@@ -52,6 +52,7 @@ class ToolRegistry:
     def __init__(self):
         self._tools: Dict[str, ToolEntry] = {}
         self._toolset_checks: Dict[str, Callable] = {}
+        self._toolset_aliases: Dict[str, str] = {}
         # MCP dynamic refresh can mutate the registry while other threads are
         # reading tool metadata, so keep mutations serialized and readers on
         # stable snapshots.
@@ -95,6 +96,27 @@ class ToolRegistry:
             entry.name for entry in self._snapshot_entries()
             if entry.toolset == toolset
         )
+
+    def register_toolset_alias(self, alias: str, toolset: str) -> None:
+        """Register an explicit alias for a canonical toolset name."""
+        with self._lock:
+            existing = self._toolset_aliases.get(alias)
+            if existing and existing != toolset:
+                logger.warning(
+                    "Toolset alias collision: '%s' (%s) overwritten by %s",
+                    alias, existing, toolset,
+                )
+            self._toolset_aliases[alias] = toolset
+
+    def get_registered_toolset_aliases(self) -> Dict[str, str]:
+        """Return a snapshot of ``{alias: canonical_toolset}`` mappings."""
+        with self._lock:
+            return dict(self._toolset_aliases)
+
+    def get_toolset_alias_target(self, alias: str) -> Optional[str]:
+        """Return the canonical toolset name for an alias, or None."""
+        with self._lock:
+            return self._toolset_aliases.get(alias)
 
     # ------------------------------------------------------------------
     # Registration
@@ -164,11 +186,18 @@ class ToolRegistry:
             entry = self._tools.pop(name, None)
             if entry is None:
                 return
-            # Drop the toolset check if this was the last tool in that toolset
-            if entry.toolset in self._toolset_checks and not any(
+            # Drop the toolset check and aliases if this was the last tool in
+            # that toolset.
+            toolset_still_exists = any(
                 e.toolset == entry.toolset for e in self._tools.values()
-            ):
+            )
+            if not toolset_still_exists:
                 self._toolset_checks.pop(entry.toolset, None)
+                self._toolset_aliases = {
+                    alias: target
+                    for alias, target in self._toolset_aliases.items()
+                    if target != entry.toolset
+                }
         logger.debug("Deregistered tool: %s", name)
 
     # ------------------------------------------------------------------

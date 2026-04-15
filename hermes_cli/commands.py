@@ -586,6 +586,116 @@ def discord_skill_commands(
     )
 
 
+def discord_skill_commands_by_category(
+    reserved_names: set[str],
+) -> tuple[dict[str, list[tuple[str, str, str]]], list[tuple[str, str, str]], int]:
+    """Return skill entries organized by category for Discord ``/skill`` subcommand groups.
+
+    Skills whose directory is nested at least 2 levels under ``SKILLS_DIR``
+    (e.g. ``creative/ascii-art/SKILL.md``) are grouped by their top-level
+    category.  Root-level skills (e.g. ``dogfood/SKILL.md``) are returned as
+    *uncategorized* — the caller should register them as direct subcommands
+    of the ``/skill`` group.
+
+    The same filtering as :func:`discord_skill_commands` is applied: hub
+    skills excluded, per-platform disabled excluded, names clamped.
+
+    Returns:
+        ``(categories, uncategorized, hidden_count)``
+
+        - *categories*: ``{category_name: [(name, description, cmd_key), ...]}``
+        - *uncategorized*: ``[(name, description, cmd_key), ...]``
+        - *hidden_count*: skills dropped due to Discord group limits
+          (25 subcommand groups, 25 subcommands per group)
+    """
+    from pathlib import Path as _P
+
+    _platform_disabled: set[str] = set()
+    try:
+        from agent.skill_utils import get_disabled_skill_names
+        _platform_disabled = get_disabled_skill_names(platform="discord")
+    except Exception:
+        pass
+
+    # Collect raw skill data --------------------------------------------------
+    categories: dict[str, list[tuple[str, str, str]]] = {}
+    uncategorized: list[tuple[str, str, str]] = []
+    _names_used: set[str] = set(reserved_names)
+    hidden = 0
+
+    try:
+        from agent.skill_commands import get_skill_commands
+        from tools.skills_tool import SKILLS_DIR
+        _skills_dir = SKILLS_DIR.resolve()
+        _hub_dir = (SKILLS_DIR / ".hub").resolve()
+        skill_cmds = get_skill_commands()
+
+        for cmd_key in sorted(skill_cmds):
+            info = skill_cmds[cmd_key]
+            skill_path = info.get("skill_md_path", "")
+            if not skill_path:
+                continue
+            sp = _P(skill_path).resolve()
+            # Skip skills outside SKILLS_DIR or from the hub
+            if not str(sp).startswith(str(_skills_dir)):
+                continue
+            if str(sp).startswith(str(_hub_dir)):
+                continue
+
+            skill_name = info.get("name", "")
+            if skill_name in _platform_disabled:
+                continue
+
+            raw_name = cmd_key.lstrip("/")
+            # Clamp to 32 chars (Discord limit)
+            discord_name = raw_name[:32]
+            if discord_name in _names_used:
+                continue
+            _names_used.add(discord_name)
+
+            desc = info.get("description", "")
+            if len(desc) > 100:
+                desc = desc[:97] + "..."
+
+            # Determine category from the relative path within SKILLS_DIR.
+            # e.g. creative/ascii-art/SKILL.md → parts = ("creative", "ascii-art")
+            try:
+                rel = sp.parent.relative_to(_skills_dir)
+            except ValueError:
+                continue
+            parts = rel.parts
+            if len(parts) >= 2:
+                cat = parts[0]
+                categories.setdefault(cat, []).append((discord_name, desc, cmd_key))
+            else:
+                uncategorized.append((discord_name, desc, cmd_key))
+    except Exception:
+        pass
+
+    # Enforce Discord limits: 25 subcommand groups, 25 subcommands each ------
+    _MAX_GROUPS = 25
+    _MAX_PER_GROUP = 25
+
+    trimmed_categories: dict[str, list[tuple[str, str, str]]] = {}
+    group_count = 0
+    for cat in sorted(categories):
+        if group_count >= _MAX_GROUPS:
+            hidden += len(categories[cat])
+            continue
+        entries = categories[cat][:_MAX_PER_GROUP]
+        hidden += max(0, len(categories[cat]) - _MAX_PER_GROUP)
+        trimmed_categories[cat] = entries
+        group_count += 1
+
+    # Uncategorized skills also count against the 25 top-level limit
+    remaining_slots = _MAX_GROUPS - group_count
+    if len(uncategorized) > remaining_slots:
+        hidden += len(uncategorized) - remaining_slots
+        uncategorized = uncategorized[:remaining_slots]
+
+    return trimmed_categories, uncategorized, hidden
+
+
 def slack_subcommand_map() -> dict[str, str]:
     """Return subcommand -> /command mapping for Slack /hermes handler.
 

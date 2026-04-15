@@ -846,8 +846,7 @@ class MCPServerTask:
         After the initial ``await`` (list_tools), all mutations are synchronous
         — atomic from the event loop's perspective.
         """
-        from tools.registry import registry, tool_error
-        from toolsets import TOOLSETS
+        from tools.registry import registry
 
         async with self._refresh_lock:
             # Capture old tool names for change diff
@@ -857,16 +856,11 @@ class MCPServerTask:
             tools_result = await self.session.list_tools()
             new_mcp_tools = tools_result.tools if hasattr(tools_result, "tools") else []
 
-            # 2. Remove old tools from hermes-* umbrella toolsets
-            for ts_name, ts in TOOLSETS.items():
-                if ts_name.startswith("hermes-"):
-                    ts["tools"] = [t for t in ts["tools"] if t not in self._registered_tool_names]
-
-            # 3. Deregister old tools from the central registry
+            # 2. Deregister old tools from the central registry
             for prefixed_name in self._registered_tool_names:
                 registry.deregister(prefixed_name)
 
-            # 4. Re-register with fresh tool list
+            # 3. Re-register with fresh tool list
             self._tools = new_mcp_tools
             self._registered_tool_names = _register_server_tools(
                 self.name, self, self._config
@@ -1144,6 +1138,8 @@ class MCPServerTask:
 
     async def shutdown(self):
         """Signal the Task to exit and wait for clean resource teardown."""
+        from tools.registry import registry
+
         self._shutdown_event.set()
         if self._task and not self._task.done():
             try:
@@ -1158,6 +1154,9 @@ class MCPServerTask:
                     await self._task
                 except asyncio.CancelledError:
                     pass
+        for tool_name in list(getattr(self, "_registered_tool_names", [])):
+            registry.deregister(tool_name)
+        self._registered_tool_names = []
         self.session = None
 
 
@@ -1671,57 +1670,6 @@ def _convert_mcp_schema(server_name: str, mcp_tool) -> dict:
     }
 
 
-def _sync_mcp_toolsets(server_names: Optional[List[str]] = None) -> None:
-    """Expose each MCP server as a standalone toolset and inject into hermes-* sets.
-
-    Creates a real toolset entry in TOOLSETS for each server name (e.g.
-    TOOLSETS["github"] = {"tools": ["mcp_github_list_files", ...]}). This
-    makes raw server names resolvable in platform_toolsets overrides.
-
-    Also injects all MCP tools into hermes-* umbrella toolsets for the
-    default behavior.
-
-    Skips server names that collide with built-in toolsets.
-    """
-    from toolsets import TOOLSETS
-
-    if server_names is None:
-        server_names = list(_load_mcp_config().keys())
-
-    existing = _existing_tool_names()
-    all_mcp_tools: List[str] = []
-
-    for server_name in server_names:
-        safe_prefix = f"mcp_{sanitize_mcp_name_component(server_name)}_"
-        server_tools = sorted(
-            t for t in existing if t.startswith(safe_prefix)
-        )
-        all_mcp_tools.extend(server_tools)
-
-        # Don't overwrite a built-in toolset that happens to share the name.
-        existing_ts = TOOLSETS.get(server_name)
-        if existing_ts and not str(existing_ts.get("description", "")).startswith("MCP server '"):
-            logger.warning(
-                "Skipping MCP toolset alias '%s' — a built-in toolset already uses that name",
-                server_name,
-            )
-            continue
-
-        TOOLSETS[server_name] = {
-            "description": f"MCP server '{server_name}' tools",
-            "tools": server_tools,
-            "includes": [],
-        }
-
-    # Also inject into hermes-* umbrella toolsets for default behavior.
-    for ts_name, ts in TOOLSETS.items():
-        if not ts_name.startswith("hermes-"):
-            continue
-        for tool_name in all_mcp_tools:
-            if tool_name not in ts["tools"]:
-                ts["tools"].append(tool_name)
-
-
 def _build_utility_schemas(server_name: str) -> List[dict]:
     """Build schemas for the MCP utility tools (resources & prompts).
 
@@ -1874,16 +1822,16 @@ def _existing_tool_names() -> List[str]:
 def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> List[str]:
     """Register tools from an already-connected server into the registry.
 
-    Handles include/exclude filtering, utility tools, toolset creation,
-    and hermes-* umbrella toolset injection.
+    Handles include/exclude filtering and utility tools. Toolset resolution
+    for ``mcp-{server}`` and raw server-name aliases is derived from the live
+    registry, rather than mutating ``toolsets.TOOLSETS`` at runtime.
 
     Used by both initial discovery and dynamic refresh (list_changed).
 
     Returns:
         List of registered prefixed tool names.
     """
-    from tools.registry import registry, tool_error
-    from toolsets import create_custom_toolset, TOOLSETS
+    from tools.registry import registry
 
     registered_names: List[str] = []
     toolset_name = f"mcp-{name}"
@@ -1973,19 +1921,8 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
         )
         registered_names.append(util_name)
 
-    # Create a custom toolset so these tools are discoverable
     if registered_names:
-        create_custom_toolset(
-            name=toolset_name,
-            description=f"MCP tools from {name} server",
-            tools=registered_names,
-        )
-        # Inject into hermes-* umbrella toolsets for default behavior
-        for ts_name, ts in TOOLSETS.items():
-            if ts_name.startswith("hermes-"):
-                for tool_name in registered_names:
-                    if tool_name not in ts["tools"]:
-                        ts["tools"].append(tool_name)
+        registry.register_toolset_alias(name, toolset_name)
 
     return registered_names
 
@@ -2049,7 +1986,6 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
         }
 
     if not new_servers:
-        _sync_mcp_toolsets(list(servers.keys()))
         return _existing_tool_names()
 
     # Start the background event loop for MCP connections
@@ -2079,8 +2015,6 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
     # Per-server timeouts are handled inside _discover_and_register_server.
     # The outer timeout is generous: 120s total for parallel discovery.
     _run_on_mcp_loop(_discover_all(), timeout=120)
-
-    _sync_mcp_toolsets(list(servers.keys()))
 
     # Log a summary so ACP callers get visibility into what was registered.
     with _lock:

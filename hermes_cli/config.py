@@ -1687,8 +1687,34 @@ def _normalize_custom_provider_entry(
         normalized["model"] = model_name.strip()
 
     models = entry.get("models")
+    normalized_models: Any = None
     if isinstance(models, dict) and models:
-        normalized["models"] = models
+        normalized_models = models
+    elif isinstance(models, str):
+        model_id = models.strip()
+        if model_id:
+            normalized_models = [model_id]
+    elif isinstance(models, (list, tuple, set)):
+        cleaned_models: List[str] = []
+        for item in models:
+            model_id = ""
+            if isinstance(item, str):
+                model_id = item.strip()
+            elif isinstance(item, dict):
+                for key in ("name", "id", "model"):
+                    raw_model_id = item.get(key)
+                    if isinstance(raw_model_id, str) and raw_model_id.strip():
+                        model_id = raw_model_id.strip()
+                        break
+            elif item is not None:
+                model_id = str(item).strip()
+            if model_id and model_id not in cleaned_models:
+                cleaned_models.append(model_id)
+        if cleaned_models:
+            normalized_models = cleaned_models
+
+    if normalized_models is not None:
+        normalized["models"] = normalized_models
 
     context_length = entry.get("context_length")
     if isinstance(context_length, int) and context_length > 0:

@@ -20,6 +20,7 @@ from hermes_cli.config import (
     save_env_value_secure,
     sanitize_env_file,
     _sanitize_env_lines,
+    _normalize_custom_provider_entry,
 )
 
 
@@ -500,6 +501,25 @@ class TestCustomProviderCompatibility:
         assert compatible[0]["base_url"] == "https://api.openai.com/v1"
         assert compatible[0]["provider_key"] == "openai-direct"
         assert compatible[0]["api_mode"] == "codex_responses"
+
+    def test_normalize_custom_provider_entry_preserves_list_models(self):
+        normalized = _normalize_custom_provider_entry(
+            {
+                "name": "cliproxy",
+                "base_url": "http://localhost:23000/v1",
+                "model": "glm-5-turbo",
+                "models": [
+                    "glm-5-turbo",
+                    {"name": "MiniMax-M2.1"},
+                    {"id": "glm-4.5-flash"},
+                    {"model": "glm-4.5-flash"},
+                    "",
+                ],
+            }
+        )
+
+        assert normalized is not None
+        assert normalized["models"] == ["glm-5-turbo", "MiniMax-M2.1", "glm-4.5-flash"]
 
     def test_compatible_custom_providers_prefers_api_then_url_then_base_url(self, tmp_path):
         config_path = tmp_path / "config.yaml"

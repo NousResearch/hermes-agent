@@ -79,9 +79,53 @@ def is_nous_hermes_non_agentic(model_name: str) -> bool:
     Callers in :mod:`cli.py` and here should go through this single helper
     so the two sites don't drift.
     """
-    if not model_name:
-        return False
-    return bool(_NOUS_HERMES_NON_AGENTIC_RE.search(model_name))
+    model_lower = model_name.lower()
+    return bool(_NOUS_HERMES_NON_AGENTIC_RE.search(model_lower))
+
+
+def _append_unique_model(models_list: List[str], model_name: object) -> None:
+    """Append a normalized model name to *models_list* if it is non-empty."""
+    if not isinstance(model_name, str):
+        model_name = "" if model_name is None else str(model_name)
+    model_name = model_name.strip()
+    if model_name and model_name not in models_list:
+        models_list.append(model_name)
+
+
+def _iter_declared_custom_provider_models(entry: dict):
+    """Yield model names declared under a custom provider entry.
+
+    Supports dict-style ``models`` (model_id -> metadata), list/tuple/set-style
+    collections of strings or dicts, and single-string fallbacks.
+    """
+    raw_models = entry.get("models")
+    if isinstance(raw_models, dict):
+        for model_id in raw_models.keys():
+            yield model_id
+        return
+
+    if isinstance(raw_models, str):
+        if raw_models.strip():
+            yield raw_models.strip()
+        return
+
+    if isinstance(raw_models, (list, tuple, set)):
+        for item in raw_models:
+            if isinstance(item, str):
+                model_id = item.strip()
+            elif isinstance(item, dict):
+                model_id = ""
+                for key in ("name", "id", "model"):
+                    raw_model_id = item.get(key)
+                    if isinstance(raw_model_id, str) and raw_model_id.strip():
+                        model_id = raw_model_id.strip()
+                        break
+            else:
+                model_id = "" if item is None else str(item).strip()
+            if model_id:
+                yield model_id
+        return
+
 
 
 def _check_hermes_model_warning(model_name: str) -> str:
@@ -1063,9 +1107,10 @@ def list_authenticated_providers(
                     "api_url": api_url,
                     "models": [],
                 }
-            default_model = (entry.get("model") or "").strip()
-            if default_model and default_model not in groups[slug]["models"]:
-                groups[slug]["models"].append(default_model)
+            default_model = entry.get("model") or entry.get("default_model") or ""
+            _append_unique_model(groups[slug]["models"], default_model)
+            for model_name in _iter_declared_custom_provider_models(entry):
+                _append_unique_model(groups[slug]["models"], model_name)
 
         for slug, grp in groups.items():
             if slug in seen_slugs:

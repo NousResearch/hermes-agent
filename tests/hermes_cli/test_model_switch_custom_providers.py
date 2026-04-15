@@ -135,6 +135,35 @@ def test_list_groups_same_name_custom_providers_into_one_row(monkeypatch):
     assert moonshot_rows[0]["models"] == ["kimi-k2-thinking"]
 
 
+def test_list_expands_declared_models_from_models_dict(monkeypatch):
+    """Named custom providers should surface every declared model in models:."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+
+    providers = list_authenticated_providers(
+        current_provider="openrouter",
+        user_providers={},
+        custom_providers=[
+            {
+                "name": "cliproxy",
+                "base_url": "http://localhost:23000/v1",
+                "model": "glm-5-turbo",
+                "models": {
+                    "glm-5-turbo": {"context_length": 202752},
+                    "MiniMax-M2.1": {"context_length": 196608},
+                    "glm-4.5-flash": {"context_length": 131072},
+                },
+            }
+        ],
+        max_models=50,
+    )
+
+    row = next((p for p in providers if p["name"] == "cliproxy"), None)
+    assert row is not None
+    assert row["models"] == ["glm-5-turbo", "MiniMax-M2.1", "glm-4.5-flash"]
+    assert row["total_models"] == 3
+
+
 def test_list_deduplicates_same_model_in_group(monkeypatch):
     """Duplicate model entries under the same provider name should not produce
     duplicate entries in the models list."""

@@ -345,3 +345,75 @@ class TestProviderResolution:
         cli = _make_cli()
         assert isinstance(cli.model, str)
         assert isinstance(cli.model, str) and '/' in cli.model
+
+
+class TestTerminalCwdRespectsExistingEnvVar:
+    """When TERMINAL_CWD is already set (e.g. by gateway from MESSAGING_CWD),
+    load_cli_config() must not overwrite it with os.getcwd() just because
+    config.yaml has cwd: '.' or 'auto'."""
+
+    def test_dot_cwd_does_not_overwrite_existing_terminal_cwd(self, tmp_path, monkeypatch):
+        import yaml
+        import importlib
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(yaml.safe_dump({
+            "terminal": {"cwd": "."},
+        }))
+
+        original_cwd = "/already/set/from/messaging"
+        monkeypatch.setenv("TERMINAL_CWD", original_cwd)
+
+        import cli
+        monkeypatch.setattr(cli, "_hermes_home", hermes_home)
+        cfg = cli.load_cli_config()
+
+        assert os.environ["TERMINAL_CWD"] == original_cwd
+        assert cfg["terminal"]["cwd"] == original_cwd
+
+    def test_auto_cwd_does_not_overwrite_existing_terminal_cwd(self, tmp_path, monkeypatch):
+        import yaml
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(yaml.safe_dump({
+            "terminal": {"cwd": "auto"},
+        }))
+
+        original_cwd = "/already/set/from/messaging"
+        monkeypatch.setenv("TERMINAL_CWD", original_cwd)
+
+        import cli
+        monkeypatch.setattr(cli, "_hermes_home", hermes_home)
+        cfg = cli.load_cli_config()
+
+        assert os.environ["TERMINAL_CWD"] == original_cwd
+        assert cfg["terminal"]["cwd"] == original_cwd
+
+    def test_dot_cwd_falls_back_to_os_getcwd_when_no_env_var(self, tmp_path, monkeypatch):
+        import yaml
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(yaml.safe_dump({
+            "terminal": {"cwd": "."},
+        }))
+
+        monkeypatch.delenv("TERMINAL_CWD", raising=False)
+
+        import cli
+        monkeypatch.setattr(cli, "_hermes_home", hermes_home)
+        cfg = cli.load_cli_config()
+
+        assert os.environ["TERMINAL_CWD"] == os.getcwd()
+        assert cfg["terminal"]["cwd"] == os.getcwd()

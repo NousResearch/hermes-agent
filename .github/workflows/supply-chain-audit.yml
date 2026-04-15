@@ -225,6 +225,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set +e
           SEVERITY="⚠️ Supply Chain Risk Detected"
           if [ "${{ steps.scan.outputs.critical }}" = "true" ]; then
             SEVERITY="🚨 CRITICAL Supply Chain Risk Detected"

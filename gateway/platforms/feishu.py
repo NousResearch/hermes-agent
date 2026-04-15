@@ -1089,6 +1089,7 @@ class FeishuAdapter(BasePlatformAdapter):
         # Exec approval button state (approval_id → {session_key, message_id, chat_id})
         self._approval_state: Dict[int, Dict[str, str]] = {}
         self._approval_counter = itertools.count(1)
+        self._model_picker_state: Dict[str, Dict[str, Any]] = {}
         self._load_seen_message_ids()
 
     @staticmethod
@@ -1436,6 +1437,121 @@ class FeishuAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.error("[Feishu] Failed to edit message %s: %s", message_id, exc, exc_info=True)
             return SendResult(success=False, error=str(exc))
+
+    async def send_model_picker(
+        self,
+        chat_id: str,
+        providers: list,
+        current_model: str,
+        current_provider: str,
+        session_key: str,
+        on_model_selected,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send an interactive card model picker for Feishu.
+        
+        Two-level drill-down: provider selection → model selection.
+        Updates the same card in-place as the user navigates.
+        """
+        if not self._client:
+            return SendResult(success=False, error="Not connected")
+        picker_id = f"mp_{chat_id}"
+
+        try:
+            from hermes_cli.providers import get_label
+        except ImportError:
+            def get_label(slug):
+                return slug
+
+        # Build provider buttons
+        provider_actions = []
+        for p in providers:
+            count = p.get("total_models", len(p.get("models", [])))
+            label = f"{p['name']} ({count})"
+            if p.get("is_current"):
+                label = f"✓ {label}"
+            provider_actions.append({
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": label},
+                "type": "primary" if p.get("is_current") else "default",
+                "value": {
+                    "hermes_action": "model_pick_provider",
+                    "picker_id": picker_id,
+                    "provider_slug": p["slug"],
+                },
+            })
+
+        provider_label = get_label(current_provider)
+        card = {
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "title": {"content": "⚙️ 切换模型", "tag": "plain_text"},
+                "template": "blue",
+            },
+            "elements": [
+                {
+                    "tag": "markdown",
+                    "content": f"当前模型: `{current_model or 'unknown'}`\nProvider: {provider_label}\n\n请选择 Provider：",
+                },
+                {"tag": "action", "actions": provider_actions},
+            ],
+        }
+        
+        payload = json.dumps(card, ensure_ascii=False)
+        response = await self._feishu_send_with_retry(
+            chat_id=chat_id,
+            msg_type="interactive",
+            payload=payload,
+            reply_to=None,
+            metadata=metadata,
+        )
+        result = self._finalize_send_result(response, "send_model_picker failed")
+        if result.success:
+            self._model_picker_state[picker_id] = {
+                "session_key": session_key,
+                "on_model_selected": on_model_selected,
+                "current_model": current_model,
+                "current_provider": current_provider,
+                "message_id": result.message_id or "",
+                "chat_id": chat_id,
+                "providers": providers,  # Store for navigation
+            }
+        return result
+
+    async def _update_model_picker_card(self, message_id: str, title: str, content: str, template: str = "blue") -> None:
+        """Update the model picker card with a new status."""
+        if not self._client or not message_id:
+            logger.warning("[Feishu] _update_model_picker_card called without client or message_id")
+            return
+        card = {
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "title": {"content": title, "tag": "plain_text"},
+                "template": template,
+            },
+            "elements": [
+                {
+                    "tag": "markdown",
+                    "content": content,
+                },
+            ],
+        }
+        try:
+            payload = json.dumps(card, ensure_ascii=False)
+            body = self._build_update_message_body(msg_type="interactive", content=payload)
+            request = self._build_update_message_request(message_id=message_id, request_body=body)
+            await asyncio.to_thread(self._client.im.v1.message.update, request)
+        except Exception as exc:
+            logger.warning("[Feishu] Failed to update model picker card %s: %s", message_id, exc)
+
+    def _get_model_display_name(self, model_id: str, provider_slug: str) -> str:
+        """Build a human-friendly model display name."""
+        try:
+            from hermes_cli.providers import get_label
+            provider_label = get_label(provider_slug)
+        except ImportError:
+            provider_label = provider_slug
+        return f"{model_id} ({provider_label})"
 
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str,
@@ -1862,17 +1978,29 @@ class FeishuAdapter(BasePlatformAdapter):
         For other card actions: delegates to ``_handle_card_action_event``.
         """
         loop = self._loop
+        event = getattr(data, "event", None)
+        action = getattr(event, "action", None)
+        action_value = getattr(action, "value", {}) or {}
+        action_tag = getattr(action, "tag", "")
+
+        hermes_action = action_value.get("hermes_action") if isinstance(action_value, dict) else None
+        action_str = action_value.get("action", "") if isinstance(action_value, dict) else ""
+
+        logger.info("[Feishu] _on_card_action_trigger: hermes_action=%s, action='%s', action_tag=%s, value=%s",
+                   hermes_action, action_str, action_tag, action_value)
+
         if not self._loop_accepts_callbacks(loop):
             logger.warning("[Feishu] Dropping card action before adapter loop is ready")
             return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
 
-        event = getattr(data, "event", None)
-        action = getattr(event, "action", None)
-        action_value = getattr(action, "value", {}) or {}
-        hermes_action = action_value.get("hermes_action") if isinstance(action_value, dict) else None
-
-        if hermes_action:
+        # Approval intercept — exact set match to avoid catching model picker buttons
+        approval_actions = {"approve_once", "approve_session", "approve_always", "deny"}
+        if hermes_action in approval_actions:
             return self._handle_approval_card_action(event=event, action_value=action_value, loop=loop)
+
+        # Model picker intercept
+        if hermes_action in ("model_pick_provider", "model_pick_model", "model_pick_back", "model_pick_page"):
+            return self._handle_model_picker_card_action(event=event, action_value=action_value, loop=loop)
 
         self._submit_on_loop(loop, self._handle_card_action_event(data))
         if P2CardActionTriggerResponse is None:
@@ -1928,6 +2056,292 @@ class FeishuAdapter(BasePlatformAdapter):
             )
         except Exception as exc:
             logger.error("Failed to resolve gateway approval from Feishu button: %s", exc)
+
+    def _handle_model_picker_card_action(self, *, event: Any, action_value: Dict[str, Any], loop: Any) -> Any:
+        """Handle model picker button clicks and return immediate card update."""
+        hermes_action = action_value.get("hermes_action", "")
+        picker_id = action_value.get("picker_id")
+        state = self._model_picker_state.get(picker_id, {})
+        
+        if not state:
+            logger.debug("[Feishu] Model picker %s unknown or expired", picker_id)
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+            
+        if hermes_action == "model_pick_provider":
+            # Show model list for selected provider
+            provider_slug = action_value.get("provider_slug", "")
+            providers = state.get("providers", [])
+            selected_provider = next((p for p in providers if p["slug"] == provider_slug), None)
+            
+            if not selected_provider:
+                logger.debug("[Feishu] Provider %s not found", provider_slug)
+                return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+            
+            # Return immediate model list card
+            if P2CardActionTriggerResponse is None:
+                return None
+            response = P2CardActionTriggerResponse()
+            if CallBackCard is not None:
+                card = CallBackCard()
+                card.type = "raw"
+                card.data = self._build_model_list_card(
+                    provider=selected_provider,
+                    picker_id=picker_id,
+                    current_model=state.get("current_model", ""),
+                    current_provider=state.get("current_provider", ""),
+                    page=0,
+                )
+                response.card = card
+            return response
+            
+        if hermes_action == "model_pick_page":
+            # Navigate to a different page within model list
+            provider_slug = action_value.get("provider_slug", "")
+            page = action_value.get("page", 0)
+            providers = state.get("providers", [])
+            selected_provider = next((p for p in providers if p["slug"] == provider_slug), None)
+            
+            if not selected_provider:
+                logger.debug("[Feishu] Provider %s not found", provider_slug)
+                return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+            
+            # Return model list card with new page
+            if P2CardActionTriggerResponse is None:
+                return None
+            response = P2CardActionTriggerResponse()
+            if CallBackCard is not None:
+                card = CallBackCard()
+                card.type = "raw"
+                card.data = self._build_model_list_card(
+                    provider=selected_provider,
+                    picker_id=picker_id,
+                    current_model=state.get("current_model", ""),
+                    current_provider=state.get("current_provider", ""),
+                    page=page,
+                )
+                response.card = card
+            return response
+            
+        if hermes_action == "model_pick_back":
+            # Return to provider list
+            if P2CardActionTriggerResponse is None:
+                return None
+            response = P2CardActionTriggerResponse()
+            if CallBackCard is not None:
+                card = CallBackCard()
+                card.type = "raw"
+                card.data = self._build_provider_list_card(
+                    providers=state.get("providers", []),
+                    picker_id=picker_id,
+                    current_model=state.get("current_model", ""),
+                    current_provider=state.get("current_provider", ""),
+                )
+                response.card = card
+            return response
+            
+        if hermes_action == "model_pick_model":
+            model_id = action_value.get("model_id", "")
+            provider_slug = action_value.get("provider_slug", "")
+            
+            # Schedule the actual switch in background
+            self._submit_on_loop(loop, self._execute_model_switch(
+                picker_id=picker_id,
+                model_id=model_id,
+                provider_slug=provider_slug,
+                state=state,
+            ))
+            
+            # Return immediate "switching..." card
+            if P2CardActionTriggerResponse is None:
+                return None
+            response = P2CardActionTriggerResponse()
+            if CallBackCard is not None:
+                card = CallBackCard()
+                card.type = "raw"
+                card.data = self._build_model_switching_card(model_id=model_id, provider_slug=provider_slug)
+                response.card = card
+            return response
+            
+        return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+
+    @staticmethod
+    def _build_provider_list_card(*, providers: list, picker_id: str, current_model: str, current_provider: str) -> Dict[str, Any]:
+        """Build raw card JSON for provider selection."""
+        try:
+            from hermes_cli.providers import get_label
+        except ImportError:
+            def get_label(slug):
+                return slug
+        
+        provider_actions = []
+        for p in providers:
+            count = p.get("total_models", len(p.get("models", [])))
+            label = f"{p['name']} ({count})"
+            if p.get("is_current"):
+                label = f"✓ {label}"
+            provider_actions.append({
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": label},
+                "type": "primary" if p.get("is_current") else "default",
+                "value": {
+                    "hermes_action": "model_pick_provider",
+                    "picker_id": picker_id,
+                    "provider_slug": p["slug"],
+                },
+            })
+        
+        provider_label = get_label(current_provider)
+        return {
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "title": {"content": "⚙️ 切换模型", "tag": "plain_text"},
+                "template": "blue",
+            },
+            "elements": [
+                {
+                    "tag": "markdown",
+                    "content": f"当前模型: `{current_model or 'unknown'}`\nProvider: {provider_label}\n\n请选择 Provider：",
+                },
+                {"tag": "action", "actions": provider_actions},
+            ],
+        }
+
+    @staticmethod
+    def _build_model_list_card(*, provider: dict, picker_id: str, current_model: str, current_provider: str, page: int = 0) -> Dict[str, Any]:
+        """Build raw card JSON for model selection within a provider."""
+        provider_slug = provider["slug"]
+        provider_name = provider["name"]
+        models = provider.get("models", [])
+        
+        # Pagination: 4 models per page (leave room for nav buttons)
+        page_size = 4
+        total_pages = max(1, (len(models) + page_size - 1) // page_size)
+        page = max(0, min(page, total_pages - 1))
+        page_models = models[page * page_size : (page + 1) * page_size]
+        
+        model_actions = []
+        for model_id in page_models:
+            is_current = (model_id == current_model and provider_slug == current_provider)
+            label = f"✓ {model_id}" if is_current else model_id
+            model_actions.append({
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": label},
+                "type": "primary" if is_current else "default",
+                "value": {
+                    "hermes_action": "model_pick_model",
+                    "picker_id": picker_id,
+                    "model_id": model_id,
+                    "provider_slug": provider_slug,
+                },
+            })
+        
+        # Navigation buttons: back, prev, next
+        nav_actions = []
+        nav_actions.append({
+            "tag": "button",
+            "text": {"tag": "plain_text", "content": "← 返回"},
+            "type": "default",
+            "value": {
+                "hermes_action": "model_pick_back",
+                "picker_id": picker_id,
+            },
+        })
+        if total_pages > 1:
+            if page > 0:
+                nav_actions.append({
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": "‹ 上一页"},
+                    "type": "default",
+                    "value": {
+                        "hermes_action": "model_pick_page",
+                        "picker_id": picker_id,
+                        "provider_slug": provider_slug,
+                        "page": page - 1,
+                    },
+                })
+            if page < total_pages - 1:
+                nav_actions.append({
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": "下一页 ›"},
+                    "type": "default",
+                    "value": {
+                        "hermes_action": "model_pick_page",
+                        "picker_id": picker_id,
+                        "provider_slug": provider_slug,
+                        "page": page + 1,
+                    },
+                })
+        
+        page_info = f" ({page + 1}/{total_pages})" if total_pages > 1 else ""
+        return {
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "title": {"content": f"⚙️ {provider_name}{page_info}", "tag": "plain_text"},
+                "template": "blue",
+            },
+            "elements": [
+                {
+                    "tag": "markdown",
+                    "content": f"当前模型: `{current_model or 'unknown'}`\n\n请选择模型：",
+                },
+                {"tag": "action", "actions": model_actions},
+                {"tag": "action", "actions": nav_actions},
+            ],
+        }
+
+    @staticmethod
+    def _build_model_switching_card(*, model_id: str, provider_slug: str) -> Dict[str, Any]:
+        """Build raw card JSON for model switching in progress."""
+        return {
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "title": {"content": "⏳ 切换模型中...", "tag": "plain_text"},
+                "template": "blue",
+            },
+            "elements": [
+                {
+                    "tag": "markdown",
+                    "content": f"正在切换到 `{model_id}` ({provider_slug})...",
+                },
+            ],
+        }
+
+    async def _execute_model_switch(
+        self, *, picker_id: Any, model_id: str, provider_slug: str, state: Dict[str, Any]
+    ) -> None:
+        """Execute the actual model switch and send completion notification."""
+        on_model_selected = state.get("on_model_selected")
+        chat_id_val = state.get("chat_id", "")
+        message_id = state.get("message_id", "")
+        
+        if on_model_selected:
+            try:
+                confirm_text = await on_model_selected(chat_id_val, model_id, provider_slug)
+                template = "green"
+                title = "✅ 模型已切换"
+            except Exception as exc:
+                confirm_text = f"切换失败: {exc}"
+                template = "red"
+                title = "❌ 切换失败"
+                
+            # Update the card with final status
+            await self._update_model_picker_card(
+                message_id=message_id,
+                title=title,
+                content=confirm_text,
+                template=template,
+            )
+            
+            # Send a separate notification message
+            if template == "green":
+                model_display = self._get_model_display_name(model_id, provider_slug)
+                chat_msg = f"✅ 模型已切换为 {model_display}"
+                try:
+                    await self.send(chat_id_val, chat_msg, reply_to=None)
+                except Exception as msg_exc:
+                    logger.warning("[Feishu] Failed to send switch notification: %s", msg_exc)
+                    
+        self._model_picker_state.pop(picker_id, None)
 
     async def _handle_reaction_event(self, event_type: str, data: Any) -> None:
         """Fetch the reacted-to message; if it was sent by this bot, emit a synthetic text event."""

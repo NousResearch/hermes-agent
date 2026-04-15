@@ -52,8 +52,12 @@ def mirror_to_session(
             "mirror_source": source_label,
         }
 
-        _append_to_jsonl(session_id, mirror_msg)
-        _append_to_sqlite(session_id, mirror_msg)
+        jsonl_ok = _append_to_jsonl(session_id, mirror_msg)
+        sqlite_ok = _append_to_sqlite(session_id, mirror_msg)
+
+        if not (jsonl_ok or sqlite_ok):
+            logger.debug("Mirror: no transcript backend succeeded for session %s", session_id)
+            return False
 
         logger.debug("Mirror: wrote to session %s (from %s)", session_id, source_label)
         return True
@@ -104,17 +108,19 @@ def _find_session_id(platform: str, chat_id: str, thread_id: Optional[str] = Non
     return best_match
 
 
-def _append_to_jsonl(session_id: str, message: dict) -> None:
+def _append_to_jsonl(session_id: str, message: dict) -> bool:
     """Append a message to the JSONL transcript file."""
     transcript_path = _SESSIONS_DIR / f"{session_id}.jsonl"
     try:
         with open(transcript_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(message, ensure_ascii=False) + "\n")
+        return True
     except Exception as e:
         logger.debug("Mirror JSONL write failed: %s", e)
+        return False
 
 
-def _append_to_sqlite(session_id: str, message: dict) -> None:
+def _append_to_sqlite(session_id: str, message: dict) -> bool:
     """Append a message to the SQLite session database."""
     db = None
     try:
@@ -125,8 +131,10 @@ def _append_to_sqlite(session_id: str, message: dict) -> None:
             role=message.get("role", "assistant"),
             content=message.get("content"),
         )
+        return True
     except Exception as e:
         logger.debug("Mirror SQLite write failed: %s", e)
+        return False
     finally:
         if db is not None:
             db.close()

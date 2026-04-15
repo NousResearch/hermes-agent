@@ -118,9 +118,10 @@ class TestAppendToJsonl:
         sessions_dir.mkdir()
 
         with patch.object(mirror_mod, "_SESSIONS_DIR", sessions_dir):
-            _append_to_jsonl("sess_1", {"role": "assistant", "content": "Hello"})
+            result = _append_to_jsonl("sess_1", {"role": "assistant", "content": "Hello"})
 
         transcript = sessions_dir / "sess_1.jsonl"
+        assert result is True
         lines = transcript.read_text().strip().splitlines()
         assert len(lines) == 1
         msg = json.loads(lines[0])
@@ -132,12 +133,22 @@ class TestAppendToJsonl:
         sessions_dir.mkdir()
 
         with patch.object(mirror_mod, "_SESSIONS_DIR", sessions_dir):
-            _append_to_jsonl("sess_1", {"role": "assistant", "content": "msg1"})
-            _append_to_jsonl("sess_1", {"role": "assistant", "content": "msg2"})
+            assert _append_to_jsonl("sess_1", {"role": "assistant", "content": "msg1"}) is True
+            assert _append_to_jsonl("sess_1", {"role": "assistant", "content": "msg2"}) is True
 
         transcript = sessions_dir / "sess_1.jsonl"
         lines = transcript.read_text().strip().splitlines()
         assert len(lines) == 2
+
+    def test_returns_false_when_jsonl_write_fails(self, tmp_path):
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+
+        with patch.object(mirror_mod, "_SESSIONS_DIR", sessions_dir), \
+             patch("builtins.open", side_effect=OSError("disk full")):
+            result = _append_to_jsonl("sess_1", {"role": "assistant", "content": "Hello"})
+
+        assert result is False
 
 
 class TestMirrorToSession:
@@ -204,6 +215,40 @@ class TestMirrorToSession:
 
         assert result is False
 
+    def test_returns_false_when_all_backends_fail(self, tmp_path):
+        sessions_dir, index_file = _setup_sessions(tmp_path, {
+            "s1": {
+                "session_id": "sess_abc",
+                "origin": {"platform": "telegram", "chat_id": "12345"},
+                "updated_at": "2026-01-01T00:00:00",
+            }
+        })
+
+        with patch.object(mirror_mod, "_SESSIONS_DIR", sessions_dir), \
+             patch.object(mirror_mod, "_SESSIONS_INDEX", index_file), \
+             patch("gateway.mirror._append_to_jsonl", return_value=False), \
+             patch("gateway.mirror._append_to_sqlite", return_value=False):
+            result = mirror_to_session("telegram", "12345", "Hello!", source_label="cli")
+
+        assert result is False
+
+    def test_returns_true_when_sqlite_succeeds_but_jsonl_fails(self, tmp_path):
+        sessions_dir, index_file = _setup_sessions(tmp_path, {
+            "s1": {
+                "session_id": "sess_abc",
+                "origin": {"platform": "telegram", "chat_id": "12345"},
+                "updated_at": "2026-01-01T00:00:00",
+            }
+        })
+
+        with patch.object(mirror_mod, "_SESSIONS_DIR", sessions_dir), \
+             patch.object(mirror_mod, "_SESSIONS_INDEX", index_file), \
+             patch("gateway.mirror._append_to_jsonl", return_value=False), \
+             patch("gateway.mirror._append_to_sqlite", return_value=True):
+            result = mirror_to_session("telegram", "12345", "Hello!", source_label="cli")
+
+        assert result is True
+
 
 class TestAppendToSqlite:
     def test_connection_is_closed_after_use(self, tmp_path):
@@ -212,8 +257,9 @@ class TestAppendToSqlite:
         mock_db = MagicMock()
 
         with patch("hermes_state.SessionDB", return_value=mock_db):
-            _append_to_sqlite("sess_1", {"role": "assistant", "content": "hello"})
+            result = _append_to_sqlite("sess_1", {"role": "assistant", "content": "hello"})
 
+        assert result is True
         mock_db.append_message.assert_called_once()
         mock_db.close.assert_called_once()
 
@@ -224,6 +270,7 @@ class TestAppendToSqlite:
         mock_db.append_message.side_effect = Exception("db error")
 
         with patch("hermes_state.SessionDB", return_value=mock_db):
-            _append_to_sqlite("sess_1", {"role": "assistant", "content": "hello"})
+            result = _append_to_sqlite("sess_1", {"role": "assistant", "content": "hello"})
 
+        assert result is False
         mock_db.close.assert_called_once()

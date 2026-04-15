@@ -2606,6 +2606,14 @@ class GatewayRunner:
             if _cmd_def_inner and _cmd_def_inner.name == "background":
                 return await self._handle_background_command(event)
 
+            # /btw must bypass the running-agent guard — it spawns its own
+            # ephemeral agent in a background task and should never interrupt
+            # the active conversation.  Without this bypass, sending /btw
+            # while the agent is running triggers running_agent.interrupt()
+            # on line 2640, killing the in-progress response.  (#btw-interrupt)
+            if _cmd_def_inner and _cmd_def_inner.name == "btw":
+                return await self._handle_btw_command(event)
+
             if event.message_type == MessageType.PHOTO:
                 logger.debug("PRIORITY photo follow-up for session %s — queueing without interrupt", _quick_key[:20])
                 adapter = self.adapters.get(source.platform)

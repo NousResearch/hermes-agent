@@ -4165,6 +4165,15 @@ class HermesCLI:
             _cprint("  Tip:   Use /history or `hermes sessions list` to find sessions.")
             return
 
+        # Strip common outer brackets that users may type literally from the
+        # usage hint (e.g. "/resume <abc123>" or "/resume [abc123]").
+        if len(target) >= 2:
+            if (target[0] == '<' and target[-1] == '>') or \
+               (target[0] == '[' and target[-1] == ']') or \
+               (target[0] == '"' and target[-1] == '"') or \
+               (target[0] == "'" and target[-1] == "'"):
+                target = target[1:-1].strip()
+
         if not self._session_db:
             _cprint("  Session database not available.")
             return

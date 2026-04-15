@@ -6207,6 +6207,14 @@ class GatewayRunner:
         session_key = self._session_key_for_source(source)
         name = event.get_command_args().strip()
 
+        # Strip common outer brackets that users may type literally
+        if len(name) >= 2:
+            if (name[0] == '<' and name[-1] == '>') or \
+               (name[0] == '[' and name[-1] == ']') or \
+               (name[0] == '"' and name[-1] == '"') or \
+               (name[0] == "'" and name[-1] == "'"):
+                name = name[1:-1].strip()
+
         if not name:
             # List recent titled sessions for this user/platform
             try:
@@ -6233,8 +6241,12 @@ class GatewayRunner:
                 logger.debug("Failed to list titled sessions: %s", e)
                 return f"Could not list sessions: {e}"
 
-        # Resolve the name to a session ID
-        target_id = self._session_db.resolve_session_by_title(name)
+        # Resolve the name to a session ID — try exact ID first, then title
+        session = self._session_db.get_session(name)
+        if session:
+            target_id = session["id"]
+        else:
+            target_id = self._session_db.resolve_session_by_title(name)
         if not target_id:
             return (
                 f"No session found matching '**{name}**'.\n"

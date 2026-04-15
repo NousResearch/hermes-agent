@@ -71,6 +71,65 @@ def _ensure_ssl_certs() -> None:
 
 _ensure_ssl_certs()
 
+
+_LIVE_GATEWAY_SILENT_MARKERS = {
+    "[silent]",
+    "silent",
+    "no message",
+    "no reply",
+    "no response",
+    "no response generated",
+    "empty",
+}
+
+
+def _normalize_live_gateway_response(response: Optional[str], *, failed: bool = False) -> str:
+    """Suppress placeholder silence markers before live message delivery.
+
+    Live gateway chats should not send placeholder strings such as
+    ``(No message)`` or ``[SILENT]`` into Discord/Telegram/etc.  Only exact
+    silence markers are suppressed; real error text and normal responses are
+    preserved.
+    """
+    if response is None:
+        return ""
+
+    text = str(response).strip()
+    if not text or failed:
+        return text
+
+    normalized = text
+    for _ in range(6):
+        updated = normalized.strip()
+        changed = False
+
+        for wrapper in ("**", "__", "~~", "`"):
+            if updated.startswith(wrapper) and updated.endswith(wrapper):
+                inner = updated[len(wrapper):-len(wrapper)].strip()
+                if inner:
+                    normalized = inner
+                    changed = True
+                    break
+        if changed:
+            continue
+
+        for left, right in (("(", ")"), ("[", "]"), ("{", "}"), ('"', '"'), ("'", "'")):
+            if updated.startswith(left) and updated.endswith(right):
+                inner = updated[len(left):-len(right)].strip()
+                if inner:
+                    normalized = inner
+                    changed = True
+                    break
+        if not changed:
+            normalized = updated
+            break
+
+    canonical = re.sub(r"[\s\-_]+", " ", normalized).strip(" .!?:;").casefold()
+    if canonical in _LIVE_GATEWAY_SILENT_MARKERS:
+        return ""
+
+    return text
+
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -3565,12 +3624,6 @@ class GatewayRunner:
             agent_messages = agent_result.get("messages", [])
             _response_time = time.time() - _msg_start_time
             _api_calls = agent_result.get("api_calls", 0)
-            _resp_len = len(response)
-            logger.info(
-                "response ready: platform=%s chat=%s time=%.1fs api_calls=%d response=%d chars",
-                _platform_name, source.chat_id or "unknown",
-                _response_time, _api_calls, _resp_len,
-            )
 
             # Surface error details when the agent failed silently (final_response=None)
             if not response and agent_result.get("failed"):
@@ -3627,6 +3680,17 @@ class GatewayRunner:
                     else:
                         display_reasoning = last_reasoning.strip()
                     response = f"💭 **Reasoning:**\n```\n{display_reasoning}\n```\n\n{response}"
+
+            response = _normalize_live_gateway_response(
+                response,
+                failed=bool(agent_result.get("failed")),
+            )
+            _resp_len = len(response)
+            logger.info(
+                "response ready: platform=%s chat=%s time=%.1fs api_calls=%d response=%d chars",
+                _platform_name, source.chat_id or "unknown",
+                _response_time, _api_calls, _resp_len,
+            )
 
             # Emit agent:end hook
             await self.hooks.emit("agent:end", {
@@ -8475,7 +8539,10 @@ class GatewayRunner:
                             )
                         )
                     )
-                    first_response = result.get("final_response", "")
+                    first_response = _normalize_live_gateway_response(
+                        result.get("final_response", ""),
+                        failed=bool(result.get("failed")),
+                    )
                     if first_response and not _already_streamed:
                         try:
                             await adapter.send(

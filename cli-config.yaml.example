@@ -773,7 +773,6 @@ code_execution:
 # Supports single tasks and batch mode (up to 3 parallel).
 delegation:
   max_iterations: 50                          # Max tool-calling turns per child (default: 50)
-  default_toolsets: ["terminal", "file", "web"]  # Default toolsets for subagents
   # model: "google/gemini-3-flash-preview"    # Override model for subagents (empty = inherit parent)
   # provider: "openrouter"                    # Override provider for subagents (empty = inherit parent)
   #                                           # Resolves full credentials (base_url, api_key) automatically.

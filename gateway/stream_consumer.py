@@ -314,6 +314,11 @@ class GatewayStreamConsumer:
         Returns the message_id so callers can thread subsequent chunks.
         """
         text = self._clean_for_display(text)
+        # Strip leading newlines — models often prefix continuation text (after
+        # a tool call) with \n\n as a natural paragraph break. When that chunk
+        # becomes a standalone message, the leading newlines render as an
+        # awkward blank line at the top. Leading \n carries no meaning here.
+        text = text.lstrip("\n")
         if not text.strip():
             return reply_to_id
         try:
@@ -348,7 +353,7 @@ class GatewayStreamConsumer:
         prefix = self._fallback_prefix or self._visible_prefix()
         if prefix and final_text.startswith(prefix):
             return final_text[len(prefix):].lstrip()
-        return final_text
+        return final_text.lstrip("\n")
 
     @staticmethod
     def _split_text_chunks(text: str, limit: int) -> list[str]:
@@ -465,6 +470,7 @@ class GatewayStreamConsumer:
     async def _send_commentary(self, text: str) -> bool:
         """Send a completed interim assistant commentary message."""
         text = self._clean_for_display(text)
+        text = text.lstrip("\n")  # strip leading newlines (see _send_new_chunk)
         if not text.strip():
             return False
         try:

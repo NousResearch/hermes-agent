@@ -460,7 +460,8 @@ def profile_env(tmp_path, monkeypatch):
 
 ```bash
 source venv/bin/activate
-python -m pytest tests/ -q          # Full suite (~3000 tests, ~3 min)
+ulimit -n 10240                     # ⚠️ macOS default is 256 — too low
+python -m pytest tests/ -q          # Full suite (~11,000 tests, ~5 min)
 python -m pytest tests/test_model_tools.py -q   # Toolset resolution
 python -m pytest tests/test_cli_init.py -q       # CLI config loading
 python -m pytest tests/gateway/ -q               # Gateway tests
@@ -468,3 +469,15 @@ python -m pytest tests/tools/ -q                 # Tool-level tests
 ```
 
 Always run the full suite before pushing changes.
+
+### macOS ulimit trap
+
+macOS sets `ulimit -n = 256` by default. With 8 xdist workers the test suite
+leaks enough fds to exhaust that limit, and **every subsequent test aborts
+with `OSError: [Errno 24] Too many open files`** — including when pytest
+itself tries to import `tracemalloc.py` to format a traceback.
+
+Symptoms: a run with thousands of ERROR entries next to ~70 FAILED entries
+(e.g. `7708 passed, 72 failed, 3476 errors`). That's not 3000 separate bugs
+— it's fd exhaustion cascading through the collection phase.
+

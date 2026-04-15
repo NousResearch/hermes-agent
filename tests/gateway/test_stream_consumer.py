@@ -583,3 +583,91 @@ class TestInterimCommentaryMessages:
         assert sent_texts == ["Hello ▉", "world"]
         assert consumer.already_sent is True
         assert consumer.final_response_sent is True
+# ── Leading newline stripping ────────────────────────────────────────────
+
+
+class TestLeadingNewlineStripping:
+    """Verify leading \\n\\n is stripped from standalone continuation messages.
+
+    When the model emits text after a tool call, it often prefixes the next
+    text block with \\n\\n as a natural paragraph break. That chunk becomes a
+    standalone message, so leading newlines would render as blank lines at
+    the top of the message bubble.
+    """
+
+    @pytest.mark.asyncio
+    async def test_send_new_chunk_strips_leading_newlines(self):
+        """_send_new_chunk strips leading \\n\\n (post-tool continuation)."""
+        adapter = MagicMock()
+        send_result = SimpleNamespace(success=True, message_id="msg_1")
+        adapter.send = AsyncMock(return_value=send_result)
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        consumer = GatewayStreamConsumer(adapter, "chat_123")
+        await consumer._send_new_chunk("\n\nContinuation text after tool", None)
+
+        adapter.send.assert_called_once()
+        sent_text = adapter.send.call_args[1]["content"]
+        assert sent_text == "Continuation text after tool"
+        assert not sent_text.startswith("\n")
+
+    @pytest.mark.asyncio
+    async def test_send_new_chunk_preserves_internal_newlines(self):
+        """Internal \\n\\n (paragraph breaks inside the text) is preserved."""
+        adapter = MagicMock()
+        send_result = SimpleNamespace(success=True, message_id="msg_1")
+        adapter.send = AsyncMock(return_value=send_result)
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        consumer = GatewayStreamConsumer(adapter, "chat_123")
+        await consumer._send_new_chunk("\nFirst para\n\nSecond para", None)
+
+        sent_text = adapter.send.call_args[1]["content"]
+        assert sent_text == "First para\n\nSecond para"
+        assert "\n\n" in sent_text  # internal break survives
+
+    @pytest.mark.asyncio
+    async def test_send_commentary_strips_leading_newlines(self):
+        """_send_commentary (interim assistant commentary) strips leading \\n."""
+        adapter = MagicMock()
+        send_result = SimpleNamespace(success=True, message_id="msg_1")
+        adapter.send = AsyncMock(return_value=send_result)
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        consumer = GatewayStreamConsumer(adapter, "chat_123")
+        await consumer._send_commentary("\n\nInterim commentary")
+
+        sent_text = adapter.send.call_args[1]["content"]
+        assert sent_text == "Interim commentary"
+
+    def test_continuation_text_strips_leading_newlines_when_no_prefix(self):
+        """_continuation_text strips leading \\n when there's no visible prefix."""
+        adapter = MagicMock()
+        consumer = GatewayStreamConsumer(adapter, "chat_123")
+        # No prefix set — fallback path returns the full final text
+        consumer._fallback_prefix = ""
+        consumer._last_sent_text = ""
+        result = consumer._continuation_text("\n\nFull response with leading newlines")
+        assert result == "Full response with leading newlines"
+        assert not result.startswith("\n")
+
+    def test_continuation_text_already_stripped_when_prefix_matches(self):
+        """When prefix matches, existing .lstrip() handles leading whitespace."""
+        adapter = MagicMock()
+        consumer = GatewayStreamConsumer(adapter, "chat_123")
+        consumer._fallback_prefix = "Hello world"
+        result = consumer._continuation_text("Hello world\n\ncontinuation")
+        assert result == "continuation"
+
+    @pytest.mark.asyncio
+    async def test_empty_after_strip_skips_send(self):
+        """Text that's only newlines becomes empty after strip and skips send."""
+        adapter = MagicMock()
+        adapter.send = AsyncMock()
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        consumer = GatewayStreamConsumer(adapter, "chat_123")
+        await consumer._send_new_chunk("\n\n\n", None)
+
+        adapter.send.assert_not_called()
+

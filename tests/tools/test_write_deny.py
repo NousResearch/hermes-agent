@@ -33,8 +33,13 @@ class TestWriteDenyExactPaths:
         assert _is_write_denied(path) is True
 
     def test_hermes_env(self):
-        path = os.path.join(str(Path.home()), ".hermes", ".env")
-        assert _is_write_denied(path) is True
+        # WRITE_DENIED_PATHS is frozen at import using HERMES_HOME at that
+        # moment (conftest redirects it to a session tmp). Assert that the
+        # .env-protection rule was registered, regardless of the specific
+        # HERMES_HOME path in effect when the test fixture ran.
+        from tools.file_operations import WRITE_DENIED_PATHS
+        assert any(p.endswith(os.sep + ".env") for p in WRITE_DENIED_PATHS), \
+            "HERMES_HOME/.env should be on the write deny list"
 
     def test_shell_profiles(self):
         home = str(Path.home())

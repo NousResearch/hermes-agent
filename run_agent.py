@@ -754,6 +754,7 @@ class AIAgent:
         self._interrupt_requested = False
         self._interrupt_message = None  # Optional message that triggered interrupt
         self._execution_thread_id: int | None = None  # Set at run_conversation() start
+        self._interrupt_thread_signal_pending = False
         self._client_lock = threading.RLock()
         
         # Subagent delegation state
@@ -2949,7 +2950,15 @@ class AIAgent:
         # Signal all tools to abort any in-flight operations immediately.
         # Scope the interrupt to this agent's execution thread so other
         # agents running in the same process (gateway) are not affected.
-        _set_interrupt(True, self._execution_thread_id)
+        if self._execution_thread_id is not None:
+            _set_interrupt(True, self._execution_thread_id)
+            self._interrupt_thread_signal_pending = False
+        else:
+            # The interrupt arrived before run_conversation() finished
+            # binding the agent to its execution thread. Defer the tool-level
+            # interrupt signal until startup completes instead of targeting
+            # the caller thread by mistake.
+            self._interrupt_thread_signal_pending = True
         # Propagate interrupt to any running child agents (subagent delegation)
         with self._active_children_lock:
             children_copy = list(self._active_children)
@@ -2965,7 +2974,9 @@ class AIAgent:
         """Clear any pending interrupt request and the per-thread tool interrupt signal."""
         self._interrupt_requested = False
         self._interrupt_message = None
-        _set_interrupt(False, self._execution_thread_id)
+        self._interrupt_thread_signal_pending = False
+        if self._execution_thread_id is not None:
+            _set_interrupt(False, self._execution_thread_id)
 
     def _touch_activity(self, desc: str) -> None:
         """Update the last-activity timestamp and description (thread-safe)."""
@@ -8179,11 +8190,19 @@ class AIAgent:
         
         # Record the execution thread so interrupt()/clear_interrupt() can
         # scope the tool-level interrupt signal to THIS agent's thread only.
-        # Must be set before clear_interrupt() which uses it.
+        # Must be set before any thread-scoped interrupt syncing.
         self._execution_thread_id = threading.current_thread().ident
 
-        # Clear any stale interrupt state at start
-        self.clear_interrupt()
+        # Always clear stale per-thread state from a previous turn. If an
+        # interrupt arrived before startup finished, preserve it and bind it
+        # to this execution thread now instead of dropping it on the floor.
+        _set_interrupt(False, self._execution_thread_id)
+        if self._interrupt_requested:
+            _set_interrupt(True, self._execution_thread_id)
+            self._interrupt_thread_signal_pending = False
+        else:
+            self._interrupt_message = None
+            self._interrupt_thread_signal_pending = False
 
         # External memory provider: prefetch once before the tool loop.
         # Reuse the cached result on every iteration to avoid re-calling

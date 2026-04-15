@@ -1952,7 +1952,9 @@ def _model_flow_named_custom(config, provider_info):
 
 
 # Curated model lists for direct API-key providers — single source in models.py
-from hermes_cli.models import _PROVIDER_MODELS
+from hermes_cli.models import _PROVIDER_MODELS, CANONICAL_PROVIDERS
+
+CLI_PROVIDER_CHOICES = ["auto", *(provider.slug for provider in CANONICAL_PROVIDERS)]
 
 
 def _current_reasoning_effort(config) -> str:
@@ -4860,7 +4862,7 @@ For more help on a command:
     )
     chat_parser.add_argument(
         "--provider",
-        choices=["auto", "openrouter", "nous", "openai-codex", "copilot-acp", "copilot", "anthropic", "gemini", "huggingface", "zai", "kimi-coding", "kimi-coding-cn", "minimax", "minimax-cn", "kilocode", "xiaomi", "arcee"],
+        choices=CLI_PROVIDER_CHOICES,
         default=None,
         help="Inference provider (default: auto)"
     )

@@ -152,7 +152,9 @@ MEMORY_GUIDANCE = (
     "Do NOT save task progress, session outcomes, completed-work logs, or temporary TODO "
     "state to memory; use session_search to recall those from past transcripts. "
     "If you've discovered a new way to do something, solved a problem that could be "
-    "necessary later, save it as a skill with the skill tool."
+    "necessary later, save it as a skill with the skill tool.\n"
+    "When hot memory is near capacity, use memory(action='archive') to move lower-priority "
+    "entries to cold storage. Use memory(action='search') to recall archived facts."
 )
 
 SESSION_SEARCH_GUIDANCE = (

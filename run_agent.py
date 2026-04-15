@@ -6385,11 +6385,14 @@ class AIAgent:
 
     @staticmethod
     def _cap_delegate_task_calls(tool_calls: list) -> list:
-        """Truncate excess delegate_task calls to max_concurrent_children.
+        """Cap separate delegate_task tool calls in a single turn.
 
-        The delegate_tool caps the task list inside a single call, but the
-        model can emit multiple separate delegate_task tool_calls in one
-        turn.  This truncates the excess, preserving all non-delegate calls.
+        ``delegate_task`` itself already enforces ``delegation.max_concurrent_children``
+        for the batch ``tasks=[...]`` form and returns a clear error if a single call
+        exceeds that limit. This guard only applies when the model emits multiple
+        separate ``delegate_task`` tool calls in one assistant turn. In that case we
+        keep only the first ``max_concurrent_children`` delegate calls and preserve all
+        non-delegate tool calls.
 
         Returns the original list if no truncation was needed.
         """
@@ -6408,7 +6411,7 @@ class AIAgent:
             else:
                 truncated.append(tc)
         logger.warning(
-            "Truncated %d excess delegate_task call(s) to enforce "
+            "Truncated %d excess separate delegate_task call(s) in one turn to enforce "
             "max_concurrent_children=%d limit",
             delegate_count - max_children, max_children,
         )

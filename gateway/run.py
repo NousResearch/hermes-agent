@@ -1579,6 +1579,12 @@ class GatewayRunner:
             adapter.set_session_store(self.session_store)
             adapter.set_busy_session_handler(self._handle_active_session_busy_message)
             
+            # Register model switching callbacks for API server adapter
+            if hasattr(adapter, 'set_switch_model_callback'):
+                adapter.set_switch_model_callback(self._api_switch_model)
+            if hasattr(adapter, 'set_current_model_callback'):
+                adapter.set_current_model_callback(self._api_current_model)
+            
             # Try to connect
             logger.info("Connecting to %s...", platform.value)
             self._update_platform_runtime_status(
@@ -1922,6 +1928,12 @@ class GatewayRunner:
                     adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
                     adapter.set_session_store(self.session_store)
                     adapter.set_busy_session_handler(self._handle_active_session_busy_message)
+
+                    # Register model switching callbacks for API server adapter
+                    if hasattr(adapter, 'set_switch_model_callback'):
+                        adapter.set_switch_model_callback(self._api_switch_model)
+                    if hasattr(adapter, 'set_current_model_callback'):
+                        adapter.set_current_model_callback(self._api_current_model)
 
                     success = await adapter.connect()
                     if success:
@@ -2665,6 +2677,10 @@ class GatewayRunner:
         # Resolve aliases to canonical name so dispatch only checks canonicals.
         _cmd_def = _resolve_cmd(command) if command else None
         canonical = _cmd_def.name if _cmd_def else command
+        
+        # Special case: if user types "hmm" without slash, treat it as a command
+        if not canonical and event.text and event.text.strip().lower() == "hmm":
+            canonical = "hmm"
 
         if canonical == "new":
             return await self._handle_reset_command(event)
@@ -2701,6 +2717,20 @@ class GatewayRunner:
 
         if canonical == "model":
             return await self._handle_model_command(event)
+
+        if canonical == "hmm":
+            # Load hmm skill (Model Manager)
+            from agent.skill_commands import build_skill_invocation_message
+            user_instruction = event.get_command_args().strip()
+            event.text = build_skill_invocation_message(
+                "/hmm",
+                user_instruction,
+                task_id=_quick_key,
+                runtime_note="Load the hmm (Model Manager) skill to switch models interactively.",
+            )
+            if not event.text:
+                return "Failed to load the hmm skill."
+            canonical = None
 
         if canonical == "provider":
             return await self._handle_provider_command(event)
@@ -7378,6 +7408,168 @@ class GatewayRunner:
         if _lock:
             with _lock:
                 self._agent_cache.pop(session_key, None)
+
+    async def _api_switch_model(self, model: str, provider: str, global_flag: bool) -> dict:
+        """Switch model for all active sessions via the API endpoint.
+
+        Called by APIServerAdapter when POST /api/switch-model is received.
+        Uses the same switch_model logic as the /model slash command.
+        """
+        import yaml
+        from hermes_cli.model_switch import switch_model as _switch_model
+
+        # Read current config values
+        current_model = ""
+        current_provider = "openrouter"
+        current_base_url = ""
+        current_api_key = ""
+        user_provs = None
+        custom_provs = None
+        config_path = _hermes_home / "config.yaml"
+        try:
+            if config_path.exists():
+                with open(config_path, encoding="utf-8") as f:
+                    cfg = yaml.safe_load(f) or {}
+                model_cfg = cfg.get("model", {})
+                if isinstance(model_cfg, dict):
+                    current_model = model_cfg.get("default", "")
+                    current_provider = model_cfg.get("provider", current_provider)
+                    current_base_url = model_cfg.get("base_url", "")
+                user_provs = cfg.get("providers")
+                custom_provs = cfg.get("custom_providers")
+        except Exception:
+            pass
+
+        # Build raw_input for switch_model.  If a provider is given, prefix it.
+        if provider:
+            raw_input = f"{provider}:{model}"
+        else:
+            raw_input = model
+
+        # Resolve the model via switch_model (no session context needed)
+        result = _switch_model(
+            raw_input=raw_input,
+            current_provider=current_provider,
+            current_model=current_model,
+            current_base_url=current_base_url,
+            current_api_key=current_api_key,
+            is_global=False,  # We handle persistence ourselves below
+            explicit_provider=provider or None,
+            user_providers=user_provs,
+            custom_providers=custom_provs,
+        )
+
+        if not result.success:
+            return {
+                "success": False,
+                "model": model,
+                "provider": provider,
+                "switched_sessions": 0,
+                "context_window": 0,
+                "error": result.error_message,
+            }
+
+        # Iterate over all cached agents and switch them in-place
+        switched = 0
+        _cache_lock = getattr(self, "_agent_cache_lock", None)
+        _cache = getattr(self, "_agent_cache", None)
+        session_keys = []
+        if _cache_lock and _cache is not None:
+            with _cache_lock:
+                session_keys = list(_cache.keys())
+
+        for sk in session_keys:
+            cached_entry = None
+            if _cache_lock and _cache is not None:
+                with _cache_lock:
+                    cached_entry = _cache.get(sk)
+            if cached_entry and cached_entry[0] is not None:
+                try:
+                    cached_entry[0].switch_model(
+                        new_model=result.new_model,
+                        new_provider=result.target_provider,
+                        api_key=result.api_key,
+                        base_url=result.base_url,
+                        api_mode=result.api_mode,
+                    )
+                    switched += 1
+                except Exception as exc:
+                    logger.warning("API model switch failed for cached agent %s: %s", sk[:30], exc)
+
+            # Store session override for each session
+            self._session_model_overrides[sk] = {
+                "model": result.new_model,
+                "provider": result.target_provider,
+                "api_key": result.api_key,
+                "base_url": result.base_url,
+                "api_mode": result.api_mode,
+            }
+
+            # Evict cached agent so next turn gets a fresh agent from override
+            self._evict_cached_agent(sk)
+
+        # Persist to config if global
+        if global_flag:
+            try:
+                if config_path.exists():
+                    with open(config_path, encoding="utf-8") as f:
+                        cfg = yaml.safe_load(f) or {}
+                else:
+                    cfg = {}
+                model_cfg = cfg.setdefault("model", {})
+                model_cfg["default"] = result.new_model
+                model_cfg["provider"] = result.target_provider
+                if result.base_url:
+                    model_cfg["base_url"] = result.base_url
+                from hermes_cli.config import save_config
+                save_config(cfg)
+                logger.info("API model switch persisted to config.yaml: %s", result.new_model)
+            except Exception as e:
+                logger.warning("Failed to persist API model switch: %s", e)
+
+        # Get context window from model info if available
+        context_window = 0
+        mi = result.model_info
+        if mi and mi.context_window:
+            context_window = mi.context_window
+        else:
+            try:
+                from agent.model_metadata import get_model_context_length
+                context_window = get_model_context_length(
+                    result.new_model,
+                    base_url=result.base_url or current_base_url,
+                    api_key=result.api_key or current_api_key,
+                    provider=result.target_provider,
+                )
+            except Exception:
+                pass
+
+        return {
+            "success": True,
+            "model": result.new_model,
+            "provider": result.target_provider,
+            "switched_sessions": switched,
+            "context_window": context_window,
+            "error": None,
+        }
+
+    def _api_current_model(self) -> dict:
+        """Return the current model from config (for GET /api/current-model)."""
+        import yaml
+        current_model = ""
+        current_provider = "openrouter"
+        config_path = _hermes_home / "config.yaml"
+        try:
+            if config_path.exists():
+                with open(config_path, encoding="utf-8") as f:
+                    cfg = yaml.safe_load(f) or {}
+                model_cfg = cfg.get("model", {})
+                if isinstance(model_cfg, dict):
+                    current_model = model_cfg.get("default", "")
+                    current_provider = model_cfg.get("provider", current_provider)
+        except Exception:
+            pass
+        return {"model": current_model, "provider": current_provider}
 
     async def _run_agent(
         self,

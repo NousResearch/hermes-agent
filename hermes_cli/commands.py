@@ -94,7 +94,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
     # Configuration
     CommandDef("config", "Show current configuration", "Configuration",
                cli_only=True),
-    CommandDef("model", "Switch model for this session", "Configuration", args_hint="[model] [--global]"),
+    CommandDef("model", "Switch model for this session", "Configuration",
+               args_hint="[model] [--global]"),
     CommandDef("provider", "Show available providers and current provider",
                "Configuration"),
 
@@ -139,6 +140,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                "Tools & Skills", cli_only=True),
     CommandDef("ada", "알잘딱깔센 개발 에이전트 - 규모 기반 자동 라우팅 (Quick/Full Pipeline)",
                "Tools & Skills", args_hint="<goal>"),
+    CommandDef("hmm", "Model Manager - 모델 전환 및 관리", "Tools & Skills",
+               args_hint="[number|name|command]"),
 
     # Info
     CommandDef("commands", "Browse all commands and skills (paginated)", "Info",

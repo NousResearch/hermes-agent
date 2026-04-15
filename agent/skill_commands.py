@@ -294,9 +294,12 @@ def resolve_skill_command_key(command: str) -> Optional[str]:
     return cmd_key if cmd_key in get_skill_commands() else None
 
 
-# Short aliases: /ada → /alzalddak-dev-agent, etc.
+# Short aliases: /ada → /alzalddak-dev-agent, /hmm → /hermes_model_manager, etc.
 _SKILL_ALIASES: Dict[str, str] = {
     "ada": "/alzalddak-dev-agent",
+    "model": "/hmm",
+    "switch": "/hmm",
+    "honcho": "/honcho-troubleshooting",
 }
 
 

@@ -394,6 +394,8 @@ class APIServerAdapter(BasePlatformAdapter):
         # Creation timestamps for orphaned-run TTL sweep
         self._run_streams_created: Dict[str, float] = {}
         self._session_db: Optional[Any] = None  # Lazy-init SessionDB for session continuity
+        self._switch_model_callback = None  # Set by gateway via set_switch_model_callback()
+        self._current_model_callback = None  # Set by gateway via set_current_model_callback()
 
     @staticmethod
     def _parse_cors_origins(value: Any) -> tuple[str, ...]:
@@ -1768,6 +1770,79 @@ class APIServerAdapter(BasePlatformAdapter):
                 self._run_streams.pop(run_id, None)
                 self._run_streams_created.pop(run_id, None)
 
+    async def _handle_api_switch_model(self, request: "web.Request") -> "web.Response":
+        """POST /api/switch-model — hot-swap model for active sessions."""
+        if not self._switch_model_callback:
+            return web.json_response(
+                {"success": False, "error": "Model switching not available (callback not registered)"},
+                status=503,
+            )
+
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response(
+                {"success": False, "error": "Invalid JSON body"},
+                status=400,
+            )
+
+        model = body.get("model", "")
+        provider = body.get("provider", "")
+        global_flag = bool(body.get("global", False))
+
+        if not model:
+            return web.json_response(
+                {"success": False, "error": "Missing required field: model"},
+                status=400,
+            )
+
+        try:
+            result = self._switch_model_callback(model, provider, global_flag)
+            # If the callback returned a coroutine, await it
+            if asyncio.iscoroutine(result):
+                result = await result
+            return web.json_response(result)
+        except Exception as e:
+            logger.exception("Model switch callback failed")
+            return web.json_response(
+                {"success": False, "model": model, "provider": provider,
+                 "switched_sessions": 0, "context_window": 0, "error": str(e)},
+                status=500,
+            )
+
+    async def _handle_api_current_model(self, request: "web.Request") -> "web.Response":
+        """GET /api/current-model — return the currently active model."""
+        if self._current_model_callback:
+            try:
+                result = self._current_model_callback()
+                if asyncio.iscoroutine(result):
+                    result = await result
+                return web.json_response(result)
+            except Exception as e:
+                logger.exception("Current model callback failed")
+                return web.json_response({"error": str(e)}, status=500)
+
+        # Fallback: return the advertised model name from config
+        return web.json_response({
+            "model": self._model_name or "hermes-agent",
+            "provider": "unknown",
+        })
+
+    def set_switch_model_callback(self, callback):
+        """Set callback for model switching.
+
+        Called with (model, provider, global_flag) -> dict with keys:
+        success, model, provider, switched_sessions, context_window, error.
+        """
+        self._switch_model_callback = callback
+
+    def set_current_model_callback(self, callback):
+        """Set callback for querying the current model.
+
+        Called with no args -> dict with keys: model, provider.
+        """
+        self._current_model_callback = callback
+
     # ------------------------------------------------------------------
     # BasePlatformAdapter interface
     # ------------------------------------------------------------------
@@ -1801,6 +1876,9 @@ class APIServerAdapter(BasePlatformAdapter):
             # Structured event streaming
             self._app.router.add_post("/v1/runs", self._handle_runs)
             self._app.router.add_get("/v1/runs/{run_id}/events", self._handle_run_events)
+            # Model switching API (for external scripts like switch-model.sh)
+            self._app.router.add_post("/api/switch-model", self._handle_api_switch_model)
+            self._app.router.add_get("/api/current-model", self._handle_api_current_model)
             # Start background sweep to clean up orphaned (unconsumed) run streams
             sweep_task = asyncio.create_task(self._sweep_orphaned_runs())
             try:

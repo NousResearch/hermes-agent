@@ -4760,6 +4760,242 @@ class HermesCLI:
         else:
             _cprint("    (session only — add --global to persist)")
 
+    def _handle_hmm_command(self, cmd_original: str):
+        """Handle /hmm as a thin preset wrapper around /model."""
+        hmm_models = [
+            ("fire", "accounts/fireworks/routers/kimi-k2p5-turbo", "fireworks", "Fireworks Kimi K2.5 Turbo"),
+            ("deepseek", "deepseek-chat", "deepseek", "DeepSeek Chat"),
+            ("deepseek-r1", "deepseek-reasoner", "deepseek", "DeepSeek Reasoner R1"),
+            ("zai-glm", "glm-5.1", "zai", "Z.ai GLM-5.1"),
+            ("zai-turbo", "glm-5-turbo", "zai", "Z.ai GLM-5 Turbo"),
+            ("zai-glm45v", "glm-4.5v", "zai", "Z.ai GLM-4.5V Vision"),
+            ("zai-glm46v", "glm-4.6v", "zai", "Z.ai GLM-4.6V Vision"),
+            ("or-trinity", "arcee-ai/trinity-large-preview:free", "openrouter", "OpenRouter Trinity Large (Free)"),
+            ("or-gemma4", "google/gemma-4-26b-a4b-it:free", "openrouter", "OpenRouter Gemma 4 26B (Free)"),
+            ("or-minimax", "minimax/minimax-m2.5:free", "openrouter", "OpenRouter MiniMax M2.5 (Free)"),
+            ("or-qwen35", "qwen/qwen3.5-flash-02-23", "openrouter", "OpenRouter Qwen3.5 Flash"),
+            ("or-grok", "x-ai/grok-4.1-fast", "openrouter", "OpenRouter Grok 4.1 Fast"),
+            ("or-minimax27", "minimax/minimax-m2.7", "openrouter", "OpenRouter MiniMax M2.7"),
+            ("or-step", "stepfun/step-3.5-flash", "openrouter", "OpenRouter Step 3.5 Flash"),
+            ("or-gptoss120", "openai/gpt-oss-120b:free", "openrouter", "OpenAI GPT-OSS 120B (Free)"),
+            ("or-qwencoder", "qwen/qwen3-coder:free", "openrouter", "OpenRouter Qwen3 Coder 480B (Free)"),
+        ]
+        alias_map = {alias: (model_id, provider, label) for alias, model_id, provider, label in hmm_models}
+        number_map = {
+            str(idx): (model_id, provider, label)
+            for idx, (_, model_id, provider, label) in enumerate(hmm_models, start=1)
+        }
+
+        parts = cmd_original.split()[1:]
+        legacy_commands = {
+            'version': 'version',
+            '--version': 'version',
+            '-v': 'version',
+            'test': 'test',
+            't': 'test',
+            'test-all': 'test-all',
+            'ta': 'test-all',
+            'scan-free': 'scan-free',
+            'sf': 'scan-free',
+            'add-or-model': 'add-or-model',
+            'add': 'add-or-model',
+        }
+
+        if not parts or parts[0] in {"list", "help"}:
+            _cprint("  HMM presets (wraps `/model`):")
+            for idx, (alias, _model_id, provider, label) in enumerate(hmm_models, start=1):
+                _cprint(f"   {idx:2d}. {label} [{alias}] via {provider}")
+            _cprint("")
+            _cprint("  Usage:")
+            _cprint("    /hmm <number|alias>           switch this session")
+            _cprint("    /hmm <number|alias> --global  switch + persist as default")
+            _cprint("    /hmm status                   show current session model")
+            _cprint("    /hmm test                     test current model via legacy helper")
+            _cprint("    /hmm test-all                 test all preset models via legacy helper")
+            _cprint("    /hmm compress-list            show compression presets")
+            _cprint("    /hmm compress-switch <name>   switch compression model")
+            _cprint("    /model ...                    use Hermes native model switching directly")
+            return
+
+        subcommand = parts[0].lower()
+        if subcommand == "status":
+            model_display = self.model or "unknown"
+            provider_display = self.provider or "unknown"
+            _cprint(f"  Current session model: {model_display}")
+            _cprint(f"  Provider: {provider_display}")
+            return
+
+        if subcommand in {"compress-list", "cl"}:
+            self._show_hmm_compression_presets()
+            return
+
+        if subcommand in {"compress-status", "cst"}:
+            self._show_hmm_compression_status()
+            return
+
+        if subcommand in {"compress-switch", "cs"}:
+            preset_name = parts[1] if len(parts) > 1 else ""
+            self._switch_hmm_compression_preset(preset_name)
+            return
+
+        if subcommand in legacy_commands:
+            self._run_hmm_legacy_subcommand(legacy_commands[subcommand], parts[1:])
+            return
+
+        persist_global = False
+        filtered_parts: list[str] = []
+        for part in parts:
+            if part == "--global":
+                persist_global = True
+            else:
+                filtered_parts.append(part)
+
+        if not filtered_parts:
+            _cprint("  Usage: /hmm <number|alias> [--global]")
+            return
+
+        selector = filtered_parts[0].lower()
+        resolved = number_map.get(selector) or alias_map.get(selector)
+        if resolved is None:
+            _cprint(f"  Unknown HMM preset: {selector}")
+            _cprint("  Try `/hmm list` to see available presets.")
+            return
+
+        model_id, provider, _label = resolved
+        delegated = f"/model {model_id} --provider {provider}"
+        if persist_global:
+            delegated += " --global"
+        self._handle_model_switch(delegated)
+
+    def _hmm_compression_presets(self) -> list[tuple[str, str, str, str]]:
+        """Return named compression presets for HMM."""
+        return [
+            ("gemini-flash", "google/gemini-3-flash-preview", "gemini", "Gemini 3 Flash (default)"),
+            ("or-qwen35", "qwen/qwen3.5-flash-02-23", "openrouter", "OpenRouter Qwen3.5 Flash"),
+            ("or-trinity", "arcee-ai/trinity-large-preview:free", "openrouter", "OpenRouter Trinity Large (Free)"),
+            ("or-gemma4", "google/gemma-4-26b-a4b-it:free", "openrouter", "OpenRouter Gemma 4 26B (Free)"),
+            ("zai-flash", "glm-4.5-flash", "zai", "Z.ai GLM-4.5 Flash"),
+            ("claude-haiku", "claude-3-haiku-4.5-20251001", "anthropic", "Claude Haiku"),
+        ]
+
+    def _show_hmm_compression_presets(self):
+        """Show native HMM compression presets and current settings."""
+        _cprint("  Compression presets:")
+        for idx, (name, model_id, provider, label) in enumerate(self._hmm_compression_presets(), start=1):
+            _cprint(f"   {idx:2d}. {label} [{name}] -> {provider}:{model_id}")
+        _cprint("")
+        _cprint("  Usage:")
+        _cprint("    /hmm compress-list")
+        _cprint("    /hmm compress-status")
+        _cprint("    /hmm compress-switch <preset>")
+        _cprint("")
+        self._show_hmm_compression_status()
+
+    def _show_hmm_compression_status(self):
+        """Show current compression config from Hermes config.yaml."""
+        try:
+            from hermes_cli.config import load_config
+            cfg = load_config()
+        except Exception as exc:
+            _cprint(f"  Failed to read config: {exc}")
+            return
+
+        compression = cfg.get("compression", {}) or {}
+        enabled = compression.get("enabled", True)
+        threshold = compression.get("threshold", 0.50)
+        target_ratio = compression.get("target_ratio", 0.20)
+        protect_last_n = compression.get("protect_last_n", 20)
+        summary_model = compression.get("summary_model", "") or "(main model)"
+        summary_provider = compression.get("summary_provider", "auto") or "auto"
+        summary_base_url = compression.get("summary_base_url") or ""
+
+        _cprint("  Context compression:")
+        _cprint(f"    Enabled: {enabled}")
+        try:
+            _cprint(f"    Threshold: {float(threshold) * 100:.0f}%")
+        except Exception:
+            _cprint(f"    Threshold: {threshold}")
+        try:
+            _cprint(f"    Target ratio: {float(target_ratio) * 100:.0f}%")
+        except Exception:
+            _cprint(f"    Target ratio: {target_ratio}")
+        _cprint(f"    Protect last: {protect_last_n}")
+        _cprint(f"    Model: {summary_model}")
+        _cprint(f"    Provider: {summary_provider}")
+        if summary_base_url:
+            _cprint(f"    Base URL: {summary_base_url}")
+
+    def _switch_hmm_compression_preset(self, preset_name: str):
+        """Switch compression summary model to a named preset."""
+        preset_name = (preset_name or "").strip().lower()
+        preset_map = {
+            name: (model_id, provider, label)
+            for name, model_id, provider, label in self._hmm_compression_presets()
+        }
+        if not preset_name:
+            _cprint("  Usage: /hmm compress-switch <preset>")
+            self._show_hmm_compression_presets()
+            return
+
+        resolved = preset_map.get(preset_name)
+        if resolved is None:
+            _cprint(f"  Unknown compression preset: {preset_name}")
+            self._show_hmm_compression_presets()
+            return
+
+        model_id, provider, label = resolved
+        ok_model = save_config_value("compression.summary_model", model_id)
+        ok_provider = save_config_value("compression.summary_provider", provider)
+        ok_base = save_config_value("compression.summary_base_url", None)
+        if not (ok_model and ok_provider and ok_base):
+            _cprint("  Failed to update compression config.")
+            return
+
+        _cprint(f"  Compression model switched: {label}")
+        _cprint(f"    Model: {model_id}")
+        _cprint(f"    Provider: {provider}")
+        _cprint("    Saved to config.yaml")
+        _cprint("    Takes effect on the next compression run")
+
+    def _run_hmm_legacy_subcommand(self, subcommand: str, extra_args: list[str] | None = None):
+        """Run the legacy HMM shell helper for non-/model features."""
+        import subprocess
+        from pathlib import Path
+
+        script_path = Path.home() / '.hermes' / 'skills' / 'productivity' / 'hmm' / 'scripts' / 'switch-model.sh'
+        if not script_path.exists():
+            _cprint(f"  HMM helper not found: {script_path}")
+            return
+
+        cmd = ['bash', str(script_path), subcommand]
+        if extra_args:
+            cmd.extend(extra_args)
+
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+        except subprocess.TimeoutExpired:
+            _cprint(f"  HMM subcommand timed out: {subcommand}")
+            return
+        except Exception as exc:
+            _cprint(f"  HMM subcommand failed to start ({exc})")
+            return
+
+        output = (result.stdout or '').strip()
+        error = (result.stderr or '').strip()
+        combined = output or error
+        if combined:
+            self.console.print(_rich_text_from_ansi(combined))
+        elif result.returncode == 0:
+            _cprint(f"  HMM subcommand completed: {subcommand}")
+
+        if result.returncode != 0 and error and error != combined:
+            self.console.print(_rich_text_from_ansi(error))
+
     def _should_handle_model_command_inline(self, text: str, has_images: bool = False) -> bool:
         """Return True when /model should be handled immediately on the UI thread."""
         if not text or has_images or not _looks_like_slash_command(text):
@@ -5489,6 +5725,8 @@ class HermesCLI:
             self._handle_skin_command(cmd_original)
         elif canonical == "voice":
             self._handle_voice_command(cmd_original)
+        elif cmd_lower.split()[0] == "/hmm":
+            self._handle_hmm_command(cmd_original)
         else:
             # Check for user-defined quick commands (bypass agent loop, no LLM call)
             base_cmd = cmd_lower.split()[0]

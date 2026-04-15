@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from gateway.config import Platform, StreamingConfig
-from gateway.run import GatewayRunner
+from gateway.run import GatewayRunner, _is_gateway_streaming_enabled
 from gateway.session import SessionSource
 
 
@@ -35,6 +35,30 @@ def _make_source(platform=Platform.MATRIX):
         user_name="testuser",
         thread_id=None,
     )
+
+
+class TestGatewayStreamingResolver:
+    """Unit tests for gateway streaming gate resolution helper."""
+
+    def test_none_follows_global_enabled(self):
+        cfg = StreamingConfig(enabled=True, transport="edit")
+        assert _is_gateway_streaming_enabled(cfg, None) is True
+
+    def test_none_follows_global_disabled(self):
+        cfg = StreamingConfig(enabled=False, transport="edit")
+        assert _is_gateway_streaming_enabled(cfg, None) is False
+
+    def test_platform_true_overrides_global_disabled(self):
+        cfg = StreamingConfig(enabled=False, transport="edit")
+        assert _is_gateway_streaming_enabled(cfg, True) is True
+
+    def test_transport_off_is_global_kill_switch(self):
+        cfg = StreamingConfig(enabled=True, transport="off")
+        assert _is_gateway_streaming_enabled(cfg, True) is False
+
+    def test_platform_false_overrides_global_enabled(self):
+        cfg = StreamingConfig(enabled=True, transport="edit")
+        assert _is_gateway_streaming_enabled(cfg, False) is False
 
 
 class _FakeSSEResponse:
@@ -306,7 +330,9 @@ class TestRunAgentViaProxy:
 
         resp = _FakeSSEResponse(
             status=200,
-            sse_chunks=[b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n'],
+            sse_chunks=[
+                b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n'
+            ],
         )
         session = _FakeSession(resp)
 
@@ -344,7 +370,9 @@ class TestRunAgentViaProxy:
 
         resp = _FakeSSEResponse(
             status=200,
-            sse_chunks=[b'data: {"choices":[{"delta":{"content":"answer"}}]}\n\ndata: [DONE]\n\n'],
+            sse_chunks=[
+                b'data: {"choices":[{"delta":{"content":"answer"}}]}\n\ndata: [DONE]\n\n'
+            ],
         )
         session = _FakeSession(resp)
 
@@ -354,7 +382,10 @@ class TestRunAgentViaProxy:
                     result = await runner._run_agent_via_proxy(
                         message="hi",
                         context_prompt="",
-                        history=[{"role": "user", "content": "prev"}, {"role": "assistant", "content": "ok"}],
+                        history=[
+                            {"role": "user", "content": "prev"},
+                            {"role": "assistant", "content": "ok"},
+                        ],
                         source=source,
                         session_id="sess-123",
                     )
@@ -379,7 +410,9 @@ class TestRunAgentViaProxy:
 
         resp = _FakeSSEResponse(
             status=200,
-            sse_chunks=[b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n'],
+            sse_chunks=[
+                b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n'
+            ],
         )
         session = _FakeSession(resp)
 
@@ -405,7 +438,9 @@ class TestRunAgentViaProxy:
 
         resp = _FakeSSEResponse(
             status=200,
-            sse_chunks=[b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n'],
+            sse_chunks=[
+                b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n'
+            ],
         )
         session = _FakeSession(resp)
 
@@ -432,6 +467,7 @@ class TestEnvVarRegistration:
 
     def test_proxy_url_in_optional_env_vars(self):
         from hermes_cli.config import OPTIONAL_ENV_VARS
+
         assert "GATEWAY_PROXY_URL" in OPTIONAL_ENV_VARS
         info = OPTIONAL_ENV_VARS["GATEWAY_PROXY_URL"]
         assert info["category"] == "messaging"
@@ -439,6 +475,7 @@ class TestEnvVarRegistration:
 
     def test_proxy_key_in_optional_env_vars(self):
         from hermes_cli.config import OPTIONAL_ENV_VARS
+
         assert "GATEWAY_PROXY_KEY" in OPTIONAL_ENV_VARS
         info = OPTIONAL_ENV_VARS["GATEWAY_PROXY_KEY"]
         assert info["category"] == "messaging"

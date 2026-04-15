@@ -117,6 +117,8 @@ Skill names are case-sensitive and must match the installed skill's folder name.
 
 Cron jobs run with the `cronjob`, `messaging`, and `clarify` toolsets disabled. This prevents recursive cron creation, direct message sending (delivery is handled by the scheduler), and interactive prompts. If a skill relies on these toolsets, it won't work in a cron context.
 
+Note that external memory providers (e.g. **mem0**) are **not** affected by this limitation — cron jobs can use `mem0_*` tools as long as the provider is configured in `config.yaml`. Only the built-in local memory files (`MEMORY.md` / `USER.md`) are skipped to avoid polluting cron system prompts.
+
 Check the skill's documentation to confirm it works in non-interactive (headless) mode.
 
 ### Check 4: Multi-skill ordering

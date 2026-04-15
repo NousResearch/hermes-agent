@@ -751,6 +751,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             quiet_mode=True,
             skip_context_files=True,  # Don't inject SOUL.md/AGENTS.md from scheduler cwd
             skip_memory=True,  # Cron system prompts would corrupt user representations
+            skip_memory_provider=False,  # Allow external memory providers (e.g. mem0)
             platform="cron",
             session_id=_cron_session_id,
             session_db=_session_db,

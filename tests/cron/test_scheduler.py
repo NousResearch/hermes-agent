@@ -965,6 +965,40 @@ class TestRunJobSkillBacked:
         assert "Instructions for find-nearby." in prompt_arg
         assert "Combine the results." in prompt_arg
 
+    def test_run_job_skips_local_memory_but_not_external_provider(self, tmp_path):
+        """Cron jobs should skip MEMORY.md/USER.md injection but still allow external memory providers (e.g. mem0)."""
+        job = {
+            "id": "memory-job",
+            "name": "memory test",
+            "prompt": "Call mem0_conclude.",
+        }
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "***",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+
+            success, output, final_response, error = run_job(job)
+
+        assert success is True
+        kwargs = mock_agent_cls.call_args.kwargs
+        assert kwargs.get("skip_memory") is True
+        assert kwargs.get("skip_memory_provider") is False
+
 
 class TestSilentDelivery:
     """Verify that [SILENT] responses suppress delivery while still saving output."""

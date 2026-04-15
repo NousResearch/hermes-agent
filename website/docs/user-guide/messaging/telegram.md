@@ -526,6 +526,29 @@ Unlike Discord (where reactions are additive), Telegram's Bot API replaces all b
 If the bot doesn't have permission to add reactions in a group, the reaction calls fail silently and message processing continues normally.
 :::
 
+## Per-Channel Prompts
+
+Assign ephemeral system prompts to specific Telegram groups or forum topics. The prompt is injected at runtime on every turn — never persisted to transcript history — so changes take effect immediately.
+
+```yaml
+telegram:
+  channel_prompts:
+    "-1001234567890": |
+      You are a research assistant. Focus on academic sources,
+      citations, and concise synthesis.
+    "42":  |
+      This topic is for creative writing feedback. Be warm and
+      constructive.
+```
+
+Keys are chat IDs (groups/supergroups) or forum topic IDs. For forum groups, topic-level prompts override the group-level prompt:
+
+- Message in topic `42` inside group `-1001234567890` → uses topic `42`'s prompt
+- Message in topic `99` (no explicit entry) → falls back to group `-1001234567890`'s prompt
+- Message in a group with no entry → no channel prompt applied
+
+Numeric YAML keys are automatically normalized to strings.
+
 ## Troubleshooting
 
 | Problem | Solution |

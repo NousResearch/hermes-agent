@@ -780,6 +780,36 @@ _RETRYABLE_ERROR_PATTERNS = (
 MessageHandler = Callable[[MessageEvent], Awaitable[Optional[str]]]
 
 
+def resolve_channel_prompt(
+    config_extra: dict,
+    channel_id: str,
+    parent_id: str | None = None,
+) -> str | None:
+    """Resolve a per-channel ephemeral prompt from platform config.
+
+    Looks up ``channel_prompts`` in the adapter's ``config.extra`` dict.
+    Prefers an exact match on *channel_id*; falls back to *parent_id*
+    (useful for forum threads / child channels inheriting a parent prompt).
+
+    Returns the prompt string, or None if no match is found.  Blank/whitespace-
+    only prompts are treated as absent.
+    """
+    prompts = config_extra.get("channel_prompts") or {}
+    if not isinstance(prompts, dict):
+        return None
+
+    for key in (channel_id, parent_id):
+        if not key:
+            continue
+        prompt = prompts.get(key)
+        if prompt is None:
+            continue
+        prompt = str(prompt).strip()
+        if prompt:
+            return prompt
+    return None
+
+
 class BasePlatformAdapter(ABC):
     """
     Base class for platform adapters.

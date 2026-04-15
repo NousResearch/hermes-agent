@@ -1167,6 +1167,12 @@ class SlackAdapter(BasePlatformAdapter):
             thread_id=thread_ts,
         )
 
+        # Per-channel ephemeral prompt
+        from gateway.platforms.base import resolve_channel_prompt
+        _channel_prompt = resolve_channel_prompt(
+            self.config.extra, channel_id, None,
+        )
+
         msg_event = MessageEvent(
             text=text,
             message_type=msg_type,
@@ -1176,6 +1182,7 @@ class SlackAdapter(BasePlatformAdapter):
             media_urls=media_urls,
             media_types=media_types,
             reply_to_message_id=thread_ts if thread_ts != ts else None,
+            channel_prompt=_channel_prompt,
         )
 
         # Only react when bot is directly addressed (DM or @mention).

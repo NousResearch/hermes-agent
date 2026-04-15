@@ -2110,29 +2110,9 @@ class DiscordAdapter(BasePlatformAdapter):
         return None
 
     def _resolve_channel_prompt(self, channel_id: str, parent_id: str | None = None) -> str | None:
-        """Resolve a Discord per-channel prompt, preferring the exact channel over its parent.
-
-        Config format (in platform extra):
-            channel_prompts:
-              "123456": "Prompt text"
-
-        Forum/thread messages inherit the parent forum/channel prompt when the
-        thread itself has no explicit override.
-        """
-        prompts = self.config.extra.get("channel_prompts") or {}
-        if not isinstance(prompts, dict):
-            return None
-
-        for key in (channel_id, parent_id):
-            if not key:
-                continue
-            prompt = prompts.get(key)
-            if prompt is None:
-                continue
-            prompt = str(prompt).strip()
-            if prompt:
-                return prompt
-        return None
+        """Resolve a Discord per-channel prompt, preferring the exact channel over its parent."""
+        from gateway.platforms.base import resolve_channel_prompt
+        return resolve_channel_prompt(self.config.extra, channel_id, parent_id)
 
     def _thread_parent_channel(self, channel: Any) -> Any:
         """Return the parent text channel when invoked from a thread."""

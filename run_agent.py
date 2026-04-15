@@ -168,7 +168,7 @@ def _install_safe_stdio() -> None:
 
 
 def _provider_api_key_hint(provider_id: str) -> str:
-    """Return the primary API key env var hint for a configured provider."""
+    """Return the primary API key env var hint for API-key providers only."""
     normalized = (provider_id or "").strip().lower()
     if not normalized:
         return ""
@@ -179,8 +179,11 @@ def _provider_api_key_hint(provider_id: str) -> str:
         PROVIDER_REGISTRY = {}
 
     provider_config = PROVIDER_REGISTRY.get(normalized)
-    if provider_config and provider_config.api_key_env_vars:
-        return provider_config.api_key_env_vars[0]
+    if provider_config is not None:
+        api_key_env_vars = getattr(provider_config, "api_key_env_vars", ()) or ()
+        if api_key_env_vars:
+            return api_key_env_vars[0]
+        return ""
 
     return f"{normalized.upper()}_API_KEY"
 
@@ -970,10 +973,16 @@ class AIAgent:
                     _explicit = (self.provider or "").strip().lower()
                     if _explicit and _explicit not in ("auto", "openrouter", "custom"):
                         env_var_hint = _provider_api_key_hint(_explicit)
+                        if env_var_hint:
+                            raise RuntimeError(
+                                f"Provider '{_explicit}' is set in config.yaml but no API key "
+                                f"was found. Set the {env_var_hint} environment "
+                                f"variable, or switch to a different provider with `hermes model`."
+                            )
                         raise RuntimeError(
-                            f"Provider '{_explicit}' is set in config.yaml but no API key "
-                            f"was found. Set the {env_var_hint} environment "
-                            f"variable, or switch to a different provider with `hermes model`."
+                            f"Provider '{_explicit}' is set in config.yaml but no credentials "
+                            f"were found. Complete authentication for this provider, or switch "
+                            f"to a different provider with `hermes model`."
                         )
                     # Final fallback: try raw OpenRouter key
                     client_kwargs = {

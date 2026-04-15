@@ -163,6 +163,32 @@ def test_explicit_provider_missing_api_key_uses_provider_env_var_hint(monkeypatc
             )
 
 
+def test_explicit_provider_missing_oauth_credentials_omits_api_key_hint():
+    """Non-API-key providers should not invent env var hints in errors."""
+    with (
+        patch(
+            "run_agent.get_tool_definitions",
+            return_value=_make_tool_defs("web_search"),
+        ),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+        patch("agent.auxiliary_client.resolve_provider_client", return_value=(None, None)),
+    ):
+        with pytest.raises(RuntimeError) as excinfo:
+            AIAgent(
+                model="gpt-5.3-codex",
+                provider="openai-codex",
+                api_key=None,
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+    message = str(excinfo.value)
+    assert "Complete authentication for this provider" in message
+    assert "API_KEY" not in message
+
+
 class TestProviderModelNormalization:
     def test_aiagent_strips_matching_native_provider_prefix(self):
         with (

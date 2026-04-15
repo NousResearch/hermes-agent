@@ -6350,39 +6350,46 @@ class HermesCLI:
                 focus_topic = parts[1].strip()
 
         original_count = len(self.conversation_history)
-        try:
-            from agent.model_metadata import estimate_messages_tokens_rough
-            from agent.manual_compression_feedback import summarize_manual_compression
-            original_history = list(self.conversation_history)
-            approx_tokens = estimate_messages_tokens_rough(original_history)
-            if focus_topic:
-                print(f"🗜️  Compressing {original_count} messages (~{approx_tokens:,} tokens), "
-                      f"focus: \"{focus_topic}\"...")
-            else:
-                print(f"🗜️  Compressing {original_count} messages (~{approx_tokens:,} tokens)...")
 
-            compressed, _ = self.agent._compress_context(
-                original_history,
-                self.agent._cached_system_prompt or "",
-                approx_tokens=approx_tokens,
-                focus_topic=focus_topic or None,
-            )
-            self.conversation_history = compressed
-            new_tokens = estimate_messages_tokens_rough(self.conversation_history)
-            summary = summarize_manual_compression(
-                original_history,
-                self.conversation_history,
-                approx_tokens,
-                new_tokens,
-            )
-            icon = "🗜️" if summary["noop"] else "✅"
-            print(f"  {icon} {summary['headline']}")
-            print(f"     {summary['token_line']}")
-            if summary["note"]:
-                print(f"     {summary['note']}")
+        # Build compressor info for the busy status
+        _comp_info = self.agent._compressor_info()
 
-        except Exception as e:
-            print(f"  ❌ Compression failed: {e}")
+        with self._busy_command("Compressing context..."):
+            try:
+                from agent.model_metadata import estimate_messages_tokens_rough
+                from agent.manual_compression_feedback import summarize_manual_compression
+                original_history = list(self.conversation_history)
+                approx_tokens = estimate_messages_tokens_rough(original_history)
+                if focus_topic:
+                    print(f"🗜️  /compress  [{_comp_info}]")
+                    print(f"🗜️  Compressing {original_count} messages (~{approx_tokens:,} tokens), "
+                          f"focus: \"{focus_topic}\"...")
+                else:
+                    print(f"🗜️  /compress  [{_comp_info}]")
+                    print(f"🗜️  Compressing {original_count} messages (~{approx_tokens:,} tokens)...")
+
+                compressed, _ = self.agent._compress_context(
+                    original_history,
+                    self.agent._cached_system_prompt or "",
+                    approx_tokens=approx_tokens,
+                    focus_topic=focus_topic or None,
+                )
+                self.conversation_history = compressed
+                new_tokens = estimate_messages_tokens_rough(self.conversation_history)
+                summary = summarize_manual_compression(
+                    original_history,
+                    self.conversation_history,
+                    approx_tokens,
+                    new_tokens,
+                )
+                icon = "🗜️" if summary["noop"] else "✅"
+                print(f"  {icon} {summary['headline']}")
+                print(f"     {summary['token_line']}")
+                if summary["note"]:
+                    print(f"     {summary['note']}")
+
+            except Exception as e:
+                print(f"  ❌ Compression failed: {e}")
 
     def _handle_debug_command(self):
         """Handle /debug — upload debug report + logs and print paste URLs."""

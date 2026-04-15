@@ -6,6 +6,7 @@ Handles: hermes gateway [run|start|stop|restart|status|install|uninstall|setup]
 
 import asyncio
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -1637,6 +1638,42 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
 # Gateway Setup (Interactive Messaging Platform Configuration)
 # =============================================================================
 
+# Bot token format validators — used by gateway setup to reject invalid tokens
+# before they are saved to .env.
+_TELEGRAM_TOKEN_RE = re.compile(r"^\d+:[A-Za-z0-9_-]{25,50}$")
+_DISCORD_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{20,}$")
+_SLACK_BOT_TOKEN_RE = re.compile(r"^xoxb-[A-Za-z0-9-]+$")
+_SLACK_APP_TOKEN_RE = re.compile(r"^xapp-[A-Za-z0-9-]+$")
+
+
+def _validate_bot_token(token: str, var_name: str) -> tuple[bool, str]:
+    """Validate a bot token format. Returns (is_valid, error_message)."""
+    if var_name == "TELEGRAM_BOT_TOKEN":
+        if not _TELEGRAM_TOKEN_RE.match(token):
+            return False, (
+                "Invalid Telegram bot token format. Expected: <numeric_id>:<alphanumeric_token>\n"
+                "  Example: 123456789:ABCdefGHI-jklMNOpqrSTUvwxYZ"
+            )
+    elif var_name == "DISCORD_BOT_TOKEN":
+        if not _DISCORD_TOKEN_RE.match(token):
+            return False, (
+                "Invalid Discord bot token format. Expected: three dot-separated segments\n"
+                "  Example: MTIzNDU2Nzg5.MmY3Zg.ABCdefGHIjklMNOpqrSTUvwxYZ"
+            )
+    elif var_name == "SLACK_BOT_TOKEN":
+        if not _SLACK_BOT_TOKEN_RE.match(token):
+            return False, (
+                "Invalid Slack bot token. Expected: xoxb- prefix\n"
+                "  Example: see Slack docs for xoxb- token format"
+            )
+    elif var_name == "SLACK_APP_TOKEN":
+        if not _SLACK_APP_TOKEN_RE.match(token):
+            return False, (
+                "Invalid Slack app token. Expected: xapp- prefix\n"
+                "  Example: see Slack docs for xapp- token format"
+            )
+    return True, ""
+
 # Per-platform config: each entry defines the env vars, setup instructions,
 # and prompts needed to configure a messaging platform.
 _PLATFORMS = [
@@ -2169,6 +2206,27 @@ def _setup_standard_platform(platform: dict):
 
         value = prompt(f"  {var['prompt']}", password=var.get("password", False))
         if value:
+            # Validate bot token format for known token fields
+            is_valid, error_msg = _validate_bot_token(value, var["name"])
+            if not is_valid:
+                print_error(f"  {error_msg}")
+                print_warning("  Please re-enter the correct token, or press Enter to skip.")
+                value = prompt(f"  {var['prompt']}", password=var.get("password", False))
+                if value:
+                    is_valid2, error_msg2 = _validate_bot_token(value, var["name"])
+                    if not is_valid2:
+                        print_error(f"  {error_msg2}")
+                        print_warning("  Saving anyway — you will need to fix this before the gateway can connect.")
+                    else:
+                        save_env_value(var["name"], value)
+                        print_success(f"  Saved {var['name']}")
+                        continue
+                if not value:
+                    if var["name"] == token_var:
+                        print_warning(f"  Skipped — {label} won't work without this.")
+                        return
+                    print_info("  Skipped (can configure later)")
+                    continue
             save_env_value(var["name"], value)
             print_success(f"  Saved {var['name']}")
         elif var["name"] == token_var:

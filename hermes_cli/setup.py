@@ -14,6 +14,7 @@ Config files are stored in ~/.hermes/ for easy access.
 import importlib.util
 import logging
 import os
+import re
 import shutil
 import sys
 import copy
@@ -1611,9 +1612,17 @@ def _setup_telegram():
             return
 
     print_info("Create a bot via @BotFather on Telegram")
-    token = prompt("Telegram bot token", password=True)
-    if not token:
-        return
+    while True:
+        token = prompt("Telegram bot token", password=True)
+        if not token:
+            return
+        if re.match(r"^\d+:[A-Za-z0-9_-]{25,50}$", token):
+            break
+        print_error("Invalid Telegram bot token format. Expected: <numeric_id>:<alphanumeric_token>")
+        print_info("  Example: 123456789:ABCdefGHI-jklMNOpqrSTUvwxYZ")
+        if not prompt_yes_no("Re-enter the token?", True):
+            print_warning("Saving anyway — you will need to fix this before the gateway can connect.")
+            break
     save_env_value("TELEGRAM_BOT_TOKEN", token)
     print_success("Telegram token saved")
 
@@ -1672,9 +1681,17 @@ def _setup_discord():
             return
 
     print_info("Create a bot at https://discord.com/developers/applications")
-    token = prompt("Discord bot token", password=True)
-    if not token:
-        return
+    while True:
+        token = prompt("Discord bot token", password=True)
+        if not token:
+            return
+        if re.match(r"^[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{20,}$", token):
+            break
+        print_error("Invalid Discord bot token format. Expected: three dot-separated segments")
+        print_info("  Example: MTIzNDU2Nzg5.MmY3Zg.ABCdefGHIjklMNOpqrSTUvwxYZ")
+        if not prompt_yes_no("Re-enter the token?", True):
+            print_warning("Saving anyway — you will need to fix this before the gateway can connect.")
+            break
     save_env_value("DISCORD_BOT_TOKEN", token)
     print_success("Discord token saved")
 
@@ -1753,10 +1770,24 @@ def _setup_slack():
     bot_token = prompt("Slack Bot Token (xoxb-...)", password=True)
     if not bot_token:
         return
-    save_env_value("SLACK_BOT_TOKEN", bot_token)
+    if not re.match(r"^xoxb-[A-Za-z0-9-]+$", bot_token):
+        print_error("Invalid Slack bot token format. Expected: xoxb- prefix")
+        print_info("  Example: see Slack docs for xoxb- token format")
+        if prompt_yes_no("Save anyway?", False):
+            save_env_value("SLACK_BOT_TOKEN", bot_token)
+        else:
+            return
+    else:
+        save_env_value("SLACK_BOT_TOKEN", bot_token)
     app_token = prompt("Slack App Token (xapp-...)", password=True)
     if app_token:
-        save_env_value("SLACK_APP_TOKEN", app_token)
+        if not re.match(r"^xapp-[A-Za-z0-9-]+$", app_token):
+            print_error("Invalid Slack app token format. Expected: xapp- prefix")
+            print_info("  Example: see Slack docs for xapp- token format")
+            if prompt_yes_no("Save anyway?", False):
+                save_env_value("SLACK_APP_TOKEN", app_token)
+        else:
+            save_env_value("SLACK_APP_TOKEN", app_token)
     print_success("Slack tokens saved")
 
     print()

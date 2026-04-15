@@ -11,6 +11,7 @@ import logging
 import tempfile
 import os
 import re
+import threading
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -36,6 +37,10 @@ CRON_DIR = HERMES_DIR / "cron"
 JOBS_FILE = CRON_DIR / "jobs.json"
 OUTPUT_DIR = CRON_DIR / "output"
 ONESHOT_GRACE_SECONDS = 120
+
+# Protects load_jobs → modify → save_jobs cycles from concurrent threads
+# (e.g. parallel cron job execution in tick()).
+_jobs_file_lock = threading.Lock()
 
 
 def _normalize_skill_list(skill: Optional[str] = None, skills: Optional[Any] = None) -> List[str]:
@@ -581,13 +586,21 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                  delivery_error: Optional[str] = None):
     """
     Mark a job as having been run.
-    
+
     Updates last_run_at, last_status, increments completed count,
     computes next_run_at, and auto-deletes if repeat limit reached.
 
     ``delivery_error`` is tracked separately from the agent error — a job
     can succeed (agent produced output) but fail delivery (platform down).
+
+    Thread-safe: holds ``_jobs_file_lock`` for the read-modify-write cycle.
     """
+    with _jobs_file_lock:
+        _mark_job_run_unlocked(job_id, success, error, delivery_error)
+
+
+def _mark_job_run_unlocked(job_id: str, success: bool, error: Optional[str] = None,
+                           delivery_error: Optional[str] = None):
     jobs = load_jobs()
     for i, job in enumerate(jobs):
         if job["id"] == job_id:
@@ -638,7 +651,14 @@ def advance_next_run(job_id: str) -> bool:
     One-shot jobs are left unchanged so they can still retry on restart.
 
     Returns True if next_run_at was advanced, False otherwise.
+
+    Thread-safe: holds ``_jobs_file_lock`` for the read-modify-write cycle.
     """
+    with _jobs_file_lock:
+        return _advance_next_run_unlocked(job_id)
+
+
+def _advance_next_run_unlocked(job_id: str) -> bool:
     jobs = load_jobs()
     for job in jobs:
         if job["id"] == job_id:

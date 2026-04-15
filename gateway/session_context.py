@@ -50,6 +50,12 @@ _SESSION_USER_ID: ContextVar[str] = ContextVar("HERMES_SESSION_USER_ID", default
 _SESSION_USER_NAME: ContextVar[str] = ContextVar("HERMES_SESSION_USER_NAME", default="")
 _SESSION_KEY: ContextVar[str] = ContextVar("HERMES_SESSION_KEY", default="")
 
+# Cron auto-delivery context — thread-safe alternative to os.environ for
+# parallel job execution (each worker thread gets its own copy).
+_CRON_AUTO_DELIVER_PLATFORM: ContextVar[str] = ContextVar("HERMES_CRON_AUTO_DELIVER_PLATFORM", default="")
+_CRON_AUTO_DELIVER_CHAT_ID: ContextVar[str] = ContextVar("HERMES_CRON_AUTO_DELIVER_CHAT_ID", default="")
+_CRON_AUTO_DELIVER_THREAD_ID: ContextVar[str] = ContextVar("HERMES_CRON_AUTO_DELIVER_THREAD_ID", default="")
+
 _VAR_MAP = {
     "HERMES_SESSION_PLATFORM": _SESSION_PLATFORM,
     "HERMES_SESSION_CHAT_ID": _SESSION_CHAT_ID,
@@ -58,6 +64,9 @@ _VAR_MAP = {
     "HERMES_SESSION_USER_ID": _SESSION_USER_ID,
     "HERMES_SESSION_USER_NAME": _SESSION_USER_NAME,
     "HERMES_SESSION_KEY": _SESSION_KEY,
+    "HERMES_CRON_AUTO_DELIVER_PLATFORM": _CRON_AUTO_DELIVER_PLATFORM,
+    "HERMES_CRON_AUTO_DELIVER_CHAT_ID": _CRON_AUTO_DELIVER_CHAT_ID,
+    "HERMES_CRON_AUTO_DELIVER_THREAD_ID": _CRON_AUTO_DELIVER_THREAD_ID,
 }
 
 

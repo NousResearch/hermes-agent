@@ -15,6 +15,7 @@ import logging
 import os
 import subprocess
 import sys
+import threading
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 try:
@@ -48,6 +49,7 @@ _KNOWN_DELIVERY_PLATFORMS = frozenset({
     "qqbot",
 })
 
+from gateway.session_context import set_session_vars, clear_session_vars, get_session_env
 from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run
 
 # Sentinel: when a cron agent has nothing new to report, it can start its
@@ -61,6 +63,10 @@ _hermes_home = get_hermes_home()
 # File-based lock prevents concurrent ticks from gateway + daemon + systemd timer
 _LOCK_DIR = _hermes_home / "cron"
 _LOCK_FILE = _LOCK_DIR / ".tick.lock"
+
+# Serializes load_dotenv() calls — all jobs load the same .env file, but
+# load_dotenv mutates os.environ and is not thread-safe.
+_dotenv_lock = threading.Lock()
 
 
 def _resolve_origin(job: dict) -> Optional[dict]:
@@ -601,28 +607,41 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     logger.info("Running job '%s' (ID: %s)", job_name, job_id)
     logger.info("Prompt: %s", prompt[:100])
 
+    _ctx_tokens = []
+    _cron_deliver_tokens = []
     try:
-        # Inject origin context so the agent's send_message tool knows the chat.
-        # Must be INSIDE the try block so the finally cleanup always runs.
+        # Inject origin context via ContextVars (thread-safe for parallel jobs).
+        # Falls back to os.environ reads via get_session_env() in tools.
         if origin:
-            os.environ["HERMES_SESSION_PLATFORM"] = origin["platform"]
-            os.environ["HERMES_SESSION_CHAT_ID"] = str(origin["chat_id"])
-            if origin.get("chat_name"):
-                os.environ["HERMES_SESSION_CHAT_NAME"] = origin["chat_name"]
+            _ctx_tokens = set_session_vars(
+                platform=origin["platform"],
+                chat_id=str(origin["chat_id"]),
+                chat_name=origin.get("chat_name", ""),
+            )
+
         # Re-read .env and config.yaml fresh every run so provider/key
         # changes take effect without a gateway restart.
         from dotenv import load_dotenv
-        try:
-            load_dotenv(str(_hermes_home / ".env"), override=True, encoding="utf-8")
-        except UnicodeDecodeError:
-            load_dotenv(str(_hermes_home / ".env"), override=True, encoding="latin-1")
+        with _dotenv_lock:
+            try:
+                load_dotenv(str(_hermes_home / ".env"), override=True, encoding="utf-8")
+            except UnicodeDecodeError:
+                load_dotenv(str(_hermes_home / ".env"), override=True, encoding="latin-1")
 
         delivery_target = _resolve_delivery_target(job)
         if delivery_target:
-            os.environ["HERMES_CRON_AUTO_DELIVER_PLATFORM"] = delivery_target["platform"]
-            os.environ["HERMES_CRON_AUTO_DELIVER_CHAT_ID"] = str(delivery_target["chat_id"])
-            if delivery_target.get("thread_id") is not None:
-                os.environ["HERMES_CRON_AUTO_DELIVER_THREAD_ID"] = str(delivery_target["thread_id"])
+            from gateway.session_context import (
+                _CRON_AUTO_DELIVER_PLATFORM,
+                _CRON_AUTO_DELIVER_CHAT_ID,
+                _CRON_AUTO_DELIVER_THREAD_ID,
+            )
+            _cron_deliver_tokens = [
+                _CRON_AUTO_DELIVER_PLATFORM.set(delivery_target["platform"]),
+                _CRON_AUTO_DELIVER_CHAT_ID.set(str(delivery_target["chat_id"])),
+                _CRON_AUTO_DELIVER_THREAD_ID.set(
+                    str(delivery_target["thread_id"]) if delivery_target.get("thread_id") is not None else ""
+                ),
+            ]
 
         model = job.get("model") or os.getenv("HERMES_MODEL") or ""
 
@@ -768,7 +787,11 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         _cron_inactivity_limit = _cron_timeout if _cron_timeout > 0 else None
         _POLL_INTERVAL = 5.0
         _cron_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-        _cron_future = _cron_pool.submit(agent.run_conversation, prompt)
+        # Copy the current context so ContextVars (session platform, delivery
+        # target) are visible inside the worker thread on Python <3.12.
+        import contextvars
+        _ctx = contextvars.copy_context()
+        _cron_future = _cron_pool.submit(_ctx.run, agent.run_conversation, prompt)
         _inactivity_timeout = False
         try:
             if _cron_inactivity_limit is None:
@@ -875,16 +898,19 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         return False, output, "", error_msg
 
     finally:
-        # Clean up injected env vars so they don't leak to other jobs
-        for key in (
-            "HERMES_SESSION_PLATFORM",
-            "HERMES_SESSION_CHAT_ID",
-            "HERMES_SESSION_CHAT_NAME",
-            "HERMES_CRON_AUTO_DELIVER_PLATFORM",
-            "HERMES_CRON_AUTO_DELIVER_CHAT_ID",
-            "HERMES_CRON_AUTO_DELIVER_THREAD_ID",
-        ):
-            os.environ.pop(key, None)
+        # Reset ContextVars (thread-safe cleanup — no cross-job leakage)
+        clear_session_vars(_ctx_tokens)
+        if _cron_deliver_tokens:
+            from gateway.session_context import (
+                _CRON_AUTO_DELIVER_PLATFORM,
+                _CRON_AUTO_DELIVER_CHAT_ID,
+                _CRON_AUTO_DELIVER_THREAD_ID,
+            )
+            for var, token in zip(
+                [_CRON_AUTO_DELIVER_PLATFORM, _CRON_AUTO_DELIVER_CHAT_ID, _CRON_AUTO_DELIVER_THREAD_ID],
+                _cron_deliver_tokens,
+            ):
+                var.reset(token)
         if _session_db:
             try:
                 _session_db.end_session(_cron_session_id, "cron_complete")
@@ -927,6 +953,8 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
             lock_fd.close()
         return 0
 
+    # Phase 1: Collect due jobs and advance schedules (under lock)
+    due_jobs = []
     try:
         due_jobs = get_due_jobs()
 
@@ -937,55 +965,73 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
         if verbose:
             logger.info("%s - %s job(s) due", _hermes_now().strftime('%H:%M:%S'), len(due_jobs))
 
-        executed = 0
         for job in due_jobs:
-            try:
-                # For recurring jobs (cron/interval), advance next_run_at to the
-                # next future occurrence BEFORE execution.  This way, if the
-                # process crashes mid-run, the job won't re-fire on restart.
-                # One-shot jobs are left alone so they can retry on restart.
-                advance_next_run(job["id"])
-
-                success, output, final_response, error = run_job(job)
-
-                output_file = save_job_output(job["id"], output)
-                if verbose:
-                    logger.info("Output saved to: %s", output_file)
-
-                # Deliver the final response to the origin/target chat.
-                # If the agent responded with [SILENT], skip delivery (but
-                # output is already saved above).  Failed jobs always deliver.
-                deliver_content = final_response if success else f"⚠️ Cron job '{job.get('name', job['id'])}' failed:\n{error}"
-                should_deliver = bool(deliver_content)
-                if should_deliver and success and SILENT_MARKER in deliver_content.strip().upper():
-                    logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
-                    should_deliver = False
-
-                delivery_error = None
-                if should_deliver:
-                    try:
-                        delivery_error = _deliver_result(job, deliver_content, adapters=adapters, loop=loop)
-                    except Exception as de:
-                        delivery_error = str(de)
-                        logger.error("Delivery failed for job %s: %s", job["id"], de)
-
-                mark_job_run(job["id"], success, error, delivery_error=delivery_error)
-                executed += 1
-
-            except Exception as e:
-                logger.error("Error processing job %s: %s", job['id'], e)
-                mark_job_run(job["id"], False, str(e))
-
-        return executed
+            advance_next_run(job["id"])
     finally:
-        if fcntl:
-            fcntl.flock(lock_fd, fcntl.LOCK_UN)
-        elif msvcrt:
+        try:
+            if fcntl:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            elif msvcrt:
+                try:
+                    msvcrt.locking(lock_fd.fileno(), msvcrt.LK_UNLCK, 1)
+                except (OSError, IOError):
+                    pass
+            lock_fd.close()
+        except Exception:
+            pass
+
+    # Phase 2: Execute jobs OUTSIDE the lock, in parallel.
+    # mark_job_run and save_job_output are thread-safe (jobs.json writes
+    # are serialized by _jobs_file_lock; output goes to per-job directories).
+    max_workers = int(os.getenv("HERMES_CRON_MAX_WORKERS", "4"))
+    max_workers = max(1, max_workers)
+
+    def _execute_one(job):
+        """Run a single job: agent execution → output save → delivery → state update."""
+        try:
+            success, output, final_response, error = run_job(job)
+
+            output_file = save_job_output(job["id"], output)
+            if verbose:
+                logger.info("Output saved to: %s", output_file)
+
+            deliver_content = final_response if success else f"⚠️ Cron job '{job.get('name', job['id'])}' failed:\n{error}"
+            should_deliver = bool(deliver_content)
+            if should_deliver and success and SILENT_MARKER in deliver_content.strip().upper():
+                logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
+                should_deliver = False
+
+            delivery_error = None
+            if should_deliver:
+                try:
+                    delivery_error = _deliver_result(job, deliver_content, adapters=adapters, loop=loop)
+                except Exception as de:
+                    delivery_error = str(de)
+                    logger.error("Delivery failed for job %s: %s", job["id"], de)
+
+            mark_job_run(job["id"], success, error, delivery_error=delivery_error)
+            return True
+
+        except Exception as e:
+            logger.error("Error processing job %s: %s", job['id'], e)
+            mark_job_run(job["id"], False, str(e))
+            return False
+
+    if max_workers == 1 or len(due_jobs) <= 1:
+        return sum(1 for job in due_jobs if _execute_one(job))
+
+    executed = 0
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {pool.submit(_execute_one, job): job for job in due_jobs}
+        for future in concurrent.futures.as_completed(futures):
             try:
-                msvcrt.locking(lock_fd.fileno(), msvcrt.LK_UNLCK, 1)
-            except (OSError, IOError):
-                pass
-        lock_fd.close()
+                if future.result():
+                    executed += 1
+            except Exception as e:
+                job = futures[future]
+                logger.error("Unexpected error for job %s: %s", job["id"], e)
+
+    return executed
 
 
 if __name__ == "__main__":

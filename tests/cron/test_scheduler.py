@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+import threading
 from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
@@ -1162,6 +1163,159 @@ class TestTickAdvanceBeforeRun:
         adv_mock.assert_called_once_with("test-advance")
         # advance must happen before run
         assert call_order == [("advance", "test-advance"), ("run", "test-advance")]
+
+
+class TestTickParallelExecution:
+    """Verify tick() runs due jobs in parallel when HERMES_CRON_MAX_WORKERS > 1."""
+
+    def test_jobs_run_in_parallel(self, tmp_path, monkeypatch):
+        """With max_workers=4, two slow jobs should overlap in time."""
+        import time
+        import threading
+
+        timestamps = {}  # job_id → (start, end)
+        lock = threading.Lock()
+
+        def slow_run_job(job):
+            start = time.monotonic()
+            time.sleep(0.3)
+            end = time.monotonic()
+            with lock:
+                timestamps[job["id"]] = (start, end)
+            return True, "output", "response", None
+
+        jobs = [
+            {"id": f"par-{i}", "name": f"job-{i}", "prompt": "hi",
+             "enabled": True, "schedule": {"kind": "interval", "seconds": 3600}}
+            for i in range(3)
+        ]
+
+        monkeypatch.setenv("HERMES_CRON_MAX_WORKERS", "4")
+
+        with patch("cron.scheduler.get_due_jobs", return_value=jobs), \
+             patch("cron.scheduler.advance_next_run", return_value=True), \
+             patch("cron.scheduler.run_job", side_effect=slow_run_job), \
+             patch("cron.scheduler.save_job_output", return_value=tmp_path / "out.md"), \
+             patch("cron.scheduler.mark_job_run"), \
+             patch("cron.scheduler._deliver_result", return_value=None):
+            from cron.scheduler import tick
+            executed = tick(verbose=False)
+
+        assert executed == 3
+        # With parallel execution, at least two jobs should have overlapping time ranges
+        intervals = list(timestamps.values())
+        overlap_found = False
+        for i in range(len(intervals)):
+            for j in range(i + 1, len(intervals)):
+                s1, e1 = intervals[i]
+                s2, e2 = intervals[j]
+                if s1 < e2 and s2 < e1:
+                    overlap_found = True
+                    break
+        assert overlap_found, "Expected parallel overlap but jobs ran serially"
+
+    def test_serial_with_max_workers_1(self, tmp_path, monkeypatch):
+        """HERMES_CRON_MAX_WORKERS=1 runs jobs serially (backward compat)."""
+        import time
+
+        call_times = []
+
+        def tracking_run_job(job):
+            call_times.append(time.monotonic())
+            time.sleep(0.1)
+            call_times.append(time.monotonic())
+            return True, "output", "response", None
+
+        jobs = [
+            {"id": f"ser-{i}", "name": f"job-{i}", "prompt": "hi",
+             "enabled": True, "schedule": {"kind": "interval", "seconds": 3600}}
+            for i in range(2)
+        ]
+
+        monkeypatch.setenv("HERMES_CRON_MAX_WORKERS", "1")
+
+        with patch("cron.scheduler.get_due_jobs", return_value=jobs), \
+             patch("cron.scheduler.advance_next_run", return_value=True), \
+             patch("cron.scheduler.run_job", side_effect=tracking_run_job), \
+             patch("cron.scheduler.save_job_output", return_value=tmp_path / "out.md"), \
+             patch("cron.scheduler.mark_job_run"), \
+             patch("cron.scheduler._deliver_result", return_value=None):
+            from cron.scheduler import tick
+            executed = tick(verbose=False)
+
+        assert executed == 2
+        # Job 2 should start after job 1 ends (serial)
+        assert call_times[2] >= call_times[1], "Expected serial execution"
+
+    def test_default_max_workers(self, monkeypatch):
+        """Default max_workers is 4 when env var is unset."""
+        monkeypatch.delenv("HERMES_CRON_MAX_WORKERS", raising=False)
+
+        with patch("cron.scheduler.get_due_jobs", return_value=[]):
+            from cron.scheduler import tick
+            tick(verbose=False)
+        # No crash = env var parsing works with default
+
+    def test_failed_job_does_not_block_others(self, tmp_path, monkeypatch):
+        """A failing job should not prevent other jobs from completing."""
+        call_count = {"ok": 0, "fail": 0}
+        lock = threading.Lock()
+
+        def sometimes_fail(job):
+            if job["id"] == "fail-job":
+                raise RuntimeError("boom")
+            with lock:
+                call_count["ok"] += 1
+            return True, "output", "response", None
+
+        jobs = [
+            {"id": "fail-job", "name": "bad", "prompt": "hi",
+             "enabled": True, "schedule": {"kind": "interval", "seconds": 3600}},
+            {"id": "ok-job", "name": "good", "prompt": "hi",
+             "enabled": True, "schedule": {"kind": "interval", "seconds": 3600}},
+        ]
+
+        monkeypatch.setenv("HERMES_CRON_MAX_WORKERS", "4")
+
+        with patch("cron.scheduler.get_due_jobs", return_value=jobs), \
+             patch("cron.scheduler.advance_next_run", return_value=True), \
+             patch("cron.scheduler.run_job", side_effect=sometimes_fail), \
+             patch("cron.scheduler.save_job_output", return_value=tmp_path / "out.md"), \
+             patch("cron.scheduler.mark_job_run"), \
+             patch("cron.scheduler._deliver_result", return_value=None):
+            from cron.scheduler import tick
+            executed = tick(verbose=False)
+
+        assert executed == 1
+        assert call_count["ok"] == 1
+
+    def test_mark_job_run_called_for_each_job(self, tmp_path, monkeypatch):
+        """Every job gets mark_job_run called, even in parallel."""
+
+        def fake_run(job):
+            return True, "output", "response", None
+
+        jobs = [
+            {"id": f"mark-{i}", "name": f"job-{i}", "prompt": "hi",
+             "enabled": True, "schedule": {"kind": "interval", "seconds": 3600}}
+            for i in range(3)
+        ]
+
+        monkeypatch.setenv("HERMES_CRON_MAX_WORKERS", "4")
+
+        with patch("cron.scheduler.get_due_jobs", return_value=jobs), \
+             patch("cron.scheduler.advance_next_run", return_value=True), \
+             patch("cron.scheduler.run_job", side_effect=fake_run), \
+             patch("cron.scheduler.save_job_output", return_value=tmp_path / "out.md"), \
+             patch("cron.scheduler.mark_job_run") as mock_mark, \
+             patch("cron.scheduler._deliver_result", return_value=None):
+            from cron.scheduler import tick
+            executed = tick(verbose=False)
+
+        assert executed == 3
+        assert mock_mark.call_count == 3
+        marked_ids = {call.args[0] for call in mock_mark.call_args_list}
+        assert marked_ids == {"mark-0", "mark-1", "mark-2"}
 
 
 class TestSendMediaViaAdapter:

@@ -516,22 +516,6 @@ class OpenVikingMemoryProvider(MemoryProvider):
         except Exception as e:
             return tool_error(str(e))
 
-    def on_session_reset(self, new_session_id: str) -> None:
-        """Rebind per-session state to new_session_id. OV auto-creates the
-        session when the first message is added, so no create call here."""
-        for t in (self._sync_thread, self._prefetch_thread):
-            if t and t.is_alive():
-                t.join(timeout=5.0)
-
-        self._session_id = new_session_id
-        self._turn_count = 0
-        self._prefetch_result = ""
-        self._sync_thread = None
-        self._prefetch_thread = None
-
-        global _last_active_provider
-        _last_active_provider = self
-
     def shutdown(self) -> None:
         # Wait for background threads to finish
         for t in (self._sync_thread, self._prefetch_thread):

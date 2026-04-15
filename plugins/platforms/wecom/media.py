@@ -132,7 +132,11 @@ class WeComMediaMixin:
 
     @staticmethod
     def _guess_extension(url: str, content_type: str, fallback: str) -> str:
+        # WeCom's CDN labels images application/octet-stream; mimetypes maps that to ".bin",
+        # which is truthy and used to win over the magic-byte fallback (#10085).
         ext = mimetypes.guess_extension(content_type) if content_type else None
+        if ext == ".bin":
+            ext = None
         return ext or Path(urlparse(url).path).suffix or fallback
 
     @staticmethod

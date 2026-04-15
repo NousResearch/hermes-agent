@@ -30,6 +30,20 @@ class TestWeComAdapterInit:
         assert WeComAdapter.SUPPORTS_MESSAGE_EDITING is False
 
 
+class TestWeComInboundImageExtension:
+    def test_octet_stream_falls_through_to_magic_bytes(self):
+        """WeCom's CDN serves images as application/octet-stream; the cached file must get the
+        real image extension from magic bytes, not ".bin" (#10085)."""
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        jpeg = b"\xff\xd8\xff\xe0" + b"\x00" * 16
+        ext = WeComAdapter._guess_extension(
+            "https://wwcdn.weixin.qq.com/img?aeskey=abc", "application/octet-stream",
+            fallback=WeComAdapter._detect_image_ext(jpeg))
+        assert ext == ".jpg"
+        assert WeComAdapter._guess_extension("https://x/y.png", "image/png", fallback=".jpg") == ".png"
+
+
 class TestWeComAdapterAuthzScope:
     """dm_policy/allowlist reads must honor the profile secret scope under
     multiplexing (#93522): a secondary profile's own scope is authoritative

@@ -715,12 +715,23 @@ def _detect_venv_dir() -> Path | None:
     """Detect the active virtualenv directory.
 
     Checks ``sys.prefix`` first (works regardless of the directory name),
-    then falls back to probing common directory names under PROJECT_ROOT.
+    then ``VIRTUAL_ENV`` env var (covers uv-managed environments where
+    sys.prefix == sys.base_prefix), then falls back to probing common
+    directory names under PROJECT_ROOT.
     Returns ``None`` when no virtualenv can be found.
     """
     # If we're running inside a virtualenv, sys.prefix points to it.
     if sys.prefix != sys.base_prefix:
         venv = Path(sys.prefix)
+        if venv.is_dir():
+            return venv
+
+    # uv and some other tools set VIRTUAL_ENV without changing sys.prefix.
+    # This catches `uv run` where sys.prefix == sys.base_prefix but the
+    # environment IS a venv.  (#8620)
+    _virtual_env = os.environ.get("VIRTUAL_ENV")
+    if _virtual_env:
+        venv = Path(_virtual_env)
         if venv.is_dir():
             return venv
 

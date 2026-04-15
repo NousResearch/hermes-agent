@@ -5419,6 +5419,27 @@ class GatewayRunner:
         
         def progress_callback(tool_name: str, preview: str = None, args: dict = None):
             """Callback invoked by agent when a tool is called."""
+            # Emit dashboard event for live ship movement
+            try:
+                import json as _j, urllib.request as _ur, uuid as _uuid, time as _time
+                _meta = {
+                    "cli": ("glados","GLaDOS","#00FFD1"),
+                    "telegram": ("glados","GLaDOS","#00FFD1"),
+                }.get(source.platform.value if source.platform else "cli",
+                      ("glados","GLaDOS","#00FFD1"))
+                _payload = _j.dumps({
+                    "type": "tool.started", "agentId": _meta[0],
+                    "sessionId": session_id, "id": str(_uuid.uuid4()), "seq": 1,
+                    "ts": _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime()),
+                    "tool_name": tool_name, "preview": str(preview or "")[:80],
+                    "agent_name": _meta[1], "agent_color": _meta[2],
+                }).encode()
+                _req = _ur.Request("http://localhost:8642/api/emit", data=_payload,
+                    headers={"Content-Type":"application/json"}, method="POST")
+                _ur.urlopen(_req, timeout=0.3)
+            except Exception:
+                pass
+
             if not progress_queue:
                 return
             
@@ -5734,7 +5755,7 @@ class GatewayRunner:
 
             # Per-message state — callbacks and reasoning config change every
             # turn and must not be baked into the cached agent constructor.
-            agent.tool_progress_callback = progress_callback if tool_progress_enabled else None
+            agent.tool_progress_callback = progress_callback  # always set — dashboard needs it
             agent.step_callback = _step_callback_sync if _hooks_ref.loaded_hooks else None
             agent.stream_delta_callback = _stream_delta_cb
             agent.status_callback = _status_callback_sync
@@ -6394,9 +6415,9 @@ def main():
     
     config = None
     if args.config:
-        import json
+        import yaml
         with open(args.config, encoding="utf-8") as f:
-            data = json.load(f)
+            data = yaml.safe_load(f) or {}
             config = GatewayConfig.from_dict(data)
     
     # Run the gateway - exit with code 1 if no platforms connected,

@@ -452,7 +452,7 @@ class SamplingHandler:
                         "type": "function",
                         "function": {
                             "name": tu.name,
-                            "arguments": json.dumps(tu.input) if isinstance(tu.input, dict) else str(tu.input),
+                            "arguments": json.dumps(tu.input, ensure_ascii=False) if isinstance(tu.input, dict) else str(tu.input),
                         },
                     })
                 msg_dict: dict = {"role": msg.role, "tool_calls": tc_list}
@@ -1157,7 +1157,7 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
         if not server or not server.session:
             return json.dumps({
                 "error": f"MCP server '{server_name}' is not connected"
-            })
+            }, ensure_ascii=False)
 
         async def _call():
             result = await server.session.call_tool(tool_name, arguments=args)
@@ -1171,14 +1171,14 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                     "error": _sanitize_error(
                         error_text or "MCP tool returned an error"
                     )
-                })
+                }, ensure_ascii=False)
 
             # Collect text from content blocks
             parts: List[str] = []
             for block in (result.content or []):
                 if hasattr(block, "text"):
                     parts.append(block.text)
-            return json.dumps({"result": "\n".join(parts) if parts else ""})
+            return json.dumps({"result": "\n".join(parts) if parts else ""}, ensure_ascii=False)
 
         try:
             return _run_on_mcp_loop(_call(), timeout=tool_timeout)
@@ -1191,7 +1191,7 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                 "error": _sanitize_error(
                     f"MCP call failed: {type(exc).__name__}: {exc}"
                 )
-            })
+            }, ensure_ascii=False)
 
     return _handler
 
@@ -1205,7 +1205,7 @@ def _make_list_resources_handler(server_name: str, tool_timeout: float):
         if not server or not server.session:
             return json.dumps({
                 "error": f"MCP server '{server_name}' is not connected"
-            })
+            }, ensure_ascii=False)
 
         async def _call():
             result = await server.session.list_resources()
@@ -1221,7 +1221,7 @@ def _make_list_resources_handler(server_name: str, tool_timeout: float):
                 if hasattr(r, "mimeType") and r.mimeType:
                     entry["mimeType"] = r.mimeType
                 resources.append(entry)
-            return json.dumps({"resources": resources})
+            return json.dumps({"resources": resources}, ensure_ascii=False)
 
         try:
             return _run_on_mcp_loop(_call(), timeout=tool_timeout)
@@ -1233,7 +1233,7 @@ def _make_list_resources_handler(server_name: str, tool_timeout: float):
                 "error": _sanitize_error(
                     f"MCP call failed: {type(exc).__name__}: {exc}"
                 )
-            })
+            }, ensure_ascii=False)
 
     return _handler
 
@@ -1247,11 +1247,11 @@ def _make_read_resource_handler(server_name: str, tool_timeout: float):
         if not server or not server.session:
             return json.dumps({
                 "error": f"MCP server '{server_name}' is not connected"
-            })
+            }, ensure_ascii=False)
 
         uri = args.get("uri")
         if not uri:
-            return json.dumps({"error": "Missing required parameter 'uri'"})
+            return json.dumps({"error": "Missing required parameter 'uri'"}, ensure_ascii=False)
 
         async def _call():
             result = await server.session.read_resource(uri)
@@ -1263,7 +1263,7 @@ def _make_read_resource_handler(server_name: str, tool_timeout: float):
                     parts.append(block.text)
                 elif hasattr(block, "blob"):
                     parts.append(f"[binary data, {len(block.blob)} bytes]")
-            return json.dumps({"result": "\n".join(parts) if parts else ""})
+            return json.dumps({"result": "\n".join(parts) if parts else ""}, ensure_ascii=False)
 
         try:
             return _run_on_mcp_loop(_call(), timeout=tool_timeout)
@@ -1275,7 +1275,7 @@ def _make_read_resource_handler(server_name: str, tool_timeout: float):
                 "error": _sanitize_error(
                     f"MCP call failed: {type(exc).__name__}: {exc}"
                 )
-            })
+            }, ensure_ascii=False)
 
     return _handler
 
@@ -1289,7 +1289,7 @@ def _make_list_prompts_handler(server_name: str, tool_timeout: float):
         if not server or not server.session:
             return json.dumps({
                 "error": f"MCP server '{server_name}' is not connected"
-            })
+            }, ensure_ascii=False)
 
         async def _call():
             result = await server.session.list_prompts()
@@ -1310,7 +1310,7 @@ def _make_list_prompts_handler(server_name: str, tool_timeout: float):
                         for a in p.arguments
                     ]
                 prompts.append(entry)
-            return json.dumps({"prompts": prompts})
+            return json.dumps({"prompts": prompts}, ensure_ascii=False)
 
         try:
             return _run_on_mcp_loop(_call(), timeout=tool_timeout)
@@ -1322,7 +1322,7 @@ def _make_list_prompts_handler(server_name: str, tool_timeout: float):
                 "error": _sanitize_error(
                     f"MCP call failed: {type(exc).__name__}: {exc}"
                 )
-            })
+            }, ensure_ascii=False)
 
     return _handler
 
@@ -1336,11 +1336,11 @@ def _make_get_prompt_handler(server_name: str, tool_timeout: float):
         if not server or not server.session:
             return json.dumps({
                 "error": f"MCP server '{server_name}' is not connected"
-            })
+            }, ensure_ascii=False)
 
         name = args.get("name")
         if not name:
-            return json.dumps({"error": "Missing required parameter 'name'"})
+            return json.dumps({"error": "Missing required parameter 'name'"}, ensure_ascii=False)
         arguments = args.get("arguments", {})
 
         async def _call():
@@ -1363,7 +1363,7 @@ def _make_get_prompt_handler(server_name: str, tool_timeout: float):
             resp = {"messages": messages}
             if hasattr(result, "description") and result.description:
                 resp["description"] = result.description
-            return json.dumps(resp)
+            return json.dumps(resp, ensure_ascii=False)
 
         try:
             return _run_on_mcp_loop(_call(), timeout=tool_timeout)
@@ -1375,7 +1375,7 @@ def _make_get_prompt_handler(server_name: str, tool_timeout: float):
                 "error": _sanitize_error(
                     f"MCP call failed: {type(exc).__name__}: {exc}"
                 )
-            })
+            }, ensure_ascii=False)
 
     return _handler
 

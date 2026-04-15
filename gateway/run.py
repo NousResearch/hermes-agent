@@ -8458,6 +8458,12 @@ class GatewayRunner:
                     cached = _cache.get(session_key)
                     if cached and cached[1] == _sig:
                         agent = cached[0]
+                        # Reset activity timestamp so the inactivity timeout
+                        # handler doesn't see stale idle time from the previous
+                        # turn and immediately kill this agent.  (#9051)
+                        agent._last_activity_ts = time.time()
+                        agent._last_activity_desc = "starting new turn (cached)"
+                        agent._api_call_count = 0
                         logger.debug("Reusing cached agent for session %s", session_key)
 
             if agent is None:

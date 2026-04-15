@@ -7858,6 +7858,7 @@ class AIAgent:
         self._incomplete_scratchpad_retries = 0
         self._codex_incomplete_retries = 0
         self._thinking_prefill_retries = 0
+        self._post_tool_empty_retried = False
         self._last_content_with_tools = None
         self._mute_post_response = False
         self._unicode_sanitization_passes = 0
@@ -10131,6 +10132,10 @@ class AIAgent:
                     if _had_prefill:
                         self._thinking_prefill_retries = 0
                         self._empty_content_retries = 0
+                    # Successful tool execution — reset the post-tool nudge
+                    # flag so it can fire again if the model goes empty on
+                    # a LATER tool round.
+                    self._post_tool_empty_retried = False
 
                     messages.append(assistant_msg)
                     self._emit_interim_assistant_message(assistant_msg)
@@ -10298,6 +10303,48 @@ class AIAgent:
                             final_response = self._strip_think_blocks(fallback).strip()
                             self._response_was_previewed = True
                             break
+
+                        # ── Post-tool-call empty response nudge ───────────
+                        # The model returned empty after executing tool calls
+                        # but there's no prior-turn content to fall back on.
+                        # Instead of giving up, nudge the model to continue by
+                        # appending a user-level hint.  This is the #9400 case:
+                        # weaker models (GLM-5, etc.) sometimes return empty
+                        # after tool results instead of continuing to the next
+                        # step.  One retry with a nudge usually fixes it.
+                        _prior_was_tool = any(
+                            m.get("role") == "tool"
+                            for m in messages[-5:]  # check recent messages
+                        )
+                        if (
+                            _prior_was_tool
+                            and not getattr(self, "_post_tool_empty_retried", False)
+                        ):
+                            self._post_tool_empty_retried = True
+                            logger.info(
+                                "Empty response after tool calls — nudging model "
+                                "to continue processing"
+                            )
+                            self._emit_status(
+                                "⚠️ Model returned empty after tool calls — "
+                                "nudging to continue"
+                            )
+                            # Append the empty assistant message first so the
+                            # message sequence stays valid:
+                            #   tool(result) → assistant("(empty)") → user(nudge)
+                            # Without this, we'd have tool → user which most
+                            # APIs reject as an invalid sequence.
+                            assistant_msg["content"] = "(empty)"
+                            messages.append(assistant_msg)
+                            messages.append({
+                                "role": "user",
+                                "content": (
+                                    "You just executed tool calls but returned an "
+                                    "empty response. Please process the tool "
+                                    "results above and continue with the task."
+                                ),
+                            })
+                            continue
 
                         # ── Thinking-only prefill continuation ──────────
                         # The model produced structured reasoning (via API

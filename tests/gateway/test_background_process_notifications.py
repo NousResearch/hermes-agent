@@ -45,7 +45,7 @@ def _build_runner(monkeypatch, tmp_path, mode: str) -> GatewayRunner:
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
 
     runner = GatewayRunner(GatewayConfig())
-    adapter = SimpleNamespace(send=AsyncMock())
+    adapter = SimpleNamespace(send=AsyncMock(), handle_message=AsyncMock())
     runner.adapters[Platform.TELEGRAM] = adapter
     return runner
 
@@ -243,3 +243,62 @@ async def test_no_thread_id_sends_no_metadata(monkeypatch, tmp_path):
     assert adapter.send.await_count == 1
     _, kwargs = adapter.send.call_args
     assert kwargs["metadata"] is None
+
+
+@pytest.mark.asyncio
+async def test_inject_watch_notification_routes_from_session_store_origin(monkeypatch, tmp_path):
+    from gateway.session import SessionSource
+
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    adapter = runner.adapters[Platform.TELEGRAM]
+    runner.session_store._entries["agent:main:telegram:group:-100:42"] = SimpleNamespace(
+        origin=SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-100",
+            chat_type="group",
+            thread_id="42",
+            user_id="123",
+            user_name="Emiliyan",
+        )
+    )
+
+    evt = {
+        "session_id": "proc_watch",
+        "session_key": "agent:main:telegram:group:-100:42",
+    }
+
+    await runner._inject_watch_notification("[SYSTEM: Background process matched]", evt)
+
+    adapter.handle_message.assert_awaited_once()
+    synth_event = adapter.handle_message.await_args.args[0]
+    assert synth_event.internal is True
+    assert synth_event.source.platform == Platform.TELEGRAM
+    assert synth_event.source.chat_id == "-100"
+    assert synth_event.source.chat_type == "group"
+    assert synth_event.source.thread_id == "42"
+    assert synth_event.source.user_id == "123"
+    assert synth_event.source.user_name == "Emiliyan"
+
+
+def test_build_process_event_source_falls_back_to_session_key_chat_type(monkeypatch, tmp_path):
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+
+    evt = {
+        "session_id": "proc_watch",
+        "session_key": "agent:main:telegram:group:-100:42",
+        "platform": "telegram",
+        "chat_id": "-100",
+        "thread_id": "42",
+        "user_id": "123",
+        "user_name": "Emiliyan",
+    }
+
+    source = runner._build_process_event_source(evt)
+
+    assert source is not None
+    assert source.platform == Platform.TELEGRAM
+    assert source.chat_id == "-100"
+    assert source.chat_type == "group"
+    assert source.thread_id == "42"
+    assert source.user_id == "123"
+    assert source.user_name == "Emiliyan"

@@ -4628,18 +4628,18 @@ def main():
     chat_parser.add_argument(
         "-v", "--verbose",
         action="store_true",
-        help="Verbose output"
+        help="상세 출력"
     )
     chat_parser.add_argument(
         "-Q", "--quiet",
         action="store_true",
-        help="Quiet mode for programmatic use: suppress banner, spinner, and tool previews. Only output the final response and session info."
+        help="프로그램용 조용한 모드: 배너, 스피너, 도구 미리보기를 숨기고 최종 응답과 세션 정보만 출력"
     )
     chat_parser.add_argument(
         "--resume", "-r",
         metavar="SESSION_ID",
         default=argparse.SUPPRESS,
-        help="Resume a previous session by ID (shown on exit)"
+        help="이전 세션을 ID로 이어서 열기(종료 시 표시됨)"
     )
     chat_parser.add_argument(
         "--continue", "-c",
@@ -4648,43 +4648,43 @@ def main():
         const=True,
         default=argparse.SUPPRESS,
         metavar="SESSION_NAME",
-        help="Resume a session by name, or the most recent if no name given"
+        help="이름으로 세션을 이어서 열고, 이름이 없으면 가장 최근 세션 열기"
     )
     chat_parser.add_argument(
         "--worktree", "-w",
         action="store_true",
         default=argparse.SUPPRESS,
-        help="Run in an isolated git worktree (for parallel agents on the same repo)"
+        help="격리된 git worktree에서 실행(같은 repo에서 병렬 에이전트용)"
     )
     chat_parser.add_argument(
         "--checkpoints",
         action="store_true",
         default=False,
-        help="Enable filesystem checkpoints before destructive file operations (use /rollback to restore)"
+        help="파괴적 파일 작업 전에 파일시스템 체크포인트 활성화(/rollback으로 복원 가능)"
     )
     chat_parser.add_argument(
         "--max-turns",
         type=int,
         default=None,
         metavar="N",
-        help="Maximum tool-calling iterations per conversation turn (default: 90, or agent.max_turns in config)"
+        help="대화 턴당 최대 도구 호출 반복 횟수(기본값: 90, 또는 config의 agent.max_turns)"
     )
     chat_parser.add_argument(
         "--yolo",
         action="store_true",
         default=argparse.SUPPRESS,
-        help="Bypass all dangerous command approval prompts (use at your own risk)"
+        help="위험 명령 승인 프롬프트를 모두 우회(사용자 책임)"
     )
     chat_parser.add_argument(
         "--pass-session-id",
         action="store_true",
         default=argparse.SUPPRESS,
-        help="Include the session ID in the agent's system prompt"
+        help="에이전트 시스템 프롬프트에 세션 ID 포함"
     )
     chat_parser.add_argument(
         "--source",
         default=None,
-        help="Session source tag for filtering (default: cli). Use 'tool' for third-party integrations that should not appear in user session lists."
+        help="필터링용 세션 source 태그(기본값: cli). 사용자 세션 목록에 보이면 안 되는 서드파티 연동은 'tool' 사용"
     )
     chat_parser.set_defaults(func=cmd_chat)
 
@@ -4698,41 +4698,41 @@ def main():
     )
     model_parser.add_argument(
         "--portal-url",
-        help="Portal base URL for Nous login (default: production portal)"
+        help="Nous 로그인용 portal 기본 URL(기본값: 운영 portal)"
     )
     model_parser.add_argument(
         "--inference-url",
-        help="Inference API base URL for Nous login (default: production inference API)"
+        help="Nous 로그인용 inference API 기본 URL(기본값: 운영 inference API)"
     )
     model_parser.add_argument(
         "--client-id",
         default=None,
-        help="OAuth client id to use for Nous login (default: hermes-cli)"
+        help="Nous 로그인에 사용할 OAuth client id(기본값: hermes-cli)"
     )
     model_parser.add_argument(
         "--scope",
         default=None,
-        help="OAuth scope to request for Nous login"
+        help="Nous 로그인에서 요청할 OAuth scope"
     )
     model_parser.add_argument(
         "--no-browser",
         action="store_true",
-        help="Do not attempt to open the browser automatically during Nous login"
+        help="Nous 로그인 중 브라우저를 자동으로 열지 않음"
     )
     model_parser.add_argument(
         "--timeout",
         type=float,
         default=15.0,
-        help="HTTP request timeout in seconds for Nous login (default: 15)"
+        help="Nous 로그인용 HTTP 요청 타임아웃(초, 기본값: 15)"
     )
     model_parser.add_argument(
         "--ca-bundle",
-        help="Path to CA bundle PEM file for Nous TLS verification"
+        help="Nous TLS 검증용 CA 번들 PEM 파일 경로"
     )
     model_parser.add_argument(
         "--insecure",
         action="store_true",
-        help="Disable TLS verification for Nous login (testing only)"
+        help="Nous 로그인용 TLS 검증 비활성화(테스트 전용)"
     )
     model_parser.set_defaults(func=cmd_model)
 
@@ -4747,44 +4747,44 @@ def main():
     gateway_subparsers = gateway_parser.add_subparsers(dest="gateway_command")
     
     # gateway run (default)
-    gateway_run = gateway_subparsers.add_parser("run", help="Run gateway in foreground (recommended for WSL, Docker, Termux)")
+    gateway_run = gateway_subparsers.add_parser("run", help="게이트웨이를 포그라운드에서 실행(WSL, Docker, Termux 권장)")
     gateway_run.add_argument("-v", "--verbose", action="count", default=0,
-                             help="Increase stderr log verbosity (-v=INFO, -vv=DEBUG)")
+                             help="stderr 로그 상세도 증가(-v=INFO, -vv=DEBUG)")
     gateway_run.add_argument("-q", "--quiet", action="store_true",
-                             help="Suppress all stderr log output")
+                             help="stderr 로그 출력을 모두 숨김")
     gateway_run.add_argument("--replace", action="store_true",
-                             help="Replace any existing gateway instance (useful for systemd)")
+                             help="기존 게이트웨이 인스턴스가 있으면 교체(systemd에서 유용)")
     
     # gateway start
-    gateway_start = gateway_subparsers.add_parser("start", help="Start the installed systemd/launchd background service")
-    gateway_start.add_argument("--system", action="store_true", help="Target the Linux system-level gateway service")
+    gateway_start = gateway_subparsers.add_parser("start", help="설치된 systemd/launchd 백그라운드 서비스 시작")
+    gateway_start.add_argument("--system", action="store_true", help="Linux 시스템 레벨 게이트웨이 서비스 대상")
     
     # gateway stop
-    gateway_stop = gateway_subparsers.add_parser("stop", help="Stop gateway service")
-    gateway_stop.add_argument("--system", action="store_true", help="Target the Linux system-level gateway service")
-    gateway_stop.add_argument("--all", action="store_true", help="Stop ALL gateway processes across all profiles")
+    gateway_stop = gateway_subparsers.add_parser("stop", help="게이트웨이 서비스 중지")
+    gateway_stop.add_argument("--system", action="store_true", help="Linux 시스템 레벨 게이트웨이 서비스 대상")
+    gateway_stop.add_argument("--all", action="store_true", help="모든 프로필의 게이트웨이 프로세스를 전부 중지")
     
     # gateway restart
-    gateway_restart = gateway_subparsers.add_parser("restart", help="Restart gateway service")
-    gateway_restart.add_argument("--system", action="store_true", help="Target the Linux system-level gateway service")
+    gateway_restart = gateway_subparsers.add_parser("restart", help="게이트웨이 서비스 재시작")
+    gateway_restart.add_argument("--system", action="store_true", help="Linux 시스템 레벨 게이트웨이 서비스 대상")
     
     # gateway status
-    gateway_status = gateway_subparsers.add_parser("status", help="Show gateway status")
-    gateway_status.add_argument("--deep", action="store_true", help="Deep status check")
-    gateway_status.add_argument("--system", action="store_true", help="Target the Linux system-level gateway service")
+    gateway_status = gateway_subparsers.add_parser("status", help="게이트웨이 상태 표시")
+    gateway_status.add_argument("--deep", action="store_true", help="심층 상태 점검")
+    gateway_status.add_argument("--system", action="store_true", help="Linux 시스템 레벨 게이트웨이 서비스 대상")
     
     # gateway install
-    gateway_install = gateway_subparsers.add_parser("install", help="Install gateway as a systemd/launchd background service")
-    gateway_install.add_argument("--force", action="store_true", help="Force reinstall")
-    gateway_install.add_argument("--system", action="store_true", help="Install as a Linux system-level service (starts at boot)")
-    gateway_install.add_argument("--run-as-user", dest="run_as_user", help="User account the Linux system service should run as")
+    gateway_install = gateway_subparsers.add_parser("install", help="게이트웨이를 systemd/launchd 백그라운드 서비스로 설치")
+    gateway_install.add_argument("--force", action="store_true", help="강제로 재설치")
+    gateway_install.add_argument("--system", action="store_true", help="Linux 시스템 레벨 서비스로 설치(부팅 시 시작)")
+    gateway_install.add_argument("--run-as-user", dest="run_as_user", help="Linux 시스템 서비스가 실행될 사용자 계정")
     
     # gateway uninstall
-    gateway_uninstall = gateway_subparsers.add_parser("uninstall", help="Uninstall gateway service")
-    gateway_uninstall.add_argument("--system", action="store_true", help="Target the Linux system-level gateway service")
+    gateway_uninstall = gateway_subparsers.add_parser("uninstall", help="게이트웨이 서비스 제거")
+    gateway_uninstall.add_argument("--system", action="store_true", help="Linux 시스템 레벨 게이트웨이 서비스 대상")
 
     # gateway setup
-    gateway_subparsers.add_parser("setup", help="Configure messaging platforms")
+    gateway_subparsers.add_parser("setup", help="메시징 플랫폼 설정")
 
     gateway_parser.set_defaults(func=cmd_gateway)
     
@@ -4802,17 +4802,17 @@ def main():
         nargs="?",
         choices=["model", "tts", "terminal", "gateway", "tools", "agent"],
         default=None,
-        help="Run a specific setup section instead of the full wizard"
+        help="전체 마법사 대신 특정 설정 섹션만 실행"
     )
     setup_parser.add_argument(
         "--non-interactive",
         action="store_true",
-        help="Non-interactive mode (use defaults/env vars)"
+        help="비대화형 모드(기본값/env var 사용)"
     )
     setup_parser.add_argument(
         "--reset",
         action="store_true",
-        help="Reset configuration to defaults"
+        help="설정을 기본값으로 초기화"
     )
     setup_parser.set_defaults(func=cmd_setup)
 
@@ -4838,45 +4838,45 @@ def main():
         "--provider",
         choices=["nous", "openai-codex"],
         default=None,
-        help="Provider to authenticate with (default: nous)"
+        help="인증할 provider(기본값: nous)"
     )
     login_parser.add_argument(
         "--portal-url",
-        help="Portal base URL (default: production portal)"
+        help="Portal 기본 URL(기본값: 운영 portal)"
     )
     login_parser.add_argument(
         "--inference-url",
-        help="Inference API base URL (default: production inference API)"
+        help="추론 API 기본 URL(기본값: 운영 inference API)"
     )
     login_parser.add_argument(
         "--client-id",
         default=None,
-        help="OAuth client id to use (default: hermes-cli)"
+        help="사용할 OAuth client id(기본값: hermes-cli)"
     )
     login_parser.add_argument(
         "--scope",
         default=None,
-        help="OAuth scope to request"
+        help="요청할 OAuth scope"
     )
     login_parser.add_argument(
         "--no-browser",
         action="store_true",
-        help="Do not attempt to open the browser automatically"
+        help="브라우저를 자동으로 열지 않음"
     )
     login_parser.add_argument(
         "--timeout",
         type=float,
         default=15.0,
-        help="HTTP request timeout in seconds (default: 15)"
+        help="HTTP 요청 타임아웃(초, 기본값: 15)"
     )
     login_parser.add_argument(
         "--ca-bundle",
-        help="Path to CA bundle PEM file for TLS verification"
+        help="TLS 검증용 CA 번들 PEM 파일 경로"
     )
     login_parser.add_argument(
         "--insecure",
         action="store_true",
-        help="Disable TLS verification (testing only)"
+        help="TLS 검증 비활성화(테스트 전용)"
     )
     login_parser.set_defaults(func=cmd_login)
 
@@ -4892,7 +4892,7 @@ def main():
         "--provider",
         choices=["nous", "openai-codex"],
         default=None,
-        help="Provider to log out from (default: active provider)"
+        help="로그아웃할 provider(기본값: 현재 활성 provider)"
     )
     logout_parser.set_defaults(func=cmd_logout)
 
@@ -4901,25 +4901,25 @@ def main():
         help="provider 풀 자격 증명 관리",
     )
     auth_subparsers = auth_parser.add_subparsers(dest="auth_action")
-    auth_add = auth_subparsers.add_parser("add", help="Add a pooled credential")
-    auth_add.add_argument("provider", help="Provider id (for example: anthropic, openai-codex, openrouter)")
-    auth_add.add_argument("--type", dest="auth_type", choices=["oauth", "api-key", "api_key"], help="Credential type to add")
-    auth_add.add_argument("--label", help="Optional display label")
-    auth_add.add_argument("--api-key", help="API key value (otherwise prompted securely)")
-    auth_add.add_argument("--portal-url", help="Nous portal base URL")
-    auth_add.add_argument("--inference-url", help="Nous inference base URL")
+    auth_add = auth_subparsers.add_parser("add", help="풀 자격 증명 추가")
+    auth_add.add_argument("provider", help="Provider id(예: anthropic, openai-codex, openrouter)")
+    auth_add.add_argument("--type", dest="auth_type", choices=["oauth", "api-key", "api_key"], help="추가할 자격 증명 유형")
+    auth_add.add_argument("--label", help="선택 표시 라벨")
+    auth_add.add_argument("--api-key", help="API key 값(없으면 안전하게 프롬프트 표시)")
+    auth_add.add_argument("--portal-url", help="Nous portal 기본 URL")
+    auth_add.add_argument("--inference-url", help="Nous inference 기본 URL")
     auth_add.add_argument("--client-id", help="OAuth client id")
-    auth_add.add_argument("--scope", help="OAuth scope override")
-    auth_add.add_argument("--no-browser", action="store_true", help="Do not auto-open a browser for OAuth login")
-    auth_add.add_argument("--timeout", type=float, help="OAuth/network timeout in seconds")
-    auth_add.add_argument("--insecure", action="store_true", help="Disable TLS verification for OAuth login")
-    auth_add.add_argument("--ca-bundle", help="Custom CA bundle for OAuth login")
-    auth_list = auth_subparsers.add_parser("list", help="List pooled credentials")
-    auth_list.add_argument("provider", nargs="?", help="Optional provider filter")
-    auth_remove = auth_subparsers.add_parser("remove", help="Remove a pooled credential by index, id, or label")
+    auth_add.add_argument("--scope", help="OAuth scope 덮어쓰기")
+    auth_add.add_argument("--no-browser", action="store_true", help="OAuth 로그인 때 브라우저를 자동으로 열지 않음")
+    auth_add.add_argument("--timeout", type=float, help="OAuth/네트워크 타임아웃(초)")
+    auth_add.add_argument("--insecure", action="store_true", help="OAuth 로그인용 TLS 검증 비활성화")
+    auth_add.add_argument("--ca-bundle", help="OAuth 로그인용 사용자 지정 CA 번들")
+    auth_list = auth_subparsers.add_parser("list", help="풀 자격 증명 목록 표시")
+    auth_list.add_argument("provider", nargs="?", help="선택 provider 필터")
+    auth_remove = auth_subparsers.add_parser("remove", help="인덱스, id, 라벨로 풀 자격 증명 제거")
     auth_remove.add_argument("provider", help="Provider id")
-    auth_remove.add_argument("target", help="Credential index, entry id, or exact label")
-    auth_reset = auth_subparsers.add_parser("reset", help="Clear exhaustion status for all credentials for a provider")
+    auth_remove.add_argument("target", help="자격 증명 인덱스, 항목 id, 또는 정확한 라벨")
+    auth_reset = auth_subparsers.add_parser("reset", help="provider의 모든 자격 증명 소진 상태 초기화")
     auth_reset.add_argument("provider", help="Provider id")
     auth_parser.set_defaults(func=cmd_auth)
 
@@ -4934,12 +4934,12 @@ def main():
     status_parser.add_argument(
         "--all",
         action="store_true",
-        help="Show all details (redacted for sharing)"
+        help="모든 세부정보 표시(공유용으로 일부 가림)"
     )
     status_parser.add_argument(
         "--deep",
         action="store_true",
-        help="Run deep checks (may take longer)"
+        help="심층 점검 실행(시간이 더 걸릴 수 있음)"
     )
     status_parser.set_defaults(func=cmd_status)
     
@@ -4954,51 +4954,51 @@ def main():
     cron_subparsers = cron_parser.add_subparsers(dest="cron_command")
     
     # cron list
-    cron_list = cron_subparsers.add_parser("list", help="List scheduled jobs")
-    cron_list.add_argument("--all", action="store_true", help="Include disabled jobs")
+    cron_list = cron_subparsers.add_parser("list", help="예약 작업 목록 표시")
+    cron_list.add_argument("--all", action="store_true", help="비활성화된 작업도 포함")
 
     # cron create/add
-    cron_create = cron_subparsers.add_parser("create", aliases=["add"], help="Create a scheduled job")
-    cron_create.add_argument("schedule", help="Schedule like '30m', 'every 2h', or '0 9 * * *'")
-    cron_create.add_argument("prompt", nargs="?", help="Optional self-contained prompt or task instruction")
-    cron_create.add_argument("--name", help="Optional human-friendly job name")
-    cron_create.add_argument("--deliver", help="Delivery target: origin, local, telegram, discord, signal, or platform:chat_id")
-    cron_create.add_argument("--repeat", type=int, help="Optional repeat count")
-    cron_create.add_argument("--skill", dest="skills", action="append", help="Attach a skill. Repeat to add multiple skills.")
-    cron_create.add_argument("--script", help="Path to a Python script whose stdout is injected into the prompt each run")
+    cron_create = cron_subparsers.add_parser("create", aliases=["add"], help="예약 작업 생성")
+    cron_create.add_argument("schedule", help="예: '30m', 'every 2h', '0 9 * * *' 형식의 일정")
+    cron_create.add_argument("prompt", nargs="?", help="선택: 독립 실행형 프롬프트 또는 작업 지시")
+    cron_create.add_argument("--name", help="선택: 사람이 읽기 쉬운 작업 이름")
+    cron_create.add_argument("--deliver", help="전달 대상: origin, local, telegram, discord, signal 또는 platform:chat_id")
+    cron_create.add_argument("--repeat", type=int, help="선택: 반복 횟수")
+    cron_create.add_argument("--skill", dest="skills", action="append", help="스킬 첨부. 여러 개를 붙이려면 반복 지정")
+    cron_create.add_argument("--script", help="실행마다 stdout을 프롬프트에 주입할 Python 스크립트 경로")
 
     # cron edit
-    cron_edit = cron_subparsers.add_parser("edit", help="Edit an existing scheduled job")
-    cron_edit.add_argument("job_id", help="Job ID to edit")
-    cron_edit.add_argument("--schedule", help="New schedule")
-    cron_edit.add_argument("--prompt", help="New prompt/task instruction")
-    cron_edit.add_argument("--name", help="New job name")
-    cron_edit.add_argument("--deliver", help="New delivery target")
-    cron_edit.add_argument("--repeat", type=int, help="New repeat count")
-    cron_edit.add_argument("--skill", dest="skills", action="append", help="Replace the job's skills with this set. Repeat to attach multiple skills.")
-    cron_edit.add_argument("--add-skill", dest="add_skills", action="append", help="Append a skill without replacing the existing list. Repeatable.")
-    cron_edit.add_argument("--remove-skill", dest="remove_skills", action="append", help="Remove a specific attached skill. Repeatable.")
-    cron_edit.add_argument("--clear-skills", action="store_true", help="Remove all attached skills from the job")
-    cron_edit.add_argument("--script", help="Path to a Python script whose stdout is injected into the prompt each run. Pass empty string to clear.")
+    cron_edit = cron_subparsers.add_parser("edit", help="기존 예약 작업 편집")
+    cron_edit.add_argument("job_id", help="편집할 작업 ID")
+    cron_edit.add_argument("--schedule", help="새 일정")
+    cron_edit.add_argument("--prompt", help="새 프롬프트/작업 지시")
+    cron_edit.add_argument("--name", help="새 작업 이름")
+    cron_edit.add_argument("--deliver", help="새 전달 대상")
+    cron_edit.add_argument("--repeat", type=int, help="새 반복 횟수")
+    cron_edit.add_argument("--skill", dest="skills", action="append", help="작업의 스킬 목록을 이 집합으로 교체. 여러 개를 붙이려면 반복 지정")
+    cron_edit.add_argument("--add-skill", dest="add_skills", action="append", help="기존 목록을 바꾸지 않고 스킬 추가. 반복 가능")
+    cron_edit.add_argument("--remove-skill", dest="remove_skills", action="append", help="첨부된 특정 스킬 제거. 반복 가능")
+    cron_edit.add_argument("--clear-skills", action="store_true", help="작업에 붙은 모든 스킬 제거")
+    cron_edit.add_argument("--script", help="실행마다 stdout을 프롬프트에 주입할 Python 스크립트 경로. 비우려면 빈 문자열 전달")
 
     # lifecycle actions
-    cron_pause = cron_subparsers.add_parser("pause", help="Pause a scheduled job")
-    cron_pause.add_argument("job_id", help="Job ID to pause")
+    cron_pause = cron_subparsers.add_parser("pause", help="예약 작업 일시중지")
+    cron_pause.add_argument("job_id", help="일시중지할 작업 ID")
 
-    cron_resume = cron_subparsers.add_parser("resume", help="Resume a paused job")
-    cron_resume.add_argument("job_id", help="Job ID to resume")
+    cron_resume = cron_subparsers.add_parser("resume", help="일시중지된 작업 재개")
+    cron_resume.add_argument("job_id", help="재개할 작업 ID")
 
-    cron_run = cron_subparsers.add_parser("run", help="Run a job on the next scheduler tick")
-    cron_run.add_argument("job_id", help="Job ID to trigger")
+    cron_run = cron_subparsers.add_parser("run", help="다음 스케줄러 tick에서 작업 실행")
+    cron_run.add_argument("job_id", help="실행할 작업 ID")
 
-    cron_remove = cron_subparsers.add_parser("remove", aliases=["rm", "delete"], help="Remove a scheduled job")
-    cron_remove.add_argument("job_id", help="Job ID to remove")
+    cron_remove = cron_subparsers.add_parser("remove", aliases=["rm", "delete"], help="예약 작업 제거")
+    cron_remove.add_argument("job_id", help="제거할 작업 ID")
 
     # cron status
-    cron_subparsers.add_parser("status", help="Check if cron scheduler is running")
+    cron_subparsers.add_parser("status", help="크론 스케줄러 실행 상태 확인")
 
     # cron tick (mostly for debugging)
-    cron_subparsers.add_parser("tick", help="Run due jobs once and exit")
+    cron_subparsers.add_parser("tick", help="실행 시각이 된 작업을 한 번 실행하고 종료")
 
     cron_parser.set_defaults(func=cmd_cron)
 
@@ -5012,24 +5012,24 @@ def main():
     )
     webhook_subparsers = webhook_parser.add_subparsers(dest="webhook_action")
 
-    wh_sub = webhook_subparsers.add_parser("subscribe", aliases=["add"], help="Create a webhook subscription")
-    wh_sub.add_argument("name", help="Route name (used in URL: /webhooks/<name>)")
-    wh_sub.add_argument("--prompt", default="", help="Prompt template with {dot.notation} payload refs")
-    wh_sub.add_argument("--events", default="", help="Comma-separated event types to accept")
-    wh_sub.add_argument("--description", default="", help="What this subscription does")
-    wh_sub.add_argument("--skills", default="", help="Comma-separated skill names to load")
-    wh_sub.add_argument("--deliver", default="log", help="Delivery target: log, telegram, discord, slack, etc.")
-    wh_sub.add_argument("--deliver-chat-id", default="", help="Target chat ID for cross-platform delivery")
-    wh_sub.add_argument("--secret", default="", help="HMAC secret (auto-generated if omitted)")
+    wh_sub = webhook_subparsers.add_parser("subscribe", aliases=["add"], help="웹훅 구독 생성")
+    wh_sub.add_argument("name", help="라우트 이름(URL에서 /webhooks/<name>에 사용)")
+    wh_sub.add_argument("--prompt", default="", help="{dot.notation} payload 참조를 포함한 프롬프트 템플릿")
+    wh_sub.add_argument("--events", default="", help="허용할 이벤트 유형(쉼표 구분)")
+    wh_sub.add_argument("--description", default="", help="이 구독의 용도 설명")
+    wh_sub.add_argument("--skills", default="", help="로드할 스킬 이름(쉼표 구분)")
+    wh_sub.add_argument("--deliver", default="log", help="전달 대상: log, telegram, discord, slack 등")
+    wh_sub.add_argument("--deliver-chat-id", default="", help="크로스플랫폼 전달 대상 chat ID")
+    wh_sub.add_argument("--secret", default="", help="HMAC 시크릿(생략 시 자동 생성)")
 
-    webhook_subparsers.add_parser("list", aliases=["ls"], help="List all dynamic subscriptions")
+    webhook_subparsers.add_parser("list", aliases=["ls"], help="동적 구독 전체 목록 표시")
 
-    wh_rm = webhook_subparsers.add_parser("remove", aliases=["rm"], help="Remove a subscription")
-    wh_rm.add_argument("name", help="Subscription name to remove")
+    wh_rm = webhook_subparsers.add_parser("remove", aliases=["rm"], help="구독 제거")
+    wh_rm.add_argument("name", help="제거할 구독 이름")
 
-    wh_test = webhook_subparsers.add_parser("test", help="Send a test POST to a webhook route")
-    wh_test.add_argument("name", help="Subscription name to test")
-    wh_test.add_argument("--payload", default="", help="JSON payload to send (default: test payload)")
+    wh_test = webhook_subparsers.add_parser("test", help="웹훅 라우트로 테스트 POST 전송")
+    wh_test.add_argument("name", help="테스트할 구독 이름")
+    wh_test.add_argument("--payload", default="", help="전송할 JSON payload(기본값: 테스트 payload)")
 
     webhook_parser.set_defaults(func=cmd_webhook)
 
@@ -5044,7 +5044,7 @@ def main():
     doctor_parser.add_argument(
         "--fix",
         action="store_true",
-        help="Attempt to fix issues automatically"
+        help="문제를 자동으로 수정 시도"
     )
     doctor_parser.set_defaults(func=cmd_doctor)
 
@@ -5060,7 +5060,7 @@ def main():
     dump_parser.add_argument(
         "--show-keys",
         action="store_true",
-        help="Show redacted API key prefixes (first/last 4 chars) instead of just set/not set"
+        help="단순 설정 여부 대신 API key 앞/뒤 4글자를 가려서 표시"
     )
     dump_parser.set_defaults(func=cmd_dump)
 
@@ -5075,29 +5075,29 @@ def main():
                     "공유 가능한 URL을 받을 수 있습니다.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""\
-Examples:
-    hermes debug share              Upload debug report and print URL
-    hermes debug share --lines 500  Include more log lines
-    hermes debug share --expire 30  Keep paste for 30 days
-    hermes debug share --local      Print report locally (no upload)
+예시:
+    hermes debug share              디버그 리포트를 업로드하고 URL 출력
+    hermes debug share --lines 500  더 많은 로그 줄 포함
+    hermes debug share --expire 30  paste를 30일간 유지
+    hermes debug share --local      로컬에만 리포트 출력(업로드 안 함)
 """,
     )
     debug_sub = debug_parser.add_subparsers(dest="debug_command")
     share_parser = debug_sub.add_parser(
         "share",
-        help="Upload debug report to a paste service and print a shareable URL",
+        help="디버그 리포트를 paste 서비스에 업로드하고 공유 URL 출력",
     )
     share_parser.add_argument(
         "--lines", type=int, default=200,
-        help="Number of log lines to include per log file (default: 200)",
+        help="로그 파일마다 포함할 줄 수(기본값: 200)",
     )
     share_parser.add_argument(
         "--expire", type=int, default=7,
-        help="Paste expiry in days (default: 7)",
+        help="paste 만료 기간(일, 기본값: 7)",
     )
     share_parser.add_argument(
         "--local", action="store_true",
-        help="Print the report locally instead of uploading",
+        help="업로드 대신 로컬에 리포트 출력",
     )
     debug_parser.set_defaults(func=cmd_debug)
 
@@ -5113,16 +5113,16 @@ Examples:
     )
     backup_parser.add_argument(
         "-o", "--output",
-        help="Output path for the zip file (default: ~/hermes-backup-<timestamp>.zip)"
+        help="zip 파일 출력 경로(기본값: ~/hermes-backup-<timestamp>.zip)"
     )
     backup_parser.add_argument(
         "-q", "--quick",
         action="store_true",
-        help="Quick snapshot: only critical state files (config, state.db, .env, auth, cron)"
+        help="빠른 스냅샷: 핵심 상태 파일만 포함(config, state.db, .env, auth, cron)"
     )
     backup_parser.add_argument(
         "-l", "--label",
-        help="Label for the snapshot (only used with --quick)"
+        help="스냅샷 라벨(--quick 사용 시에만 적용)"
     )
     backup_parser.set_defaults(func=cmd_backup)
 
@@ -5136,12 +5136,12 @@ Examples:
     )
     import_parser.add_argument(
         "zipfile",
-        help="Path to the backup zip file"
+        help="백업 zip 파일 경로"
     )
     import_parser.add_argument(
         "--force", "-f",
         action="store_true",
-        help="Overwrite existing files without confirmation"
+        help="확인 없이 기존 파일 덮어쓰기"
     )
     import_parser.set_defaults(func=cmd_import)
 
@@ -5156,27 +5156,27 @@ Examples:
     config_subparsers = config_parser.add_subparsers(dest="config_command")
     
     # config show (default)
-    config_subparsers.add_parser("show", help="Show current configuration")
+    config_subparsers.add_parser("show", help="현재 설정 표시")
     
     # config edit
-    config_subparsers.add_parser("edit", help="Open config file in editor")
+    config_subparsers.add_parser("edit", help="에디터에서 config 파일 열기")
     
     # config set
-    config_set = config_subparsers.add_parser("set", help="Set a configuration value")
-    config_set.add_argument("key", nargs="?", help="Configuration key (e.g., model, terminal.backend)")
-    config_set.add_argument("value", nargs="?", help="Value to set")
+    config_set = config_subparsers.add_parser("set", help="설정값 지정")
+    config_set.add_argument("key", nargs="?", help="설정 키(예: model, terminal.backend)")
+    config_set.add_argument("value", nargs="?", help="설정할 값")
     
     # config path
-    config_subparsers.add_parser("path", help="Print config file path")
+    config_subparsers.add_parser("path", help="config 파일 경로 출력")
     
     # config env-path
-    config_subparsers.add_parser("env-path", help="Print .env file path")
+    config_subparsers.add_parser("env-path", help=".env 파일 경로 출력")
     
     # config check
-    config_subparsers.add_parser("check", help="Check for missing/outdated config")
+    config_subparsers.add_parser("check", help="누락되었거나 오래된 config 점검")
     
     # config migrate
-    config_subparsers.add_parser("migrate", help="Update config with new options")
+    config_subparsers.add_parser("migrate", help="새 옵션으로 config 업데이트")
     
     config_parser.set_defaults(func=cmd_config)
     
@@ -5190,17 +5190,17 @@ Examples:
     )
     pairing_sub = pairing_parser.add_subparsers(dest="pairing_action")
 
-    pairing_sub.add_parser("list", help="Show pending + approved users")
+    pairing_sub.add_parser("list", help="대기 중 + 승인된 사용자 표시")
 
-    pairing_approve_parser = pairing_sub.add_parser("approve", help="Approve a pairing code")
-    pairing_approve_parser.add_argument("platform", help="Platform name (telegram, discord, slack, whatsapp)")
-    pairing_approve_parser.add_argument("code", help="Pairing code to approve")
+    pairing_approve_parser = pairing_sub.add_parser("approve", help="페어링 코드 승인")
+    pairing_approve_parser.add_argument("platform", help="플랫폼 이름(telegram, discord, slack, whatsapp)")
+    pairing_approve_parser.add_argument("code", help="승인할 페어링 코드")
 
-    pairing_revoke_parser = pairing_sub.add_parser("revoke", help="Revoke user access")
-    pairing_revoke_parser.add_argument("platform", help="Platform name")
-    pairing_revoke_parser.add_argument("user_id", help="User ID to revoke")
+    pairing_revoke_parser = pairing_sub.add_parser("revoke", help="사용자 접근 권한 철회")
+    pairing_revoke_parser.add_argument("platform", help="플랫폼 이름")
+    pairing_revoke_parser.add_argument("user_id", help="철회할 사용자 ID")
 
-    pairing_sub.add_parser("clear-pending", help="Clear all pending codes")
+    pairing_sub.add_parser("clear-pending", help="대기 중인 코드 모두 비우기")
 
     def cmd_pairing(args):
         from hermes_cli.pairing import pairing_command
@@ -5218,65 +5218,65 @@ Examples:
     )
     skills_subparsers = skills_parser.add_subparsers(dest="skills_action")
 
-    skills_browse = skills_subparsers.add_parser("browse", help="Browse all available skills (paginated)")
-    skills_browse.add_argument("--page", type=int, default=1, help="Page number (default: 1)")
-    skills_browse.add_argument("--size", type=int, default=20, help="Results per page (default: 20)")
+    skills_browse = skills_subparsers.add_parser("browse", help="사용 가능한 스킬 전체 둘러보기(페이지 단위)")
+    skills_browse.add_argument("--page", type=int, default=1, help="페이지 번호(기본값: 1)")
+    skills_browse.add_argument("--size", type=int, default=20, help="페이지당 결과 수(기본값: 20)")
     skills_browse.add_argument("--source", default="all",
                                choices=["all", "official", "skills-sh", "well-known", "github", "clawhub", "lobehub"],
-                               help="Filter by source (default: all)")
+                               help="source로 필터링(기본값: all)")
 
-    skills_search = skills_subparsers.add_parser("search", help="Search skill registries")
-    skills_search.add_argument("query", help="Search query")
+    skills_search = skills_subparsers.add_parser("search", help="스킬 레지스트리 검색")
+    skills_search.add_argument("query", help="검색어")
     skills_search.add_argument("--source", default="all", choices=["all", "official", "skills-sh", "well-known", "github", "clawhub", "lobehub"])
-    skills_search.add_argument("--limit", type=int, default=10, help="Max results")
+    skills_search.add_argument("--limit", type=int, default=10, help="최대 결과 수")
 
-    skills_install = skills_subparsers.add_parser("install", help="Install a skill")
-    skills_install.add_argument("identifier", help="Skill identifier (e.g. openai/skills/skill-creator)")
-    skills_install.add_argument("--category", default="", help="Category folder to install into")
-    skills_install.add_argument("--force", action="store_true", help="Install despite blocked scan verdict")
-    skills_install.add_argument("--yes", "-y", action="store_true", help="Skip confirmation prompt (needed in TUI mode)")
+    skills_install = skills_subparsers.add_parser("install", help="스킬 설치")
+    skills_install.add_argument("identifier", help="스킬 식별자(예: openai/skills/skill-creator)")
+    skills_install.add_argument("--category", default="", help="설치할 category 폴더")
+    skills_install.add_argument("--force", action="store_true", help="차단 스캔 판정이 있어도 설치")
+    skills_install.add_argument("--yes", "-y", action="store_true", help="확인 프롬프트 건너뛰기(TUI 모드에서 필요)")
 
-    skills_inspect = skills_subparsers.add_parser("inspect", help="Preview a skill without installing")
-    skills_inspect.add_argument("identifier", help="Skill identifier")
+    skills_inspect = skills_subparsers.add_parser("inspect", help="설치하지 않고 스킬 미리보기")
+    skills_inspect.add_argument("identifier", help="스킬 식별자")
 
-    skills_list = skills_subparsers.add_parser("list", help="List installed skills")
+    skills_list = skills_subparsers.add_parser("list", help="설치된 스킬 목록 표시")
     skills_list.add_argument("--source", default="all", choices=["all", "hub", "builtin", "local"])
 
-    skills_check = skills_subparsers.add_parser("check", help="Check installed hub skills for updates")
-    skills_check.add_argument("name", nargs="?", help="Specific skill to check (default: all)")
+    skills_check = skills_subparsers.add_parser("check", help="설치된 hub 스킬 업데이트 점검")
+    skills_check.add_argument("name", nargs="?", help="점검할 특정 스킬(기본값: 전체)")
 
-    skills_update = skills_subparsers.add_parser("update", help="Update installed hub skills")
-    skills_update.add_argument("name", nargs="?", help="Specific skill to update (default: all outdated skills)")
+    skills_update = skills_subparsers.add_parser("update", help="설치된 hub 스킬 업데이트")
+    skills_update.add_argument("name", nargs="?", help="업데이트할 특정 스킬(기본값: 오래된 스킬 전체)")
 
-    skills_audit = skills_subparsers.add_parser("audit", help="Re-scan installed hub skills")
-    skills_audit.add_argument("name", nargs="?", help="Specific skill to audit (default: all)")
+    skills_audit = skills_subparsers.add_parser("audit", help="설치된 hub 스킬 재스캔")
+    skills_audit.add_argument("name", nargs="?", help="감사할 특정 스킬(기본값: 전체)")
 
-    skills_uninstall = skills_subparsers.add_parser("uninstall", help="Remove a hub-installed skill")
-    skills_uninstall.add_argument("name", help="Skill name to remove")
+    skills_uninstall = skills_subparsers.add_parser("uninstall", help="hub 설치 스킬 제거")
+    skills_uninstall.add_argument("name", help="제거할 스킬 이름")
 
-    skills_publish = skills_subparsers.add_parser("publish", help="Publish a skill to a registry")
-    skills_publish.add_argument("skill_path", help="Path to skill directory")
-    skills_publish.add_argument("--to", default="github", choices=["github", "clawhub"], help="Target registry")
-    skills_publish.add_argument("--repo", default="", help="Target GitHub repo (e.g. openai/skills)")
+    skills_publish = skills_subparsers.add_parser("publish", help="레지스트리에 스킬 게시")
+    skills_publish.add_argument("skill_path", help="스킬 디렉터리 경로")
+    skills_publish.add_argument("--to", default="github", choices=["github", "clawhub"], help="대상 레지스트리")
+    skills_publish.add_argument("--repo", default="", help="대상 GitHub repo(예: openai/skills)")
 
-    skills_snapshot = skills_subparsers.add_parser("snapshot", help="Export/import skill configurations")
+    skills_snapshot = skills_subparsers.add_parser("snapshot", help="스킬 설정 내보내기/가져오기")
     snapshot_subparsers = skills_snapshot.add_subparsers(dest="snapshot_action")
-    snap_export = snapshot_subparsers.add_parser("export", help="Export installed skills to a file")
-    snap_export.add_argument("output", help="Output JSON file path (use - for stdout)")
-    snap_import = snapshot_subparsers.add_parser("import", help="Import and install skills from a file")
-    snap_import.add_argument("input", help="Input JSON file path")
-    snap_import.add_argument("--force", action="store_true", help="Force install despite caution verdict")
+    snap_export = snapshot_subparsers.add_parser("export", help="설치된 스킬을 파일로 내보내기")
+    snap_export.add_argument("output", help="출력 JSON 파일 경로(stdout은 - 사용)")
+    snap_import = snapshot_subparsers.add_parser("import", help="파일에서 스킬을 가져와 설치")
+    snap_import.add_argument("input", help="입력 JSON 파일 경로")
+    snap_import.add_argument("--force", action="store_true", help="주의 판정이 있어도 강제로 설치")
 
-    skills_tap = skills_subparsers.add_parser("tap", help="Manage skill sources")
+    skills_tap = skills_subparsers.add_parser("tap", help="스킬 source 관리")
     tap_subparsers = skills_tap.add_subparsers(dest="tap_action")
-    tap_subparsers.add_parser("list", help="List configured taps")
-    tap_add = tap_subparsers.add_parser("add", help="Add a GitHub repo as skill source")
-    tap_add.add_argument("repo", help="GitHub repo (e.g. owner/repo)")
-    tap_rm = tap_subparsers.add_parser("remove", help="Remove a tap")
-    tap_rm.add_argument("name", help="Tap name to remove")
+    tap_subparsers.add_parser("list", help="설정된 tap 목록 표시")
+    tap_add = tap_subparsers.add_parser("add", help="GitHub repo를 스킬 source로 추가")
+    tap_add.add_argument("repo", help="GitHub repo(예: owner/repo)")
+    tap_rm = tap_subparsers.add_parser("remove", help="tap 제거")
+    tap_rm.add_argument("name", help="제거할 tap 이름")
 
     # config sub-action: interactive enable/disable
-    skills_subparsers.add_parser("config", help="Interactive skill configuration — enable/disable individual skills")
+    skills_subparsers.add_parser("config", help="대화형 스킬 설정 — 개별 스킬 활성화/비활성화")
 
     def cmd_skills(args):
         # Route 'config' action to skills_config module
@@ -5301,38 +5301,38 @@ Examples:
     plugins_subparsers = plugins_parser.add_subparsers(dest="plugins_action")
 
     plugins_install = plugins_subparsers.add_parser(
-        "install", help="Install a plugin from a Git URL or owner/repo"
+        "install", help="Git URL 또는 owner/repo로 플러그인 설치"
     )
     plugins_install.add_argument(
         "identifier",
-        help="Git URL or owner/repo shorthand (e.g. anpicasso/hermes-plugin-chrome-profiles)",
+        help="Git URL 또는 owner/repo 축약형(예: anpicasso/hermes-plugin-chrome-profiles)",
     )
     plugins_install.add_argument(
         "--force", "-f", action="store_true",
-        help="Remove existing plugin and reinstall",
+        help="기존 플러그인을 제거하고 재설치",
     )
 
     plugins_update = plugins_subparsers.add_parser(
-        "update", help="Pull latest changes for an installed plugin"
+        "update", help="설치된 플러그인의 최신 변경 사항 가져오기"
     )
-    plugins_update.add_argument("name", help="Plugin name to update")
+    plugins_update.add_argument("name", help="업데이트할 플러그인 이름")
 
     plugins_remove = plugins_subparsers.add_parser(
-        "remove", aliases=["rm", "uninstall"], help="Remove an installed plugin"
+        "remove", aliases=["rm", "uninstall"], help="설치된 플러그인 제거"
     )
-    plugins_remove.add_argument("name", help="Plugin directory name to remove")
+    plugins_remove.add_argument("name", help="제거할 플러그인 디렉터리 이름")
 
-    plugins_subparsers.add_parser("list", aliases=["ls"], help="List installed plugins")
+    plugins_subparsers.add_parser("list", aliases=["ls"], help="설치된 플러그인 목록 표시")
 
     plugins_enable = plugins_subparsers.add_parser(
-        "enable", help="Enable a disabled plugin"
+        "enable", help="비활성화된 플러그인 활성화"
     )
-    plugins_enable.add_argument("name", help="Plugin name to enable")
+    plugins_enable.add_argument("name", help="활성화할 플러그인 이름")
 
     plugins_disable = plugins_subparsers.add_parser(
-        "disable", help="Disable a plugin without removing it"
+        "disable", help="플러그인을 제거하지 않고 비활성화"
     )
-    plugins_disable.add_argument("name", help="Plugin name to disable")
+    plugins_disable.add_argument("name", help="비활성화할 플러그인 이름")
 
     def cmd_plugins(args):
         from hermes_cli.plugins_cmd import plugins_command
@@ -5374,9 +5374,9 @@ Examples:
         ),
     )
     memory_sub = memory_parser.add_subparsers(dest="memory_command")
-    memory_sub.add_parser("setup", help="Interactive provider selection and configuration")
-    memory_sub.add_parser("status", help="Show current memory provider config")
-    memory_sub.add_parser("off", help="Disable external provider (built-in only)")
+    memory_sub.add_parser("setup", help="대화형 provider 선택 및 설정")
+    memory_sub.add_parser("status", help="현재 memory provider 설정 표시")
+    memory_sub.add_parser("off", help="외부 provider 비활성화(내장만 사용)")
 
     def cmd_memory(args):
         sub = getattr(args, "memory_command", None)
@@ -5411,46 +5411,46 @@ Examples:
     tools_parser.add_argument(
         "--summary",
         action="store_true",
-        help="Print a summary of enabled tools per platform and exit"
+        help="플랫폼별 활성 도구 요약을 출력하고 종료"
     )
     tools_sub = tools_parser.add_subparsers(dest="tools_action")
 
     # hermes tools list [--platform cli]
     tools_list_p = tools_sub.add_parser(
         "list",
-        help="Show all tools and their enabled/disabled status",
+        help="모든 도구와 활성/비활성 상태 표시",
     )
     tools_list_p.add_argument(
         "--platform", default="cli",
-        help="Platform to show (default: cli)",
+        help="표시할 플랫폼(기본값: cli)",
     )
 
     # hermes tools disable <name...> [--platform cli]
     tools_disable_p = tools_sub.add_parser(
         "disable",
-        help="Disable toolsets or MCP tools",
+        help="toolset 또는 MCP 도구 비활성화",
     )
     tools_disable_p.add_argument(
         "names", nargs="+", metavar="NAME",
-        help="Toolset name (e.g. web) or MCP tool in server:tool form",
+        help="Toolset 이름(예: web) 또는 server:tool 형식의 MCP 도구",
     )
     tools_disable_p.add_argument(
         "--platform", default="cli",
-        help="Platform to apply to (default: cli)",
+        help="적용할 플랫폼(기본값: cli)",
     )
 
     # hermes tools enable <name...> [--platform cli]
     tools_enable_p = tools_sub.add_parser(
         "enable",
-        help="Enable toolsets or MCP tools",
+        help="toolset 또는 MCP 도구 활성화",
     )
     tools_enable_p.add_argument(
         "names", nargs="+", metavar="NAME",
-        help="Toolset name or MCP tool in server:tool form",
+        help="Toolset 이름 또는 server:tool 형식의 MCP 도구",
     )
     tools_enable_p.add_argument(
         "--platform", default="cli",
-        help="Platform to apply to (default: cli)",
+        help="적용할 플랫폼(기본값: cli)",
     )
 
     def cmd_tools(args):
@@ -5481,32 +5481,32 @@ Examples:
 
     mcp_serve_p = mcp_sub.add_parser(
         "serve",
-        help="Run Hermes as an MCP server (expose conversations to other agents)",
+        help="Hermes를 MCP 서버로 실행(대화를 다른 에이전트에 노출)",
     )
     mcp_serve_p.add_argument(
         "-v", "--verbose", action="store_true",
-        help="Enable verbose logging on stderr",
+        help="stderr에 자세한 로그 활성화",
     )
 
-    mcp_add_p = mcp_sub.add_parser("add", help="Add an MCP server (discovery-first install)")
-    mcp_add_p.add_argument("name", help="Server name (used as config key)")
-    mcp_add_p.add_argument("--url", help="HTTP/SSE endpoint URL")
-    mcp_add_p.add_argument("--command", help="Stdio command (e.g. npx)")
-    mcp_add_p.add_argument("--args", nargs="*", default=[], help="Arguments for stdio command")
-    mcp_add_p.add_argument("--auth", choices=["oauth", "header"], help="Auth method")
-    mcp_add_p.add_argument("--preset", help="Known MCP preset name")
-    mcp_add_p.add_argument("--env", nargs="*", default=[], help="Environment variables for stdio servers (KEY=VALUE)")
+    mcp_add_p = mcp_sub.add_parser("add", help="MCP 서버 추가(discovery-first 설치)")
+    mcp_add_p.add_argument("name", help="서버 이름(config 키로 사용)")
+    mcp_add_p.add_argument("--url", help="HTTP/SSE 엔드포인트 URL")
+    mcp_add_p.add_argument("--command", help="stdio 명령어(예: npx)")
+    mcp_add_p.add_argument("--args", nargs="*", default=[], help="stdio 명령어 인자")
+    mcp_add_p.add_argument("--auth", choices=["oauth", "header"], help="인증 방식")
+    mcp_add_p.add_argument("--preset", help="알려진 MCP preset 이름")
+    mcp_add_p.add_argument("--env", nargs="*", default=[], help="stdio 서버용 환경 변수(KEY=VALUE)")
 
-    mcp_rm_p = mcp_sub.add_parser("remove", aliases=["rm"], help="Remove an MCP server")
-    mcp_rm_p.add_argument("name", help="Server name to remove")
+    mcp_rm_p = mcp_sub.add_parser("remove", aliases=["rm"], help="MCP 서버 제거")
+    mcp_rm_p.add_argument("name", help="제거할 서버 이름")
 
-    mcp_sub.add_parser("list", aliases=["ls"], help="List configured MCP servers")
+    mcp_sub.add_parser("list", aliases=["ls"], help="설정된 MCP 서버 목록 표시")
 
-    mcp_test_p = mcp_sub.add_parser("test", help="Test MCP server connection")
-    mcp_test_p.add_argument("name", help="Server name to test")
+    mcp_test_p = mcp_sub.add_parser("test", help="MCP 서버 연결 테스트")
+    mcp_test_p.add_argument("name", help="테스트할 서버 이름")
 
-    mcp_cfg_p = mcp_sub.add_parser("configure", aliases=["config"], help="Toggle tool selection")
-    mcp_cfg_p.add_argument("name", help="Server name to configure")
+    mcp_cfg_p = mcp_sub.add_parser("configure", aliases=["config"], help="도구 선택 토글")
+    mcp_cfg_p.add_argument("name", help="설정할 서버 이름")
 
     def cmd_mcp(args):
         from hermes_cli.mcp_config import mcp_command
@@ -5524,36 +5524,36 @@ Examples:
     )
     sessions_subparsers = sessions_parser.add_subparsers(dest="sessions_action")
 
-    sessions_list = sessions_subparsers.add_parser("list", help="List recent sessions")
-    sessions_list.add_argument("--source", help="Filter by source (cli, telegram, discord, etc.)")
-    sessions_list.add_argument("--limit", type=int, default=20, help="Max sessions to show")
+    sessions_list = sessions_subparsers.add_parser("list", help="최근 세션 목록 표시")
+    sessions_list.add_argument("--source", help="source로 필터링(cli, telegram, discord 등)")
+    sessions_list.add_argument("--limit", type=int, default=20, help="표시할 최대 세션 수")
 
-    sessions_export = sessions_subparsers.add_parser("export", help="Export sessions to a JSONL file")
-    sessions_export.add_argument("output", help="Output JSONL file path (use - for stdout)")
-    sessions_export.add_argument("--source", help="Filter by source")
-    sessions_export.add_argument("--session-id", help="Export a specific session")
+    sessions_export = sessions_subparsers.add_parser("export", help="세션을 JSONL 파일로 내보내기")
+    sessions_export.add_argument("output", help="출력 JSONL 파일 경로(stdout은 - 사용)")
+    sessions_export.add_argument("--source", help="source로 필터링")
+    sessions_export.add_argument("--session-id", help="특정 세션 내보내기")
 
-    sessions_delete = sessions_subparsers.add_parser("delete", help="Delete a specific session")
-    sessions_delete.add_argument("session_id", help="Session ID to delete")
-    sessions_delete.add_argument("--yes", "-y", action="store_true", help="Skip confirmation")
+    sessions_delete = sessions_subparsers.add_parser("delete", help="특정 세션 삭제")
+    sessions_delete.add_argument("session_id", help="삭제할 세션 ID")
+    sessions_delete.add_argument("--yes", "-y", action="store_true", help="확인 건너뛰기")
 
-    sessions_prune = sessions_subparsers.add_parser("prune", help="Delete old sessions")
-    sessions_prune.add_argument("--older-than", type=int, default=90, help="Delete sessions older than N days (default: 90)")
-    sessions_prune.add_argument("--source", help="Only prune sessions from this source")
-    sessions_prune.add_argument("--yes", "-y", action="store_true", help="Skip confirmation")
+    sessions_prune = sessions_subparsers.add_parser("prune", help="오래된 세션 삭제")
+    sessions_prune.add_argument("--older-than", type=int, default=90, help="N일보다 오래된 세션 삭제(기본값: 90)")
+    sessions_prune.add_argument("--source", help="이 source의 세션만 정리")
+    sessions_prune.add_argument("--yes", "-y", action="store_true", help="확인 건너뛰기")
 
-    sessions_subparsers.add_parser("stats", help="Show session store statistics")
+    sessions_subparsers.add_parser("stats", help="세션 저장소 통계 표시")
 
-    sessions_rename = sessions_subparsers.add_parser("rename", help="Set or change a session's title")
-    sessions_rename.add_argument("session_id", help="Session ID to rename")
-    sessions_rename.add_argument("title", nargs="+", help="New title for the session")
+    sessions_rename = sessions_subparsers.add_parser("rename", help="세션 제목 지정 또는 변경")
+    sessions_rename.add_argument("session_id", help="이름을 바꿀 세션 ID")
+    sessions_rename.add_argument("title", nargs="+", help="세션의 새 제목")
 
     sessions_browse = sessions_subparsers.add_parser(
         "browse",
-        help="Interactive session picker — browse, search, and resume sessions",
+        help="대화형 세션 선택기 — 탐색, 검색, 이어서 열기",
     )
-    sessions_browse.add_argument("--source", help="Filter by source (cli, telegram, discord, etc.)")
-    sessions_browse.add_argument("--limit", type=int, default=50, help="Max sessions to load (default: 50)")
+    sessions_browse.add_argument("--source", help="source로 필터링(cli, telegram, discord 등)")
+    sessions_browse.add_argument("--limit", type=int, default=50, help="불러올 최대 세션 수(기본값: 50)")
 
     def _confirm_prompt(prompt: str) -> bool:
         """Prompt for y/N confirmation, safe against non-TTY environments."""
@@ -5726,8 +5726,8 @@ Examples:
         help="사용량 인사이트와 분석 표시",
         description="세션 기록을 분석해 토큰 사용량, 비용, 도구 패턴, 활동 추세를 표시"
     )
-    insights_parser.add_argument("--days", type=int, default=30, help="Number of days to analyze (default: 30)")
-    insights_parser.add_argument("--source", help="Filter by platform (cli, telegram, discord, etc.)")
+    insights_parser.add_argument("--days", type=int, default=30, help="분석할 일 수(기본값: 30)")
+    insights_parser.add_argument("--source", help="플랫폼으로 필터링(cli, telegram, discord 등)")
 
     def cmd_insights(args):
         try:
@@ -5757,71 +5757,71 @@ Examples:
     # claw migrate
     claw_migrate = claw_subparsers.add_parser(
         "migrate",
-        help="Migrate from OpenClaw to Hermes",
-        description="Import settings, memories, skills, and API keys from an OpenClaw installation. "
-                    "Always shows a preview before making changes."
+        help="OpenClaw에서 Hermes로 마이그레이션",
+        description="OpenClaw 설치본에서 설정, memory, 스킬, API key를 가져옵니다. "
+                    "변경 전에 항상 미리보기를 보여줍니다."
     )
     claw_migrate.add_argument(
         "--source",
-        help="Path to OpenClaw directory (default: ~/.openclaw)"
+        help="OpenClaw 디렉터리 경로(기본값: ~/.openclaw)"
     )
     claw_migrate.add_argument(
         "--dry-run",
         action="store_true",
-        help="Preview only — stop after showing what would be migrated"
+        help="미리보기만 수행 — 무엇이 마이그레이션될지 보여준 뒤 중지"
     )
     claw_migrate.add_argument(
         "--preset",
         choices=["user-data", "full"],
         default="full",
-        help="Migration preset (default: full). 'user-data' excludes secrets"
+        help="마이그레이션 preset(기본값: full). 'user-data'는 시크릿 제외"
     )
     claw_migrate.add_argument(
         "--overwrite",
         action="store_true",
-        help="Overwrite existing files (default: skip conflicts)"
+        help="기존 파일 덮어쓰기(기본값: 충돌 시 건너뜀)"
     )
     claw_migrate.add_argument(
         "--migrate-secrets",
         action="store_true",
-        help="Include allowlisted secrets (TELEGRAM_BOT_TOKEN, API keys, etc.)"
+        help="허용 목록 시크릿 포함(TELEGRAM_BOT_TOKEN, API key 등)"
     )
     claw_migrate.add_argument(
         "--workspace-target",
-        help="Absolute path to copy workspace instructions into"
+        help="workspace 지침을 복사할 절대 경로"
     )
     claw_migrate.add_argument(
         "--skill-conflict",
         choices=["skip", "overwrite", "rename"],
         default="skip",
-        help="How to handle skill name conflicts (default: skip)"
+        help="스킬 이름 충돌 처리 방식(기본값: skip)"
     )
     claw_migrate.add_argument(
         "--yes", "-y",
         action="store_true",
-        help="Skip confirmation prompts"
+        help="확인 프롬프트 건너뛰기"
     )
 
     # claw cleanup
     claw_cleanup = claw_subparsers.add_parser(
         "cleanup",
         aliases=["clean"],
-        help="Archive leftover OpenClaw directories after migration",
-        description="Scan for and archive leftover OpenClaw directories to prevent state fragmentation"
+        help="마이그레이션 후 남은 OpenClaw 디렉터리 보관",
+        description="상태 분산을 막기 위해 남은 OpenClaw 디렉터리를 스캔하고 보관"
     )
     claw_cleanup.add_argument(
         "--source",
-        help="Path to a specific OpenClaw directory to clean up"
+        help="정리할 특정 OpenClaw 디렉터리 경로"
     )
     claw_cleanup.add_argument(
         "--dry-run",
         action="store_true",
-        help="Preview what would be archived without making changes"
+        help="변경 없이 무엇이 보관될지 미리보기"
     )
     claw_cleanup.add_argument(
         "--yes", "-y",
         action="store_true",
-        help="Skip confirmation prompts"
+        help="확인 프롬프트 건너뛰기"
     )
 
     def cmd_claw(args):
@@ -5864,12 +5864,12 @@ Examples:
     uninstall_parser.add_argument(
         "--full",
         action="store_true",
-        help="Full uninstall - remove everything including configs and data"
+        help="전체 제거 - 설정과 데이터까지 모두 삭제"
     )
     uninstall_parser.add_argument(
         "--yes", "-y",
         action="store_true",
-        help="Skip confirmation prompts"
+        help="확인 프롬프트 건너뛰기"
     )
     uninstall_parser.set_defaults(func=cmd_uninstall)
 
@@ -5903,49 +5903,49 @@ Examples:
     )
     profile_subparsers = profile_parser.add_subparsers(dest="profile_action")
 
-    profile_subparsers.add_parser("list", help="List all profiles")
-    profile_use = profile_subparsers.add_parser("use", help="Set sticky default profile")
-    profile_use.add_argument("profile_name", help="Profile name (or 'default')")
+    profile_subparsers.add_parser("list", help="모든 프로필 목록 표시")
+    profile_use = profile_subparsers.add_parser("use", help="고정 기본 프로필 지정")
+    profile_use.add_argument("profile_name", help="프로필 이름(또는 'default')")
 
-    profile_create = profile_subparsers.add_parser("create", help="Create a new profile")
-    profile_create.add_argument("profile_name", help="Profile name (lowercase, alphanumeric)")
+    profile_create = profile_subparsers.add_parser("create", help="새 프로필 생성")
+    profile_create.add_argument("profile_name", help="프로필 이름(소문자, 영숫자)")
     profile_create.add_argument("--clone", action="store_true",
-                                help="Copy config.yaml, .env, SOUL.md from active profile")
+                                help="활성 프로필의 config.yaml, .env, SOUL.md 복사")
     profile_create.add_argument("--clone-all", action="store_true",
-                                help="Full copy of active profile (all state)")
+                                help="활성 프로필 전체 복사(모든 상태 포함)")
     profile_create.add_argument("--clone-from", metavar="SOURCE",
-                                help="Source profile to clone from (default: active)")
+                                help="복사할 원본 프로필(기본값: 활성 프로필)")
     profile_create.add_argument("--no-alias", action="store_true",
-                                help="Skip wrapper script creation")
+                                help="래퍼 스크립트 생성 건너뛰기")
 
-    profile_delete = profile_subparsers.add_parser("delete", help="Delete a profile")
-    profile_delete.add_argument("profile_name", help="Profile to delete")
+    profile_delete = profile_subparsers.add_parser("delete", help="프로필 삭제")
+    profile_delete.add_argument("profile_name", help="삭제할 프로필")
     profile_delete.add_argument("-y", "--yes", action="store_true",
-                                help="Skip confirmation prompt")
+                                help="확인 프롬프트 건너뛰기")
 
-    profile_show = profile_subparsers.add_parser("show", help="Show profile details")
-    profile_show.add_argument("profile_name", help="Profile to show")
+    profile_show = profile_subparsers.add_parser("show", help="프로필 세부정보 표시")
+    profile_show.add_argument("profile_name", help="표시할 프로필")
 
-    profile_alias = profile_subparsers.add_parser("alias", help="Manage wrapper scripts")
-    profile_alias.add_argument("profile_name", help="Profile name")
+    profile_alias = profile_subparsers.add_parser("alias", help="래퍼 스크립트 관리")
+    profile_alias.add_argument("profile_name", help="프로필 이름")
     profile_alias.add_argument("--remove", action="store_true",
-                               help="Remove the wrapper script")
+                               help="래퍼 스크립트 제거")
     profile_alias.add_argument("--name", dest="alias_name", metavar="NAME",
-                               help="Custom alias name (default: profile name)")
+                               help="사용자 지정 alias 이름(기본값: 프로필 이름)")
 
-    profile_rename = profile_subparsers.add_parser("rename", help="Rename a profile")
-    profile_rename.add_argument("old_name", help="Current profile name")
-    profile_rename.add_argument("new_name", help="New profile name")
+    profile_rename = profile_subparsers.add_parser("rename", help="프로필 이름 변경")
+    profile_rename.add_argument("old_name", help="현재 프로필 이름")
+    profile_rename.add_argument("new_name", help="새 프로필 이름")
 
-    profile_export = profile_subparsers.add_parser("export", help="Export a profile to archive")
-    profile_export.add_argument("profile_name", help="Profile to export")
+    profile_export = profile_subparsers.add_parser("export", help="프로필을 아카이브로 내보내기")
+    profile_export.add_argument("profile_name", help="내보낼 프로필")
     profile_export.add_argument("-o", "--output", default=None,
-                                help="Output file (default: <name>.tar.gz)")
+                                help="출력 파일(기본값: <name>.tar.gz)")
 
-    profile_import = profile_subparsers.add_parser("import", help="Import a profile from archive")
-    profile_import.add_argument("archive", help="Path to .tar.gz archive")
+    profile_import = profile_subparsers.add_parser("import", help="아카이브에서 프로필 가져오기")
+    profile_import.add_argument("archive", help=".tar.gz 아카이브 경로")
     profile_import.add_argument("--name", dest="import_name", metavar="NAME",
-                                help="Profile name (default: inferred from archive)")
+                                help="프로필 이름(기본값: 아카이브에서 추론)")
 
     profile_parser.set_defaults(func=cmd_profile)
 
@@ -5958,7 +5958,7 @@ Examples:
     )
     completion_parser.add_argument(
         "shell", nargs="?", default="bash", choices=["bash", "zsh", "fish"],
-        help="Shell type (default: bash)",
+        help="셸 종류(기본값: bash)",
     )
     completion_parser.set_defaults(func=lambda args: cmd_completion(args, parser))
 
@@ -5970,12 +5970,12 @@ Examples:
         help="웹 UI 대시보드 시작",
         description="설정, API key, 세션 관리를 위한 Hermes Agent 웹 대시보드 실행",
     )
-    dashboard_parser.add_argument("--port", type=int, default=9119, help="Port (default 9119)")
-    dashboard_parser.add_argument("--host", default="127.0.0.1", help="Host (default 127.0.0.1)")
-    dashboard_parser.add_argument("--no-open", action="store_true", help="Don't open browser automatically")
+    dashboard_parser.add_argument("--port", type=int, default=9119, help="포트(기본값: 9119)")
+    dashboard_parser.add_argument("--host", default="127.0.0.1", help="호스트(기본값: 127.0.0.1)")
+    dashboard_parser.add_argument("--no-open", action="store_true", help="브라우저를 자동으로 열지 않음")
     dashboard_parser.add_argument(
         "--insecure", action="store_true",
-        help="Allow binding to non-localhost (DANGEROUS: exposes API keys on the network)",
+        help="localhost가 아닌 주소 바인딩 허용(위험: 네트워크에 API key 노출 가능)",
     )
     dashboard_parser.set_defaults(func=cmd_dashboard)
 
@@ -5988,46 +5988,46 @@ Examples:
         description="agent.log / errors.log / gateway.log 조회, tail, 필터링",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""\
-Examples:
-    hermes logs                    Show last 50 lines of agent.log
-    hermes logs -f                 Follow agent.log in real time
-    hermes logs errors             Show last 50 lines of errors.log
-    hermes logs gateway -n 100     Show last 100 lines of gateway.log
-    hermes logs --level WARNING    Only show WARNING and above
-    hermes logs --session abc123   Filter by session ID
-    hermes logs --component tools  Only show tool-related lines
-    hermes logs --since 1h         Lines from the last hour
-    hermes logs --since 30m -f     Follow, starting from 30 min ago
-    hermes logs list               List available log files with sizes
+예시:
+    hermes logs                    agent.log 최근 50줄 표시
+    hermes logs -f                 agent.log를 실시간으로 따라가기
+    hermes logs errors             errors.log 최근 50줄 표시
+    hermes logs gateway -n 100     gateway.log 최근 100줄 표시
+    hermes logs --level WARNING    WARNING 이상만 표시
+    hermes logs --session abc123   세션 ID로 필터링
+    hermes logs --component tools  도구 관련 줄만 표시
+    hermes logs --since 1h         최근 1시간의 줄만 표시
+    hermes logs --since 30m -f     최근 30분부터 시작해 따라가기
+    hermes logs list               사용 가능한 로그 파일과 크기 표시
 """,
     )
     logs_parser.add_argument(
         "log_name", nargs="?", default="agent",
-        help="Log to view: agent (default), errors, gateway, or 'list' to show available files",
+        help="볼 로그: agent(기본값), errors, gateway 또는 사용 가능한 파일 표시용 'list'",
     )
     logs_parser.add_argument(
         "-n", "--lines", type=int, default=50,
-        help="Number of lines to show (default: 50)",
+        help="표시할 줄 수(기본값: 50)",
     )
     logs_parser.add_argument(
         "-f", "--follow", action="store_true",
-        help="Follow the log in real time (like tail -f)",
+        help="로그를 실시간으로 따라가기(tail -f처럼)",
     )
     logs_parser.add_argument(
         "--level", metavar="LEVEL",
-        help="Minimum log level to show (DEBUG, INFO, WARNING, ERROR)",
+        help="표시할 최소 로그 레벨(DEBUG, INFO, WARNING, ERROR)",
     )
     logs_parser.add_argument(
         "--session", metavar="ID",
-        help="Filter lines containing this session ID substring",
+        help="이 세션 ID 부분 문자열이 포함된 줄만 필터링",
     )
     logs_parser.add_argument(
         "--since", metavar="TIME",
-        help="Show lines since TIME ago (e.g. 1h, 30m, 2d)",
+        help="TIME 전부터의 줄만 표시(예: 1h, 30m, 2d)",
     )
     logs_parser.add_argument(
         "--component", metavar="NAME",
-        help="Filter by component: gateway, agent, tools, cli, cron",
+        help="구성요소로 필터링: gateway, agent, tools, cli, cron",
     )
     logs_parser.set_defaults(func=cmd_logs)
 

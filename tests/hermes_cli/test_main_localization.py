@@ -59,6 +59,43 @@ def test_argparse_default_labels_are_localized():
     assert _argparse_korean("show this help message and exit") == "이 도움말을 표시하고 종료"
 
 
+@pytest.mark.parametrize(
+    ("argv", "expected_strings"),
+    [
+        (
+            ["hermes", "gateway", "install", "--help"],
+            ["강제로 재설치", "Linux 시스템 레벨 서비스로 설치", "사용법: hermes gateway install"],
+        ),
+        (
+            ["hermes", "sessions", "browse", "--help"],
+            ["source로 필터링", "불러올 최대 세션 수", "사용법: hermes sessions browse"],
+        ),
+        (
+            ["hermes", "mcp", "add", "--help"],
+            ["서버 이름", "stdio 서버용 환경 변수", "사용법: hermes mcp add"],
+        ),
+        (
+            ["hermes", "profile", "create", "--help"],
+            ["프로필 이름", "래퍼 스크립트 생성 건너뛰기", "사용법: hermes profile create"],
+        ),
+        (
+            ["hermes", "logs", "--help"],
+            ["예시:", "agent.log 최근 50줄 표시", "표시할 최소 로그 레벨"],
+        ),
+    ],
+)
+def test_nested_subcommand_help_is_localized(monkeypatch, capsys, argv, expected_strings):
+    monkeypatch.setattr(sys, "argv", argv)
+    with pytest.raises(SystemExit) as exc:
+        main()
+    assert exc.value.code == 0
+    out = capsys.readouterr().out
+    assert "사용법:" in out
+    assert "옵션:" in out
+    for expected in expected_strings:
+        assert expected in out
+
+
 def test_prompt_provider_choice_fallback_is_localized(monkeypatch, capsys):
     monkeypatch.setattr("builtins.input", lambda _prompt: "")
 

@@ -1,6 +1,8 @@
 import asyncio
 import os
 
+import pytest
+
 from gateway.config import Platform
 from gateway.run import GatewayRunner
 from gateway.session import SessionContext, SessionSource
@@ -8,7 +10,24 @@ from gateway.session_context import (
     get_session_env,
     set_session_vars,
     clear_session_vars,
+    _VAR_MAP,
+    _UNSET,
 )
+
+
+@pytest.fixture(autouse=True)
+def _reset_contextvars():
+    """Reset all session contextvars to _UNSET between tests.
+
+    In production each asyncio.Task gets a fresh context copy where the
+    defaults are _UNSET.  In tests all functions share the same thread
+    context, so a clear_session_vars() from test A (which sets vars to "")
+    would leak into test B.  This fixture ensures each test starts clean.
+    """
+    yield
+    for var in _VAR_MAP.values():
+        # Can't use var.reset() without a token; just set back to sentinel.
+        var.set(_UNSET)
 
 
 def test_set_session_env_sets_contextvars(monkeypatch):
@@ -98,9 +117,11 @@ def test_get_session_env_falls_back_to_os_environ(monkeypatch):
     tokens = set_session_vars(platform="telegram")
     assert get_session_env("HERMES_SESSION_PLATFORM") == "telegram"
 
-    # Restore — should fall back to os.environ again
+    # After clear — should return "" (explicitly cleared), NOT fall back
+    # to os.environ.  This is the fix for #10304: stale os.environ values
+    # must not leak through after a gateway session is cleaned up.
     clear_session_vars(tokens)
-    assert get_session_env("HERMES_SESSION_PLATFORM") == "discord"
+    assert get_session_env("HERMES_SESSION_PLATFORM") == ""
 
 
 def test_get_session_env_default_when_nothing_set(monkeypatch):
@@ -164,9 +185,9 @@ def test_session_key_falls_back_to_os_environ(monkeypatch):
     tokens = set_session_vars(session_key="ctx-session-456")
     assert get_session_env("HERMES_SESSION_KEY") == "ctx-session-456"
 
-    # Restore — should fall back to os.environ
+    # After clear — should return "" (explicitly cleared), not os.environ (#10304)
     clear_session_vars(tokens)
-    assert get_session_env("HERMES_SESSION_KEY") == "env-session-123"
+    assert get_session_env("HERMES_SESSION_KEY") == ""
 
 
 def test_set_session_env_includes_session_key():

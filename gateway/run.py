@@ -3881,6 +3881,18 @@ class GatewayRunner:
                 pass
 
             response = agent_result.get("final_response") or ""
+
+            # Convert the agent's internal "(empty)" sentinel into a
+            # user-friendly message.  "(empty)" means the model failed to
+            # produce visible content after exhausting all retries (nudge,
+            # prefill, empty-retry, fallback).  Sending the raw sentinel
+            # looks like a bug; a short explanation is more helpful.
+            if response == "(empty)":
+                response = (
+                    "⚠️ The model returned no response after processing tool "
+                    "results. This can happen with some models — try again or "
+                    "rephrase your question."
+                )
             agent_messages = agent_result.get("messages", [])
             _response_time = time.time() - _msg_start_time
             _api_calls = agent_result.get("api_calls", 0)
@@ -6900,11 +6912,17 @@ class GatewayRunner:
     })
 
     async def _handle_debug_command(self, event: MessageEvent) -> str:
-        """Handle /debug — upload debug report + logs and return paste URLs."""
+        """Handle /debug — upload debug report (summary only) and return paste URLs.
+
+        Gateway uploads ONLY the summary report (system info + log tails),
+        NOT full log files, to protect conversation privacy.  Users who need
+        full log uploads should use ``hermes debug share`` from the CLI.
+        """
         import asyncio
         from hermes_cli.debug import (
-            _capture_dump, collect_debug_report, _read_full_log,
-            upload_to_pastebin,
+            _capture_dump, collect_debug_report,
+            upload_to_pastebin, _schedule_auto_delete,
+            _GATEWAY_PRIVACY_NOTICE,
         )
 
         loop = asyncio.get_running_loop()
@@ -6913,43 +6931,25 @@ class GatewayRunner:
         def _collect_and_upload():
             dump_text = _capture_dump()
             report = collect_debug_report(log_lines=200, dump_text=dump_text)
-            agent_log = _read_full_log("agent")
-            gateway_log = _read_full_log("gateway")
-
-            if agent_log:
-                agent_log = dump_text + "\n\n--- full agent.log ---\n" + agent_log
-            if gateway_log:
-                gateway_log = dump_text + "\n\n--- full gateway.log ---\n" + gateway_log
 
             urls = {}
-            failures = []
-
             try:
                 urls["Report"] = upload_to_pastebin(report)
             except Exception as exc:
                 return f"✗ Failed to upload debug report: {exc}"
 
-            if agent_log:
-                try:
-                    urls["agent.log"] = upload_to_pastebin(agent_log)
-                except Exception:
-                    failures.append("agent.log")
+            # Schedule auto-deletion after 1 hour
+            _schedule_auto_delete(list(urls.values()))
 
-            if gateway_log:
-                try:
-                    urls["gateway.log"] = upload_to_pastebin(gateway_log)
-                except Exception:
-                    failures.append("gateway.log")
-
-            lines = ["**Debug report uploaded:**", ""]
+            lines = [_GATEWAY_PRIVACY_NOTICE, "", "**Debug report uploaded:**", ""]
             label_width = max(len(k) for k in urls)
             for label, url in urls.items():
                 lines.append(f"`{label:<{label_width}}`  {url}")
 
-            if failures:
-                lines.append(f"\n_(failed to upload: {', '.join(failures)})_")
-
-            lines.append("\nShare these links with the Hermes team for support.")
+            lines.append("")
+            lines.append("⏱ Pastes will auto-delete in 1 hour.")
+            lines.append("For full log uploads, use `hermes debug share` from the CLI.")
+            lines.append("Share these links with the Hermes team for support.")
             return "\n".join(lines)
 
         return await loop.run_in_executor(None, _collect_and_upload)
@@ -9509,9 +9509,19 @@ class GatewayRunner:
         # BUT: never suppress delivery when the agent failed — the error
         # message is new content the user hasn't seen, and it must reach
         # them even if streaming had sent earlier partial output.
+        #
+        # Also never suppress when the final response is "(empty)" — this
+        # means the model failed to produce content after tool calls (common
+        # with mimo-v2-pro, GLM-5, etc.).  The stream consumer may have
+        # sent intermediate text ("Let me search for that…") alongside the
+        # tool call, setting already_sent=True, but that text is NOT the
+        # final answer.  Suppressing delivery here leaves the user staring
+        # at silence.  (#10xxx — "agent stops after web search")
         _sc = stream_consumer_holder[0]
         if _sc and isinstance(response, dict) and not response.get("failed"):
-            if (
+            _final = response.get("final_response") or ""
+            _is_empty_sentinel = not _final or _final == "(empty)"
+            if not _is_empty_sentinel and (
                 getattr(_sc, "final_response_sent", False)
                 or getattr(_sc, "already_sent", False)
             ):
@@ -9822,9 +9832,9 @@ def main():
     
     config = None
     if args.config:
-        import json
+        import yaml
         with open(args.config, encoding="utf-8") as f:
-            data = json.load(f)
+            data = yaml.safe_load(f)
             config = GatewayConfig.from_dict(data)
     
     # Run the gateway - exit with code 1 if no platforms connected,

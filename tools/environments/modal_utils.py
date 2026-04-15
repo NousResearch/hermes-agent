@@ -105,6 +105,10 @@ class BaseModalExecutionEnvironment(BaseEnvironment):
         if self._client_timeout_grace_seconds is not None:
             deadline = time.monotonic() + prepared.timeout + self._client_timeout_grace_seconds
 
+        _last_activity_touch = time.monotonic()
+        _modal_exec_start = time.monotonic()
+        _ACTIVITY_INTERVAL = 10.0  # match _wait_for_process cadence
+
         while True:
             if is_interrupted():
                 try:
@@ -127,6 +131,22 @@ class BaseModalExecutionEnvironment(BaseEnvironment):
                 except Exception:
                     pass
                 return self._timeout_result_for_modal(prepared.timeout)
+
+            # Periodic activity touch so the gateway knows we're alive
+            _now = time.monotonic()
+            if _now - _last_activity_touch >= _ACTIVITY_INTERVAL:
+                _last_activity_touch = _now
+                try:
+                    from tools.environments.base import _get_activity_callback
+                    _cb = _get_activity_callback()
+                except Exception:
+                    _cb = None
+                if _cb:
+                    try:
+                        _elapsed = int(_now - _modal_exec_start)
+                        _cb(f"modal command running ({_elapsed}s elapsed)")
+                    except Exception:
+                        pass
 
             time.sleep(self._poll_interval_seconds)
 

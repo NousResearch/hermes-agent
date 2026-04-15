@@ -3752,7 +3752,7 @@ class HermesCLI:
             skin = get_active_skin()
             separator_color = skin.get_color("banner_dim", "#B8860B")
             accent_color = skin.get_color("ui_accent", "#FFBF00")
-            label_color = skin.get_color("ui_label", "#4dd0e1")
+            label_color = skin.get_color("ui_label", "#DAA520")
         except Exception:
             separator_color, accent_color, label_color = "#B8860B", "#FFBF00", "cyan"
         toolsets_info = ""

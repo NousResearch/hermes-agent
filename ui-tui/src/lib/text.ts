@@ -74,9 +74,17 @@ export const pasteTokenLabel = (text: string, lineCount: number) => {
 }
 
 export const thinkingPreview = (reasoning: string, mode: ThinkingMode, max: number) => {
-  const text = reasoning.replace(/\n/g, ' ').trim()
+  const raw = reasoning.trim()
 
-  return !text || mode === 'collapsed' ? '' : mode === 'full' ? text : compactPreview(text, max)
+  if (!raw || mode === 'collapsed') {
+    return ''
+  }
+
+  if (mode === 'full') {
+    return raw
+  }
+
+  return compactPreview(raw.replace(/\s+/g, ' '), max)
 }
 
 export const stripTrailingPasteNewlines = (text: string) => (/[^\n]/.test(text) ? text.replace(/\n+$/, '') : text)

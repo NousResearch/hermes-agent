@@ -14,16 +14,6 @@ export function getQueueWindow(queueLen: number, queueEditIdx: number | null) {
   return { end, showLead: start > 0, showTail: end < queueLen, start }
 }
 
-export function estimateQueuedRows(queueLen: number, queueEditIdx: number | null): number {
-  if (!queueLen) {
-    return 0
-  }
-
-  const win = getQueueWindow(queueLen, queueEditIdx)
-
-  return 1 + 1 + (win.showLead ? 1 : 0) + (win.end - win.start) + (win.showTail ? 1 : 0)
-}
-
 export function QueuedMessages({
   cols,
   queueEditIdx,

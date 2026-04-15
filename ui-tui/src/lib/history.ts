@@ -81,7 +81,3 @@ export function append(line: string): void {
     /* ignore */
   }
 }
-
-export function all(): string[] {
-  return load()
-}

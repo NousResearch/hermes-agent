@@ -191,9 +191,15 @@ class ProcessRegistry:
                     session._watch_disabled = True
                     self.completion_queue.put({
                         "session_id": session.id,
+                        "session_key": session.session_key,
                         "command": session.command,
                         "type": "watch_disabled",
                         "suppressed": session._watch_suppressed,
+                        "platform": session.watcher_platform,
+                        "chat_id": session.watcher_chat_id,
+                        "user_id": session.watcher_user_id,
+                        "user_name": session.watcher_user_name,
+                        "thread_id": session.watcher_thread_id,
                         "message": (
                             f"Watch patterns disabled for process {session.id} — "
                             f"too many matches ({session._watch_suppressed} suppressed). "
@@ -219,11 +225,17 @@ class ProcessRegistry:
 
         self.completion_queue.put({
             "session_id": session.id,
+            "session_key": session.session_key,
             "command": session.command,
             "type": "watch_match",
             "pattern": matched_pattern,
             "output": output,
             "suppressed": suppressed,
+            "platform": session.watcher_platform,
+            "chat_id": session.watcher_chat_id,
+            "user_id": session.watcher_user_id,
+            "user_name": session.watcher_user_name,
+            "thread_id": session.watcher_thread_id,
         })
 
     @staticmethod

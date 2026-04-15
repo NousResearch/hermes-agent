@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 import { render } from '@hermes/ink'
-import React from 'react'
 
 import { App } from './app.js'
 import { GatewayClient } from './gatewayClient.js'

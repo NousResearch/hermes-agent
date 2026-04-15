@@ -44,7 +44,7 @@ export const MessageLine = memo(function MessageLine({
   }
 
   const { body, glyph, prefix } = ROLE[msg.role](t)
-  const thinking = msg.thinking?.replace(/\n/g, ' ').trim() ?? ''
+  const thinking = msg.thinking?.trim() ?? ''
   const showDetails = detailsMode !== 'hidden' && (Boolean(msg.tools?.length) || Boolean(thinking))
 
   const content = (() => {

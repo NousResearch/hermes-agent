@@ -13,9 +13,16 @@ import asyncio
 import ipaddress
 import logging
 import socket
-from typing import Iterable, Optional
+from typing import Any, Iterable, Optional
 
 import httpx
+import httpcore
+from httpcore._backends.auto import AutoBackend
+from httpcore._backends.base import SOCKET_OPTION, AsyncNetworkBackend, AsyncNetworkStream
+from httpx._config import DEFAULT_LIMITS, Limits, Proxy, create_ssl_context
+from httpx._models import Request, Response
+from httpx._transports.default import AsyncResponseStream, map_httpcore_exceptions
+from httpx._types import AsyncByteStream
 
 logger = logging.getLogger(__name__)
 
@@ -63,9 +70,10 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
         proxy_url = _resolve_proxy_url()
         if proxy_url and "proxy" not in transport_kwargs:
             transport_kwargs["proxy"] = proxy_url
-        self._primary = httpx.AsyncHTTPTransport(**transport_kwargs)
+        self._primary = _build_async_http_transport(**transport_kwargs)
         self._fallbacks = {
-            ip: httpx.AsyncHTTPTransport(**transport_kwargs) for ip in self._fallback_ips
+            ip: _build_async_http_transport_for_ip(ip, **transport_kwargs)
+            for ip in self._fallback_ips
         }
         self._sticky_ip: Optional[str] = None
         self._sticky_lock = asyncio.Lock()
@@ -82,10 +90,9 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
 
         last_error: Exception | None = None
         for ip in attempt_order:
-            candidate = request if ip is None else _rewrite_request_for_ip(request, ip)
             transport = self._primary if ip is None else self._fallbacks[ip]
             try:
-                response = await transport.handle_async_request(candidate)
+                response = await transport.handle_async_request(request)
                 if ip is not None and self._sticky_ip != ip:
                     async with self._sticky_lock:
                         if self._sticky_ip != ip:
@@ -244,3 +251,164 @@ def _rewrite_request_for_ip(request: httpx.Request, ip: str) -> httpx.Request:
 
 def _is_retryable_connect_error(exc: Exception) -> bool:
     return isinstance(exc, (httpx.ConnectTimeout, httpx.ConnectError))
+
+
+class _TelegramIPOverrideBackend(AsyncNetworkBackend):
+    """Route TCP connects for api.telegram.org to a chosen fallback IP.
+
+    Request URL, Host header, and TLS server hostname remain unchanged, so
+    certificate validation still happens against api.telegram.org.
+    """
+
+    def __init__(self, override_ip: str, backend: AsyncNetworkBackend | None = None):
+        self._override_ip = override_ip
+        self._backend = AutoBackend() if backend is None else backend
+
+    async def connect_tcp(
+        self,
+        host: str,
+        port: int,
+        timeout: float | None = None,
+        local_address: str | None = None,
+        socket_options: Iterable[SOCKET_OPTION] | None = None,
+    ) -> AsyncNetworkStream:
+        target_host = self._override_ip if host == _TELEGRAM_API_HOST else host
+        return await self._backend.connect_tcp(
+            target_host,
+            port,
+            timeout=timeout,
+            local_address=local_address,
+            socket_options=socket_options,
+        )
+
+    async def connect_unix_socket(
+        self,
+        path: str,
+        timeout: float | None = None,
+        socket_options: Iterable[SOCKET_OPTION] | None = None,
+    ) -> AsyncNetworkStream:  # pragma: nocover
+        return await self._backend.connect_unix_socket(
+            path,
+            timeout=timeout,
+            socket_options=socket_options,
+        )
+
+    async def sleep(self, seconds: float) -> None:  # pragma: nocover
+        await self._backend.sleep(seconds)
+
+
+class _TelegramIPOverrideTransport(httpx.AsyncBaseTransport):
+    """Async transport that preserves request host while overriding TCP target."""
+
+    def __init__(
+        self,
+        override_ip: str,
+        verify: Any = True,
+        cert: Any = None,
+        trust_env: bool = True,
+        http1: bool = True,
+        http2: bool = False,
+        limits: Limits = DEFAULT_LIMITS,
+        proxy: Any = None,
+        uds: str | None = None,
+        local_address: str | None = None,
+        retries: int = 0,
+        socket_options: Iterable[SOCKET_OPTION] | None = None,
+    ) -> None:
+        proxy = Proxy(url=proxy) if isinstance(proxy, (str, httpx.URL)) else proxy
+        ssl_context = create_ssl_context(verify=verify, cert=cert, trust_env=trust_env)
+        network_backend = _TelegramIPOverrideBackend(override_ip)
+
+        if proxy is None:
+            self._pool = httpcore.AsyncConnectionPool(
+                ssl_context=ssl_context,
+                max_connections=limits.max_connections,
+                max_keepalive_connections=limits.max_keepalive_connections,
+                keepalive_expiry=limits.keepalive_expiry,
+                http1=http1,
+                http2=http2,
+                uds=uds,
+                local_address=local_address,
+                retries=retries,
+                socket_options=socket_options,
+                network_backend=network_backend,
+            )
+        elif proxy.url.scheme in ("http", "https"):
+            self._pool = httpcore.AsyncHTTPProxy(
+                proxy_url=httpcore.URL(
+                    scheme=proxy.url.raw_scheme,
+                    host=proxy.url.raw_host,
+                    port=proxy.url.port,
+                    target=proxy.url.raw_path,
+                ),
+                proxy_auth=proxy.raw_auth,
+                proxy_headers=proxy.headers.raw,
+                proxy_ssl_context=proxy.ssl_context,
+                ssl_context=ssl_context,
+                max_connections=limits.max_connections,
+                max_keepalive_connections=limits.max_keepalive_connections,
+                keepalive_expiry=limits.keepalive_expiry,
+                http1=http1,
+                http2=http2,
+                socket_options=socket_options,
+                network_backend=network_backend,
+            )
+        elif proxy.url.scheme in ("socks5", "socks5h"):
+            self._pool = httpcore.AsyncSOCKSProxy(
+                proxy_url=httpcore.URL(
+                    scheme=proxy.url.raw_scheme,
+                    host=proxy.url.raw_host,
+                    port=proxy.url.port,
+                    target=proxy.url.raw_path,
+                ),
+                proxy_auth=proxy.raw_auth,
+                ssl_context=ssl_context,
+                max_connections=limits.max_connections,
+                max_keepalive_connections=limits.max_keepalive_connections,
+                keepalive_expiry=limits.keepalive_expiry,
+                http1=http1,
+                http2=http2,
+                network_backend=network_backend,
+            )
+        else:  # pragma: no cover
+            raise ValueError(
+                "Proxy protocol must be either 'http', 'https', 'socks5', or 'socks5h',"
+                f" but got {proxy.url.scheme!r}."
+            )
+
+    async def handle_async_request(self, request: Request) -> Response:
+        assert isinstance(request.stream, AsyncByteStream)
+        req = httpcore.Request(
+            method=request.method,
+            url=httpcore.URL(
+                scheme=request.url.raw_scheme,
+                host=request.url.raw_host,
+                port=request.url.port,
+                target=request.url.raw_path,
+            ),
+            headers=request.headers.raw,
+            content=request.stream,
+            extensions=request.extensions,
+        )
+        with map_httpcore_exceptions():
+            resp = await self._pool.handle_async_request(req)
+
+        return Response(
+            status_code=resp.status,
+            headers=resp.headers,
+            stream=AsyncResponseStream(resp.stream),
+            extensions=resp.extensions,
+        )
+
+    async def aclose(self) -> None:
+        await self._pool.aclose()
+
+
+def _build_async_http_transport(**transport_kwargs) -> httpx.AsyncBaseTransport:
+    return httpx.AsyncHTTPTransport(**transport_kwargs)
+
+
+def _build_async_http_transport_for_ip(
+    ip: str, **transport_kwargs
+) -> httpx.AsyncBaseTransport:
+    return _TelegramIPOverrideTransport(ip, **transport_kwargs)

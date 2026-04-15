@@ -28,21 +28,23 @@ from gateway.platforms import telegram_network as tnet
 class FakeTransport(httpx.AsyncBaseTransport):
     """Records calls and raises / returns based on a host→action mapping."""
 
-    def __init__(self, calls, behavior):
+    def __init__(self, calls, behavior, label="primary"):
         self.calls = calls
         self.behavior = behavior
+        self.label = label
         self.closed = False
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         self.calls.append(
             {
+                "transport_label": self.label,
                 "url_host": request.url.host,
                 "host_header": request.headers.get("host"),
                 "sni_hostname": request.extensions.get("sni_hostname"),
                 "path": request.url.path,
             }
         )
-        action = self.behavior.get(request.url.host, "ok")
+        action = self.behavior.get(self.label, self.behavior.get(request.url.host, "ok"))
         if action == "timeout":
             raise httpx.ConnectTimeout("timed out")
         if action == "connect_error":
@@ -66,6 +68,24 @@ def _fake_transport_factory(calls, behavior):
 
     factory.instances = instances
     return factory
+
+
+def _fake_transport_builders(calls, behavior):
+    instances = []
+
+    def primary(**kwargs):
+        t = FakeTransport(calls, behavior, label="primary")
+        instances.append(t)
+        return t
+
+    def fallback(ip, **kwargs):
+        t = FakeTransport(calls, behavior, label=ip)
+        instances.append(t)
+        return t
+
+    primary.instances = instances
+    fallback.instances = instances
+    return primary, fallback
 
 
 def _telegram_request(path="/botTOKEN/getMe"):
@@ -148,31 +168,34 @@ class TestFallbackTransport:
     @pytest.mark.asyncio
     async def test_falls_back_on_connect_timeout_and_becomes_sticky(self, monkeypatch):
         calls = []
-        behavior = {"api.telegram.org": "timeout", "149.154.167.220": "ok"}
-        monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", _fake_transport_factory(calls, behavior))
+        behavior = {"primary": "timeout", "149.154.167.220": "ok"}
+        primary_builder, fallback_builder = _fake_transport_builders(calls, behavior)
+        monkeypatch.setattr(tnet, "_build_async_http_transport", primary_builder)
+        monkeypatch.setattr(tnet, "_build_async_http_transport_for_ip", fallback_builder)
 
         transport = tnet.TelegramFallbackTransport(["149.154.167.220"])
         resp = await transport.handle_async_request(_telegram_request())
 
         assert resp.status_code == 200
         assert transport._sticky_ip == "149.154.167.220"
-        # First attempt was primary (api.telegram.org), second was fallback
-        assert calls[0]["url_host"] == "api.telegram.org"
-        assert calls[1]["url_host"] == "149.154.167.220"
-        assert calls[1]["host_header"] == "api.telegram.org"
-        assert calls[1]["sni_hostname"] == "api.telegram.org"
+        # First attempt was primary, second was fallback transport for .220
+        assert calls[0]["transport_label"] == "primary"
+        assert calls[1]["transport_label"] == "149.154.167.220"
+        assert calls[1]["url_host"] == "api.telegram.org"
 
         # Second request goes straight to sticky IP
         calls.clear()
         resp2 = await transport.handle_async_request(_telegram_request())
         assert resp2.status_code == 200
-        assert calls[0]["url_host"] == "149.154.167.220"
+        assert calls[0]["transport_label"] == "149.154.167.220"
 
     @pytest.mark.asyncio
     async def test_falls_back_on_connect_error(self, monkeypatch):
         calls = []
-        behavior = {"api.telegram.org": "connect_error", "149.154.167.220": "ok"}
-        monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", _fake_transport_factory(calls, behavior))
+        behavior = {"primary": "connect_error", "149.154.167.220": "ok"}
+        primary_builder, fallback_builder = _fake_transport_builders(calls, behavior)
+        monkeypatch.setattr(tnet, "_build_async_http_transport", primary_builder)
+        monkeypatch.setattr(tnet, "_build_async_http_transport_for_ip", fallback_builder)
 
         transport = tnet.TelegramFallbackTransport(["149.154.167.220"])
         resp = await transport.handle_async_request(_telegram_request())
@@ -184,47 +207,53 @@ class TestFallbackTransport:
     async def test_does_not_fallback_on_non_connect_error(self, monkeypatch):
         """Errors like ReadTimeout are not connection issues — don't retry."""
         calls = []
-        behavior = {"api.telegram.org": httpx.ReadTimeout("read timeout"), "149.154.167.220": "ok"}
-        monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", _fake_transport_factory(calls, behavior))
+        behavior = {"primary": httpx.ReadTimeout("read timeout"), "149.154.167.220": "ok"}
+        primary_builder, fallback_builder = _fake_transport_builders(calls, behavior)
+        monkeypatch.setattr(tnet, "_build_async_http_transport", primary_builder)
+        monkeypatch.setattr(tnet, "_build_async_http_transport_for_ip", fallback_builder)
 
         transport = tnet.TelegramFallbackTransport(["149.154.167.220"])
 
         with pytest.raises(httpx.ReadTimeout):
             await transport.handle_async_request(_telegram_request())
 
-        assert [c["url_host"] for c in calls] == ["api.telegram.org"]
+        assert [c["transport_label"] for c in calls] == ["primary"]
 
     @pytest.mark.asyncio
     async def test_all_ips_fail_raises_last_error(self, monkeypatch):
         calls = []
-        behavior = {"api.telegram.org": "timeout", "149.154.167.220": "timeout"}
-        monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", _fake_transport_factory(calls, behavior))
+        behavior = {"primary": "timeout", "149.154.167.220": "timeout"}
+        primary_builder, fallback_builder = _fake_transport_builders(calls, behavior)
+        monkeypatch.setattr(tnet, "_build_async_http_transport", primary_builder)
+        monkeypatch.setattr(tnet, "_build_async_http_transport_for_ip", fallback_builder)
 
         transport = tnet.TelegramFallbackTransport(["149.154.167.220"])
 
         with pytest.raises(httpx.ConnectTimeout):
             await transport.handle_async_request(_telegram_request())
 
-        assert [c["url_host"] for c in calls] == ["api.telegram.org", "149.154.167.220"]
+        assert [c["transport_label"] for c in calls] == ["primary", "149.154.167.220"]
         assert transport._sticky_ip is None
 
     @pytest.mark.asyncio
     async def test_multiple_fallback_ips_tried_in_order(self, monkeypatch):
         calls = []
         behavior = {
-            "api.telegram.org": "timeout",
+            "primary": "timeout",
             "149.154.167.220": "timeout",
             "149.154.167.221": "ok",
         }
-        monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", _fake_transport_factory(calls, behavior))
+        primary_builder, fallback_builder = _fake_transport_builders(calls, behavior)
+        monkeypatch.setattr(tnet, "_build_async_http_transport", primary_builder)
+        monkeypatch.setattr(tnet, "_build_async_http_transport_for_ip", fallback_builder)
 
         transport = tnet.TelegramFallbackTransport(["149.154.167.220", "149.154.167.221"])
         resp = await transport.handle_async_request(_telegram_request())
 
         assert resp.status_code == 200
         assert transport._sticky_ip == "149.154.167.221"
-        assert [c["url_host"] for c in calls] == [
-            "api.telegram.org",
+        assert [c["transport_label"] for c in calls] == [
+            "primary",
             "149.154.167.220",
             "149.154.167.221",
         ]
@@ -234,11 +263,13 @@ class TestFallbackTransport:
         """If the sticky IP stops working, the transport retries others."""
         calls = []
         behavior = {
-            "api.telegram.org": "timeout",
+            "primary": "timeout",
             "149.154.167.220": "ok",
             "149.154.167.221": "ok",
         }
-        monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", _fake_transport_factory(calls, behavior))
+        primary_builder, fallback_builder = _fake_transport_builders(calls, behavior)
+        monkeypatch.setattr(tnet, "_build_async_http_transport", primary_builder)
+        monkeypatch.setattr(tnet, "_build_async_http_transport_for_ip", fallback_builder)
 
         transport = tnet.TelegramFallbackTransport(["149.154.167.220", "149.154.167.221"])
 
@@ -253,7 +284,7 @@ class TestFallbackTransport:
         resp = await transport.handle_async_request(_telegram_request())
         assert resp.status_code == 200
         # Tried sticky (.220) first, then fell through to .221
-        assert [c["url_host"] for c in calls] == ["149.154.167.220", "149.154.167.221"]
+        assert [c["transport_label"] for c in calls] == ["149.154.167.220", "149.154.167.221"]
         assert transport._sticky_ip == "149.154.167.221"
 
 
@@ -264,7 +295,9 @@ class TestFallbackTransportPassthrough:
     async def test_non_telegram_host_bypasses_fallback(self, monkeypatch):
         calls = []
         behavior = {}
-        monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", _fake_transport_factory(calls, behavior))
+        primary_builder, fallback_builder = _fake_transport_builders(calls, behavior)
+        monkeypatch.setattr(tnet, "_build_async_http_transport", primary_builder)
+        monkeypatch.setattr(tnet, "_build_async_http_transport_for_ip", fallback_builder)
 
         transport = tnet.TelegramFallbackTransport(["149.154.167.220"])
         request = httpx.Request("GET", "https://example.com/path")
@@ -278,7 +311,9 @@ class TestFallbackTransportPassthrough:
     async def test_empty_fallback_list_uses_primary_only(self, monkeypatch):
         calls = []
         behavior = {}
-        monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", _fake_transport_factory(calls, behavior))
+        primary_builder, fallback_builder = _fake_transport_builders(calls, behavior)
+        monkeypatch.setattr(tnet, "_build_async_http_transport", primary_builder)
+        monkeypatch.setattr(tnet, "_build_async_http_transport_for_ip", fallback_builder)
 
         transport = tnet.TelegramFallbackTransport([])
         resp = await transport.handle_async_request(_telegram_request())
@@ -289,8 +324,10 @@ class TestFallbackTransportPassthrough:
     @pytest.mark.asyncio
     async def test_primary_succeeds_no_fallback_needed(self, monkeypatch):
         calls = []
-        behavior = {"api.telegram.org": "ok"}
-        monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", _fake_transport_factory(calls, behavior))
+        behavior = {"primary": "ok"}
+        primary_builder, fallback_builder = _fake_transport_builders(calls, behavior)
+        monkeypatch.setattr(tnet, "_build_async_http_transport", primary_builder)
+        monkeypatch.setattr(tnet, "_build_async_http_transport_for_ip", fallback_builder)
 
         transport = tnet.TelegramFallbackTransport(["149.154.167.220"])
         resp = await transport.handle_async_request(_telegram_request())
@@ -302,30 +339,33 @@ class TestFallbackTransportPassthrough:
 
 class TestFallbackTransportInit:
     def test_deduplicates_fallback_ips(self, monkeypatch):
-        monkeypatch.setattr(
-            tnet.httpx, "AsyncHTTPTransport", lambda **kw: FakeTransport([], {})
-        )
+        monkeypatch.setattr(tnet, "_build_async_http_transport", lambda **kw: FakeTransport([], {}))
+        monkeypatch.setattr(tnet, "_build_async_http_transport_for_ip", lambda ip, **kw: FakeTransport([], {}, label=ip))
         transport = tnet.TelegramFallbackTransport(["149.154.167.220", "149.154.167.220"])
         assert transport._fallback_ips == ["149.154.167.220"]
 
     def test_filters_invalid_ips_at_init(self, monkeypatch):
-        monkeypatch.setattr(
-            tnet.httpx, "AsyncHTTPTransport", lambda **kw: FakeTransport([], {})
-        )
+        monkeypatch.setattr(tnet, "_build_async_http_transport", lambda **kw: FakeTransport([], {}))
+        monkeypatch.setattr(tnet, "_build_async_http_transport_for_ip", lambda ip, **kw: FakeTransport([], {}, label=ip))
         transport = tnet.TelegramFallbackTransport(["149.154.167.220", "not-an-ip"])
         assert transport._fallback_ips == ["149.154.167.220"]
 
     def test_uses_proxy_env_for_primary_and_fallback_transports(self, monkeypatch):
         seen_kwargs = []
 
-        def factory(**kwargs):
+        def primary_factory(**kwargs):
             seen_kwargs.append(kwargs.copy())
             return FakeTransport([], {})
+
+        def fallback_factory(ip, **kwargs):
+            seen_kwargs.append(kwargs.copy())
+            return FakeTransport([], {}, label=ip)
 
         for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy"):
             monkeypatch.delenv(key, raising=False)
         monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example:8080")
-        monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", factory)
+        monkeypatch.setattr(tnet, "_build_async_http_transport", primary_factory)
+        monkeypatch.setattr(tnet, "_build_async_http_transport_for_ip", fallback_factory)
 
         transport = tnet.TelegramFallbackTransport(["149.154.167.220"])
 
@@ -337,15 +377,18 @@ class TestFallbackTransportInit:
 class TestFallbackTransportClose:
     @pytest.mark.asyncio
     async def test_aclose_closes_all_transports(self, monkeypatch):
-        factory = _fake_transport_factory([], {})
-        monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", factory)
+        calls = []
+        behavior = {}
+        primary_builder, fallback_builder = _fake_transport_builders(calls, behavior)
+        monkeypatch.setattr(tnet, "_build_async_http_transport", primary_builder)
+        monkeypatch.setattr(tnet, "_build_async_http_transport_for_ip", fallback_builder)
 
         transport = tnet.TelegramFallbackTransport(["149.154.167.220", "149.154.167.221"])
         await transport.aclose()
 
         # 1 primary + 2 fallback transports
-        assert len(factory.instances) == 3
-        assert all(t.closed for t in factory.instances)
+        assert len(primary_builder.instances) == 3
+        assert all(t.closed for t in primary_builder.instances)
 
 
 # ═══════════════════════════════════════════════════════════════════════════

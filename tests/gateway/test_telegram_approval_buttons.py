@@ -1,6 +1,7 @@
 """Tests for Telegram inline keyboard approval buttons."""
 
 import asyncio
+import json
 import os
 import sys
 from pathlib import Path
@@ -46,6 +47,8 @@ def _ensure_telegram_mock():
 
 _ensure_telegram_mock()
 
+import gateway.platforms.telegram as telegram_module
+from gateway.platforms.base import SendResult
 from gateway.platforms.telegram import TelegramAdapter
 from gateway.config import Platform, PlatformConfig
 
@@ -289,3 +292,162 @@ class TestTelegramApprovalCallback:
 
         # Should NOT have triggered approval resolution
         mock_resolve.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_daily_report_callback_sends_full_digest(self, tmp_path, monkeypatch):
+        adapter = _make_adapter()
+        adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="10"))
+
+        digest_json = tmp_path / "latest.digest.json"
+        digest_json.write_text(
+            json.dumps(
+                {
+                    "report_date": "2026-04-12",
+                    "market_sentiment": {
+                        "value": "54",
+                        "classification_zh": "中性",
+                    },
+                    "top_binance_movers": [
+                        {
+                            "symbol": "BTCUSDT",
+                            "price_change_percent": 3.21,
+                            "quote_volume": 123000000,
+                        }
+                    ],
+                    "top_contract_movers": [],
+                    "top_github_repos": [
+                        {
+                            "repo": "foo/bar",
+                            "language": "Python",
+                            "stars_today": 123,
+                            "description_zh": "测试仓库",
+                        }
+                    ],
+                    "top_x_posts": [
+                        {
+                            "account": "alice",
+                            "summary_zh": "市场偏强",
+                        }
+                    ],
+                    "top_potential_picks": [
+                        {
+                            "symbol": "ETH",
+                            "confidence": 88,
+                        }
+                    ],
+                    "paths": {},
+                },
+                ensure_ascii=False,
+            )
+        )
+        monkeypatch.setattr(
+            telegram_module,
+            "DAILY_CRYPTO_LATEST_DIGEST_JSON_PATH",
+            str(digest_json),
+            raising=False,
+        )
+        monkeypatch.setattr(
+            telegram_module,
+            "DAILY_CRYPTO_LATEST_DIGEST_TEXT_PATH",
+            str(tmp_path / "latest.digest.txt"),
+            raising=False,
+        )
+
+        query = AsyncMock()
+        query.data = "daily-report:full"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.message.message_id = 77
+        query.message.message_thread_id = 456
+        query.answer = AsyncMock()
+
+        update = MagicMock()
+        update.callback_query = query
+
+        await adapter._handle_callback_query(update, MagicMock())
+
+        query.answer.assert_called_once()
+        adapter.send.assert_called_once()
+        kwargs = adapter.send.call_args.kwargs
+        assert kwargs["chat_id"] == "12345"
+        assert kwargs["reply_to"] == "77"
+        assert kwargs["metadata"] == {"thread_id": "456"}
+        assert "每日加密晨报" in kwargs["content"]
+        assert "BTCUSDT" in kwargs["content"]
+
+    @pytest.mark.asyncio
+    async def test_daily_report_callback_sends_markdown_in_parts(self, tmp_path, monkeypatch):
+        adapter = _make_adapter()
+        adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="11"))
+
+        markdown_path = tmp_path / "latest.md"
+        markdown_path.write_text("\n\n".join(["A" * 2100, "B" * 2100, "C" * 2100]))
+
+        digest_json = tmp_path / "latest.digest.json"
+        digest_json.write_text(
+            json.dumps({"paths": {"markdown": str(markdown_path)}}, ensure_ascii=False)
+        )
+        monkeypatch.setattr(
+            telegram_module,
+            "DAILY_CRYPTO_LATEST_DIGEST_JSON_PATH",
+            str(digest_json),
+            raising=False,
+        )
+        monkeypatch.setattr(
+            telegram_module,
+            "DAILY_CRYPTO_LATEST_DIGEST_TEXT_PATH",
+            str(tmp_path / "latest.digest.txt"),
+            raising=False,
+        )
+
+        query = AsyncMock()
+        query.data = "daily-report:markdown"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.message.message_id = 78
+        query.answer = AsyncMock()
+
+        update = MagicMock()
+        update.callback_query = query
+
+        await adapter._handle_callback_query(update, MagicMock())
+
+        query.answer.assert_called_once()
+        assert adapter.send.call_count >= 2
+        first_kwargs = adapter.send.call_args_list[0].kwargs
+        assert first_kwargs["chat_id"] == "12345"
+        assert first_kwargs["reply_to"] == "78"
+
+    @pytest.mark.asyncio
+    async def test_daily_report_callback_handles_missing_files(self, tmp_path, monkeypatch):
+        adapter = _make_adapter()
+        adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="12"))
+
+        monkeypatch.setattr(
+            telegram_module,
+            "DAILY_CRYPTO_LATEST_DIGEST_JSON_PATH",
+            str(tmp_path / "missing.digest.json"),
+            raising=False,
+        )
+        monkeypatch.setattr(
+            telegram_module,
+            "DAILY_CRYPTO_LATEST_DIGEST_TEXT_PATH",
+            str(tmp_path / "missing.digest.txt"),
+            raising=False,
+        )
+
+        query = AsyncMock()
+        query.data = "daily-report:github"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.message.message_id = 79
+        query.answer = AsyncMock()
+
+        update = MagicMock()
+        update.callback_query = query
+
+        await adapter._handle_callback_query(update, MagicMock())
+
+        query.answer.assert_called_once()
+        adapter.send.assert_called_once()
+        assert "还没生成" in adapter.send.call_args.kwargs["content"]

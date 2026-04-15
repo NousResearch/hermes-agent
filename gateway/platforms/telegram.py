@@ -112,6 +112,328 @@ def _strip_mdv2(text: str) -> str:
     return cleaned
 
 
+DAILY_CRYPTO_LATEST_DIGEST_JSON_PATH = os.getenv(
+    "DAILY_CRYPTO_LATEST_DIGEST_JSON_PATH",
+    str(_Path.home() / ".openclaw" / "workspace" / "reports" / "daily-crypto" / "latest.digest.json"),
+).strip()
+DAILY_CRYPTO_LATEST_DIGEST_TEXT_PATH = os.getenv(
+    "DAILY_CRYPTO_LATEST_DIGEST_TEXT_PATH",
+    str(_Path.home() / ".openclaw" / "workspace" / "reports" / "daily-crypto" / "latest.digest.txt"),
+).strip()
+DAILY_REPORT_CALLBACK_PREFIX = "daily-report:"
+_DAILY_REPORT_LABELS = {
+    "markdown": "长版报告",
+    "full": "晨报摘要",
+    "binance": "币安异动",
+    "github": "GitHub 热门",
+    "x": "X 情报",
+    "sentiment": "市场情绪",
+}
+
+
+def _split_telegram_text(text: str, limit: int = 3600) -> List[str]:
+    cleaned = text.strip()
+    if not cleaned:
+        return []
+    if len(cleaned) <= limit:
+        return [cleaned]
+
+    parts: List[str] = []
+    chunk = ""
+    for paragraph in cleaned.split("\n\n"):
+        paragraph = paragraph.strip()
+        if not paragraph:
+            continue
+        candidate = paragraph if not chunk else f"{chunk}\n\n{paragraph}"
+        if len(candidate) <= limit:
+            chunk = candidate
+            continue
+        if chunk:
+            parts.append(chunk)
+            chunk = ""
+        if len(paragraph) <= limit:
+            chunk = paragraph
+            continue
+        lines = paragraph.splitlines()
+        line_chunk = ""
+        for line in lines:
+            candidate_line = line if not line_chunk else f"{line_chunk}\n{line}"
+            if len(candidate_line) <= limit:
+                line_chunk = candidate_line
+                continue
+            if line_chunk:
+                parts.append(line_chunk)
+            if len(line) <= limit:
+                line_chunk = line
+                continue
+            for index in range(0, len(line), limit):
+                parts.append(line[index : index + limit])
+            line_chunk = ""
+        if line_chunk:
+            chunk = line_chunk
+    if chunk:
+        parts.append(chunk)
+    return parts
+
+
+def _add_telegram_part_numbers(parts: List[str]) -> List[str]:
+    if len(parts) <= 1:
+        return parts
+    total = len(parts)
+    return [f"({index}/{total})\n{part}" for index, part in enumerate(parts, start=1)]
+
+
+def _summarize_text(text: str, limit: int = 120) -> str:
+    clean = text.replace("\n", " ").strip()
+    if len(clean) <= limit:
+        return clean
+    return f"{clean[:limit]}..."
+
+
+def _contains_cjk(text: str) -> bool:
+    return any("\u4e00" <= char <= "\u9fff" for char in text or "")
+
+
+def _choose_localized_text(*values: Any, fallback: str = "") -> str:
+    normalized: List[str] = []
+    for value in values:
+        text = str(value or "").strip()
+        if text:
+            normalized.append(text)
+    for candidate in normalized:
+        if _contains_cjk(candidate):
+            return candidate
+    return normalized[0] if normalized else fallback
+
+
+def _translate_sentiment_label(label: str) -> str:
+    lowered = (label or "").strip().lower()
+    mapping = {
+        "extreme fear": "极度恐慌",
+        "fear": "恐慌",
+        "neutral": "中性",
+        "greed": "贪婪",
+        "extreme greed": "极度贪婪",
+    }
+    return mapping.get(lowered, label or "-")
+
+
+def _format_daily_digest_binance(items: List[Dict[str, Any]]) -> str:
+    if not items:
+        return "今天的币安异动摘要还没生成。"
+    lines = ["今日币安异动"]
+    for item in items[:5]:
+        symbol = str(item.get("symbol", "-"))
+        move = item.get("price_change_percent")
+        quote_volume = item.get("quote_volume")
+        move_text = f"{float(move):+.2f}%" if isinstance(move, (int, float)) else str(move or "-")
+        volume_text = (
+            f"{float(quote_volume) / 1_000_000:.2f}M"
+            if isinstance(quote_volume, (int, float))
+            else "-"
+        )
+        lines.append(f"- {symbol} | {move_text} | 成交额 {volume_text} USDT")
+    return "\n".join(lines)
+
+
+def _format_daily_digest_github(items: List[Dict[str, Any]]) -> str:
+    if not items:
+        return "今天的 GitHub 热门摘要还没生成。"
+    lines = ["今日 GitHub 热门"]
+    for item in items[:5]:
+        repo = str(item.get("repo", "-"))
+        language = str(item.get("language", "") or "未知")
+        stars_today = item.get("stars_today")
+        desc = _choose_localized_text(
+            item.get("description_zh"),
+            item.get("description"),
+            fallback="查看仓库说明",
+        )
+        if not _contains_cjk(desc):
+            desc = "查看仓库说明"
+        desc = _summarize_text(desc, limit=72)
+        star_text = f"+{int(stars_today)}" if isinstance(stars_today, (int, float)) else "-"
+        lines.append(f"- {repo} | {language} | 今日星标 {star_text} | {desc}")
+    return "\n".join(lines)
+
+
+def _format_daily_digest_x(items: List[Dict[str, Any]]) -> str:
+    if not items:
+        return "今天的 X 情报摘要还没生成。"
+    lines = ["今日 X 情报"]
+    for item in items[:5]:
+        account = str(item.get("account", "-"))
+        title = _choose_localized_text(
+            item.get("summary_zh"),
+            item.get("title_zh"),
+            item.get("summary"),
+            item.get("title"),
+            fallback="该条情报已收录，详见长版报告。",
+        )
+        if not _contains_cjk(title):
+            title = "该条情报已收录，详见长版报告。"
+        title = _summarize_text(title, limit=96)
+        lines.append(f"- @{account} {title}")
+    return "\n".join(lines)
+
+
+def _format_daily_digest_sentiment(sentiment: Dict[str, Any]) -> str:
+    if not sentiment:
+        return "今天的市场情绪摘要还没生成。"
+    value = str(sentiment.get("value", "-"))
+    classification = _choose_localized_text(
+        sentiment.get("classification_zh"),
+        sentiment.get("value_classification_zh"),
+        sentiment.get("classification"),
+        sentiment.get("value_classification"),
+        fallback="-",
+    )
+    classification = _translate_sentiment_label(classification)
+    return f"今日市场情绪\n- 恐慌与贪婪指数：{value}\n- 分类：{classification}"
+
+
+def _build_localized_daily_digest_from_payload(payload: Dict[str, Any]) -> str:
+    report_date = str(payload.get("report_date", "")).strip() or "今日"
+    sentiment = payload.get("market_sentiment") or payload.get("fng_index") or {}
+    sentiment_value = str(sentiment.get("value", "-"))
+    sentiment_label = _choose_localized_text(
+        sentiment.get("classification_zh"),
+        sentiment.get("value_classification_zh"),
+        sentiment.get("classification"),
+        sentiment.get("value_classification"),
+        fallback="-",
+    )
+    sentiment_label = _translate_sentiment_label(sentiment_label)
+
+    binance_items = payload.get("top_binance_movers") or (payload.get("binance_movers") or {}).get("items") or []
+    contract_items = payload.get("top_contract_movers") or (payload.get("contract_movers") or {}).get("items") or []
+    github_items = payload.get("top_github_repos") or (payload.get("github_trending") or {}).get("items") or []
+    x_items = payload.get("top_x_posts") or (payload.get("x_watchlist") or {}).get("items") or []
+    potential_raw = payload.get("top_potential_picks") or payload.get("potential_picks") or []
+    if isinstance(potential_raw, dict):
+        potential_items = potential_raw.get("items") or []
+    elif isinstance(potential_raw, list):
+        potential_items = potential_raw
+    else:
+        potential_items = []
+
+    def _format_movers(items: List[Dict[str, Any]]) -> str:
+        if not items:
+            return "暂无"
+        parts: List[str] = []
+        for item in items[:3]:
+            symbol = str(item.get("symbol", "-"))
+            move = item.get("price_change_percent")
+            move_text = f"{float(move):+.2f}%" if isinstance(move, (int, float)) else str(move or "-")
+            parts.append(f"{symbol} {move_text}")
+        return "，".join(parts) if parts else "暂无"
+
+    def _format_github(items: List[Dict[str, Any]]) -> str:
+        if not items:
+            return "暂无"
+        repos = [str(item.get("repo", "-")).strip() for item in items[:3] if str(item.get("repo", "")).strip()]
+        return "，".join(repos) if repos else "暂无"
+
+    def _format_x_focus(items: List[Dict[str, Any]]) -> str:
+        if not items:
+            return "暂无"
+        accounts = [
+            f"@{str(item.get('account', '-')).strip()}"
+            for item in items[:3]
+            if str(item.get("account", "")).strip()
+        ]
+        return "、".join(accounts) + "（详见长版）" if accounts else "暂无"
+
+    def _format_picks(items: List[Dict[str, Any]]) -> str:
+        if not items:
+            return "暂无"
+        picks: List[str] = []
+        for item in items[:3]:
+            symbol = str(item.get("symbol", "-"))
+            confidence = item.get("confidence")
+            if isinstance(confidence, (int, float)):
+                picks.append(f"{symbol}({int(confidence)})")
+            else:
+                picks.append(symbol)
+        return "，".join(picks) if picks else "暂无"
+
+    lines = [
+        f"每日加密晨报 | {report_date}",
+        f"情绪：{sentiment_value} | {sentiment_label}",
+        f"异动：{_format_movers(binance_items)}",
+        f"合约：{_format_movers(contract_items)}",
+        f"GitHub：{_format_github(github_items)}",
+        f"焦点：{_format_x_focus(x_items)}",
+        f"潜力币：{_format_picks(potential_items)}",
+    ]
+    return "\n".join(lines)
+
+
+def _build_daily_report_messages_for_callback(query_type: str) -> tuple[List[str], str]:
+    digest_json_path = _Path(DAILY_CRYPTO_LATEST_DIGEST_JSON_PATH)
+    digest_text_path = _Path(DAILY_CRYPTO_LATEST_DIGEST_TEXT_PATH)
+
+    if digest_json_path.exists():
+        payload = json.loads(digest_json_path.read_text())
+        markdown_path = str((payload.get("paths") or {}).get("markdown", "")).strip()
+
+        if query_type == "markdown":
+            markdown_text = ""
+            if markdown_path and _Path(markdown_path).exists():
+                markdown_text = _Path(markdown_path).read_text().strip()
+            else:
+                latest_md = digest_json_path.with_name("latest.md")
+                if latest_md.exists():
+                    markdown_text = latest_md.read_text().strip()
+                    markdown_path = str(latest_md)
+            if markdown_text:
+                messages = _split_telegram_text(markdown_text)
+                footer = f"长版报告路径：{markdown_path}" if markdown_path else ""
+                if footer:
+                    if messages and len(messages[-1]) + len(footer) + 2 <= 3600:
+                        messages[-1] = f"{messages[-1]}\n\n{footer}"
+                    else:
+                        messages.append(footer)
+                messages = _add_telegram_part_numbers(messages)
+                return messages, f"已发送长版报告（共 {len(messages)} 段）"
+
+        if query_type == "binance":
+            reply = _format_daily_digest_binance(payload.get("top_binance_movers") or [])
+        elif query_type == "github":
+            reply = _format_daily_digest_github(payload.get("top_github_repos") or [])
+        elif query_type == "x":
+            reply = _format_daily_digest_x(payload.get("top_x_posts") or [])
+        elif query_type == "sentiment":
+            reply = _format_daily_digest_sentiment(payload.get("market_sentiment") or {})
+        else:
+            reply = _build_localized_daily_digest_from_payload(payload)
+            if not reply.strip():
+                reply = str(payload.get("digest_text", "")).strip()
+
+        if reply:
+            if markdown_path:
+                reply = f"{reply}\n\n长版报告：{markdown_path}"
+            return [reply], reply
+
+    if digest_text_path.exists():
+        digest_text = digest_text_path.read_text().strip()
+        if digest_text:
+            return [digest_text], digest_text
+
+    raise FileNotFoundError("daily crypto digest not found")
+
+
+def _normalize_int_string(value: Any) -> Optional[str]:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, str):
+        stripped = value.strip()
+        return stripped if stripped.isdigit() else None
+    return None
+
+
 class TelegramAdapter(BasePlatformAdapter):
     """
     Telegram bot adapter.
@@ -1486,6 +1808,14 @@ class TelegramAdapter(BasePlatformAdapter):
                     logger.error("Failed to resolve gateway approval from Telegram button: %s", exc)
             return
 
+        if data.startswith(DAILY_REPORT_CALLBACK_PREFIX):
+            query_type = data[len(DAILY_REPORT_CALLBACK_PREFIX) :].strip()
+            if query_type not in _DAILY_REPORT_LABELS:
+                await query.answer(text="暂不支持这个晨报按钮。")
+                return
+            await self._handle_daily_report_callback(query, query_type)
+            return
+
         # --- Update prompt callbacks ---
         if not data.startswith("update_prompt:"):
             return
@@ -1513,6 +1843,53 @@ class TelegramAdapter(BasePlatformAdapter):
                         answer, getattr(query.from_user, "id", "unknown"))
         except Exception as exc:
             logger.error("Failed to write update response from callback: %s", exc)
+
+    async def _handle_daily_report_callback(self, query: Any, query_type: str) -> None:
+        """Send the requested daily report section back to the chat."""
+        label = _DAILY_REPORT_LABELS.get(query_type, "晨报")
+        await query.answer(text=f"正在发送{label}...")
+
+        try:
+            messages, summary = _build_daily_report_messages_for_callback(query_type)
+        except FileNotFoundError:
+            messages = ["今天的晨报摘要还没生成，先稍后再问我一次。"]
+            summary = messages[0]
+        except Exception as exc:
+            logger.error("Failed to build daily report callback payload: %s", exc)
+            messages = ["晨报展开失败了，我稍后再帮你重试一次。"]
+            summary = messages[0]
+
+        if not query.message:
+            return
+
+        chat_id = str(query.message.chat_id)
+        reply_to = _normalize_int_string(getattr(query.message, "message_id", None))
+        thread_id = _normalize_int_string(getattr(query.message, "message_thread_id", None))
+        metadata = {"thread_id": thread_id} if thread_id else None
+
+        for index, message in enumerate(messages):
+            result = await self.send(
+                chat_id=chat_id,
+                content=message,
+                reply_to=reply_to if index == 0 else None,
+                metadata=metadata,
+            )
+            if not result.success:
+                logger.warning(
+                    "[%s] Failed sending daily report callback chunk %d/%d: %s",
+                    self.name,
+                    index + 1,
+                    len(messages),
+                    result.error,
+                )
+
+        logger.info(
+            "[%s] Served daily report callback type=%s chat_id=%s summary=%s",
+            self.name,
+            query_type,
+            chat_id,
+            _summarize_text(summary, limit=160),
+        )
 
     async def send_voice(
         self,

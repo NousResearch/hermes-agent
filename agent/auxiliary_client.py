@@ -1835,9 +1835,15 @@ def auxiliary_max_tokens_param(value: int) -> dict:
 # Every auxiliary LLM consumer should use these instead of manually
 # constructing clients and calling .chat.completions.create().
 
-# Client cache: (provider, async_mode, base_url, api_key) -> (client, default_model)
+# Client cache: (provider, async_mode, base_url, api_key, api_mode, runtime_key) -> (client, default_model, loop)
+# NOTE: loop identity is NOT part of the key.  On async cache hits we check
+# whether the cached loop is the *current* loop; if not, the stale entry is
+# replaced in-place.  This bounds cache growth to one entry per unique
+# provider config rather than one per (config × event-loop), which previously
+# caused unbounded fd accumulation in long-running gateway processes (#10200).
 _client_cache: Dict[tuple, tuple] = {}
 _client_cache_lock = threading.Lock()
+_CLIENT_CACHE_MAX_SIZE = 64  # safety belt — evict oldest when exceeded
 
 
 def neuter_async_httpx_del() -> None:
@@ -1970,39 +1976,49 @@ def _get_cached_client(
     Async clients (AsyncOpenAI) use httpx.AsyncClient internally, which
     binds to the event loop that was current when the client was created.
     Using such a client on a *different* loop causes deadlocks or
-    RuntimeError.  To prevent cross-loop issues (especially in gateway
-    mode where _run_async() may spawn fresh loops in worker threads), the
-    cache key for async clients includes the current event loop's identity
-    so each loop gets its own client instance.
+    RuntimeError.  To prevent cross-loop issues, the cache validates on
+    every async hit that the cached loop is the *current, open* loop.
+    If the loop changed (e.g. a new gateway worker-thread loop), the stale
+    entry is replaced in-place rather than creating an additional entry.
+
+    This keeps cache size bounded to one entry per unique provider config,
+    preventing the fd-exhaustion that previously occurred in long-running
+    gateways where recycled worker threads created unbounded entries (#10200).
     """
-    # Include loop identity for async clients to prevent cross-loop reuse.
-    # httpx.AsyncClient (inside AsyncOpenAI) is bound to the loop where it
-    # was created — reusing it on a different loop causes deadlocks (#2681).
-    loop_id = 0
+    # Resolve the current event loop for async clients so we can validate
+    # cached entries.  Loop identity is NOT in the cache key — instead we
+    # check at hit time whether the cached loop is still current and open.
+    # This prevents unbounded cache growth from recycled worker-thread loops
+    # while still guaranteeing we never reuse a client on the wrong loop
+    # (which causes deadlocks, see #2681).
     current_loop = None
     if async_mode:
         try:
             import asyncio as _aio
             current_loop = _aio.get_event_loop()
-            loop_id = id(current_loop)
         except RuntimeError:
             pass
     runtime = _normalize_main_runtime(main_runtime)
     runtime_key = tuple(runtime.get(field, "") for field in _MAIN_RUNTIME_FIELDS) if provider == "auto" else ()
-    cache_key = (provider, async_mode, base_url or "", api_key or "", api_mode or "", loop_id, runtime_key)
+    cache_key = (provider, async_mode, base_url or "", api_key or "", api_mode or "", runtime_key)
     with _client_cache_lock:
         if cache_key in _client_cache:
             cached_client, cached_default, cached_loop = _client_cache[cache_key]
             if async_mode:
-                # A cached async client whose loop has been closed will raise
-                # "Event loop is closed" when httpx tries to clean up its
-                # transport.  Discard the stale client and create a fresh one.
-                if cached_loop is not None and cached_loop.is_closed():
-                    _force_close_async_httpx(cached_client)
-                    del _client_cache[cache_key]
-                else:
+                # Validate: the cached client must be bound to the CURRENT,
+                # OPEN loop.  If the loop changed or was closed, the httpx
+                # transport inside is dead — force-close and replace.
+                loop_ok = (
+                    cached_loop is not None
+                    and cached_loop is current_loop
+                    and not cached_loop.is_closed()
+                )
+                if loop_ok:
                     effective = _compat_model(cached_client, model, cached_default)
                     return cached_client, effective
+                # Stale — evict and fall through to create a new client.
+                _force_close_async_httpx(cached_client)
+                del _client_cache[cache_key]
             else:
                 effective = _compat_model(cached_client, model, cached_default)
                 return cached_client, effective
@@ -2022,6 +2038,12 @@ def _get_cached_client(
         bound_loop = current_loop
         with _client_cache_lock:
             if cache_key not in _client_cache:
+                # Safety belt: if the cache has grown beyond the max, evict
+                # the oldest entries (FIFO — dict preserves insertion order).
+                while len(_client_cache) >= _CLIENT_CACHE_MAX_SIZE:
+                    evict_key, evict_entry = next(iter(_client_cache.items()))
+                    _force_close_async_httpx(evict_entry[0])
+                    del _client_cache[evict_key]
                 _client_cache[cache_key] = (client, default_model, bound_loop)
             else:
                 client, default_model, _ = _client_cache[cache_key]

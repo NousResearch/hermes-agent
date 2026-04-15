@@ -135,6 +135,57 @@ async def test_registers_native_restart_slash_command(adapter):
 
 
 # ------------------------------------------------------------------
+# Auto-registration from COMMAND_REGISTRY
+# ------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_auto_registers_missing_gateway_commands(adapter):
+    """Commands in COMMAND_REGISTRY that aren't explicitly registered should
+    be auto-registered by the dynamic catch-all block."""
+    adapter._run_simple_slash = AsyncMock()
+    adapter._register_slash_commands()
+
+    tree_names = set(adapter._client.tree.commands.keys())
+
+    # These commands are gateway-available but were not in the original
+    # hardcoded registration list — they should be auto-registered.
+    expected_auto = {"debug", "yolo", "reload", "profile"}
+    for name in expected_auto:
+        assert name in tree_names, f"/{name} should be auto-registered on Discord"
+
+
+@pytest.mark.asyncio
+async def test_auto_registered_command_dispatches_correctly(adapter):
+    """Auto-registered commands should dispatch via _run_simple_slash."""
+    adapter._run_simple_slash = AsyncMock()
+    adapter._register_slash_commands()
+
+    # /debug has no args — test parameterless dispatch
+    debug_cmd = adapter._client.tree.commands["debug"]
+    interaction = SimpleNamespace()
+    adapter._run_simple_slash.reset_mock()
+    await debug_cmd.callback(interaction)
+    adapter._run_simple_slash.assert_awaited_once_with(interaction, "/debug")
+
+
+@pytest.mark.asyncio
+async def test_auto_registered_command_with_args(adapter):
+    """Auto-registered commands with args_hint should accept an optional args param."""
+    adapter._run_simple_slash = AsyncMock()
+    adapter._register_slash_commands()
+
+    # /branch has args_hint="[name]" — test dispatch with args
+    branch_cmd = adapter._client.tree.commands["branch"]
+    interaction = SimpleNamespace()
+    adapter._run_simple_slash.reset_mock()
+    await branch_cmd.callback(interaction, args="my-branch")
+    adapter._run_simple_slash.assert_awaited_once_with(
+        interaction, "/branch my-branch"
+    )
+
+
+# ------------------------------------------------------------------
 # _handle_thread_create_slash — success, session dispatch, failure
 # ------------------------------------------------------------------
 

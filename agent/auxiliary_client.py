@@ -886,7 +886,7 @@ def _resolve_custom_runtime() -> Tuple[Optional[str], Optional[str], Optional[st
     # local servers ignore the Authorization header.  Same fix as cli.py
     # _ensure_runtime_credentials() (PR #2556).
     if not isinstance(custom_key, str) or not custom_key.strip():
-        custom_key = "no-key-required"
+        custom_key = ""
 
     if not isinstance(custom_mode, str) or not custom_mode.strip():
         custom_mode = None
@@ -1406,7 +1406,7 @@ def resolve_provider_client(
             custom_key = (
                 (explicit_api_key or "").strip()
                 or os.getenv("OPENAI_API_KEY", "").strip()
-                or "no-key-required"  # local servers don't need auth
+                or ""
             )
             if not custom_base:
                 logger.warning(
@@ -1452,7 +1452,7 @@ def resolve_provider_client(
             custom_key_env = custom_entry.get("key_env", "").strip()
             if not custom_key and custom_key_env:
                 custom_key = os.getenv(custom_key_env, "").strip()
-            custom_key = custom_key or "no-key-required"
+            custom_key = custom_key or ""
             if custom_base:
                 final_model = _normalize_resolved_model(
                     model or custom_entry.get("model") or _read_main_model() or "gpt-4o-mini",

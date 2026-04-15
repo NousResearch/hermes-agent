@@ -302,6 +302,52 @@ class TestDetectProviderForModel:
         assert result is not None
         assert result[0] not in ("nous",)  # nous has claude models but shouldn't be suggested
 
+    def test_prefers_credentialed_sibling_direct_provider_over_openrouter(self, monkeypatch):
+        monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
+        monkeypatch.setenv("MINIMAX_CN_API_KEY", "cn-key")
+        live_models = LIVE_OPENROUTER_MODELS + [("minimax/minimax-m2.7", "")]
+
+        with patch("hermes_cli.models.fetch_openrouter_models", return_value=live_models):
+            result = detect_provider_for_model("minimax-m2.7", "openai-codex")
+
+        assert result is not None
+        assert result[0] == "minimax-cn"
+        assert result[1].lower() == "minimax-m2.7"
+
+    def test_vendor_prefixed_direct_model_strips_prefix_for_matching_provider(self, monkeypatch):
+        monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
+        monkeypatch.setenv("MINIMAX_CN_API_KEY", "cn-key")
+        live_models = LIVE_OPENROUTER_MODELS + [("minimax/minimax-m2.7", "")]
+
+        with patch("hermes_cli.models.fetch_openrouter_models", return_value=live_models):
+            result = detect_provider_for_model("minimax/minimax-m2.7", "openai-codex")
+
+        assert result is not None
+        assert result[0] == "minimax-cn"
+        assert result[1].lower() == "minimax-m2.7"
+
+    def test_prefixed_custom_provider_secret_beats_openrouter_fallback(self, monkeypatch):
+        for env_var in ("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"):
+            monkeypatch.delenv(env_var, raising=False)
+
+        live_models = LIVE_OPENROUTER_MODELS + [("z-ai/glm-5-turbo", "")]
+        config = {
+            "providers": {
+                "zai": {
+                    "name": "Z.AI",
+                    "base_url": "https://api.z.ai/api/paas/v4",
+                    "api_key": "zai-config-key",
+                }
+            }
+        }
+
+        with patch("hermes_cli.models.fetch_openrouter_models", return_value=live_models), \
+             patch("hermes_cli.config.load_config", return_value=config):
+            result = detect_provider_for_model("z-ai/glm-5-turbo", "openai-codex")
+
+        assert result is not None
+        assert result == ("zai", "glm-5-turbo")
+
 
 class TestIsNousFreeTier:
     """Tests for is_nous_free_tier — account tier detection."""

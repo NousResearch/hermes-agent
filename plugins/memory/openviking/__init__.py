@@ -109,12 +109,7 @@ class _VikingClient:
         resp = self._httpx.get(
             self._url(path), headers=self._headers(), timeout=_TIMEOUT, **kwargs
         )
-        try:
-            resp.raise_for_status()
-        except Exception as e:
-            logger.debug("OpenViking request failed: %s %s, status: %s, response: %s",
-                         "GET", path, resp.status_code, resp.text)
-            raise
+        resp.raise_for_status()
         return resp.json()
 
     def post(self, path: str, payload: dict = None, **kwargs) -> dict:
@@ -122,12 +117,7 @@ class _VikingClient:
             self._url(path), json=payload or {}, headers=self._headers(),
             timeout=_TIMEOUT, **kwargs
         )
-        try:
-            resp.raise_for_status()
-        except Exception as e:
-            logger.debug("OpenViking request failed: %s %s, status: %s, response: %s",
-                         "POST", path, resp.status_code, resp.text)
-            raise
+        resp.raise_for_status()
         return resp.json()
 
     def health(self) -> bool:
@@ -336,13 +326,6 @@ class OpenVikingMemoryProvider(MemoryProvider):
             if not self._client.health():
                 logger.warning("OpenViking server at %s is not reachable", self._endpoint)
                 self._client = None
-            else:
-                # Explicitly create the session to ensure it exists
-                try:
-                    self._client.post("/api/v1/sessions", {"session_id": self._session_id})
-                    logger.info("OpenViking session %s created", self._session_id)
-                except Exception as e:
-                    logger.debug("OpenViking session creation failed (may already exist): %s", e)
         except ImportError:
             logger.warning("httpx not installed — OpenViking plugin disabled")
             self._client = None
@@ -533,14 +516,9 @@ class OpenVikingMemoryProvider(MemoryProvider):
         except Exception as e:
             return tool_error(str(e))
 
-    def reset_session(self, new_session_id: str) -> None:
-        """Transition to a new session without tearing down the HTTP client.
-
-        Called by MemoryManager.restart_session() after on_session_end() has
-        committed the old session (e.g. after CLI /new or context compression).
-        Lighter than shutdown() + initialize(): keeps the httpx client alive,
-        resets per-session counters, and creates the new OV session.
-        """
+    def on_session_reset(self, new_session_id: str) -> None:
+        """Rebind per-session state to new_session_id. OV auto-creates the
+        session when the first message is added, so no create call here."""
         for t in (self._sync_thread, self._prefetch_thread):
             if t and t.is_alive():
                 t.join(timeout=5.0)
@@ -550,13 +528,6 @@ class OpenVikingMemoryProvider(MemoryProvider):
         self._prefetch_result = ""
         self._sync_thread = None
         self._prefetch_thread = None
-
-        if self._client:
-            try:
-                self._client.post("/api/v1/sessions", {"session_id": self._session_id})
-                logger.info("OpenViking new session %s created", self._session_id)
-            except Exception as e:
-                logger.debug("OpenViking session creation on reset: %s", e)
 
         global _last_active_provider
         _last_active_provider = self

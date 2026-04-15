@@ -452,7 +452,7 @@ class TestGatewayServiceDetection:
 
 
 class TestGatewaySystemServiceRouting:
-    def test_systemd_restart_self_requests_graceful_restart_without_reload_or_restart(self, monkeypatch, capsys):
+    def test_systemd_restart_self_requests_graceful_restart_and_waits(self, monkeypatch, capsys):
         calls = []
 
         monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: False)
@@ -466,16 +466,37 @@ class TestGatewaySystemServiceRouting:
             "_request_gateway_self_restart",
             lambda pid: calls.append(("self", pid)) or True,
         )
-        monkeypatch.setattr(
-            gateway_cli.subprocess,
-            "run",
-            lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("systemctl should not run")),
-        )
+
+        # Simulate: old process dies immediately, new process becomes active
+        kill_call_count = [0]
+        def fake_kill(pid, sig):
+            kill_call_count[0] += 1
+            if kill_call_count[0] >= 2:  # first call checks, second = dead
+                raise ProcessLookupError()
+        monkeypatch.setattr(os, "kill", fake_kill)
+
+        # Simulate systemctl is-active returning "active" with a new PID
+        new_pid = [None]
+        def fake_subprocess_run(cmd, **kwargs):
+            if "is-active" in cmd:
+                result = SimpleNamespace(stdout="active\n", returncode=0)
+                new_pid[0] = 999  # new PID
+                return result
+            raise AssertionError(f"Unexpected systemctl call: {cmd}")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_subprocess_run)
+        # get_running_pid returns new PID after restart
+        pid_calls = [0]
+        def fake_get_pid():
+            pid_calls[0] += 1
+            return 999 if pid_calls[0] > 1 else 654
+        monkeypatch.setattr("gateway.status.get_running_pid", fake_get_pid)
 
         gateway_cli.systemd_restart()
 
-        assert calls == [("refresh", False), ("self", 654)]
-        assert "restart requested" in capsys.readouterr().out.lower()
+        assert ("self", 654) in calls
+        out = capsys.readouterr().out.lower()
+        assert "restarted" in out
 
     def test_gateway_install_passes_system_flags(self, monkeypatch):
         monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)

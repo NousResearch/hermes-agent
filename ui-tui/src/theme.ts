@@ -23,6 +23,8 @@ export interface ThemeColors {
   diffRemoved: string
   diffAddedWord: string
   diffRemovedWord: string
+
+  shellDollar: string
 }
 
 export interface ThemeBrand {
@@ -95,7 +97,8 @@ export const DEFAULT_THEME: Theme = {
     diffAdded: 'rgb(220,255,220)',
     diffRemoved: 'rgb(255,220,220)',
     diffAddedWord: 'rgb(36,138,61)',
-    diffRemovedWord: 'rgb(207,34,46)'
+    diffRemovedWord: 'rgb(207,34,46)',
+    shellDollar: '#4dabf7'
   },
 
   brand: {
@@ -149,7 +152,8 @@ export function fromSkin(
       diffAdded: d.color.diffAdded,
       diffRemoved: d.color.diffRemoved,
       diffAddedWord: d.color.diffAddedWord,
-      diffRemovedWord: d.color.diffRemovedWord
+      diffRemovedWord: d.color.diffRemovedWord,
+      shellDollar: c('shell_dollar') ?? d.color.shellDollar
     },
 
     brand: {

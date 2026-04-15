@@ -22,6 +22,7 @@ const TranscriptPane = memo(function TranscriptPane({
   transcript
 }: Pick<AppLayoutProps, 'actions' | 'composer' | 'progress' | 'transcript'>) {
   const ui = useStore($uiState)
+
   const visibleHistory = transcript.virtualRows.slice(transcript.virtualHistory.start, transcript.virtualHistory.end)
 
   return (
@@ -35,6 +36,7 @@ const TranscriptPane = memo(function TranscriptPane({
               {row.msg.kind === 'intro' && row.msg.info ? (
                 <Box flexDirection="column" paddingTop={1}>
                   <Banner t={ui.theme} />
+
                   <SessionPanel info={row.msg.info} sid={ui.sid} t={ui.theme} />
                 </Box>
               ) : row.msg.kind === 'panel' && row.msg.panelData ? (
@@ -105,6 +107,9 @@ const ComposerPane = memo(function ComposerPane({
   const ui = useStore($uiState)
   const isBlocked = useStore($isBlocked)
 
+  const sh = (composer.inputBuf[0] ?? composer.input).startsWith('!')
+  const pw = sh ? 2 : 3
+
   return (
     <NoSelect flexDirection="column" flexShrink={0} fromLeftEdge paddingX={1}>
       <QueuedMessages
@@ -123,6 +128,7 @@ const ComposerPane = memo(function ComposerPane({
       {status.showStickyPrompt ? (
         <Text color={ui.theme.color.dim as any} wrap="truncate-end">
           <Text color={ui.theme.color.label as any}>↳ </Text>
+
           {status.stickyPrompt}
         </Text>
       ) : (
@@ -172,14 +178,18 @@ const ComposerPane = memo(function ComposerPane({
           ))}
 
           <Box>
-            <Box width={3}>
-              <Text bold color={ui.theme.color.gold as any}>
-                {composer.inputBuf.length ? '  ' : `${ui.theme.brand.prompt} `}
-              </Text>
+            <Box width={pw}>
+              {sh ? (
+                <Text color={ui.theme.color.shellDollar as any}>$ </Text>
+              ) : (
+                <Text bold color={ui.theme.color.gold as any}>
+                  {composer.inputBuf.length ? '  ' : `${ui.theme.brand.prompt} `}
+                </Text>
+              )}
             </Box>
 
             <TextInput
-              columns={Math.max(20, composer.cols - 3)}
+              columns={Math.max(20, composer.cols - pw)}
               onChange={composer.updateInput}
               onPaste={composer.handleTextPaste}
               onSubmit={composer.submit}

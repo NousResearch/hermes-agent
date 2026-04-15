@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from gateway.config import GatewayConfig, Platform
-from gateway.run import GatewayRunner
+from gateway.run import GatewayRunner, _parse_session_key
 
 
 # ---------------------------------------------------------------------------
@@ -302,3 +302,97 @@ def test_build_process_event_source_falls_back_to_session_key_chat_type(monkeypa
     assert source.thread_id == "42"
     assert source.user_id == "123"
     assert source.user_name == "Emiliyan"
+
+
+@pytest.mark.asyncio
+async def test_inject_watch_notification_ignores_foreground_event_source(monkeypatch, tmp_path):
+    """Negative test: watch notification must NOT route to the foreground thread."""
+    from gateway.session import SessionSource
+
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    adapter = runner.adapters[Platform.TELEGRAM]
+
+    # Session store has the process's original thread (thread 42)
+    runner.session_store._entries["agent:main:telegram:group:-100:42"] = SimpleNamespace(
+        origin=SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-100",
+            chat_type="group",
+            thread_id="42",
+            user_id="proc_owner",
+            user_name="alice",
+        )
+    )
+
+    # The evt dict carries the correct session_key — NOT a foreground event
+    evt = {
+        "session_id": "proc_cross_thread",
+        "session_key": "agent:main:telegram:group:-100:42",
+    }
+
+    await runner._inject_watch_notification("[SYSTEM: watch match]", evt)
+
+    adapter.handle_message.assert_awaited_once()
+    synth_event = adapter.handle_message.await_args.args[0]
+    # Must route to thread 42 (process origin), NOT some other thread
+    assert synth_event.source.thread_id == "42"
+    assert synth_event.source.user_id == "proc_owner"
+
+
+def test_build_process_event_source_returns_none_for_empty_evt(monkeypatch, tmp_path):
+    """Missing session_key and no platform metadata → None (drop notification)."""
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+
+    source = runner._build_process_event_source({"session_id": "proc_orphan"})
+    assert source is None
+
+
+def test_build_process_event_source_returns_none_for_invalid_platform(monkeypatch, tmp_path):
+    """Invalid platform string → None."""
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+
+    evt = {
+        "session_id": "proc_bad",
+        "platform": "not_a_real_platform",
+        "chat_type": "dm",
+        "chat_id": "123",
+    }
+    source = runner._build_process_event_source(evt)
+    assert source is None
+
+
+def test_build_process_event_source_returns_none_for_short_session_key(monkeypatch, tmp_path):
+    """Session key with <5 parts doesn't parse, falls through to empty metadata → None."""
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+
+    evt = {
+        "session_id": "proc_short",
+        "session_key": "agent:main:telegram",  # Too few parts
+    }
+    source = runner._build_process_event_source(evt)
+    assert source is None
+
+
+# ---------------------------------------------------------------------------
+# _parse_session_key helper
+# ---------------------------------------------------------------------------
+
+def test_parse_session_key_valid():
+    result = _parse_session_key("agent:main:telegram:group:-100")
+    assert result == {"platform": "telegram", "chat_type": "group", "chat_id": "-100"}
+
+
+def test_parse_session_key_with_extra_parts():
+    """Extra trailing parts (thread_id etc.) are ignored — only first 5 matter."""
+    result = _parse_session_key("agent:main:discord:group:chan123:thread456")
+    assert result == {"platform": "discord", "chat_type": "group", "chat_id": "chan123"}
+
+
+def test_parse_session_key_too_short():
+    assert _parse_session_key("agent:main:telegram") is None
+    assert _parse_session_key("") is None
+
+
+def test_parse_session_key_wrong_prefix():
+    assert _parse_session_key("cron:main:telegram:dm:123") is None
+    assert _parse_session_key("agent:cron:telegram:dm:123") is None

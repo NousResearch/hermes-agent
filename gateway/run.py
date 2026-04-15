@@ -482,6 +482,23 @@ def _resolve_hermes_bin() -> Optional[list[str]]:
     return None
 
 
+def _parse_session_key(session_key: str) -> "dict | None":
+    """Parse a session key into its component parts.
+
+    Session keys follow the format ``agent:main:{platform}:{chat_type}:{chat_id}``.
+    Returns a dict with ``platform``, ``chat_type``, and ``chat_id`` keys,
+    or None if the key doesn't match the expected format.
+    """
+    parts = session_key.split(":")
+    if len(parts) >= 5 and parts[0] == "agent" and parts[1] == "main":
+        return {
+            "platform": parts[2],
+            "chat_type": parts[3],
+            "chat_id": parts[4],
+        }
+    return None
+
+
 def _format_gateway_process_notification(evt: dict) -> "str | None":
     """Format a watch pattern event from completion_queue into a [SYSTEM:] message."""
     evt_type = evt.get("type", "completion")
@@ -1489,12 +1506,11 @@ class GatewayRunner:
         notified: set = set()
         for session_key in active:
             # Parse platform + chat_id from the session key.
-            # Format: agent:main:{platform}:{chat_type}:{chat_id}[:{extra}...]
-            parts = session_key.split(":")
-            if len(parts) < 5:
+            _parsed = _parse_session_key(session_key)
+            if not _parsed:
                 continue
-            platform_str = parts[2]
-            chat_id = parts[4]
+            platform_str = _parsed["platform"]
+            chat_id = _parsed["chat_id"]
 
             # Deduplicate: one notification per chat, even if multiple
             # sessions (different users/threads) share the same chat.
@@ -7479,11 +7495,11 @@ class GatewayRunner:
                     exc,
                 )
 
-            parts = session_key.split(":")
-            if len(parts) >= 5 and parts[0] == "agent" and parts[1] == "main":
-                derived_platform = parts[2]
-                derived_chat_type = parts[3]
-                derived_chat_id = parts[4]
+            _parsed = _parse_session_key(session_key)
+            if _parsed:
+                derived_platform = _parsed["platform"]
+                derived_chat_type = _parsed["chat_type"]
+                derived_chat_id = _parsed["chat_id"]
 
         platform_name = str(evt.get("platform") or derived_platform or "").strip().lower()
         chat_type = str(evt.get("chat_type") or derived_chat_type or "").strip().lower()

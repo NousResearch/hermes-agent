@@ -174,6 +174,21 @@ class TestMemoryManager:
         assert mgr.get_provider("test1") is p
         assert mgr.get_provider("nonexistent") is None
 
+    def test_failed_schema_load_leaves_manager_unregistered(self):
+        """A provider whose get_tool_schemas() raises must not poison the single-external slot (#9948)."""
+        class BrokenProvider(FakeMemoryProvider):
+            def get_tool_schemas(self):
+                raise RuntimeError("boom")
+
+        mgr = MemoryManager()
+        with pytest.raises(RuntimeError):
+            mgr.add_provider(BrokenProvider("broken"))
+        assert mgr.providers == []
+
+        ok = FakeMemoryProvider("ok")
+        mgr.add_provider(ok)
+        assert mgr.get_provider("ok") is ok
+
     def test_on_turn_start_passes_each_provider_only_the_kwargs_it_accepts(self):
         """A provider with the two-positional ``on_turn_start`` still runs; one declaring the author kwargs gets them."""
         class AuthorAwareProvider(FakeMemoryProvider):

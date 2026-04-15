@@ -172,6 +172,7 @@ class TelegramAdapter(BasePlatformAdapter):
         self._approval_state: Dict[int, str] = {}
         # Inline menu state per chat
         self._commands_menu_state: Dict[str, dict] = {}
+        self._resume_menu_state: Dict[str, dict] = {}
 
     @staticmethod
     def _is_callback_user_authorized(user_id: str) -> bool:
@@ -1570,6 +1571,116 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.warning("[%s] send_commands_menu failed: %s", self.name, e)
             return SendResult(success=False, error=str(e))
 
+    @staticmethod
+    def _relative_time(ts_str: str | None) -> str:
+        """Convert an ISO timestamp to a concise relative label."""
+        if not ts_str:
+            return ""
+        try:
+            from datetime import datetime, timezone
+
+            dt = datetime.fromisoformat(str(ts_str).replace("Z", "+00:00"))
+            now = datetime.now(timezone.utc)
+            delta = now - dt
+            seconds = int(delta.total_seconds())
+            if seconds < 60:
+                return "just now"
+            minutes = seconds // 60
+            if minutes < 60:
+                return f"{minutes}m ago"
+            hours = minutes // 60
+            if hours < 24:
+                return f"{hours}h ago"
+            days = hours // 24
+            if days < 30:
+                return f"{days}d ago"
+            months = days // 30
+            return f"{months}mo ago"
+        except Exception:
+            return ""
+
+    def _render_resume_menu_text(self, mode: str = "root") -> str:
+        """Render the inline-menu body for /resume."""
+        if mode == "chain":
+            return "📋 *Resume Session*\n\nTap the point in time you want to resume:"
+        return "📋 *Named Sessions*\n\nTap a session to resume it:"
+
+    @staticmethod
+    def _resume_session_label(session: dict) -> str:
+        """Return the best available label for a /resume session entry."""
+        title = (session.get("title") or "").strip()
+        if title:
+            return title
+
+        preview = (session.get("preview") or "").strip()
+        if preview:
+            return preview
+
+        session_id = (session.get("id") or "").strip()
+        if session_id:
+            return session_id
+
+        return "Untitled"
+
+    def _build_resume_keyboard(self, sessions: list, *, show_back: bool = False) -> "InlineKeyboardMarkup":
+        """Build inline keyboard rows for /resume session selection."""
+        rows: list = []
+        for idx, session in enumerate(sessions):
+            title = self._resume_session_label(session)[:30]
+            rel = self._relative_time(session.get("last_active") or session.get("started_at"))
+            label = f"{title} — {rel}" if rel else title
+            if len(label) > 50:
+                label = label[:47] + "..."
+            rows.append([InlineKeyboardButton(label, callback_data=f"rs:{idx}")])
+
+        if show_back:
+            rows.append([InlineKeyboardButton("← Back", callback_data="rb")])
+        rows.append([InlineKeyboardButton("✗ Close", callback_data="rx")])
+        return InlineKeyboardMarkup(rows)
+
+    async def send_resume_menu(
+        self,
+        chat_id: str,
+        sessions: list,
+        session_key: str,
+        on_session_resumed,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send an inline-keyboard session picker for /resume."""
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+
+        try:
+            menu_mode = (metadata or {}).get("resume_menu_mode") or "root"
+            root_sessions = (metadata or {}).get("resume_root_sessions")
+            keyboard = self._build_resume_keyboard(
+                sessions,
+                show_back=bool(menu_mode == "chain" and root_sessions),
+            )
+            thread_id = metadata.get("thread_id") if metadata else None
+            kwargs: Dict[str, Any] = {
+                "chat_id": int(chat_id),
+                "text": self._render_resume_menu_text(menu_mode),
+                "parse_mode": ParseMode.MARKDOWN,
+                "reply_markup": keyboard,
+            }
+            if thread_id:
+                kwargs["message_thread_id"] = int(thread_id)
+
+            msg = await self._send_message_with_thread_fallback(**kwargs)
+            self._resume_menu_state[str(chat_id)] = {
+                "sessions": sessions,
+                "root_sessions": root_sessions if root_sessions is not None else (sessions if menu_mode == "root" else None),
+                "mode": menu_mode,
+                "msg_id": msg.message_id,
+                "session_key": session_key,
+                "on_session_resumed": on_session_resumed,
+            }
+            return SendResult(success=True, message_id=str(msg.message_id))
+        except Exception as e:
+            logger.warning("[%s] send_resume_menu failed: %s", self.name, e)
+            return SendResult(success=False, error=str(e))
+
     async def _handle_commands_callback(self, query, data: str, chat_id: str) -> None:
         """Handle /commands inline menu callbacks."""
         state = self._commands_menu_state.get(chat_id)
@@ -1617,6 +1728,120 @@ class TelegramAdapter(BasePlatformAdapter):
 
         await query.answer()
 
+    async def _handle_resume_callback(self, query, data: str, chat_id: str) -> None:
+        """Handle /resume inline menu callbacks."""
+        state = self._resume_menu_state.get(chat_id)
+        if not state:
+            await query.answer(text="Menu expired — use /resume again.")
+            return
+
+        expected_msg_id = state.get("msg_id")
+        actual_msg_id = getattr(getattr(query, "message", None), "message_id", None)
+        if expected_msg_id is not None and actual_msg_id != expected_msg_id:
+            await query.answer(text="Menu expired — use /resume again.")
+            return
+
+        if data.startswith("rs:"):
+            try:
+                idx = int(data[3:])
+            except ValueError:
+                await query.answer(text="Invalid selection.")
+                return
+
+            sessions = state["sessions"]
+            if idx < 0 or idx >= len(sessions):
+                await query.answer(text="Session not found.")
+                return
+
+            session = sessions[idx]
+            chain = session.get("resume_chain") or []
+            if chain and state.get("mode") == "root":
+                state["sessions"] = chain
+                state["mode"] = "chain"
+                try:
+                    await query.edit_message_text(
+                        text=self._render_resume_menu_text("chain"),
+                        parse_mode=ParseMode.MARKDOWN,
+                        reply_markup=self._build_resume_keyboard(chain, show_back=True),
+                    )
+                except Exception:
+                    pass
+                await query.answer()
+                return
+
+            session_id = session.get("id")
+            title = self._resume_session_label(session)
+            self._resume_menu_state.pop(chat_id, None)
+
+            try:
+                await query.edit_message_text(
+                    text=f"↻ Resuming **{title}**…",
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=None,
+                )
+            except Exception:
+                pass
+
+            on_resume = state.get("on_session_resumed")
+            thread_id = getattr(getattr(query, "message", None), "message_thread_id", None)
+            if on_resume:
+                try:
+                    result_msg = await on_resume(session_id, title)
+                    if result_msg:
+                        kwargs: Dict[str, Any] = {
+                            "chat_id": int(chat_id),
+                            "text": result_msg,
+                            "parse_mode": ParseMode.MARKDOWN,
+                        }
+                        if thread_id:
+                            kwargs["message_thread_id"] = int(thread_id)
+                        await self._send_message_with_thread_fallback(**kwargs)
+                except Exception as exc:
+                    logger.error("Resume callback failed: %s", exc)
+                    try:
+                        kwargs = {
+                            "chat_id": int(chat_id),
+                            "text": f"❌ Failed to resume session: {exc}",
+                        }
+                        if thread_id:
+                            kwargs["message_thread_id"] = int(thread_id)
+                        await self._send_message_with_thread_fallback(**kwargs)
+                    except Exception:
+                        pass
+
+            await query.answer()
+            return
+
+        if data == "rb":
+            root_sessions = state.get("root_sessions") or []
+            if not root_sessions:
+                await query.answer(text="Menu expired — use /resume again.")
+                return
+
+            state["sessions"] = root_sessions
+            state["mode"] = "root"
+            try:
+                await query.edit_message_text(
+                    text=self._render_resume_menu_text("root"),
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=self._build_resume_keyboard(root_sessions),
+                )
+            except Exception:
+                pass
+            await query.answer()
+            return
+
+        if data == "rx":
+            self._resume_menu_state.pop(chat_id, None)
+            try:
+                await query.edit_message_text(text="📋 Session picker closed.", reply_markup=None)
+            except Exception:
+                pass
+            await query.answer()
+            return
+
+        await query.answer()
+
     async def _handle_callback_query(
         self, update: "Update", context: "ContextTypes.DEFAULT_TYPE"
     ) -> None:
@@ -1638,6 +1863,13 @@ class TelegramAdapter(BasePlatformAdapter):
             chat_id = str(query.message.chat_id) if query.message else None
             if chat_id:
                 await self._handle_commands_callback(query, data, chat_id)
+            return
+
+        # --- /resume menu callbacks (rs:/rb/rx) ---
+        if data.startswith(("rs:", "rb", "rx")):
+            chat_id = str(query.message.chat_id) if query.message else None
+            if chat_id:
+                await self._handle_resume_callback(query, data, chat_id)
             return
 
         # --- Exec approval callbacks (ea:choice:id) ---

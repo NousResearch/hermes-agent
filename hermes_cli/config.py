@@ -670,6 +670,21 @@ DEFAULT_CONFIG = {
         # Supports \n for newlines, e.g. "🤖 *My Bot*\n──────\n"
     },
 
+    # Telegram platform settings (gateway mode)
+    "telegram": {
+        "channel_prompts": {},         # Per-chat/topic ephemeral system prompts (topics inherit from parent group)
+    },
+
+    # Slack platform settings (gateway mode)
+    "slack": {
+        "channel_prompts": {},         # Per-channel ephemeral system prompts
+    },
+
+    # Mattermost platform settings (gateway mode)
+    "mattermost": {
+        "channel_prompts": {},         # Per-channel ephemeral system prompts
+    },
+
     # Approval mode for dangerous commands:
     #   manual — always prompt the user (default)
     #   smart  — use auxiliary LLM to auto-approve low-risk commands, prompt for high-risk

@@ -298,6 +298,33 @@ def build_anthropic_client(api_key: str, base_url: str = None):
     return _anthropic_sdk.Anthropic(**kwargs)
 
 
+def build_anthropic_bedrock_client(region: str):
+    """Create an AnthropicBedrock client for Bedrock Claude models.
+
+    Uses the Anthropic SDK's native Bedrock adapter, which provides full
+    Claude feature parity: prompt caching, thinking budgets, adaptive
+    thinking, fast mode — features not available via the Converse API.
+
+    Auth uses the boto3 default credential chain (IAM roles, SSO, env vars).
+    """
+    if _anthropic_sdk is None:
+        raise ImportError(
+            "The 'anthropic' package is required for the Bedrock provider. "
+            "Install it with: pip install 'anthropic>=0.39.0'"
+        )
+    if not hasattr(_anthropic_sdk, "AnthropicBedrock"):
+        raise ImportError(
+            "anthropic.AnthropicBedrock not available. "
+            "Upgrade with: pip install 'anthropic>=0.39.0'"
+        )
+    from httpx import Timeout
+
+    return _anthropic_sdk.AnthropicBedrock(
+        aws_region=region,
+        timeout=Timeout(timeout=900.0, connect=10.0),
+    )
+
+
 def read_claude_code_credentials() -> Optional[Dict[str, Any]]:
     """Read refreshable Claude Code OAuth credentials from ~/.claude/.credentials.json.
 

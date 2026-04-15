@@ -35,6 +35,7 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     "show_reasoning": False,
     "tool_preview_length": 0,
     "streaming": None,  # None = follow top-level streaming config
+    "internal_status": False,
 }
 
 # ---------------------------------------------------------------------------
@@ -50,6 +51,7 @@ _TIER_HIGH = {
     "show_reasoning": False,
     "tool_preview_length": 40,
     "streaming": None,  # follow global
+    "internal_status": False,
 }
 
 _TIER_MEDIUM = {
@@ -57,6 +59,7 @@ _TIER_MEDIUM = {
     "show_reasoning": False,
     "tool_preview_length": 40,
     "streaming": None,
+    "internal_status": False,
 }
 
 _TIER_LOW = {
@@ -64,6 +67,7 @@ _TIER_LOW = {
     "show_reasoning": False,
     "tool_preview_length": 40,
     "streaming": False,
+    "internal_status": False,
 }
 
 _TIER_MINIMAL = {
@@ -71,6 +75,7 @@ _TIER_MINIMAL = {
     "show_reasoning": False,
     "tool_preview_length": 0,
     "streaming": False,
+    "internal_status": False,
 }
 
 _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
@@ -182,7 +187,7 @@ def _normalise(setting: str, value: Any) -> Any:
         if value is True:
             return "all"
         return str(value).lower()
-    if setting in ("show_reasoning", "streaming"):
+    if setting in ("show_reasoning", "streaming", "internal_status"):
         if isinstance(value, str):
             return value.lower() in ("true", "1", "yes", "on")
         return bool(value)

@@ -26,7 +26,7 @@ import threading
 import time
 from pathlib import Path
 from datetime import datetime
-from typing import Dict, Optional, Any, List
+from typing import Dict, Optional, Any, List, Callable
 
 # ---------------------------------------------------------------------------
 # SSL certificate auto-detection for NixOS and other non-standard systems.
@@ -1413,30 +1413,11 @@ class GatewayRunner:
 
         self._busy_ack_ts[session_key] = now
 
-        # Build a status-rich acknowledgment
-        status_parts = []
-        if running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
-            try:
-                summary = running_agent.get_activity_summary()
-                iteration = summary.get("api_call_count", 0)
-                max_iter = summary.get("max_iterations", 0)
-                current_tool = summary.get("current_tool")
-                start_ts = self._running_agents_ts.get(session_key, 0)
-                if start_ts:
-                    elapsed_min = int((now - start_ts) / 60)
-                    if elapsed_min > 0:
-                        status_parts.append(f"{elapsed_min} min elapsed")
-                if max_iter:
-                    status_parts.append(f"iteration {iteration}/{max_iter}")
-                if current_tool:
-                    status_parts.append(f"running: {current_tool}")
-            except Exception:
-                pass
-
-        status_detail = f" ({', '.join(status_parts)})" if status_parts else ""
-        message = (
-            f"⚡ Interrupting current task{status_detail}. "
-            f"I'll respond to your message shortly."
+        message = self._build_busy_ack_message(
+            source=event.source,
+            running_agent=running_agent,
+            session_key=session_key,
+            now=now,
         )
 
         thread_meta = {"thread_id": event.source.thread_id} if event.source.thread_id else None
@@ -2560,6 +2541,104 @@ class GatewayRunner:
             return QQAdapter(config)
 
         return None
+
+    def _internal_status_enabled(self, source: SessionSource) -> bool:
+        """Return True only when internal gateway telemetry is explicitly enabled."""
+        try:
+            from gateway.display_config import resolve_display_setting
+
+            user_config = _load_gateway_config()
+            platform_key = "cli" if source.platform == Platform.LOCAL else source.platform.value
+            return bool(resolve_display_setting(user_config, platform_key, "internal_status", False))
+        except Exception:
+            return False
+
+    def _build_busy_ack_message(
+        self,
+        source: SessionSource,
+        running_agent: Any,
+        session_key: str,
+        now: float,
+    ) -> str:
+        if not self._internal_status_enabled(source):
+            return "One sec, finishing the previous reply and then I'll handle this."
+
+        status_parts = []
+        if running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
+            try:
+                summary = running_agent.get_activity_summary()
+                iteration = summary.get("api_call_count", 0)
+                max_iter = summary.get("max_iterations", 0)
+                current_tool = summary.get("current_tool")
+                start_ts = self._running_agents_ts.get(session_key, 0)
+                if start_ts:
+                    elapsed_min = int((now - start_ts) / 60)
+                    if elapsed_min > 0:
+                        status_parts.append(f"{elapsed_min} min elapsed")
+                if max_iter:
+                    status_parts.append(f"iteration {iteration}/{max_iter}")
+                if current_tool:
+                    status_parts.append(f"running: {current_tool}")
+            except Exception:
+                pass
+
+        status_detail = f" ({', '.join(status_parts)})" if status_parts else ""
+        return (
+            f"⚡ Interrupting current task{status_detail}. "
+            f"I'll respond to your message shortly."
+        )
+
+    def _build_internal_status_callback(
+        self,
+        source: SessionSource,
+        adapter: Any,
+        chat_id: str,
+        metadata: Optional[dict[str, Any]],
+        loop: asyncio.AbstractEventLoop,
+    ) -> Optional[Callable[[str, str], None]]:
+        if not adapter or not self._internal_status_enabled(source):
+            return None
+
+        def _status_callback_sync(event_type: str, message: str) -> None:
+            try:
+                asyncio.run_coroutine_threadsafe(
+                    adapter.send(
+                        chat_id,
+                        message,
+                        metadata=metadata,
+                    ),
+                    loop,
+                )
+            except Exception as _e:
+                logger.debug("status_callback error (%s): %s", event_type, _e)
+
+        return _status_callback_sync
+
+    def _build_background_review_callback(
+        self,
+        source: SessionSource,
+        adapter: Any,
+        chat_id: str,
+        metadata: Optional[dict[str, Any]],
+        loop: asyncio.AbstractEventLoop,
+    ) -> Optional[Callable[[str], None]]:
+        if not adapter or not self._internal_status_enabled(source):
+            return None
+
+        def _bg_review_send(message: str) -> None:
+            try:
+                asyncio.run_coroutine_threadsafe(
+                    adapter.send(
+                        chat_id,
+                        message,
+                        metadata=metadata,
+                    ),
+                    loop,
+                )
+            except Exception as _e:
+                logger.debug("background_review_callback error: %s", _e)
+
+        return _bg_review_send
 
     def _is_user_authorized(self, source: SessionSource) -> bool:
         """
@@ -8383,25 +8462,17 @@ class GatewayRunner:
             except Exception as _e:
                 logger.debug("agent:step hook error: %s", _e)
 
-        # Bridge sync status_callback → async adapter.send for context pressure
+        # Bridge sync status_callback → async adapter.send for optional internal telemetry
         _status_adapter = self.adapters.get(source.platform)
         _status_chat_id = source.chat_id
         _status_thread_metadata = {"thread_id": _progress_thread_id} if _progress_thread_id else None
-
-        def _status_callback_sync(event_type: str, message: str) -> None:
-            if not _status_adapter:
-                return
-            try:
-                asyncio.run_coroutine_threadsafe(
-                    _status_adapter.send(
-                        _status_chat_id,
-                        message,
-                        metadata=_status_thread_metadata,
-                    ),
-                    _loop_for_step,
-                )
-            except Exception as _e:
-                logger.debug("status_callback error (%s): %s", event_type, _e)
+        _status_callback_sync = self._build_internal_status_callback(
+            source=source,
+            adapter=_status_adapter,
+            chat_id=_status_chat_id,
+            metadata=_status_thread_metadata,
+            loop=_loop_for_step,
+        )
 
         def run_sync():
             # The conditional re-assignment of `message` further below
@@ -8608,23 +8679,14 @@ class GatewayRunner:
             agent.service_tier = self._service_tier
             agent.request_overrides = turn_route.get("request_overrides")
 
-            # Background review delivery — send "💾 Memory updated" etc. to user
-            def _bg_review_send(message: str) -> None:
-                if not _status_adapter:
-                    return
-                try:
-                    asyncio.run_coroutine_threadsafe(
-                        _status_adapter.send(
-                            _status_chat_id,
-                            message,
-                            metadata=_status_thread_metadata,
-                        ),
-                        _loop_for_step,
-                    )
-                except Exception as _e:
-                    logger.debug("background_review_callback error: %s", _e)
-
-            agent.background_review_callback = _bg_review_send
+            # Background review delivery is disabled by default for gateway chats.
+            agent.background_review_callback = self._build_background_review_callback(
+                source=source,
+                adapter=_status_adapter,
+                chat_id=_status_chat_id,
+                metadata=_status_thread_metadata,
+                loop=_loop_for_step,
+            )
 
             # Store agent reference for interrupt support
             agent_holder[0] = agent

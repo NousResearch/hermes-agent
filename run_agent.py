@@ -2412,6 +2412,7 @@ class AIAgent:
                     reasoning=msg.get("reasoning") if role == "assistant" else None,
                     reasoning_details=msg.get("reasoning_details") if role == "assistant" else None,
                     codex_reasoning_items=msg.get("codex_reasoning_items") if role == "assistant" else None,
+                    message_metadata=msg.get("message_metadata"),
                 )
             self._last_flushed_db_idx = len(messages)
         except Exception as e:
@@ -7941,6 +7942,7 @@ class AIAgent:
         task_id: str = None,
         stream_callback: Optional[callable] = None,
         persist_user_message: Optional[str] = None,
+        user_message_metadata: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Run a complete conversation with tool calling until completion.
@@ -7956,6 +7958,8 @@ class AIAgent:
             persist_user_message: Optional clean user message to store in
                 transcripts/history when user_message contains API-only
                 synthetic prefixes.
+            user_message_metadata: Optional transport metadata persisted
+                alongside the current user message.
                     or queuing follow-up prefetch work.
 
         Returns:
@@ -8072,6 +8076,8 @@ class AIAgent:
 
         # Add user message
         user_msg = {"role": "user", "content": user_message}
+        if user_message_metadata:
+            user_msg["message_metadata"] = dict(user_message_metadata)
         messages.append(user_msg)
         current_turn_user_idx = len(messages) - 1
         self._persist_user_message_idx = current_turn_user_idx

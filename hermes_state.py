@@ -31,7 +31,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -81,7 +81,10 @@ CREATE TABLE IF NOT EXISTS messages (
     finish_reason TEXT,
     reasoning TEXT,
     reasoning_details TEXT,
-    codex_reasoning_items TEXT
+    codex_reasoning_items TEXT,
+    platform_chat_id TEXT,
+    platform_thread_id TEXT,
+    platform_message_id TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
@@ -329,6 +332,30 @@ class SessionDB:
                     except sqlite3.OperationalError:
                         pass  # Column already exists
                 cursor.execute("UPDATE schema_version SET version = 6")
+            if current_version < 7:
+                # v7: persist per-message platform identifiers so native
+                # platform links (for example Telegram private deep links)
+                # can be resolved from Hermes' local transcript store.
+                for col_name, col_type in [
+                    ("platform_chat_id", "TEXT"),
+                    ("platform_thread_id", "TEXT"),
+                    ("platform_message_id", "TEXT"),
+                ]:
+                    try:
+                        safe = col_name.replace('"', '""')
+                        cursor.execute(
+                            f'ALTER TABLE messages ADD COLUMN "{safe}" {col_type}'
+                        )
+                    except sqlite3.OperationalError:
+                        pass
+                try:
+                    cursor.execute(
+                        "CREATE INDEX IF NOT EXISTS idx_messages_platform_ref "
+                        "ON messages(platform_chat_id, platform_message_id, platform_thread_id)"
+                    )
+                except sqlite3.OperationalError:
+                    pass
+                cursor.execute("UPDATE schema_version SET version = 7")
 
         # Unique title index — always ensure it exists (safe to run after migrations
         # since the title column is guaranteed to exist at this point)
@@ -339,6 +366,13 @@ class SessionDB:
             )
         except sqlite3.OperationalError:
             pass  # Index already exists
+        try:
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_messages_platform_ref "
+                "ON messages(platform_chat_id, platform_message_id, platform_thread_id)"
+            )
+        except sqlite3.OperationalError:
+            pass
 
         # FTS5 setup (separate because CREATE VIRTUAL TABLE can't be in executescript with IF NOT EXISTS reliably)
         try:
@@ -801,6 +835,7 @@ class SessionDB:
         reasoning: str = None,
         reasoning_details: Any = None,
         codex_reasoning_items: Any = None,
+        message_metadata: Optional[Dict[str, Any]] = None,
     ) -> int:
         """
         Append a message to a session. Returns the message row ID.
@@ -824,12 +859,21 @@ class SessionDB:
         if tool_calls is not None:
             num_tool_calls = len(tool_calls) if isinstance(tool_calls, list) else 1
 
+        platform_chat_id = None
+        platform_thread_id = None
+        platform_message_id = None
+        if isinstance(message_metadata, dict):
+            platform_chat_id = message_metadata.get("chat_id")
+            platform_thread_id = message_metadata.get("thread_id")
+            platform_message_id = message_metadata.get("message_id")
+
         def _do(conn):
             cursor = conn.execute(
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
                    tool_calls, tool_name, timestamp, token_count, finish_reason,
-                   reasoning, reasoning_details, codex_reasoning_items)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   reasoning, reasoning_details, codex_reasoning_items,
+                   platform_chat_id, platform_thread_id, platform_message_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
@@ -843,6 +887,9 @@ class SessionDB:
                     reasoning,
                     reasoning_details_json,
                     codex_items_json,
+                    platform_chat_id,
+                    platform_thread_id,
+                    platform_message_id,
                 ),
             )
             msg_id = cursor.lastrowid
@@ -929,6 +976,47 @@ class SessionDB:
                         msg["codex_reasoning_items"] = None
             messages.append(msg)
         return messages
+
+    def find_telegram_message(
+        self,
+        chat_id: str,
+        message_id: str,
+        thread_id: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Find a persisted Telegram message by chat/message identifiers."""
+        params: List[Any] = ["telegram", chat_id, message_id]
+        thread_sql = ""
+        if thread_id is not None:
+            thread_sql = " AND (m.platform_thread_id = ? OR m.platform_thread_id IS NULL)"
+            params.append(thread_id)
+        with self._lock:
+            cursor = self._conn.execute(
+                f"""
+                SELECT
+                    m.id,
+                    m.session_id,
+                    m.role,
+                    m.content,
+                    m.timestamp,
+                    m.platform_chat_id,
+                    m.platform_thread_id,
+                    m.platform_message_id
+                FROM messages m
+                JOIN sessions s ON s.id = m.session_id
+                WHERE s.source = ?
+                  AND m.platform_chat_id = ?
+                  AND m.platform_message_id = ?
+                  {thread_sql}
+                ORDER BY
+                    CASE WHEN m.platform_thread_id = ? THEN 0 ELSE 1 END,
+                    m.timestamp DESC,
+                    m.id DESC
+                LIMIT 1
+                """,
+                params + [thread_id],
+            )
+            row = cursor.fetchone()
+        return dict(row) if row else None
 
     # =========================================================================
     # Search

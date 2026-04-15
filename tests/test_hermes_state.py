@@ -170,6 +170,30 @@ class TestMessageStorage:
         assert conv[0] == {"role": "user", "content": "Hello"}
         assert conv[1] == {"role": "assistant", "content": "Hi!"}
 
+    def test_message_metadata_persisted_for_platform_lookup(self, db):
+        db.create_session(session_id="s1", source="telegram")
+        db.append_message(
+            "s1",
+            role="user",
+            content="linked message",
+            message_metadata={
+                "platform": "telegram",
+                "chat_id": "-1003712897238",
+                "thread_id": "712",
+                "message_id": "1031",
+            },
+        )
+
+        messages = db.get_messages("s1")
+        assert messages[0]["platform_chat_id"] == "-1003712897238"
+        assert messages[0]["platform_thread_id"] == "712"
+        assert messages[0]["platform_message_id"] == "1031"
+
+        match = db.find_telegram_message("-1003712897238", "1031", thread_id="712")
+        assert match is not None
+        assert match["content"] == "linked message"
+        assert match["platform_message_id"] == "1031"
+
     def test_finish_reason_stored(self, db):
         db.create_session(session_id="s1", source="cli")
         db.append_message("s1", role="assistant", content="Done", finish_reason="stop")
@@ -935,7 +959,7 @@ class TestSchemaInit:
     def test_schema_version(self, db):
         cursor = db._conn.execute("SELECT version FROM schema_version")
         version = cursor.fetchone()[0]
-        assert version == 6
+        assert version == 7
 
     def test_title_column_exists(self, db):
         """Verify the title column was created in the sessions table."""
@@ -991,12 +1015,12 @@ class TestSchemaInit:
         conn.commit()
         conn.close()
 
-        # Open with SessionDB — should migrate to v6
+        # Open with SessionDB — should migrate to v7
         migrated_db = SessionDB(db_path=db_path)
 
         # Verify migration
         cursor = migrated_db._conn.execute("SELECT version FROM schema_version")
-        assert cursor.fetchone()[0] == 6
+        assert cursor.fetchone()[0] == 7
 
         # Verify title column exists and is NULL for existing sessions
         session = migrated_db.get_session("existing")

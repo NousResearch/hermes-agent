@@ -77,6 +77,7 @@ try:
     from tools.url_safety import is_safe_url as _is_safe_url
 except Exception:
     _is_safe_url = lambda url: False  # noqa: E731 — fail-closed: block all if safety module unavailable
+from tools.telegram_link_resolver import parse_private_telegram_link
 from tools.browser_providers.base import CloudBrowserProvider
 from tools.browser_providers.browserbase import BrowserbaseProvider
 from tools.browser_providers.browser_use import BrowserUseProvider
@@ -1298,6 +1299,21 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
             "error": "Blocked: URL contains what appears to be an API key or token. "
                      "Secrets must not be sent in URLs.",
         })
+
+    private_telegram = parse_private_telegram_link(url)
+    if private_telegram:
+        return json.dumps({
+            "success": False,
+            "error": (
+                "Private Telegram t.me/c links are not browser-accessible. "
+                "Use web_extract so Hermes can resolve them from stored Telegram history."
+            ),
+            "suggested_tool": "web_extract",
+            "platform": "telegram",
+            "chat_id": private_telegram["chat_id"],
+            "thread_id": private_telegram["thread_id"],
+            "message_id": private_telegram["message_id"],
+        }, ensure_ascii=False)
 
     # SSRF protection — block private/internal addresses before navigating.
     # Skipped for local backends (Camofox, headless Chromium without a cloud

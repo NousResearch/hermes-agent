@@ -60,6 +60,7 @@ from tools.managed_tool_gateway import (
     resolve_managed_tool_gateway,
 )
 from tools.tool_backend_helpers import managed_nous_tools_enabled
+from tools.telegram_link_resolver import resolve_private_telegram_link
 from tools.url_safety import is_safe_url
 from tools.website_policy import check_website_access
 
@@ -1222,35 +1223,46 @@ async def web_extract_tool(
     try:
         logger.info("Extracting content from %d URL(s)", len(urls))
 
-        # ── SSRF protection — filter out private/internal URLs before any backend ──
-        safe_urls = []
-        ssrf_blocked: List[Dict[str, Any]] = []
+        # Resolve platform-native deep links before falling back to generic web
+        # extraction. Private Telegram links are not browser/web readable.
+        ordered_inputs: List[Any] = []
+        safe_urls: List[str] = []
         for url in urls:
+            native_result = resolve_private_telegram_link(url)
+            if native_result is not None:
+                ordered_inputs.append(("resolved", native_result))
+                continue
             if not is_safe_url(url):
-                ssrf_blocked.append({
-                    "url": url, "title": "", "content": "",
-                    "error": "Blocked: URL targets a private or internal network address",
-                })
-            else:
-                safe_urls.append(url)
+                ordered_inputs.append((
+                    "resolved",
+                    {
+                        "url": url,
+                        "title": "",
+                        "content": "",
+                        "error": "Blocked: URL targets a private or internal network address",
+                    },
+                ))
+                continue
+            ordered_inputs.append(("fetch", url))
+            safe_urls.append(url)
 
-        # Dispatch only safe URLs to the configured backend
+        backend_results: List[Dict[str, Any]] = []
         if not safe_urls:
             results = []
         else:
             backend = _get_backend()
 
             if backend == "parallel":
-                results = await _parallel_extract(safe_urls)
+                backend_results = await _parallel_extract(safe_urls)
             elif backend == "exa":
-                results = _exa_extract(safe_urls)
+                backend_results = _exa_extract(safe_urls)
             elif backend == "tavily":
                 logger.info("Tavily extract: %d URL(s)", len(safe_urls))
                 raw = _tavily_request("extract", {
                     "urls": safe_urls,
                     "include_images": False,
                 })
-                results = _normalize_tavily_documents(raw, fallback_url=safe_urls[0] if safe_urls else "")
+                backend_results = _normalize_tavily_documents(raw, fallback_url=safe_urls[0] if safe_urls else "")
             else:
                 # ── Firecrawl extraction ──
                 # Determine requested formats for Firecrawl v2
@@ -1265,7 +1277,7 @@ async def web_extract_tool(
 
                 # Always use individual scraping for simplicity and reliability
                 # Batch scraping adds complexity without much benefit for small numbers of URLs
-                results: List[Dict[str, Any]] = []
+                backend_results = []
 
                 from tools.interrupt import is_interrupted as _is_interrupted
                 for url in safe_urls:
@@ -1277,7 +1289,7 @@ async def web_extract_tool(
                     blocked = check_website_access(url)
                     if blocked:
                         logger.info("Blocked web_extract for %s by rule %s", blocked["host"], blocked["rule"])
-                        results.append({
+                        backend_results.append({
                             "url": url, "title": "", "content": "",
                             "error": blocked["message"],
                             "blocked_by_policy": {"host": blocked["host"], "rule": blocked["rule"], "source": blocked["source"]},
@@ -1328,7 +1340,7 @@ async def web_extract_tool(
                         final_blocked = check_website_access(final_url)
                         if final_blocked:
                             logger.info("Blocked redirected web_extract for %s by rule %s", final_blocked["host"], final_blocked["rule"])
-                            results.append({
+                            backend_results.append({
                                 "url": final_url, "title": title, "content": "", "raw_content": "",
                                 "error": final_blocked["message"],
                                 "blocked_by_policy": {"host": final_blocked["host"], "rule": final_blocked["rule"], "source": final_blocked["source"]},
@@ -1338,7 +1350,7 @@ async def web_extract_tool(
                         # Choose content based on requested format
                         chosen_content = content_markdown if (format == "markdown" or (format is None and content_markdown)) else content_html or content_markdown or ""
 
-                        results.append({
+                        backend_results.append({
                             "url": final_url,
                             "title": title,
                             "content": chosen_content,
@@ -1348,7 +1360,7 @@ async def web_extract_tool(
 
                     except Exception as scrape_err:
                         logger.debug("Scrape failed for %s: %s", url, scrape_err)
-                        results.append({
+                        backend_results.append({
                             "url": url,
                             "title": "",
                             "content": "",
@@ -1356,9 +1368,13 @@ async def web_extract_tool(
                             "error": str(scrape_err)
                         })
 
-        # Merge any SSRF-blocked results back in
-        if ssrf_blocked:
-            results = ssrf_blocked + results
+        backend_iter = iter(backend_results)
+        results = []
+        for kind, value in ordered_inputs:
+            if kind == "resolved":
+                results.append(value)
+            else:
+                results.append(next(backend_iter))
 
         response = {"results": results}
         

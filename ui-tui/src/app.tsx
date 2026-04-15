@@ -109,12 +109,6 @@ export function App({ gw }: { gw: GatewayClient }) {
   const composerActions = composer.actions
   const composerRefs = composer.refs
   const composerState = composer.state
-  const composerCompletions = composerState.completions
-  const composerCompIdx = composerState.compIdx
-  const composerInput = composerState.input
-  const composerInputBuf = composerState.inputBuf
-  const composerQueueEditIdx = composerState.queueEditIdx
-  const composerQueuedDisplay = composerState.queuedDisplay
 
   const empty = !historyItems.some(msg => msg.kind !== 'intro')
 
@@ -231,10 +225,6 @@ export function App({ gw }: { gw: GatewayClient }) {
     },
     [sys]
   )
-
-  const pushActivity = turnActions.pushActivity
-  const pruneTransient = turnActions.pruneTransient
-  const pushTrail = turnActions.pushTrail
 
   const applyDisplayConfig = useCallback((cfg: ConfigFullResponse | null) => {
     const display = cfg?.config?.display ?? {}
@@ -353,7 +343,7 @@ export function App({ gw }: { gw: GatewayClient }) {
               return
             }
 
-            pushActivity('MCP reloaded after config change')
+            turnActions.pushActivity('MCP reloaded after config change')
           })
           rpc<ConfigFullResponse>('config.get', { key: 'full' }).then(applyDisplayConfig)
         } else if (!configMtimeRef.current && next) {
@@ -363,7 +353,7 @@ export function App({ gw }: { gw: GatewayClient }) {
     }, 5000)
 
     return () => clearInterval(id)
-  }, [applyDisplayConfig, pushActivity, rpc, ui.sid])
+  }, [applyDisplayConfig, turnActions, rpc, ui.sid])
 
   const idle = turnActions.idle
   const clearReasoning = turnActions.clearReasoning
@@ -606,9 +596,9 @@ export function App({ gw }: { gw: GatewayClient }) {
           if (r?.matched) {
             if (r.is_image) {
               const meta = imageTokenMeta(r)
-              pushActivity(`attached image: ${r.name}${meta ? ` · ${meta}` : ''}`)
+              turnActions.pushActivity(`attached image: ${r.name}${meta ? ` · ${meta}` : ''}`)
             } else {
-              pushActivity(`detected file: ${r.name}`)
+              turnActions.pushActivity(`detected file: ${r.name}`)
             }
 
             startSubmit(r.text || text, expandPasteSnips(r.text || text))
@@ -620,7 +610,7 @@ export function App({ gw }: { gw: GatewayClient }) {
         })
         .catch(() => startSubmit(text, expandPasteSnips(text)))
     },
-    [appendMessage, composerState.pasteSnips, gw, pushActivity, sys, turnRefs]
+    [appendMessage, composerState.pasteSnips, gw, turnActions, sys, turnRefs]
   )
 
   const shellExec = useCallback(
@@ -850,10 +840,10 @@ export function App({ gw }: { gw: GatewayClient }) {
             clearReasoning,
             endReasoningPhase: turnActions.endReasoningPhase,
             idle,
-            pruneTransient,
+            pruneTransient: turnActions.pruneTransient,
             pulseReasoningStreaming: turnActions.pulseReasoningStreaming,
-            pushActivity,
-            pushTrail,
+            pushActivity: turnActions.pushActivity,
+            pushTrail: turnActions.pushTrail,
             scheduleReasoning: turnActions.scheduleReasoning,
             scheduleStreaming: turnActions.scheduleStreaming,
             setActivity: turnActions.setActivity,
@@ -888,9 +878,6 @@ export function App({ gw }: { gw: GatewayClient }) {
       gateway,
       idle,
       newSession,
-      pruneTransient,
-      pushActivity,
-      pushTrail,
       resetSession,
       sendQueued,
       sys,
@@ -907,7 +894,7 @@ export function App({ gw }: { gw: GatewayClient }) {
 
     const exitHandler = () => {
       patchUiState({ busy: false, sid: null, status: 'gateway exited' })
-      pushActivity('gateway exited · /logs to inspect', 'error')
+      turnActions.pushActivity('gateway exited · /logs to inspect', 'error')
       sys('error: gateway exited')
     }
 
@@ -920,7 +907,7 @@ export function App({ gw }: { gw: GatewayClient }) {
       gw.off('exit', exitHandler)
       gw.kill()
     }
-  }, [gw, pushActivity, sys])
+  }, [gw, turnActions, sys])
 
   // ── Slash commands ───────────────────────────────────────────────
 
@@ -1162,27 +1149,27 @@ export function App({ gw }: { gw: GatewayClient }) {
   const appComposer = useMemo(
     () => ({
       cols,
-      compIdx: composerCompIdx,
-      completions: composerCompletions,
+      compIdx: composerState.compIdx,
+      completions: composerState.completions,
       empty,
       handleTextPaste,
-      input: composerInput,
-      inputBuf: composerInputBuf,
+      input: composerState.input,
+      inputBuf: composerState.inputBuf,
       pagerPageSize,
-      queueEditIdx: composerQueueEditIdx,
-      queuedDisplay: composerQueuedDisplay,
+      queueEditIdx: composerState.queueEditIdx,
+      queuedDisplay: composerState.queuedDisplay,
       submit,
       updateInput: composerActions.setInput
     }),
     [
       cols,
       composerActions.setInput,
-      composerCompIdx,
-      composerCompletions,
-      composerInput,
-      composerInputBuf,
-      composerQueueEditIdx,
-      composerQueuedDisplay,
+      composerState.compIdx,
+      composerState.completions,
+      composerState.input,
+      composerState.inputBuf,
+      composerState.queueEditIdx,
+      composerState.queuedDisplay,
       empty,
       handleTextPaste,
       pagerPageSize,

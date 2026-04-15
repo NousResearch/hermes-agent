@@ -2191,6 +2191,13 @@ class GatewayRunner:
                         except Exception:
                             pass
                     else:
+                        # Release connection pools from the failed adapter to
+                        # prevent file-descriptor exhaustion on repeated retries.
+                        try:
+                            await adapter.disconnect()
+                        except Exception:
+                            pass
+
                         # Check if the failure is non-retryable
                         if adapter.has_fatal_error and not adapter.fatal_error_retryable:
                             self._update_platform_runtime_status(
@@ -2219,6 +2226,13 @@ class GatewayRunner:
                                 platform.value, backoff,
                             )
                 except Exception as e:
+                    # Clean up the adapter that failed during connect to avoid
+                    # leaking its HTTP connection-pool file descriptors.
+                    try:
+                        await adapter.disconnect()
+                    except Exception:
+                        pass
+
                     self._update_platform_runtime_status(
                         platform.value,
                         platform_state="retrying",

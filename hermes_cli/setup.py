@@ -1597,8 +1597,8 @@ def _setup_telegram():
     print_header("Telegram")
     existing = get_env_value("TELEGRAM_BOT_TOKEN")
     if existing:
-        print_info("Telegram: already configured")
-        if not prompt_yes_no("Reconfigure Telegram?", False):
+        print_info("Telegram: 이미 설정되어 있음")
+        if not prompt_yes_no("Telegram을 다시 설정할까요?", False):
             # Check missing allowlist on existing config
             if not get_env_value("TELEGRAM_ALLOWED_USERS"):
                 print_info("⚠️  Telegram has no user allowlist - anyone can use your bot!")
@@ -1658,10 +1658,10 @@ def _setup_discord():
     print_header("Discord")
     existing = get_env_value("DISCORD_BOT_TOKEN")
     if existing:
-        print_info("Discord: already configured")
-        if not prompt_yes_no("Reconfigure Discord?", False):
+        print_info("Discord: 이미 설정되어 있음")
+        if not prompt_yes_no("Discord를 다시 설정할까요?", False):
             if not get_env_value("DISCORD_ALLOWED_USERS"):
-                print_info("⚠️  Discord has no user allowlist - anyone can use your bot!")
+                print_info("⚠️  Discord에 사용자 허용 목록이 없습니다 - 누구나 봇을 사용할 수 있어요!")
                 if prompt_yes_no("Add allowed users now?", True):
                     print_info("   To find Discord ID: Enable Developer Mode, right-click name → Copy ID")
                     allowed_users = prompt("Allowed user IDs (comma-separated)")
@@ -1726,8 +1726,8 @@ def _setup_slack():
     print_header("Slack")
     existing = get_env_value("SLACK_BOT_TOKEN")
     if existing:
-        print_info("Slack: already configured")
-        if not prompt_yes_no("Reconfigure Slack?", False):
+        print_info("Slack: 이미 설정되어 있음")
+        if not prompt_yes_no("Slack을 다시 설정할까요?", False):
             return
 
     print_info("Steps to create a Slack app:")
@@ -1779,8 +1779,8 @@ def _setup_matrix():
     print_header("Matrix")
     existing = get_env_value("MATRIX_ACCESS_TOKEN") or get_env_value("MATRIX_PASSWORD")
     if existing:
-        print_info("Matrix: already configured")
-        if not prompt_yes_no("Reconfigure Matrix?", False):
+        print_info("Matrix: 이미 설정되어 있음")
+        if not prompt_yes_no("Matrix를 다시 설정할까요?", False):
             return
 
     print_info("Works with any Matrix homeserver (Synapse, Conduit, Dendrite, or matrix.org).")
@@ -1865,8 +1865,8 @@ def _setup_mattermost():
     print_header("Mattermost")
     existing = get_env_value("MATTERMOST_TOKEN")
     if existing:
-        print_info("Mattermost: already configured")
-        if not prompt_yes_no("Reconfigure Mattermost?", False):
+        print_info("Mattermost: 이미 설정되어 있음")
+        if not prompt_yes_no("Mattermost를 다시 설정할까요?", False):
             return
 
     print_info("Works with any self-hosted Mattermost instance.")
@@ -2096,8 +2096,8 @@ def _setup_webhooks():
     print_header("Webhooks")
     existing = get_env_value("WEBHOOK_ENABLED")
     if existing:
-        print_info("Webhooks: already configured")
-        if not prompt_yes_no("Reconfigure webhooks?", False):
+        print_info("Webhooks: 이미 설정되어 있음")
+        if not prompt_yes_no("Webhooks를 다시 설정할까요?", False):
             return
 
     print()

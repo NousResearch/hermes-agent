@@ -120,6 +120,14 @@ class TestNonInteractiveSetup:
         assert '원격 머신에서 SSH로 명령어를 실행합니다.' in source
         assert 'Daytona 클라우드 개발 환경입니다.' in source
         assert 'SSH 호스트 (hostname 또는 IP)' in source
+        assert 'Telegram: 이미 설정되어 있음' in source
+        assert 'Telegram을 다시 설정할까요?' in source
+        assert 'Discord: 이미 설정되어 있음' in source
+        assert 'Discord를 다시 설정할까요?' in source
+        assert 'Slack: 이미 설정되어 있음' in source
+        assert 'Matrix: 이미 설정되어 있음' in source
+        assert 'Mattermost: 이미 설정되어 있음' in source
+        assert 'Webhooks: 이미 설정되어 있음' in source
 
     def test_cmd_setup_allows_noninteractive_flag_without_tty(self):
         """The CLI entrypoint should not block --non-interactive before setup.py handles it."""

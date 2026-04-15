@@ -2572,7 +2572,12 @@ class HermesCLI:
             except (ValueError, IndexError):
                 self._stream_text_ansi = ""
             w = shutil.get_terminal_size().columns
-            fill = w - 2 - len(label)
+            try:
+                from rich.cells import cell_len
+                label_width = cell_len(label)
+            except ImportError:
+                label_width = len(label)
+            fill = w - 2 - label_width
             _cprint(f"\n{_ACCENT}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
 
         self._stream_buf += text

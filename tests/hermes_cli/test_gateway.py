@@ -179,6 +179,36 @@ def test_install_linux_gateway_from_setup_system_choice_as_root_installs(monkeyp
     assert calls == [(True, True, "alice")]
 
 
+def test_gateway_restart_all_prints_restarted_services_and_manual_restart_hint(monkeypatch, capsys):
+    monkeypatch.setattr(
+        gateway,
+        "restart_all_gateways",
+        lambda: (
+            ["hermes-gateway", "hermes-gateway-writer"],
+            {4321},
+            ["hermes-gateway-broken: Permission denied"],
+        ),
+    )
+
+    gateway.gateway_command(SimpleNamespace(gateway_command="restart", all=True, system=False))
+
+    out = capsys.readouterr().out
+    assert "Restarted hermes-gateway" in out
+    assert "Restarted hermes-gateway-writer" in out
+    assert "Failed to restart hermes-gateway-broken: Permission denied" in out
+    assert "Stopped 1 manual gateway process(es)" in out
+    assert "Restart manually: hermes gateway run" in out
+
+
+def test_gateway_restart_all_reports_when_nothing_is_running(monkeypatch, capsys):
+    monkeypatch.setattr(gateway, "restart_all_gateways", lambda: ([], set(), []))
+
+    gateway.gateway_command(SimpleNamespace(gateway_command="restart", all=True, system=False))
+
+    out = capsys.readouterr().out
+    assert "No gateway processes found" in out
+
+
 # ---------------------------------------------------------------------------
 # _wait_for_gateway_exit
 # ---------------------------------------------------------------------------

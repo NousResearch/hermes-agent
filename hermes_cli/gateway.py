@@ -104,6 +104,139 @@ def _get_service_pids() -> set:
     return pids
 
 
+def _list_systemd_gateway_services() -> list[tuple[bool, str]]:
+    """Return ``(system_scope, service_name)`` for installed gateway units."""
+    services: list[tuple[bool, str]] = []
+    seen: set[tuple[bool, str]] = set()
+
+    if not supports_systemd_services():
+        return services
+
+    for system in (False, True):
+        try:
+            result = subprocess.run(
+                _systemctl_cmd(system) + [
+                    "list-units",
+                    "hermes-gateway*",
+                    "--plain",
+                    "--no-legend",
+                    "--no-pager",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired, RuntimeError):
+            continue
+
+        for line in result.stdout.strip().splitlines():
+            parts = line.split()
+            if not parts:
+                continue
+            unit = parts[0]
+            if not unit.endswith(".service"):
+                continue
+            entry = (system, unit.removesuffix(".service"))
+            if entry not in seen:
+                services.append(entry)
+                seen.add(entry)
+
+    return services
+
+
+def _list_launchd_gateway_labels() -> list[str]:
+    """Return launchd gateway labels for the default profile and named profiles."""
+    if not is_macos():
+        return []
+
+    launch_agents_dir = get_launchd_plist_path().parent
+    if not launch_agents_dir.exists():
+        return []
+
+    return [plist_path.stem for plist_path in sorted(launch_agents_dir.glob("ai.hermes.gateway*.plist"))]
+
+
+def restart_all_gateways() -> tuple[list[str], set[int], list[str]]:
+    """Restart every installed gateway service and stop manual gateways."""
+    restarted_services: list[str] = []
+    stopped_manual_pids: set[int] = set()
+    failed_services: list[str] = []
+
+    if supports_systemd_services():
+        for system, service_name in _list_systemd_gateway_services():
+            try:
+                check = _run_systemctl(
+                    ["is-active", service_name],
+                    system=system,
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                    check=False,
+                )
+            except RuntimeError:
+                continue
+
+            if check.stdout.strip() != "active":
+                continue
+
+            try:
+                restart = _run_systemctl(
+                    ["restart", service_name],
+                    system=system,
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                    check=False,
+                )
+            except RuntimeError as exc:
+                failed_services.append(f"{service_name}: {exc}")
+                continue
+
+            if restart.returncode == 0:
+                restarted_services.append(service_name)
+            else:
+                stderr = (restart.stderr or restart.stdout or f"exit {restart.returncode}").strip()
+                failed_services.append(f"{service_name}: {stderr}")
+
+    if is_macos():
+        current_label = get_launchd_label()
+        for label in _list_launchd_gateway_labels():
+            try:
+                check = subprocess.run(
+                    ["launchctl", "list", label],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+            except (FileNotFoundError, subprocess.TimeoutExpired):
+                continue
+
+            if check.returncode != 0:
+                continue
+
+            try:
+                if label == current_label:
+                    launchd_restart()
+                else:
+                    target = f"{_launchd_domain()}/{label}"
+                    subprocess.run(["launchctl", "kickstart", "-k", target], check=True, timeout=90)
+                restarted_services.append(label)
+            except subprocess.CalledProcessError as exc:
+                stderr = (getattr(exc, "stderr", "") or getattr(exc, "stdout", "") or str(exc)).strip()
+                failed_services.append(f"{label}: {stderr}")
+
+    service_pids = _get_service_pids()
+    manual_pids = find_gateway_pids(exclude_pids=service_pids, all_profiles=True)
+    for pid in manual_pids:
+        try:
+            os.kill(pid, signal.SIGTERM)
+            stopped_manual_pids.add(pid)
+        except (ProcessLookupError, PermissionError):
+            pass
+
+    return restarted_services, stopped_manual_pids, failed_services
+
+
 def _get_parent_pid(pid: int) -> int | None:
     """Return the parent PID for ``pid``, or ``None`` when unavailable."""
     if pid <= 1:
@@ -2946,6 +3079,24 @@ def gateway_command(args):
                 print(f"✓ Stopped {get_service_name()} service")
     
     elif subcmd == "restart":
+        if getattr(args, 'all', False):
+            restarted_services, killed_pids, failed_services = restart_all_gateways()
+
+            if restarted_services or killed_pids or failed_services:
+                print()
+                for svc in restarted_services:
+                    print(f"  ✓ Restarted {svc}")
+                for failure in failed_services:
+                    print(f"  ⚠ Failed to restart {failure}")
+                if killed_pids:
+                    print(f"  → Stopped {len(killed_pids)} manual gateway process(es)")
+                    print("    Restart manually: hermes gateway run")
+                    if len(killed_pids) > 1:
+                        print("    (or: hermes -p <profile> gateway run  for each profile)")
+            else:
+                print("✗ No gateway processes found")
+            return
+
         # Try service first, fall back to killing and restarting
         service_available = False
         system = getattr(args, 'system', False)

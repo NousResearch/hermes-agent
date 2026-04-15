@@ -11,6 +11,8 @@ export type Frame = {
   readonly scrollHint?: ScrollHint | null
   /** A ScrollBox has remaining pendingScrollDelta — schedule another frame. */
   readonly scrollDrainPending?: boolean
+  /** Absolute overlay moved/resized — schedule corrective frame without prevScreen. */
+  readonly absoluteOverlayMoved?: boolean
 }
 
 export function emptyFrame(

@@ -903,21 +903,12 @@ export default class Ink {
     // becomes frontFrame (= next frame's prevScreen). If we applied the
     // selection overlay, that buffer has inverted cells. selActive/hlActive
     // are only ever true in alt-screen; in main-screen this is false→false.
-    this.prevFrameContaminated = selActive || hlActive
+    this.prevFrameContaminated = selActive || hlActive || !!frame.absoluteOverlayMoved
 
-    // A ScrollBox has pendingScrollDelta left to drain — schedule the next
-    // frame. MUST NOT call this.scheduleRender() here: we're inside a
-    // trailing-edge throttle invocation, timerId is undefined, and lodash's
-    // debounce sees timeSinceLastCall >= wait (last call was at the start
-    // of this window) → leadingEdge fires IMMEDIATELY → double render ~0.1ms
-    // apart → jank. Use a plain timeout. If a wheel event arrives first,
-    // its scheduleRender path fires a render which clears this timer at
-    // the top of onRender — no double.
-    //
-    // Drain frames are cheap (DECSTBM + ~10 patches, ~200 bytes) so run at
-    // quarter interval (~250fps, setTimeout practical floor) for max scroll
-    // speed. Regular renders stay at FRAME_INTERVAL_MS via the throttle.
-    if (frame.scrollDrainPending) {
+    // Schedule corrective frame for scroll drain or absolute overlay resize.
+    // Plain timeout instead of scheduleRender to avoid double-render from
+    // lodash throttle's leadingEdge firing inside a trailing invocation.
+    if (frame.scrollDrainPending || frame.absoluteOverlayMoved) {
       this.drainTimer = setTimeout(() => this.onRender(), FRAME_INTERVAL_MS >> 2)
     }
 

@@ -1,4 +1,4 @@
-import { startTransition, useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import type { GatewayClient } from '../gatewayClient.js'
 
@@ -11,16 +11,20 @@ export function useCompletion(input: string, blocked: boolean, gw: GatewayClient
   const ref = useRef('')
 
   useEffect(() => {
-    if (blocked) {
-      if (completions.length) {
-        setCompletions([])
-        setCompIdx(0)
+    const clear = () => {
+      if (!completions.length) {
+        return
       }
 
-      return
+      setCompletions([])
+      setCompIdx(0)
     }
 
-    if (input === ref.current) {
+    if (blocked || input === ref.current) {
+      if (blocked) {
+        clear()
+      }
+
       return
     }
 
@@ -30,10 +34,7 @@ export function useCompletion(input: string, blocked: boolean, gw: GatewayClient
     const pathWord = !isSlash ? (input.match(TAB_PATH_RE)?.[1] ?? null) : null
 
     if (!isSlash && !pathWord) {
-      if (completions.length) {
-        setCompletions([])
-        setCompIdx(0)
-      }
+      clear()
 
       return
     }
@@ -53,23 +54,24 @@ export function useCompletion(input: string, blocked: boolean, gw: GatewayClient
             return
           }
 
-          startTransition(() => {
-            setCompletions(r?.items ?? [])
-            setCompIdx(0)
-            setCompReplace(isSlash ? (r?.replace_from ?? 1) : input.length - (pathWord?.length ?? 0))
-          })
+          setCompletions(r?.items ?? [])
+          setCompIdx(0)
+          setCompReplace(isSlash ? (r?.replace_from ?? 1) : input.length - (pathWord?.length ?? 0))
         })
         .catch((e: unknown) => {
           if (ref.current !== input) {
             return
           }
 
-          const meta = e instanceof Error && e.message ? e.message : 'unavailable'
-          startTransition(() => {
-            setCompletions([{ text: '', display: 'completion unavailable', meta }])
-            setCompIdx(0)
-            setCompReplace(isSlash ? 1 : input.length - (pathWord?.length ?? 0))
-          })
+          setCompletions([
+            {
+              text: '',
+              display: 'completion unavailable',
+              meta: e instanceof Error && e.message ? e.message : 'unavailable'
+            }
+          ])
+          setCompIdx(0)
+          setCompReplace(isSlash ? 1 : input.length - (pathWord?.length ?? 0))
         })
     }, 60)
 

@@ -5,6 +5,7 @@ import type { Frame } from './frame.js'
 import { consumeAbsoluteRemovedFlag } from './node-cache.js'
 import Output from './output.js'
 import renderNodeToOutput, {
+  didAbsoluteOverlayMove,
   getScrollDrainNode,
   getScrollHint,
   resetLayoutShifted,
@@ -135,6 +136,7 @@ export default function createRenderer(node: DOMElement, stylePool: StylePool): 
     }
 
     return {
+      absoluteOverlayMoved: didAbsoluteOverlayMove(),
       scrollHint: options.altScreen ? getScrollHint() : null,
       scrollDrainPending: drainNode !== null,
       screen: renderedScreen,

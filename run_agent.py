@@ -3290,11 +3290,18 @@ class AIAgent:
     # =========================================================================
 
     @staticmethod
+    def _normalize_tool_call_id(value: Any) -> str:
+        """Normalize tool-call IDs from providers before comparing them."""
+        return value.strip() if isinstance(value, str) else ""
+
+    @staticmethod
     def _get_tool_call_id_static(tc) -> str:
         """Extract call ID from a tool_call entry (dict or object)."""
         if isinstance(tc, dict):
-            return tc.get("id", "") or ""
-        return getattr(tc, "id", "") or ""
+            raw = tc.get("id", "") or ""
+        else:
+            raw = getattr(tc, "id", "") or ""
+        return AIAgent._normalize_tool_call_id(raw)
 
     _VALID_API_ROLES = frozenset({"system", "user", "assistant", "tool", "function", "developer"})
 
@@ -3330,7 +3337,7 @@ class AIAgent:
         result_call_ids: set = set()
         for msg in messages:
             if msg.get("role") == "tool":
-                cid = msg.get("tool_call_id")
+                cid = AIAgent._normalize_tool_call_id(msg.get("tool_call_id"))
                 if cid:
                     result_call_ids.add(cid)
 
@@ -3339,7 +3346,10 @@ class AIAgent:
         if orphaned_results:
             messages = [
                 m for m in messages
-                if not (m.get("role") == "tool" and m.get("tool_call_id") in orphaned_results)
+                if not (
+                    m.get("role") == "tool"
+                    and AIAgent._normalize_tool_call_id(m.get("tool_call_id")) in orphaned_results
+                )
             ]
             logger.debug(
                 "Pre-call sanitizer: removed %d orphaned tool result(s)",

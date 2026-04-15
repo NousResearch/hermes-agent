@@ -1005,6 +1005,17 @@ class TestBuildAssistantMessage:
         assert len(result["tool_calls"]) == 1
         assert result["tool_calls"][0]["function"]["name"] == "web_search"
 
+    def test_with_tool_calls_strips_whitespace_from_ids(self, agent):
+        tc = _mock_tool_call(
+            name="web_search",
+            arguments='{"q":"test"}',
+            call_id=" functions.web_search:24 ",
+        )
+        msg = _mock_assistant_msg(content="", tool_calls=[tc])
+        result = agent._build_assistant_message(msg, "tool_calls")
+        assert result["tool_calls"][0]["id"] == "functions.web_search:24"
+        assert result["tool_calls"][0]["call_id"] == "functions.web_search:24"
+
     def test_with_reasoning_details(self, agent):
         details = [{"type": "reasoning.summary", "text": "step1", "signature": "sig1"}]
         msg = _mock_assistant_msg(content="ans", reasoning_details=details)
@@ -1042,6 +1053,49 @@ class TestFormatToolsForSystemMessage:
     def test_no_tools_returns_empty_array(self, agent):
         agent.tools = []
         assert agent._format_tools_for_system_message() == "[]"
+
+
+class TestSanitizeApiMessages:
+    def test_preserves_tool_result_when_tool_call_id_has_leading_space(self):
+        messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "functions.cronjob:24",
+                        "function": {"name": "cronjob", "arguments": "{}"},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": " functions.cronjob:24",
+                "content": '{"success": true}',
+            },
+        ]
+
+        result = AIAgent._sanitize_api_messages(messages)
+
+        assert len(result) == 2
+        assert result[1]["role"] == "tool"
+        assert result[1]["content"] == '{"success": true}'
+        assert result[1]["tool_call_id"] == " functions.cronjob:24"
+
+    def test_strips_orphaned_tool_result_even_when_id_has_whitespace(self):
+        messages = [
+            {"role": "user", "content": "Hello"},
+            {
+                "role": "tool",
+                "tool_call_id": " tc_orphan ",
+                "content": "stale result",
+            },
+            {"role": "user", "content": "Thanks"},
+        ]
+
+        result = AIAgent._sanitize_api_messages(messages)
+
+        assert [msg["role"] for msg in result] == ["user", "user"]
 
     def test_formats_single_tool(self, agent):
         agent.tools = _make_tool_defs("web_search")

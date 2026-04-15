@@ -115,6 +115,7 @@ AUTHOR_MAP = {
     "195255660+EvilHumphrey@users.noreply.github.com": "EvilHumphrey",
     "270604154+superearn-fisher@users.noreply.github.com": "superearn-fisher",
     "3540493+kpadilha@users.noreply.github.com": "kpadilha",
+    "krishna@padilha.com": "kpadilha",
     "40378218+chaconne67@users.noreply.github.com": "chaconne67",
     "Pluviobyte@users.noreply.github.com": "Pluviobyte",
     "sanghyuk_seo@nexcubecorp.com": "sanghyuk-seo-nexcube",

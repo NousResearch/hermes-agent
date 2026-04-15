@@ -39,6 +39,105 @@ from utils import base_url_host_matches, base_url_hostname, env_int
 logger = logging.getLogger(__name__)
 
 
+def extract_tool_calls_from_reasoning(
+    reasoning_text: str,
+    valid_tool_names: set | None = None,
+) -> list:
+    """Extract tool calls embedded inside reasoning/thinking content.
+
+    Some models (notably GLM-5.x and Qwen3.5 variants) emit tool calls inside
+    ``reasoning_content`` / ``<thinking>`` blocks instead of the standard
+    ``delta.tool_calls`` stream field.  Scan common JSON/XML shapes and return
+    OpenAI-compatible tool-call dictionaries that the agent loop can execute.
+    """
+    if not reasoning_text or not str(reasoning_text).strip():
+        return []
+
+    results = []
+    seen_ids = set()
+    call_counter = 0
+
+    def _append(tool_name: str, args_str: str) -> None:
+        nonlocal call_counter
+        if not tool_name:
+            return
+        if valid_tool_names and tool_name not in valid_tool_names:
+            return
+        call_id = f"reasoning_tc_{call_counter}"
+        call_counter += 1
+        if call_id in seen_ids:
+            return
+        seen_ids.add(call_id)
+        results.append({
+            "id": call_id,
+            "type": "function",
+            "function": {"name": tool_name, "arguments": args_str},
+        })
+
+    json_pattern = re.compile(
+        r'\{\s*"name"\s*:\s*"([^"]+)"\s*,\s*"'
+        r'(?:arguments|parameters)'
+        r'"\s*:\s*(\{[^}]*\})'
+        r'\s*\}',
+        re.DOTALL,
+    )
+    for match in json_pattern.finditer(reasoning_text):
+        tool_name = match.group(1)
+        args_str = match.group(2)
+        try:
+            json.loads(args_str)
+        except json.JSONDecodeError:
+            args_str = json.dumps({"_raw": args_str})
+        _append(tool_name, args_str)
+
+    xml_pattern = re.compile(
+        r'<tool_call[^>]*\bname\s*=\s*"([^"]+)"[^>]*>'
+        r'(.*?)</tool_call\s*>',
+        re.DOTALL | re.IGNORECASE,
+    )
+    for match in xml_pattern.finditer(reasoning_text):
+        tool_name = match.group(1)
+        body = match.group(2).strip()
+        args_str = body if body else "{}"
+        try:
+            args_str = json.dumps(json.loads(args_str))
+        except json.JSONDecodeError:
+            args_str = "{}"
+        _append(tool_name, args_str)
+
+    fc_pattern = re.compile(
+        r'<function_call>\s*(\{.*?\})\s*</function_call\s*>',
+        re.DOTALL | re.IGNORECASE,
+    )
+    for match in fc_pattern.finditer(reasoning_text):
+        body = match.group(1).strip()
+        try:
+            obj = json.loads(body)
+        except json.JSONDecodeError:
+            continue
+        tool_name = obj.get("name", "")
+        args = obj.get("arguments") or obj.get("parameters") or {}
+        _append(tool_name, json.dumps(args))
+
+    if results:
+        unique = []
+        seen = set()
+        for result in results:
+            key = (result["function"]["name"], result["function"]["arguments"])
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(result)
+        results = unique
+        logger.info(
+            "Extracted %d tool call(s) from reasoning content (names: %s)",
+            len(results),
+            [r["function"]["name"] for r in results],
+        )
+
+    return results
+
+
 def _ra():
     """Lazy ``run_agent`` reference.
 
@@ -1972,6 +2071,27 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     ),
                 ))
 
+        full_reasoning = "".join(reasoning_parts) or None
+        if not mock_tool_calls and full_reasoning:
+            recovered = extract_tool_calls_from_reasoning(
+                full_reasoning,
+                valid_tool_names=getattr(agent, "valid_tool_names", None) or None,
+            )
+            if recovered:
+                mock_tool_calls = [
+                    SimpleNamespace(
+                        id=tc["id"],
+                        type=tc["type"],
+                        extra_content=None,
+                        function=SimpleNamespace(
+                            name=tc["function"]["name"],
+                            arguments=tc["function"]["arguments"],
+                        ),
+                    )
+                    for tc in recovered
+                ]
+                finish_reason = "tool_calls"
+
         # Zero-chunk guard: stream yielded nothing usable — a provider/upstream
         # error or malformed SSE, not a legitimate empty completion. Raise so the
         # retry machinery handles it instead of fabricating a successful turn.
@@ -1990,7 +2110,6 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         if has_truncated_tool_args:
             effective_finish_reason = "length"
 
-        full_reasoning = "".join(reasoning_parts) or None
         mock_message = SimpleNamespace(
             role=role,
             content=full_content,

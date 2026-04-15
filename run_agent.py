@@ -1378,6 +1378,15 @@ class AIAgent:
         from agent.agent_runtime_helpers import extract_reasoning
         return extract_reasoning(self, assistant_message)
 
+    def _extract_tool_calls_from_reasoning(
+        self,
+        reasoning_text: str,
+        valid_tool_names: set = None,
+    ) -> list:
+        """Forwarder — see ``agent.chat_completion_helpers.extract_tool_calls_from_reasoning``."""
+        from agent.chat_completion_helpers import extract_tool_calls_from_reasoning
+        return extract_tool_calls_from_reasoning(reasoning_text, valid_tool_names=valid_tool_names)
+
     def _cleanup_task_resources(self, task_id: str) -> None:
         """Forwarder — see ``agent.chat_completion_helpers.cleanup_task_resources``."""
         from agent.chat_completion_helpers import cleanup_task_resources

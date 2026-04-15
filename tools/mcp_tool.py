@@ -2036,7 +2036,7 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
 def discover_mcp_tools() -> List[str]:
     """Entry point: load config, connect to MCP servers, register tools.
 
-    Called from ``model_tools._discover_tools()``. Safe to call even when
+    Called from ``model_tools`` after ``discover_builtin_tools()``. Safe to call even when
     the ``mcp`` package is not installed (returns empty list).
 
     Idempotent for already-connected servers. If some servers failed on a

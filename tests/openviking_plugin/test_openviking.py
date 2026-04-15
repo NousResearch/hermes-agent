@@ -12,7 +12,10 @@ class FakeVikingClient:
 
     def get(self, path, params=None, **kwargs):
         self.calls.append((path, params or {}))
-        return self.responses[(path, tuple(sorted((params or {}).items())))]
+        response = self.responses[(path, tuple(sorted((params or {}).items())))]
+        if isinstance(response, Exception):
+            raise response
+        return response
 
 
 class TestOpenVikingSummaryUriNormalization:
@@ -67,6 +70,55 @@ class TestOpenVikingRead:
             "/api/v1/content/read",
             {"uri": "viking://user/hermes/memories/profile.md"},
         )]
+
+    def test_overview_file_uri_falls_back_to_content_read_on_summary_error(self):
+        provider = OpenVikingMemoryProvider()
+        file_uri = "viking://user/hermes/memories/entities/mem_abc.md"
+        provider._client = FakeVikingClient(
+            {
+                (
+                    "/api/v1/content/overview",
+                    (("uri", file_uri),),
+                ): RuntimeError("500 Internal Server Error"),
+                (
+                    "/api/v1/content/read",
+                    (("uri", file_uri),),
+                ): {"result": {"content": "fallback full content"}},
+            }
+        )
+
+        result = json.loads(provider._tool_read({"uri": file_uri, "level": "overview"}))
+
+        assert result["uri"] == file_uri
+        assert result["resolved_uri"] == file_uri
+        assert result["level"] == "overview"
+        assert result["fallback"] == "content/read"
+        assert result["content"] == "fallback full content"
+        assert provider._client.calls == [
+            ("/api/v1/content/overview", {"uri": file_uri}),
+            ("/api/v1/content/read", {"uri": file_uri}),
+        ]
+
+    def test_summary_uri_error_does_not_fallback_and_raises(self):
+        provider = OpenVikingMemoryProvider()
+        provider._client = FakeVikingClient(
+            {
+                (
+                    "/api/v1/content/overview",
+                    (("uri", "viking://user/hermes"),),
+                ): RuntimeError("500 Internal Server Error"),
+            }
+        )
+
+        try:
+            provider._tool_read({"uri": "viking://user/hermes/.overview.md", "level": "overview"})
+            assert False, "Expected summary endpoint error to be raised"
+        except RuntimeError:
+            pass
+
+        assert provider._client.calls == [
+            ("/api/v1/content/overview", {"uri": "viking://user/hermes"}),
+        ]
 
 
 class TestOpenVikingBrowse:

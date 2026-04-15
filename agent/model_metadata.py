@@ -1047,7 +1047,7 @@ def get_model_context_length(
     for default_model, length in sorted(
         DEFAULT_CONTEXT_LENGTHS.items(), key=lambda x: len(x[0]), reverse=True
     ):
-        if default_model in model_lower:
+        if default_model.lower() in model_lower:
             return length
 
     # 9. Query local server as last resort

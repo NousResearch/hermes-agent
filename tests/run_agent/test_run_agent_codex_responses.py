@@ -578,6 +578,36 @@ def test_run_conversation_codex_refreshes_after_401_and_retries(monkeypatch):
     assert result["final_response"] == "Recovered after refresh"
 
 
+def test_run_conversation_copilot_refreshes_after_401_and_retries(monkeypatch):
+    agent = _build_copilot_agent(monkeypatch)
+    calls = {"api": 0, "refresh": 0}
+
+    class _UnauthorizedError(RuntimeError):
+        def __init__(self):
+            super().__init__("Error code: 401 - unauthorized")
+            self.status_code = 401
+
+    def _fake_api_call(api_kwargs):
+        calls["api"] += 1
+        if calls["api"] == 1:
+            raise _UnauthorizedError()
+        return _codex_message_response("Recovered after copilot refresh")
+
+    def _fake_refresh():
+        calls["refresh"] += 1
+        return True
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _fake_api_call)
+    monkeypatch.setattr(agent, "_try_refresh_copilot_client_credentials", _fake_refresh)
+
+    result = agent.run_conversation("Say OK")
+
+    assert calls["api"] == 2
+    assert calls["refresh"] == 1
+    assert result["completed"] is True
+    assert result["final_response"] == "Recovered after copilot refresh"
+
+
 def test_try_refresh_codex_client_credentials_rebuilds_client(monkeypatch):
     agent = _build_agent(monkeypatch)
     closed = {"value": False}
@@ -611,6 +641,62 @@ def test_try_refresh_codex_client_credentials_rebuilds_client(monkeypatch):
     assert rebuilt["kwargs"]["api_key"] == "new-codex-token"
     assert rebuilt["kwargs"]["base_url"] == "https://chatgpt.com/backend-api/codex"
     assert isinstance(agent.client, _RebuiltClient)
+
+
+def test_try_refresh_copilot_client_credentials_rebuilds_client(monkeypatch):
+    agent = _build_copilot_agent(monkeypatch)
+    closed = {"value": False}
+    rebuilt = {"kwargs": None}
+
+    class _ExistingClient:
+        def close(self):
+            closed["value"] = True
+
+    class _RebuiltClient:
+        pass
+
+    def _fake_openai(**kwargs):
+        rebuilt["kwargs"] = kwargs
+        return _RebuiltClient()
+
+    monkeypatch.setattr(
+        "hermes_cli.copilot_auth.resolve_copilot_token",
+        lambda: ("gho_new_token", "GH_TOKEN"),
+    )
+    monkeypatch.setattr(run_agent, "OpenAI", _fake_openai)
+
+    agent.client = _ExistingClient()
+    ok = agent._try_refresh_copilot_client_credentials()
+
+    assert ok is True
+    assert closed["value"] is True
+    assert rebuilt["kwargs"]["api_key"] == "gho_new_token"
+    assert rebuilt["kwargs"]["base_url"] == "https://api.githubcopilot.com"
+    assert rebuilt["kwargs"]["default_headers"]["Copilot-Integration-Id"] == "vscode-chat"
+    assert isinstance(agent.client, _RebuiltClient)
+
+
+def test_try_refresh_copilot_client_credentials_rebuilds_even_if_token_unchanged(monkeypatch):
+    agent = _build_copilot_agent(monkeypatch)
+    rebuilt = {"count": 0}
+
+    class _RebuiltClient:
+        pass
+
+    def _fake_openai(**kwargs):
+        rebuilt["count"] += 1
+        return _RebuiltClient()
+
+    monkeypatch.setattr(
+        "hermes_cli.copilot_auth.resolve_copilot_token",
+        lambda: ("gh-token", "gh auth token"),
+    )
+    monkeypatch.setattr(run_agent, "OpenAI", _fake_openai)
+
+    ok = agent._try_refresh_copilot_client_credentials()
+
+    assert ok is True
+    assert rebuilt["count"] == 1
 
 
 def test_run_conversation_codex_tool_round_trip(monkeypatch):

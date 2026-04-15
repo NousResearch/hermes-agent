@@ -168,43 +168,73 @@ async def _download_image(image_url: str, destination: Path, max_retries: int = 
             if blocked:
                 raise PermissionError(blocked["message"])
 
-            # Download the image with appropriate headers using async httpx
-            # Enable follow_redirects to handle image CDNs that redirect (e.g., Imgur, Picsum)
-            # SSRF: event_hooks validates each redirect target against private IP ranges
+            # Download the image with appropriate headers using async httpx.
+            # Enable follow_redirects to handle image CDNs that redirect (e.g., Imgur, Picsum).
+            # SSRF: event_hooks validates each redirect target against private IP ranges.
             async with httpx.AsyncClient(
                 timeout=_VISION_DOWNLOAD_TIMEOUT,
                 follow_redirects=True,
                 event_hooks={"response": [_ssrf_redirect_guard]},
             ) as client:
-                response = await client.get(
+                async with client.stream(
+                    "GET",
                     image_url,
                     headers={
                         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                         "Accept": "image/*,*/*;q=0.8",
                     },
-                )
-                response.raise_for_status()
+                ) as response:
+                    response.raise_for_status()
 
-                # Reject overly large images early via Content-Length header.
-                cl = response.headers.get("content-length")
-                if cl and int(cl) > _VISION_MAX_DOWNLOAD_BYTES:
-                    raise ValueError(
-                        f"Image too large ({int(cl)} bytes, max {_VISION_MAX_DOWNLOAD_BYTES})"
-                    )
+                    # Reject overly large images early via Content-Length header
+                    # when it is present and valid. Still enforce the cap while
+                    # streaming because servers can omit or lie about it.
+                    cl = response.headers.get("content-length")
+                    if cl:
+                        try:
+                            declared_size = int(cl)
+                        except ValueError:
+                            declared_size = None
+                        if (
+                            declared_size is not None
+                            and declared_size > _VISION_MAX_DOWNLOAD_BYTES
+                        ):
+                            raise ValueError(
+                                f"Image too large ({declared_size} bytes, max {_VISION_MAX_DOWNLOAD_BYTES})"
+                            )
 
-                final_url = str(response.url)
-                blocked = check_website_access(final_url)
-                if blocked:
-                    raise PermissionError(blocked["message"])
-                
-                # Save the image content (double-check actual size)
-                body = response.content
-                if len(body) > _VISION_MAX_DOWNLOAD_BYTES:
-                    raise ValueError(
-                        f"Image too large ({len(body)} bytes, max {_VISION_MAX_DOWNLOAD_BYTES})"
+                    final_url = str(response.url)
+                    blocked = check_website_access(final_url)
+                    if blocked:
+                        raise PermissionError(blocked["message"])
+
+                    tmp_destination = destination.with_name(
+                        f".{destination.name}.{uuid.uuid4().hex}.tmp"
                     )
-                destination.write_bytes(body)
-            
+                    bytes_written = 0
+                    try:
+                        with tmp_destination.open("wb") as f:
+                            async for chunk in response.aiter_bytes():
+                                if not chunk:
+                                    continue
+                                bytes_written += len(chunk)
+                                if bytes_written > _VISION_MAX_DOWNLOAD_BYTES:
+                                    raise ValueError(
+                                        f"Image too large ({bytes_written} bytes, max {_VISION_MAX_DOWNLOAD_BYTES})"
+                                    )
+                                f.write(chunk)
+                        tmp_destination.replace(destination)
+                    except Exception:
+                        try:
+                            tmp_destination.unlink(missing_ok=True)
+                        except OSError:
+                            logger.debug(
+                                "Could not delete partial image download: %s",
+                                tmp_destination,
+                                exc_info=True,
+                            )
+                        raise
+
             return destination
         except Exception as e:
             last_error = e

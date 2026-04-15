@@ -20,6 +20,58 @@ _PLAN_SLUG_RE = re.compile(r"[^a-z0-9]+")
 _SKILL_INVALID_CHARS = re.compile(r"[^a-z0-9-]")
 _SKILL_MULTI_HYPHEN = re.compile(r"-{2,}")
 
+_CATEGORY_ZH = {
+    "apple": "Apple／macOS",
+    "autonomous-ai-agents": "自主代理",
+    "creative": "創意生成",
+    "data-science": "資料科學",
+    "devops": "DevOps",
+    "email": "電子郵件",
+    "gaming": "遊戲",
+    "github": "GitHub",
+    "leisure": "生活搜尋",
+    "mcp": "MCP",
+    "media": "媒體內容",
+    "mlops": "MLOps",
+    "note-taking": "知識整理",
+    "openclaw-transfer": "OpenClaw 移轉",
+    "productivity": "生產力",
+    "red-teaming": "紅隊測試",
+    "research": "研究",
+    "smart-home": "智慧家庭",
+    "social-media": "社群媒體",
+    "software-development": "軟體開發",
+}
+
+
+def _category_zh(category: str) -> str:
+    return _CATEGORY_ZH.get(category, category or "未分類")
+
+
+def _extract_skill_category(skill_md: Path, scan_dir: Path) -> str:
+    try:
+        rel = skill_md.parent.relative_to(scan_dir)
+    except Exception:
+        return ""
+    return rel.parts[0] if len(rel.parts) >= 2 else ""
+
+
+def _extract_skill_zh_description(frontmatter: dict[str, Any], name: str, category: str) -> str:
+    zh_description = frontmatter.get("zh_description")
+    if isinstance(zh_description, str) and zh_description.strip():
+        return zh_description.strip()
+
+    metadata = frontmatter.get("metadata")
+    if isinstance(metadata, dict):
+        hermes_meta = metadata.get("hermes")
+        if isinstance(hermes_meta, dict):
+            zh_description = hermes_meta.get("zh_description")
+            if isinstance(zh_description, str) and zh_description.strip():
+                return zh_description.strip()
+
+    category_label = _category_zh(category)
+    return f"技能：{name}（{category_label}）"
+
 
 def build_plan_path(
     user_instruction: str = "",
@@ -240,6 +292,8 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
                             if line and not line.startswith('#'):
                                 description = line[:80]
                                 break
+                    category = _extract_skill_category(skill_md, scan_dir)
+                    zh_description = _extract_skill_zh_description(frontmatter, name, category)
                     seen_names.add(name)
                     # Normalize to hyphen-separated slug, stripping
                     # non-alnum chars (e.g. +, /) to avoid invalid
@@ -252,6 +306,8 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
                     _skill_commands[f"/{cmd_name}"] = {
                         "name": name,
                         "description": description or f"Invoke the {name} skill",
+                        "zh_description": zh_description,
+                        "category": category,
                         "skill_md_path": str(skill_md),
                         "skill_dir": str(skill_md.parent),
                     }

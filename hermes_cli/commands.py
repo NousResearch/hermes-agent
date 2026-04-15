@@ -52,6 +52,66 @@ class CommandDef:
     gateway_config_gate: str | None = None  # config dotpath; when truthy, overrides cli_only for gateway
 
 
+COMMAND_DESCRIPTIONS_ZH: dict[str, str] = {
+    "new": "開始新對話（新的 session ID 與歷史）",
+    "clear": "清空畫面並開始新對話",
+    "history": "查看目前對話歷史",
+    "save": "儲存目前對話",
+    "retry": "重新送出上一則訊息",
+    "undo": "移除上一組使用者/助理往返",
+    "title": "設定目前對話標題",
+    "branch": "從目前對話分支出另一條路徑",
+    "compress": "手動壓縮目前上下文",
+    "rollback": "列出或還原檔案系統 checkpoint",
+    "snapshot": "建立或還原 Hermes 狀態快照",
+    "stop": "停止所有背景程序",
+    "approve": "批准待確認的危險指令",
+    "deny": "拒絕待確認的危險指令",
+    "background": "把一段任務放到背景執行",
+    "btw": "用目前上下文問側問題（不持久化、不用工具）",
+    "queue": "把提示排到下一輪再處理",
+    "status": "顯示目前 session 狀態",
+    "profile": "顯示目前 profile 名稱與 home 目錄",
+    "sethome": "把這個聊天室設成 home channel",
+    "resume": "恢復先前命名過的對話",
+    "config": "顯示目前設定",
+    "model": "切換這個 session 使用的模型",
+    "provider": "顯示目前與可用 provider",
+    "personality": "切換預設人格風格",
+    "statusbar": "切換上下文／模型狀態列",
+    "verbose": "切換工具進度顯示層級：off → new → all → verbose",
+    "yolo": "切換 YOLO 模式（略過危險指令批准）",
+    "reasoning": "管理推理強度與顯示方式",
+    "fast": "切換 Fast Mode／Priority Processing",
+    "skin": "顯示或切換 CLI 外觀主題",
+    "voice": "切換語音模式",
+    "tools": "管理工具：列出／停用／啟用",
+    "toolsets": "列出可用工具集",
+    "skills": "搜尋、安裝、檢視或管理技能",
+    "cron": "管理排程任務",
+    "reload": "把 .env 變數重新載入目前 session",
+    "reload-mcp": "重新載入 config 裡的 MCP 伺服器",
+    "browser": "把 browser 工具連到你目前的 Chrome",
+    "plugins": "列出已安裝外掛與狀態",
+    "commands": "分頁瀏覽所有指令與技能",
+    "help": "顯示可用指令",
+    "restart": "在排空現有任務後重新啟動 gateway",
+    "usage": "顯示目前 session 的 token 使用量與限制",
+    "insights": "顯示使用量與分析資訊",
+    "platforms": "顯示 gateway／訊息平台狀態",
+    "paste": "檢查剪貼簿圖片並附加到下一則訊息",
+    "image": "附加本機圖片到下一則訊息",
+    "update": "把 Hermes Agent 更新到最新版",
+    "debug": "上傳除錯報告（系統資訊＋日誌）並取得分享連結",
+    "quit": "離開 CLI",
+}
+
+
+def _localized_command_description(cmd: CommandDef) -> str:
+    """Return Traditional Chinese description for CLI-facing slash help/autocomplete."""
+    return COMMAND_DESCRIPTIONS_ZH.get(cmd.name, cmd.description)
+
+
 # ---------------------------------------------------------------------------
 # Central registry -- single source of truth
 # ---------------------------------------------------------------------------
@@ -195,9 +255,10 @@ def resolve_command(name: str) -> CommandDef | None:
 
 def _build_description(cmd: CommandDef) -> str:
     """Build a CLI-facing description string including usage hint."""
+    base = _localized_command_description(cmd)
     if cmd.args_hint:
-        return f"{cmd.description} (usage: /{cmd.name} {cmd.args_hint})"
-    return cmd.description
+        return f"{base}（用法：/{cmd.name} {cmd.args_hint}）"
+    return base
 
 
 # Backwards-compatible flat dict: "/command" -> description
@@ -206,7 +267,7 @@ for _cmd in COMMAND_REGISTRY:
     if not _cmd.gateway_only:
         COMMANDS[f"/{_cmd.name}"] = _build_description(_cmd)
         for _alias in _cmd.aliases:
-            COMMANDS[f"/{_alias}"] = f"{_cmd.description} (alias for /{_cmd.name})"
+            COMMANDS[f"/{_alias}"] = f"{_localized_command_description(_cmd)}（/{_cmd.name} 的別名）"
 
 # Backwards-compatible categorized dict
 COMMANDS_BY_CATEGORY: dict[str, dict[str, str]] = {}
@@ -1131,7 +1192,11 @@ class SlashCommandCompleter(Completer):
         for cmd, info in self._iter_skill_commands().items():
             cmd_name = cmd[1:]
             if cmd_name.startswith(word):
-                description = str(info.get("description", "Skill command"))
+                description = str(
+                    info.get("zh_description")
+                    or info.get("description")
+                    or "技能指令"
+                )
                 short_desc = description[:50] + ("..." if len(description) > 50 else "")
                 yield Completion(
                     self._completion_text(cmd_name, word),

@@ -3039,6 +3039,98 @@ class AIAgent:
                 )
             except Exception:
                 pass
+        # Auto Session Summary — generate structured summary in background
+        self._spawn_auto_summary(messages or [])
+
+    def _spawn_auto_summary(self, messages: list) -> None:
+        """Generate a structured session summary in a background thread.
+
+        Uses the current provider (via call_llm) to produce a compact summary
+        of the conversation, then stores it in the session DB. The summary is
+        injected into future sessions' system prompts for cross-session context.
+
+        Only runs when:
+        - There is a session DB and session ID
+        - The conversation has meaningful content (>= 2 user/assistant turns)
+        - Auto-summary is not disabled via config
+        """
+        if not self._session_db or not self.session_id:
+            return
+
+        # Check config — allow disabling via memory.auto_summary: false
+        try:
+            from hermes_cli.config import load_config
+            cfg = load_config()
+            if not cfg.get("memory", {}).get("auto_summary", True):
+                return
+        except Exception:
+            pass
+
+        # Only summarize if there's meaningful content
+        user_assistant_msgs = [
+            m for m in messages
+            if isinstance(m, dict) and m.get("role") in ("user", "assistant")
+            and m.get("content") and isinstance(m.get("content"), str)
+            and len(m["content"].strip()) > 10
+        ]
+        if len(user_assistant_msgs) < 2:
+            return
+
+        session_id = self.session_id
+        session_db = self._session_db
+
+        # Build a compact conversation digest for summarization
+        digest_parts = []
+        for m in messages:
+            if not isinstance(m, dict):
+                continue
+            role = m.get("role", "")
+            content = m.get("content", "")
+            if role == "system" or not content or not isinstance(content, str):
+                continue
+            # Truncate individual messages to keep digest reasonable
+            text = content.strip()
+            if len(text) > 1500:
+                text = text[:1500] + "..."
+            if role == "tool":
+                tool_name = m.get("tool_name", "tool")
+                digest_parts.append(f"[{tool_name} result]: {text[:500]}")
+            elif role in ("user", "assistant"):
+                digest_parts.append(f"[{role}]: {text}")
+        # Cap total digest
+        digest = "\n".join(digest_parts)
+        if len(digest) > 15000:
+            digest = digest[:15000] + "\n...(truncated)"
+
+        def _generate_summary():
+            try:
+                from agent.auxiliary_client import call_llm
+                summary_prompt = (
+                    "You are a session summarizer. Produce a concise structured summary "
+                    "of this conversation in the SAME LANGUAGE the user spoke. Keep it under "
+                    "500 characters. Format:\n"
+                    "Topic: (1-line topic)\n"
+                    "Key Actions: (bullet list of what was done)\n"
+                    "Decisions: (important decisions made)\n"
+                    "Open Items: (unfinished tasks, if any)\n\n"
+                    "Conversation:\n"
+                ) + digest
+
+                response = call_llm(
+                    task="compression",  # reuse compression task's provider config
+                    messages=[{"role": "user", "content": summary_prompt}],
+                    max_tokens=400,
+                    temperature=0.0,
+                )
+                summary_text = response.choices[0].message.content
+                if summary_text and summary_text.strip():
+                    session_db.save_summary(session_id, summary_text.strip()[:1000])
+                    logger.info("Auto session summary saved for %s", session_id)
+            except Exception as e:
+                logger.debug("Auto session summary failed: %s", e)
+
+        t = threading.Thread(target=_generate_summary, daemon=True, name="auto-summary")
+        t.start()
     
     def close(self) -> None:
         """Release all resources held by this agent instance.
@@ -3244,6 +3336,30 @@ class AIAgent:
                 _ext_mem_block = self._memory_manager.build_system_prompt()
                 if _ext_mem_block:
                     prompt_parts.append(_ext_mem_block)
+            except Exception:
+                pass
+
+        # Auto Session Summaries — inject recent session summaries for cross-session context
+        if self._session_db and self.session_id:
+            try:
+                recent_summaries = self._session_db.get_recent_summaries(
+                    limit=3,
+                    exclude_session_id=self.session_id,
+                )
+                if recent_summaries:
+                    from datetime import datetime as _dt, timezone as _tz
+                    summary_lines = ["## Recent Session Context\n"]
+                    for s in recent_summaries:
+                        ts = s.get("started_at", 0)
+                        try:
+                            time_str = _dt.fromtimestamp(ts, tz=_tz.utc).strftime("%Y-%m-%d %H:%M UTC")
+                        except Exception:
+                            time_str = "unknown"
+                        title = s.get("title") or "Untitled"
+                        summary_lines.append(f"### {title} ({time_str})")
+                        summary_lines.append(s["summary"])
+                        summary_lines.append("")
+                    prompt_parts.append("\n".join(summary_lines))
             except Exception:
                 pass
 

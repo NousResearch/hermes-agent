@@ -31,7 +31,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -329,6 +329,13 @@ class SessionDB:
                     except sqlite3.OperationalError:
                         pass  # Column already exists
                 cursor.execute("UPDATE schema_version SET version = 6")
+            if current_version < 7:
+                # v7: add summary column to sessions for auto session summaries
+                try:
+                    cursor.execute("ALTER TABLE sessions ADD COLUMN summary TEXT")
+                except sqlite3.OperationalError:
+                    pass  # Column already exists
+                cursor.execute("UPDATE schema_version SET version = 7")
 
         # Unique title index — always ensure it exists (safe to run after migrations
         # since the title column is guaranteed to exist at this point)
@@ -390,6 +397,59 @@ class SessionDB:
                 (time.time(), end_reason, session_id),
             )
         self._execute_write(_do)
+
+    def save_summary(self, session_id: str, summary: str) -> None:
+        """Store a generated summary for a session."""
+        def _do(conn):
+            conn.execute(
+                "UPDATE sessions SET summary = ? WHERE id = ?",
+                (summary, session_id),
+            )
+        self._execute_write(_do)
+
+    def get_recent_summaries(
+        self,
+        limit: int = 3,
+        exclude_session_id: str = None,
+        source: str = None,
+    ) -> List[Dict[str, Any]]:
+        """Retrieve recent session summaries for context injection.
+
+        Returns sessions that have a non-null summary, ordered by most recent.
+        Each result is a dict with: session_id, title, summary, started_at, source.
+        """
+        conn = self._conn
+        conditions = ["summary IS NOT NULL"]
+        params: list = []
+        if exclude_session_id:
+            # Exclude the current session and its lineage (compression children)
+            conditions.append("id != ?")
+            params.append(exclude_session_id)
+            conditions.append("parent_session_id IS NULL OR parent_session_id != ?")
+            params.append(exclude_session_id)
+        if source:
+            conditions.append("source = ?")
+            params.append(source)
+        where = " AND ".join(conditions)
+        params.append(limit)
+        rows = conn.execute(
+            f"""SELECT id, title, summary, started_at, source
+                FROM sessions
+                WHERE {where}
+                ORDER BY started_at DESC
+                LIMIT ?""",
+            params,
+        ).fetchall()
+        results = []
+        for row in rows:
+            results.append({
+                "session_id": row[0],
+                "title": row[1],
+                "summary": row[2],
+                "started_at": row[3],
+                "source": row[4],
+            })
+        return results
 
     def reopen_session(self, session_id: str) -> None:
         """Clear ended_at/end_reason so a session can be resumed."""

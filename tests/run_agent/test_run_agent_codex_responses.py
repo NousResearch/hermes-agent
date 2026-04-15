@@ -148,7 +148,8 @@ def _codex_ack_message_response(text: str):
 
 
 class _FakeResponsesStream:
-    def __init__(self, *, final_response=None, final_error=None):
+    def __init__(self, *, events=None, final_response=None, final_error=None):
+        self._events = list(events or [])
         self._final_response = final_response
         self._final_error = final_error
 
@@ -159,7 +160,7 @@ class _FakeResponsesStream:
         return False
 
     def __iter__(self):
-        return iter(())
+        return iter(self._events)
 
     def get_final_response(self):
         if self._final_error is not None:
@@ -421,6 +422,88 @@ def test_run_codex_stream_falls_back_to_create_after_stream_completion_error(mon
     assert calls["stream"] == 2
     assert calls["create"] == 1
     assert response.output[0].content[0].text == "create fallback ok"
+
+
+def test_run_codex_stream_backfills_semantically_empty_final_output(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    final_response = SimpleNamespace(
+        output=[
+            SimpleNamespace(
+                type="message",
+                role="assistant",
+                status="completed",
+                content=[],
+            )
+        ],
+        usage=SimpleNamespace(input_tokens=5, output_tokens=2, total_tokens=7),
+        status="completed",
+        model="gpt-5-codex",
+    )
+
+    def _fake_stream(**kwargs):
+        return _FakeResponsesStream(
+            events=[
+                SimpleNamespace(type="response.output_text.delta", delta="OK"),
+                SimpleNamespace(
+                    type="response.output_item.done",
+                    item=SimpleNamespace(
+                        type="message",
+                        role="assistant",
+                        status="completed",
+                        content=[SimpleNamespace(type="output_text", text="OK")],
+                    ),
+                ),
+            ],
+            final_response=final_response,
+        )
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(
+            stream=_fake_stream,
+            create=lambda **kwargs: _codex_message_response("fallback"),
+        )
+    )
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+
+    assert response.output[0].content[0].text == "OK"
+
+
+def test_run_codex_create_stream_fallback_backfills_dict_terminal_output(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    create_stream = _FakeCreateStream(
+        [
+            {"type": "response.output_text.delta", "delta": "OK"},
+            {
+                "type": "response.output_item.done",
+                "item": {
+                    "type": "message",
+                    "role": "assistant",
+                    "status": "completed",
+                    "content": [{"type": "output_text", "text": "OK"}],
+                },
+            },
+            {
+                "type": "response.completed",
+                "response": {
+                    "status": "completed",
+                    "output": [{"type": "message", "role": "assistant", "content": []}],
+                },
+            },
+        ]
+    )
+
+    response = agent._run_codex_create_stream_fallback(
+        _codex_request_kwargs(),
+        client=SimpleNamespace(
+            responses=SimpleNamespace(create=lambda **kwargs: create_stream)
+        ),
+    )
+    assistant_message, finish_reason = agent._normalize_codex_response(response)
+
+    assert create_stream.closed is True
+    assert assistant_message.content == "OK"
+    assert finish_reason == "stop"
 
 
 def test_run_codex_stream_fallback_parses_create_stream_events(monkeypatch):
@@ -1276,3 +1359,23 @@ def test_preflight_codex_input_deduplicates_reasoning_ids(monkeypatch):
     assert reasoning_ids.count("rs_xyz") == 1
     assert reasoning_ids.count("rs_zzz") == 1
     assert len(reasoning_items) == 2
+    assert normalized[0]["content"] == [{"type": "input_text", "text": "hello"}]
+    assert normalized[2]["content"] == [{"type": "output_text", "text": "ok"}]
+    assert normalized[4]["content"] == [{"type": "output_text", "text": "done"}]
+
+
+def test_preflight_codex_input_converts_string_messages_to_typed_content(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    normalized = agent._preflight_codex_input_items(
+        [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "ok"},
+            {"role": "assistant", "content": ""},
+        ]
+    )
+
+    assert normalized == [
+        {"role": "user", "content": [{"type": "input_text", "text": "hello"}]},
+        {"role": "assistant", "content": [{"type": "output_text", "text": "ok"}]},
+        {"role": "assistant", "content": []},
+    ]

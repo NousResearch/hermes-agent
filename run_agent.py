@@ -3670,6 +3670,77 @@ class AIAgent:
         if not isinstance(raw_items, list):
             raise ValueError("Codex Responses input must be a list of input items.")
 
+        def _normalize_message_content(role: str, content: Any) -> List[Dict[str, Any]]:
+            default_text_type = "output_text" if role == "assistant" else "input_text"
+
+            if content is None:
+                return []
+
+            if isinstance(content, str):
+                return [{"type": default_text_type, "text": content}] if content else []
+
+            if not isinstance(content, list):
+                text = str(content) if content else ""
+                return [{"type": default_text_type, "text": text}] if text else []
+
+            normalized_parts: List[Dict[str, Any]] = []
+            for part in content:
+                if isinstance(part, str):
+                    if part:
+                        normalized_parts.append({"type": default_text_type, "text": part})
+                    continue
+
+                if not isinstance(part, dict):
+                    text = str(part) if part else ""
+                    if text:
+                        normalized_parts.append({"type": default_text_type, "text": text})
+                    continue
+
+                ptype = str(part.get("type") or "").strip()
+                if ptype in {"input_text", "output_text"}:
+                    text = part.get("text", "")
+                    if text is None:
+                        text = ""
+                    if not isinstance(text, str):
+                        text = str(text)
+                    normalized_parts.append({"type": ptype, "text": text})
+                    continue
+
+                if ptype == "text":
+                    text = part.get("text", "")
+                    if text is None:
+                        text = ""
+                    if not isinstance(text, str):
+                        text = str(text)
+                    normalized_parts.append({"type": default_text_type, "text": text})
+                    continue
+
+                if ptype == "image_url":
+                    image_data = part.get("image_url", {})
+                    image_url = image_data.get("url", "") if isinstance(image_data, dict) else str(image_data or "")
+                    if not image_url:
+                        continue
+                    entry: Dict[str, Any] = {"type": "input_image", "image_url": image_url}
+                    detail = image_data.get("detail") if isinstance(image_data, dict) else None
+                    if detail:
+                        entry["detail"] = detail
+                    normalized_parts.append(entry)
+                    continue
+
+                if ptype in {"input_image", "input_file"}:
+                    normalized_parts.append(dict(part))
+                    continue
+
+                text = part.get("text", "")
+                if text is None:
+                    text = ""
+                if not isinstance(text, str):
+                    text = str(text)
+                if text:
+                    normalized_parts.append({"type": default_text_type, "text": text})
+
+            return normalized_parts
+
         normalized: List[Dict[str, Any]] = []
         seen_ids: set = set()
         for idx, item in enumerate(raw_items):
@@ -3742,13 +3813,12 @@ class AIAgent:
 
             role = item.get("role")
             if role in {"user", "assistant"}:
-                content = item.get("content", "")
-                if content is None:
-                    content = ""
-                if not isinstance(content, str):
-                    content = str(content)
-
-                normalized.append({"role": role, "content": content})
+                normalized.append(
+                    {
+                        "role": role,
+                        "content": _normalize_message_content(role, item.get("content", "")),
+                    }
+                )
                 continue
 
             raise ValueError(
@@ -3885,67 +3955,170 @@ class AIAgent:
 
         return normalized
 
+    @staticmethod
+    def _responses_obj_get(obj: Any, key: str, default: Any = None) -> Any:
+        if isinstance(obj, dict):
+            return obj.get(key, default)
+        return getattr(obj, key, default)
+
+    @staticmethod
+    def _responses_obj_set(obj: Any, key: str, value: Any) -> None:
+        if isinstance(obj, dict):
+            obj[key] = value
+        else:
+            setattr(obj, key, value)
+
     def _extract_responses_message_text(self, item: Any) -> str:
         """Extract assistant text from a Responses message output item."""
-        content = getattr(item, "content", None)
+        content = self._responses_obj_get(item, "content", None)
         if not isinstance(content, list):
             return ""
 
         chunks: List[str] = []
         for part in content:
-            ptype = getattr(part, "type", None)
+            ptype = self._responses_obj_get(part, "type", None)
             if ptype not in {"output_text", "text"}:
                 continue
-            text = getattr(part, "text", None)
+            text = self._responses_obj_get(part, "text", None)
             if isinstance(text, str) and text:
                 chunks.append(text)
         return "".join(chunks).strip()
 
     def _extract_responses_reasoning_text(self, item: Any) -> str:
         """Extract a compact reasoning text from a Responses reasoning item."""
-        summary = getattr(item, "summary", None)
+        summary = self._responses_obj_get(item, "summary", None)
         if isinstance(summary, list):
             chunks: List[str] = []
             for part in summary:
-                text = getattr(part, "text", None)
+                text = self._responses_obj_get(part, "text", None)
                 if isinstance(text, str) and text:
                     chunks.append(text)
             if chunks:
                 return "\n".join(chunks).strip()
-        text = getattr(item, "text", None)
+        text = self._responses_obj_get(item, "text", None)
         if isinstance(text, str) and text:
             return text.strip()
         return ""
 
+    def _responses_output_has_tool_calls(self, output: Any) -> bool:
+        if not isinstance(output, list):
+            return False
+
+        for item in output:
+            item_type = self._responses_obj_get(item, "type", None)
+            if item_type not in {"function_call", "custom_tool_call"}:
+                continue
+            item_status = self._responses_obj_get(item, "status", None)
+            if isinstance(item_status, str) and item_status.strip().lower() in {
+                "queued", "in_progress", "incomplete",
+            }:
+                continue
+            return True
+        return False
+
+    def _responses_output_has_semantic_content(self, output: Any) -> bool:
+        if not isinstance(output, list) or not output:
+            return False
+
+        for item in output:
+            item_type = self._responses_obj_get(item, "type", None)
+            if item_type == "message":
+                if self._extract_responses_message_text(item):
+                    return True
+            elif item_type == "reasoning":
+                if self._extract_responses_reasoning_text(item):
+                    return True
+                encrypted = self._responses_obj_get(item, "encrypted_content", None)
+                if isinstance(encrypted, str) and encrypted:
+                    return True
+            elif item_type in {"function_call", "custom_tool_call"}:
+                if self._responses_output_has_tool_calls([item]):
+                    return True
+            elif item is not None:
+                # Preserve unknown output item types rather than discarding
+                # provider-specific data we don't explicitly understand yet.
+                return True
+        return False
+
+    def _backfill_codex_stream_output(
+        self,
+        response: Any,
+        *,
+        collected_output_items: list,
+        text_deltas: list[str],
+        source: str,
+        has_tool_calls: bool = False,
+    ) -> Any:
+        current_output = self._responses_obj_get(response, "output", None)
+        if self._responses_output_has_semantic_content(current_output):
+            return response
+
+        if self._responses_output_has_semantic_content(collected_output_items):
+            self._responses_obj_set(response, "output", list(collected_output_items))
+            logger.debug(
+                "%s: backfilled %d output items from stream events",
+                source,
+                len(collected_output_items),
+            )
+            return response
+
+        suppress_delta_synthesis = (
+            has_tool_calls
+            or self._responses_output_has_tool_calls(current_output)
+            or self._responses_output_has_tool_calls(collected_output_items)
+        )
+        if text_deltas and not suppress_delta_synthesis:
+            assembled = "".join(text_deltas)
+            self._responses_obj_set(
+                response,
+                "output",
+                [SimpleNamespace(
+                    type="message",
+                    role="assistant",
+                    status="completed",
+                    content=[SimpleNamespace(type="output_text", text=assembled)],
+                )],
+            )
+            logger.debug(
+                "%s: synthesized output from %d text deltas (%d chars)",
+                source,
+                len(text_deltas),
+                len(assembled),
+            )
+        return response
+
     def _normalize_codex_response(self, response: Any) -> tuple[Any, str]:
         """Normalize a Responses API object to an assistant_message-like object."""
-        output = getattr(response, "output", None)
-        if not isinstance(output, list) or not output:
+        output = self._responses_obj_get(response, "output", None)
+        output_has_semantic_content = self._responses_output_has_semantic_content(output)
+        if not isinstance(output, list) or not output or not output_has_semantic_content:
             # The Codex backend can return empty output when the answer was
-            # delivered entirely via stream events. Check output_text as a
-            # last-resort fallback before raising.
-            out_text = getattr(response, "output_text", None)
+            # delivered entirely via stream events. Some routers also return a
+            # non-empty ``output`` list whose message items have empty
+            # ``content`` arrays. Check output_text as a last-resort fallback
+            # before raising.
+            out_text = self._responses_obj_get(response, "output_text", None)
             if isinstance(out_text, str) and out_text.strip():
                 logger.debug(
-                    "Codex response has empty output but output_text is present (%d chars); "
+                    "Codex response has unusable output but output_text is present (%d chars); "
                     "synthesizing output item.", len(out_text.strip()),
                 )
                 output = [SimpleNamespace(
                     type="message", role="assistant", status="completed",
                     content=[SimpleNamespace(type="output_text", text=out_text.strip())],
                 )]
-                response.output = output
-            else:
+                self._responses_obj_set(response, "output", output)
+            elif not isinstance(output, list) or not output:
                 raise RuntimeError("Responses API returned no output items")
 
-        response_status = getattr(response, "status", None)
+        response_status = self._responses_obj_get(response, "status", None)
         if isinstance(response_status, str):
             response_status = response_status.strip().lower()
         else:
             response_status = None
 
         if response_status in {"failed", "cancelled"}:
-            error_obj = getattr(response, "error", None)
+            error_obj = self._responses_obj_get(response, "error", None)
             if isinstance(error_obj, dict):
                 error_msg = error_obj.get("message") or str(error_obj)
             else:
@@ -3961,8 +4134,8 @@ class AIAgent:
         saw_final_answer_phase = False
 
         for item in output:
-            item_type = getattr(item, "type", None)
-            item_status = getattr(item, "status", None)
+            item_type = self._responses_obj_get(item, "type", None)
+            item_status = self._responses_obj_get(item, "status", None)
             if isinstance(item_status, str):
                 item_status = item_status.strip().lower()
             else:
@@ -3972,7 +4145,7 @@ class AIAgent:
                 has_incomplete_items = True
 
             if item_type == "message":
-                item_phase = getattr(item, "phase", None)
+                item_phase = self._responses_obj_get(item, "phase", None)
                 if isinstance(item_phase, str):
                     normalized_phase = item_phase.strip().lower()
                     if normalized_phase in {"commentary", "analysis"}:
@@ -3989,18 +4162,18 @@ class AIAgent:
                 # Capture the full reasoning item for multi-turn continuity.
                 # encrypted_content is an opaque blob the API needs back on
                 # subsequent turns to maintain coherent reasoning chains.
-                encrypted = getattr(item, "encrypted_content", None)
+                encrypted = self._responses_obj_get(item, "encrypted_content", None)
                 if isinstance(encrypted, str) and encrypted:
                     raw_item = {"type": "reasoning", "encrypted_content": encrypted}
-                    item_id = getattr(item, "id", None)
+                    item_id = self._responses_obj_get(item, "id", None)
                     if isinstance(item_id, str) and item_id:
                         raw_item["id"] = item_id
                     # Capture summary — required by the API when replaying reasoning items
-                    summary = getattr(item, "summary", None)
+                    summary = self._responses_obj_get(item, "summary", None)
                     if isinstance(summary, list):
                         raw_summary = []
                         for part in summary:
-                            text = getattr(part, "text", None)
+                            text = self._responses_obj_get(part, "text", None)
                             if isinstance(text, str):
                                 raw_summary.append({"type": "summary_text", "text": text})
                         raw_item["summary"] = raw_summary
@@ -4008,12 +4181,12 @@ class AIAgent:
             elif item_type == "function_call":
                 if item_status in {"queued", "in_progress", "incomplete"}:
                     continue
-                fn_name = getattr(item, "name", "") or ""
-                arguments = getattr(item, "arguments", "{}")
+                fn_name = self._responses_obj_get(item, "name", "") or ""
+                arguments = self._responses_obj_get(item, "arguments", "{}")
                 if not isinstance(arguments, str):
                     arguments = json.dumps(arguments, ensure_ascii=False)
-                raw_call_id = getattr(item, "call_id", None)
-                raw_item_id = getattr(item, "id", None)
+                raw_call_id = self._responses_obj_get(item, "call_id", None)
+                raw_item_id = self._responses_obj_get(item, "id", None)
                 embedded_call_id, _ = self._split_responses_tool_id(raw_item_id)
                 call_id = raw_call_id if isinstance(raw_call_id, str) and raw_call_id.strip() else embedded_call_id
                 if not isinstance(call_id, str) or not call_id.strip():
@@ -4029,12 +4202,12 @@ class AIAgent:
                     function=SimpleNamespace(name=fn_name, arguments=arguments),
                 ))
             elif item_type == "custom_tool_call":
-                fn_name = getattr(item, "name", "") or ""
-                arguments = getattr(item, "input", "{}")
+                fn_name = self._responses_obj_get(item, "name", "") or ""
+                arguments = self._responses_obj_get(item, "input", "{}")
                 if not isinstance(arguments, str):
                     arguments = json.dumps(arguments, ensure_ascii=False)
-                raw_call_id = getattr(item, "call_id", None)
-                raw_item_id = getattr(item, "id", None)
+                raw_call_id = self._responses_obj_get(item, "call_id", None)
+                raw_item_id = self._responses_obj_get(item, "id", None)
                 embedded_call_id, _ = self._split_responses_tool_id(raw_item_id)
                 call_id = raw_call_id if isinstance(raw_call_id, str) and raw_call_id.strip() else embedded_call_id
                 if not isinstance(call_id, str) or not call_id.strip():
@@ -4051,8 +4224,8 @@ class AIAgent:
                 ))
 
         final_text = "\n".join([p for p in content_parts if p]).strip()
-        if not final_text and hasattr(response, "output_text"):
-            out_text = getattr(response, "output_text", "")
+        if not final_text and self._responses_obj_get(response, "output_text", None) is not None:
+            out_text = self._responses_obj_get(response, "output_text", "")
             if isinstance(out_text, str):
                 final_text = out_text.strip()
 
@@ -4415,29 +4588,13 @@ class AIAgent:
                                 self._client_log_context(),
                             )
                     final_response = stream.get_final_response()
-                    # PATCH: ChatGPT Codex backend streams valid output items
-                    # but get_final_response() can return an empty output list.
-                    # Backfill from collected items or synthesize from deltas.
-                    _out = getattr(final_response, "output", None)
-                    if isinstance(_out, list) and not _out:
-                        if collected_output_items:
-                            final_response.output = list(collected_output_items)
-                            logger.debug(
-                                "Codex stream: backfilled %d output items from stream events",
-                                len(collected_output_items),
-                            )
-                        elif self._codex_streamed_text_parts and not has_tool_calls:
-                            assembled = "".join(self._codex_streamed_text_parts)
-                            final_response.output = [SimpleNamespace(
-                                type="message",
-                                role="assistant",
-                                status="completed",
-                                content=[SimpleNamespace(type="output_text", text=assembled)],
-                            )]
-                            logger.debug(
-                                "Codex stream: synthesized output from %d text deltas (%d chars)",
-                                len(self._codex_streamed_text_parts), len(assembled),
-                            )
+                    self._backfill_codex_stream_output(
+                        final_response,
+                        collected_output_items=collected_output_items,
+                        text_deltas=self._codex_streamed_text_parts,
+                        source="Codex stream",
+                        has_tool_calls=has_tool_calls,
+                    )
                     return final_response
             except (_httpx.RemoteProtocolError, _httpx.ReadTimeout, _httpx.ConnectError, ConnectionError) as exc:
                 if attempt < max_stream_retries:
@@ -4519,26 +4676,12 @@ class AIAgent:
                 if terminal_response is None and isinstance(event, dict):
                     terminal_response = event.get("response")
                 if terminal_response is not None:
-                    # Backfill empty output from collected stream events
-                    _out = getattr(terminal_response, "output", None)
-                    if isinstance(_out, list) and not _out:
-                        if collected_output_items:
-                            terminal_response.output = list(collected_output_items)
-                            logger.debug(
-                                "Codex fallback stream: backfilled %d output items",
-                                len(collected_output_items),
-                            )
-                        elif collected_text_deltas:
-                            assembled = "".join(collected_text_deltas)
-                            terminal_response.output = [SimpleNamespace(
-                                type="message", role="assistant",
-                                status="completed",
-                                content=[SimpleNamespace(type="output_text", text=assembled)],
-                            )]
-                            logger.debug(
-                                "Codex fallback stream: synthesized from %d deltas (%d chars)",
-                                len(collected_text_deltas), len(assembled),
-                            )
+                    self._backfill_codex_stream_output(
+                        terminal_response,
+                        collected_output_items=collected_output_items,
+                        text_deltas=collected_text_deltas,
+                        source="Codex fallback stream",
+                    )
                     return terminal_response
         finally:
             close_fn = getattr(stream_or_response, "close", None)

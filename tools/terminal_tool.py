@@ -147,31 +147,36 @@ def _check_all_guards(command: str, env_type: str) -> dict:
                                   approval_callback=_approval_callback)
 
 
-# Allowlist: characters that can legitimately appear in directory paths.
-# Covers alphanumeric, path separators, tilde, dot, hyphen, underscore, space,
-# plus, at, equals, and comma.  Everything else is rejected.
-_WORKDIR_SAFE_RE = re.compile(r'^[A-Za-z0-9/_\-.~ +@=,]+$')
+# Reject only characters that can still change shell meaning even when a path
+# would otherwise look platform-native. The actual cwd is shell-quoted later in
+# BaseEnvironment._wrap_command(), so valid Windows drive prefixes, backslashes,
+# apostrophes, and common punctuation should pass here.
+_WORKDIR_BLOCKED_CHARS = frozenset({
+    "\x00",  # NUL terminator
+    "\n",
+    "\r",
+    ";",
+    "|",
+    "&",
+    "<",
+    ">",
+    "$",
+    "`",
+})
 
 
 def _validate_workdir(workdir: str) -> str | None:
-    """Reject workdir values that don't look like a filesystem path.
-
-    Uses an allowlist of safe characters rather than a deny-list, so novel
-    shell metacharacters can't slip through.
-
-    Returns None if safe, or an error message string if dangerous.
-    """
+    """Reject workdir values containing shell metacharacters or control chars."""
     if not workdir:
         return None
-    if not _WORKDIR_SAFE_RE.match(workdir):
-        # Find the first offending character for a helpful message.
-        for ch in workdir:
-            if not _WORKDIR_SAFE_RE.match(ch):
-                return (
-                    f"Blocked: workdir contains disallowed character {repr(ch)}. "
-                    "Use a simple filesystem path without shell metacharacters."
-                )
-        return "Blocked: workdir contains disallowed characters."
+
+    for ch in workdir:
+        if ch in _WORKDIR_BLOCKED_CHARS or ord(ch) < 32 or ord(ch) == 127:
+            return (
+                f"Blocked: workdir contains disallowed character {repr(ch)}. "
+                "Use a simple filesystem path without shell metacharacters."
+            )
+
     return None
 
 

@@ -112,6 +112,7 @@ _CURATED_SKILL_ZH_HINTS = {
     "requesting-code-review": "做什麼：在 commit 或 push 前做驗證管線，包含安全掃描、測試、獨立 reviewer 與修正迴圈；適合：改完一批東西後要先驗證品質，再送出去時",
     "phase-based-autonomous-delivery": "做什麼：把長任務變成 phase ladder，一段做完就自動推下一段，不因小中斷停住；適合：你要我 one-shot 持續推進，不要每個 phase 都回頭問時",
     "parallel-architecture-review": "做什麼：把大型架構題拆成多角度平行審查，再收斂成一份 canonical blueprint；適合：重建系統、重做 workflow、做 operating model 時",
+    "self-improving-agent": "做什麼：來自 peterskoett/self-improving-agent 的自我進化方法，重點是從每次任務提煉 learnings、錯誤、模式與修正，再回寫成可持續改進的系統；適合：你要我建立 Hermes 自我進化迴圈、方法、記錄與長期演進排程時",
     "boss-mode-mobile-decision-ui": "做什麼：把充滿內部術語的工程後台翻成老闆看得懂、手機上可決策的 UI；適合：你要我把 agent / approval / project 介面改成 boss-mode 時",
     "hermes-dashboard-project-control-plane": "做什麼：把 Hermes 9119 dashboard 從狀態頁升級成真正的專案控制台，能看到 project、approval、autopilot 與推進狀態；適合：你要我把 Hermes 前台變成可控的 project OS 時",
     "slack-mcp-boss-mode-control-layer": "做什麼：把 Slack 變成 Hermes 的 boss-mode 控制層，用主頻道交辦、thread 執行、摘要回主頻道；適合：你要把 Slack 當成主要管理介面時",

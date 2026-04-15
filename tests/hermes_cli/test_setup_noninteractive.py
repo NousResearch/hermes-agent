@@ -86,6 +86,12 @@ class TestNonInteractiveSetup:
         assert 'Hermes Agent 설치를 함께 설정해볼게요.' in source
         assert '다시 오신 것을 환영합니다!' in source
         assert '무엇을 하시겠어요?' in source
+        assert '도구 사용 가능 요약' in source
+        assert '도구 API 키' in source
+        assert '어떤 도구를 설정하시겠어요?' in source
+        assert '어떤 플랫폼을 설정하시겠어요?' in source
+        assert '모든 항목이 설정되어 있습니다! 할 일이 없습니다.' in source
+        assert '필수 설정이 누락되었습니다:' in source
 
     def test_cmd_setup_allows_noninteractive_flag_without_tty(self):
         """The CLI entrypoint should not block --non-interactive before setup.py handles it."""

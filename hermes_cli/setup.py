@@ -348,7 +348,7 @@ def _print_setup_summary(config: dict, hermes_home):
     """Print the setup completion summary."""
     # Tool availability summary
     print()
-    print_header("Tool Availability Summary")
+    print_header("도구 사용 가능 요약")
 
     tool_status = []
     subscription_features = get_nous_subscription_features(config)
@@ -487,7 +487,7 @@ def _print_setup_summary(config: dict, hermes_home):
     available_count = sum(1 for _, avail, _ in tool_status if avail)
     total_count = len(tool_status)
 
-    print_info(f"{available_count}/{total_count} tool categories available:")
+    print_info(f"{available_count}/{total_count}개 도구 범주 사용 가능:")
     print()
 
     for name, available, missing_var in tool_status:
@@ -503,10 +503,10 @@ def _print_setup_summary(config: dict, hermes_home):
     disabled_tools = [(name, var) for name, avail, var in tool_status if not avail]
     if disabled_tools:
         print_warning(
-            "Some tools are disabled. Run 'hermes setup tools' to configure them,"
+            "일부 도구가 비활성화되어 있습니다. 'hermes setup tools'를 실행해 설정하거나,"
         )
         from hermes_constants import display_hermes_home as _dhh
-        print_warning(f"or edit {_dhh()}/.env directly to add the missing API keys.")
+        print_warning(f"{_dhh()}/.env를 직접 수정해 누락된 API 키를 추가하세요.")
         print()
 
     # Done banner
@@ -3062,16 +3062,16 @@ def _run_quick_setup(config: dict, hermes_home):
     )
 
     if not has_anything_missing:
-        print_success("Everything is configured! Nothing to do.")
+        print_success("모든 항목이 설정되어 있습니다! 할 일이 없습니다.")
         print()
-        print_info("Run 'hermes setup' and choose 'Full Setup' to reconfigure,")
-        print_info("or pick a specific section from the menu.")
+        print_info("다시 설정하려면 'hermes setup'을 실행하고 '전체 설정'을 선택하세요,")
+        print_info("또는 메뉴에서 특정 섹션을 선택하세요.")
         return
 
     # Handle missing required env vars
     if missing_required:
         print()
-        print_info(f"{len(missing_required)} required setting(s) missing:")
+        print_info(f"{len(missing_required)}개의 필수 설정이 누락되었습니다:")
         for var in missing_required:
             print(f"     • {var['name']}")
         print()
@@ -3081,7 +3081,7 @@ def _run_quick_setup(config: dict, hermes_home):
             print(color(f"  {var['name']}", Colors.CYAN))
             print_info(f"  {var.get('description', '')}")
             if var.get("url"):
-                print_info(f"  Get key at: {var['url']}")
+                print_info(f"  키 발급 위치: {var['url']}")
 
             if var.get("password"):
                 value = prompt(f"  {var.get('prompt', var['name'])}", password=True)
@@ -3105,7 +3105,7 @@ def _run_quick_setup(config: dict, hermes_home):
     # ── Tool API keys (checklist) ──
     if missing_tools:
         print()
-        print_header("Tool API Keys")
+        print_header("도구 API 키")
 
         checklist_labels = []
         for var in missing_tools:
@@ -3114,7 +3114,7 @@ def _run_quick_setup(config: dict, hermes_home):
             checklist_labels.append(f"{var.get('description', var['name'])}{tools_str}")
 
         selected_indices = prompt_checklist(
-            "Which tools would you like to configure?",
+            "어떤 도구를 설정하시겠어요?",
             checklist_labels,
         )
 
@@ -3125,9 +3125,9 @@ def _run_quick_setup(config: dict, hermes_home):
     # ── Messaging platforms (checklist then prompt for selected) ──
     if missing_messaging:
         print()
-        print_header("Messaging Platforms")
-        print_info("Connect Hermes to messaging apps to chat from anywhere.")
-        print_info("You can configure these later with 'hermes setup gateway'.")
+        print_header("메시징 플랫폼")
+        print_info("어디서든 Hermes와 대화할 수 있도록 메시징 앱에 연결하세요.")
+        print_info("이 설정은 나중에 'hermes setup gateway'로 다시 할 수 있습니다.")
 
         # Group by platform (preserving order)
         platform_order = []
@@ -3156,7 +3156,7 @@ def _run_quick_setup(config: dict, hermes_home):
         ]
 
         selected_indices = prompt_checklist(
-            "Which platforms would you like to set up?",
+            "어떤 플랫폼을 설정하시겠어요?",
             platform_labels,
         )
 

@@ -457,6 +457,15 @@ def _sanitize_messages_non_ascii(messages: list) -> bool:
                             if sanitized != fn_args:
                                 fn["arguments"] = sanitized
                                 found = True
+        # Sanitize any additional top-level string fields (e.g. reasoning_content)
+        for key, value in msg.items():
+            if key in {"content", "name", "tool_calls", "role"}:
+                continue
+            if isinstance(value, str):
+                sanitized = _strip_non_ascii(value)
+                if sanitized != value:
+                    msg[key] = sanitized
+                    found = True
     return found
 
 
@@ -705,12 +714,13 @@ class AIAgent:
         except Exception:
             pass
 
-        # GPT-5.x models require the Responses API path — they are rejected
-        # on /v1/chat/completions by both OpenAI and OpenRouter.  Also
-        # auto-upgrade for direct OpenAI URLs (api.openai.com) since all
-        # newer tool-calling models prefer Responses there.
-        # ACP runtimes are excluded: CopilotACPClient handles its own
-        # routing and does not implement the Responses API surface.
+        # GPT-5.x models usually require the Responses API path, but some
+        # providers have exceptions (for example Copilot's gpt-5-mini still
+        # uses chat completions). Also auto-upgrade for direct OpenAI URLs
+        # (api.openai.com) since all newer tool-calling models prefer
+        # Responses there. ACP runtimes are excluded: CopilotACPClient
+        # handles its own routing and does not implement the Responses API
+        # surface.
         if (
             self.api_mode == "chat_completions"
             and self.provider != "copilot-acp"
@@ -718,7 +728,10 @@ class AIAgent:
             and not str(self.base_url or "").lower().startswith("acp+tcp://")
             and (
                 self._is_direct_openai_url()
-                or self._model_requires_responses_api(self.model)
+                or self._provider_model_requires_responses_api(
+                    self.model,
+                    provider=self.provider,
+                )
             )
         ):
             self.api_mode = "codex_responses"
@@ -1950,6 +1963,24 @@ class AIAgent:
         if "/" in m:
             m = m.rsplit("/", 1)[-1]
         return m.startswith("gpt-5")
+
+    @staticmethod
+    def _provider_model_requires_responses_api(
+        model: str,
+        *,
+        provider: Optional[str] = None,
+    ) -> bool:
+        """Return True when this provider/model pair should use Responses API."""
+        normalized_provider = (provider or "").strip().lower()
+        if normalized_provider == "copilot":
+            try:
+                from hermes_cli.models import _should_use_copilot_responses_api
+                return _should_use_copilot_responses_api(model)
+            except Exception:
+                # Fall back to the generic GPT-5 rule if Copilot-specific
+                # logic is unavailable for any reason.
+                pass
+        return AIAgent._model_requires_responses_api(model)
 
     def _max_tokens_param(self, value: int) -> dict:
         """Return the correct max tokens kwarg for the current provider.
@@ -5721,9 +5752,13 @@ class AIAgent:
                 fb_api_mode = "anthropic_messages"
             elif self._is_direct_openai_url(fb_base_url):
                 fb_api_mode = "codex_responses"
-            elif self._model_requires_responses_api(fb_model):
-                # GPT-5.x models need Responses API on every provider
-                # (OpenRouter, Copilot, direct OpenAI, etc.)
+            elif self._provider_model_requires_responses_api(
+                fb_model,
+                provider=fb_provider,
+            ):
+                # GPT-5.x models usually need Responses API, but keep
+                # provider-specific exceptions like Copilot gpt-5-mini on
+                # chat completions.
                 fb_api_mode = "codex_responses"
 
             old_model = self.model
@@ -9108,7 +9143,19 @@ class AIAgent:
                             # ASCII codec: the system encoding can't handle
                             # non-ASCII characters at all. Sanitize all
                             # non-ASCII content from messages/tool schemas and retry.
+                            # Sanitize both the canonical `messages` list and
+                            # `api_messages` (the API-copy built before the retry
+                            # loop, which may contain extra fields like
+                            # reasoning_content that are not in `messages`).
                             _messages_sanitized = _sanitize_messages_non_ascii(messages)
+                            if isinstance(api_messages, list):
+                                _sanitize_messages_non_ascii(api_messages)
+                            # Also sanitize the last api_kwargs if already built,
+                            # so a leftover non-ASCII value in a transformed field
+                            # (e.g. extra_body, reasoning_content) doesn't survive
+                            # into the next attempt via _build_api_kwargs cache paths.
+                            if isinstance(api_kwargs, dict):
+                                _sanitize_structure_non_ascii(api_kwargs)
                             _prefill_sanitized = False
                             if isinstance(getattr(self, "prefill_messages", None), list):
                                 _prefill_sanitized = _sanitize_messages_non_ascii(self.prefill_messages)
@@ -9166,22 +9213,34 @@ class AIAgent:
                                         force=True,
                                     )
 
-                            if (
+                            # Always retry on ASCII codec detection —
+                            # _force_ascii_payload guarantees the full
+                            # api_kwargs payload is sanitized on the
+                            # next iteration (line ~8475).  Even when
+                            # per-component checks above find nothing
+                            # (e.g. non-ASCII only in api_messages'
+                            # reasoning_content), the flag catches it.
+                            # Bounded by _unicode_sanitization_passes < 2.
+                            self._unicode_sanitization_passes += 1
+                            _any_sanitized = (
                                 _messages_sanitized
                                 or _prefill_sanitized
                                 or _tools_sanitized
                                 or _system_sanitized
                                 or _headers_sanitized
                                 or _credential_sanitized
-                            ):
-                                self._unicode_sanitization_passes += 1
+                            )
+                            if _any_sanitized:
                                 self._vprint(
                                     f"{self.log_prefix}⚠️  System encoding is ASCII — stripped non-ASCII characters from request payload. Retrying...",
                                     force=True,
                                 )
-                                continue
-                        # Nothing to sanitize in any payload component.
-                        # Fall through to normal error path.
+                            else:
+                                self._vprint(
+                                    f"{self.log_prefix}⚠️  System encoding is ASCII — enabling full-payload sanitization for retry...",
+                                    force=True,
+                                )
+                            continue
 
                     status_code = getattr(api_error, "status_code", None)
                     error_context = self._extract_api_error_context(api_error)

@@ -609,12 +609,15 @@ class GatewayStreamConsumer:
                 content=text,
                 metadata=self.metadata,
             )
-            if result.success:
-                self._already_sent = True
-                return True
+            # Note: do NOT set _already_sent = True here.
+            # Commentary messages are interim status updates (e.g. "Using browser
+            # tool..."), not the final response. Setting already_sent would cause
+            # the final response to be incorrectly suppressed when there are
+            # multiple tool calls. See: https://github.com/NousResearch/hermes-agent/issues/10454
+            return result.success
         except Exception as e:
             logger.error("Commentary send error: %s", e)
-        return False
+            return False
 
     async def _send_or_edit(self, text: str) -> bool:
         """Send or edit the streaming message.

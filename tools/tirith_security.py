@@ -360,7 +360,21 @@ def _install_tirith(*, log_failures: bool = True) -> tuple[str | None, str]:
 
         src = os.path.join(tmpdir, "tirith")
         dest = os.path.join(_hermes_bin_dir(), "tirith")
-        shutil.move(src, dest)
+        try:
+            shutil.move(src, dest)
+        except OSError:
+            # Cross-device move (common in Docker, NFS): shutil.move() falls
+            # back to copy2 + unlink, but copy2's metadata step can raise
+            # PermissionError.  Use plain copy + manual chmod instead.
+            try:
+                shutil.copy(src, dest)
+            except OSError:
+                # Clean up partial dest to prevent a non-executable retry loop
+                try:
+                    os.unlink(dest)
+                except OSError:
+                    pass
+                return None, "cross_device_copy_failed"
         os.chmod(dest, os.stat(dest).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
         verification = "cosign + SHA-256" if cosign_verified else "SHA-256 only"

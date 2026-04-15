@@ -232,7 +232,7 @@ def _call(tool_name, args):
         buf += chunk
         if buf.endswith(b"\\n"):
             break
-    raw = buf.decode().strip()
+    raw = buf.decode("utf-8", errors="replace").strip()
     result = json.loads(raw)
     if isinstance(result, str):
         try:

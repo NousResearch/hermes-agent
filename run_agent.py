@@ -7158,8 +7158,18 @@ class AIAgent:
                     f = executor.submit(_run_tool, i, tc, name, args)
                     futures.append(f)
 
-                # Wait for all to complete (exceptions are captured inside _run_tool)
-                concurrent.futures.wait(futures)
+                # Wait for all to complete (exceptions are captured inside _run_tool).
+                # Use a generous timeout to prevent indefinite hangs if a tool
+                # blocks (e.g. network call without timeout, infinite loop).
+                _tool_timeout = max(300, 60 * num_tools)  # 5 min minimum, 1 min per tool
+                done, not_done = concurrent.futures.wait(futures, timeout=_tool_timeout)
+                if not_done:
+                    logger.warning(
+                        "Concurrent tool execution timed out after %ds: %d/%d tools incomplete",
+                        _tool_timeout, len(not_done), num_tools,
+                    )
+                    for f in not_done:
+                        f.cancel()
         finally:
             if spinner:
                 # Build a summary message for the spinner stop

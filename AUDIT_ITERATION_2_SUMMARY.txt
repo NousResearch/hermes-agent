@@ -1,0 +1,224 @@
+================================================================================
+GATEWAY SECURITY AUDIT - ITERATION #2 SUMMARY
+================================================================================
+Date: April 9, 2026
+Analyst: Claude Code
+Scope: hermes-agent/gateway/ (platform adapters, session management, webhooks)
+
+================================================================================
+KEY FINDINGS
+================================================================================
+
+🔴 CRITICAL (2 HIGH-SEVERITY ISSUES)
+────────────────────────────────────
+
+1. PII LEAKAGE IN AUTHORIZATION LOGS
+   File: gateway/run.py, Line 1800
+   Issue: User IDs and names (phone numbers, emails) logged in plaintext
+   
+   Code:
+   ```
+   logger.warning("Unauthorized user: %s (%s) on %s", 
+                  source.user_id, source.user_name, source.platform.value)
+   ```
+   
+   Impact: GDPR/CCPA violation, PII enumeration attack, harassment risk
+   Example Leak: "Unauthorized user: +1234567890 (john.doe) on telegram"
+   
+   Fix: Hash user_id before logging using _hash_sender_id() from session.py
+   Effort: 5 minutes
+   Risk if Not Fixed: HIGH - regulatory violation, data breach
+
+────────────────────────────────────────────────────────────────────────────────
+
+2. MISSING PLATFORM-WIDE RATE LIMITING ON UNAUTHORIZED MESSAGES
+   File: gateway/run.py, Lines 1799-1832
+   Issue: No rate limiting on incoming unauthorized messages (DoS vulnerability)
+   
+   Current Code Flow:
+   - Line 1807: Check if THIS user is rate limited (per-user, 10 min)
+   - Line 1809: Generate pairing code if rate limit passed
+   - MISSING: No check to prevent multiple NEW users from hammering the gateway
+   
+   Attack Scenario:
+   ```
+   Alice sends message → generates pairing code (user A, not rate limited)
+   Bob sends message   → generates pairing code (user B, not rate limited)  
+   Charlie sends msg   → generates pairing code (user C, not rate limited)
+   ...attacker controls 100 SIM cards...
+   ```
+   
+   Impact: DoS via repeated pairing code generation, log spam, resource exhaustion
+   
+   Mitigation: MAX_PENDING_PER_PLATFORM = 3 (line 43 in pairing.py) partially blocks
+   But still allows 3 concurrent unauthorized users * multiple platforms = issue
+   
+   Fix: Add platform-wide rate limit (10 unauthorized msgs/min max)
+   Effort: 30 minutes
+   Risk if Not Fixed: MEDIUM - DoS possible but capped by pairing store limits
+
+════════════════════════════════════════════════════════════════════════════════
+
+🟡 MEDIUM SEVERITY (4 ISSUES)
+─────────────────────────────
+
+3. UNSAFE JSON DESERIALIZATION IN WEBHOOK DYNAMIC ROUTES
+   File: gateway/platforms/webhook.py, Line 249
+   Issue: No validation of route names in webhook_subscriptions.json
+   
+   Code Path:
+   - Agent writes webhook_subscriptions.json with arbitrary route names
+   - _reload_dynamic_routes() loads without validation
+   - No length checks, no character validation, no path validation
+   
+   Potential Issue (if file is malicious):
+   ```json
+   {
+     "../../etc/passwd": {...},
+     "\x00injection": {...},
+     "a".repeat(100000): {...}
+   }
+   ```
+   
+   Fix: Add route name validation (alphanumeric, max 255 chars)
+   Effort: 15 minutes
+   Risk: LOW-MEDIUM (requires agent compromise or file tampering)
+
+────────────────────────────────────────────────────────────────────────────────
+
+4. WEBHOOK SIGNATURE VALIDATION - INCOMPLETE COVERAGE
+   File: gateway/platforms/webhook.py, Lines 473-502
+   Issue: No fallback for unknown signature header formats
+   
+   Supported Headers:
+   - GitHub: X-Hub-Signature-256 ✓
+   - GitLab: X-Gitlab-Token ✓
+   - Generic: X-Webhook-Signature ✓
+   - Others: REJECTED ✓
+   
+   Risk: If a webhook provider uses non-standard header, it's rejected
+   Status: CORRECT BEHAVIOR (fail-safe, not fail-open)
+   
+   Minor Issue: No logging of which validation method succeeded
+   Fix: Add debug log showing which signature method validated
+   Effort: 5 minutes
+   Risk: LOW (system is secure, just not logging properly)
+
+────────────────────────────────────────────────────────────────────────────────
+
+5. PAIRING RATE LIMITING - PER-USER ONLY
+   File: gateway/pairing.py, Lines 250-255
+   Issue: Rate limit is per-user-per-platform, not global
+   
+   Current:
+   ```
+   key = f"{platform}:{user_id}"  # Different key per user
+   ```
+   
+   Attack: 1000 different Telegram numbers in 10 minutes = 1000 rate limit keys
+   
+   Mitigation: MAX_PENDING_PER_PLATFORM = 3 (line 43)
+   Status: PARTIALLY MITIGATED (max 3 pending codes cap total damage)
+   
+   Real Risk: LOW due to the 3-code cap
+   Fix: Optional - add global rate limit anyway for defense-in-depth
+   Effort: 20 minutes
+   Risk: LOW
+
+════════════════════════════════════════════════════════════════════════════════
+
+🟡 LOW SEVERITY (3 ISSUES)
+──────────────────────────
+
+6. SESSION KEY LEAKAGE IN LOGS
+   File: gateway/run.py, Multiple lines (1485, 1945, 2025, 2033)
+   Issue: Partial session keys logged (first 20 chars)
+   
+   Example Log Output:
+   "HARD STOP for session agent:main:tel — session lock released"
+   
+   Risk: Session enumeration, though keys are deterministic/recreatable
+   Fix: Remove session_key from debug logs or hash it
+   Effort: 15 minutes
+   Risk: LOW (information disclosure only)
+
+────────────────────────────────────────────────────────────────────────────────
+
+7. FALLBACK FORM-ENCODED WEBHOOK PARSING
+   File: gateway/platforms/webhook.py, Lines 317-330
+   Issue: Webhook handler accepts both JSON and form-encoded data
+   
+   Code:
+   ```
+   try:
+       payload = json.loads(raw_body)
+   except json.JSONDecodeError:
+       payload = urllib.parse.parse_qsl(...)  # Fallback to form encoding
+   ```
+   
+   Risk: Parsing multiple formats = larger attack surface
+   Status: WORKING CORRECTLY (multiple parsers can be risky)
+   Fix: Accept JSON only, reject form-encoded
+   Effort: 5 minutes
+   Risk: LOW (historical fallback, probably not needed)
+
+────────────────────────────────────────────────────────────────────────────────
+
+8. MISSING CONTENT-TYPE HEADER VALIDATION
+   File: gateway/platforms/webhook.py, Lines 298-330
+   Issue: No Content-Type validation before parsing
+   
+   Current Flow:
+   - 1. Check Content-Length (line 282) ✓
+   - 2. Check rate limit (line 288) ✓
+   - 3. Check signature (line 308) ✓
+   - 4. Parse body - NO Content-Type check ✗
+   
+   Fix: Add Content-Type: application/json validation
+   Effort: 5 minutes
+   Risk: LOW
+
+════════════════════════════════════════════════════════════════════════════════
+
+✓ VERIFIED SECURE (3 STRENGTHS)
+────────────────────────────────
+
+✓ Session Isolation: Correct implementation of build_session_key()
+  - DMs isolated by chat_id
+  - Groups isolated by chat_id, with per-user isolation configurable
+  - Threads handled correctly
+  - NO cross-user session contamination found
+
+✓ Webhook Rate Limiting: Correct per-route sliding window (60s, configurable)
+  - Returns 429 on limit
+  - Proper deduplication by delivery ID
+  - TTL cleanup (1 hour)
+
+✓ Authorization Order: Correct flow
+  - Internal events (cron) bypass auth ✓
+  - HomeAssistant (token) bypasses auth ✓
+  - Webhook (HMAC) bypasses auth ✓
+  - Regular users checked via allowlists ✓
+
+════════════════════════════════════════════════════════════════════════════════
+ACTION ITEMS
+════════════════════════════════════════════════════════════════════════════════
+
+IMMEDIATE (Blocking):
+  [ ] 1. Fix PII leakage in logs (line 1800) - CRITICAL
+  [ ] 2. Add unauthorized message rate limiting - CRITICAL
+  [ ] 3. Add webhook route name validation - MEDIUM
+
+NEXT SPRINT:
+  [ ] 4. Remove form-encoded webhook parsing
+  [ ] 5. Add Content-Type validation
+  [ ] 6. Add global pairing rate limit (optional)
+  [ ] 7. Hash session keys in logs
+
+TEST CASES NEEDED:
+  - Test unauthorized message flooding (100 msgs from different users)
+  - Test webhook route name with "../../../" (path traversal attempt)
+  - Test Content-Type: text/plain on webhook (should be rejected)
+  - Test form-encoded webhook (should be rejected after fix)
+
+════════════════════════════════════════════════════════════════════════════════

@@ -1765,14 +1765,44 @@ class DiscordAdapter(BasePlatformAdapter):
             if not categories and not uncategorized:
                 return
 
-            skill_group = discord.app_commands.Group(
+            app_commands = getattr(discord, "app_commands", None)
+            describe = getattr(app_commands, "describe", lambda **kwargs: (lambda fn: fn))
+            group_cls = getattr(app_commands, "Group", None)
+            command_cls = getattr(app_commands, "Command", None)
+
+            if group_cls is None:
+                class _FallbackGroup:
+                    def __init__(self, *, name, description, parent=None):
+                        self.name = name
+                        self.description = description
+                        self.parent = parent
+                        self._children = {}
+                        if parent is not None:
+                            parent.add_command(self)
+
+                    def add_command(self, cmd):
+                        self._children[cmd.name] = cmd
+
+                group_cls = _FallbackGroup
+
+            if command_cls is None:
+                class _FallbackCommand:
+                    def __init__(self, *, name, description, callback, parent=None):
+                        self.name = name
+                        self.description = description
+                        self.callback = callback
+                        self.parent = parent
+
+                command_cls = _FallbackCommand
+
+            skill_group = group_cls(
                 name="skill",
                 description="Run a Hermes skill",
             )
 
             # ── Helper: build a callback for a skill command key ──
             def _make_handler(_key: str):
-                @discord.app_commands.describe(args="Optional arguments for the skill")
+                @describe(args="Optional arguments for the skill")
                 async def _handler(interaction: discord.Interaction, args: str = ""):
                     await self._run_simple_slash(interaction, f"{_key} {args}".strip())
                 _handler.__name__ = f"skill_{_key.lstrip('/').replace('-', '_')}"
@@ -1780,7 +1810,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
             # ── Uncategorized (root-level) skills → direct subcommands ──
             for discord_name, description, cmd_key in uncategorized:
-                cmd = discord.app_commands.Command(
+                cmd = command_cls(
                     name=discord_name,
                     description=description or f"Run the {discord_name} skill",
                     callback=_make_handler(cmd_key),
@@ -1792,13 +1822,13 @@ class DiscordAdapter(BasePlatformAdapter):
                 cat_desc = f"{cat_name.replace('-', ' ').title()} skills"
                 if len(cat_desc) > 100:
                     cat_desc = cat_desc[:97] + "..."
-                cat_group = discord.app_commands.Group(
+                cat_group = group_cls(
                     name=cat_name,
                     description=cat_desc,
                     parent=skill_group,
                 )
                 for discord_name, description, cmd_key in categories[cat_name]:
-                    cmd = discord.app_commands.Command(
+                    cmd = command_cls(
                         name=discord_name,
                         description=description or f"Run the {discord_name} skill",
                         callback=_make_handler(cmd_key),

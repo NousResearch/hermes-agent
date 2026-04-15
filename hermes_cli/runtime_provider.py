@@ -167,6 +167,9 @@ def _resolve_runtime_from_pool_entry(
         api_mode = "chat_completions"
     elif provider == "copilot":
         api_mode = _copilot_runtime_api_mode(model_cfg, getattr(entry, "runtime_api_key", ""))
+        pconfig = PROVIDER_REGISTRY.get(provider)
+        if not base_url and pconfig:
+            base_url = str(getattr(pconfig, "inference_base_url", "") or "").rstrip("/")
     else:
         configured_provider = str(model_cfg.get("provider") or "").strip().lower()
         # Honour model.base_url from config.yaml when the configured provider
@@ -849,6 +852,8 @@ def resolve_runtime_provider(
         if cfg_provider == provider:
             cfg_base_url = (model_cfg.get("base_url") or "").strip().rstrip("/")
         base_url = cfg_base_url or creds.get("base_url", "").rstrip("/")
+        if not base_url:
+            base_url = str(getattr(pconfig, "inference_base_url", "") or "").rstrip("/")
         api_mode = "chat_completions"
         if provider == "copilot":
             api_mode = _copilot_runtime_api_mode(model_cfg, creds.get("api_key", ""))

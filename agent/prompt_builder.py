@@ -751,9 +751,24 @@ def build_skills_system_prompt(
             except Exception as e:
                 logger.debug("Could not read external skill description %s: %s", desc_file, e)
 
+    # ── Size constants for skills prompt budget ─────────────────────
+    _SKILLS_PROMPT_WARN_SIZE = 6 * 1024   # 6 KB — log warning
+    _SKILLS_PROMPT_MAX_SIZE = 8 * 1024     # 8 KB — hard cap
+    _SKILL_DESC_MAX_CHARS = 80             # max chars per skill description
+
     if not skills_by_category:
         result = ""
     else:
+        # Truncate individual skill descriptions to _SKILL_DESC_MAX_CHARS
+        for category in skills_by_category:
+            skills_by_category[category] = [
+                (
+                    sname,
+                    (sdesc[:_SKILL_DESC_MAX_CHARS] + "...") if len(sdesc) > _SKILL_DESC_MAX_CHARS else sdesc,
+                )
+                for sname, sdesc in skills_by_category[category]
+            ]
+
         index_lines = []
         for category in sorted(skills_by_category.keys()):
             cat_desc = category_descriptions.get(category, "")
@@ -771,6 +786,61 @@ def build_skills_system_prompt(
                     index_lines.append(f"    - {name}: {desc}")
                 else:
                     index_lines.append(f"    - {name}")
+
+        skills_block = "\n".join(index_lines)
+
+        # ── Budget enforcement: progressive degradation if over cap ────
+        if len(skills_block) > _SKILLS_PROMPT_MAX_SIZE:
+            # Stage 1: drop descriptions, keep names only
+            logger.warning(
+                "Skills prompt index (%d chars) exceeds %d cap — dropping descriptions",
+                len(skills_block), _SKILLS_PROMPT_MAX_SIZE,
+            )
+            index_lines = []
+            for category in sorted(skills_by_category.keys()):
+                cat_desc = category_descriptions.get(category, "")
+                if cat_desc:
+                    index_lines.append(f"  {category}: {cat_desc}")
+                else:
+                    index_lines.append(f"  {category}:")
+                seen = set()
+                for sname, _sdesc in sorted(skills_by_category[category], key=lambda x: x[0]):
+                    if sname in seen:
+                        continue
+                    seen.add(sname)
+                    index_lines.append(f"    - {sname}")
+            skills_block = "\n".join(index_lines)
+
+        if len(skills_block) > _SKILLS_PROMPT_MAX_SIZE:
+            # Stage 2: drop entire categories until under cap
+            logger.warning(
+                "Skills prompt index still over cap (%d chars) — dropping categories",
+                len(skills_block),
+            )
+            sorted_cats = sorted(
+                skills_by_category.keys(),
+                key=lambda c: len(skills_by_category[c]),
+            )
+            while len(skills_block) > _SKILLS_PROMPT_MAX_SIZE and sorted_cats:
+                dropped = sorted_cats.pop()
+                logger.debug("Dropping skills category '%s' to fit budget", dropped)
+                skills_by_category.pop(dropped, None)
+                index_lines = []
+                for category in sorted(skills_by_category.keys()):
+                    index_lines.append(f"  {category}:")
+                    seen = set()
+                    for sname, _sdesc in sorted(skills_by_category[category], key=lambda x: x[0]):
+                        if sname in seen:
+                            continue
+                        seen.add(sname)
+                        index_lines.append(f"    - {sname}")
+                skills_block = "\n".join(index_lines)
+
+        if len(skills_block) > _SKILLS_PROMPT_WARN_SIZE:
+            logger.warning(
+                "Skills prompt index is large: %d chars (warn threshold: %d)",
+                len(skills_block), _SKILLS_PROMPT_WARN_SIZE,
+            )
 
         result = (
             "## Skills (mandatory)\n"
@@ -790,7 +860,7 @@ def build_skills_system_prompt(
             "pitfalls you discovered, update it before finishing.\n"
             "\n"
             "<available_skills>\n"
-            + "\n".join(index_lines) + "\n"
+            + skills_block + "\n"
             "</available_skills>\n"
             "\n"
             "Only proceed without loading a skill if genuinely none are relevant to the task."

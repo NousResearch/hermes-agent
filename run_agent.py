@@ -3309,7 +3309,35 @@ class AIAgent:
         if platform_key in PLATFORM_HINTS:
             prompt_parts.append(PLATFORM_HINTS[platform_key])
 
-        return "\n\n".join(p.strip() for p in prompt_parts if p.strip())
+        full_prompt = "\n\n".join(p.strip() for p in prompt_parts if p.strip())
+
+        # ── System prompt budget tracking ──────────────────────────────
+        # Estimate token count and warn if the system prompt consumes a
+        # large fraction of the model's context window.
+        _prompt_chars = len(full_prompt)
+        _estimated_tokens = _prompt_chars // 4  # rough char-to-token ratio
+        try:
+            from agent.model_metadata import get_model_context_length
+            _ctx_len = get_model_context_length(self.model or "")
+        except Exception:
+            _ctx_len = 200_000  # conservative fallback
+
+        if _ctx_len and _estimated_tokens > 0:
+            _ratio = _estimated_tokens / _ctx_len
+            if _ratio > 0.25:
+                logger.error(
+                    "System prompt is very large: ~%d tokens (%.1f%% of %d context). "
+                    "Chars: %d. Consider reducing skills, memory, or context files.",
+                    _estimated_tokens, _ratio * 100, _ctx_len, _prompt_chars,
+                )
+            elif _ratio > 0.15:
+                logger.warning(
+                    "System prompt is large: ~%d tokens (%.1f%% of %d context). "
+                    "Chars: %d.",
+                    _estimated_tokens, _ratio * 100, _ctx_len, _prompt_chars,
+                )
+
+        return full_prompt
 
     # =========================================================================
     # Pre/post-call guardrails (inspired by PR #1321 — @alireza78a)

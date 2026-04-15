@@ -91,6 +91,71 @@ def _check_hermes_model_warning(model_name: str) -> str:
     return ""
 
 
+def _parse_config_context_length(value: object) -> Optional[int]:
+    """Parse a persisted context-length override from config.yaml."""
+    if isinstance(value, int):
+        return value if value > 0 else None
+    if isinstance(value, str):
+        cleaned = value.replace(",", "").strip()
+        if cleaned.isdigit():
+            parsed = int(cleaned)
+            return parsed if parsed > 0 else None
+    return None
+
+
+def get_context_length_mismatch_warning(result: "ModelSwitchResult") -> str:
+    """Warn when ``/model --global`` leaves a stale config context override.
+
+    The explicit ``model.context_length`` override is intentionally higher
+    priority than dynamic model metadata. When the user switches models with
+    ``--global``, Hermes should preserve that override but still surface when
+    it no longer matches the newly selected model.
+    """
+    if not result.success or not result.is_global:
+        return ""
+
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+    except Exception:
+        return ""
+
+    model_cfg = cfg.get("model", {}) if isinstance(cfg, dict) else {}
+    if not isinstance(model_cfg, dict):
+        return ""
+
+    config_ctx = _parse_config_context_length(model_cfg.get("context_length"))
+    if config_ctx is None:
+        return ""
+
+    target_ctx = 0
+    if result.model_info and isinstance(result.model_info.context_window, int):
+        target_ctx = result.model_info.context_window
+
+    if target_ctx <= 0:
+        try:
+            from agent.model_metadata import get_model_context_length
+
+            target_ctx = get_model_context_length(
+                result.new_model,
+                base_url=result.base_url,
+                api_key=result.api_key,
+                provider=result.target_provider,
+                config_context_length=None,
+            ) or 0
+        except Exception:
+            target_ctx = 0
+
+    if target_ctx <= 0 or target_ctx == config_ctx:
+        return ""
+
+    return (
+        f"config.yaml context_length ({config_ctx:,}) doesn't match this model. "
+        f"Run /context {target_ctx} to update, or keep the current value if intentional."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Model aliases -- short names -> (vendor, family) with NO version numbers.
 # Resolved dynamically against the live models.dev catalog.
@@ -1086,5 +1151,4 @@ def list_authenticated_providers(
     results.sort(key=lambda r: (not r["is_current"], -r["total_models"]))
 
     return results
-
 

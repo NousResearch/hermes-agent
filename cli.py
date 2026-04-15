@@ -4569,6 +4569,15 @@ class HermesCLI:
         if result.warning_message:
             _cprint(f"    ⚠ {result.warning_message}")
         if persist_global:
+            try:
+                from hermes_cli.model_switch import get_context_length_mismatch_warning
+
+                ctx_warning = get_context_length_mismatch_warning(result)
+                if ctx_warning:
+                    _cprint(f"    ⚠ {ctx_warning}")
+            except Exception:
+                pass
+        if persist_global:
             save_config_value("model.default", result.new_model)
             if result.provider_changed:
                 save_config_value("model.provider", result.target_provider)
@@ -4798,6 +4807,15 @@ class HermesCLI:
         # Warning from validation
         if result.warning_message:
             _cprint(f"    ⚠ {result.warning_message}")
+        if persist_global:
+            try:
+                from hermes_cli.model_switch import get_context_length_mismatch_warning
+
+                ctx_warning = get_context_length_mismatch_warning(result)
+                if ctx_warning:
+                    _cprint(f"    ⚠ {ctx_warning}")
+            except Exception:
+                pass
 
         # Persistence
         if persist_global:

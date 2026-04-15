@@ -4,6 +4,8 @@ import { existsSync } from 'node:fs'
 import { delimiter, resolve } from 'node:path'
 import { createInterface } from 'node:readline'
 
+import type { GatewayEvent } from './gatewayTypes.js'
+
 const MAX_GATEWAY_LOG_LINES = 200
 const MAX_LOG_PREVIEW = 240
 const STARTUP_TIMEOUT_MS = Math.max(5000, parseInt(process.env.HERMES_TUI_STARTUP_TIMEOUT_MS ?? '15000', 10) || 15000)
@@ -42,10 +44,12 @@ const resolvePython = (root: string) => {
   return process.platform === 'win32' ? 'python' : 'python3'
 }
 
-export interface GatewayEvent {
-  type: string
-  session_id?: string
-  payload?: Record<string, unknown>
+const asGatewayEvent = (value: unknown): GatewayEvent | null => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null
+  }
+
+  return typeof (value as { type?: unknown }).type === 'string' ? (value as GatewayEvent) : null
 }
 
 interface Pending {
@@ -174,13 +178,23 @@ export class GatewayClient extends EventEmitter {
 
     if (p) {
       this.pending.delete(id!)
-      msg.error ? p.reject(new Error((msg.error as any).message)) : p.resolve(msg.result)
+
+      if (msg.error) {
+        const err = msg.error as { message?: unknown } | null | undefined
+        p.reject(new Error(typeof err?.message === 'string' ? err.message : 'request failed'))
+      } else {
+        p.resolve(msg.result)
+      }
 
       return
     }
 
     if (msg.method === 'event') {
-      this.publish(msg.params as GatewayEvent)
+      const ev = asGatewayEvent(msg.params)
+
+      if (ev) {
+        this.publish(ev)
+      }
     }
   }
 
@@ -218,7 +232,7 @@ export class GatewayClient extends EventEmitter {
     return this.logs.slice(-Math.max(1, limit)).join('\n')
   }
 
-  request(method: string, params: Record<string, unknown> = {}): Promise<unknown> {
+  request<T = unknown>(method: string, params: Record<string, unknown> = {}): Promise<T> {
     if (!this.proc?.stdin || this.proc.killed || this.proc.exitCode !== null) {
       this.start()
     }
@@ -243,7 +257,7 @@ export class GatewayClient extends EventEmitter {
         },
         resolve: v => {
           clearTimeout(timeout)
-          resolve(v)
+          resolve(v as T)
         }
       })
 

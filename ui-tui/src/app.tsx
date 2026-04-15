@@ -7,7 +7,6 @@ import { createGatewayEventHandler } from './app/createGatewayEventHandler.js'
 import { createSlashHandler } from './app/createSlashHandler.js'
 import { GatewayProvider } from './app/gatewayContext.js'
 import {
-  fmtDuration,
   imageTokenMeta,
   introMsg,
   looksLikeSlashCommand,
@@ -15,7 +14,7 @@ import {
   shortCwd,
   toTranscriptMessages
 } from './app/helpers.js'
-import { type TranscriptRow } from './app/interfaces.js'
+import { type GatewayRpc, type TranscriptRow } from './app/interfaces.js'
 import { $isBlocked, $overlayState, patchOverlayState } from './app/overlayStore.js'
 import { $uiState, getUiState, patchUiState } from './app/uiStore.js'
 import { useComposerState } from './app/useComposerState.js'
@@ -23,7 +22,8 @@ import { useInputHandlers } from './app/useInputHandlers.js'
 import { useTurnState } from './app/useTurnState.js'
 import { AppLayout } from './components/appLayout.js'
 import { INTERPOLATION_RE, ZERO } from './constants.js'
-import { type GatewayClient, type GatewayEvent } from './gatewayClient.js'
+import { type GatewayClient } from './gatewayClient.js'
+import type { ConfigFullResponse, ConfigMtimeResponse, GatewayEvent, SessionCreateResponse } from './gatewayTypes.js'
 import { useVirtualHistory } from './hooks/useVirtualHistory.js'
 import { asRpcResult, rpcErrorMessage } from './lib/rpc.js'
 import { buildToolTrailLine, hasInterpolation, sameToolTrailGroup, toolTrailLabel } from './lib/text.js'
@@ -60,7 +60,6 @@ export function App({ gw }: { gw: GatewayClient }) {
 
   // ── State ────────────────────────────────────────────────────────
 
-  const [messages, setMessages] = useState<Msg[]>([])
   const [historyItems, setHistoryItems] = useState<Msg[]>([])
   const [lastUserMsg, setLastUserMsg] = useState('')
   const [stickyPrompt, setStickyPrompt] = useState('')
@@ -70,7 +69,6 @@ export function App({ gw }: { gw: GatewayClient }) {
   const [voiceProcessing, setVoiceProcessing] = useState(false)
   const [sessionStartedAt, setSessionStartedAt] = useState(() => Date.now())
   const [bellOnComplete, setBellOnComplete] = useState(false)
-  const [clockNow, setClockNow] = useState(() => Date.now())
   const ui = useStore($uiState)
   const overlay = useStore($overlayState)
   const isBlocked = useStore($isBlocked)
@@ -85,7 +83,13 @@ export function App({ gw }: { gw: GatewayClient }) {
   const clipboardPasteRef = useRef<(quiet?: boolean) => Promise<void> | void>(() => {})
   const submitRef = useRef<(value: string) => void>(() => {})
   const configMtimeRef = useRef(0)
+  const historyItemsRef = useRef(historyItems)
+  const lastUserMsgRef = useRef(lastUserMsg)
+  const msgIdsRef = useRef(new WeakMap<Msg, string>())
+  const nextMsgIdRef = useRef(0)
   colsRef.current = cols
+  historyItemsRef.current = historyItems
+  lastUserMsgRef.current = lastUserMsg
 
   // ── Hooks ────────────────────────────────────────────────────────
 
@@ -105,17 +109,36 @@ export function App({ gw }: { gw: GatewayClient }) {
   const composerActions = composer.actions
   const composerRefs = composer.refs
   const composerState = composer.state
+  const composerCompletions = composerState.completions
+  const composerCompIdx = composerState.compIdx
+  const composerInput = composerState.input
+  const composerInputBuf = composerState.inputBuf
+  const composerQueueEditIdx = composerState.queueEditIdx
+  const composerQueuedDisplay = composerState.queuedDisplay
 
-  const empty = !messages.length
+  const empty = !historyItems.some(msg => msg.kind !== 'intro')
+
+  const messageId = useCallback((msg: Msg) => {
+    const hit = msgIdsRef.current.get(msg)
+
+    if (hit) {
+      return hit
+    }
+
+    const next = `m${++nextMsgIdRef.current}`
+    msgIdsRef.current.set(msg, next)
+
+    return next
+  }, [])
 
   const virtualRows = useMemo<TranscriptRow[]>(
     () =>
       historyItems.map((msg, index) => ({
         index,
-        key: `${index}:${msg.role}:${msg.kind ?? ''}:${msg.text.slice(0, 40)}`,
+        key: messageId(msg),
         msg
       })),
-    [historyItems]
+    [historyItems, messageId]
   )
 
   const virtualHistory = useVirtualHistory(scrollRef, virtualRows)
@@ -173,12 +196,6 @@ export function App({ gw }: { gw: GatewayClient }) {
     [selection]
   )
 
-  useEffect(() => {
-    const id = setInterval(() => setClockNow(Date.now()), 1000)
-
-    return () => clearInterval(id)
-  }, [])
-
   // ── Core actions ─────────────────────────────────────────────────
 
   const appendMessage = useCallback((msg: Msg) => {
@@ -189,7 +206,6 @@ export function App({ gw }: { gw: GatewayClient }) {
           ? [items[0]!, ...items.slice(-(MAX_HISTORY - 1))]
           : items.slice(-MAX_HISTORY)
 
-    setMessages(prev => cap([...prev, msg]))
     setHistoryItems(prev => cap([...prev, msg]))
   }, [])
 
@@ -220,10 +236,24 @@ export function App({ gw }: { gw: GatewayClient }) {
   const pruneTransient = turnActions.pruneTransient
   const pushTrail = turnActions.pushTrail
 
-  const rpc = useCallback(
-    async (method: string, params: Record<string, unknown> = {}) => {
+  const applyDisplayConfig = useCallback((cfg: ConfigFullResponse | null) => {
+    const display = cfg?.config?.display ?? {}
+
+    setBellOnComplete(!!display?.bell_on_complete)
+    patchUiState({
+      compact: !!display?.tui_compact,
+      detailsMode: resolveDetailsMode(display),
+      statusBar: display?.tui_statusbar !== false
+    })
+  }, [])
+
+  const rpc: GatewayRpc = useCallback(
+    async <T extends Record<string, any> = Record<string, any>>(
+      method: string,
+      params: Record<string, unknown> = {}
+    ) => {
       try {
-        const result = asRpcResult(await gw.request(method, params))
+        const result = asRpcResult<T>(await gw.request<T>(method, params))
 
         if (result) {
           return result
@@ -301,20 +331,11 @@ export function App({ gw }: { gw: GatewayClient }) {
     }
 
     rpc('voice.toggle', { action: 'status' }).then((r: any) => setVoiceEnabled(!!r?.enabled))
-    rpc('config.get', { key: 'mtime' }).then((r: any) => {
+    rpc<ConfigMtimeResponse>('config.get', { key: 'mtime' }).then(r => {
       configMtimeRef.current = Number(r?.mtime ?? 0)
     })
-    rpc('config.get', { key: 'full' }).then((r: any) => {
-      const display = r?.config?.display ?? {}
-
-      setBellOnComplete(!!display?.bell_on_complete)
-      patchUiState({
-        compact: !!display?.tui_compact,
-        detailsMode: resolveDetailsMode(display),
-        statusBar: display?.tui_statusbar !== false
-      })
-    })
-  }, [rpc, ui.sid])
+    rpc<ConfigFullResponse>('config.get', { key: 'full' }).then(applyDisplayConfig)
+  }, [applyDisplayConfig, rpc, ui.sid])
 
   useEffect(() => {
     if (!ui.sid) {
@@ -322,7 +343,7 @@ export function App({ gw }: { gw: GatewayClient }) {
     }
 
     const id = setInterval(() => {
-      rpc('config.get', { key: 'mtime' }).then((r: any) => {
+      rpc<ConfigMtimeResponse>('config.get', { key: 'mtime' }).then(r => {
         const next = Number(r?.mtime ?? 0)
 
         if (configMtimeRef.current && next && next !== configMtimeRef.current) {
@@ -334,16 +355,7 @@ export function App({ gw }: { gw: GatewayClient }) {
 
             pushActivity('MCP reloaded after config change')
           })
-          rpc('config.get', { key: 'full' }).then((cfg: any) => {
-            const display = cfg?.config?.display ?? {}
-
-            setBellOnComplete(!!display?.bell_on_complete)
-            patchUiState({
-              compact: !!display?.tui_compact,
-              detailsMode: resolveDetailsMode(display),
-              statusBar: display?.tui_statusbar !== false
-            })
-          })
+          rpc<ConfigFullResponse>('config.get', { key: 'full' }).then(applyDisplayConfig)
         } else if (!configMtimeRef.current && next) {
           configMtimeRef.current = next
         }
@@ -351,7 +363,7 @@ export function App({ gw }: { gw: GatewayClient }) {
     }, 5000)
 
     return () => clearInterval(id)
-  }, [pushActivity, rpc, ui.sid])
+  }, [applyDisplayConfig, pushActivity, rpc, ui.sid])
 
   const idle = turnActions.idle
   const clearReasoning = turnActions.clearReasoning
@@ -373,7 +385,7 @@ export function App({ gw }: { gw: GatewayClient }) {
       usage: ZERO
     })
     setHistoryItems([])
-    setMessages([])
+    setLastUserMsg('')
     setStickyPrompt('')
     composerActions.setPasteSnips([])
     turnActions.setActivity([])
@@ -387,7 +399,6 @@ export function App({ gw }: { gw: GatewayClient }) {
     (info: SessionInfo | null = null) => {
       idle()
       clearReasoning()
-      setMessages([])
       setHistoryItems(info ? [introMsg(info)] : [])
       patchUiState({
         info,
@@ -403,7 +414,7 @@ export function App({ gw }: { gw: GatewayClient }) {
     [clearReasoning, composerActions, idle, turnActions, turnRefs]
   )
 
-  const trimLastExchange = (items: Msg[]) => {
+  const trimLastExchange = useCallback((items: Msg[]) => {
     const q = [...items]
 
     while (q.at(-1)?.role === 'assistant' || q.at(-1)?.role === 'tool') {
@@ -415,7 +426,7 @@ export function App({ gw }: { gw: GatewayClient }) {
     }
 
     return q
-  }
+  }, [])
 
   const guardBusySessionSwitch = useCallback(
     (what = 'switch sessions') => {
@@ -447,7 +458,7 @@ export function App({ gw }: { gw: GatewayClient }) {
     async (msg?: string) => {
       await closeSession(getUiState().sid)
 
-      return rpc('session.create', { cols: colsRef.current }).then((r: any) => {
+      return rpc<SessionCreateResponse>('session.create', { cols: colsRef.current }).then(r => {
         if (!r) {
           patchUiState({ status: 'ready' })
 
@@ -500,7 +511,6 @@ export function App({ gw }: { gw: GatewayClient }) {
             setSessionStartedAt(Date.now())
             const resumed = toTranscriptMessages(r.messages)
 
-            setMessages(resumed)
             setHistoryItems(r.info ? [introMsg(r.info), ...resumed] : resumed)
             patchUiState({
               info: r.info ?? null,
@@ -833,8 +843,7 @@ export function App({ gw }: { gw: GatewayClient }) {
         },
         transcript: {
           appendMessage,
-          setHistoryItems,
-          setMessages
+          setHistoryItems
         },
         turn: {
           actions: {
@@ -850,6 +859,7 @@ export function App({ gw }: { gw: GatewayClient }) {
             setActivity: turnActions.setActivity,
             setReasoningTokens: turnActions.setReasoningTokens,
             setStreaming: turnActions.setStreaming,
+            setSubagents: turnActions.setSubagents,
             setToolTokens: turnActions.setToolTokens,
             setTools: turnActions.setTools,
             setTurnTrail: turnActions.setTurnTrail
@@ -913,46 +923,73 @@ export function App({ gw }: { gw: GatewayClient }) {
   }, [gw, pushActivity, sys])
 
   // ── Slash commands ───────────────────────────────────────────────
-  // Always current via ref — no useMemo deps duplication needed.
 
-  slashRef.current = createSlashHandler({
-    composer: {
-      enqueue: composerActions.enqueue,
-      hasSelection,
-      paste,
-      queueRef: composerRefs.queueRef,
-      selection,
-      setInput: composerActions.setInput
-    },
-    gateway,
-    local: {
+  const slash = useMemo(
+    () =>
+      createSlashHandler({
+        composer: {
+          enqueue: composerActions.enqueue,
+          hasSelection,
+          paste,
+          queueRef: composerRefs.queueRef,
+          selection,
+          setInput: composerActions.setInput
+        },
+        gateway,
+        local: {
+          catalog,
+          getHistoryItems: () => historyItemsRef.current,
+          getLastUserMsg: () => lastUserMsgRef.current,
+          maybeWarn
+        },
+        session: {
+          closeSession,
+          die,
+          guardBusySessionSwitch,
+          newSession,
+          resetVisibleHistory,
+          resumeById,
+          setSessionStartedAt
+        },
+        transcript: {
+          page,
+          panel,
+          send,
+          setHistoryItems,
+          sys,
+          trimLastExchange
+        },
+        voice: {
+          setVoiceEnabled
+        }
+      }),
+    [
       catalog,
-      lastUserMsg,
-      maybeWarn,
-      messages
-    },
-    session: {
       closeSession,
+      composerActions,
+      composerRefs,
       die,
+      gateway,
       guardBusySessionSwitch,
+      hasSelection,
+      maybeWarn,
       newSession,
-      resetVisibleHistory,
-      resumeById,
-      setSessionStartedAt
-    },
-    transcript: {
       page,
       panel,
+      paste,
+      resetVisibleHistory,
+      resumeById,
+      selection,
       send,
+      setSessionStartedAt,
       setHistoryItems,
-      setMessages,
+      setVoiceEnabled,
       sys,
       trimLastExchange
-    },
-    voice: {
-      setVoiceEnabled
-    }
-  })
+    ]
+  )
+
+  slashRef.current = slash
 
   // ── Submit ───────────────────────────────────────────────────────
 
@@ -1033,7 +1070,7 @@ export function App({ gw }: { gw: GatewayClient }) {
           ? ui.theme.color.warn
           : ui.theme.color.dim
 
-  const durationLabel = ui.sid ? fmtDuration(clockNow - sessionStartedAt) : ''
+  const sessionStarted = ui.sid ? sessionStartedAt : null
   const voiceLabel = voiceRecording ? 'REC' : voiceProcessing ? 'STT' : `voice ${voiceEnabled ? 'on' : 'off'}`
   const cwdLabel = shortCwd(ui.info?.cwd || process.env.HERMES_CWD || process.cwd())
   const showStreamingArea = Boolean(turnState.streaming)
@@ -1045,7 +1082,12 @@ export function App({ gw }: { gw: GatewayClient }) {
     ui.detailsMode === 'hidden'
       ? turnState.activity.some(item => item.tone !== 'info')
       : Boolean(
-          ui.busy || turnState.tools.length || turnState.turnTrail.length || hasReasoning || turnState.activity.length
+          ui.busy ||
+          turnState.subagents.length ||
+          turnState.tools.length ||
+          turnState.turnTrail.length ||
+          hasReasoning ||
+          turnState.activity.length
         )
 
   const answerApproval = useCallback(
@@ -1104,62 +1146,101 @@ export function App({ gw }: { gw: GatewayClient }) {
     slashRef.current(`/model ${value}`)
   }, [])
 
+  const appActions = useMemo(
+    () => ({
+      answerApproval,
+      answerClarify,
+      answerSecret,
+      answerSudo,
+      onModelSelect,
+      resumeById,
+      setStickyPrompt
+    }),
+    [answerApproval, answerClarify, answerSecret, answerSudo, onModelSelect, resumeById, setStickyPrompt]
+  )
+
+  const appComposer = useMemo(
+    () => ({
+      cols,
+      compIdx: composerCompIdx,
+      completions: composerCompletions,
+      empty,
+      handleTextPaste,
+      input: composerInput,
+      inputBuf: composerInputBuf,
+      pagerPageSize,
+      queueEditIdx: composerQueueEditIdx,
+      queuedDisplay: composerQueuedDisplay,
+      submit,
+      updateInput: composerActions.setInput
+    }),
+    [
+      cols,
+      composerActions.setInput,
+      composerCompIdx,
+      composerCompletions,
+      composerInput,
+      composerInputBuf,
+      composerQueueEditIdx,
+      composerQueuedDisplay,
+      empty,
+      handleTextPaste,
+      pagerPageSize,
+      submit
+    ]
+  )
+
+  const appProgress = useMemo(
+    () => ({
+      activity: turnState.activity,
+      reasoning: turnState.reasoning,
+      reasoningActive: turnState.reasoningActive,
+      reasoningStreaming: turnState.reasoningStreaming,
+      reasoningTokens: turnState.reasoningTokens,
+      showProgressArea,
+      showStreamingArea,
+      streaming: turnState.streaming,
+      subagents: turnState.subagents,
+      toolTokens: turnState.toolTokens,
+      tools: turnState.tools,
+      turnTrail: turnState.turnTrail
+    }),
+    [showProgressArea, showStreamingArea, turnState]
+  )
+
+  const appStatus = useMemo(
+    () => ({
+      cwdLabel,
+      sessionStartedAt: sessionStarted,
+      showStickyPrompt,
+      statusColor,
+      stickyPrompt,
+      voiceLabel
+    }),
+    [cwdLabel, sessionStarted, showStickyPrompt, statusColor, stickyPrompt, voiceLabel]
+  )
+
+  const appTranscript = useMemo(
+    () => ({
+      historyItems,
+      scrollRef,
+      virtualHistory,
+      virtualRows
+    }),
+    [historyItems, scrollRef, virtualHistory, virtualRows]
+  )
+
   // ── Render ───────────────────────────────────────────────────────
 
   return (
     <GatewayProvider value={gateway}>
       <AppLayout
-        actions={{
-          answerApproval,
-          answerClarify,
-          answerSecret,
-          answerSudo,
-          onModelSelect,
-          resumeById,
-          setStickyPrompt
-        }}
-        composer={{
-          cols,
-          compIdx: composerState.compIdx,
-          completions: composerState.completions,
-          empty,
-          handleTextPaste,
-          input: composerState.input,
-          inputBuf: composerState.inputBuf,
-          pagerPageSize,
-          queueEditIdx: composerState.queueEditIdx,
-          queuedDisplay: composerState.queuedDisplay,
-          submit,
-          updateInput: composerActions.setInput
-        }}
+        actions={appActions}
+        composer={appComposer}
         mouseTracking={MOUSE_TRACKING}
-        progress={{
-          activity: turnState.activity,
-          reasoning: turnState.reasoning,
-          reasoningTokens: turnState.reasoningTokens,
-          reasoningActive: turnState.reasoningActive,
-          reasoningStreaming: turnState.reasoningStreaming,
-          showProgressArea,
-          showStreamingArea,
-          streaming: turnState.streaming,
-          toolTokens: turnState.toolTokens,
-          tools: turnState.tools,
-          turnTrail: turnState.turnTrail
-        }}
-        status={{
-          cwdLabel,
-          durationLabel,
-          showStickyPrompt,
-          statusColor,
-          stickyPrompt,
-          voiceLabel
-        }}
-        transcript={{
-          historyItems,
-          scrollRef,
-          virtualHistory,
-          virtualRows
-        }}
+        progress={appProgress}
+        status={appStatus}
+        transcript={appTranscript}
       />
     </GatewayProvider>
   )

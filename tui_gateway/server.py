@@ -1,6 +1,8 @@
 import atexit
+import copy
 import json
 import os
+import queue
 import subprocess
 import sys
 import threading
@@ -29,6 +31,10 @@ _pending: dict[str, threading.Event] = {}
 _answers: dict[str, str] = {}
 _db = None
 _stdout_lock = threading.Lock()
+_cfg_lock = threading.Lock()
+_cfg_cache: dict | None = None
+_cfg_mtime: float | None = None
+_SLASH_WORKER_TIMEOUT_S = max(5.0, float(os.environ.get("HERMES_TUI_SLASH_TIMEOUT_S", "45") or 45))
 
 # Reserve real stdout for JSON-RPC only; redirect Python's stdout to stderr
 # so stray print() from libraries/tools becomes harmless gateway.stderr instead
@@ -44,6 +50,7 @@ class _SlashWorker:
         self._lock = threading.Lock()
         self._seq = 0
         self.stderr_tail: list[str] = []
+        self.stdout_queue: queue.Queue[dict | None] = queue.Queue()
 
         argv = [sys.executable, "-m", "tui_gateway.slash_worker", "--session-key", session_key]
         if model:
@@ -53,7 +60,16 @@ class _SlashWorker:
             argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, bufsize=1, cwd=os.getcwd(), env=os.environ.copy(),
         )
+        threading.Thread(target=self._drain_stdout, daemon=True).start()
         threading.Thread(target=self._drain_stderr, daemon=True).start()
+
+    def _drain_stdout(self):
+        for line in (self.proc.stdout or []):
+            try:
+                self.stdout_queue.put(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+        self.stdout_queue.put(None)
 
     def _drain_stderr(self):
         for line in (self.proc.stderr or []):
@@ -70,11 +86,13 @@ class _SlashWorker:
             self.proc.stdin.write(json.dumps({"id": rid, "command": command}) + "\n")
             self.proc.stdin.flush()
 
-            for line in self.proc.stdout:
+            while True:
                 try:
-                    msg = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
+                    msg = self.stdout_queue.get(timeout=_SLASH_WORKER_TIMEOUT_S)
+                except queue.Empty:
+                    raise RuntimeError("slash worker timed out")
+                if msg is None:
+                    break
                 if msg.get("id") != rid:
                     continue
                 if not msg.get("ok"):
@@ -199,21 +217,58 @@ def _normalize_completion_path(path_part: str) -> str:
 # ── Config I/O ────────────────────────────────────────────────────────
 
 def _load_cfg() -> dict:
+    global _cfg_cache, _cfg_mtime
     try:
         import yaml
         p = _hermes_home / "config.yaml"
+        mtime = p.stat().st_mtime if p.exists() else None
+        with _cfg_lock:
+            if _cfg_cache is not None and _cfg_mtime == mtime:
+                return copy.deepcopy(_cfg_cache)
         if p.exists():
             with open(p) as f:
-                return yaml.safe_load(f) or {}
+                data = yaml.safe_load(f) or {}
+        else:
+            data = {}
+        with _cfg_lock:
+            _cfg_cache = copy.deepcopy(data)
+            _cfg_mtime = mtime
+        return data
     except Exception:
         pass
     return {}
 
 
 def _save_cfg(cfg: dict):
+    global _cfg_cache, _cfg_mtime
     import yaml
-    with open(_hermes_home / "config.yaml", "w") as f:
+    path = _hermes_home / "config.yaml"
+    with open(path, "w") as f:
         yaml.safe_dump(cfg, f)
+    with _cfg_lock:
+        _cfg_cache = copy.deepcopy(cfg)
+        try:
+            _cfg_mtime = path.stat().st_mtime
+        except Exception:
+            _cfg_mtime = None
+
+
+def _set_session_context(session_key: str) -> list:
+    try:
+        from gateway.session_context import set_session_vars
+        return set_session_vars(session_key=session_key)
+    except Exception:
+        return []
+
+
+def _clear_session_context(tokens: list) -> None:
+    if not tokens:
+        return
+    try:
+        from gateway.session_context import clear_session_vars
+        clear_session_vars(tokens)
+    except Exception:
+        pass
 
 
 # ── Blocking prompt factory ──────────────────────────────────────────
@@ -305,6 +360,17 @@ def _load_tool_progress_mode() -> str:
         return "all"
     mode = str(raw or "all").strip().lower()
     return mode if mode in {"off", "new", "all", "verbose"} else "all"
+
+
+def _load_enabled_toolsets() -> list[str] | None:
+    try:
+        from hermes_cli.config import load_config
+        from hermes_cli.tools_config import _get_platform_tools
+
+        enabled = sorted(_get_platform_tools(load_config(), "cli", include_default_mcp_servers=False))
+        return enabled or None
+    except Exception:
+        return None
 
 
 def _session_show_reasoning(sid: str) -> bool:
@@ -626,6 +692,27 @@ def _on_tool_progress(
         return
     if event_type == "reasoning.available" and preview and _reasoning_visible(sid):
         _emit("reasoning.available", sid, {"text": str(preview)})
+        return
+    if event_type.startswith("subagent."):
+        payload = {
+            "goal": str(_kwargs.get("goal") or ""),
+            "task_count": int(_kwargs.get("task_count") or 1),
+            "task_index": int(_kwargs.get("task_index") or 0),
+        }
+        if name:
+            payload["tool_name"] = str(name)
+        if preview:
+            payload["text"] = str(preview)
+        if _kwargs.get("status"):
+            payload["status"] = str(_kwargs["status"])
+        if _kwargs.get("summary"):
+            payload["summary"] = str(_kwargs["summary"])
+        if _kwargs.get("duration_seconds") is not None:
+            payload["duration_seconds"] = float(_kwargs["duration_seconds"])
+        if preview and event_type == "subagent.tool":
+            payload["tool_preview"] = str(preview)
+            payload["text"] = str(preview)
+        _emit(event_type, sid, payload)
 
 
 def _agent_cbs(sid: str) -> dict:
@@ -735,14 +822,7 @@ def _apply_personality_to_session(sid: str, session: dict, new_prompt: str) -> t
         return False, None
 
     try:
-        new_agent = _make_agent(sid, session["session_key"], session_id=session["session_key"])
-        session["agent"] = new_agent
-        with session["history_lock"]:
-            session["history"] = []
-            session["history_version"] = int(session.get("history_version", 0)) + 1
-        info = _session_info(new_agent)
-        _emit("session.info", sid, info)
-        _restart_slash_worker(session)
+        info = _reset_session_agent(sid, session)
         return True, info
     except Exception:
         if session.get("agent"):
@@ -753,6 +833,61 @@ def _apply_personality_to_session(sid: str, session: dict, new_prompt: str) -> t
             _emit("session.info", sid, info)
             return False, info
         return False, None
+
+
+def _background_agent_kwargs(agent, task_id: str) -> dict:
+    cfg = _load_cfg()
+
+    return {
+        "base_url": getattr(agent, "base_url", None) or None,
+        "api_key": getattr(agent, "api_key", None) or None,
+        "provider": getattr(agent, "provider", None) or None,
+        "api_mode": getattr(agent, "api_mode", None) or None,
+        "acp_command": getattr(agent, "acp_command", None) or None,
+        "acp_args": getattr(agent, "acp_args", None) or None,
+        "model": getattr(agent, "model", None) or _resolve_model(),
+        "max_iterations": int(cfg.get("max_turns", 25) or 25),
+        "enabled_toolsets": getattr(agent, "enabled_toolsets", None) or _load_enabled_toolsets(),
+        "quiet_mode": True,
+        "verbose_logging": False,
+        "ephemeral_system_prompt": getattr(agent, "ephemeral_system_prompt", None) or None,
+        "providers_allowed": getattr(agent, "providers_allowed", None),
+        "providers_ignored": getattr(agent, "providers_ignored", None),
+        "providers_order": getattr(agent, "providers_order", None),
+        "provider_sort": getattr(agent, "provider_sort", None),
+        "provider_require_parameters": getattr(agent, "provider_require_parameters", False),
+        "provider_data_collection": getattr(agent, "provider_data_collection", None),
+        "session_id": task_id,
+        "reasoning_config": getattr(agent, "reasoning_config", None) or _load_reasoning_config(),
+        "service_tier": getattr(agent, "service_tier", None) or _load_service_tier(),
+        "request_overrides": dict(getattr(agent, "request_overrides", {}) or {}),
+        "platform": "tui",
+        "session_db": _get_db(),
+        "fallback_model": getattr(agent, "_fallback_model", None),
+    }
+
+
+def _reset_session_agent(sid: str, session: dict) -> dict:
+    tokens = _set_session_context(session["session_key"])
+    try:
+        new_agent = _make_agent(sid, session["session_key"], session_id=session["session_key"])
+    finally:
+        _clear_session_context(tokens)
+    session["agent"] = new_agent
+    session["attached_images"] = []
+    session["edit_snapshots"] = {}
+    session["image_counter"] = 0
+    session["running"] = False
+    session["show_reasoning"] = _load_show_reasoning()
+    session["tool_progress_mode"] = _load_tool_progress_mode()
+    session["tool_started_at"] = {}
+    with session["history_lock"]:
+        session["history"] = []
+        session["history_version"] = int(session.get("history_version", 0)) + 1
+    info = _session_info(new_agent)
+    _emit("session.info", sid, info)
+    _restart_slash_worker(session)
+    return info
 
 
 def _make_agent(sid: str, key: str, session_id: str | None = None):
@@ -767,6 +902,7 @@ def _make_agent(sid: str, key: str, session_id: str | None = None):
         verbose_logging=_load_tool_progress_mode() == "verbose",
         reasoning_config=_load_reasoning_config(),
         service_tier=_load_service_tier(),
+        enabled_toolsets=_load_enabled_toolsets(),
         platform="tui",
         session_id=session_id or key, session_db=_get_db(),
         ephemeral_system_prompt=system_prompt or None,
@@ -857,16 +993,55 @@ def _enrich_with_attached_images(user_text: str, image_paths: list[str]) -> str:
     return text or "What do you see in this image?"
 
 
+def _history_to_messages(history: list[dict]) -> list[dict]:
+    messages = []
+    tool_call_args = {}
+
+    for m in history:
+        if not isinstance(m, dict):
+            continue
+        role = m.get("role")
+        if role not in ("user", "assistant", "tool", "system"):
+            continue
+        if role == "assistant" and m.get("tool_calls"):
+            for tc in m["tool_calls"]:
+                fn = tc.get("function", {})
+                tc_id = tc.get("id", "")
+                if tc_id and fn.get("name"):
+                    try:
+                        args = json.loads(fn.get("arguments", "{}"))
+                    except (json.JSONDecodeError, TypeError):
+                        args = {}
+                    tool_call_args[tc_id] = (fn["name"], args)
+            if not (m.get("content") or "").strip():
+                continue
+        if role == "tool":
+            tc_id = m.get("tool_call_id", "")
+            tc_info = tool_call_args.get(tc_id) if tc_id else None
+            name = (tc_info[0] if tc_info else None) or m.get("tool_name") or "tool"
+            args = (tc_info[1] if tc_info else None) or {}
+            messages.append({"role": "tool", "name": name, "context": _tool_ctx(name, args)})
+            continue
+        if not (m.get("content") or "").strip():
+            continue
+        messages.append({"role": role, "text": m.get("content") or ""})
+
+    return messages
+
+
 # ── Methods: session ─────────────────────────────────────────────────
 
 @method("session.create")
 def _(rid, params: dict) -> dict:
     sid = uuid.uuid4().hex[:8]
     key = _new_session_key()
-    os.environ["HERMES_SESSION_KEY"] = key
     os.environ["HERMES_INTERACTIVE"] = "1"
     try:
-        agent = _make_agent(sid, key)
+        tokens = _set_session_context(key)
+        try:
+            agent = _make_agent(sid, key)
+        finally:
+            _clear_session_context(tokens)
         _get_db().create_session(key, source="tui", model=_resolve_model())
         _init_session(sid, key, agent, [], cols=int(params.get("cols", 80)))
     except Exception as e:
@@ -911,41 +1086,16 @@ def _(rid, params: dict) -> dict:
         else:
             return _err(rid, 4007, "session not found")
     sid = uuid.uuid4().hex[:8]
-    os.environ["HERMES_SESSION_KEY"] = target
     os.environ["HERMES_INTERACTIVE"] = "1"
     try:
         db.reopen_session(target)
         history = db.get_messages_as_conversation(target)
-        messages = []
-        tool_call_args = {}
-        for m in history:
-            role = m.get("role")
-            if role not in ("user", "assistant", "tool", "system"):
-                continue
-            if role == "assistant" and m.get("tool_calls"):
-                for tc in m["tool_calls"]:
-                    fn = tc.get("function", {})
-                    tc_id = tc.get("id", "")
-                    if tc_id and fn.get("name"):
-                        try:
-                            args = json.loads(fn.get("arguments", "{}"))
-                        except (json.JSONDecodeError, TypeError):
-                            args = {}
-                        tool_call_args[tc_id] = (fn["name"], args)
-                if not (m.get("content") or "").strip():
-                    continue
-            if role == "tool":
-                tc_id = m.get("tool_call_id", "")
-                tc_info = tool_call_args.get(tc_id) if tc_id else None
-                name = (tc_info[0] if tc_info else None) or m.get("tool_name") or "tool"
-                args = (tc_info[1] if tc_info else None) or {}
-                ctx = _tool_ctx(name, args)
-                messages.append({"role": "tool", "name": name, "context": ctx})
-                continue
-            if not (m.get("content") or "").strip():
-                continue
-            messages.append({"role": role, "text": m.get("content") or ""})
-        agent = _make_agent(sid, target, session_id=target)
+        messages = _history_to_messages(history)
+        tokens = _set_session_context(target)
+        try:
+            agent = _make_agent(sid, target, session_id=target)
+        finally:
+            _clear_session_context(tokens)
         _init_session(sid, target, agent, history, cols=int(params.get("cols", 80)))
     except Exception as e:
         return _err(rid, 5000, f"resume failed: {e}")
@@ -985,7 +1135,13 @@ def _(rid, params: dict) -> dict:
 @method("session.history")
 def _(rid, params: dict) -> dict:
     session, err = _sess(params, rid)
-    return err or _ok(rid, {"count": len(session.get("history", []))})
+    return err or _ok(
+        rid,
+        {
+            "count": len(session.get("history", [])),
+            "messages": _history_to_messages(list(session.get("history", []))),
+        },
+    )
 
 
 @method("session.undo")
@@ -1086,9 +1242,12 @@ def _(rid, params: dict) -> dict:
     except Exception as e:
         return _err(rid, 5008, f"branch failed: {e}")
     new_sid = uuid.uuid4().hex[:8]
-    os.environ["HERMES_SESSION_KEY"] = new_key
     try:
-        agent = _make_agent(new_sid, new_key, session_id=new_key)
+        tokens = _set_session_context(new_key)
+        try:
+            agent = _make_agent(new_sid, new_key, session_id=new_key)
+        finally:
+            _clear_session_context(tokens)
         _init_session(new_sid, new_key, agent, list(history), cols=session.get("cols", 80))
     except Exception as e:
         return _err(rid, 5000, f"agent init failed on branch: {e}")
@@ -1141,9 +1300,11 @@ def _(rid, params: dict) -> dict:
 
     def run():
         approval_token = None
+        session_tokens = []
         try:
             from tools.approval import reset_current_session_key, set_current_session_key
             approval_token = set_current_session_key(session["session_key"])
+            session_tokens = _set_session_context(session["session_key"])
             cols = session.get("cols", 80)
             streamer = make_stream_renderer(cols)
             prompt = text
@@ -1206,6 +1367,7 @@ def _(rid, params: dict) -> dict:
                     reset_current_session_key(approval_token)
             except Exception:
                 pass
+            _clear_session_context(session_tokens)
             with session["history_lock"]:
                 session["running"] = False
 
@@ -1336,14 +1498,19 @@ def _(rid, params: dict) -> dict:
     task_id = f"bg_{uuid.uuid4().hex[:6]}"
 
     def run():
+        session_tokens = _set_session_context(task_id)
         try:
             from run_agent import AIAgent
-            result = AIAgent(model=_resolve_model(), quiet_mode=True, platform="tui",
-                             session_id=task_id, max_iterations=30).run_conversation(text)
+            result = AIAgent(**_background_agent_kwargs(session["agent"], task_id)).run_conversation(
+                user_message=text,
+                task_id=task_id,
+            )
             _emit("background.complete", parent, {"task_id": task_id,
                   "text": result.get("final_response", str(result)) if isinstance(result, dict) else str(result)})
         except Exception as e:
             _emit("background.complete", parent, {"task_id": task_id, "text": f"error: {e}"})
+        finally:
+            _clear_session_context(session_tokens)
 
     threading.Thread(target=run, daemon=True).start()
     return _ok(rid, {"task_id": task_id})
@@ -1360,6 +1527,7 @@ def _(rid, params: dict) -> dict:
     snapshot = list(session.get("history", []))
 
     def run():
+        session_tokens = _set_session_context(session["session_key"])
         try:
             from run_agent import AIAgent
             result = AIAgent(model=_resolve_model(), quiet_mode=True, platform="tui",
@@ -1367,6 +1535,8 @@ def _(rid, params: dict) -> dict:
             _emit("btw.complete", sid, {"text": result.get("final_response", str(result)) if isinstance(result, dict) else str(result)})
         except Exception as e:
             _emit("btw.complete", sid, {"text": f"error: {e}"})
+        finally:
+            _clear_session_context(session_tokens)
 
     threading.Thread(target=run, daemon=True).start()
     return _ok(rid, {"status": "running"})
@@ -1637,8 +1807,8 @@ def _(rid, params: dict) -> dict:
 @method("process.stop")
 def _(rid, params: dict) -> dict:
     try:
-        from tools.process_registry import ProcessRegistry
-        return _ok(rid, {"killed": ProcessRegistry().kill_all()})
+        from tools.process_registry import process_registry
+        return _ok(rid, {"killed": process_registry.kill_all()})
     except Exception as e:
         return _err(rid, 5010, str(e))
 
@@ -2036,8 +2206,8 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
         elif name == "reload-mcp" and agent and hasattr(agent, "reload_mcp_tools"):
             agent.reload_mcp_tools()
         elif name == "stop":
-            from tools.process_registry import ProcessRegistry
-            ProcessRegistry().kill_all()
+            from tools.process_registry import process_registry
+            process_registry.kill_all()
     except Exception as e:
         return f"live session sync failed: {e}"
     return ""
@@ -2315,9 +2485,7 @@ def _(rid, params: dict) -> dict:
     try:
         from toolsets import get_all_toolsets, get_toolset_info
         session = _sessions.get(params.get("session_id", ""))
-        enabled = set()
-        if session:
-            enabled = set(getattr(session["agent"], "enabled_toolsets", []) or [])
+        enabled = set(getattr(session["agent"], "enabled_toolsets", []) or []) if session else set(_load_enabled_toolsets() or [])
 
         items = []
         for name in sorted(get_all_toolsets().keys()):
@@ -2336,14 +2504,92 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5031, str(e))
 
 
+@method("tools.show")
+def _(rid, params: dict) -> dict:
+    try:
+        from model_tools import get_toolset_for_tool, get_tool_definitions
+
+        session = _sessions.get(params.get("session_id", ""))
+        enabled = getattr(session["agent"], "enabled_toolsets", None) if session else _load_enabled_toolsets()
+        tools = get_tool_definitions(enabled_toolsets=enabled, quiet_mode=True)
+        sections = {}
+
+        for tool in sorted(tools, key=lambda t: t["function"]["name"]):
+            name = tool["function"]["name"]
+            desc = str(tool["function"].get("description", "") or "").split("\n")[0]
+            if ". " in desc:
+                desc = desc[:desc.index(". ") + 1]
+            sections.setdefault(get_toolset_for_tool(name) or "unknown", []).append({
+                "name": name,
+                "description": desc,
+            })
+
+        return _ok(rid, {
+            "sections": [{"name": name, "tools": rows} for name, rows in sorted(sections.items())],
+            "total": len(tools),
+        })
+    except Exception as e:
+        return _err(rid, 5034, str(e))
+
+
+@method("tools.configure")
+def _(rid, params: dict) -> dict:
+    action = str(params.get("action", "") or "").strip().lower()
+    targets = [str(name).strip() for name in params.get("names", []) or [] if str(name).strip()]
+    if action not in {"disable", "enable"}:
+        return _err(rid, 4017, f"unknown tools action: {action}")
+    if not targets:
+        return _err(rid, 4018, "names required")
+
+    try:
+        from hermes_cli.config import load_config, save_config
+        from hermes_cli.tools_config import (
+            CONFIGURABLE_TOOLSETS,
+            _apply_mcp_change,
+            _apply_toolset_change,
+            _get_platform_tools,
+            _get_plugin_toolset_keys,
+        )
+
+        cfg = load_config()
+        valid_toolsets = {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS} | _get_plugin_toolset_keys()
+        toolset_targets = [name for name in targets if ":" not in name]
+        mcp_targets = [name for name in targets if ":" in name]
+        unknown = [name for name in toolset_targets if name not in valid_toolsets]
+        toolset_targets = [name for name in toolset_targets if name in valid_toolsets]
+
+        if toolset_targets:
+            _apply_toolset_change(cfg, "cli", toolset_targets, action)
+
+        missing_servers = _apply_mcp_change(cfg, mcp_targets, action) if mcp_targets else set()
+        save_config(cfg)
+
+        session = _sessions.get(params.get("session_id", ""))
+        info = _reset_session_agent(params.get("session_id", ""), session) if session else None
+        enabled = sorted(_get_platform_tools(load_config(), "cli", include_default_mcp_servers=False))
+        changed = [
+            name for name in targets
+            if name not in unknown and (":" not in name or name.split(":", 1)[0] not in missing_servers)
+        ]
+
+        return _ok(rid, {
+            "changed": changed,
+            "enabled_toolsets": enabled,
+            "info": info,
+            "missing_servers": sorted(missing_servers),
+            "reset": bool(session),
+            "unknown": unknown,
+        })
+    except Exception as e:
+        return _err(rid, 5035, str(e))
+
+
 @method("toolsets.list")
 def _(rid, params: dict) -> dict:
     try:
         from toolsets import get_all_toolsets, get_toolset_info
         session = _sessions.get(params.get("session_id", ""))
-        enabled = set()
-        if session:
-            enabled = set(getattr(session["agent"], "enabled_toolsets", []) or [])
+        enabled = set(getattr(session["agent"], "enabled_toolsets", []) or []) if session else set(_load_enabled_toolsets() or [])
 
         items = []
         for name in sorted(get_all_toolsets().keys()):
@@ -2364,8 +2610,8 @@ def _(rid, params: dict) -> dict:
 @method("agents.list")
 def _(rid, params: dict) -> dict:
     try:
-        from tools.process_registry import ProcessRegistry
-        procs = ProcessRegistry().list_sessions()
+        from tools.process_registry import process_registry
+        procs = process_registry.list_sessions()
         return _ok(rid, {
             "processes": [{
                 "session_id": p["session_id"],

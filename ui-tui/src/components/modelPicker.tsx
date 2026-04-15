@@ -2,17 +2,9 @@ import { Box, Text, useInput } from '@hermes/ink'
 import { useEffect, useState } from 'react'
 
 import type { GatewayClient } from '../gatewayClient.js'
+import type { ModelOptionProvider, ModelOptionsResponse } from '../gatewayTypes.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
 import type { Theme } from '../theme.js'
-
-interface ProviderItem {
-  is_current?: boolean
-  models?: string[]
-  name: string
-  slug: string
-  total_models?: number
-  warning?: string
-}
 
 const VISIBLE = 12
 
@@ -31,7 +23,7 @@ export function ModelPicker({
   sessionId: string | null
   t: Theme
 }) {
-  const [providers, setProviders] = useState<ProviderItem[]>([])
+  const [providers, setProviders] = useState<ModelOptionProvider[]>([])
   const [currentModel, setCurrentModel] = useState('')
   const [err, setErr] = useState('')
   const [loading, setLoading] = useState(true)
@@ -41,9 +33,9 @@ export function ModelPicker({
   const [stage, setStage] = useState<'model' | 'provider'>('provider')
 
   useEffect(() => {
-    gw.request('model.options', sessionId ? { session_id: sessionId } : {})
-      .then((raw: any) => {
-        const r = asRpcResult(raw)
+    gw.request<ModelOptionsResponse>('model.options', sessionId ? { session_id: sessionId } : {})
+      .then(raw => {
+        const r = asRpcResult<ModelOptionsResponse>(raw)
 
         if (!r) {
           setErr('invalid response: model.options')
@@ -52,7 +44,7 @@ export function ModelPicker({
           return
         }
 
-        const next = (r.providers ?? []) as ProviderItem[]
+        const next = r.providers ?? []
         setProviders(next)
         setCurrentModel(String(r.model ?? ''))
         setProviderIdx(

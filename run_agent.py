@@ -9037,6 +9037,11 @@ class AIAgent:
                                     self.api_key = _clean_key
                                     if isinstance(getattr(self, "_client_kwargs", None), dict):
                                         self._client_kwargs["api_key"] = _clean_key
+                                    # Also update the live client — it holds its
+                                    # own copy of api_key which auth_headers reads
+                                    # dynamically on every request.
+                                    if getattr(self, "client", None) is not None and hasattr(self.client, "api_key"):
+                                        self.client.api_key = _clean_key
                                     _credential_sanitized = True
                                     self._vprint(
                                         f"{self.log_prefix}⚠️  API key contained non-ASCII characters "

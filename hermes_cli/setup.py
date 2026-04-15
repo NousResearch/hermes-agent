@@ -1611,9 +1611,19 @@ def _setup_telegram():
             return
 
     print_info("Create a bot via @BotFather on Telegram")
-    token = prompt("Telegram bot token", password=True)
-    if not token:
-        return
+    import re
+
+    while True:
+        token = prompt("Telegram bot token", password=True)
+        if not token:
+            return
+        if not re.match(r"^\d+:[A-Za-z0-9_-]{30,}$", token):
+            print_error(
+                "Invalid token format. Expected: <numeric_id>:<alphanumeric_hash> "
+                "(e.g., 123456789:ABCdefGHI-jklMNOpqrSTUvwxYZ)"
+            )
+            continue
+        break
     save_env_value("TELEGRAM_BOT_TOKEN", token)
     print_success("Telegram token saved")
 

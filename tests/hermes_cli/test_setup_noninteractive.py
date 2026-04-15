@@ -139,6 +139,13 @@ class TestNonInteractiveSetup:
         assert '고급 설정 (대부분 기본값이면 충분합니다):' in source
         assert 'Webhook listener settings를 설정할까요?' in source
         assert 'Webhooks 활성화 완료! 다음 단계:' in source
+        assert 'Hermes Agent 설정 마법사' in source
+        assert '모듈식 마법사이며 각 섹션을 독립적으로 실행할 수 있습니다:' in source
+        assert '권장 기본값을 적용했습니다:' in source
+        assert '최대 반복 수: 90' in source
+        assert '도구 진행 표시: all' in source
+        assert '압축 임계값: 0.50' in source
+        assert '자동 리셋 안 함' in source
 
     def test_cmd_setup_allows_noninteractive_flag_without_tty(self):
         """The CLI entrypoint should not block --non-interactive before setup.py handles it."""

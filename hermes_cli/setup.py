@@ -1,14 +1,14 @@
 """
-Interactive setup wizard for Hermes Agent.
+Hermes Agent 설정 마법사.
 
-Modular wizard with independently-runnable sections:
-  1. Model & Provider — choose your AI provider and model
-  2. Terminal Backend — where your agent runs commands
-  3. Agent Settings — iterations, compression, session reset
-  4. Messaging Platforms — connect Telegram, Discord, etc.
-  5. Tools — configure TTS, web search, image generation, etc.
+모듈식 마법사이며 각 섹션을 독립적으로 실행할 수 있습니다:
+  1. 모델 및 Provider — AI provider와 모델 선택
+  2. 터미널 백엔드 — 에이전트가 명령을 실행할 위치
+  3. 에이전트 설정 — 반복 수, 압축, 세션 리셋
+  4. 메시징 플랫폼 — Telegram, Discord 등 연결
+  5. 도구 — TTS, 웹 검색, 이미지 생성 등 설정
 
-Config files are stored in ~/.hermes/ for easy access.
+설정 파일은 쉽게 접근할 수 있도록 ~/.hermes/ 아래에 저장됩니다.
 """
 
 import importlib.util
@@ -1414,12 +1414,12 @@ def _apply_default_agent_settings(config: dict):
     })
 
     save_config(config)
-    print_success("Applied recommended defaults:")
-    print_info("  Max iterations: 90")
-    print_info("  Tool progress: all")
-    print_info("  Compression threshold: 0.50")
-    print_info("  Session reset: inactivity (1440 min) + daily (4:00)")
-    print_info("  Run `hermes setup agent` later to customize.")
+    print_success("권장 기본값을 적용했습니다:")
+    print_info("  최대 반복 수: 90")
+    print_info("  도구 진행 표시: all")
+    print_info("  압축 임계값: 0.50")
+    print_info("  세션 리셋: 비활성 1440분 + 매일 4:00")
+    print_info("  나중에 `hermes setup agent`를 실행해 세부 조정할 수 있습니다.")
 
 
 def setup_agent_settings(config: dict):
@@ -1513,11 +1513,11 @@ def setup_agent_settings(config: dict):
     print_info("")
 
     reset_choices = [
-        "Inactivity + daily reset (recommended - reset whichever comes first)",
-        "Inactivity only (reset after N minutes of no messages)",
-        "Daily only (reset at a fixed hour each day)",
-        "Never auto-reset (context lives until /reset or context compression)",
-        "Keep current settings",
+        "비활성 + 매일 리셋 (권장 - 먼저 도달한 조건으로 리셋)",
+        "비활성만 (N분 동안 메시지가 없으면 리셋)",
+        "매일만 (매일 고정 시각에 리셋)",
+        "자동 리셋 안 함 (/reset 또는 컨텍스트 압축 전까지 유지)",
+        "현재 설정 유지",
     ]
 
     current_policy = config.get("session_reset", {})

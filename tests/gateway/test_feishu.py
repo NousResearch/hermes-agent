@@ -2154,6 +2154,22 @@ class TestFeishuPostMentionParsing(unittest.TestCase):
         self.assertEqual(result.text_content, "@Alice hello")
 
 
+class TestFeishuPostTextIsNotMarkdownEscaped(unittest.TestCase):
+    def test_text_elements_keep_markdown_characters_and_style_wrappers(self):
+        """Inbound post text reaches the model verbatim (no backslash escapes) while the
+        structured style flags still render as markdown (#9816)."""
+        from plugins.platforms.feishu.adapter import parse_feishu_post_payload
+
+        payload = {"zh_cn": {"content": [[
+            {"tag": "text", "text": "run `print('hi')` for **emphasis** [x](y)"},
+            {"tag": "text", "text": "strong", "style": {"bold": True}},
+        ]]}}
+        text = parse_feishu_post_payload(payload).text_content
+        self.assertIn("run `print('hi')` for **emphasis** [x](y)", text)
+        self.assertIn("**strong**", text)
+        self.assertNotIn("\\", text)
+
+
 class TestFeishuNormalizeWithMentions(unittest.TestCase):
     def test_text_message_renders_mention_by_name(self):
         from plugins.platforms.feishu.adapter import normalize_feishu_message, _FeishuBotIdentity

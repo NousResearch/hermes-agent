@@ -18,12 +18,15 @@ Honcho is integrated into the [Memory Providers](./memory-providers.md) system. 
 |-----------|----------------|--------|
 | Cross-session persistence | ✔ File-based MEMORY.md/USER.md | ✔ Server-side with API |
 | User profile | ✔ Manual agent curation | ✔ Automatic dialectic reasoning |
+| Session summary | — | ✔ Session-scoped context injection |
 | Multi-agent isolation | — | ✔ Per-peer profile separation |
 | Observation modes | — | ✔ Unified or directional observation |
 | Conclusions (derived insights) | — | ✔ Server-side reasoning about patterns |
 | Search across history | ✔ FTS5 session search | ✔ Semantic search over conclusions |
 
-**Dialectic reasoning**: After each conversation, Honcho analyzes the exchange and derives "conclusions" — insights about the user's preferences, habits, and goals. These conclusions accumulate over time, giving the agent a deepening understanding that goes beyond what the user explicitly stated.
+**Dialectic reasoning**: After each conversation turn (gated by `dialecticCadence`), Honcho analyzes the exchange and derives insights about the user's preferences, habits, and goals. These accumulate over time, giving the agent a deepening understanding that goes beyond what the user explicitly stated. The dialectic supports multi-pass depth (1–3 passes) with automatic cold/warm prompt selection — cold start queries focus on general user facts while warm queries prioritize session-scoped context.
+
+**Session-scoped context**: Base context now includes the session summary alongside the user representation and peer card. This gives the agent awareness of what has already been discussed in the current session, reducing repetition and enabling continuity.
 
 **Multi-agent profiles**: When multiple Hermes instances talk to the same user (e.g., a coding assistant and a personal assistant), Honcho maintains separate "peer" profiles. Each peer sees only its own observations and conclusions, preventing cross-contamination of context.
 
@@ -42,27 +45,78 @@ memory:
 ```
 
 ```bash
-echo "HONCHO_API_KEY=your-key" >> ~/.hermes/.env
+echo "HONCHO_API_KEY=*** >> ~/.hermes/.env
 ```
 
 Get an API key at [honcho.dev](https://honcho.dev).
+
+## Architecture
+
+### Two-Layer Context Injection
+
+Every turn (in `hybrid` or `context` mode), Honcho assembles two layers of context injected into the system prompt:
+
+1. **Base context** — session summary, user representation, user peer card, AI self-representation, and AI identity card. Refreshed on `contextCadence`. This is the "who is this user" layer.
+2. **Dialectic supplement** — LLM-synthesized reasoning about the user's current state and needs. Refreshed on `dialecticCadence`. This is the "what matters right now" layer.
+
+Both layers are concatenated and truncated to the `contextTokens` budget (if set).
+
+### Cold/Warm Prompt Selection
+
+The dialectic automatically selects between two prompt strategies:
+
+- **Cold start** (no base context yet): General query — "Who is this person? What are their preferences, goals, and working style?"
+- **Warm session** (base context exists): Session-scoped query — "Given what's been discussed in this session so far, what context about this user is most relevant?"
+
+This happens automatically based on whether base context has been populated.
+
+### Three Orthogonal Config Knobs
+
+Cost and depth are controlled by three independent knobs:
+
+| Knob | Controls | Default |
+|------|----------|---------|
+| `contextCadence` | Turns between `context()` API calls (base layer refresh) | `1` |
+| `dialecticCadence` | Turns between `peer.chat()` LLM calls (dialectic layer refresh) | `3` |
+| `dialecticDepth` | Number of `.chat()` passes per dialectic invocation (1–3) | `1` |
+
+These are orthogonal — you can have frequent context refreshes with infrequent dialectic, or deep multi-pass dialectic at low frequency. Example: `contextCadence: 1, dialecticCadence: 5, dialecticDepth: 2` refreshes base context every turn, runs dialectic every 5 turns, and each dialectic run makes 2 passes.
+
+### Dialectic Depth (Multi-Pass)
+
+When `dialecticDepth` > 1, each dialectic invocation runs multiple `.chat()` passes:
+
+- **Pass 0**: Cold or warm prompt (see above)
+- **Pass 1**: Self-audit — identifies gaps in the initial assessment and synthesizes evidence from recent sessions
+- **Pass 2**: Reconciliation — checks for contradictions between prior passes and produces a final synthesis
+
+Each pass uses a proportional reasoning level (lighter early passes, base level for the main pass). Override per-pass levels with `dialecticDepthLevels` — e.g., `["minimal", "medium", "high"]` for a depth-3 run.
+
+Passes bail out early if the prior pass returned strong signal (long, structured output), so depth 3 doesn't always mean 3 LLM calls.
 
 ## Configuration Options
 
 Honcho is configured in `~/.honcho/config.json` (global) or `$HERMES_HOME/honcho.json` (profile-local). The setup wizard handles this for you.
 
-**Key settings:**
+### Full Config Reference
 
-| Setting | Default | Description |
-|---------|---------|-------------|
-| `sessionStrategy` | `per-directory` | `per-directory`, `per-repo`, `per-session`, or `global` |
-| `recallMode` | `hybrid` | `hybrid` (auto-inject + tools), `context` (inject only), `tools` (tools only) |
-| `contextTokens` | uncapped | Token budget for auto-injected context per turn. Set to an integer (e.g. 1200) to cap |
-| `dialecticReasoningLevel` | `low` | Base reasoning level: `minimal`, `low`, `medium`, `high`, `max` |
+| Key | Default | Description |
+|-----|---------|-------------|
+| `contextTokens` | `null` (uncapped) | Token budget for auto-injected context per turn. Set to an integer (e.g. 1200) to cap. Truncates at word boundaries |
+| `contextCadence` | `1` | Minimum turns between `context()` API calls (base layer refresh) |
+| `dialecticCadence` | `3` | Minimum turns between `peer.chat()` LLM calls (dialectic layer). In `tools` mode, irrelevant — model calls explicitly |
+| `dialecticDepth` | `1` | Number of `.chat()` passes per dialectic invocation. Clamped to 1–3 |
+| `dialecticDepthLevels` | `null` | Optional array of reasoning levels per pass, e.g. `["minimal", "low", "medium"]`. Overrides proportional defaults |
+| `dialecticReasoningLevel` | `'low'` | Base reasoning level: `minimal`, `low`, `medium`, `high`, `max` |
 | `dialecticDynamic` | `true` | When `true`, model can override reasoning level per-call via tool param |
-| `dialecticCadence` | `3` | Turns between Honcho LLM calls (higher = fewer calls) |
-| `writeFrequency` | `async` | When to flush messages to Honcho: `async` (background thread), `turn` (sync each turn), `session` (flush on end), or integer N (every N turns) |
-| `observation` | all on | Per-peer `observeMe`/`observeOthers` booleans |
+| `dialecticMaxChars` | `600` | Max chars of dialectic result injected into system prompt |
+| `recallMode` | `'hybrid'` | `hybrid` (auto-inject + tools), `context` (inject only), `tools` (tools only) |
+| `writeFrequency` | `'async'` | When to flush messages: `async` (background thread), `turn` (sync), `session` (batch on end), or integer N |
+| `saveMessages` | `true` | Whether to persist messages to Honcho API |
+| `observationMode` | `'directional'` | `directional` (all on) or `unified` (shared pool). Override with `observation` object for granular control |
+| `messageMaxChars` | `25000` | Max chars per message sent via `add_messages()`. Chunked if exceeded |
+| `dialecticMaxInputChars` | `10000` | Max chars for dialectic query input to `peer.chat()` |
+| `sessionStrategy` | `'per-directory'` | `per-directory`, `per-repo`, `per-session`, or `global` |
 
 **Session strategy** controls how Honcho sessions map to your work:
 - `per-session` — each `hermes` run gets a fresh session. Clean starts, memory via tools. Recommended for new users.
@@ -75,18 +129,18 @@ Honcho is configured in `~/.honcho/config.json` (global) or `$HERMES_HOME/honcho
 - `context` — auto-injection only, tools hidden.
 - `tools` — tools only, no auto-injection. Agent must explicitly call `honcho_reasoning`, `honcho_search`, etc.
 
-**Dialectic cadence** controls cost. With default `3`, Honcho rebuilds the user model every 3 turns instead of every turn — ~66% fewer LLM calls without losing model fidelity.
-
 **Settings per recall mode:**
 
 | Setting | `hybrid` | `context` | `tools` |
 |---------|----------|-----------|---------|
 | `writeFrequency` | flushes messages | flushes messages | flushes messages |
+| `contextCadence` | gates base context refresh | gates base context refresh | irrelevant — no injection |
 | `dialecticCadence` | gates auto LLM calls | gates auto LLM calls | irrelevant — model calls explicitly |
+| `dialecticDepth` | multi-pass per invocation | multi-pass per invocation | irrelevant — model calls explicitly |
 | `contextTokens` | caps injection | caps injection | irrelevant — no injection |
 | `dialecticDynamic` | gates model override | N/A (no tools) | gates model override |
 
-In `tools` mode, the model is fully in control — it calls `honcho_reasoning` when it wants, at whatever `reasoning_level` it picks. `dialecticCadence` and `contextTokens` only apply to modes with auto-injection (`hybrid` and `context`).
+In `tools` mode, the model is fully in control — it calls `honcho_reasoning` when it wants, at whatever `reasoning_level` it picks. Cadence and budget settings only apply to modes with auto-injection (`hybrid` and `context`).
 
 ## Tools
 

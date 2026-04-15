@@ -1,7 +1,10 @@
 import json
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from plugins.memory.openviking import OpenVikingMemoryProvider
+import pytest
+
+from plugins.memory.openviking import OpenVikingMemoryProvider, _VikingClient
 
 
 def test_tool_search_sorts_by_raw_score_across_buckets():
@@ -60,3 +63,66 @@ def test_tool_search_sorts_missing_raw_score_after_negative_scores():
     ]
     assert [entry["score"] for entry in result["results"]] == [0.1, 0.0, -0.25]
     assert result["total"] == 3
+
+
+def test_tool_add_resource_uploads_existing_local_file(tmp_path):
+    sample = tmp_path / "sample.md"
+    sample.write_text("# Local resource\n", encoding="utf-8")
+    provider = OpenVikingMemoryProvider()
+    provider._client = MagicMock()
+    provider._client.upload_temp_file.return_value = "upload_sample.md"
+    provider._client.post.return_value = {
+        "status": "ok",
+        "result": {"root_uri": "viking://resources/sample"},
+    }
+
+    result = json.loads(provider._tool_add_resource({
+        "url": str(sample),
+        "reason": "local test",
+        "wait": True,
+    }))
+
+    provider._client.upload_temp_file.assert_called_once_with(sample)
+    provider._client.post.assert_called_once_with("/api/v1/resources", {
+        "reason": "local test",
+        "wait": True,
+        "source_name": "sample.md",
+        "temp_file_id": "upload_sample.md",
+    })
+    assert result["status"] == "added"
+    assert result["root_uri"] == "viking://resources/sample"
+
+
+def test_tool_add_resource_sends_remote_url_as_path():
+    provider = OpenVikingMemoryProvider()
+    provider._client = MagicMock()
+    provider._client.post.return_value = {
+        "status": "ok",
+        "result": {"root_uri": "viking://resources/remote"},
+    }
+
+    provider._tool_add_resource({"url": "https://example.com/doc.md"})
+
+    provider._client.upload_temp_file.assert_not_called()
+    provider._client.post.assert_called_once_with("/api/v1/resources", {
+        "path": "https://example.com/doc.md",
+    })
+
+
+def test_viking_client_raises_structured_server_error():
+    client = _VikingClient.__new__(_VikingClient)
+    response = SimpleNamespace(
+        status_code=403,
+        text='{"status":"error"}',
+        json=lambda: {
+            "status": "error",
+            "error": {
+                "code": "PERMISSION_DENIED",
+                "message": "direct host filesystem paths are not allowed",
+            },
+        },
+        raise_for_status=lambda: None,
+    )
+
+    with pytest.raises(RuntimeError, match="PERMISSION_DENIED"):
+        client._parse_response(response)

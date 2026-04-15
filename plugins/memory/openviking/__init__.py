@@ -27,8 +27,13 @@ from __future__ import annotations
 import atexit
 import json
 import logging
+import mimetypes
 import os
+import tempfile
 import threading
+import uuid
+import zipfile
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from agent.memory_provider import MemoryProvider
@@ -105,20 +110,72 @@ class _VikingClient:
     def _url(self, path: str) -> str:
         return f"{self._endpoint}{path}"
 
+    def _auth_headers(self) -> dict:
+        h = {
+            "X-OpenViking-Account": self._account,
+            "X-OpenViking-User": self._user,
+        }
+        if self._api_key:
+            h["X-API-Key"] = self._api_key
+        return h
+
+    def _parse_response(self, resp) -> dict:
+        try:
+            data = resp.json()
+        except Exception:
+            data = None
+
+        if resp.status_code >= 400:
+            if isinstance(data, dict):
+                error = data.get("error")
+                if isinstance(error, dict):
+                    code = error.get("code", "HTTP_ERROR")
+                    message = error.get("message", resp.text)
+                    raise RuntimeError(f"{code}: {message}")
+                if data.get("status") == "error":
+                    raise RuntimeError(str(data))
+            resp.raise_for_status()
+
+        if isinstance(data, dict) and data.get("status") == "error":
+            error = data.get("error")
+            if isinstance(error, dict):
+                code = error.get("code", "OPENVIKING_ERROR")
+                message = error.get("message", "")
+                raise RuntimeError(f"{code}: {message}")
+            raise RuntimeError(str(data))
+
+        if data is None:
+            return {}
+        return data
+
     def get(self, path: str, **kwargs) -> dict:
         resp = self._httpx.get(
             self._url(path), headers=self._headers(), timeout=_TIMEOUT, **kwargs
         )
-        resp.raise_for_status()
-        return resp.json()
+        return self._parse_response(resp)
 
     def post(self, path: str, payload: dict = None, **kwargs) -> dict:
         resp = self._httpx.post(
             self._url(path), json=payload or {}, headers=self._headers(),
             timeout=_TIMEOUT, **kwargs
         )
-        resp.raise_for_status()
-        return resp.json()
+        return self._parse_response(resp)
+
+    def upload_temp_file(self, file_path: Path) -> str:
+        mime_type = mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
+        with file_path.open("rb") as f:
+            resp = self._httpx.post(
+                self._url("/api/v1/resources/temp_upload"),
+                files={"file": (file_path.name, f, mime_type)},
+                headers=self._auth_headers(),
+                timeout=_TIMEOUT,
+            )
+        data = self._parse_response(resp)
+        result = data.get("result", {})
+        temp_file_id = result.get("temp_file_id", "")
+        if not temp_file_id:
+            raise RuntimeError("OpenViking temp upload did not return temp_file_id")
+        return temp_file_id
 
     def health(self) -> bool:
         try:
@@ -230,22 +287,54 @@ REMEMBER_SCHEMA = {
 ADD_RESOURCE_SCHEMA = {
     "name": "viking_add_resource",
     "description": (
-        "Add a URL or document to the OpenViking knowledge base. "
-        "Supports web pages, GitHub repos, PDFs, markdown, code files. "
+        "Add a remote URL or local file/directory to the OpenViking knowledge base. "
+        "Remote resources must be public http(s), git, or ssh URLs. "
+        "Local files are uploaded first using OpenViking temp_upload. "
         "The system automatically parses, indexes, and generates summaries."
     ),
     "parameters": {
         "type": "object",
         "properties": {
-            "url": {"type": "string", "description": "URL or path of the resource to add."},
+            "url": {"type": "string", "description": "Remote URL or local file/directory path to add."},
             "reason": {
                 "type": "string",
                 "description": "Why this resource is relevant (improves search).",
+            },
+            "to": {
+                "type": "string",
+                "description": "Optional target viking:// URI for the resource.",
+            },
+            "parent": {
+                "type": "string",
+                "description": "Optional parent viking:// URI. Cannot be used with to.",
+            },
+            "instruction": {
+                "type": "string",
+                "description": "Optional processing instruction for semantic extraction.",
+            },
+            "wait": {
+                "type": "boolean",
+                "description": "Whether to wait for processing to complete.",
+            },
+            "timeout": {
+                "type": "number",
+                "description": "Timeout in seconds when wait is true.",
             },
         },
         "required": ["url"],
     },
 }
+
+
+def _zip_directory(dir_path: Path) -> Path:
+    """Create a temporary zip file containing a directory tree."""
+    zip_path = Path(tempfile.gettempdir()) / f"openviking_upload_{uuid.uuid4().hex}.zip"
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zipf:
+        for file_path in dir_path.rglob("*"):
+            if file_path.is_file():
+                arcname = str(file_path.relative_to(dir_path)).replace("\\", "/")
+                zipf.write(file_path, arcname=arcname)
+    return zip_path
 
 
 # ---------------------------------------------------------------------------
@@ -744,12 +833,36 @@ class OpenVikingMemoryProvider(MemoryProvider):
         if not url:
             return tool_error("url is required")
 
-        payload: Dict[str, Any] = {"path": url}
-        if args.get("reason"):
-            payload["reason"] = args["reason"]
+        if args.get("to") and args.get("parent"):
+            return tool_error("Cannot specify both 'to' and 'parent'")
 
-        resp = self._client.post("/api/v1/resources", payload)
-        result = resp.get("result", {})
+        payload: Dict[str, Any] = {}
+        for key in ("reason", "to", "parent", "instruction", "wait", "timeout"):
+            if key in args and args[key] not in (None, ""):
+                payload[key] = args[key]
+
+        source_path = Path(url).expanduser()
+        cleanup_path: Optional[Path] = None
+        if source_path.exists():
+            if source_path.is_dir():
+                payload["source_name"] = source_path.name
+                cleanup_path = _zip_directory(source_path)
+                upload_path = cleanup_path
+            elif source_path.is_file():
+                payload["source_name"] = source_path.name
+                upload_path = source_path
+            else:
+                return tool_error(f"Unsupported local resource path: {url}")
+            payload["temp_file_id"] = self._client.upload_temp_file(upload_path)
+        else:
+            payload["path"] = url
+
+        try:
+            resp = self._client.post("/api/v1/resources", payload)
+            result = resp.get("result", {})
+        finally:
+            if cleanup_path:
+                cleanup_path.unlink(missing_ok=True)
 
         return json.dumps({
             "status": "added",

@@ -408,7 +408,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if media_files and not message.strip():
         return {
             "error": (
-                f"send_message MEDIA delivery is currently only supported for telegram and discord; "
+                f"send_message MEDIA delivery is currently only supported for telegram, discord, and weixin; "
                 f"target {platform.value} had only media attachments"
             )
         }
@@ -416,7 +416,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if media_files:
         warning = (
             f"MEDIA attachments were omitted for {platform.value}; "
-            "native send_message media delivery is currently only supported for telegram and discord"
+            "native send_message media delivery is currently only supported for telegram, discord, and weixin"
         )
 
     last_result = None
@@ -637,14 +637,14 @@ async def _send_discord(token, chat_id, message, thread_id=None, media_files=Non
                     filename = os.path.basename(media_path)
                     with open(media_path, "rb") as f:
                         form.add_field("files[0]", f, filename=filename)
-                    async with session.post(url, headers=auth_headers, data=form, **_req_kw) as resp:
-                        if resp.status not in (200, 201):
-                            body = await resp.text()
-                            warning = _sanitize_error_text(f"Failed to send media {media_path}: Discord API error ({resp.status}): {body}")
-                            logger.error(warning)
-                            warnings.append(warning)
-                            continue
-                        last_data = await resp.json()
+                        async with session.post(url, headers=auth_headers, data=form, **_req_kw) as resp:
+                            if resp.status not in (200, 201):
+                                body = await resp.text()
+                                warning = _sanitize_error_text(f"Failed to send media {media_path}: Discord API error ({resp.status}): {body}")
+                                logger.error(warning)
+                                warnings.append(warning)
+                                continue
+                            last_data = await resp.json()
                 except Exception as e:
                     warning = _sanitize_error_text(f"Failed to send media {media_path}: {e}")
                     logger.error(warning)

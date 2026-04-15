@@ -339,7 +339,7 @@ class TestSlashCommandCompleter:
     def test_builtin_completion_display_meta_shows_description(self):
         completions = _completions(SlashCommandCompleter(), "/help")
         assert len(completions) == 1
-        assert completions[0].display_meta_text == "Show available commands"
+        assert completions[0].display_meta_text == "顯示可用指令"
 
     # -- exact-match trailing space --------------------------------------
 
@@ -366,7 +366,10 @@ class TestSlashCommandCompleter:
     def test_skill_commands_are_completed_from_provider(self):
         completer = SlashCommandCompleter(
             skill_commands_provider=lambda: {
-                "/gif-search": {"description": "Search for GIFs across providers"},
+                "/gif-search": {
+                    "description": "Search for GIFs across providers",
+                    "zh_description": "技能：gif-search（媒體內容）",
+                },
             }
         )
 
@@ -375,7 +378,7 @@ class TestSlashCommandCompleter:
         assert len(completions) == 1
         assert completions[0].text == "gif-search"
         assert completions[0].display_text == "/gif-search"
-        assert completions[0].display_meta_text == "⚡ Search for GIFs across providers"
+        assert completions[0].display_meta_text == "⚡ 技能：gif-search（媒體內容）"
 
     def test_skill_exact_match_adds_trailing_space(self):
         completer = SlashCommandCompleter(
@@ -427,7 +430,7 @@ class TestSlashCommandCompleter:
         )
         completions = _completions(completer, "/no-desc")
         assert len(completions) == 1
-        assert "Skill command" in completions[0].display_meta_text
+        assert "技能指令" in completions[0].display_meta_text
 
 
 # ── SUBCOMMANDS extraction ──────────────────────────────────────────────

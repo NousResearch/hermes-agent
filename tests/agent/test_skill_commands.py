@@ -45,6 +45,7 @@ class TestScanSkillCommands:
             result = scan_skill_commands()
         assert "/my-skill" in result
         assert result["/my-skill"]["name"] == "my-skill"
+        assert result["/my-skill"]["zh_description"] == "技能：my-skill（未分類）"
 
     def test_empty_dir(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
@@ -100,6 +101,18 @@ class TestScanSkillCommands:
             result = scan_skill_commands()
         assert "/enabled-skill" in result
         assert "/disabled-skill" not in result
+
+    def test_prefers_explicit_zh_description(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "hound-mode",
+                frontmatter_extra="zh_description: 思維獵犬模式（規劃／執行節奏控制）\n",
+                category="software-development",
+            )
+            result = scan_skill_commands()
+        assert result["/hound-mode"]["zh_description"] == "思維獵犬模式（規劃／執行節奏控制）"
+        assert result["/hound-mode"]["category"] == "software-development"
 
 
     def test_special_chars_stripped_from_cmd_key(self, tmp_path):

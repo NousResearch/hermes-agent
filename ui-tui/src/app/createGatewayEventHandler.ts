@@ -1,14 +1,16 @@
-import type { GatewayEvent } from '../gatewayClient.js'
+import type { CommandsCatalogResponse, GatewayEvent, SessionResumeResponse } from '../gatewayTypes.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
 import {
   buildToolTrailLine,
   estimateTokensRough,
+  formatToolCall,
   isToolTrailResultLine,
   sameToolTrailGroup,
   toolTrailLabel
 } from '../lib/text.js'
 import { fromSkin } from '../theme.js'
 
+import { STREAM_BATCH_MS } from './constants.js'
 import { introMsg, toTranscriptMessages } from './helpers.js'
 import type { GatewayEventHandlerContext } from './interfaces.js'
 import { patchOverlayState } from './overlayStore.js'
@@ -19,7 +21,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
   const { gw, rpc } = ctx.gateway
   const { STARTUP_RESUME_ID, colsRef, newSession, resetSession, setCatalog } = ctx.session
   const { bellOnComplete, stdout, sys } = ctx.system
-  const { appendMessage, setHistoryItems, setMessages } = ctx.transcript
+  const { appendMessage, setHistoryItems } = ctx.transcript
 
   const {
     clearReasoning,
@@ -32,8 +34,8 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
     scheduleReasoning,
     scheduleStreaming,
     setActivity,
-    setReasoningTokens,
     setStreaming,
+    setSubagents,
     setToolTokens,
     setTools,
     setTurnTrail
@@ -53,6 +55,108 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
     turnToolsRef
   } = ctx.turn.refs
 
+  let pendingThinkingStatus = ''
+  let thinkingStatusTimer: ReturnType<typeof setTimeout> | null = null
+  let toolProgressTimer: ReturnType<typeof setTimeout> | null = null
+
+  const cancelThinkingStatus = () => {
+    pendingThinkingStatus = ''
+
+    if (thinkingStatusTimer) {
+      clearTimeout(thinkingStatusTimer)
+      thinkingStatusTimer = null
+    }
+  }
+
+  const setStatus = (status: string) => {
+    cancelThinkingStatus()
+    patchUiState({ status })
+  }
+
+  const scheduleThinkingStatus = (status: string) => {
+    pendingThinkingStatus = status
+
+    if (thinkingStatusTimer) {
+      return
+    }
+
+    thinkingStatusTimer = setTimeout(() => {
+      thinkingStatusTimer = null
+      patchUiState({ status: pendingThinkingStatus || (getUiState().busy ? 'running…' : 'ready') })
+    }, STREAM_BATCH_MS)
+  }
+
+  const scheduleToolProgress = () => {
+    if (toolProgressTimer) {
+      return
+    }
+
+    toolProgressTimer = setTimeout(() => {
+      toolProgressTimer = null
+      setTools([...activeToolsRef.current])
+    }, STREAM_BATCH_MS)
+  }
+
+  const upsertSubagent = (
+    taskIndex: number,
+    taskCount: number,
+    goal: string,
+    update: (current: {
+      durationSeconds?: number
+      goal: string
+      id: string
+      index: number
+      notes: string[]
+      status: 'completed' | 'failed' | 'interrupted' | 'running'
+      summary?: string
+      taskCount: number
+      thinking: string[]
+      tools: string[]
+    }) => {
+      durationSeconds?: number
+      goal: string
+      id: string
+      index: number
+      notes: string[]
+      status: 'completed' | 'failed' | 'interrupted' | 'running'
+      summary?: string
+      taskCount: number
+      thinking: string[]
+      tools: string[]
+    }
+  ) => {
+    const id = `sa:${taskIndex}:${goal || 'subagent'}`
+
+    setSubagents(prev => {
+      const index = prev.findIndex(item => item.id === id)
+
+      const base =
+        index >= 0
+          ? prev[index]!
+          : {
+              id,
+              index: taskIndex,
+              taskCount,
+              goal,
+              notes: [],
+              status: 'running' as const,
+              thinking: [],
+              tools: []
+            }
+
+      const nextItem = update(base)
+
+      if (index < 0) {
+        return [...prev, nextItem].sort((a, b) => a.index - b.index)
+      }
+
+      const next = [...prev]
+      next[index] = nextItem
+
+      return next
+    })
+  }
+
   return (ev: GatewayEvent) => {
     const sid = getUiState().sid
 
@@ -60,10 +164,10 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       return
     }
 
-    const p = ev.payload as any
-
     switch (ev.type) {
-      case 'gateway.ready':
+      case 'gateway.ready': {
+        const p = ev.payload
+
         if (p?.skin) {
           patchUiState({
             theme: fromSkin(
@@ -75,15 +179,15 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           })
         }
 
-        rpc('commands.catalog', {})
-          .then((r: any) => {
+        rpc<CommandsCatalogResponse>('commands.catalog', {})
+          .then(r => {
             if (!r?.pairs) {
               return
             }
 
             setCatalog({
               canon: (r.canon ?? {}) as Record<string, string>,
-              categories: (r.categories ?? []) as any,
+              categories: r.categories ?? [],
               pairs: r.pairs as [string, string][],
               skillCount: (r.skill_count ?? 0) as number,
               sub: (r.sub ?? {}) as Record<string, string[]>
@@ -97,9 +201,9 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         if (STARTUP_RESUME_ID) {
           patchUiState({ status: 'resuming…' })
-          gw.request('session.resume', { cols: colsRef.current, session_id: STARTUP_RESUME_ID })
-            .then((raw: any) => {
-              const r = asRpcResult(raw)
+          gw.request<SessionResumeResponse>('session.resume', { cols: colsRef.current, session_id: STARTUP_RESUME_ID })
+            .then(raw => {
+              const r = asRpcResult<SessionResumeResponse>(raw)
 
               if (!r) {
                 throw new Error('invalid response: session.resume')
@@ -114,7 +218,6 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
                 status: 'ready',
                 usage: r.info?.usage ?? getUiState().usage
               })
-              setMessages(resumed)
               setHistoryItems(r.info ? [introMsg(r.info), ...resumed] : resumed)
             })
             .catch((e: unknown) => {
@@ -128,8 +231,11 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         }
 
         break
+      }
 
-      case 'skin.changed':
+      case 'skin.changed': {
+        const p = ev.payload
+
         if (p) {
           patchUiState({
             theme: fromSkin(p.colors ?? {}, p.branding ?? {}, p.banner_logo ?? '', p.banner_hero ?? '')
@@ -137,28 +243,36 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         }
 
         break
+      }
 
-      case 'session.info':
+      case 'session.info': {
+        const p = ev.payload
+
         patchUiState(state => ({
           ...state,
-          info: p as any,
-          usage: p?.usage ? { ...state.usage, ...p.usage } : state.usage
+          info: p,
+          usage: p.usage ? { ...state.usage, ...p.usage } : state.usage
         }))
 
         break
+      }
 
-      case 'thinking.delta':
+      case 'thinking.delta': {
+        const p = ev.payload
+
         if (p && Object.prototype.hasOwnProperty.call(p, 'text')) {
-          patchUiState({ status: p.text ? String(p.text) : getUiState().busy ? 'running…' : 'ready' })
+          scheduleThinkingStatus(p.text ? String(p.text) : getUiState().busy ? 'running…' : 'ready')
         }
 
         break
+      }
 
       case 'message.start':
         patchUiState({ busy: true })
         endReasoningPhase()
         clearReasoning()
         setActivity([])
+        setSubagents([])
         setTurnTrail([])
         activeToolsRef.current = []
         setTools([])
@@ -168,10 +282,11 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         setToolTokens(0)
 
         break
+      case 'status.update': {
+        const p = ev.payload
 
-      case 'status.update':
         if (p?.text) {
-          patchUiState({ status: p.text })
+          setStatus(p.text)
 
           if (p.kind && p.kind !== 'status') {
             if (lastStatusNoteRef.current !== p.text) {
@@ -194,8 +309,11 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         }
 
         break
+      }
 
-      case 'gateway.stderr':
+      case 'gateway.stderr': {
+        const p = ev.payload
+
         if (p?.line) {
           const line = String(p.line).slice(0, 120)
           const tone = /\b(error|traceback|exception|failed|spawn)\b/i.test(line) ? 'error' : 'warn'
@@ -204,18 +322,24 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         }
 
         break
+      }
 
-      case 'gateway.start_timeout':
-        patchUiState({ status: 'gateway startup timeout' })
+      case 'gateway.start_timeout': {
+        const p = ev.payload
+
+        setStatus('gateway startup timeout')
         pushActivity(
           `gateway startup timed out${p?.python || p?.cwd ? ` · ${String(p?.python || '')} ${String(p?.cwd || '')}`.trim() : ''} · /logs to inspect`,
           'error'
         )
 
         break
+      }
 
-      case 'gateway.protocol_error':
-        patchUiState({ status: 'protocol warning' })
+      case 'gateway.protocol_error': {
+        const p = ev.payload
+
+        setStatus('protocol warning')
 
         if (statusTimerRef.current) {
           clearTimeout(statusTimerRef.current)
@@ -236,17 +360,22 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         }
 
         break
+      }
 
-      case 'reasoning.delta':
+      case 'reasoning.delta': {
+        const p = ev.payload
+
         if (p?.text) {
           reasoningRef.current += p.text
-          setReasoningTokens(estimateTokensRough(reasoningRef.current))
           scheduleReasoning()
           pulseReasoningStreaming()
         }
 
         break
+      }
+
       case 'reasoning.available': {
+        const p = ev.payload
         const incoming = String(p?.text ?? '').trim()
 
         if (!incoming) {
@@ -261,7 +390,6 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         // nothing.
         if (!current) {
           reasoningRef.current = incoming
-          setReasoningTokens(estimateTokensRough(reasoningRef.current))
           scheduleReasoning()
           pulseReasoningStreaming()
         }
@@ -269,7 +397,9 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         break
       }
 
-      case 'tool.progress':
+      case 'tool.progress': {
+        const p = ev.payload
+
         if (p?.preview) {
           const index = activeToolsRef.current.findIndex(tool => tool.name === p.name)
 
@@ -278,28 +408,35 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
             next[index] = { ...next[index]!, context: p.preview as string }
             activeToolsRef.current = next
-            setTools(next)
+            scheduleToolProgress()
           }
         }
 
         break
+      }
 
-      case 'tool.generating':
+      case 'tool.generating': {
+        const p = ev.payload
+
         if (p?.name) {
           pushTrail(`drafting ${p.name}…`)
         }
 
         break
+      }
+
       case 'tool.start': {
+        const p = ev.payload
         pruneTransient()
         endReasoningPhase()
-        const ctx = (p.context as string) || ''
+        const name = p.name ?? 'tool'
+        const ctx = p.context ?? ''
         const sample = `${String(p.name ?? '')} ${ctx}`.trim()
         toolTokenAccRef.current += sample ? estimateTokensRough(sample) : 0
         setToolTokens(toolTokenAccRef.current)
         activeToolsRef.current = [
           ...activeToolsRef.current,
-          { id: p.tool_id, name: p.name, context: ctx, startedAt: Date.now() }
+          { id: p.tool_id, name, context: ctx, startedAt: Date.now() }
         ]
         setTools(activeToolsRef.current)
 
@@ -307,17 +444,13 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       }
 
       case 'tool.complete': {
+        const p = ev.payload
         toolCompleteRibbonRef.current = null
         const done = activeToolsRef.current.find(tool => tool.id === p.tool_id)
-        const name = done?.name ?? p.name
+        const name = done?.name ?? p.name ?? 'tool'
         const label = toolTrailLabel(name)
 
-        const line = buildToolTrailLine(
-          name,
-          done?.context || '',
-          !!p.error,
-          (p.error as string) || (p.summary as string) || ''
-        )
+        const line = buildToolTrailLine(name, done?.context || '', !!p.error, p.error || p.summary || '')
 
         const next = [...turnToolsRef.current.filter(item => !sameToolTrailGroup(label, item)), line]
 
@@ -333,37 +466,46 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         setTurnTrail(turnToolsRef.current)
 
         if (p?.inline_diff) {
-          sys(p.inline_diff as string)
+          sys(p.inline_diff)
         }
 
         break
       }
 
-      case 'clarify.request':
+      case 'clarify.request': {
+        const p = ev.payload
         patchOverlayState({ clarify: { choices: p.choices, question: p.question, requestId: p.request_id } })
-        patchUiState({ status: 'waiting for input…' })
+        setStatus('waiting for input…')
 
         break
+      }
 
-      case 'approval.request':
+      case 'approval.request': {
+        const p = ev.payload
         patchOverlayState({ approval: { command: p.command, description: p.description } })
-        patchUiState({ status: 'approval needed' })
+        setStatus('approval needed')
 
         break
+      }
 
-      case 'sudo.request':
+      case 'sudo.request': {
+        const p = ev.payload
         patchOverlayState({ sudo: { requestId: p.request_id } })
-        patchUiState({ status: 'sudo password needed' })
+        setStatus('sudo password needed')
 
         break
+      }
 
-      case 'secret.request':
+      case 'secret.request': {
+        const p = ev.payload
         patchOverlayState({ secret: { envVar: p.env_var, prompt: p.prompt, requestId: p.request_id } })
-        patchUiState({ status: 'secret input needed' })
+        setStatus('secret input needed')
 
         break
+      }
 
-      case 'background.complete':
+      case 'background.complete': {
+        const p = ev.payload
         patchUiState(state => {
           const next = new Set(state.bgTasks)
 
@@ -374,8 +516,10 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         sys(`[bg ${p.task_id}] ${p.text}`)
 
         break
+      }
 
-      case 'btw.complete':
+      case 'btw.complete': {
+        const p = ev.payload
         patchUiState(state => {
           const next = new Set(state.bgTasks)
 
@@ -386,8 +530,92 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         sys(`[btw] ${p.text}`)
 
         break
+      }
 
-      case 'message.delta':
+      case 'subagent.start': {
+        const p = ev.payload
+
+        upsertSubagent(p.task_index, p.task_count ?? 1, p.goal, current => ({
+          ...current,
+          goal: p.goal || current.goal,
+          status: 'running',
+          taskCount: p.task_count ?? current.taskCount
+        }))
+
+        break
+      }
+
+      case 'subagent.thinking': {
+        const p = ev.payload
+        const text = String(p.text ?? '').trim()
+
+        if (!text) {
+          break
+        }
+
+        upsertSubagent(p.task_index, p.task_count ?? 1, p.goal, current => ({
+          ...current,
+          goal: p.goal || current.goal,
+          status: current.status === 'completed' ? current.status : 'running',
+          taskCount: p.task_count ?? current.taskCount,
+          thinking: current.thinking.at(-1) === text ? current.thinking : [...current.thinking, text].slice(-6)
+        }))
+
+        break
+      }
+
+      case 'subagent.tool': {
+        const p = ev.payload
+        const line = formatToolCall(p.tool_name ?? 'delegate_task', p.tool_preview ?? p.text ?? '')
+
+        upsertSubagent(p.task_index, p.task_count ?? 1, p.goal, current => ({
+          ...current,
+          goal: p.goal || current.goal,
+          status: current.status === 'completed' ? current.status : 'running',
+          taskCount: p.task_count ?? current.taskCount,
+          tools: current.tools.at(-1) === line ? current.tools : [...current.tools, line].slice(-8)
+        }))
+
+        break
+      }
+
+      case 'subagent.progress': {
+        const p = ev.payload
+        const text = String(p.text ?? '').trim()
+
+        if (!text) {
+          break
+        }
+
+        upsertSubagent(p.task_index, p.task_count ?? 1, p.goal, current => ({
+          ...current,
+          goal: p.goal || current.goal,
+          status: current.status === 'completed' ? current.status : 'running',
+          taskCount: p.task_count ?? current.taskCount,
+          notes: current.notes.at(-1) === text ? current.notes : [...current.notes, text].slice(-6)
+        }))
+
+        break
+      }
+
+      case 'subagent.complete': {
+        const p = ev.payload
+        const status = p.status ?? 'completed'
+
+        upsertSubagent(p.task_index, p.task_count ?? 1, p.goal, current => ({
+          ...current,
+          durationSeconds: p.duration_seconds ?? current.durationSeconds,
+          goal: p.goal || current.goal,
+          status,
+          summary: p.summary || p.text || current.summary,
+          taskCount: p.task_count ?? current.taskCount
+        }))
+
+        break
+      }
+
+      case 'message.delta': {
+        const p = ev.payload
         pruneTransient()
         endReasoningPhase()
 
@@ -397,7 +625,10 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         }
 
         break
+      }
+
       case 'message.complete': {
+        const p = ev.payload
         const finalText = (p?.rendered ?? p?.text ?? bufRef.current).trimStart()
         const persisted = persistedToolLabelsRef.current
         const savedReasoning = reasoningRef.current.trim()
@@ -432,7 +663,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         persistedToolLabelsRef.current.clear()
         setActivity([])
         bufRef.current = ''
-        patchUiState({ status: 'ready' })
+        setStatus('ready')
 
         if (p?.usage) {
           patchUiState({ usage: p.usage })
@@ -451,7 +682,8 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         break
       }
 
-      case 'error':
+      case 'error': {
+        const p = ev.payload
         idle()
         clearReasoning()
         turnToolsRef.current = []
@@ -464,9 +696,10 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         pushActivity(String(p?.message || 'unknown error'), 'error')
         sys(`error: ${p?.message}`)
-        patchUiState({ status: 'ready' })
+        setStatus('ready')
 
         break
+      }
     }
   }
 }

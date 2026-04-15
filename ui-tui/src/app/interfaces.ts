@@ -16,6 +16,7 @@ import type {
   SecretReq,
   SessionInfo,
   SlashCatalog,
+  SubagentProgress,
   SudoReq,
   Usage
 } from '../types.js'
@@ -35,7 +36,7 @@ export interface CompletionItem {
 }
 
 export interface GatewayRpc {
-  (method: string, params?: Record<string, unknown>): Promise<RpcResult | null>
+  <T extends RpcResult = RpcResult>(method: string, params?: Record<string, unknown>): Promise<T | null>
 }
 
 export interface GatewayServices {
@@ -176,6 +177,7 @@ export interface TurnActions {
   setToolTokens: StateSetter<number>
   setReasoningStreaming: StateSetter<boolean>
   setStreaming: StateSetter<string>
+  setSubagents: StateSetter<SubagentProgress[]>
   setTools: StateSetter<ActiveTool[]>
   setTurnTrail: StateSetter<string[]>
 }
@@ -204,6 +206,7 @@ export interface TurnState {
   reasoningActive: boolean
   reasoningStreaming: boolean
   streaming: string
+  subagents: SubagentProgress[]
   toolTokens: number
   tools: ActiveTool[]
   turnTrail: string[]
@@ -278,7 +281,6 @@ export interface GatewayEventHandlerContext {
   transcript: {
     appendMessage: (msg: Msg) => void
     setHistoryItems: StateSetter<Msg[]>
-    setMessages: StateSetter<Msg[]>
   }
   turn: {
     actions: Pick<
@@ -295,6 +297,7 @@ export interface GatewayEventHandlerContext {
       | 'setActivity'
       | 'setReasoningTokens'
       | 'setStreaming'
+      | 'setSubagents'
       | 'setToolTokens'
       | 'setTools'
       | 'setTurnTrail'
@@ -328,9 +331,9 @@ export interface SlashHandlerContext {
   gateway: GatewayServices
   local: {
     catalog: SlashCatalog | null
-    lastUserMsg: string
+    getHistoryItems: () => Msg[]
+    getLastUserMsg: () => string
     maybeWarn: (value: any) => void
-    messages: Msg[]
   }
   session: {
     closeSession: (targetSid?: string | null) => Promise<unknown>
@@ -346,7 +349,6 @@ export interface SlashHandlerContext {
     panel: (title: string, sections: PanelSection[]) => void
     send: (text: string) => void
     setHistoryItems: StateSetter<Msg[]>
-    setMessages: StateSetter<Msg[]>
     sys: (text: string) => void
     trimLastExchange: (items: Msg[]) => Msg[]
   }
@@ -389,6 +391,7 @@ export interface AppLayoutProgressProps {
   showProgressArea: boolean
   showStreamingArea: boolean
   streaming: string
+  subagents: SubagentProgress[]
   toolTokens: number
   tools: ActiveTool[]
   turnTrail: string[]
@@ -396,7 +399,7 @@ export interface AppLayoutProgressProps {
 
 export interface AppLayoutStatusProps {
   cwdLabel: string
-  durationLabel: string
+  sessionStartedAt: number | null
   showStickyPrompt: boolean
   statusColor: string
   stickyPrompt: string

@@ -1,7 +1,7 @@
 import { Box, type ScrollBoxHandle, Text } from '@hermes/ink'
 import { type ReactNode, type RefObject, useCallback, useEffect, useState, useSyncExternalStore } from 'react'
 
-import { stickyPromptFromViewport } from '../app/helpers.js'
+import { fmtDuration, stickyPromptFromViewport } from '../app/helpers.js'
 import { fmtK } from '../lib/text.js'
 import type { Theme } from '../theme.js'
 import type { Msg, Usage } from '../types.js'
@@ -33,6 +33,19 @@ function ctxBar(pct: number | undefined, w = 10) {
   return '█'.repeat(filled) + '░'.repeat(w - filled)
 }
 
+function SessionDuration({ startedAt }: { startedAt: number }) {
+  const [now, setNow] = useState(() => Date.now())
+
+  useEffect(() => {
+    setNow(Date.now())
+    const id = setInterval(() => setNow(Date.now()), 1000)
+
+    return () => clearInterval(id)
+  }, [startedAt])
+
+  return fmtDuration(now - startedAt)
+}
+
 export function StatusRule({
   cwdLabel,
   cols,
@@ -41,7 +54,7 @@ export function StatusRule({
   model,
   usage,
   bgCount,
-  durationLabel,
+  sessionStartedAt,
   voiceLabel,
   t
 }: {
@@ -52,7 +65,7 @@ export function StatusRule({
   model: string
   usage: Usage
   bgCount: number
-  durationLabel?: string
+  sessionStartedAt?: number | null
   voiceLabel?: string
   t: Theme
 }) {
@@ -83,7 +96,12 @@ export function StatusRule({
               <Text color={barColor}>[{bar}]</Text> <Text color={barColor}>{pctLabel}</Text>
             </Text>
           ) : null}
-          {durationLabel ? <Text color={t.color.dim}> │ {durationLabel}</Text> : null}
+          {sessionStartedAt ? (
+            <Text color={t.color.dim}>
+              {' │ '}
+              <SessionDuration startedAt={sessionStartedAt} />
+            </Text>
+          ) : null}
           {voiceLabel ? <Text color={t.color.dim}> │ {voiceLabel}</Text> : null}
           {bgCount > 0 ? <Text color={t.color.dim}> │ {bgCount} bg</Text> : null}
         </Text>
@@ -177,6 +195,8 @@ export function TranscriptScrollbar({ scrollRef, t }: { scrollRef: RefObject<Scr
   const travel = Math.max(1, vp - thumb)
   const pos = Math.max(0, (s?.getScrollTop() ?? 0) + (s?.getPendingDelta() ?? 0))
   const thumbTop = scrollable ? Math.round((pos / Math.max(1, total - vp)) * travel) : 0
+  const thumbColor = grab !== null ? t.color.gold : hover ? t.color.amber : t.color.bronze
+  const trackColor = hover ? t.color.bronze : t.color.dim
 
   const jump = (row: number, offset: number) => {
     if (!s || !scrollable) {
@@ -203,25 +223,27 @@ export function TranscriptScrollbar({ scrollRef, t }: { scrollRef: RefObject<Scr
       onMouseUp={() => setGrab(null)}
       width={1}
     >
-      {Array.from({ length: vp }, (_, i) => {
-        const active = i >= thumbTop && i < thumbTop + thumb
-
-        const color = active
-          ? grab !== null
-            ? t.color.gold
-            : hover
-              ? t.color.amber
-              : t.color.bronze
-          : hover
-            ? t.color.bronze
-            : t.color.dim
-
-        return (
-          <Text color={color} dimColor={!active && !hover} key={i}>
-            {scrollable ? (active ? '┃' : '│') : ' '}
-          </Text>
-        )
-      })}
+      {!scrollable ? (
+        <Text color={trackColor} dimColor>
+          {' \n'.repeat(Math.max(0, vp - 1))}{' '}
+        </Text>
+      ) : (
+        <>
+          {thumbTop > 0 ? (
+            <Text color={trackColor} dimColor={!hover}>
+              {`${'│\n'.repeat(Math.max(0, thumbTop - 1))}${thumbTop > 0 ? '│' : ''}`}
+            </Text>
+          ) : null}
+          {thumb > 0 ? (
+            <Text color={thumbColor}>{`${'┃\n'.repeat(Math.max(0, thumb - 1))}${thumb > 0 ? '┃' : ''}`}</Text>
+          ) : null}
+          {vp - thumbTop - thumb > 0 ? (
+            <Text color={trackColor} dimColor={!hover}>
+              {`${'│\n'.repeat(Math.max(0, vp - thumbTop - thumb - 1))}${vp - thumbTop - thumb > 0 ? '│' : ''}`}
+            </Text>
+          ) : null}
+        </>
+      )}
     </Box>
   )
 }

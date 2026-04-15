@@ -3,6 +3,7 @@ import { memo, type ReactNode, useEffect, useMemo, useState } from 'react'
 import spinners, { type BrailleSpinnerName } from 'unicode-animations'
 
 import {
+  compactPreview,
   estimateTokensRough,
   fmtK,
   formatToolCall,
@@ -13,7 +14,7 @@ import {
   toolTrailLabel
 } from '../lib/text.js'
 import type { Theme } from '../theme.js'
-import type { ActiveTool, ActivityItem, DetailsMode, ThinkingMode } from '../types.js'
+import type { ActiveTool, ActivityItem, DetailsMode, SubagentProgress, ThinkingMode } from '../types.js'
 
 const THINK: BrailleSpinnerName[] = ['helix', 'breathe', 'orbit', 'dna', 'waverows', 'snake', 'pulse']
 const TOOL: BrailleSpinnerName[] = ['cascade', 'scan', 'diagswipe', 'fillsweep', 'rain', 'columns', 'sparkle']
@@ -128,6 +129,122 @@ function Chevron({
   )
 }
 
+function SubagentAccordion({ expanded, item, t }: { expanded: boolean; item: SubagentProgress; t: Theme }) {
+  const [open, setOpen] = useState(expanded)
+  const [openThinking, setOpenThinking] = useState(expanded)
+  const [openTools, setOpenTools] = useState(expanded)
+  const [openNotes, setOpenNotes] = useState(expanded)
+
+  useEffect(() => {
+    if (!expanded) {
+      return
+    }
+
+    setOpen(true)
+    setOpenThinking(true)
+    setOpenTools(true)
+    setOpenNotes(true)
+  }, [expanded])
+
+  const statusTone: 'dim' | 'error' | 'warn' =
+    item.status === 'failed' ? 'error' : item.status === 'interrupted' ? 'warn' : 'dim'
+
+  const prefix = item.taskCount > 1 ? `[${item.index + 1}/${item.taskCount}] ` : ''
+  const title = `${prefix}${item.goal || `Subagent ${item.index + 1}`}`
+  const summary = compactPreview((item.summary || '').replace(/\s+/g, ' ').trim(), 72)
+
+  const suffix =
+    item.status === 'running'
+      ? 'running'
+      : `${item.status}${item.durationSeconds ? ` · ${fmtElapsed(item.durationSeconds * 1000)}` : ''}`
+
+  const thinkingText = item.thinking.join('\n')
+  const hasThinking = Boolean(thinkingText)
+  const hasTools = item.tools.length > 0
+  const noteRows = [...(summary ? [summary] : []), ...item.notes]
+  const hasNotes = noteRows.length > 0
+  const active = expanded || open
+
+  return (
+    <Box flexDirection="column" paddingLeft={1}>
+      <Chevron onClick={() => setOpen(v => !v)} open={active} suffix={suffix} t={t} title={title} tone={statusTone} />
+      {active && (
+        <Box flexDirection="column" paddingLeft={2}>
+          {hasThinking && (
+            <>
+              <Chevron
+                count={item.thinking.length}
+                onClick={() => setOpenThinking(v => !v)}
+                open={expanded || openThinking}
+                t={t}
+                title="Thinking"
+              />
+              {(expanded || openThinking) && (
+                <Thinking
+                  active={item.status === 'running'}
+                  mode="full"
+                  reasoning={thinkingText}
+                  streaming={item.status === 'running'}
+                  t={t}
+                />
+              )}
+            </>
+          )}
+
+          {hasTools && (
+            <>
+              <Chevron
+                count={item.tools.length}
+                onClick={() => setOpenTools(v => !v)}
+                open={expanded || openTools}
+                t={t}
+                title="Tool calls"
+              />
+              {(expanded || openTools) && (
+                <Box flexDirection="column">
+                  {item.tools.map((line, index) => (
+                    <Text color={t.color.cornsilk} key={`${item.id}-tool-${index}`} wrap="wrap-trim">
+                      <Text color={t.color.amber}>● </Text>
+                      {line}
+                    </Text>
+                  ))}
+                </Box>
+              )}
+            </>
+          )}
+
+          {hasNotes && (
+            <>
+              <Chevron
+                count={noteRows.length}
+                onClick={() => setOpenNotes(v => !v)}
+                open={expanded || openNotes}
+                t={t}
+                title="Progress"
+                tone={statusTone}
+              />
+              {(expanded || openNotes) && (
+                <Box flexDirection="column">
+                  {noteRows.map((line, index) => (
+                    <Text
+                      color={statusTone === 'error' ? t.color.error : t.color.dim}
+                      dimColor
+                      key={`${item.id}-note-${index}`}
+                    >
+                      <Text dimColor>{index === noteRows.length - 1 ? '└ ' : '├ '}</Text>
+                      {line}
+                    </Text>
+                  ))}
+                </Box>
+              )}
+            </>
+          )}
+        </Box>
+      )}
+    </Box>
+  )
+}
+
 // ── Thinking ─────────────────────────────────────────────────────────
 
 export const Thinking = memo(function Thinking({
@@ -143,7 +260,7 @@ export const Thinking = memo(function Thinking({
   streaming?: boolean
   t: Theme
 }) {
-  const preview = thinkingPreview(reasoning, mode, THINKING_COT_MAX)
+  const preview = useMemo(() => thinkingPreview(reasoning, mode, THINKING_COT_MAX), [mode, reasoning])
   const lines = useMemo(() => preview.split('\n').map(line => line.replace(/\t/g, '  ')), [preview])
 
   return (
@@ -198,6 +315,7 @@ export const ToolTrail = memo(function ToolTrail({
   reasoning = '',
   reasoningTokens,
   reasoningStreaming = false,
+  subagents = [],
   t,
   tools = [],
   toolTokens,
@@ -210,6 +328,7 @@ export const ToolTrail = memo(function ToolTrail({
   reasoning?: string
   reasoningTokens?: number
   reasoningStreaming?: boolean
+  subagents?: SubagentProgress[]
   t: Theme
   tools?: ActiveTool[]
   toolTokens?: number
@@ -219,6 +338,7 @@ export const ToolTrail = memo(function ToolTrail({
   const [now, setNow] = useState(() => Date.now())
   const [openThinking, setOpenThinking] = useState(false)
   const [openTools, setOpenTools] = useState(false)
+  const [openSubagents, setOpenSubagents] = useState(false)
   const [openMeta, setOpenMeta] = useState(false)
 
   useEffect(() => {
@@ -235,19 +355,21 @@ export const ToolTrail = memo(function ToolTrail({
     if (detailsMode === 'expanded') {
       setOpenThinking(true)
       setOpenTools(true)
+      setOpenSubagents(true)
       setOpenMeta(true)
     }
 
     if (detailsMode === 'hidden') {
       setOpenThinking(false)
       setOpenTools(false)
+      setOpenSubagents(false)
       setOpenMeta(false)
     }
   }, [detailsMode])
 
-  const cot = thinkingPreview(reasoning, 'full', THINKING_COT_MAX)
+  const cot = useMemo(() => thinkingPreview(reasoning, 'full', THINKING_COT_MAX), [reasoning])
 
-  if (!busy && !trail.length && !tools.length && !activity.length && !cot && !reasoningActive) {
+  if (!busy && !trail.length && !tools.length && !subagents.length && !activity.length && !cot && !reasoningActive) {
     return null
   }
 
@@ -334,6 +456,7 @@ export const ToolTrail = memo(function ToolTrail({
   // ── Derived ────────────────────────────────────────────────────
 
   const hasTools = groups.length > 0
+  const hasSubagents = subagents.length > 0
   const hasMeta = meta.length > 0
   const hasThinking = !!cot || reasoningActive || (busy && !hasTools)
   const thinkingLive = reasoningActive || reasoningStreaming
@@ -395,6 +518,10 @@ export const ToolTrail = memo(function ToolTrail({
       ))
     : null
 
+  const subagentBlock = hasSubagents
+    ? subagents.map(item => <SubagentAccordion expanded={detailsMode === 'expanded'} item={item} key={item.id} t={t} />)
+    : null
+
   const metaBlock = hasMeta
     ? meta.map((row, i) => (
         <Text color={row.color} dimColor={row.dimColor} key={row.key}>
@@ -418,6 +545,7 @@ export const ToolTrail = memo(function ToolTrail({
       <Box flexDirection="column">
         {thinkingBlock}
         {toolBlock}
+        {subagentBlock}
         {metaBlock}
         {totalBlock}
       </Box>
@@ -465,6 +593,19 @@ export const ToolTrail = memo(function ToolTrail({
             title="Tool calls"
           />
           {openTools && toolBlock}
+        </>
+      )}
+
+      {hasSubagents && (
+        <>
+          <Chevron
+            count={subagents.length}
+            onClick={() => setOpenSubagents(v => !v)}
+            open={openSubagents}
+            t={t}
+            title="Subagents"
+          />
+          {openSubagents && subagentBlock}
         </>
       )}
 

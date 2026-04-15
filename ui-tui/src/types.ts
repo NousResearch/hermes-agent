@@ -11,6 +11,19 @@ export interface ActivityItem {
   tone: 'error' | 'info' | 'warn'
 }
 
+export interface SubagentProgress {
+  durationSeconds?: number
+  goal: string
+  id: string
+  index: number
+  notes: string[]
+  status: 'completed' | 'failed' | 'interrupted' | 'running'
+  summary?: string
+  taskCount: number
+  thinking: string[]
+  tools: string[]
+}
+
 export interface ApprovalReq {
   command: string
   description: string

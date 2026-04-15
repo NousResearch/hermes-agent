@@ -2,17 +2,9 @@ import { Box, Text, useInput } from '@hermes/ink'
 import { useEffect, useState } from 'react'
 
 import type { GatewayClient } from '../gatewayClient.js'
+import type { SessionListItem, SessionListResponse } from '../gatewayTypes.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
 import type { Theme } from '../theme.js'
-
-interface SessionItem {
-  id: string
-  title: string
-  preview: string
-  started_at: number
-  message_count: number
-  source?: string
-}
 
 function age(ts: number): string {
   const d = (Date.now() / 1000 - ts) / 86400
@@ -41,15 +33,15 @@ export function SessionPicker({
   onSelect: (id: string) => void
   t: Theme
 }) {
-  const [items, setItems] = useState<SessionItem[]>([])
+  const [items, setItems] = useState<SessionListItem[]>([])
   const [err, setErr] = useState('')
   const [sel, setSel] = useState(0)
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    gw.request('session.list', { limit: 20 })
-      .then((raw: any) => {
-        const r = asRpcResult(raw)
+    gw.request<SessionListResponse>('session.list', { limit: 20 })
+      .then(raw => {
+        const r = asRpcResult<SessionListResponse>(raw)
 
         if (!r) {
           setErr('invalid response: session.list')
@@ -58,7 +50,7 @@ export function SessionPicker({
           return
         }
 
-        setItems((r?.sessions ?? []) as SessionItem[])
+        setItems(r.sessions ?? [])
         setErr('')
         setLoading(false)
       })

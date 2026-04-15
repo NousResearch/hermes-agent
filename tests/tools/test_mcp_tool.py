@@ -4,6 +4,7 @@ All tests use mocks -- no real MCP servers or subprocesses are started.
 """
 
 import asyncio
+import concurrent.futures
 import json
 import os
 import threading
@@ -273,6 +274,101 @@ class TestToolHandler:
             assert result == {"error": "MCP call interrupted: user sent a new message"}
         finally:
             _servers.pop("test_srv", None)
+
+    def test_stale_transport_triggers_reclaim_and_retry(self):
+        """A ClosedResourceError on the first attempt should trigger a
+        reclaim and a silent retry. The agent must see the successful
+        result of the retry, not the transient error.
+        """
+        import tools.mcp_tool as mcp_mod
+        from tools.mcp_tool import _make_tool_handler, _servers
+
+        class FakeClosedResourceError(Exception):
+            pass
+
+        call_counter = {"n": 0}
+
+        async def failing_then_succeeding(*args, **kwargs):
+            call_counter["n"] += 1
+            if call_counter["n"] == 1:
+                raise FakeClosedResourceError("transport went away")
+            return _make_call_result("after reclaim", is_error=False)
+
+        first_session = MagicMock()
+        first_session.call_tool = AsyncMock(side_effect=failing_then_succeeding)
+        first_server = _make_mock_server("flappy", session=first_session)
+
+        second_session = MagicMock()
+        second_session.call_tool = AsyncMock(side_effect=failing_then_succeeding)
+        second_server = _make_mock_server("flappy", session=second_session)
+
+        _servers.pop("flappy", None)
+        _servers["flappy"] = first_server
+
+        reclaim_calls = {"n": 0}
+
+        def fake_mark_stale(server_name):
+            reclaim_calls["n"] += 1
+            # Simulate reclaim finishing synchronously by swapping in
+            # the second (live) server immediately.
+            with mcp_mod._lock:
+                _servers[server_name] = second_server
+            f = concurrent.futures.Future()
+            f.set_result(None)
+            return f
+
+        try:
+            handler = _make_tool_handler("flappy", "ping", 120)
+            with self._patch_mcp_loop(), \
+                 patch("tools.mcp_tool._mark_session_stale",
+                       side_effect=fake_mark_stale), \
+                 patch("tools.mcp_tool._wait_for_reclaim_future"), \
+                 patch("tools.mcp_tool._is_stale_transport_error",
+                       return_value=True):
+                result = json.loads(handler({"query": "hi"}))
+            assert result == {"result": "after reclaim"}, result
+            assert reclaim_calls["n"] == 1
+            assert call_counter["n"] == 2  # one failed, one succeeded
+        finally:
+            _servers.pop("flappy", None)
+
+    def test_stale_transport_gives_up_after_second_failure(self):
+        """If the transport stays stale after a reclaim retry, the
+        handler must return a clear reclaim-failure error rather than
+        raising or hanging.
+        """
+        import tools.mcp_tool as mcp_mod
+        from tools.mcp_tool import _make_tool_handler, _servers
+
+        class FakeClosed(Exception):
+            pass
+
+        async def always_stale(*args, **kwargs):
+            raise FakeClosed("still broken")
+
+        session = MagicMock()
+        session.call_tool = AsyncMock(side_effect=always_stale)
+        server = _make_mock_server("doomed", session=session)
+        _servers["doomed"] = server
+
+        def fake_mark_stale(server_name):
+            f = concurrent.futures.Future()
+            f.set_result(None)
+            return f
+
+        try:
+            handler = _make_tool_handler("doomed", "noop", 120)
+            with self._patch_mcp_loop(), \
+                 patch("tools.mcp_tool._mark_session_stale",
+                       side_effect=fake_mark_stale), \
+                 patch("tools.mcp_tool._wait_for_reclaim_future"), \
+                 patch("tools.mcp_tool._is_stale_transport_error",
+                       return_value=True):
+                result = json.loads(handler({}))
+            assert "error" in result
+            assert "reclaim did not restore" in result["error"]
+        finally:
+            _servers.pop("doomed", None)
 
 
 class TestRunOnMCPLoopInterrupts:
@@ -1109,6 +1205,135 @@ class TestReconnection:
             assert run_count == 1
 
         asyncio.run(_test())
+
+    def test_healthy_disconnect_resets_retry_counter(self):
+        """A disconnect after a long-lived healthy connection should reset
+        the consecutive-retry counter so the server survives more lifetime
+        disconnects than _MAX_RECONNECT_RETRIES.
+
+        Regression: before this fix, every disconnect incremented a
+        lifetime counter that capped at _MAX_RECONNECT_RETRIES (5), so a
+        long-running Hermes gateway whose MCP subprocesses each failed
+        more than 5 times would permanently retire those servers.
+        """
+        from tools.mcp_tool import (
+            MCPServerTask, _MAX_RECONNECT_RETRIES,
+            _HEALTHY_CONNECTION_SECONDS,
+        )
+
+        run_count = 0
+        target_server = None
+        disconnect_budget = _MAX_RECONNECT_RETRIES + 3
+
+        original_run_stdio = MCPServerTask._run_stdio
+
+        async def patched_run_stdio(self_srv, config):
+            nonlocal run_count, target_server
+            run_count += 1
+            if target_server is not self_srv:
+                return await original_run_stdio(self_srv, config)
+
+            self_srv.session = MagicMock()
+            self_srv._tools = []
+            self_srv._ready.set()
+            # Simulate a long-lived connection so the next disconnect is
+            # classified as "healthy" and the retry counter resets.
+            self_srv._connected_at = (
+                time.monotonic() - (_HEALTHY_CONNECTION_SECONDS + 5)
+            )
+
+            if run_count <= disconnect_budget:
+                raise ConnectionError(f"drop #{run_count}")
+            # Final iteration: signal shutdown so run() exits cleanly.
+            self_srv._shutdown_event.set()
+            await self_srv._shutdown_event.wait()
+
+        async def _test():
+            nonlocal target_server
+            server = MCPServerTask("test_srv")
+            target_server = server
+
+            with patch.object(MCPServerTask, "_run_stdio", patched_run_stdio), \
+                 patch("asyncio.sleep", new_callable=AsyncMock):
+                await server.run({"command": "test"})
+
+            # Should have reconnected past _MAX_RECONNECT_RETRIES because
+            # every prior connection was healthy.
+            assert run_count == disconnect_budget + 1
+
+        asyncio.run(_test())
+
+    def test_unexpected_clean_exit_triggers_reconnect(self):
+        """If _run_stdio returns cleanly without shutdown_event being set,
+        run() should treat it as a disconnect and reconnect instead of
+        breaking out of the loop.
+        """
+        from tools.mcp_tool import MCPServerTask
+
+        run_count = 0
+        target_server = None
+
+        original_run_stdio = MCPServerTask._run_stdio
+
+        async def patched_run_stdio(self_srv, config):
+            nonlocal run_count, target_server
+            run_count += 1
+            if target_server is not self_srv:
+                return await original_run_stdio(self_srv, config)
+
+            self_srv.session = MagicMock()
+            self_srv._tools = []
+            self_srv._ready.set()
+            self_srv._connected_at = time.monotonic()
+
+            if run_count == 1:
+                # Clean return without setting shutdown_event — this used
+                # to cause run() to break out of the loop.
+                return
+            # Second attempt: signal shutdown so run() exits cleanly.
+            self_srv._shutdown_event.set()
+            await self_srv._shutdown_event.wait()
+
+        async def _test():
+            nonlocal target_server
+            server = MCPServerTask("test_srv")
+            target_server = server
+
+            with patch.object(MCPServerTask, "_run_stdio", patched_run_stdio), \
+                 patch("asyncio.sleep", new_callable=AsyncMock):
+                await server.run({"command": "test"})
+
+            assert run_count == 2  # reconnected once
+
+        asyncio.run(_test())
+
+    def test_stale_transport_exception_detection(self):
+        """_is_stale_transport_error should catch wrapped anyio errors."""
+        from tools.mcp_tool import _is_stale_transport_error
+
+        class ClosedResourceError(Exception):
+            pass
+
+        class BrokenResourceError(Exception):
+            pass
+
+        assert _is_stale_transport_error(ClosedResourceError("closed"))
+        assert _is_stale_transport_error(BrokenResourceError("broken"))
+
+        # Wrapped via __cause__
+        wrapper = RuntimeError("wrap")
+        wrapper.__cause__ = ClosedResourceError("inner")
+        assert _is_stale_transport_error(wrapper)
+
+        # Wrapped via ExceptionGroup-like .exceptions attribute
+        class FakeGroup(Exception):
+            def __init__(self, exceptions):
+                self.exceptions = exceptions
+        group = FakeGroup([ValueError("nope"), BrokenResourceError("yep")])
+        assert _is_stale_transport_error(group)
+
+        # Unrelated exception
+        assert not _is_stale_transport_error(ValueError("unrelated"))
 
     def test_no_reconnect_on_initial_failure(self):
         """First connection failure retries up to _MAX_INITIAL_CONNECT_RETRIES times.
@@ -3112,7 +3337,7 @@ class TestRegisterMcpServers:
     def test_skips_already_connected_servers(self):
         from tools.mcp_tool import register_mcp_servers, _servers
 
-        mock_server = _make_mock_server("existing")
+        mock_server = _make_mock_server("existing", session=MagicMock())
         _servers["existing"] = mock_server
 
         try:
@@ -3122,6 +3347,86 @@ class TestRegisterMcpServers:
             assert result == ["mcp_existing_tool"]
         finally:
             _servers.pop("existing", None)
+
+    def test_reclaims_dead_server_entry(self):
+        """A server with session=None must be re-registered instead of
+        being treated as 'already connected'.
+
+        Regression: before this fix, once run() retired a server (e.g.
+        after _MAX_RECONNECT_RETRIES or a killed subprocess), the entry
+        stayed in _servers with session=None and register_mcp_servers
+        would permanently skip it, leaving the agent with a dead tool.
+        """
+        from tools.mcp_tool import (
+            register_mcp_servers, _servers, _ensure_mcp_loop,
+        )
+
+        # Seed a dead server entry (session already None)
+        dead_server = _make_mock_server("zombie", session=None)
+        dead_server._task = MagicMock()
+        dead_server._task.done.return_value = True
+        _servers["zombie"] = dead_server
+
+        fresh_calls: list[str] = []
+
+        async def fake_register(name, cfg):
+            fresh_calls.append(name)
+            server = _make_mock_server(name, session=MagicMock())
+            server._registered_tool_names = [f"mcp_{name}_tool"]
+            _servers[name] = server
+            return [f"mcp_{name}_tool"]
+
+        try:
+            with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+                 patch("tools.mcp_tool._discover_and_register_server",
+                       side_effect=fake_register), \
+                 patch("tools.mcp_tool._existing_tool_names",
+                       return_value=["mcp_zombie_tool"]):
+                _ensure_mcp_loop()
+                register_mcp_servers({"zombie": {"command": "test"}})
+
+            # fake_register should have been called for the dead server
+            assert fresh_calls == ["zombie"], (
+                f"dead server must be re-registered, got: {fresh_calls}"
+            )
+            # The entry in _servers should be the fresh one with session
+            assert _servers["zombie"].session is not None
+        finally:
+            _servers.pop("zombie", None)
+
+    def test_reclaims_dead_server_with_live_task_but_no_session(self):
+        """A server with session=None but a still-running task is also
+        considered stale and reclaimed."""
+        from tools.mcp_tool import (
+            register_mcp_servers, _servers, _ensure_mcp_loop,
+        )
+
+        dead_server = _make_mock_server("zombie2", session=None)
+        dead_server._task = MagicMock()
+        dead_server._task.done.return_value = False  # task still running
+        _servers["zombie2"] = dead_server
+
+        fresh_calls: list[str] = []
+
+        async def fake_register(name, cfg):
+            fresh_calls.append(name)
+            server = _make_mock_server(name, session=MagicMock())
+            server._registered_tool_names = [f"mcp_{name}_tool"]
+            _servers[name] = server
+            return [f"mcp_{name}_tool"]
+
+        try:
+            with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+                 patch("tools.mcp_tool._discover_and_register_server",
+                       side_effect=fake_register), \
+                 patch("tools.mcp_tool._existing_tool_names",
+                       return_value=["mcp_zombie2_tool"]):
+                _ensure_mcp_loop()
+                register_mcp_servers({"zombie2": {"command": "test"}})
+
+            assert fresh_calls == ["zombie2"]
+        finally:
+            _servers.pop("zombie2", None)
 
     def test_skips_disabled_servers(self):
         from tools.mcp_tool import register_mcp_servers, _servers

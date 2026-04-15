@@ -165,6 +165,30 @@ _DEFAULT_CONNECT_TIMEOUT = 60    # seconds for initial connection per server
 _MAX_RECONNECT_RETRIES = 5
 _MAX_INITIAL_CONNECT_RETRIES = 3 # retries for the very first connection attempt
 _MAX_BACKOFF_SECONDS = 60
+# A connection that survived at least this long before dropping is
+# considered "healthy". The consecutive-reconnect counter is reset on a
+# healthy disconnect so that long-lived servers aren't permanently retired
+# after _MAX_RECONNECT_RETRIES lifetime disconnects.
+_HEALTHY_CONNECTION_SECONDS = 30.0
+# Interval at which _run_stdio polls the spawned subprocess PIDs while
+# waiting for shutdown. If any tracked PID has died without the stream
+# reader propagating the error, this poll raises ConnectionError to
+# force the run() loop into its reconnect path.
+_SUBPROCESS_LIVENESS_POLL_SECONDS = 5.0
+# Max time a tool handler will block waiting for a stale-session reclaim
+# before retrying the call. Keeps the user-visible latency bounded while
+# still hiding transient MCP subprocess deaths from the agent.
+_RECLAIM_WAIT_SECONDS = 15.0
+# Exception class names that indicate the MCP stdio/HTTP transport has gone
+# away mid-call. Matched by type().__name__ so we don't need to import anyio.
+_STALE_TRANSPORT_EXC_NAMES = frozenset({
+    "ClosedResourceError",
+    "BrokenResourceError",
+    "EndOfStream",
+    "IncompleteReadError",
+    "ConnectionResetError",
+    "BrokenPipeError",
+})
 
 # Environment variables that are safe to pass to stdio subprocesses
 _SAFE_ENV_KEYS = frozenset({
@@ -269,6 +293,168 @@ def _scan_mcp_description(server_name: str, tool_name: str, description: str) ->
             description,
         )
     return findings
+
+
+def _is_stale_transport_error(exc: BaseException) -> bool:
+    """Return True if *exc* indicates the MCP transport has gone away.
+
+    Matches by exception class name rather than isinstance so we don't
+    have to import anyio (which may or may not be the underlying
+    transport library). Walks the exception chain to catch wrapped
+    errors raised through ExceptionGroup / __cause__ / __context__.
+    """
+    seen: set[int] = set()
+    stack: list[BaseException] = [exc]
+    while stack:
+        current = stack.pop()
+        if current is None or id(current) in seen:
+            continue
+        seen.add(id(current))
+        if type(current).__name__ in _STALE_TRANSPORT_EXC_NAMES:
+            return True
+        nested = getattr(current, "exceptions", None)
+        if nested:
+            try:
+                stack.extend(nested)
+            except TypeError:
+                pass
+        cause = getattr(current, "__cause__", None)
+        if cause is not None:
+            stack.append(cause)
+        context = getattr(current, "__context__", None)
+        if context is not None:
+            stack.append(context)
+    return False
+
+
+# In-flight reclaim futures keyed by server name. Multiple concurrent
+# handler calls that all hit the same stale session must share a single
+# reclaim operation instead of each spawning their own (which would
+# create duplicate subprocesses and race each other).
+_reclaim_inflight: Dict[str, "concurrent.futures.Future"] = {}
+
+
+def _mark_session_stale(
+    server_name: str,
+) -> Optional["concurrent.futures.Future"]:
+    """Clear the session reference for *server_name* and schedule a
+    reclaim that will re-register the server with a fresh subprocess.
+
+    Returns the reclaim ``concurrent.futures.Future`` so callers can
+    block on completion if they want to hide the failure from the
+    user. Returns ``None`` when scheduling wasn't possible (module
+    shutdown, server not configured, etc.).
+
+    Why the reclaim: the legacy recovery path is ``discover_mcp_tools()``
+    which is only called at module import. Once we are past startup, a
+    server whose subprocess died stays permanently broken unless
+    someone triggers ``/reload-mcp``. Handler-detected staleness is the
+    natural signal — we drop the dead entry here and let
+    ``_discover_and_register_server`` recreate it on the MCP loop.
+
+    Safe to call from the MCP event loop thread or any caller thread —
+    all mutations happen under the module lock and the re-registration
+    is scheduled via ``asyncio.run_coroutine_threadsafe``.
+    """
+    # Phase 1: clear the session and fast-reject if something else is
+    # already reclaiming this server. Held under the lock so two threads
+    # hitting the same dead session can't both proceed past this point
+    # with "nothing in flight".
+    with _lock:
+        server = _servers.get(server_name)
+        if server is None:
+            return None
+        server.session = None
+        existing_future = _reclaim_inflight.get(server_name)
+        if existing_future is not None and not existing_future.done():
+            return existing_future
+
+    # Phase 2: config load is potentially slow (YAML parse, env interp),
+    # so we drop the lock before touching disk.
+    try:
+        config = _load_mcp_config()
+    except Exception as exc:
+        logger.debug(
+            "Reclaim for '%s' skipped — config reload failed: %s",
+            server_name, exc,
+        )
+        return None
+    if server_name not in config:
+        return None
+    server_cfg = config[server_name]
+    config_keys = list(config.keys())
+
+    async def _reclaim_one():
+        # Drain the old task first so its stdio_client context manager
+        # finishes killing the previous subprocess before we spawn a new
+        # one. Bounded by a timeout because a stuck run() loop must not
+        # block recovery.
+        old_task = None
+        with _lock:
+            existing = _servers.get(server_name)
+            if existing is not None:
+                old_task = getattr(existing, "_task", None)
+                try:
+                    existing._shutdown_event.set()
+                except Exception:
+                    pass
+                _servers.pop(server_name, None)
+        if old_task is not None and not old_task.done():
+            try:
+                await asyncio.wait_for(old_task, timeout=5.0)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                pass
+            except Exception:
+                pass
+        try:
+            await _discover_and_register_server(server_name, server_cfg)
+            _sync_mcp_toolsets(config_keys)
+            logger.info(
+                "MCP server '%s' reclaimed after stale transport",
+                server_name,
+            )
+        except Exception as exc:
+            logger.warning(
+                "MCP server '%s' reclaim failed: %s",
+                server_name, exc,
+            )
+            raise
+
+    # Phase 3: schedule the reclaim and register the future atomically.
+    # The re-check inside the lock is the TOCTOU guard — another thread
+    # may have scheduled its own reclaim between phases 1 and 3, and if
+    # so we must hand its future back rather than double-spawning.
+    reclaim_future: Optional["concurrent.futures.Future"] = None
+    with _lock:
+        existing_future = _reclaim_inflight.get(server_name)
+        if existing_future is not None and not existing_future.done():
+            return existing_future
+        loop = _mcp_loop
+        if loop is None or not loop.is_running():
+            return None
+        try:
+            reclaim_future = asyncio.run_coroutine_threadsafe(
+                _reclaim_one(), loop
+            )
+        except Exception as exc:
+            logger.debug(
+                "Reclaim scheduling for '%s' failed: %s",
+                server_name, exc,
+            )
+            return None
+        _reclaim_inflight[server_name] = reclaim_future
+
+    def _clear_inflight(_fut):
+        with _lock:
+            if _reclaim_inflight.get(server_name) is _fut:
+                _reclaim_inflight.pop(server_name, None)
+
+    reclaim_future.add_done_callback(_clear_inflight)
+    logger.info(
+        "MCP server '%s' flagged for reclaim (stale session)",
+        server_name,
+    )
+    return reclaim_future
 
 
 def _prepend_path(env: dict, directory: str) -> dict:
@@ -785,6 +971,7 @@ class MCPServerTask:
         "name", "session", "tool_timeout",
         "_task", "_ready", "_shutdown_event", "_tools", "_error", "_config",
         "_sampling", "_registered_tool_names", "_auth_type", "_refresh_lock",
+        "_connected_at",
     )
 
     def __init__(self, name: str):
@@ -801,6 +988,10 @@ class MCPServerTask:
         self._registered_tool_names: list[str] = []
         self._auth_type: str = ""
         self._refresh_lock = asyncio.Lock()
+        # monotonic timestamp of the most recent successful connection; used
+        # by run() to decide whether a disconnect should reset the
+        # consecutive-retry counter.
+        self._connected_at: float = 0.0
 
     def _is_http(self) -> bool:
         """Check if this server uses HTTP transport."""
@@ -932,11 +1123,33 @@ class MCPServerTask:
                 self.session = session
                 await self._discover_tools()
                 self._ready.set()
-                await self._shutdown_event.wait()
-        # Context exited cleanly — subprocess was terminated by the SDK.
-        if new_pids:
-            with _lock:
-                _stdio_pids.difference_update(new_pids)
+                self._connected_at = time.monotonic()
+                # Poll subprocess liveness while waiting for shutdown so a
+                # silently-killed child doesn't leave run() blocked when the
+                # stream reader fails to surface the disconnect. Without
+                # this, SIGKILL'ing an MCP subprocess can leave the
+                # ClientSession in a zombie state where handler calls see
+                # a stale session and reconnect never fires.
+                try:
+                    while not self._shutdown_event.is_set():
+                        try:
+                            await asyncio.wait_for(
+                                self._shutdown_event.wait(),
+                                timeout=_SUBPROCESS_LIVENESS_POLL_SECONDS,
+                            )
+                            break  # shutdown_event set — exit cleanly
+                        except asyncio.TimeoutError:
+                            pass
+                        if new_pids and not _any_pid_alive(new_pids):
+                            raise ConnectionError(
+                                f"MCP server '{self.name}' stdio subprocess "
+                                f"PID(s) {sorted(new_pids)} died without "
+                                "stream-level propagation"
+                            )
+                finally:
+                    if new_pids:
+                        with _lock:
+                            _stdio_pids.difference_update(new_pids)
 
     async def _run_http(self, config: dict):
         """Run the server using HTTP/StreamableHTTP transport."""
@@ -995,6 +1208,7 @@ class MCPServerTask:
                         self.session = session
                         await self._discover_tools()
                         self._ready.set()
+                        self._connected_at = time.monotonic()
                         await self._shutdown_event.wait()
         else:
             # Deprecated API (mcp < 1.24.0): manages httpx client internally.
@@ -1012,6 +1226,7 @@ class MCPServerTask:
                     self.session = session
                     await self._discover_tools()
                     self._ready.set()
+                    self._connected_at = time.monotonic()
                     await self._shutdown_event.wait()
 
     async def _discover_tools(self):
@@ -1055,79 +1270,111 @@ class MCPServerTask:
         backoff = 1.0
 
         while True:
+            disconnect_exc: Optional[BaseException] = None
             try:
                 if self._is_http():
                     await self._run_http(config)
                 else:
                     await self._run_stdio(config)
-                # Normal exit (shutdown requested) -- break out
-                break
+                # _run_* returned without raising. Only a set shutdown_event
+                # is a legitimate reason for that; any other path is an
+                # unexpected clean disconnect (e.g. the SDK's stdio_client
+                # context exited because the subprocess died but the
+                # underlying stream cleanup swallowed the error). Fall
+                # through to the reconnect logic in that case.
+                if self._shutdown_event.is_set():
+                    break
+                disconnect_exc = ConnectionError(
+                    f"MCP server '{self.name}' transport exited without "
+                    "a shutdown request"
+                )
             except Exception as exc:
+                disconnect_exc = exc
+            finally:
                 self.session = None
 
-                # If this is the first connection attempt, retry with backoff
-                # before giving up. A transient DNS/network blip at startup
-                # should not permanently kill the server.
-                # (Ported from Kilo Code's MCP resilience fix.)
-                if not self._ready.is_set():
-                    initial_retries += 1
-                    if initial_retries > _MAX_INITIAL_CONNECT_RETRIES:
-                        logger.warning(
-                            "MCP server '%s' failed initial connection after "
-                            "%d attempts, giving up: %s",
-                            self.name, _MAX_INITIAL_CONNECT_RETRIES, exc,
-                        )
-                        self._error = exc
-                        self._ready.set()
-                        return
+            exc = disconnect_exc
+            assert exc is not None  # for type checkers
 
+            # If this is the first connection attempt, retry with backoff
+            # before giving up. A transient DNS/network blip at startup
+            # should not permanently kill the server.
+            # (Ported from Kilo Code's MCP resilience fix.)
+            if not self._ready.is_set():
+                initial_retries += 1
+                if initial_retries > _MAX_INITIAL_CONNECT_RETRIES:
                     logger.warning(
-                        "MCP server '%s' initial connection failed "
-                        "(attempt %d/%d), retrying in %.0fs: %s",
-                        self.name, initial_retries,
-                        _MAX_INITIAL_CONNECT_RETRIES, backoff, exc,
+                        "MCP server '%s' failed initial connection after "
+                        "%d attempts, giving up: %s",
+                        self.name, _MAX_INITIAL_CONNECT_RETRIES, exc,
                     )
-                    await asyncio.sleep(backoff)
-                    backoff = min(backoff * 2, _MAX_BACKOFF_SECONDS)
-
-                    # Check if shutdown was requested during the sleep
-                    if self._shutdown_event.is_set():
-                        self._error = exc
-                        self._ready.set()
-                        return
-                    continue
-
-                # If shutdown was requested, don't reconnect
-                if self._shutdown_event.is_set():
-                    logger.debug(
-                        "MCP server '%s' disconnected during shutdown: %s",
-                        self.name, exc,
-                    )
-                    return
-
-                retries += 1
-                if retries > _MAX_RECONNECT_RETRIES:
-                    logger.warning(
-                        "MCP server '%s' failed after %d reconnection attempts, "
-                        "giving up: %s",
-                        self.name, _MAX_RECONNECT_RETRIES, exc,
-                    )
+                    self._error = exc
+                    self._ready.set()
                     return
 
                 logger.warning(
-                    "MCP server '%s' connection lost (attempt %d/%d), "
-                    "reconnecting in %.0fs: %s",
-                    self.name, retries, _MAX_RECONNECT_RETRIES,
-                    backoff, exc,
+                    "MCP server '%s' initial connection failed "
+                    "(attempt %d/%d), retrying in %.0fs: %s",
+                    self.name, initial_retries,
+                    _MAX_INITIAL_CONNECT_RETRIES, backoff, exc,
                 )
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, _MAX_BACKOFF_SECONDS)
 
-                # Check again after sleeping
+                # Check if shutdown was requested during the sleep
                 if self._shutdown_event.is_set():
+                    self._error = exc
+                    self._ready.set()
                     return
-            finally:
-                self.session = None
+                continue
+
+            # If shutdown was requested, don't reconnect
+            if self._shutdown_event.is_set():
+                logger.debug(
+                    "MCP server '%s' disconnected during shutdown: %s",
+                    self.name, exc,
+                )
+                return
+
+            # If the previous session was up for long enough to be
+            # considered healthy, reset the consecutive-retry counter so a
+            # long-running server is not permanently retired after
+            # _MAX_RECONNECT_RETRIES lifetime disconnects.
+            healthy_duration = 0.0
+            if self._connected_at:
+                healthy_duration = time.monotonic() - self._connected_at
+            self._connected_at = 0.0
+            if healthy_duration >= _HEALTHY_CONNECTION_SECONDS:
+                if retries > 0 or backoff > 1.0:
+                    logger.info(
+                        "MCP server '%s' disconnected after %.1fs uptime "
+                        "(healthy) — resetting retry counter",
+                        self.name, healthy_duration,
+                    )
+                retries = 0
+                backoff = 1.0
+
+            retries += 1
+            if retries > _MAX_RECONNECT_RETRIES:
+                logger.warning(
+                    "MCP server '%s' failed after %d consecutive "
+                    "reconnection attempts, giving up: %s",
+                    self.name, _MAX_RECONNECT_RETRIES, exc,
+                )
+                return
+
+            logger.warning(
+                "MCP server '%s' connection lost (attempt %d/%d, "
+                "last uptime %.1fs), reconnecting in %.0fs: %s",
+                self.name, retries, _MAX_RECONNECT_RETRIES,
+                healthy_duration, backoff, exc,
+            )
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, _MAX_BACKOFF_SECONDS)
+
+            # Check again after sleeping
+            if self._shutdown_event.is_set():
+                return
 
     async def start(self, config: dict):
         """Create the background Task and wait until ready (or failed)."""
@@ -1204,6 +1451,34 @@ def _snapshot_child_pids() -> set:
         pass
 
     return set()
+
+
+def _any_pid_alive(pids: set) -> bool:
+    """Return True if at least one of *pids* still exists.
+
+    Sending signal 0 doesn't deliver a signal; it just verifies the target
+    exists and is reachable. A dead or reaped child raises
+    ProcessLookupError. Used by _run_stdio's liveness poll to detect
+    silently-killed subprocesses that the SDK's stream reader failed to
+    surface as an exception.
+    """
+    if not pids:
+        # No PIDs tracked -> treat as alive (best-effort; we can't tell).
+        return True
+    for pid in pids:
+        try:
+            os.kill(pid, 0)
+            return True
+        except ProcessLookupError:
+            continue
+        except PermissionError:
+            # Process exists but is owned by another user — still alive.
+            return True
+        except OSError:
+            # Unexpected errno (e.g. ESRCH on some platforms) — treat as
+            # dead for this pid and keep checking the rest.
+            continue
+    return False
 
 
 def _mcp_loop_exception_handler(loop, context):
@@ -1353,109 +1628,236 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
 
     The handler conforms to the registry's dispatch interface:
     ``handler(args_dict, **kwargs) -> str``
+
+    When a stale transport is detected (subprocess died, ClosedResource
+    Error, broken pipe, etc.), the handler schedules an in-place reclaim,
+    waits up to ``_RECLAIM_WAIT_SECONDS`` for the fresh subprocess to
+    come up, and retries the call once. From the agent's perspective
+    the subprocess death is invisible — it just sees a slightly slower
+    call instead of an error.
     """
 
     def _handler(args: dict, **kwargs) -> str:
-        with _lock:
-            server = _servers.get(server_name)
-        if not server or not server.session:
-            return json.dumps({
-                "error": f"MCP server '{server_name}' is not connected"
-            })
-
-        async def _call():
-            result = await server.session.call_tool(tool_name, arguments=args)
-            # MCP CallToolResult has .content (list of content blocks) and .isError
-            if result.isError:
-                error_text = ""
-                for block in (result.content or []):
-                    if hasattr(block, "text"):
-                        error_text += block.text
+        for attempt in range(2):
+            with _lock:
+                server = _servers.get(server_name)
+            if not server or not server.session:
+                if attempt == 0 and _wait_for_live_session(
+                    server_name, _RECLAIM_WAIT_SECONDS
+                ):
+                    continue
                 return json.dumps({
-                    "error": _sanitize_error(
-                        error_text or "MCP tool returned an error"
+                    "error": (
+                        f"MCP server '{server_name}' is not connected"
                     )
                 })
 
-            # Collect text from content blocks
-            parts: List[str] = []
-            for block in (result.content or []):
-                if hasattr(block, "text"):
-                    parts.append(block.text)
-            text_result = "\n".join(parts) if parts else ""
-
-            # Combine content + structuredContent when both are present.
-            # MCP spec: content is model-oriented (text), structuredContent
-            # is machine-oriented (JSON metadata).  For an AI agent, content
-            # is the primary payload; structuredContent supplements it.
-            structured = getattr(result, "structuredContent", None)
-            if structured is not None:
-                if text_result:
-                    return json.dumps({
-                        "result": text_result,
-                        "structuredContent": structured,
-                    })
-                return json.dumps({"result": structured})
-            return json.dumps({"result": text_result})
-
-        try:
-            return _run_on_mcp_loop(_call(), timeout=tool_timeout)
-        except InterruptedError:
-            return _interrupted_call_result()
-        except Exception as exc:
-            logger.error(
-                "MCP tool %s/%s call failed: %s",
-                server_name, tool_name, exc,
-            )
-            return json.dumps({
-                "error": _sanitize_error(
-                    f"MCP call failed: {type(exc).__name__}: {exc}"
+            async def _call():
+                result = await server.session.call_tool(
+                    tool_name, arguments=args
                 )
-            })
+                if result.isError:
+                    error_text = ""
+                    for block in (result.content or []):
+                        if hasattr(block, "text"):
+                            error_text += block.text
+                    return json.dumps({
+                        "error": _sanitize_error(
+                            error_text or "MCP tool returned an error"
+                        )
+                    })
+
+                parts: List[str] = []
+                for block in (result.content or []):
+                    if hasattr(block, "text"):
+                        parts.append(block.text)
+                text_result = "\n".join(parts) if parts else ""
+
+                structured = getattr(result, "structuredContent", None)
+                if structured is not None:
+                    if text_result:
+                        return json.dumps({
+                            "result": text_result,
+                            "structuredContent": structured,
+                        })
+                    return json.dumps({"result": structured})
+                return json.dumps({"result": text_result})
+
+            try:
+                return _run_on_mcp_loop(_call(), timeout=tool_timeout)
+            except InterruptedError:
+                return _interrupted_call_result()
+            except Exception as exc:
+                if _is_stale_transport_error(exc):
+                    reclaim_future = _mark_session_stale(server_name)
+                    if attempt == 0:
+                        logger.warning(
+                            "MCP tool %s/%s hit stale transport (%s); "
+                            "waiting for reclaim and retrying",
+                            server_name, tool_name, type(exc).__name__,
+                        )
+                        _wait_for_reclaim_future(
+                            reclaim_future, _RECLAIM_WAIT_SECONDS
+                        )
+                        continue
+                    logger.error(
+                        "MCP tool %s/%s still stale after reclaim retry: %s",
+                        server_name, tool_name, exc,
+                    )
+                    return json.dumps({
+                        "error": (
+                            f"MCP server '{server_name}' transport closed "
+                            "and reclaim did not restore it in time"
+                        )
+                    })
+                logger.error(
+                    "MCP tool %s/%s call failed: %s",
+                    server_name, tool_name, exc,
+                )
+                return json.dumps({
+                    "error": _sanitize_error(
+                        f"MCP call failed: {type(exc).__name__}: {exc}"
+                    )
+                })
+
+        # Safety net — should be unreachable because every path above
+        # returns inside the loop, but satisfies the type checker and
+        # guards against a future refactor dropping a return.
+        return json.dumps({
+            "error": (
+                f"MCP server '{server_name}' recovery exhausted"
+            )
+        })
 
     return _handler
+
+
+def _wait_for_reclaim_future(
+    reclaim_future: Optional["concurrent.futures.Future"],
+    timeout: float,
+) -> None:
+    """Block up to *timeout* seconds for a reclaim future to complete.
+
+    Swallows exceptions — the caller only cares whether the server
+    became live, which is checked separately via ``_wait_for_live_session``.
+    """
+    if reclaim_future is None:
+        return
+    try:
+        reclaim_future.result(timeout=timeout)
+    except concurrent.futures.TimeoutError:
+        logger.warning(
+            "MCP reclaim did not complete within %.1fs — proceeding",
+            timeout,
+        )
+    except Exception:
+        # Reclaim raised (e.g. connect_timeout). The next iteration's
+        # liveness check will surface "not connected".
+        pass
+
+
+def _wait_for_live_session(server_name: str, timeout: float) -> bool:
+    """Poll until *server_name* has an active session or *timeout* elapses.
+
+    Returns True if the server became live, False otherwise. Used by
+    the handler retry path when the initial lookup found session=None
+    because a prior call already marked the session stale and a reclaim
+    is in flight.
+
+    The caller's *timeout* is the total deadline — any time spent
+    blocking on an in-flight reclaim future counts against the same
+    budget, so callers cannot be forced to wait longer than they asked.
+    """
+    deadline = time.monotonic() + timeout
+    inflight: Optional["concurrent.futures.Future"] = None
+    with _lock:
+        inflight = _reclaim_inflight.get(server_name)
+    if inflight is not None:
+        remaining = deadline - time.monotonic()
+        if remaining > 0:
+            _wait_for_reclaim_future(inflight, remaining)
+    while time.monotonic() < deadline:
+        with _lock:
+            server = _servers.get(server_name)
+            if server is not None and server.session is not None:
+                return True
+        time.sleep(0.1)
+    return False
 
 
 def _make_list_resources_handler(server_name: str, tool_timeout: float):
     """Return a sync handler that lists resources from an MCP server."""
 
     def _handler(args: dict, **kwargs) -> str:
-        with _lock:
-            server = _servers.get(server_name)
-        if not server or not server.session:
-            return json.dumps({
-                "error": f"MCP server '{server_name}' is not connected"
-            })
+        for attempt in range(2):
+            with _lock:
+                server = _servers.get(server_name)
+            if not server or not server.session:
+                if attempt == 0 and _wait_for_live_session(
+                    server_name, _RECLAIM_WAIT_SECONDS
+                ):
+                    continue
+                return json.dumps({
+                    "error": (
+                        f"MCP server '{server_name}' is not connected"
+                    )
+                })
 
-        async def _call():
-            result = await server.session.list_resources()
-            resources = []
-            for r in (result.resources if hasattr(result, "resources") else []):
-                entry = {}
-                if hasattr(r, "uri"):
-                    entry["uri"] = str(r.uri)
-                if hasattr(r, "name"):
-                    entry["name"] = r.name
-                if hasattr(r, "description") and r.description:
-                    entry["description"] = r.description
-                if hasattr(r, "mimeType") and r.mimeType:
-                    entry["mimeType"] = r.mimeType
-                resources.append(entry)
-            return json.dumps({"resources": resources})
+            async def _call():
+                result = await server.session.list_resources()
+                resources = []
+                for r in (result.resources if hasattr(result, "resources") else []):
+                    entry = {}
+                    if hasattr(r, "uri"):
+                        entry["uri"] = str(r.uri)
+                    if hasattr(r, "name"):
+                        entry["name"] = r.name
+                    if hasattr(r, "description") and r.description:
+                        entry["description"] = r.description
+                    if hasattr(r, "mimeType") and r.mimeType:
+                        entry["mimeType"] = r.mimeType
+                    resources.append(entry)
+                return json.dumps({"resources": resources})
 
-        try:
-            return _run_on_mcp_loop(_call(), timeout=tool_timeout)
-        except InterruptedError:
-            return _interrupted_call_result()
-        except Exception as exc:
-            logger.error(
-                "MCP %s/list_resources failed: %s", server_name, exc,
-            )
-            return json.dumps({
-                "error": _sanitize_error(
-                    f"MCP call failed: {type(exc).__name__}: {exc}"
+            try:
+                return _run_on_mcp_loop(_call(), timeout=tool_timeout)
+            except InterruptedError:
+                return _interrupted_call_result()
+            except Exception as exc:
+                if _is_stale_transport_error(exc):
+                    reclaim_future = _mark_session_stale(server_name)
+                    if attempt == 0:
+                        logger.warning(
+                            "MCP %s/list_resources hit stale transport (%s); "
+                            "waiting for reclaim and retrying",
+                            server_name, type(exc).__name__,
+                        )
+                        _wait_for_reclaim_future(
+                            reclaim_future, _RECLAIM_WAIT_SECONDS
+                        )
+                        continue
+                    logger.error(
+                        "MCP %s/list_resources still stale after reclaim retry: %s",
+                        server_name, exc,
+                    )
+                    return json.dumps({
+                        "error": (
+                            f"MCP server '{server_name}' transport closed "
+                            "and reclaim did not restore it in time"
+                        )
+                    })
+                logger.error(
+                    "MCP %s/list_resources failed: %s", server_name, exc,
                 )
-            })
+                return json.dumps({
+                    "error": _sanitize_error(
+                        f"MCP call failed: {type(exc).__name__}: {exc}"
+                    )
+                })
+
+        return json.dumps({
+            "error": f"MCP server '{server_name}' recovery exhausted"
+        })
 
     return _handler
 
@@ -1466,42 +1868,74 @@ def _make_read_resource_handler(server_name: str, tool_timeout: float):
     def _handler(args: dict, **kwargs) -> str:
         from tools.registry import tool_error
 
-        with _lock:
-            server = _servers.get(server_name)
-        if not server or not server.session:
-            return json.dumps({
-                "error": f"MCP server '{server_name}' is not connected"
-            })
-
         uri = args.get("uri")
         if not uri:
             return tool_error("Missing required parameter 'uri'")
 
-        async def _call():
-            result = await server.session.read_resource(uri)
-            # read_resource returns ReadResourceResult with .contents list
-            parts: List[str] = []
-            contents = result.contents if hasattr(result, "contents") else []
-            for block in contents:
-                if hasattr(block, "text"):
-                    parts.append(block.text)
-                elif hasattr(block, "blob"):
-                    parts.append(f"[binary data, {len(block.blob)} bytes]")
-            return json.dumps({"result": "\n".join(parts) if parts else ""})
+        for attempt in range(2):
+            with _lock:
+                server = _servers.get(server_name)
+            if not server or not server.session:
+                if attempt == 0 and _wait_for_live_session(
+                    server_name, _RECLAIM_WAIT_SECONDS
+                ):
+                    continue
+                return json.dumps({
+                    "error": (
+                        f"MCP server '{server_name}' is not connected"
+                    )
+                })
 
-        try:
-            return _run_on_mcp_loop(_call(), timeout=tool_timeout)
-        except InterruptedError:
-            return _interrupted_call_result()
-        except Exception as exc:
-            logger.error(
-                "MCP %s/read_resource failed: %s", server_name, exc,
-            )
-            return json.dumps({
-                "error": _sanitize_error(
-                    f"MCP call failed: {type(exc).__name__}: {exc}"
+            async def _call():
+                result = await server.session.read_resource(uri)
+                parts: List[str] = []
+                contents = result.contents if hasattr(result, "contents") else []
+                for block in contents:
+                    if hasattr(block, "text"):
+                        parts.append(block.text)
+                    elif hasattr(block, "blob"):
+                        parts.append(f"[binary data, {len(block.blob)} bytes]")
+                return json.dumps({"result": "\n".join(parts) if parts else ""})
+
+            try:
+                return _run_on_mcp_loop(_call(), timeout=tool_timeout)
+            except InterruptedError:
+                return _interrupted_call_result()
+            except Exception as exc:
+                if _is_stale_transport_error(exc):
+                    reclaim_future = _mark_session_stale(server_name)
+                    if attempt == 0:
+                        logger.warning(
+                            "MCP %s/read_resource hit stale transport (%s); "
+                            "waiting for reclaim and retrying",
+                            server_name, type(exc).__name__,
+                        )
+                        _wait_for_reclaim_future(
+                            reclaim_future, _RECLAIM_WAIT_SECONDS
+                        )
+                        continue
+                    logger.error(
+                        "MCP %s/read_resource still stale after reclaim retry: %s",
+                        server_name, exc,
+                    )
+                    return json.dumps({
+                        "error": (
+                            f"MCP server '{server_name}' transport closed "
+                            "and reclaim did not restore it in time"
+                        )
+                    })
+                logger.error(
+                    "MCP %s/read_resource failed: %s", server_name, exc,
                 )
-            })
+                return json.dumps({
+                    "error": _sanitize_error(
+                        f"MCP call failed: {type(exc).__name__}: {exc}"
+                    )
+                })
+
+        return json.dumps({
+            "error": f"MCP server '{server_name}' recovery exhausted"
+        })
 
     return _handler
 
@@ -1510,47 +1944,80 @@ def _make_list_prompts_handler(server_name: str, tool_timeout: float):
     """Return a sync handler that lists prompts from an MCP server."""
 
     def _handler(args: dict, **kwargs) -> str:
-        with _lock:
-            server = _servers.get(server_name)
-        if not server or not server.session:
-            return json.dumps({
-                "error": f"MCP server '{server_name}' is not connected"
-            })
+        for attempt in range(2):
+            with _lock:
+                server = _servers.get(server_name)
+            if not server or not server.session:
+                if attempt == 0 and _wait_for_live_session(
+                    server_name, _RECLAIM_WAIT_SECONDS
+                ):
+                    continue
+                return json.dumps({
+                    "error": (
+                        f"MCP server '{server_name}' is not connected"
+                    )
+                })
 
-        async def _call():
-            result = await server.session.list_prompts()
-            prompts = []
-            for p in (result.prompts if hasattr(result, "prompts") else []):
-                entry = {}
-                if hasattr(p, "name"):
-                    entry["name"] = p.name
-                if hasattr(p, "description") and p.description:
-                    entry["description"] = p.description
-                if hasattr(p, "arguments") and p.arguments:
-                    entry["arguments"] = [
-                        {
-                            "name": a.name,
-                            **({"description": a.description} if hasattr(a, "description") and a.description else {}),
-                            **({"required": a.required} if hasattr(a, "required") else {}),
-                        }
-                        for a in p.arguments
-                    ]
-                prompts.append(entry)
-            return json.dumps({"prompts": prompts})
+            async def _call():
+                result = await server.session.list_prompts()
+                prompts = []
+                for p in (result.prompts if hasattr(result, "prompts") else []):
+                    entry = {}
+                    if hasattr(p, "name"):
+                        entry["name"] = p.name
+                    if hasattr(p, "description") and p.description:
+                        entry["description"] = p.description
+                    if hasattr(p, "arguments") and p.arguments:
+                        entry["arguments"] = [
+                            {
+                                "name": a.name,
+                                **({"description": a.description} if hasattr(a, "description") and a.description else {}),
+                                **({"required": a.required} if hasattr(a, "required") else {}),
+                            }
+                            for a in p.arguments
+                        ]
+                    prompts.append(entry)
+                return json.dumps({"prompts": prompts})
 
-        try:
-            return _run_on_mcp_loop(_call(), timeout=tool_timeout)
-        except InterruptedError:
-            return _interrupted_call_result()
-        except Exception as exc:
-            logger.error(
-                "MCP %s/list_prompts failed: %s", server_name, exc,
-            )
-            return json.dumps({
-                "error": _sanitize_error(
-                    f"MCP call failed: {type(exc).__name__}: {exc}"
+            try:
+                return _run_on_mcp_loop(_call(), timeout=tool_timeout)
+            except InterruptedError:
+                return _interrupted_call_result()
+            except Exception as exc:
+                if _is_stale_transport_error(exc):
+                    reclaim_future = _mark_session_stale(server_name)
+                    if attempt == 0:
+                        logger.warning(
+                            "MCP %s/list_prompts hit stale transport (%s); "
+                            "waiting for reclaim and retrying",
+                            server_name, type(exc).__name__,
+                        )
+                        _wait_for_reclaim_future(
+                            reclaim_future, _RECLAIM_WAIT_SECONDS
+                        )
+                        continue
+                    logger.error(
+                        "MCP %s/list_prompts still stale after reclaim retry: %s",
+                        server_name, exc,
+                    )
+                    return json.dumps({
+                        "error": (
+                            f"MCP server '{server_name}' transport closed "
+                            "and reclaim did not restore it in time"
+                        )
+                    })
+                logger.error(
+                    "MCP %s/list_prompts failed: %s", server_name, exc,
                 )
-            })
+                return json.dumps({
+                    "error": _sanitize_error(
+                        f"MCP call failed: {type(exc).__name__}: {exc}"
+                    )
+                })
+
+        return json.dumps({
+            "error": f"MCP server '{server_name}' recovery exhausted"
+        })
 
     return _handler
 
@@ -1561,53 +2028,87 @@ def _make_get_prompt_handler(server_name: str, tool_timeout: float):
     def _handler(args: dict, **kwargs) -> str:
         from tools.registry import tool_error
 
-        with _lock:
-            server = _servers.get(server_name)
-        if not server or not server.session:
-            return json.dumps({
-                "error": f"MCP server '{server_name}' is not connected"
-            })
-
         name = args.get("name")
         if not name:
             return tool_error("Missing required parameter 'name'")
         arguments = args.get("arguments", {})
 
-        async def _call():
-            result = await server.session.get_prompt(name, arguments=arguments)
-            # GetPromptResult has .messages list
-            messages = []
-            for msg in (result.messages if hasattr(result, "messages") else []):
-                entry = {}
-                if hasattr(msg, "role"):
-                    entry["role"] = msg.role
-                if hasattr(msg, "content"):
-                    content = msg.content
-                    if hasattr(content, "text"):
-                        entry["content"] = content.text
-                    elif isinstance(content, str):
-                        entry["content"] = content
-                    else:
-                        entry["content"] = str(content)
-                messages.append(entry)
-            resp = {"messages": messages}
-            if hasattr(result, "description") and result.description:
-                resp["description"] = result.description
-            return json.dumps(resp)
+        for attempt in range(2):
+            with _lock:
+                server = _servers.get(server_name)
+            if not server or not server.session:
+                if attempt == 0 and _wait_for_live_session(
+                    server_name, _RECLAIM_WAIT_SECONDS
+                ):
+                    continue
+                return json.dumps({
+                    "error": f"MCP server '{server_name}' is not connected"
+                })
 
-        try:
-            return _run_on_mcp_loop(_call(), timeout=tool_timeout)
-        except InterruptedError:
-            return _interrupted_call_result()
-        except Exception as exc:
-            logger.error(
-                "MCP %s/get_prompt failed: %s", server_name, exc,
-            )
-            return json.dumps({
-                "error": _sanitize_error(
-                    f"MCP call failed: {type(exc).__name__}: {exc}"
+            async def _call():
+                result = await server.session.get_prompt(
+                    name, arguments=arguments
                 )
-            })
+                messages = []
+                for msg in (
+                    result.messages if hasattr(result, "messages") else []
+                ):
+                    entry = {}
+                    if hasattr(msg, "role"):
+                        entry["role"] = msg.role
+                    if hasattr(msg, "content"):
+                        content = msg.content
+                        if hasattr(content, "text"):
+                            entry["content"] = content.text
+                        elif isinstance(content, str):
+                            entry["content"] = content
+                        else:
+                            entry["content"] = str(content)
+                    messages.append(entry)
+                resp = {"messages": messages}
+                if hasattr(result, "description") and result.description:
+                    resp["description"] = result.description
+                return json.dumps(resp)
+
+            try:
+                return _run_on_mcp_loop(_call(), timeout=tool_timeout)
+            except InterruptedError:
+                return _interrupted_call_result()
+            except Exception as exc:
+                if _is_stale_transport_error(exc):
+                    reclaim_future = _mark_session_stale(server_name)
+                    if attempt == 0:
+                        logger.warning(
+                            "MCP %s/get_prompt hit stale transport (%s); "
+                            "waiting for reclaim and retrying",
+                            server_name, type(exc).__name__,
+                        )
+                        _wait_for_reclaim_future(
+                            reclaim_future, _RECLAIM_WAIT_SECONDS
+                        )
+                        continue
+                    logger.warning(
+                        "MCP %s/get_prompt still stale after reclaim (%s)",
+                        server_name, type(exc).__name__,
+                    )
+                    return json.dumps({
+                        "error": (
+                            f"MCP server '{server_name}' transport closed; "
+                            "reconnecting — please retry"
+                        )
+                    })
+                logger.error(
+                    "MCP %s/get_prompt failed: %s", server_name, exc,
+                )
+                return json.dumps({
+                    "error": _sanitize_error(
+                        f"MCP call failed: {type(exc).__name__}: {exc}"
+                    )
+                })
+
+        return json.dumps({
+            "error": f"MCP server '{server_name}' recovery exhausted"
+        })
 
     return _handler
 
@@ -1978,12 +2479,41 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
 
     # Only attempt servers that aren't already connected and are enabled
     # (enabled: false skips the server entirely without removing its config)
+    #
+    # A server "counts" as already-connected only when its run() coroutine
+    # is still alive and holds an active session. If the previous task
+    # gave up (run() returned) or the session went stale (subprocess
+    # killed, stream closed), we drop the dead entry here so the fresh
+    # _discover_and_register_server pass can recreate it. Without this,
+    # a stale _servers entry blocks recovery forever.
+    dead_server_names: list[str] = []
     with _lock:
-        new_servers = {
-            k: v
-            for k, v in servers.items()
-            if k not in _servers and _parse_boolish(v.get("enabled", True), default=True)
-        }
+        new_servers: Dict[str, dict] = {}
+        for k, v in servers.items():
+            if not _parse_boolish(v.get("enabled", True), default=True):
+                continue
+            existing = _servers.get(k)
+            if existing is None:
+                new_servers[k] = v
+                continue
+            task = getattr(existing, "_task", None)
+            is_dead = (
+                existing.session is None
+                or (task is not None and task.done())
+            )
+            if is_dead:
+                dead_server_names.append(k)
+                # Drop the dead entry so _discover_and_register_server
+                # can overwrite it with a fresh MCPServerTask below.
+                _servers.pop(k, None)
+                new_servers[k] = v
+
+    if dead_server_names:
+        logger.info(
+            "MCP: reclaiming %d stale server entry/entries for "
+            "re-registration: %s",
+            len(dead_server_names), ", ".join(sorted(dead_server_names)),
+        )
 
     if not new_servers:
         return _existing_tool_names()
@@ -2054,12 +2584,21 @@ def discover_mcp_tools() -> List[str]:
         logger.debug("No MCP servers configured")
         return []
 
+    # Same liveness check as register_mcp_servers: a stale server with
+    # session=None or a completed _task is treated as "new" so
+    # register_mcp_servers can reclaim and retry it.
     with _lock:
-        new_server_names = [
-            name
-            for name, cfg in servers.items()
-            if name not in _servers and _parse_boolish(cfg.get("enabled", True), default=True)
-        ]
+        new_server_names: list[str] = []
+        for name, cfg in servers.items():
+            if not _parse_boolish(cfg.get("enabled", True), default=True):
+                continue
+            existing = _servers.get(name)
+            if existing is None:
+                new_server_names.append(name)
+                continue
+            task = getattr(existing, "_task", None)
+            if existing.session is None or (task is not None and task.done()):
+                new_server_names.append(name)
 
     tool_names = register_mcp_servers(servers)
     if not new_server_names:

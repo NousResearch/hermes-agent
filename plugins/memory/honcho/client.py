@@ -128,8 +128,8 @@ def _parse_dialectic_depth_levels(host_val, root_val, depth: int) -> list[str] |
     for val in (host_val, root_val):
         if val is not None and isinstance(val, list):
             levels = [
-                l if l in _VALID_REASONING_LEVELS else "low"
-                for l in val[:depth]
+                lvl if lvl in _VALID_REASONING_LEVELS else "low"
+                for lvl in val[:depth]
             ]
             # Pad with "low" if array is shorter than depth
             while len(levels) < depth:
@@ -427,7 +427,6 @@ class HonchoClientConfig:
                 or raw.get("dialecticReasoningLevel")
                 or "low"
             ),
-
             dialectic_dynamic=_resolve_bool(
                 host_block.get("dialecticDynamic"),
                 raw.get("dialecticDynamic"),
@@ -445,10 +444,7 @@ class HonchoClientConfig:
             dialectic_depth_levels=_parse_dialectic_depth_levels(
                 host_block.get("dialecticDepthLevels"),
                 raw.get("dialecticDepthLevels"),
-                depth=_parse_dialectic_depth(
-                    host_block.get("dialecticDepth"),
-                    raw.get("dialecticDepth"),
-                ),
+                depth=_parse_dialectic_depth(host_block.get("dialecticDepth"), raw.get("dialecticDepth")),
             ),
             message_max_chars=int(
                 host_block.get("messageMaxChars")

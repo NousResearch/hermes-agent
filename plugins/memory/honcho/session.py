@@ -930,8 +930,11 @@ class HonchoSessionManager:
 
         honcho_session = self._sessions_cache.get(session.honcho_session_id)
         if not honcho_session:
-            # Fall back to peer-level context
-            return self._fetch_peer_context(session.user_peer_id, target=session.user_peer_id)
+            # Fall back to peer-level context, respecting the requested peer
+            peer_id = self._resolve_peer_id(session, peer)
+            if peer_id is None:
+                peer_id = session.user_peer_id
+            return self._fetch_peer_context(peer_id, target=peer_id)
 
         try:
             peer_id = self._resolve_peer_id(session, peer)
@@ -963,11 +966,15 @@ class HonchoSessionManager:
 
             return result
         except Exception as e:
-            logger.warning("Session context fetch failed: %s", e)
+            logger.debug("Session context fetch failed: %s", e)
             return {}
 
-    def _resolve_peer_id(self, session: HonchoSession, peer: str | None) -> str | None:
-        """Resolve a peer alias or explicit peer ID to a concrete Honcho peer ID."""
+    def _resolve_peer_id(self, session: HonchoSession, peer: str | None) -> str:
+        """Resolve a peer alias or explicit peer ID to a concrete Honcho peer ID.
+
+        Always returns a non-empty string: either a known peer ID or a
+        sanitized version of the caller-supplied alias/ID.
+        """
         candidate = (peer or "user").strip()
         if not candidate:
             return session.user_peer_id
@@ -987,8 +994,6 @@ class HonchoSessionManager:
     ) -> tuple[str, str | None]:
         """Resolve observer and target peer IDs for context/search/profile queries."""
         target_peer_id = self._resolve_peer_id(session, peer)
-        if target_peer_id is None:
-            return session.user_peer_id, None
 
         if target_peer_id == session.assistant_peer_id:
             return session.assistant_peer_id, session.assistant_peer_id
@@ -1160,6 +1165,9 @@ class HonchoSessionManager:
             return None
         try:
             peer_id = self._resolve_peer_id(session, peer)
+            if peer_id is None:
+                logger.warning("Could not resolve peer '%s' for set_peer_card in session '%s'", peer, session_key)
+                return None
             peer_obj = self._get_or_create_peer(peer_id)
             result = peer_obj.set_card(card)
             logger.info("Updated peer card for %s (%d facts)", peer_id, len(card))

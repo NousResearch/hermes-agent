@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import threading
 from typing import Any, Dict, List, Optional
 
@@ -150,26 +151,30 @@ CONCLUDE_SCHEMA = {
     "description": (
         "Write or delete a conclusion about a peer in Honcho's memory. "
         "Conclusions are persistent facts that build a peer's profile. "
-        "Pass `conclusion` to create. Pass `delete_id` to remove a conclusion "
-        "containing personal information — Honcho self-heals incorrect "
-        "conclusions over time, so deletion is only needed for PII removal."
+        "You MUST pass exactly one of: `conclusion` (to create) or `delete_id` (to delete). "
+        "Passing neither is an error. "
+        "Deletion is only for PII removal — Honcho self-heals incorrect conclusions over time."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "conclusion": {
                 "type": "string",
-                "description": "A factual statement to persist. Omit when using delete_id.",
+                "description": "A factual statement to persist. Required when not using delete_id.",
             },
             "delete_id": {
                 "type": "string",
-                "description": "Conclusion ID to delete (for removing PII). Omit when creating.",
+                "description": "Conclusion ID to delete (for PII removal). Required when not using conclusion.",
             },
             "peer": {
                 "type": "string",
                 "description": "Peer to query. Built-in aliases: 'user' (default), 'ai'. Or pass any peer ID from this workspace.",
-            }
+            },
         },
+        "anyOf": [
+            {"required": ["conclusion"]},
+            {"required": ["delete_id"]},
+        ],
     },
 }
 
@@ -556,18 +561,39 @@ class HonchoMemoryProvider(MemoryProvider):
 
         # ----- Layer 2: Dialectic supplement -----
         # On the very first turn, no queue_prefetch() has run yet so the
-        # dialectic result is empty.  Mirror the base-context pattern:
-        # run the dialectic synchronously on the first call so turn 0
-        # always gets the cold-start synthesis.
+        # dialectic result is empty.  Run with a bounded timeout so a slow
+        # Honcho connection doesn't block the first response indefinitely.
+        # On timeout the result is skipped and queue_prefetch() will pick it
+        # up at the next cadence-allowed turn.
         if self._last_dialectic_turn == -999 and query:
-            try:
-                first_turn_dialectic = self._run_dialectic_depth(query)
+            _first_turn_timeout = (
+                self._config.timeout if self._config and self._config.timeout else 8.0
+            )
+            _result_holder: list[str] = []
+
+            def _run_first_turn() -> None:
+                try:
+                    _result_holder.append(self._run_dialectic_depth(query))
+                except Exception as exc:
+                    logger.debug("Honcho first-turn dialectic failed: %s", exc)
+
+            _t = threading.Thread(target=_run_first_turn, daemon=True)
+            _t.start()
+            _t.join(timeout=_first_turn_timeout)
+            if not _t.is_alive():
+                first_turn_dialectic = _result_holder[0] if _result_holder else ""
                 if first_turn_dialectic and first_turn_dialectic.strip():
                     with self._prefetch_lock:
                         self._prefetch_result = first_turn_dialectic
                 self._last_dialectic_turn = self._turn_count
-            except Exception as e:
-                logger.debug("Honcho first-turn dialectic failed: %s", e)
+            else:
+                logger.debug(
+                    "Honcho first-turn dialectic timed out (%.1fs) — "
+                    "will inject at next cadence-allowed turn",
+                    _first_turn_timeout,
+                )
+                # Don't update _last_dialectic_turn: queue_prefetch() will
+                # retry at the next cadence-allowed turn via the async path.
 
         if self._prefetch_thread and self._prefetch_thread.is_alive():
             self._prefetch_thread.join(timeout=3.0)
@@ -728,12 +754,17 @@ class HonchoMemoryProvider(MemoryProvider):
         """Check if a dialectic pass returned enough signal to skip further passes.
 
         Heuristic: a response longer than 100 chars with some structure
-        (newlines or bullet points) is considered sufficient.
+        (section headers, bullets, or an ordered list) is considered sufficient.
         """
         if not result or len(result.strip()) < 100:
             return False
         # Structured output with sections/bullets is strong signal
-        if "\n" in result and any(c in result for c in ("-", "•", "##", "1.")):
+        if "\n" in result and (
+            "##" in result
+            or "•" in result
+            or re.search(r"^[*-] ", result, re.MULTILINE)
+            or re.search(r"^\s*\d+\. ", result, re.MULTILINE)
+        ):
             return True
         # Long enough even without structure
         return len(result.strip()) > 300

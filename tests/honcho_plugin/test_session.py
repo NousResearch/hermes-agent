@@ -459,6 +459,21 @@ class TestConcludeToolDispatch:
             peer="hermes",
         )
 
+    def test_honcho_conclude_missing_both_params_returns_error(self):
+        """Calling honcho_conclude with neither conclusion nor delete_id returns a tool error."""
+        import json
+        provider = HonchoMemoryProvider()
+        provider._session_initialized = True
+        provider._session_key = "telegram:123"
+        provider._manager = MagicMock()
+
+        result = provider.handle_tool_call("honcho_conclude", {})
+
+        parsed = json.loads(result)
+        assert "error" in parsed or "Missing required" in parsed.get("result", "")
+        provider._manager.create_conclusion.assert_not_called()
+        provider._manager.delete_conclusion.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # Message chunking
@@ -1015,3 +1030,116 @@ class TestDialecticDepth:
         result = provider._run_dialectic_depth("test query")
         # Only 1 call because pass 0 had sufficient signal
         assert provider._manager.dialectic_query.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# set_peer_card None guard
+# ---------------------------------------------------------------------------
+
+
+class TestSetPeerCardNoneGuard:
+    """set_peer_card must return None (not raise) when peer ID cannot be resolved."""
+
+    def _make_manager(self):
+        from plugins.memory.honcho.client import HonchoClientConfig
+        from plugins.memory.honcho.session import HonchoSessionManager
+
+        cfg = HonchoClientConfig(api_key="test-key", enabled=True)
+        mgr = HonchoSessionManager.__new__(HonchoSessionManager)
+        mgr._cache = {}
+        mgr._sessions_cache = {}
+        mgr._config = cfg
+        return mgr
+
+    def test_returns_none_when_peer_resolves_to_none(self):
+        """set_peer_card returns None when _resolve_peer_id returns None."""
+        from unittest.mock import patch
+        mgr = self._make_manager()
+
+        session = HonchoSession(
+            key="test",
+            honcho_session_id="sid",
+            user_peer_id="user-peer",
+            assistant_peer_id="ai-peer",
+        )
+        mgr._cache["test"] = session
+
+        with patch.object(mgr, "_resolve_peer_id", return_value=None):
+            result = mgr.set_peer_card("test", ["fact 1", "fact 2"], peer="ghost")
+
+        assert result is None
+
+    def test_returns_none_when_session_missing(self):
+        """set_peer_card returns None when session key is not in cache."""
+        mgr = self._make_manager()
+        result = mgr.set_peer_card("nonexistent", ["fact"], peer="user")
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# get_session_context cache-miss fallback respects peer param
+# ---------------------------------------------------------------------------
+
+
+class TestGetSessionContextFallback:
+    """get_session_context fallback must honour the peer param when honcho_session is absent."""
+
+    def _make_manager_with_session(self, user_peer_id="user-peer", assistant_peer_id="ai-peer"):
+        from plugins.memory.honcho.client import HonchoClientConfig
+        from plugins.memory.honcho.session import HonchoSessionManager
+
+        cfg = HonchoClientConfig(api_key="test-key", enabled=True)
+        mgr = HonchoSessionManager.__new__(HonchoSessionManager)
+        mgr._cache = {}
+        mgr._sessions_cache = {}
+        mgr._config = cfg
+        mgr._dialectic_dynamic = True
+        mgr._dialectic_reasoning_level = "low"
+        mgr._dialectic_max_input_chars = 10000
+        mgr._ai_observe_others = True
+
+        session = HonchoSession(
+            key="test",
+            honcho_session_id="sid-missing-from-sessions-cache",
+            user_peer_id=user_peer_id,
+            assistant_peer_id=assistant_peer_id,
+        )
+        mgr._cache["test"] = session
+        # Deliberately NOT adding to _sessions_cache to trigger fallback path
+        return mgr
+
+    def test_fallback_uses_user_peer_for_user(self):
+        """On cache miss, peer='user' fetches user peer context."""
+        mgr = self._make_manager_with_session()
+        fetch_calls = []
+
+        def _fake_fetch(peer_id, search_query=None, *, target=None):
+            fetch_calls.append((peer_id, target))
+            return {"representation": "user rep", "card": []}
+
+        mgr._fetch_peer_context = _fake_fetch
+
+        mgr.get_session_context("test", peer="user")
+
+        assert len(fetch_calls) == 1
+        peer_id, target = fetch_calls[0]
+        assert peer_id == "user-peer"
+        assert target == "user-peer"
+
+    def test_fallback_uses_ai_peer_for_ai(self):
+        """On cache miss, peer='ai' fetches assistant peer context, not user."""
+        mgr = self._make_manager_with_session()
+        fetch_calls = []
+
+        def _fake_fetch(peer_id, search_query=None, *, target=None):
+            fetch_calls.append((peer_id, target))
+            return {"representation": "ai rep", "card": []}
+
+        mgr._fetch_peer_context = _fake_fetch
+
+        mgr.get_session_context("test", peer="ai")
+
+        assert len(fetch_calls) == 1
+        peer_id, target = fetch_calls[0]
+        assert peer_id == "ai-peer", f"expected ai-peer, got {peer_id}"
+        assert target == "ai-peer"

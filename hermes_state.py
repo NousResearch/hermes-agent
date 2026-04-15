@@ -31,7 +31,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -89,6 +89,19 @@ CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
 CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp);
+
+CREATE TABLE IF NOT EXISTS memory_entries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    target TEXT NOT NULL DEFAULT 'memory',
+    content TEXT NOT NULL,
+    source TEXT DEFAULT 'manual',
+    created_at REAL NOT NULL,
+    last_accessed_at REAL,
+    access_count INTEGER DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_memory_entries_target ON memory_entries(target);
+CREATE INDEX IF NOT EXISTS idx_memory_entries_accessed ON memory_entries(last_accessed_at DESC);
 """
 
 FTS_SQL = """
@@ -109,6 +122,27 @@ END;
 CREATE TRIGGER IF NOT EXISTS messages_fts_update AFTER UPDATE ON messages BEGIN
     INSERT INTO messages_fts(messages_fts, rowid, content) VALUES('delete', old.id, old.content);
     INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content);
+END;
+"""
+
+MEMORY_FTS_SQL = """
+CREATE VIRTUAL TABLE IF NOT EXISTS memory_entries_fts USING fts5(
+    content,
+    content=memory_entries,
+    content_rowid=id
+);
+
+CREATE TRIGGER IF NOT EXISTS memory_fts_insert AFTER INSERT ON memory_entries BEGIN
+    INSERT INTO memory_entries_fts(rowid, content) VALUES (new.id, new.content);
+END;
+
+CREATE TRIGGER IF NOT EXISTS memory_fts_delete AFTER DELETE ON memory_entries BEGIN
+    INSERT INTO memory_entries_fts(memory_entries_fts, rowid, content) VALUES('delete', old.id, old.content);
+END;
+
+CREATE TRIGGER IF NOT EXISTS memory_fts_update AFTER UPDATE ON memory_entries BEGIN
+    INSERT INTO memory_entries_fts(memory_entries_fts, rowid, content) VALUES('delete', old.id, old.content);
+    INSERT INTO memory_entries_fts(rowid, content) VALUES (new.id, new.content);
 END;
 """
 
@@ -337,6 +371,25 @@ class SessionDB:
                 except sqlite3.OperationalError:
                     pass  # Column already exists
                 cursor.execute("UPDATE schema_version SET version = 7")
+            if current_version < 8:
+                # v8: add memory_entries table for cold memory storage
+                # (Elastic Memory: Hot/Cold split)
+                cursor.executescript("""
+                    CREATE TABLE IF NOT EXISTS memory_entries (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        target TEXT NOT NULL DEFAULT 'memory',
+                        content TEXT NOT NULL,
+                        source TEXT DEFAULT 'manual',
+                        created_at REAL NOT NULL,
+                        last_accessed_at REAL,
+                        access_count INTEGER DEFAULT 0
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_memory_entries_target
+                        ON memory_entries(target);
+                    CREATE INDEX IF NOT EXISTS idx_memory_entries_accessed
+                        ON memory_entries(last_accessed_at DESC);
+                """)
+                cursor.execute("UPDATE schema_version SET version = 8")
 
         # Unique title index — always ensure it exists (safe to run after migrations
         # since the title column is guaranteed to exist at this point)
@@ -353,6 +406,12 @@ class SessionDB:
             cursor.execute("SELECT * FROM messages_fts LIMIT 0")
         except sqlite3.OperationalError:
             cursor.executescript(FTS_SQL)
+
+        # Memory entries FTS5 setup
+        try:
+            cursor.execute("SELECT * FROM memory_entries_fts LIMIT 0")
+        except sqlite3.OperationalError:
+            cursor.executescript(MEMORY_FTS_SQL)
 
         self._conn.commit()
 
@@ -1297,3 +1356,134 @@ class SessionDB:
             return len(session_ids)
 
         return self._execute_write(_do)
+
+    # =========================================================================
+    # Cold Memory (Elastic Memory Hot/Cold split)
+    # =========================================================================
+
+    def add_cold_memory(self, target: str, content: str,
+                        source: str = "manual") -> int:
+        """Add an entry to cold memory storage. Returns the new entry ID."""
+        now = time.time()
+
+        def _do(conn):
+            cursor = conn.execute(
+                """INSERT INTO memory_entries (target, content, source,
+                   created_at, last_accessed_at, access_count)
+                   VALUES (?, ?, ?, ?, ?, 0)""",
+                (target, content, source, now, now),
+            )
+            return cursor.lastrowid
+
+        return self._execute_write(_do)
+
+    def search_cold_memory(self, query: str, target: str = None,
+                           limit: int = 10) -> List[Dict[str, Any]]:
+        """FTS5 search over cold memory entries.
+
+        Returns matching entries with snippets, ordered by relevance.
+        """
+        sanitized = self._sanitize_fts5_query(query)
+        if not sanitized:
+            return []
+
+        with self._lock:
+            if target:
+                rows = self._conn.execute(
+                    """SELECT m.id, m.target, m.content, m.source,
+                              m.created_at, m.last_accessed_at, m.access_count,
+                              snippet(memory_entries_fts, 0, '>>>', '<<<', '...', 40) as snippet
+                       FROM memory_entries_fts fts
+                       JOIN memory_entries m ON m.id = fts.rowid
+                       WHERE memory_entries_fts MATCH ? AND m.target = ?
+                       ORDER BY rank
+                       LIMIT ?""",
+                    (sanitized, target, limit),
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    """SELECT m.id, m.target, m.content, m.source,
+                              m.created_at, m.last_accessed_at, m.access_count,
+                              snippet(memory_entries_fts, 0, '>>>', '<<<', '...', 40) as snippet
+                       FROM memory_entries_fts fts
+                       JOIN memory_entries m ON m.id = fts.rowid
+                       WHERE memory_entries_fts MATCH ?
+                       ORDER BY rank
+                       LIMIT ?""",
+                    (sanitized, limit),
+                ).fetchall()
+
+        return [dict(row) for row in rows]
+
+    def get_cold_memory(self, entry_id: int) -> Optional[Dict[str, Any]]:
+        """Get a single cold memory entry by ID."""
+        with self._lock:
+            row = self._conn.execute(
+                """SELECT id, target, content, source,
+                          created_at, last_accessed_at, access_count
+                   FROM memory_entries WHERE id = ?""",
+                (entry_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def remove_cold_memory(self, entry_id: int) -> bool:
+        """Remove a cold memory entry. Returns True if found and removed."""
+        def _do(conn):
+            cursor = conn.execute(
+                "DELETE FROM memory_entries WHERE id = ?", (entry_id,)
+            )
+            return cursor.rowcount > 0
+
+        return self._execute_write(_do)
+
+    def list_cold_memory(self, target: str = None,
+                         limit: int = 50) -> List[Dict[str, Any]]:
+        """List cold memory entries, most recently accessed first."""
+        with self._lock:
+            if target:
+                rows = self._conn.execute(
+                    """SELECT id, target, content, source,
+                              created_at, last_accessed_at, access_count
+                       FROM memory_entries
+                       WHERE target = ?
+                       ORDER BY last_accessed_at DESC NULLS LAST
+                       LIMIT ?""",
+                    (target, limit),
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    """SELECT id, target, content, source,
+                              created_at, last_accessed_at, access_count
+                       FROM memory_entries
+                       ORDER BY last_accessed_at DESC NULLS LAST
+                       LIMIT ?""",
+                    (limit,),
+                ).fetchall()
+        return [dict(row) for row in rows]
+
+    def touch_cold_memory(self, entry_id: int) -> None:
+        """Bump access_count and last_accessed_at for a cold entry."""
+        def _do(conn):
+            conn.execute(
+                """UPDATE memory_entries
+                   SET access_count = access_count + 1,
+                       last_accessed_at = ?
+                   WHERE id = ?""",
+                (time.time(), entry_id),
+            )
+
+        self._execute_write(_do)
+
+    def cold_memory_count(self, target: str = None) -> int:
+        """Return count of cold memory entries."""
+        with self._lock:
+            if target:
+                row = self._conn.execute(
+                    "SELECT COUNT(*) FROM memory_entries WHERE target = ?",
+                    (target,),
+                ).fetchone()
+            else:
+                row = self._conn.execute(
+                    "SELECT COUNT(*) FROM memory_entries"
+                ).fetchone()
+        return row[0] if row else 0

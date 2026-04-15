@@ -1149,6 +1149,7 @@ class AIAgent:
                     self._memory_store = MemoryStore(
                         memory_char_limit=mem_config.get("memory_char_limit", 2200),
                         user_char_limit=mem_config.get("user_char_limit", 1375),
+                        session_db=self._session_db,
                     )
                     self._memory_store.load_from_disk()
             except Exception:
@@ -3278,6 +3279,13 @@ class AIAgent:
                             result = memory_store.add(target, content)
                             if result.get("success"):
                                 applied += 1
+                            elif not result.get("success") and "exceed" in result.get("error", ""):
+                                # Hot memory full — fall back to cold storage
+                                cold_result = memory_store.add_to_cold(
+                                    target, content, source="auto_extract"
+                                )
+                                if cold_result.get("success"):
+                                    applied += 1
                         elif action == "replace" and old_text and content:
                             result = memory_store.replace(target, old_text, content)
                             if result.get("success"):

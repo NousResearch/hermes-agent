@@ -271,6 +271,32 @@ def _scan_mcp_description(server_name: str, tool_name: str, description: str) ->
     return findings
 
 
+def _scan_mcp_result(server_name: str, tool_name: str, text: str) -> List[str]:
+    """Scan MCP tool result text for prompt injection patterns.
+
+    Uses the same pattern set as description scanning.  Matches are logged
+    at WARNING level — the result is still returned to the agent (blocking
+    would break legitimate tools that happen to match), but the log entry
+    enables monitoring and alerting.
+
+    Returns a list of finding strings (empty = clean).
+    """
+    findings = []
+    if not text:
+        return findings
+    for pattern, reason in _MCP_INJECTION_PATTERNS:
+        if pattern.search(text):
+            findings.append(reason)
+    if findings:
+        logger.warning(
+            "MCP server '%s' tool '%s': suspicious RESULT content — %s. "
+            "Result (truncated): %.300s",
+            server_name, tool_name, "; ".join(findings),
+            text,
+        )
+    return findings
+
+
 def _prepend_path(env: dict, directory: str) -> dict:
     """Prepend *directory* to env PATH if it is not already present."""
     updated = dict(env or {})
@@ -1384,6 +1410,10 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                     parts.append(block.text)
             text_result = "\n".join(parts) if parts else ""
 
+            # Scan result text for prompt injection patterns
+            if text_result:
+                _scan_mcp_result(server_name, tool_name, text_result)
+
             # Combine content + structuredContent when both are present.
             # MCP spec: content is model-oriented (text), structuredContent
             # is machine-oriented (JSON metadata).  For an AI agent, content
@@ -1487,7 +1517,13 @@ def _make_read_resource_handler(server_name: str, tool_timeout: float):
                     parts.append(block.text)
                 elif hasattr(block, "blob"):
                     parts.append(f"[binary data, {len(block.blob)} bytes]")
-            return json.dumps({"result": "\n".join(parts) if parts else ""})
+            text_result = "\n".join(parts) if parts else ""
+
+            # Scan resource content for prompt injection patterns
+            if text_result:
+                _scan_mcp_result(server_name, "read_resource", text_result)
+
+            return json.dumps({"result": text_result})
 
         try:
             return _run_on_mcp_loop(_call(), timeout=tool_timeout)

@@ -5956,7 +5956,7 @@ class HermesCLI:
         parts = cmd.strip().split(None, 1)
         sub = parts[1].lower().strip() if len(parts) > 1 else "status"
 
-        _DEFAULT_CDP = "http://localhost:9222"
+        _DEFAULT_CDP = "http://127.0.0.1:9222"
         current = os.environ.get("BROWSER_CDP_URL", "").strip()
 
         if sub.startswith("connect"):

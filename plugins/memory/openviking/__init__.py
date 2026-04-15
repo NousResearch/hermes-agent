@@ -12,6 +12,7 @@ Config via environment variables (profile-scoped via each profile's .env):
   OPENVIKING_API_KEY   — API key (required for authenticated servers)
   OPENVIKING_ACCOUNT   — Tenant account (default: default)
   OPENVIKING_USER      — Tenant user (default: default)
+  OPENVIKING_AGENT   — Tenant agent (default: hermes)
 
 Capabilities:
   - Automatic memory extraction on session commit (6 categories)

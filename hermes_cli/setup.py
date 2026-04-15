@@ -868,15 +868,15 @@ def _install_neutts_deps() -> bool:
     # Check espeak-ng
     if not _check_espeak_ng():
         print()
-        print_warning("NeuTTS requires espeak-ng for phonemization.")
+        print_warning("NeuTTS는 음소 변환을 위해 espeak-ng가 필요합니다.")
         if sys.platform == "darwin":
-            print_info("Install with: brew install espeak-ng")
+            print_info("설치: brew install espeak-ng")
         elif sys.platform == "win32":
-            print_info("Install with: choco install espeak-ng")
+            print_info("설치: choco install espeak-ng")
         else:
-            print_info("Install with: sudo apt install espeak-ng")
+            print_info("설치: sudo apt install espeak-ng")
         print()
-        if prompt_yes_no("Install espeak-ng now?", True):
+        if prompt_yes_no("지금 espeak-ng를 설치할까요?", True):
             try:
                 if sys.platform == "darwin":
                     subprocess.run(["brew", "install", "espeak-ng"], check=True)
@@ -884,13 +884,13 @@ def _install_neutts_deps() -> bool:
                     subprocess.run(["choco", "install", "espeak-ng", "-y"], check=True)
                 else:
                     subprocess.run(["sudo", "apt", "install", "-y", "espeak-ng"], check=True)
-                print_success("espeak-ng installed")
+                print_success("espeak-ng 설치 완료")
             except (subprocess.CalledProcessError, FileNotFoundError) as e:
-                print_warning(f"Could not install espeak-ng automatically: {e}")
-                print_info("Please install it manually and re-run setup.")
+                print_warning(f"espeak-ng를 자동으로 설치하지 못했습니다: {e}")
+                print_info("직접 설치한 뒤 setup을 다시 실행하세요.")
                 return False
         else:
-            print_warning("espeak-ng is required for NeuTTS. Install it manually before using NeuTTS.")
+            print_warning("NeuTTS에는 espeak-ng가 필요합니다. 사용 전에 수동으로 설치하세요.")
 
     # Install neutts Python package
     print()
@@ -980,7 +980,7 @@ def _setup_tts_provider(config: dict):
             print_info("  • Python package: neutts (~50MB install + ~300MB model on first use)")
             print_info("  • System package: espeak-ng (phonemizer)")
             print()
-            if prompt_yes_no("Install NeuTTS dependencies now?", True):
+            if prompt_yes_no("지금 NeuTTS 의존성을 설치할까요?", True):
                 if not _install_neutts_deps():
                     print_warning("NeuTTS installation incomplete. Falling back to Edge TTS.")
                     selected = "edge"
@@ -1758,8 +1758,8 @@ def _setup_slack():
     print_success("Slack tokens saved")
 
     print()
-    print_info("🔒 Security: Restrict who can use your bot")
-    print_info("   To find a Member ID: click a user's name → View full profile → ⋮ → Copy member ID")
+    print_info("🔒 보안: 누가 봇을 사용할 수 있는지 제한하세요")
+    print_info("   Member ID 확인: 사용자 이름 클릭 → View full profile → ⋮ → Copy member ID")
     print()
     allowed_users = prompt(
         "허용할 사용자 ID (쉼표로 구분, 비워두면 페어링된 사용자 외에는 모두 거부)"
@@ -1791,35 +1791,36 @@ def _setup_matrix():
         save_env_value("MATRIX_HOMESERVER", homeserver.rstrip("/"))
 
     print()
-    print_info("Auth: provide an access token (recommended), or user ID + password.")
-    token = prompt("Access token (leave empty for password login)", password=True)
+    print_info("인증: access token(권장) 또는 user ID + 비밀번호를 입력하세요.")
+    token = prompt("Access token (비워두면 비밀번호 로그인)", password=True)
     if token:
         save_env_value("MATRIX_ACCESS_TOKEN", token)
-        user_id = prompt("User ID (@bot:server — optional, will be auto-detected)")
+        user_id = prompt("User ID (@bot:server — 선택 사항, 자동 감지 가능)")
         if user_id:
             save_env_value("MATRIX_USER_ID", user_id)
-        print_success("Matrix access token saved")
+        print_success("Matrix access token 저장 완료")
     else:
-        user_id = prompt("User ID (@bot:server)")
+        # Username/password flow
+        user_id = prompt("Matrix user ID (예: @bot:example.org)")
         if user_id:
             save_env_value("MATRIX_USER_ID", user_id)
-        password = prompt("Password", password=True)
+        password = prompt("비밀번호", password=True)
         if password:
             save_env_value("MATRIX_PASSWORD", password)
-            print_success("Matrix credentials saved")
+            print_success("Matrix 자격 증명 저장 완료")
 
     if token or get_env_value("MATRIX_PASSWORD"):
         print()
         want_e2ee = prompt_yes_no("종단간 암호화(E2EE)를 활성화할까요?", False)
         if want_e2ee:
             save_env_value("MATRIX_ENCRYPTION", "true")
-            print_success("E2EE enabled")
+            print_success("E2EE 활성화 완료")
 
         matrix_pkg = "mautrix[encryption]" if want_e2ee else "mautrix"
         try:
             __import__("mautrix")
         except ImportError:
-            print_info(f"Installing {matrix_pkg}...")
+            print_info(f"{matrix_pkg} 설치 중...")
             import subprocess
             uv_bin = shutil.which("uv")
             if uv_bin:
@@ -1907,7 +1908,7 @@ def _setup_whatsapp():
     print_header("WhatsApp")
     existing = get_env_value("WHATSAPP_ENABLED")
     if existing:
-        print_info("WhatsApp: already enabled")
+        print_info("WhatsApp: 이미 활성화되어 있음")
         return
 
     print_info("WhatsApp은 내장 브리지(Baileys)로 연결됩니다.")
@@ -2013,7 +2014,7 @@ def _setup_qqbot():
         save_env_value("QQ_HOME_CHANNEL", home_channel)
 
     print()
-    print_success("QQ Bot configured!")
+    print_success("QQ Bot 설정 완료!")
 
 
 def _setup_bluebubbles():
@@ -2053,9 +2054,9 @@ def _setup_bluebubbles():
     allowed_users = prompt("허용할 iMessage 주소 (쉼표로 구분, 비워두면 누구나 접근 가능)")
     if allowed_users:
         save_env_value("BLUEBUBBLES_ALLOWED_USERS", allowed_users.replace(" ", ""))
-        print_success("BlueBubbles allowlist configured")
+        print_success("BlueBubbles allowlist 설정 완료")
     else:
-        print_info("⚠️  No allowlist set — anyone who can iMessage you can use the bot!")
+        print_info("⚠️  allowlist가 없습니다 — iMessage를 보낼 수 있는 누구나 봇을 사용할 수 있습니다!")
 
     print()
     print_info("📬 홈 채널: cron 전달과 알림에 사용할 전화번호 또는 이메일입니다.")

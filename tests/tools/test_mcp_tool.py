@@ -237,6 +237,21 @@ class TestToolHandler:
         assert "error" in result
         assert "not connected" in result["error"]
 
+    def test_disconnected_server_fails_fast_without_reclaim(self):
+        from tools.mcp_tool import _make_tool_handler, _reclaim_inflight, _servers
+
+        _servers.pop("ghost", None)
+        _reclaim_inflight.pop("ghost", None)
+        handler = _make_tool_handler("ghost", "any_tool", 120)
+
+        start = time.monotonic()
+        result = json.loads(handler({}))
+        elapsed = time.monotonic() - start
+
+        assert "error" in result
+        assert "not connected" in result["error"]
+        assert elapsed < 1.0
+
     def test_exception_during_call(self):
         from tools.mcp_tool import _make_tool_handler, _servers
 

@@ -1767,20 +1767,36 @@ def _wait_for_live_session(server_name: str, timeout: float) -> bool:
     The caller's *timeout* is the total deadline — any time spent
     blocking on an in-flight reclaim future counts against the same
     budget, so callers cannot be forced to wait longer than they asked.
+
+    If there is no reclaim currently in flight for *server_name*, fail
+    fast instead of polling for the full timeout.
     """
     deadline = time.monotonic() + timeout
     inflight: Optional["concurrent.futures.Future"] = None
+
     with _lock:
+        server = _servers.get(server_name)
+        if server is not None and server.session is not None:
+            return True
         inflight = _reclaim_inflight.get(server_name)
-    if inflight is not None:
-        remaining = deadline - time.monotonic()
-        if remaining > 0:
-            _wait_for_reclaim_future(inflight, remaining)
+
+    if inflight is None:
+        return False
+
+    remaining = deadline - time.monotonic()
+    if remaining > 0:
+        _wait_for_reclaim_future(inflight, remaining)
+
     while time.monotonic() < deadline:
         with _lock:
             server = _servers.get(server_name)
             if server is not None and server.session is not None:
                 return True
+            current_inflight = _reclaim_inflight.get(server_name)
+
+        if current_inflight is None:
+            return False
+
         time.sleep(0.1)
     return False
 

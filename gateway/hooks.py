@@ -3,11 +3,12 @@ Event Hook System
 
 A lightweight event-driven system that fires handlers at key lifecycle points.
 Hooks are discovered from ~/.hermes/hooks/ directories, each containing:
-  - HOOK.yaml  (metadata: name, description, events list)
+  - HOOK.yaml  (metadata: name, description, events list, optional startup_readiness)
   - handler.py (Python handler with async def handle(event_type, context))
 
 Events:
   - gateway:startup     -- Gateway process starts
+  - gateway:shutdown    -- Gateway process is shutting down
   - session:start       -- New session created (first message of a new session)
   - session:end         -- Session ends (user ran /new or /reset)
   - session:reset       -- Session reset completed (new session entry created)
@@ -29,6 +30,26 @@ from hermes_cli.config import get_hermes_home
 
 
 HOOKS_DIR = get_hermes_home() / "hooks"
+
+
+def _normalize_startup_readiness(hook_name: str, manifest: dict[str, Any]) -> Optional[dict[str, Any]]:
+    """Validate and normalize optional startup readiness metadata."""
+    readiness = manifest.get("startup_readiness")
+    if readiness is None:
+        return None
+    if not isinstance(readiness, dict):
+        print(f"[hooks] Ignoring startup_readiness for {hook_name}: expected mapping", flush=True)
+        return None
+
+    check_id = str(readiness.get("id", "")).strip()
+    if not check_id:
+        print(f"[hooks] Ignoring startup_readiness for {hook_name}: missing id", flush=True)
+        return None
+
+    return {
+        "id": check_id,
+        "required": bool(readiness.get("required", True)),
+    }
 
 
 class HookRegistry:
@@ -62,6 +83,7 @@ class HookRegistry:
                 "description": "Run ~/.hermes/BOOT.md on gateway startup",
                 "events": ["gateway:startup"],
                 "path": "(builtin)",
+                "startup_readiness": None,
             })
         except Exception as e:
             print(f"[hooks] Could not load built-in boot-md hook: {e}", flush=True)
@@ -102,6 +124,7 @@ class HookRegistry:
                 if not events:
                     print(f"[hooks] Skipping {hook_name}: no events declared", flush=True)
                     continue
+                startup_readiness = _normalize_startup_readiness(hook_name, manifest)
 
                 # Dynamically load the handler module
                 spec = importlib.util.spec_from_file_location(
@@ -128,6 +151,7 @@ class HookRegistry:
                     "description": manifest.get("description", ""),
                     "events": events,
                     "path": str(hook_dir),
+                    "startup_readiness": startup_readiness,
                 })
 
                 print(f"[hooks] Loaded hook '{hook_name}' for events: {events}", flush=True)

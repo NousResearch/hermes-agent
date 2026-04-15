@@ -132,6 +132,72 @@ class TestGatewayRuntimeStatus:
         assert payload["platforms"]["discord"]["error_code"] is None
         assert payload["platforms"]["discord"]["error_message"] is None
 
+    def test_reset_startup_checks_replaces_previous_run_entries(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        status.write_runtime_status(
+            gateway_state="running",
+            startup_checks={
+                "old-check": {
+                    "state": "ready",
+                    "required": True,
+                    "source": "old-hook",
+                    "detail": None,
+                }
+            },
+        )
+
+        status.reset_startup_checks([
+            {
+                "name": "new-hook",
+                "startup_readiness": {
+                    "id": "new-check",
+                    "required": False,
+                },
+            }
+        ])
+
+        payload = status.read_runtime_status()
+        assert set(payload["startup_checks"]) == {"new-check"}
+        assert payload["startup_checks"]["new-check"]["state"] == "pending"
+        assert payload["startup_checks"]["new-check"]["required"] is False
+        assert payload["startup_checks"]["new-check"]["source"] == "new-hook"
+
+    def test_mark_startup_check_ready_persists_detail(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        status.reset_startup_checks([
+            {
+                "name": "beam",
+                "startup_readiness": {
+                    "id": "beam-runtime",
+                    "required": True,
+                },
+            }
+        ])
+
+        status.mark_startup_check_ready("beam-runtime", detail="ready for RPC")
+
+        payload = status.read_runtime_status()
+        assert payload["startup_checks"]["beam-runtime"]["state"] == "ready"
+        assert payload["startup_checks"]["beam-runtime"]["detail"] == "ready for RPC"
+
+    def test_mark_startup_check_failed_creates_missing_entry(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        status.mark_startup_check_failed(
+            "late-hook",
+            detail="startup hook crashed",
+            required=False,
+            source="late-hook",
+        )
+
+        payload = status.read_runtime_status()
+        assert payload["startup_checks"]["late-hook"]["state"] == "failed"
+        assert payload["startup_checks"]["late-hook"]["required"] is False
+        assert payload["startup_checks"]["late-hook"]["source"] == "late-hook"
+        assert payload["startup_checks"]["late-hook"]["detail"] == "startup hook crashed"
+
 
 class TestTerminatePid:
     def test_force_uses_taskkill_on_windows(self, monkeypatch):

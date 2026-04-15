@@ -9,7 +9,7 @@ import pytest
 from gateway.hooks import HookRegistry
 
 
-def _create_hook(hooks_dir, hook_name, events, handler_code):
+def _create_hook(hooks_dir, hook_name, events, handler_code, *, manifest_extra=""):
     """Helper to create a hook directory with HOOK.yaml and handler.py."""
     hook_dir = hooks_dir / hook_name
     hook_dir.mkdir(parents=True)
@@ -17,6 +17,7 @@ def _create_hook(hooks_dir, hook_name, events, handler_code):
         f"name: {hook_name}\n"
         f"description: Test hook\n"
         f"events: {events}\n"
+        f"{manifest_extra}"
     )
     (hook_dir / "handler.py").write_text(handler_code)
     return hook_dir
@@ -111,6 +112,24 @@ class TestDiscoverAndLoad:
             reg.discover_and_load()
 
         assert len(reg.loaded_hooks) == 2
+
+    def test_preserves_optional_startup_readiness_metadata(self, tmp_path):
+        _create_hook(
+            tmp_path,
+            "ready-hook",
+            '["gateway:startup"]',
+            "def handle(e, c): pass\n",
+            manifest_extra="startup_readiness:\n  id: beam-runtime\n  required: false\n",
+        )
+
+        reg = HookRegistry()
+        with patch("gateway.hooks.HOOKS_DIR", tmp_path), _patch_no_builtins(reg):
+            reg.discover_and_load()
+
+        assert reg.loaded_hooks[0]["startup_readiness"] == {
+            "id": "beam-runtime",
+            "required": False,
+        }
 
 
 class TestEmit:

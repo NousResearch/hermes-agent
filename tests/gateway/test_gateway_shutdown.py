@@ -126,6 +126,25 @@ async def test_gateway_stop_service_restart_sets_named_exit_code():
 
 
 @pytest.mark.asyncio
+async def test_gateway_stop_emits_shutdown_hook_after_drain(monkeypatch):
+    runner, adapter = make_restart_runner()
+    adapter.disconnect = AsyncMock()
+    runner.hooks.emit = AsyncMock()
+
+    with patch("gateway.status.remove_pid_file"), patch("gateway.status.write_runtime_status"):
+        await runner.stop(restart=True, service_restart=True)
+
+    runner.hooks.emit.assert_awaited_once_with(
+        "gateway:shutdown",
+        {
+            "restart": True,
+            "service_restart": True,
+            "detached_restart": False,
+        },
+    )
+
+
+@pytest.mark.asyncio
 async def test_drain_active_agents_throttles_status_updates():
     runner, _adapter = make_restart_runner()
     runner._update_runtime_status = MagicMock()

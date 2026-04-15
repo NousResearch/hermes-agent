@@ -133,6 +133,68 @@ async def test_runner_records_connected_platform_state_on_success(monkeypatch, t
 
 
 @pytest.mark.asyncio
+async def test_runner_discovers_plugins_before_loading_hooks(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    config = GatewayConfig(
+        platforms={
+            Platform.DISCORD: PlatformConfig(enabled=True, token="***")
+        },
+        sessions_dir=tmp_path / "sessions",
+    )
+    runner = GatewayRunner(config)
+    order: list[str] = []
+
+    monkeypatch.setattr(runner, "_create_adapter", lambda platform, platform_config: _SuccessfulAdapter())
+    monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda: order.append("plugins"))
+    monkeypatch.setattr(runner.hooks, "discover_and_load", lambda: order.append("hooks"))
+    monkeypatch.setattr(runner.hooks, "emit", AsyncMock())
+
+    ok = await runner.start()
+
+    assert ok is True
+    assert order == ["plugins", "hooks"]
+
+
+@pytest.mark.asyncio
+async def test_runner_initializes_startup_checks_before_gateway_startup_emit(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    config = GatewayConfig(
+        platforms={
+            Platform.DISCORD: PlatformConfig(enabled=True, token="***")
+        },
+        sessions_dir=tmp_path / "sessions",
+    )
+    runner = GatewayRunner(config)
+
+    runner.hooks._loaded_hooks = [
+        {
+            "name": "beam-runtime",
+            "events": ["gateway:startup"],
+            "path": str(tmp_path / "hook"),
+            "startup_readiness": {
+                "id": "beam-runtime",
+                "required": True,
+            },
+        }
+    ]
+    monkeypatch.setattr(runner, "_create_adapter", lambda platform, platform_config: _SuccessfulAdapter())
+    monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda: None)
+    monkeypatch.setattr(runner.hooks, "discover_and_load", lambda: None)
+
+    async def _assert_checks(event_type, context):
+        state = read_runtime_status()
+        assert event_type == "gateway:startup"
+        assert state["startup_checks"]["beam-runtime"]["state"] == "pending"
+        assert state["startup_checks"]["beam-runtime"]["required"] is True
+
+    monkeypatch.setattr(runner.hooks, "emit", _assert_checks)
+
+    ok = await runner.start()
+
+    assert ok is True
+
+
+@pytest.mark.asyncio
 async def test_start_gateway_verbosity_imports_redacting_formatter(monkeypatch, tmp_path):
     """Verbosity != None must not crash with NameError on RedactingFormatter (#8044)."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))

@@ -6,10 +6,19 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import hermes_cli.gateway as gateway_cli
+import pytest
 from gateway.restart import (
     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
     GATEWAY_SERVICE_RESTART_EXIT_CODE,
 )
+
+
+_REAL_AWAIT_SERVICE_READY = gateway_cli._await_service_ready_or_exit
+
+
+@pytest.fixture(autouse=True)
+def _stub_service_readiness(monkeypatch):
+    monkeypatch.setattr(gateway_cli, "_await_service_ready_or_exit", lambda **kwargs: None)
 
 
 class TestSystemdServiceRefresh:
@@ -80,6 +89,30 @@ class TestSystemdServiceRefresh:
         assert calls[:2] == [
             ["systemctl", "--user", "daemon-reload"],
             ["systemctl", "--user", "reload-or-restart", gateway_cli.get_service_name()],
+        ]
+
+    def test_systemd_start_waits_for_readiness_before_reporting_success(self, monkeypatch):
+        calls = []
+
+        monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: False)
+        monkeypatch.setattr(gateway_cli, "refresh_systemd_unit_if_needed", lambda system=False: calls.append(("refresh", system)))
+        monkeypatch.setattr(
+            gateway_cli,
+            "_run_systemctl",
+            lambda cmd, system=False, check=True, timeout=30, **kwargs: calls.append((tuple(cmd), system, timeout)),
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_await_service_ready_or_exit",
+            lambda **kwargs: calls.append(("ready", kwargs)),
+        )
+
+        gateway_cli.systemd_start()
+
+        assert calls == [
+            ("refresh", False),
+            (("start", gateway_cli.get_service_name()), False, 30),
+            ("ready", {"action": "start"}),
         ]
 
 
@@ -268,6 +301,32 @@ class TestLaunchdServiceRecovery:
             ["launchctl", "kickstart", target],
         ]
 
+    def test_launchd_start_waits_for_readiness_before_reporting_success(self, tmp_path, monkeypatch):
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
+        label = gateway_cli.get_launchd_label()
+        calls = []
+
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli, "refresh_launchd_plist_if_needed", lambda: None)
+        monkeypatch.setattr(
+            gateway_cli.subprocess,
+            "run",
+            lambda cmd, check=False, **kwargs: calls.append(cmd) or SimpleNamespace(returncode=0, stdout="", stderr=""),
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_await_service_ready_or_exit",
+            lambda **kwargs: calls.append(("ready", kwargs)),
+        )
+
+        gateway_cli.launchd_start()
+
+        assert calls == [
+            ["launchctl", "kickstart", f"{gateway_cli._launchd_domain()}/{label}"],
+            ("ready", {"action": "start"}),
+        ]
+
     def test_launchd_restart_drains_running_gateway_before_kickstart(self, monkeypatch):
         calls = []
         target = f"{gateway_cli._launchd_domain()}/{gateway_cli.get_launchd_label()}"
@@ -315,7 +374,7 @@ class TestLaunchdServiceRecovery:
         gateway_cli.launchd_restart()
 
         assert calls == [("self", 321)]
-        assert "restart requested" in capsys.readouterr().out.lower()
+        assert "service restarted" in capsys.readouterr().out.lower()
 
     def test_launchd_stop_uses_bootout_not_kill(self, monkeypatch):
         """launchd_stop must bootout the service so KeepAlive doesn't respawn it."""
@@ -391,6 +450,109 @@ class TestLaunchdServiceRecovery:
         assert str(plist_path) in output
         assert "stale" in output.lower()
         assert "not loaded" in output.lower()
+
+
+class TestGatewayServiceReadiness:
+    def test_wait_for_service_readiness_accepts_running_gateway_without_checks(self, monkeypatch):
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: 123)
+        monkeypatch.setattr(
+            "gateway.status.read_runtime_status",
+            lambda: {"pid": 123, "gateway_state": "running", "startup_checks": {}},
+        )
+
+        warnings = gateway_cli._wait_for_service_readiness(action="start", timeout=0.1, poll_interval=0.0)
+
+        assert warnings == []
+
+    def test_wait_for_service_readiness_ignores_stale_runtime_state_until_pid_matches(self, monkeypatch):
+        runtime_states = iter(
+            [
+                {"pid": 999, "gateway_state": "running", "startup_checks": {}},
+                {"pid": 123, "gateway_state": "running", "startup_checks": {}},
+            ]
+        )
+
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: 123)
+        monkeypatch.setattr("gateway.status.read_runtime_status", lambda: next(runtime_states))
+
+        warnings = gateway_cli._wait_for_service_readiness(action="start", timeout=0.1, poll_interval=0.0)
+
+        assert warnings == []
+
+    def test_wait_for_service_readiness_returns_optional_pending_warnings(self, monkeypatch):
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: 123)
+        monkeypatch.setattr(
+            "gateway.status.read_runtime_status",
+            lambda: {
+                "pid": 123,
+                "gateway_state": "running",
+                "startup_checks": {
+                    "optional-check": {
+                        "state": "pending",
+                        "required": False,
+                        "source": "test-hook",
+                        "detail": "still warming",
+                    }
+                },
+            },
+        )
+
+        warnings = gateway_cli._wait_for_service_readiness(action="start", timeout=0.1, poll_interval=0.0)
+
+        assert warnings == ["pending: optional-check (test-hook): still warming"]
+
+    def test_wait_for_service_readiness_fails_when_required_check_fails(self, monkeypatch):
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: 123)
+        monkeypatch.setattr(
+            "gateway.status.read_runtime_status",
+            lambda: {
+                "pid": 123,
+                "gateway_state": "running",
+                "startup_checks": {
+                    "beam-runtime": {
+                        "state": "failed",
+                        "required": True,
+                        "source": "beam",
+                        "detail": "RPC boot failed",
+                    }
+                },
+            },
+        )
+
+        with pytest.raises(RuntimeError, match=r"required startup checks failed: beam-runtime \(beam\): RPC boot failed"):
+            gateway_cli._wait_for_service_readiness(action="start", timeout=0.1, poll_interval=0.0)
+
+    def test_wait_for_service_readiness_times_out_on_pending_required_check(self, monkeypatch):
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: 123)
+        monkeypatch.setattr(
+            "gateway.status.read_runtime_status",
+            lambda: {
+                "pid": 123,
+                "gateway_state": "running",
+                "startup_checks": {
+                    "beam-runtime": {
+                        "state": "pending",
+                        "required": True,
+                        "source": "beam",
+                        "detail": "waiting for runtime",
+                    }
+                },
+            },
+        )
+
+        with pytest.raises(RuntimeError, match=r"timed out waiting for required startup checks: beam-runtime \(beam\): waiting for runtime"):
+            gateway_cli._wait_for_service_readiness(action="start", timeout=0.01, poll_interval=0.0)
+
+    def test_await_service_ready_or_exit_raises_system_exit_when_not_ready(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "_await_service_ready_or_exit", _REAL_AWAIT_SERVICE_READY)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_wait_for_service_readiness",
+            lambda **kwargs: (_ for _ in ()).throw(RuntimeError("not ready")),
+        )
+
+        with pytest.raises(SystemExit, match="1"):
+            gateway_cli._await_service_ready_or_exit(action="start")
 
 
 class TestGatewayServiceDetection:
@@ -475,7 +637,7 @@ class TestGatewaySystemServiceRouting:
         gateway_cli.systemd_restart()
 
         assert calls == [("refresh", False), ("self", 654)]
-        assert "restart requested" in capsys.readouterr().out.lower()
+        assert "service restarted" in capsys.readouterr().out.lower()
 
     def test_gateway_install_passes_system_flags(self, monkeypatch):
         monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)

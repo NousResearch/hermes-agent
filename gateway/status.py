@@ -27,6 +27,7 @@ _RUNTIME_STATUS_FILE = "gateway_state.json"
 _LOCKS_DIRNAME = "gateway-locks"
 _IS_WINDOWS = sys.platform == "win32"
 _UNSET = object()
+_VALID_STARTUP_CHECK_STATES = {"pending", "ready", "failed"}
 
 
 def _get_pid_path() -> Path:
@@ -162,9 +163,37 @@ def _build_runtime_status_record() -> dict[str, Any]:
         "restart_requested": False,
         "active_agents": 0,
         "platforms": {},
+        "startup_checks": {},
         "updated_at": _utc_now_iso(),
     })
     return payload
+
+
+def _normalize_startup_check_entries(
+    startup_checks: Optional[dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """Normalize persisted startup readiness entries."""
+    if not isinstance(startup_checks, dict):
+        return {}
+
+    now = _utc_now_iso()
+    normalized: dict[str, dict[str, Any]] = {}
+    for raw_id, raw_payload in startup_checks.items():
+        check_id = str(raw_id).strip()
+        if not check_id:
+            continue
+        payload = raw_payload if isinstance(raw_payload, dict) else {}
+        state = str(payload.get("state", "pending")).strip().lower()
+        if state not in _VALID_STARTUP_CHECK_STATES:
+            state = "pending"
+        normalized[check_id] = {
+            "state": state,
+            "required": bool(payload.get("required", True)),
+            "source": payload.get("source"),
+            "detail": payload.get("detail"),
+            "updated_at": payload.get("updated_at") or now,
+        }
+    return normalized
 
 
 def _read_json_file(path: Path) -> Optional[dict[str, Any]]:
@@ -223,6 +252,7 @@ def write_runtime_status(
     exit_reason: Any = _UNSET,
     restart_requested: Any = _UNSET,
     active_agents: Any = _UNSET,
+    startup_checks: Any = _UNSET,
     platform: Any = _UNSET,
     platform_state: Any = _UNSET,
     error_code: Any = _UNSET,
@@ -245,6 +275,8 @@ def write_runtime_status(
         payload["restart_requested"] = bool(restart_requested)
     if active_agents is not _UNSET:
         payload["active_agents"] = max(0, int(active_agents))
+    if startup_checks is not _UNSET:
+        payload["startup_checks"] = _normalize_startup_check_entries(startup_checks)
 
     if platform is not _UNSET:
         platform_payload = payload["platforms"].get(platform, {})
@@ -262,7 +294,109 @@ def write_runtime_status(
 
 def read_runtime_status() -> Optional[dict[str, Any]]:
     """Read the persisted gateway runtime health/status information."""
-    return _read_json_file(_get_runtime_status_path())
+    payload = _read_json_file(_get_runtime_status_path())
+    if payload is None:
+        return None
+    payload.setdefault("platforms", {})
+    payload["startup_checks"] = _normalize_startup_check_entries(payload.get("startup_checks"))
+    return payload
+
+
+def reset_startup_checks(checks: Optional[list[dict[str, Any]]] = None) -> dict[str, dict[str, Any]]:
+    """Replace persisted startup readiness checks for the current run."""
+    normalized: dict[str, dict[str, Any]] = {}
+    now = _utc_now_iso()
+
+    for hook in checks or []:
+        if not isinstance(hook, dict):
+            continue
+        readiness = hook.get("startup_readiness")
+        if not isinstance(readiness, dict):
+            continue
+        check_id = str(readiness.get("id", "")).strip()
+        if not check_id:
+            continue
+        normalized[check_id] = {
+            "state": "pending",
+            "required": bool(readiness.get("required", True)),
+            "source": hook.get("name"),
+            "detail": None,
+            "updated_at": now,
+        }
+
+    write_runtime_status(startup_checks=normalized)
+    return normalized
+
+
+def update_startup_check(
+    check_id: str,
+    state: str,
+    *,
+    detail: Any = _UNSET,
+    required: Any = _UNSET,
+    source: Any = _UNSET,
+) -> dict[str, Any]:
+    """Update a single startup readiness check in the runtime status file."""
+    normalized_id = str(check_id).strip()
+    if not normalized_id:
+        raise ValueError("startup readiness check id is required")
+
+    normalized_state = str(state).strip().lower()
+    if normalized_state not in _VALID_STARTUP_CHECK_STATES:
+        raise ValueError(f"invalid startup readiness state: {state}")
+
+    path = _get_runtime_status_path()
+    payload = _read_json_file(path) or _build_runtime_status_record()
+    checks = _normalize_startup_check_entries(payload.get("startup_checks"))
+    existing = checks.get(normalized_id, {})
+    now = _utc_now_iso()
+
+    checks[normalized_id] = {
+        "state": normalized_state,
+        "required": bool(existing.get("required", True) if required is _UNSET else required),
+        "source": existing.get("source") if source is _UNSET else source,
+        "detail": existing.get("detail") if detail is _UNSET else detail,
+        "updated_at": now,
+    }
+
+    payload["startup_checks"] = checks
+    payload.setdefault("platforms", {})
+    payload.setdefault("kind", _GATEWAY_KIND)
+    payload["pid"] = os.getpid()
+    payload["start_time"] = _get_process_start_time(os.getpid())
+    payload["updated_at"] = now
+    _write_json_file(path, payload)
+    return checks[normalized_id]
+
+
+def mark_startup_check_pending(
+    check_id: str,
+    *,
+    detail: Any = _UNSET,
+    required: Any = _UNSET,
+    source: Any = _UNSET,
+) -> dict[str, Any]:
+    return update_startup_check(check_id, "pending", detail=detail, required=required, source=source)
+
+
+def mark_startup_check_ready(
+    check_id: str,
+    *,
+    detail: Any = _UNSET,
+    required: Any = _UNSET,
+    source: Any = _UNSET,
+) -> dict[str, Any]:
+    return update_startup_check(check_id, "ready", detail=detail, required=required, source=source)
+
+
+def mark_startup_check_failed(
+    check_id: str,
+    *,
+    detail: Any = _UNSET,
+    required: Any = _UNSET,
+    source: Any = _UNSET,
+) -> dict[str, Any]:
+    return update_startup_check(check_id, "failed", detail=detail, required=required, source=source)
 
 
 def remove_pid_file() -> None:

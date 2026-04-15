@@ -10,6 +10,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
@@ -35,6 +36,10 @@ from hermes_cli.setup import (
     prompt, prompt_choice, prompt_yes_no,
 )
 from hermes_cli.colors import Colors, color
+
+
+_SERVICE_READINESS_TIMEOUT = 30.0
+_SERVICE_READINESS_POLL_INTERVAL = 0.2
 
 
 # =============================================================================
@@ -1100,12 +1105,123 @@ def systemd_uninstall(system: bool = False):
     print(f"✓ {_service_scope_label(system).capitalize()} service uninstalled")
 
 
+def _describe_startup_check(check_id: str, check: dict) -> str:
+    source = check.get("source")
+    detail = check.get("detail")
+    label = f"{check_id} ({source})" if source and source != check_id else check_id
+    return f"{label}: {detail}" if detail else label
+
+
+def _classify_startup_checks(state: dict | None) -> tuple[list[str], list[str], list[str]]:
+    checks = (state or {}).get("startup_checks") or {}
+    pending_required: list[str] = []
+    failed_required: list[str] = []
+    optional_warnings: list[str] = []
+
+    if not isinstance(checks, dict):
+        return pending_required, failed_required, optional_warnings
+
+    for check_id, raw_check in checks.items():
+        check = raw_check if isinstance(raw_check, dict) else {}
+        label = _describe_startup_check(str(check_id), check)
+        check_state = str(check.get("state", "pending")).strip().lower()
+        required = bool(check.get("required", True))
+
+        if check_state == "ready":
+            continue
+        if required:
+            if check_state == "failed":
+                failed_required.append(label)
+            else:
+                pending_required.append(label)
+        else:
+            prefix = "failed" if check_state == "failed" else "pending"
+            optional_warnings.append(f"{prefix}: {label}")
+
+    return pending_required, failed_required, optional_warnings
+
+
+def _wait_for_service_readiness(
+    *,
+    action: str,
+    previous_pid: int | None = None,
+    timeout: float = _SERVICE_READINESS_TIMEOUT,
+    poll_interval: float = _SERVICE_READINESS_POLL_INTERVAL,
+) -> list[str]:
+    from gateway.status import get_running_pid, read_runtime_status
+
+    deadline = time.monotonic() + timeout
+    last_pending: list[str] = []
+
+    while time.monotonic() < deadline:
+        live_pid = get_running_pid()
+        if live_pid is None or (previous_pid is not None and live_pid == previous_pid):
+            time.sleep(poll_interval)
+            continue
+
+        runtime = read_runtime_status() or {}
+        try:
+            runtime_pid = int(runtime.get("pid"))
+        except (TypeError, ValueError):
+            runtime_pid = None
+        if runtime_pid != live_pid:
+            time.sleep(poll_interval)
+            continue
+
+        gateway_state = runtime.get("gateway_state")
+        pending_required, failed_required, optional_warnings = _classify_startup_checks(runtime)
+        last_pending = pending_required
+
+        if gateway_state == "startup_failed":
+            reason = runtime.get("exit_reason") or f"gateway {action} failed during startup"
+            raise RuntimeError(reason)
+        if failed_required:
+            raise RuntimeError(
+                "required startup checks failed: " + "; ".join(failed_required)
+            )
+        if gateway_state == "running" and not pending_required:
+            return optional_warnings
+
+        time.sleep(poll_interval)
+
+    if last_pending:
+        raise RuntimeError(
+            "timed out waiting for required startup checks: " + "; ".join(last_pending)
+        )
+    if previous_pid is not None:
+        raise RuntimeError(
+            f"timed out waiting for gateway {action}; previous process is still active or no new runtime became ready"
+        )
+    raise RuntimeError(f"timed out waiting for gateway {action} readiness")
+
+
+def _await_service_ready_or_exit(
+    *,
+    action: str,
+    previous_pid: int | None = None,
+    timeout: float = _SERVICE_READINESS_TIMEOUT,
+) -> None:
+    try:
+        optional_warnings = _wait_for_service_readiness(
+            action=action,
+            previous_pid=previous_pid,
+            timeout=timeout,
+        )
+    except RuntimeError as exc:
+        print_error(f"  Gateway {action} did not become ready: {exc}")
+        raise SystemExit(1) from exc
+
+    for warning in optional_warnings:
+        print_warning(f"  Optional startup check {warning}")
+
+
 def systemd_start(system: bool = False):
     system = _select_systemd_scope(system)
     if system:
         _require_root_for_system_service("start")
     refresh_systemd_unit_if_needed(system=system)
     _run_systemctl(["start", get_service_name()], system=system, check=True, timeout=30)
+    _await_service_ready_or_exit(action="start")
     print(f"✓ {_service_scope_label(system).capitalize()} service started")
 
 
@@ -1128,9 +1244,11 @@ def systemd_restart(system: bool = False):
 
     pid = get_running_pid()
     if pid is not None and _request_gateway_self_restart(pid):
-        print(f"✓ {_service_scope_label(system).capitalize()} service restart requested")
+        _await_service_ready_or_exit(action="restart", previous_pid=pid)
+        print(f"✓ {_service_scope_label(system).capitalize()} service restarted")
         return
     _run_systemctl(["reload-or-restart", get_service_name()], system=system, check=True, timeout=90)
+    _await_service_ready_or_exit(action="restart", previous_pid=pid)
     print(f"✓ {_service_scope_label(system).capitalize()} service restarted")
 
 
@@ -1389,6 +1507,7 @@ def launchd_start():
         plist_path.write_text(generate_launchd_plist(), encoding="utf-8")
         subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=True, timeout=30)
         subprocess.run(["launchctl", "kickstart", f"{_launchd_domain()}/{label}"], check=True, timeout=30)
+        _await_service_ready_or_exit(action="start")
         print("✓ Service started")
         return
 
@@ -1401,6 +1520,7 @@ def launchd_start():
         print("↻ launchd job was unloaded; reloading service definition")
         subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=True, timeout=30)
         subprocess.run(["launchctl", "kickstart", f"{_launchd_domain()}/{label}"], check=True, timeout=30)
+    _await_service_ready_or_exit(action="start")
     print("✓ Service started")
 
 def launchd_stop():
@@ -1471,7 +1591,8 @@ def launchd_restart():
     try:
         pid = get_running_pid()
         if pid is not None and _request_gateway_self_restart(pid):
-            print("✓ Service restart requested")
+            _await_service_ready_or_exit(action="restart", previous_pid=pid)
+            print("✓ Service restarted")
             return
         if pid is not None:
             try:
@@ -1483,6 +1604,7 @@ def launchd_restart():
                 if not exited:
                     print(f"⚠ Gateway drain timed out after {drain_timeout:.0f}s — forcing launchd restart")
         subprocess.run(["launchctl", "kickstart", "-k", target], check=True, timeout=90)
+        _await_service_ready_or_exit(action="restart", previous_pid=pid)
         print("✓ Service restarted")
     except subprocess.CalledProcessError as e:
         if e.returncode not in (3, 113):
@@ -1492,6 +1614,7 @@ def launchd_restart():
         plist_path = get_launchd_plist_path()
         subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=True, timeout=30)
         subprocess.run(["launchctl", "kickstart", target], check=True, timeout=30)
+        _await_service_ready_or_exit(action="restart", previous_pid=pid)
         print("✓ Service restarted")
 
 def launchd_status(deep: bool = False):

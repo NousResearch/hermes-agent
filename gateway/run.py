@@ -1640,7 +1640,7 @@ class GatewayRunner:
             pass
         try:
             from gateway.status import write_runtime_status
-            write_runtime_status(gateway_state="starting", exit_reason=None)
+            write_runtime_status(gateway_state="starting", exit_reason=None, startup_checks={})
         except Exception:
             pass
         
@@ -1682,8 +1682,23 @@ class GatewayRunner:
                 "or configure platform allowlists (e.g., TELEGRAM_ALLOWED_USERS=your_id)."
             )
         
+        # Discover plugins before hooks so plugin-owned hook bundles can
+        # participate in this same startup cycle.
+        try:
+            from hermes_cli.plugins import discover_plugins
+
+            discover_plugins()
+        except Exception as e:
+            logger.warning("Plugin discovery during gateway startup failed: %s", e)
+
         # Discover and load event hooks
         self.hooks.discover_and_load()
+        try:
+            from gateway.status import reset_startup_checks
+
+            reset_startup_checks(self.hooks.loaded_hooks)
+        except Exception as e:
+            logger.warning("Startup readiness initialization failed: %s", e)
         
         # Recover background processes from checkpoint (crash recovery)
         try:
@@ -2215,6 +2230,11 @@ class GatewayRunner:
                     logger.error("Failed to launch detached gateway restart: %s", e)
 
             self._finalize_shutdown_agents(active_agents)
+            await self.hooks.emit("gateway:shutdown", {
+                "restart": self._restart_requested,
+                "service_restart": self._restart_via_service,
+                "detached_restart": self._restart_detached,
+            })
 
             for platform, adapter in list(self.adapters.items()):
                 try:

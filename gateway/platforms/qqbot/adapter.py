@@ -84,38 +84,34 @@ class QQCloseError(Exception):
         self.reason = str(reason) if reason else ""
         super().__init__(f"WebSocket closed (code={self.code}, reason={self.reason})")
 # ---------------------------------------------------------------------------
-# Constants
+# Constants — imported from the shared constants module.
 # ---------------------------------------------------------------------------
 
-API_BASE = "https://api.sgroup.qq.com"
-TOKEN_URL = "https://bots.qq.com/app/getAppAccessToken"
-GATEWAY_URL_PATH = "/gateway"
-
-DEFAULT_API_TIMEOUT = 30.0
-FILE_UPLOAD_TIMEOUT = 120.0
-CONNECT_TIMEOUT_SECONDS = 20.0
-
-RECONNECT_BACKOFF = [2, 5, 10, 30, 60]
-MAX_RECONNECT_ATTEMPTS = 100
-RATE_LIMIT_DELAY = 60  # seconds
-QUICK_DISCONNECT_THRESHOLD = 5.0  # seconds
-MAX_QUICK_DISCONNECT_COUNT = 3
-
-MAX_MESSAGE_LENGTH = 4000
-DEDUP_WINDOW_SECONDS = 300
-DEDUP_MAX_SIZE = 1000
-
-# QQ Bot message types
-MSG_TYPE_TEXT = 0
-MSG_TYPE_MARKDOWN = 2
-MSG_TYPE_MEDIA = 7
-MSG_TYPE_INPUT_NOTIFY = 6
-
-# QQ Bot file media types
-MEDIA_TYPE_IMAGE = 1
-MEDIA_TYPE_VIDEO = 2
-MEDIA_TYPE_VOICE = 3
-MEDIA_TYPE_FILE = 4
+from gateway.platforms.qqbot.constants import (
+    API_BASE,
+    TOKEN_URL,
+    GATEWAY_URL_PATH,
+    DEFAULT_API_TIMEOUT,
+    FILE_UPLOAD_TIMEOUT,
+    CONNECT_TIMEOUT_SECONDS,
+    RECONNECT_BACKOFF,
+    MAX_RECONNECT_ATTEMPTS,
+    RATE_LIMIT_DELAY,
+    QUICK_DISCONNECT_THRESHOLD,
+    MAX_QUICK_DISCONNECT_COUNT,
+    MAX_MESSAGE_LENGTH,
+    DEDUP_WINDOW_SECONDS,
+    DEDUP_MAX_SIZE,
+    MSG_TYPE_TEXT,
+    MSG_TYPE_MARKDOWN,
+    MSG_TYPE_MEDIA,
+    MSG_TYPE_INPUT_NOTIFY,
+    MEDIA_TYPE_IMAGE,
+    MEDIA_TYPE_VIDEO,
+    MEDIA_TYPE_VOICE,
+    MEDIA_TYPE_FILE,
+)
+from gateway.platforms.qqbot.utils import coerce_list as _coerce_list_impl, build_user_agent
 
 
 def check_qq_requirements() -> bool:
@@ -125,13 +121,7 @@ def check_qq_requirements() -> bool:
 
 def _coerce_list(value: Any) -> List[str]:
     """Coerce config values into a trimmed string list."""
-    if value is None:
-        return []
-    if isinstance(value, str):
-        return [item.strip() for item in value.split(",") if item.strip()]
-    if isinstance(value, (list, tuple, set)):
-        return [str(item).strip() for item in value if str(item).strip()]
-    return [str(value).strip()] if str(value).strip() else []
+    return _coerce_list_impl(value)
 
 
 # ---------------------------------------------------------------------------
@@ -143,6 +133,9 @@ class QQAdapter(BasePlatformAdapter):
 
     # QQ Bot API does not support editing sent messages.
     SUPPORTS_MESSAGE_EDITING = False
+    MAX_MESSAGE_LENGTH = MAX_MESSAGE_LENGTH
+    _TYPING_INPUT_SECONDS = 60    # input_notify duration reported to QQ
+    _TYPING_DEBOUNCE_SECONDS = 50  # refresh before it expires
 
     def _fail_pending(self, reason: str) -> None:
         """Fail all pending response futures."""
@@ -151,7 +144,6 @@ class QQAdapter(BasePlatformAdapter):
                 fut.set_exception(RuntimeError(reason))
         self._pending_responses.clear()
 
-    MAX_MESSAGE_LENGTH = MAX_MESSAGE_LENGTH
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.QQBOT)
@@ -181,6 +173,11 @@ class QQAdapter(BasePlatformAdapter):
         # Request/response correlation
         self._pending_responses: Dict[str, asyncio.Future] = {}
         self._seen_messages: Dict[str, float] = {}
+
+        # Last inbound message ID per chat — used by send_typing
+        self._last_msg_id: Dict[str, str] = {}
+        # Typing debounce: chat_id → last send_typing timestamp
+        self._typing_sent_at: Dict[str, float] = {}
 
         # Token cache
         self._access_token: Optional[str] = None
@@ -687,6 +684,12 @@ class QQAdapter(BasePlatformAdapter):
     # Inbound message handling
     # ------------------------------------------------------------------
 
+    async def handle_message(self, event: MessageEvent) -> None:
+        """Cache the last message ID per chat, then delegate to base."""
+        if event.message_id and event.source.chat_id:
+            self._last_msg_id[event.source.chat_id] = event.message_id
+        await super().handle_message(event)
+
     async def _on_message(self, event_type: str, d: Any) -> None:
         """Process an inbound QQ Bot message event."""
         if not isinstance(d, dict):
@@ -908,7 +911,6 @@ class QQAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
     # Attachment processing
     # ------------------------------------------------------------------
-
 
     @staticmethod
     def _detect_message_type(media_urls: list, media_types: list):
@@ -1476,6 +1478,7 @@ class QQAdapter(BasePlatformAdapter):
         headers = {
             "Authorization": f"QQBot {token}",
             "Content-Type": "application/json",
+            "User-Agent": build_user_agent(),
         }
 
         try:
@@ -1875,25 +1878,39 @@ class QQAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
-        """Send an input notify to a C2C user (only supported for C2C)."""
-        del metadata
+        """Send an input notify to a C2C user (only supported for C2C).
 
+        Debounced to one request per ~50s (the API sets a 60s indicator).
+        The QQ API requires the originating message ID — retrieved from
+        ``_last_msg_id`` which is populated by ``_on_message``.
+        """
         if not self.is_connected:
             return
 
-        # Only C2C supports input notify
         chat_type = self._guess_chat_type(chat_id)
         if chat_type != "c2c":
+            return
+
+        msg_id = self._last_msg_id.get(chat_id)
+        if not msg_id:
+            return
+
+        # Debounce — skip if we sent recently
+        now = time.time()
+        last_sent = self._typing_sent_at.get(chat_id, 0.0)
+        if now - last_sent < self._TYPING_DEBOUNCE_SECONDS:
             return
 
         try:
             msg_seq = self._next_msg_seq(chat_id)
             body = {
                 "msg_type": MSG_TYPE_INPUT_NOTIFY,
-                "input_notify": {"input_type": 1, "input_second": 60},
+                "msg_id": msg_id,
+                "input_notify": {"input_type": 1, "input_second": self._TYPING_INPUT_SECONDS},
                 "msg_seq": msg_seq,
             }
             await self._api_request("POST", f"/v2/users/{chat_id}/messages", body)
+            self._typing_sent_at[chat_id] = now
         except Exception as exc:
             logger.debug("[%s] send_typing failed: %s", self.name, exc)
 

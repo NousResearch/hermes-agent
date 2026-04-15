@@ -43,24 +43,72 @@ class FakeRetryAfter(Exception):
         self.retry_after = seconds
 
 
-# Build a fake telegram module tree so the adapter's internal imports work
-_fake_telegram = types.ModuleType("telegram")
-_fake_telegram_error = types.ModuleType("telegram.error")
-_fake_telegram_error.NetworkError = FakeNetworkError
-_fake_telegram_error.BadRequest = FakeBadRequest
-_fake_telegram_error.TimedOut = FakeTimedOut
-_fake_telegram.error = _fake_telegram_error
-_fake_telegram_constants = types.ModuleType("telegram.constants")
-_fake_telegram_constants.ParseMode = SimpleNamespace(MARKDOWN_V2="MarkdownV2")
-_fake_telegram.constants = _fake_telegram_constants
+def _build_fake_telegram_modules():
+    """Build a complete fake telegram package so adapter imports stay enabled."""
+    telegram_mod = types.ModuleType("telegram")
+    telegram_error = types.ModuleType("telegram.error")
+    telegram_constants = types.ModuleType("telegram.constants")
+    telegram_ext = types.ModuleType("telegram.ext")
+    telegram_request = types.ModuleType("telegram.request")
+
+    class FakeInlineKeyboardButton:
+        def __init__(self, text, callback_data=None):
+            self.text = text
+            self.callback_data = callback_data
+
+    class FakeInlineKeyboardMarkup:
+        def __init__(self, inline_keyboard):
+            self.inline_keyboard = inline_keyboard
+
+    telegram_error.NetworkError = FakeNetworkError
+    telegram_error.BadRequest = FakeBadRequest
+    telegram_error.TimedOut = FakeTimedOut
+    telegram_error.RetryAfter = FakeRetryAfter
+
+    telegram_constants.ParseMode = SimpleNamespace(
+        MARKDOWN="Markdown",
+        MARKDOWN_V2="MarkdownV2",
+        HTML="HTML",
+    )
+    telegram_constants.ChatType = SimpleNamespace(
+        PRIVATE="private",
+        GROUP="group",
+        SUPERGROUP="supergroup",
+        CHANNEL="channel",
+    )
+
+    telegram_ext.Application = type("Application", (), {})
+    telegram_ext.CommandHandler = type("CommandHandler", (), {})
+    telegram_ext.CallbackQueryHandler = type("CallbackQueryHandler", (), {})
+    telegram_ext.MessageHandler = type("MessageHandler", (), {})
+    telegram_ext.ContextTypes = SimpleNamespace(DEFAULT_TYPE=object)
+    telegram_ext.filters = SimpleNamespace()
+
+    telegram_request.HTTPXRequest = type("HTTPXRequest", (), {})
+
+    telegram_mod.Update = type("Update", (), {"ALL_TYPES": []})
+    telegram_mod.Bot = type("Bot", (), {})
+    telegram_mod.Message = type("Message", (), {})
+    telegram_mod.InlineKeyboardButton = FakeInlineKeyboardButton
+    telegram_mod.InlineKeyboardMarkup = FakeInlineKeyboardMarkup
+    telegram_mod.error = telegram_error
+    telegram_mod.constants = telegram_constants
+
+    return {
+        "telegram": telegram_mod,
+        "telegram.error": telegram_error,
+        "telegram.constants": telegram_constants,
+        "telegram.ext": telegram_ext,
+        "telegram.request": telegram_request,
+    }
 
 
 @pytest.fixture(autouse=True)
 def _inject_fake_telegram(monkeypatch):
-    """Inject fake telegram modules so the adapter can import from them."""
-    monkeypatch.setitem(sys.modules, "telegram", _fake_telegram)
-    monkeypatch.setitem(sys.modules, "telegram.error", _fake_telegram_error)
-    monkeypatch.setitem(sys.modules, "telegram.constants", _fake_telegram_constants)
+    """Inject fake telegram modules and force a fresh adapter import per test."""
+    monkeypatch.delitem(sys.modules, "gateway.platforms.telegram", raising=False)
+    for module_name, module in _build_fake_telegram_modules().items():
+        monkeypatch.setitem(sys.modules, module_name, module)
 
 
 def _make_adapter():

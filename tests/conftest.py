@@ -1,6 +1,8 @@
 """Shared fixtures for the hermes-agent test suite."""
 
 import asyncio
+import importlib
+import importlib.util
 import os
 import signal
 import sys
@@ -14,6 +16,29 @@ import pytest
 PROJECT_ROOT = Path(__file__).parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+
+
+def _dependency_available(module_name: str) -> bool:
+    """Return True when the optional dependency can be imported for real."""
+    try:
+        return importlib.util.find_spec(module_name) is not None
+    except (ImportError, AttributeError, ValueError):
+        return False
+
+
+def _reload_optional_gateway_adapter(module_name: str, dependency: str, broken_predicate) -> None:
+    """Reload a gateway adapter if a previous test imported it in fallback mode."""
+    module = sys.modules.get(module_name)
+    if module is None or not _dependency_available(dependency):
+        return
+    try:
+        if broken_predicate(module):
+            importlib.reload(module)
+    except Exception:
+        # Tests that intentionally simulate missing optional deps may leave
+        # the module in a transient state. Ignore cleanup failures here and let
+        # the next test control its own import path.
+        pass
 
 
 @pytest.fixture(autouse=True)
@@ -40,6 +65,54 @@ def _isolate_hermes_home(tmp_path, monkeypatch):
     monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
     # Avoid making real calls during tests if this key is set in the env files
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _reset_process_state(monkeypatch):
+    """Clear process-global state that otherwise leaks across xdist workers."""
+    for env_var in (
+        "VIRTUAL_ENV",
+        "GH_TOKEN",
+        "GITHUB_TOKEN",
+        "COPILOT_GITHUB_TOKEN",
+        "COPILOT_API_BASE_URL",
+        "CAMOFOX_URL",
+    ):
+        monkeypatch.delenv(env_var, raising=False)
+
+    _reload_optional_gateway_adapter(
+        "gateway.platforms.discord",
+        "discord",
+        lambda mod: getattr(mod, "DISCORD_AVAILABLE", True) is False or getattr(mod, "discord", object()) is None,
+    )
+    _reload_optional_gateway_adapter(
+        "gateway.platforms.telegram",
+        "telegram",
+        lambda mod: getattr(mod, "TELEGRAM_AVAILABLE", True) is False or getattr(mod, "ChatType", object()) is None,
+    )
+
+    camofox = sys.modules.get("tools.browser_camofox")
+    if camofox is not None:
+        try:
+            with camofox._sessions_lock:
+                camofox._sessions.clear()
+        except Exception:
+            pass
+        monkeypatch.setattr(camofox, "_vnc_url", None, raising=False)
+        monkeypatch.setattr(camofox, "_vnc_url_checked", False, raising=False)
+
+    checkpoint_manager = sys.modules.get("tools.checkpoint_manager")
+    if checkpoint_manager is not None:
+        try:
+            from hermes_constants import get_hermes_home
+            monkeypatch.setattr(
+                checkpoint_manager,
+                "CHECKPOINT_BASE",
+                get_hermes_home() / "checkpoints",
+                raising=False,
+            )
+        except Exception:
+            pass
 
 
 @pytest.fixture()

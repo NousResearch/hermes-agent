@@ -170,6 +170,8 @@ class TelegramAdapter(BasePlatformAdapter):
         self._model_picker_state: Dict[str, dict] = {}
         # Approval button state: message_id → session_key
         self._approval_state: Dict[int, str] = {}
+        # Inline menu state per chat
+        self._commands_menu_state: Dict[str, dict] = {}
 
     @staticmethod
     def _is_callback_user_authorized(user_id: str) -> bool:
@@ -1475,6 +1477,146 @@ class TelegramAdapter(BasePlatformAdapter):
             # Catch-all (e.g. page counter button "mx:noop")
             await query.answer()
 
+    # ── /commands inline menu ──────────────────────────────────────────
+
+    _COMMANDS_PAGE_SIZE = 12
+
+    def _build_commands_keyboard(
+        self,
+        entries: list,
+        page: int,
+        page_size: int = 0,
+    ) -> tuple:
+        """Build pagination-only inline keyboard for /commands.
+
+        The command list itself stays in message text; buttons are only for
+        Prev/Next navigation and Close.
+        Returns ``(InlineKeyboardMarkup, page_info_text)``.
+        """
+        page_size = page_size or self._COMMANDS_PAGE_SIZE
+        total = len(entries)
+        total_pages = max(1, (total + page_size - 1) // page_size)
+        page = max(0, min(page, total_pages - 1))
+        start = page * page_size
+        end = min(start + page_size, total)
+
+        rows: list = []
+        if total_pages > 1:
+            nav: list = []
+            if page > 0:
+                nav.append(InlineKeyboardButton("◀ Prev", callback_data=f"cp:{page - 1}"))
+            nav.append(InlineKeyboardButton(f"{page + 1}/{total_pages}", callback_data="ci:noop"))
+            if page < total_pages - 1:
+                nav.append(InlineKeyboardButton("Next ▶", callback_data=f"cp:{page + 1}"))
+            rows.append(nav)
+
+        rows.append([InlineKeyboardButton("✗ Close", callback_data="cx")])
+        page_info = f" ({start + 1}–{end} of {total})" if total_pages > 1 else ""
+        return InlineKeyboardMarkup(rows), page_info
+
+    def _render_commands_menu_text(self, entries: list, page: int, total_pages: int) -> str:
+        """Render /commands page text as plain text for Telegram.
+
+        Skill descriptions can contain arbitrary markdown-ish content from SKILL.md
+        frontmatter. Rendering the menu in Telegram Markdown is brittle and can
+        make pagination silently fail when a later page contains malformed text.
+        """
+        page_size = self._COMMANDS_PAGE_SIZE
+        total = len(entries)
+        page = max(0, min(page, max(0, total_pages - 1)))
+        start = page * page_size
+        end = min(start + page_size, total)
+        page_entries = [str(entry or "") for entry in entries[start:end]]
+        text_lines = [
+            f"📚 Commands ({total} total, page {page + 1}/{total_pages})",
+            "",
+            *page_entries,
+        ]
+        return "\n".join(text_lines)
+
+    async def send_commands_menu(
+        self,
+        chat_id: str,
+        entries: list,
+        page: int = 0,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a paginated inline-keyboard /commands menu."""
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+
+        try:
+            page_size = self._COMMANDS_PAGE_SIZE
+            total_pages = max(1, (len(entries) + page_size - 1) // page_size)
+            page = max(0, min(page, total_pages - 1))
+            keyboard, _page_info = self._build_commands_keyboard(entries, page, page_size)
+            thread_id = metadata.get("thread_id") if metadata else None
+            kwargs: Dict[str, Any] = {
+                "chat_id": int(chat_id),
+                "text": self._render_commands_menu_text(entries, page, total_pages),
+                "parse_mode": None,
+                "reply_markup": keyboard,
+            }
+            if thread_id:
+                kwargs["message_thread_id"] = int(thread_id)
+
+            msg = await self._send_message_with_thread_fallback(**kwargs)
+            self._commands_menu_state[str(chat_id)] = {
+                "entries": entries,
+                "msg_id": msg.message_id,
+            }
+            return SendResult(success=True, message_id=str(msg.message_id))
+        except Exception as e:
+            logger.warning("[%s] send_commands_menu failed: %s", self.name, e)
+            return SendResult(success=False, error=str(e))
+
+    async def _handle_commands_callback(self, query, data: str, chat_id: str) -> None:
+        """Handle /commands inline menu callbacks."""
+        state = self._commands_menu_state.get(chat_id)
+        if not state:
+            await query.answer(text="Menu expired — use /commands again.")
+            return
+
+        expected_msg_id = state.get("msg_id")
+        actual_msg_id = getattr(getattr(query, "message", None), "message_id", None)
+        if expected_msg_id is not None and actual_msg_id != expected_msg_id:
+            await query.answer(text="Menu expired — use /commands again.")
+            return
+
+        entries = state["entries"]
+        if data.startswith("cp:"):
+            try:
+                page = int(data[3:])
+            except ValueError:
+                await query.answer(text="Invalid page.")
+                return
+
+            page_size = self._COMMANDS_PAGE_SIZE
+            total_pages = max(1, (len(entries) + page_size - 1) // page_size)
+            page = max(0, min(page, total_pages - 1))
+            keyboard, _page_info = self._build_commands_keyboard(entries, page, page_size)
+            try:
+                await query.edit_message_text(
+                    text=self._render_commands_menu_text(entries, page, total_pages),
+                    parse_mode=None,
+                    reply_markup=keyboard,
+                )
+            except Exception:
+                pass
+            await query.answer()
+            return
+
+        if data == "cx":
+            self._commands_menu_state.pop(chat_id, None)
+            try:
+                await query.edit_message_text(text="📚 Commands menu closed.", reply_markup=None)
+            except Exception:
+                pass
+            await query.answer()
+            return
+
+        await query.answer()
+
     async def _handle_callback_query(
         self, update: "Update", context: "ContextTypes.DEFAULT_TYPE"
     ) -> None:
@@ -1489,6 +1631,13 @@ class TelegramAdapter(BasePlatformAdapter):
             chat_id = str(query.message.chat_id) if query.message else None
             if chat_id:
                 await self._handle_model_picker_callback(query, data, chat_id)
+            return
+
+        # --- /commands menu callbacks (cp:/ci:/cx) ---
+        if data.startswith(("cp:", "ci:", "cx")):
+            chat_id = str(query.message.chat_id) if query.message else None
+            if chat_id:
+                await self._handle_commands_callback(query, data, chat_id)
             return
 
         # --- Exec approval callbacks (ea:choice:id) ---

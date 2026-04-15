@@ -11,7 +11,7 @@ The web dashboard is a browser-based UI for managing your Hermes Agent installat
 ## Quick Start
 
 ```bash
-hermes web
+hermes dashboard
 ```
 
 This starts a local web server and opens `http://127.0.0.1:9119` in your browser. The dashboard runs entirely on your machine — no data leaves localhost.
@@ -26,13 +26,13 @@ This starts a local web server and opens `http://127.0.0.1:9119` in your browser
 
 ```bash
 # Custom port
-hermes web --port 8080
+hermes dashboard --port 8080
 
 # Bind to all interfaces (use with caution on shared networks)
-hermes web --host 0.0.0.0
+hermes dashboard --host 0.0.0.0
 
 # Start without opening browser
-hermes web --no-open
+hermes dashboard --no-open
 ```
 
 ## Prerequisites
@@ -45,7 +45,7 @@ pip install hermes-agent[web]
 
 If you installed with `pip install hermes-agent[all]`, the web dependencies are already included.
 
-When you run `hermes web` without the dependencies, it will tell you what to install. If the frontend hasn't been built yet and `npm` is available, it builds automatically on first launch.
+When you run `hermes dashboard` without the dependencies, it will tell you what to install. If the frontend hasn't been built yet and `npm` is available, it builds automatically on first launch.
 
 ## Pages
 
@@ -283,7 +283,7 @@ If you're contributing to the web dashboard frontend:
 
 ```bash
 # Terminal 1: start the backend API
-hermes web --no-open
+hermes dashboard --no-open
 
 # Terminal 2: start the Vite dev server with HMR
 cd web/
@@ -297,4 +297,4 @@ The frontend is built with React 19, TypeScript, Tailwind CSS v4, and shadcn/ui-
 
 ## Automatic Build on Update
 
-When you run `hermes update`, the web frontend is automatically rebuilt if `npm` is available. This keeps the dashboard in sync with code updates. If `npm` isn't installed, the update skips the frontend build and `hermes web` will build it on first launch.
+When you run `hermes update`, the web frontend is automatically rebuilt if `npm` is available. This keeps the dashboard in sync with code updates. If `npm` isn't installed, the update skips the frontend build and `hermes dashboard` will build it on first launch.

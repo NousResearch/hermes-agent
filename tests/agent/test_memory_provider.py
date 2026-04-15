@@ -695,3 +695,102 @@ class TestMemoryContextFencing:
         fence_end = combined.index("</memory-context>")
         assert "Alice" in combined[fence_start:fence_end]
         assert combined.index("weather") < fence_start
+
+
+# ---------------------------------------------------------------------------
+# AIAgent.commit_memory_session — routes to MemoryManager.on_session_end
+# ---------------------------------------------------------------------------
+
+
+class _CommitRecorder(FakeMemoryProvider):
+    """Provider that records on_session_end calls for assertions."""
+
+    def __init__(self, name="recorder"):
+        super().__init__(name)
+        self.end_calls = []
+
+    def on_session_end(self, messages):
+        self.end_calls.append(list(messages or []))
+
+
+class TestCommitMemorySessionRouting:
+    def test_on_session_end_fans_out(self):
+        mgr = MemoryManager()
+        builtin = _CommitRecorder("builtin")
+        external = _CommitRecorder("openviking")
+        mgr.add_provider(builtin)
+        mgr.add_provider(external)
+
+        msgs = [{"role": "user", "content": "hi"}]
+        mgr.on_session_end(msgs)
+
+        assert builtin.end_calls == [msgs]
+        assert external.end_calls == [msgs]
+
+    def test_on_session_end_tolerates_failure(self):
+        mgr = MemoryManager()
+        builtin = FakeMemoryProvider("builtin")
+        bad = _CommitRecorder("bad-provider")
+        bad.on_session_end = lambda m: (_ for _ in ()).throw(RuntimeError("boom"))
+        mgr.add_provider(builtin)
+        mgr.add_provider(bad)
+
+        mgr.on_session_end([])  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# on_memory_write bridge — must fire from both concurrent AND sequential paths
+# ---------------------------------------------------------------------------
+
+
+class TestOnMemoryWriteBridge:
+    """Verify that MemoryManager.on_memory_write is called when built-in
+    memory writes happen.  This is a regression test for #10174 where the
+    sequential tool execution path (_execute_tool_calls_sequential) was
+    missing the bridge call, so single memory tool calls never notified
+    external memory providers.
+    """
+
+    def test_on_memory_write_add(self):
+        """on_memory_write fires for 'add' actions."""
+        mgr = MemoryManager()
+        p = FakeMemoryProvider("ext")
+        mgr.add_provider(p)
+
+        mgr.on_memory_write("add", "memory", "new fact")
+        assert p.memory_writes == [("add", "memory", "new fact")]
+
+    def test_on_memory_write_replace(self):
+        """on_memory_write fires for 'replace' actions."""
+        mgr = MemoryManager()
+        p = FakeMemoryProvider("ext")
+        mgr.add_provider(p)
+
+        mgr.on_memory_write("replace", "user", "updated pref")
+        assert p.memory_writes == [("replace", "user", "updated pref")]
+
+    def test_on_memory_write_remove_not_bridged(self):
+        """The bridge intentionally skips 'remove' — only add/replace notify."""
+        # This tests the contract that run_agent.py checks:
+        #   function_args.get("action") in ("add", "replace")
+        mgr = MemoryManager()
+        p = FakeMemoryProvider("ext")
+        mgr.add_provider(p)
+
+        # Manager itself doesn't filter — run_agent.py does.
+        # But providers should handle remove gracefully.
+        mgr.on_memory_write("remove", "memory", "old fact")
+        assert p.memory_writes == [("remove", "memory", "old fact")]
+
+    def test_on_memory_write_tolerates_provider_failure(self):
+        """If a provider's on_memory_write raises, others still get notified."""
+        mgr = MemoryManager()
+        bad = FakeMemoryProvider("builtin")
+        bad.on_memory_write = MagicMock(side_effect=RuntimeError("boom"))
+        good = FakeMemoryProvider("good")
+        mgr.add_provider(bad)
+        mgr.add_provider(good)
+
+        mgr.on_memory_write("add", "user", "test")
+        # Good provider still received the call despite bad provider crashing
+        assert good.memory_writes == [("add", "user", "test")]

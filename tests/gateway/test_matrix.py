@@ -336,6 +336,29 @@ def _make_adapter():
 
 
 # ---------------------------------------------------------------------------
+# Typing indicator
+# ---------------------------------------------------------------------------
+
+class TestMatrixTypingIndicator:
+    def setup_method(self):
+        self.adapter = _make_adapter()
+        self.adapter._client = MagicMock()
+        self.adapter._client.set_typing = AsyncMock()
+
+    @pytest.mark.asyncio
+    async def test_stop_typing_clears_matrix_typing_state(self):
+        """stop_typing() should send typing=false instead of waiting for timeout expiry."""
+        from gateway.platforms.matrix import RoomID
+
+        await self.adapter.stop_typing("!room:example.org")
+
+        self.adapter._client.set_typing.assert_awaited_once_with(
+            RoomID("!room:example.org"),
+            timeout=0,
+        )
+
+
+# ---------------------------------------------------------------------------
 # mxc:// URL conversion
 # ---------------------------------------------------------------------------
 
@@ -1831,45 +1854,3 @@ class TestMatrixPresence:
         assert result is False
 
 
-# ---------------------------------------------------------------------------
-# Emote & notice
-# ---------------------------------------------------------------------------
-
-class TestMatrixMessageTypes:
-    def setup_method(self):
-        self.adapter = _make_adapter()
-
-    @pytest.mark.asyncio
-    async def test_send_emote(self):
-        """send_emote should call send_message_event with m.emote."""
-        mock_client = MagicMock()
-        # mautrix returns EventID string directly
-        mock_client.send_message_event = AsyncMock(return_value="$emote1")
-        self.adapter._client = mock_client
-
-        result = await self.adapter.send_emote("!room:ex", "waves hello")
-        assert result.success is True
-        assert result.message_id == "$emote1"
-        call_args = mock_client.send_message_event.call_args
-        content = call_args.args[2] if len(call_args.args) > 2 else call_args.kwargs.get("content")
-        assert content["msgtype"] == "m.emote"
-
-    @pytest.mark.asyncio
-    async def test_send_notice(self):
-        """send_notice should call send_message_event with m.notice."""
-        mock_client = MagicMock()
-        mock_client.send_message_event = AsyncMock(return_value="$notice1")
-        self.adapter._client = mock_client
-
-        result = await self.adapter.send_notice("!room:ex", "System message")
-        assert result.success is True
-        assert result.message_id == "$notice1"
-        call_args = mock_client.send_message_event.call_args
-        content = call_args.args[2] if len(call_args.args) > 2 else call_args.kwargs.get("content")
-        assert content["msgtype"] == "m.notice"
-
-    @pytest.mark.asyncio
-    async def test_send_emote_empty_text(self):
-        self.adapter._client = MagicMock()
-        result = await self.adapter.send_emote("!room:ex", "")
-        assert result.success is False

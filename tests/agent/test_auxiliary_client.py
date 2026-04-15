@@ -365,7 +365,7 @@ class TestExpiredCodexFallback:
     def test_hermes_oauth_file_sets_oauth_flag(self, monkeypatch):
         """OAuth-style tokens should get is_oauth=*** (token is not sk-ant-api-*)."""
         # Mock resolve_anthropic_token to return an OAuth-style token
-        with patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="hermes-oauth-jwt-token"), \
+        with patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="sk-ant-oat-hermes-token"), \
              patch("agent.anthropic_adapter.build_anthropic_client") as mock_build, \
              patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
             mock_build.return_value = MagicMock()
@@ -420,7 +420,7 @@ class TestExpiredCodexFallback:
 
     def test_claude_code_oauth_env_sets_flag(self, monkeypatch):
         """CLAUDE_CODE_OAUTH_TOKEN env var should get is_oauth=True."""
-        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "cc-oauth-token-test")
+        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat-cc-test-token")
         monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
         with patch("agent.anthropic_adapter.build_anthropic_client") as mock_build:
             mock_build.return_value = MagicMock()
@@ -786,7 +786,7 @@ class TestAuxiliaryPoolAwareness:
             patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
             patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="***"),
         ):
-            client, model = get_vision_auxiliary_client()
+            provider, client, model = resolve_vision_provider_client()
 
         assert client is not None
         assert client.__class__.__name__ == "AnthropicAuxiliaryClient"
@@ -942,6 +942,46 @@ model:
             "provider": "openai-codex",
             "model": "gpt-5.4",
         }
+
+
+def test_resolve_provider_client_supports_copilot_acp_external_process():
+    fake_client = MagicMock()
+
+    with patch("agent.auxiliary_client._read_main_model", return_value="gpt-5.4-mini"), \
+         patch("agent.auxiliary_client.CodexAuxiliaryClient", MagicMock()), \
+         patch("agent.copilot_acp_client.CopilotACPClient", return_value=fake_client) as mock_acp, \
+         patch("hermes_cli.auth.resolve_external_process_provider_credentials", return_value={
+             "provider": "copilot-acp",
+             "api_key": "copilot-acp",
+             "base_url": "acp://copilot",
+             "command": "/usr/bin/copilot",
+             "args": ["--acp", "--stdio"],
+         }):
+        client, model = resolve_provider_client("copilot-acp")
+
+    assert client is fake_client
+    assert model == "gpt-5.4-mini"
+    assert mock_acp.call_args.kwargs["api_key"] == "copilot-acp"
+    assert mock_acp.call_args.kwargs["base_url"] == "acp://copilot"
+    assert mock_acp.call_args.kwargs["command"] == "/usr/bin/copilot"
+    assert mock_acp.call_args.kwargs["args"] == ["--acp", "--stdio"]
+
+
+def test_resolve_provider_client_copilot_acp_requires_explicit_or_configured_model():
+    with patch("agent.auxiliary_client._read_main_model", return_value=""), \
+         patch("agent.copilot_acp_client.CopilotACPClient") as mock_acp, \
+         patch("hermes_cli.auth.resolve_external_process_provider_credentials", return_value={
+             "provider": "copilot-acp",
+             "api_key": "copilot-acp",
+             "base_url": "acp://copilot",
+             "command": "/usr/bin/copilot",
+             "args": ["--acp", "--stdio"],
+         }):
+        client, model = resolve_provider_client("copilot-acp")
+
+    assert client is None
+    assert model is None
+    mock_acp.assert_not_called()
 
 
 class TestAuxiliaryMaxTokensParam:

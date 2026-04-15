@@ -8,6 +8,7 @@ from hermes_cli.tools_config import (
     _platform_toolset_summary,
     _save_platform_tools,
     _toolset_has_keys,
+    CONFIGURABLE_TOOLSETS,
     TOOL_CATEGORIES,
     _visible_providers,
     tools_command,
@@ -20,6 +21,15 @@ def test_get_platform_tools_uses_default_when_platform_not_configured():
     enabled = _get_platform_tools(config, "cli")
 
     assert enabled
+
+
+def test_configurable_toolsets_include_messaging():
+    assert any(ts_key == "messaging" for ts_key, _, _ in CONFIGURABLE_TOOLSETS)
+
+def test_get_platform_tools_default_telegram_includes_messaging():
+    enabled = _get_platform_tools({}, "telegram")
+
+    assert "messaging" in enabled
 
 
 def test_get_platform_tools_preserves_explicit_empty_selection():

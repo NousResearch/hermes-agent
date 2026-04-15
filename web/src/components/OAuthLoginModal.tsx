@@ -3,29 +3,7 @@ import { ExternalLink, Copy, X, Check, Loader2 } from "lucide-react";
 import { api, type OAuthProvider, type OAuthStartResponse } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-
-/**
- * OAuthLoginModal — drives the in-browser OAuth flow for a single provider.
- *
- * Two variants share the same modal shell:
- *
- * - PKCE (Anthropic): user opens the auth URL in a new tab, authorizes,
- *   pastes the resulting code back. We POST it to /submit which exchanges
- *   the (code + verifier) pair for tokens server-side.
- *
- * - Device code (Nous, OpenAI Codex): we display the verification URL
- *   and short user code; the backend polls the provider's token endpoint
- *   in a background thread; we poll /poll/{session_id} every 2s for status.
- *
- * Edge cases handled:
- *  - Popup blocker (we use plain anchor href + open in new tab; no popup
- *    window.open which is more likely to be blocked).
- *  - Modal dismissal mid-flight cancels the server-side session via DELETE.
- *  - Code expiry surfaces as a clear error state with retry button.
- *  - Polling continues to work if the user backgrounds the tab (setInterval
- *    keeps firing in modern browsers; we guard against polls firing after
- *    component unmount via an isMounted ref).
- */
+import { useI18n } from "@/i18n";
 
 interface Props {
   provider: OAuthProvider;
@@ -45,6 +23,7 @@ export function OAuthLoginModal({ provider, onClose, onSuccess, onError }: Props
   const [codeCopied, setCodeCopied] = useState(false);
   const isMounted = useRef(true);
   const pollTimer = useRef<number | null>(null);
+  const { t } = useI18n();
 
   // Initiate flow on mount
   useEffect(() => {
@@ -57,10 +36,8 @@ export function OAuthLoginModal({ provider, onClose, onSuccess, onError }: Props
         setSecondsLeft(resp.expires_in);
         setPhase(resp.flow === "device_code" ? "polling" : "awaiting_user");
         if (resp.flow === "pkce") {
-          // Auto-open the auth URL in a new tab
           window.open(resp.auth_url, "_blank", "noopener,noreferrer");
         } else {
-          // Device-code: open the verification URL automatically
           window.open(resp.verification_url, "_blank", "noopener,noreferrer");
         }
       })
@@ -73,7 +50,6 @@ export function OAuthLoginModal({ provider, onClose, onSuccess, onError }: Props
       isMounted.current = false;
       if (pollTimer.current !== null) window.clearInterval(pollTimer.current);
     };
-    // We only want to start the flow once on mount.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -85,16 +61,15 @@ export function OAuthLoginModal({ provider, onClose, onSuccess, onError }: Props
       if (!isMounted.current) return;
       setSecondsLeft((s) => {
         if (s !== null && s <= 1) {
-          // Session expired — transition to error state
           setPhase("error");
-          setErrorMsg("Session expired. Click Retry to start a new login.");
+          setErrorMsg(t.oauth.sessionExpired);
           return 0;
         }
         return s !== null && s > 0 ? s - 1 : 0;
       });
     }, 1000);
     return () => window.clearInterval(tick);
-  }, [secondsLeft, phase]);
+  }, [secondsLeft, phase, t]);
 
   // Device-code: poll backend every 2s
   useEffect(() => {
@@ -115,7 +90,6 @@ export function OAuthLoginModal({ provider, onClose, onSuccess, onError }: Props
           if (pollTimer.current !== null) window.clearInterval(pollTimer.current);
         }
       } catch (e) {
-        // 404 = session expired/cleaned up; treat as error
         if (!isMounted.current) return;
         setPhase("error");
         setErrorMsg(`Polling failed: ${e}`);
@@ -151,12 +125,11 @@ export function OAuthLoginModal({ provider, onClose, onSuccess, onError }: Props
   };
 
   const handleClose = async () => {
-    // Cancel server session if still in flight
     if (start && phase !== "approved" && phase !== "error") {
       try {
         await api.cancelOAuthSession(start.session_id);
       } catch {
-        // ignore — server-side TTL will clean it up anyway
+        // ignore
       }
     }
     onClose();
@@ -172,7 +145,6 @@ export function OAuthLoginModal({ provider, onClose, onSuccess, onError }: Props
     }
   };
 
-  // Backdrop click closes
   const handleBackdrop = (e: React.MouseEvent) => {
     if (e.target === e.currentTarget) handleClose();
   };
@@ -197,18 +169,18 @@ export function OAuthLoginModal({ provider, onClose, onSuccess, onError }: Props
           type="button"
           onClick={handleClose}
           className="absolute right-3 top-3 text-muted-foreground hover:text-foreground transition-colors"
-          aria-label="Close"
+          aria-label={t.common.close}
         >
           <X className="h-5 w-5" />
         </button>
         <div className="p-6 flex flex-col gap-4">
           <div>
             <h2 id="oauth-modal-title" className="font-display text-base tracking-wider uppercase">
-              Connect {provider.name}
+              {t.oauth.connect} {provider.name}
             </h2>
             {secondsLeft !== null && phase !== "approved" && phase !== "error" && (
               <p className="text-xs text-muted-foreground mt-1">
-                Session expires in {fmtTime(secondsLeft)}
+                {t.oauth.sessionExpires.replace("{time}", fmtTime(secondsLeft))}
               </p>
             )}
           </div>
@@ -217,7 +189,7 @@ export function OAuthLoginModal({ provider, onClose, onSuccess, onError }: Props
           {phase === "starting" && (
             <div className="flex items-center gap-3 py-6 text-sm text-muted-foreground">
               <Loader2 className="h-4 w-4 animate-spin" />
-              Initiating login flow…
+              {t.oauth.initiatingLogin}
             </div>
           )}
 
@@ -225,18 +197,15 @@ export function OAuthLoginModal({ provider, onClose, onSuccess, onError }: Props
           {start?.flow === "pkce" && phase === "awaiting_user" && (
             <>
               <ol className="text-sm space-y-2 list-decimal list-inside text-muted-foreground">
-                <li>
-                  A new tab opened to <code className="text-foreground">claude.ai</code>. Sign in
-                  and click <strong className="text-foreground">Authorize</strong>.
-                </li>
-                <li>Copy the <strong className="text-foreground">authorization code</strong> shown after authorizing.</li>
-                <li>Paste it below and submit.</li>
+                <li>{t.oauth.pkceStep1}</li>
+                <li>{t.oauth.pkceStep2}</li>
+                <li>{t.oauth.pkceStep3}</li>
               </ol>
               <div className="flex flex-col gap-2">
                 <Input
                   value={pkceCode}
                   onChange={(e) => setPkceCode(e.target.value)}
-                  placeholder="Paste authorization code (with #state suffix is fine)"
+                  placeholder={t.oauth.pasteCode}
                   onKeyDown={(e) => e.key === "Enter" && handleSubmitPkceCode()}
                   autoFocus
                 />
@@ -248,10 +217,10 @@ export function OAuthLoginModal({ provider, onClose, onSuccess, onError }: Props
                     className="text-xs text-muted-foreground hover:text-foreground inline-flex items-center gap-1"
                   >
                     <ExternalLink className="h-3 w-3" />
-                    Re-open auth page
+                    {t.oauth.reOpenAuth}
                   </a>
                   <Button onClick={handleSubmitPkceCode} disabled={!pkceCode.trim()} size="sm">
-                    Submit code
+                    {t.oauth.submitCode}
                   </Button>
                 </div>
               </div>
@@ -262,7 +231,7 @@ export function OAuthLoginModal({ provider, onClose, onSuccess, onError }: Props
           {phase === "submitting" && (
             <div className="flex items-center gap-3 py-6 text-sm text-muted-foreground">
               <Loader2 className="h-4 w-4 animate-spin" />
-              Exchanging code for tokens…
+              {t.oauth.exchangingCode}
             </div>
           )}
 
@@ -270,7 +239,7 @@ export function OAuthLoginModal({ provider, onClose, onSuccess, onError }: Props
           {start?.flow === "device_code" && phase === "polling" && (
             <>
               <p className="text-sm text-muted-foreground">
-                A new tab opened. Enter this code if prompted:
+                {t.oauth.enterCodePrompt}
               </p>
               <div className="flex items-center justify-between gap-2 border border-border bg-secondary/30 p-4">
                 <code className="font-mono-ui text-2xl tracking-widest text-foreground">
@@ -296,11 +265,11 @@ export function OAuthLoginModal({ provider, onClose, onSuccess, onError }: Props
                 className="text-xs text-muted-foreground hover:text-foreground inline-flex items-center gap-1"
               >
                 <ExternalLink className="h-3 w-3" />
-                Re-open verification page
+                {t.oauth.reOpenVerification}
               </a>
               <div className="flex items-center gap-2 text-xs text-muted-foreground border-t border-border pt-3">
                 <Loader2 className="h-3 w-3 animate-spin" />
-                Waiting for you to authorize in the browser…
+                {t.oauth.waitingAuth}
               </div>
             </>
           )}
@@ -309,7 +278,7 @@ export function OAuthLoginModal({ provider, onClose, onSuccess, onError }: Props
           {phase === "approved" && (
             <div className="flex items-center gap-3 py-6 text-sm text-success">
               <Check className="h-5 w-5" />
-              Connected! Closing…
+              {t.oauth.connectedClosing}
             </div>
           )}
 
@@ -317,16 +286,15 @@ export function OAuthLoginModal({ provider, onClose, onSuccess, onError }: Props
           {phase === "error" && (
             <>
               <div className="border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
-                {errorMsg || "Login failed."}
+                {errorMsg || t.oauth.loginFailed}
               </div>
               <div className="flex justify-end gap-2">
                 <Button variant="outline" size="sm" onClick={handleClose}>
-                  Close
+                  {t.common.close}
                 </Button>
                 <Button
                   size="sm"
                   onClick={() => {
-                    // Cancel the old session before starting a new one
                     if (start?.session_id) {
                       api.cancelOAuthSession(start.session_id).catch(() => {});
                     }
@@ -334,8 +302,6 @@ export function OAuthLoginModal({ provider, onClose, onSuccess, onError }: Props
                     setStart(null);
                     setPkceCode("");
                     setPhase("starting");
-                    // Re-trigger the start effect by remounting (caller should re-key us)
-                    // Simpler: just kick off a new start manually
                     api.startOAuthLogin(provider.id).then((resp) => {
                       if (!isMounted.current) return;
                       setStart(resp);
@@ -349,11 +315,11 @@ export function OAuthLoginModal({ provider, onClose, onSuccess, onError }: Props
                     }).catch((e) => {
                       if (!isMounted.current) return;
                       setPhase("error");
-                      setErrorMsg(`Retry failed: ${e}`);
+                      setErrorMsg(`${t.common.retry} failed: ${e}`);
                     });
                   }}
                 >
-                  Retry
+                  {t.common.retry}
                 </Button>
               </div>
             </>

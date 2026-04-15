@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import enum
 import logging
-import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
@@ -157,6 +156,18 @@ _CONTEXT_OVERFLOW_PATTERNS = [
     "prompt exceeds max length",
     "max_tokens",
     "maximum number of tokens",
+    # vLLM / local inference server patterns
+    "exceeds the max_model_len",
+    "max_model_len",
+    "prompt length",             # "engine prompt length X exceeds"
+    "input is too long",
+    "maximum model length",
+    # Ollama patterns
+    "context length exceeded",
+    "truncating input",
+    # llama.cpp / llama-server patterns
+    "slot context",              # "slot context: N tokens, prompt N tokens"
+    "n_ctx_slot",
     # Chinese error messages (some providers return these)
     "超过最大长度",
     "上下文长度",

@@ -661,6 +661,9 @@ class MessageEvent:
     """
     # Message content
     text: str
+    # Optional clean text to persist in transcripts/history when `text`
+    # contains API-only synthetic context (e.g. injected thread history).
+    persist_text: Optional[str] = None
     message_type: MessageType = MessageType.TEXT
     
     # Source information

@@ -1014,6 +1014,7 @@ class SlackAdapter(BasePlatformAdapter):
         is_mentioned = bot_uid and f"<@{bot_uid}>" in text
         event_thread_ts = event.get("thread_ts")
         is_thread_reply = bool(event_thread_ts and event_thread_ts != ts)
+        persist_text = None
 
         if not is_dm and bot_uid:
             if channel_id in self._slack_free_response_channels():
@@ -1064,6 +1065,11 @@ class SlackAdapter(BasePlatformAdapter):
                 team_id=team_id,
             )
             if thread_context:
+                # Keep the original user utterance for transcript/history
+                # persistence. The prepended thread scaffold is only for the
+                # live model call so the agent can orient itself in a fresh
+                # thread without polluting stored exchanges.
+                persist_text = text
                 text = thread_context + text
 
         # Determine message type
@@ -1169,6 +1175,7 @@ class SlackAdapter(BasePlatformAdapter):
 
         msg_event = MessageEvent(
             text=text,
+            persist_text=persist_text,
             message_type=msg_type,
             source=source,
             raw_message=event,

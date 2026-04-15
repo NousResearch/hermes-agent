@@ -1258,6 +1258,34 @@ class TestAssistantThreadLifecycle:
         assert msg_event.source.thread_id == "171.000"
         assert msg_event.source.user_name == "Tyler"
 
+    @pytest.mark.asyncio
+    async def test_first_thread_reply_preserves_clean_persist_text(self, assistant_adapter):
+        assistant_adapter._app.client.users_info = AsyncMock(return_value={
+            "user": {"profile": {"display_name": "Tyler"}}
+        })
+        assistant_adapter._app.client.reactions_add = AsyncMock()
+        assistant_adapter._app.client.reactions_remove = AsyncMock()
+        assistant_adapter._fetch_thread_context = AsyncMock(
+            return_value="[Thread context — prior messages in this thread]\nfoo\n[End of thread context]\n\n"
+        )
+        assistant_adapter._has_active_session_for_thread = MagicMock(return_value=False)
+
+        event = {
+            "text": "hello from thread",
+            "user": "U_USER",
+            "channel": "D123",
+            "channel_type": "im",
+            "thread_ts": "171.000",
+            "ts": "171.111",
+            "team": "T_TEAM",
+        }
+
+        await assistant_adapter._handle_slack_message(event)
+
+        msg_event = assistant_adapter.handle_message.call_args[0][0]
+        assert msg_event.text.startswith("[Thread context — prior messages in this thread]")
+        assert msg_event.persist_text == "hello from thread"
+
     def test_assistant_threads_cache_eviction(self, assistant_adapter):
         """Cache should evict oldest entries when exceeding the size limit."""
         assistant_adapter._ASSISTANT_THREADS_MAX = 10

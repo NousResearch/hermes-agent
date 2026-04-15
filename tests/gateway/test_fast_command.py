@@ -178,14 +178,17 @@ async def test_run_agent_passes_priority_processing_to_gateway_agent(monkeypatch
 
     _CapturingAgent.last_init = None
     result = await runner._run_agent(
-        message="hi",
+        message="[Thread context]\n\nhi",
         context_prompt="",
         history=[],
         source=_make_source(),
         session_id="session-1",
         session_key="agent:main:telegram:dm:12345",
+        persist_user_message="hi",
     )
 
     assert result["final_response"] == "ok"
     assert _CapturingAgent.last_init["service_tier"] == "priority"
     assert _CapturingAgent.last_init["request_overrides"] == {"service_tier": "priority"}
+    assert _CapturingAgent.last_run["user_message"] == "[Thread context]\n\nhi"
+    assert _CapturingAgent.last_run["persist_user_message"] == "hi"

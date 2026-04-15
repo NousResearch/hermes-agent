@@ -13,6 +13,8 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from hermes_constants import display_hermes_home
+
 logger = logging.getLogger(__name__)
 
 # Import from cron module (will be available when properly installed)
@@ -455,7 +457,7 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
             },
             "script": {
                 "type": "string",
-                "description": "Optional path to a Python script that runs before each cron job execution. Its stdout is injected into the prompt as context. Use for data collection and change detection. Relative paths resolve under ~/.hermes/scripts/. On update, pass empty string to clear."
+                "description": f"Optional path to a Python script that runs before each cron job execution. Its stdout is injected into the prompt as context. Use for data collection and change detection. Relative paths resolve under {display_hermes_home()}/scripts/. On update, pass empty string to clear."
             },
         },
         "required": ["action"]

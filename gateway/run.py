@@ -482,6 +482,27 @@ def _resolve_hermes_bin() -> Optional[list[str]]:
     return None
 
 
+def _parse_session_key(session_key: str) -> "dict | None":
+    """Parse a session key into its component parts.
+
+    Session keys follow the format
+    ``agent:main:{platform}:{chat_type}:{chat_id}[:{thread_id}[:{user_id}]]``.
+    Returns a dict with ``platform``, ``chat_type``, ``chat_id``, and
+    optionally ``thread_id`` keys, or None if the key doesn't match.
+    """
+    parts = session_key.split(":")
+    if len(parts) >= 5 and parts[0] == "agent" and parts[1] == "main":
+        result = {
+            "platform": parts[2],
+            "chat_type": parts[3],
+            "chat_id": parts[4],
+        }
+        if len(parts) > 5:
+            result["thread_id"] = parts[5]
+        return result
+    return None
+
+
 def _format_gateway_process_notification(evt: dict) -> "str | None":
     """Format a watch pattern event from completion_queue into a [SYSTEM:] message."""
     evt_type = evt.get("type", "completion")
@@ -1489,12 +1510,11 @@ class GatewayRunner:
         notified: set = set()
         for session_key in active:
             # Parse platform + chat_id from the session key.
-            # Format: agent:main:{platform}:{chat_type}:{chat_id}[:{extra}...]
-            parts = session_key.split(":")
-            if len(parts) < 5:
+            _parsed = _parse_session_key(session_key)
+            if not _parsed:
                 continue
-            platform_str = parts[2]
-            chat_id = parts[4]
+            platform_str = _parsed["platform"]
+            chat_id = _parsed["chat_id"]
 
             # Deduplicate: one notification per chat, even if multiple
             # sessions (different users/threads) share the same chat.
@@ -1510,7 +1530,7 @@ class GatewayRunner:
 
                 # Include thread_id if present so the message lands in the
                 # correct forum topic / thread.
-                thread_id = parts[5] if len(parts) > 5 else None
+                thread_id = _parsed.get("thread_id")
                 metadata = {"thread_id": thread_id} if thread_id else None
 
                 await adapter.send(chat_id, msg, metadata=metadata)
@@ -3958,7 +3978,7 @@ class GatewayRunner:
                     synth_text = _format_gateway_process_notification(evt)
                     if synth_text:
                         try:
-                            await self._inject_watch_notification(synth_text, event)
+                            await self._inject_watch_notification(synth_text, evt)
                         except Exception as e2:
                             logger.error("Watch notification injection error: %s", e2)
             except Exception as e:
@@ -7452,14 +7472,75 @@ class GatewayRunner:
             return prefix
         return user_text
 
-    async def _inject_watch_notification(self, synth_text: str, original_event) -> None:
+    def _build_process_event_source(self, evt: dict):
+        """Resolve the canonical source for a synthetic background-process event.
+
+        Prefer the persisted session-store origin for the event's session key.
+        Falling back to the currently active foreground event is what causes
+        cross-topic bleed, so don't do that.
+        """
+        from gateway.session import SessionSource
+
+        session_key = str(evt.get("session_key") or "").strip()
+        derived_platform = ""
+        derived_chat_type = ""
+        derived_chat_id = ""
+
+        if session_key:
+            try:
+                self.session_store._ensure_loaded()
+                entry = self.session_store._entries.get(session_key)
+                if entry and getattr(entry, "origin", None):
+                    return entry.origin
+            except Exception as exc:
+                logger.debug(
+                    "Synthetic process-event session-store lookup failed for %s: %s",
+                    session_key,
+                    exc,
+                )
+
+            _parsed = _parse_session_key(session_key)
+            if _parsed:
+                derived_platform = _parsed["platform"]
+                derived_chat_type = _parsed["chat_type"]
+                derived_chat_id = _parsed["chat_id"]
+
+        platform_name = str(evt.get("platform") or derived_platform or "").strip().lower()
+        chat_type = str(evt.get("chat_type") or derived_chat_type or "").strip().lower()
+        chat_id = str(evt.get("chat_id") or derived_chat_id or "").strip()
+        if not platform_name or not chat_type or not chat_id:
+            return None
+
+        try:
+            platform = Platform(platform_name)
+        except Exception:
+            logger.warning(
+                "Synthetic process event has invalid platform metadata: %r",
+                platform_name,
+            )
+            return None
+
+        return SessionSource(
+            platform=platform,
+            chat_id=chat_id,
+            chat_type=chat_type,
+            thread_id=str(evt.get("thread_id") or "").strip() or None,
+            user_id=str(evt.get("user_id") or "").strip() or None,
+            user_name=str(evt.get("user_name") or "").strip() or None,
+        )
+
+    async def _inject_watch_notification(self, synth_text: str, evt: dict) -> None:
         """Inject a watch-pattern notification as a synthetic message event.
 
-        Uses the source from the original user event to route the notification
-        back to the correct chat/adapter.
+        Routing must come from the queued watch event itself, not from whatever
+        foreground message happened to be active when the queue was drained.
         """
-        source = getattr(original_event, "source", None)
+        source = self._build_process_event_source(evt)
         if not source:
+            logger.warning(
+                "Dropping watch notification with no routing metadata for process %s",
+                evt.get("session_id", "unknown"),
+            )
             return
         platform_name = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
         adapter = None
@@ -7477,7 +7558,12 @@ class GatewayRunner:
                 source=source,
                 internal=True,
             )
-            logger.info("Watch pattern notification — injecting for %s", platform_name)
+            logger.info(
+                "Watch pattern notification — injecting for %s chat=%s thread=%s",
+                platform_name,
+                source.chat_id,
+                source.thread_id,
+            )
             await adapter.handle_message(synth_event)
         except Exception as e:
             logger.error("Watch notification injection error: %s", e)
@@ -7547,33 +7633,42 @@ class GatewayRunner:
                         f"Command: {session.command}\n"
                         f"Output:\n{_out}]"
                     )
+                    source = self._build_process_event_source({
+                        "session_id": session_id,
+                        "session_key": session_key,
+                        "platform": platform_name,
+                        "chat_id": chat_id,
+                        "thread_id": thread_id,
+                        "user_id": user_id,
+                        "user_name": user_name,
+                    })
+                    if not source:
+                        logger.warning(
+                            "Dropping completion notification with no routing metadata for process %s",
+                            session_id,
+                        )
+                        break
+
                     adapter = None
                     for p, a in self.adapters.items():
-                        if p.value == platform_name:
+                        if p == source.platform:
                             adapter = a
                             break
-                    if adapter and chat_id:
+                    if adapter and source.chat_id:
                         try:
                             from gateway.platforms.base import MessageEvent, MessageType
-                            from gateway.session import SessionSource
-                            from gateway.config import Platform
-                            _platform_enum = Platform(platform_name)
-                            _source = SessionSource(
-                                platform=_platform_enum,
-                                chat_id=chat_id,
-                                thread_id=thread_id or None,
-                                user_id=user_id or None,
-                                user_name=user_name or None,
-                            )
                             synth_event = MessageEvent(
                                 text=synth_text,
                                 message_type=MessageType.TEXT,
-                                source=_source,
+                                source=source,
                                 internal=True,
                             )
                             logger.info(
-                                "Process %s finished — injecting agent notification for session %s",
-                                session_id, session_key,
+                                "Process %s finished — injecting agent notification for session %s chat=%s thread=%s",
+                                session_id,
+                                session_key,
+                                source.chat_id,
+                                source.thread_id,
                             )
                             await adapter.handle_message(synth_event)
                         except Exception as e:

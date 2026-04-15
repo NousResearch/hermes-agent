@@ -695,3 +695,44 @@ class TestMemoryContextFencing:
         fence_end = combined.index("</memory-context>")
         assert "Alice" in combined[fence_start:fence_end]
         assert combined.index("weather") < fence_start
+
+
+# ---------------------------------------------------------------------------
+# AIAgent.commit_memory_session — routes to MemoryManager.on_session_end
+# ---------------------------------------------------------------------------
+
+
+class _CommitRecorder(FakeMemoryProvider):
+    """Provider that records on_session_end calls for assertions."""
+
+    def __init__(self, name="recorder"):
+        super().__init__(name)
+        self.end_calls = []
+
+    def on_session_end(self, messages):
+        self.end_calls.append(list(messages or []))
+
+
+class TestCommitMemorySessionRouting:
+    def test_on_session_end_fans_out(self):
+        mgr = MemoryManager()
+        builtin = _CommitRecorder("builtin")
+        external = _CommitRecorder("openviking")
+        mgr.add_provider(builtin)
+        mgr.add_provider(external)
+
+        msgs = [{"role": "user", "content": "hi"}]
+        mgr.on_session_end(msgs)
+
+        assert builtin.end_calls == [msgs]
+        assert external.end_calls == [msgs]
+
+    def test_on_session_end_tolerates_failure(self):
+        mgr = MemoryManager()
+        builtin = FakeMemoryProvider("builtin")
+        bad = _CommitRecorder("bad-provider")
+        bad.on_session_end = lambda m: (_ for _ in ()).throw(RuntimeError("boom"))
+        mgr.add_provider(builtin)
+        mgr.add_provider(bad)
+
+        mgr.on_session_end([])  # must not raise

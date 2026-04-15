@@ -4100,6 +4100,8 @@ class HermesCLI:
                 self.agent.flush_memories(self.conversation_history)
             except (Exception, KeyboardInterrupt):
                 pass
+            # Trigger memory extraction on the old session before session_id rotates.
+            self.agent.commit_memory_session(self.conversation_history)
             self._notify_session_boundary("on_session_finalize")
         elif self.agent:
             # First session or empty history — still finalize the old session

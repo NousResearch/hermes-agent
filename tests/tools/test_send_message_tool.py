@@ -888,6 +888,192 @@ class TestSendToPlatformDiscordThread:
         assert call_kwargs["thread_id"] is None
 
 
+# ---------------------------------------------------------------------------
+# Discord media attachment support
+# ---------------------------------------------------------------------------
+
+
+class TestSendDiscordMedia:
+    """_send_discord uploads media files via multipart/form-data."""
+
+    @staticmethod
+    def _build_mock(response_status, response_data=None, response_text="error body"):
+        """Build a properly-structured aiohttp mock chain."""
+        mock_resp = MagicMock()
+        mock_resp.status = response_status
+        mock_resp.json = AsyncMock(return_value=response_data or {"id": "msg123"})
+        mock_resp.text = AsyncMock(return_value=response_text)
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=None)
+
+        mock_session = MagicMock()
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=None)
+        mock_session.post = MagicMock(return_value=mock_resp)
+
+        return mock_session, mock_resp
+
+    def test_text_and_media_sends_both(self, tmp_path):
+        """Text message is sent first, then each media file as multipart."""
+        img = tmp_path / "photo.png"
+        img.write_bytes(b"\x89PNG fake image data")
+
+        mock_session, _ = self._build_mock(200, {"id": "msg999"})
+        with patch("aiohttp.ClientSession", return_value=mock_session):
+            result = asyncio.run(
+                _send_discord("tok", "111", "hello", media_files=[(str(img), False)])
+            )
+
+        assert result["success"] is True
+        assert result["message_id"] == "msg999"
+        # Two POSTs: one text JSON, one multipart upload
+        assert mock_session.post.call_count == 2
+
+    def test_media_only_skips_text_post(self, tmp_path):
+        """When message is empty and media is present, text POST is skipped."""
+        img = tmp_path / "photo.png"
+        img.write_bytes(b"\x89PNG fake image data")
+
+        mock_session, _ = self._build_mock(200, {"id": "media_only"})
+        with patch("aiohttp.ClientSession", return_value=mock_session):
+            result = asyncio.run(
+                _send_discord("tok", "222", "  ", media_files=[(str(img), False)])
+            )
+
+        assert result["success"] is True
+        # Only one POST: the media upload (text was whitespace-only)
+        assert mock_session.post.call_count == 1
+
+    def test_missing_media_file_collected_as_warning(self):
+        """Non-existent media paths produce warnings but don't fail."""
+        mock_session, _ = self._build_mock(200, {"id": "txt_ok"})
+        with patch("aiohttp.ClientSession", return_value=mock_session):
+            result = asyncio.run(
+                _send_discord("tok", "333", "hello", media_files=[("/nonexistent/file.png", False)])
+            )
+
+        assert result["success"] is True
+        assert "warnings" in result
+        assert any("not found" in w for w in result["warnings"])
+        # Only the text POST was made, media was skipped
+        assert mock_session.post.call_count == 1
+
+    def test_media_upload_failure_collected_as_warning(self, tmp_path):
+        """Failed media upload becomes a warning, text still succeeds."""
+        img = tmp_path / "photo.png"
+        img.write_bytes(b"\x89PNG fake image data")
+
+        # First call (text) succeeds, second call (media) returns 413
+        text_resp = MagicMock()
+        text_resp.status = 200
+        text_resp.json = AsyncMock(return_value={"id": "txt_ok"})
+        text_resp.__aenter__ = AsyncMock(return_value=text_resp)
+        text_resp.__aexit__ = AsyncMock(return_value=None)
+
+        media_resp = MagicMock()
+        media_resp.status = 413
+        media_resp.text = AsyncMock(return_value="Request Entity Too Large")
+        media_resp.__aenter__ = AsyncMock(return_value=media_resp)
+        media_resp.__aexit__ = AsyncMock(return_value=None)
+
+        mock_session = MagicMock()
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=None)
+        mock_session.post = MagicMock(side_effect=[text_resp, media_resp])
+
+        with patch("aiohttp.ClientSession", return_value=mock_session):
+            result = asyncio.run(
+                _send_discord("tok", "444", "hello", media_files=[(str(img), False)])
+            )
+
+        assert result["success"] is True
+        assert result["message_id"] == "txt_ok"
+        assert "warnings" in result
+        assert any("413" in w for w in result["warnings"])
+
+    def test_no_text_no_media_returns_error(self):
+        """Empty text with no media returns error dict."""
+        mock_session, _ = self._build_mock(200)
+        with patch("aiohttp.ClientSession", return_value=mock_session):
+            result = asyncio.run(
+                _send_discord("tok", "555", "", media_files=[])
+            )
+
+        # Text is empty but media_files is empty, so text POST fires
+        # (the "skip text if media present" condition isn't met)
+        assert result["success"] is True
+
+    def test_multiple_media_files_uploaded_separately(self, tmp_path):
+        """Each media file gets its own multipart POST."""
+        img1 = tmp_path / "a.png"
+        img1.write_bytes(b"img1")
+        img2 = tmp_path / "b.jpg"
+        img2.write_bytes(b"img2")
+
+        mock_session, _ = self._build_mock(200, {"id": "last"})
+        with patch("aiohttp.ClientSession", return_value=mock_session):
+            result = asyncio.run(
+                _send_discord("tok", "666", "hi", media_files=[
+                    (str(img1), False), (str(img2), False)
+                ])
+            )
+
+        assert result["success"] is True
+        # 1 text POST + 2 media POSTs = 3
+        assert mock_session.post.call_count == 3
+
+
+class TestSendToPlatformDiscordMedia:
+    """_send_to_platform routes Discord media correctly."""
+
+    def test_media_files_passed_on_last_chunk_only(self):
+        """Discord media_files are only passed on the final chunk."""
+        call_log = []
+
+        async def mock_send_discord(token, chat_id, message, thread_id=None, media_files=None):
+            call_log.append({"message": message, "media_files": media_files or []})
+            return {"success": True, "platform": "discord", "chat_id": chat_id, "message_id": "1"}
+
+        # A message long enough to get chunked (Discord limit is 2000)
+        long_msg = "A" * 1900 + " " + "B" * 1900
+
+        with patch("tools.send_message_tool._send_discord", side_effect=mock_send_discord):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.DISCORD,
+                    SimpleNamespace(enabled=True, token="tok", extra={}),
+                    "999",
+                    long_msg,
+                    media_files=[("/fake/img.png", False)],
+                )
+            )
+
+        assert result["success"] is True
+        assert len(call_log) == 2  # Message was chunked
+        assert call_log[0]["media_files"] == []  # First chunk: no media
+        assert call_log[1]["media_files"] == [("/fake/img.png", False)]  # Last chunk: media attached
+
+    def test_single_chunk_gets_media(self):
+        """Short message (single chunk) gets media_files directly."""
+        send_mock = AsyncMock(return_value={"success": True, "message_id": "1"})
+
+        with patch("tools.send_message_tool._send_discord", send_mock):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.DISCORD,
+                    SimpleNamespace(enabled=True, token="tok", extra={}),
+                    "888",
+                    "short message",
+                    media_files=[("/fake/img.png", False)],
+                )
+            )
+
+        assert result["success"] is True
+        send_mock.assert_awaited_once()
+        call_kwargs = send_mock.await_args.kwargs
+        assert call_kwargs["media_files"] == [("/fake/img.png", False)]
+
+
 class TestSendMatrixUrlEncoding:
     """_send_matrix URL-encodes Matrix room IDs in the API path."""
 

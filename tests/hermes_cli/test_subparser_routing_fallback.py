@@ -47,6 +47,7 @@ def _safe_parse(parser, subparsers, argv):
     """Replica of the defensive parsing logic from main()."""
     known_cmds = set(subparsers.choices.keys()) if hasattr(subparsers, "choices") else set()
     has_cmd_token = any(t in known_cmds for t in argv if not t.startswith("-"))
+    _is_help = any(t in ("-h", "--help") for t in argv)
 
     if has_cmd_token:
         subparsers.required = True
@@ -56,9 +57,11 @@ def _safe_parse(parser, subparsers, argv):
             args = parser.parse_args(argv)
             sys.stderr = saved_stderr
             return args
-        except SystemExit:
+        except SystemExit as e:
             sys.stderr = saved_stderr
             subparsers.required = False
+            if e.code == 0 and _is_help:
+                return None  # Help was printed successfully, no error
             return parser.parse_args(argv)
     else:
         subparsers.required = False
@@ -146,3 +149,20 @@ class TestSubparserRoutingFallback:
         assert args.yolo is True
         assert args.worktree is True
         assert args.skills == ["myskill"]
+
+    def test_subcommand_help_printed_once(self, capsys):
+        parser, sub = _build_parser()
+        args = _safe_parse(parser, sub, ["chat", "-h"])
+        captured = capsys.readouterr()
+        assert args is None
+        assert captured.out.count("usage: hermes chat") == 1
+        assert captured.err == ""
+
+    def test_top_level_help_printed_once(self, capsys):
+        parser, sub = _build_parser()
+        with pytest.raises(SystemExit) as exc:
+            _safe_parse(parser, sub, ["-h"])
+        captured = capsys.readouterr()
+        assert exc.value.code == 0
+        assert captured.out.count("usage: hermes") == 1
+        assert captured.err == ""

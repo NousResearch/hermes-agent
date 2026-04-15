@@ -1741,15 +1741,48 @@ class TestMatrixReadReceipts:
         self.adapter = _make_adapter()
 
     @pytest.mark.asyncio
+    async def test_accepted_message_schedules_read_receipt(self):
+        self.adapter._is_dm_room = AsyncMock(return_value=True)
+        self.adapter._get_display_name = AsyncMock(return_value="Alice")
+        self.adapter._background_read_receipt = MagicMock()
+
+        ctx = await self.adapter._resolve_message_context(
+            room_id="!room:ex",
+            sender="@alice:ex",
+            event_id="$event1",
+            body="hello",
+            source_content={"body": "hello"},
+            relates_to={},
+        )
+
+        assert ctx is not None
+        self.adapter._background_read_receipt.assert_called_once_with(
+            "!room:ex", "$event1"
+        )
+
+    @pytest.mark.asyncio
     async def test_send_read_receipt(self):
-        """send_read_receipt should call client.set_read_markers."""
+        """send_read_receipt should call mautrix's real read-marker API."""
         mock_client = MagicMock()
-        mock_client.set_read_markers = AsyncMock(return_value=None)
+        mock_client.set_fully_read_marker = AsyncMock(return_value=None)
         self.adapter._client = mock_client
 
         result = await self.adapter.send_read_receipt("!room:ex", "$event1")
         assert result is True
-        mock_client.set_read_markers.assert_called_once()
+        mock_client.set_fully_read_marker.assert_awaited_once_with(
+            "!room:ex", "$event1", "$event1"
+        )
+
+    @pytest.mark.asyncio
+    async def test_send_read_receipt_falls_back_to_receipt_only(self):
+        """send_read_receipt should still work with clients lacking read markers."""
+        mock_client = MagicMock(spec=["send_receipt"])
+        mock_client.send_receipt = AsyncMock(return_value=None)
+        self.adapter._client = mock_client
+
+        result = await self.adapter.send_read_receipt("!room:ex", "$event1")
+        assert result is True
+        mock_client.send_receipt.assert_awaited_once_with("!room:ex", "$event1")
 
     @pytest.mark.asyncio
     async def test_read_receipt_no_client(self):
@@ -1852,5 +1885,3 @@ class TestMatrixPresence:
         self.adapter._client = None
         result = await self.adapter.set_presence("online")
         assert result is False
-
-

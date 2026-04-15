@@ -1781,9 +1781,9 @@ def _setup_matrix():
         if not prompt_yes_no("Matrix를 다시 설정할까요?", False):
             return
 
-    print_info("Works with any Matrix homeserver (Synapse, Conduit, Dendrite, or matrix.org).")
-    print_info("   1. Create a bot user on your homeserver, or use your own account")
-    print_info("   2. Get an access token from Element, or provide user ID + password")
+    print_info("어떤 Matrix homeserver와도 사용할 수 있습니다. (Synapse, Conduit, Dendrite, matrix.org)")
+    print_info("   1. homeserver에 봇 사용자를 만들거나 본인 계정을 사용하세요")
+    print_info("   2. Element에서 access token을 얻거나 사용자 ID + 비밀번호를 입력하세요")
     print()
     homeserver = prompt("Homeserver URL (e.g. https://matrix.example.org)")
     if homeserver:
@@ -1839,10 +1839,10 @@ def _setup_matrix():
                     print_info(f"  Error: {result.stderr.strip().splitlines()[-1]}")
 
         print()
-        print_info("🔒 Security: Restrict who can use your bot")
-        print_info("   Matrix user IDs look like @username:server")
+        print_info("🔒 보안: 누가 봇을 사용할 수 있는지 제한하세요")
+        print_info("   Matrix 사용자 ID 형식: @username:server")
         print()
-        allowed_users = prompt("Allowed user IDs (comma-separated, leave empty for open access)")
+        allowed_users = prompt("허용할 사용자 ID (쉼표로 구분, 비워두면 누구나 접근 가능)")
         if allowed_users:
             save_env_value("MATRIX_ALLOWED_USERS", allowed_users.replace(" ", ""))
             print_success("Matrix allowlist configured")
@@ -1867,11 +1867,11 @@ def _setup_mattermost():
         if not prompt_yes_no("Mattermost를 다시 설정할까요?", False):
             return
 
-    print_info("Works with any self-hosted Mattermost instance.")
-    print_info("   1. In Mattermost: Integrations → Bot Accounts → Add Bot Account")
-    print_info("   2. Copy the bot token")
+    print_info("어떤 self-hosted Mattermost 인스턴스와도 사용할 수 있습니다.")
+    print_info("   1. Mattermost에서: Integrations → Bot Accounts → Add Bot Account")
+    print_info("   2. 봇 토큰을 복사하세요")
     print()
-    mm_url = prompt("Mattermost server URL (e.g. https://mm.example.com)")
+    mm_url = prompt("Mattermost 서버 URL (예: https://mm.example.com)")
     if mm_url:
         save_env_value("MATTERMOST_URL", mm_url.rstrip("/"))
     token = prompt("Bot token", password=True)
@@ -1885,7 +1885,7 @@ def _setup_mattermost():
     print_info("   To find your user ID: click your avatar → Profile")
     print_info("   or use the API: GET /api/v4/users/me")
     print()
-    allowed_users = prompt("Allowed user IDs (comma-separated, leave empty for open access)")
+    allowed_users = prompt("허용할 사용자 ID (쉼표로 구분, 비워두면 누구나 접근 가능)")
     if allowed_users:
         save_env_value("MATTERMOST_ALLOWED_USERS", allowed_users.replace(" ", ""))
         print_success("Mattermost allowlist configured")
@@ -1893,10 +1893,10 @@ def _setup_mattermost():
         print_info("⚠️  No allowlist set - anyone who can message the bot can use it!")
 
     print()
-    print_info("📬 Home Channel: where Hermes delivers cron job results and notifications.")
-    print_info("   To get a channel ID: click channel name → View Info → copy the ID")
-    print_info("   You can also set this later by typing /set-home in a Mattermost channel.")
-    home_channel = prompt("Home channel ID (leave empty to set later with /set-home)")
+    print_info("📬 홈 채널: Hermes가 cron 결과와 알림을 전달하는 곳입니다.")
+    print_info("   채널 ID 확인: 채널 이름 클릭 → 정보 보기 → ID 복사")
+    print_info("   나중에 Mattermost 채널에서 /set-home을 입력해 설정할 수도 있습니다.")
+    home_channel = prompt("홈 채널 ID (비워두면 나중에 /set-home으로 설정)")
     if home_channel:
         save_env_value("MATTERMOST_HOME_CHANNEL", home_channel)
 
@@ -2064,15 +2064,15 @@ def _setup_bluebubbles():
         save_env_value("BLUEBUBBLES_HOME_CHANNEL", home_channel)
 
     print()
-    print_info("Advanced settings (defaults are fine for most setups):")
-    if prompt_yes_no("Configure webhook listener settings?", False):
-        webhook_port = prompt("Webhook listener port (default: 8645)")
+    print_info("고급 설정 (대부분 기본값이면 충분합니다):")
+    if prompt_yes_no("Webhook listener settings를 설정할까요?", False):
+        webhook_port = prompt("Webhook listener 포트 (기본값: 8645)")
         if webhook_port:
             try:
                 save_env_value("BLUEBUBBLES_WEBHOOK_PORT", str(int(webhook_port)))
-                print_success(f"Webhook port set to {webhook_port}")
+                print_success(f"Webhook 포트를 {webhook_port}로 설정했습니다")
             except ValueError:
-                print_warning("Invalid port number, using default 8645")
+                print_warning("잘못된 포트 번호입니다. 기본값 8645를 사용합니다")
 
     print()
     print_info("Requires the BlueBubbles Private API helper for typing indicators,")
@@ -2110,11 +2110,11 @@ def _setup_webhooks():
     if port:
         try:
             save_env_value("WEBHOOK_PORT", str(int(port)))
-            print_success(f"Webhook port set to {port}")
+            print_success(f"Webhook 포트를 {port}로 설정했습니다")
         except ValueError:
-            print_warning("Invalid port number, using default 8644")
+            print_warning("잘못된 포트 번호입니다. 기본값 8644를 사용합니다")
 
-    secret = prompt("Global HMAC secret (shared across all routes)", password=True)
+    secret = prompt("전역 HMAC 시크릿 (모든 라우트에서 공유)", password=True)
     if secret:
         save_env_value("WEBHOOK_SECRET", secret)
         print_success("Webhook secret saved")
@@ -2123,16 +2123,16 @@ def _setup_webhooks():
 
     save_env_value("WEBHOOK_ENABLED", "true")
     print()
-    print_success("Webhooks enabled! Next steps:")
+    print_success("Webhooks 활성화 완료! 다음 단계:")
     from hermes_constants import display_hermes_home as _dhh
-    print_info(f"   1. Define webhook routes in {_dhh()}/config.yaml")
-    print_info("   2. Point your service (GitHub, GitLab, etc.) at:")
+    print_info(f"   1. {_dhh()}/config.yaml에서 webhook 라우트를 정의하세요")
+    print_info("   2. 서비스(GitHub, GitLab 등)의 대상 주소를 다음으로 설정하세요:")
     print_info("      http://your-server:8644/webhooks/<route-name>")
     print()
-    print_info("   Route configuration guide:")
+    print_info("   라우트 설정 가이드:")
     print_info("   https://hermes-agent.nousresearch.com/docs/user-guide/messaging/webhooks/#configuring-routes")
     print()
-    print_info("   Open config in your editor:  hermes config edit")
+    print_info("   편집기에서 config 열기:  hermes config edit")
 
 
 # Platform registry for the gateway checklist

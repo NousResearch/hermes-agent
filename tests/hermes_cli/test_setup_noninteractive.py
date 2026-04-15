@@ -134,6 +134,11 @@ class TestNonInteractiveSetup:
         assert 'Telegram 봇 토큰' in source
         assert 'Discord 봇 토큰' in source
         assert '허용할 사용자 ID' in source
+        assert '어떤 Matrix homeserver와도 사용할 수 있습니다.' in source
+        assert 'Mattermost 서버 URL' in source
+        assert '고급 설정 (대부분 기본값이면 충분합니다):' in source
+        assert 'Webhook listener settings를 설정할까요?' in source
+        assert 'Webhooks 활성화 완료! 다음 단계:' in source
 
     def test_cmd_setup_allows_noninteractive_flag_without_tty(self):
         """The CLI entrypoint should not block --non-interactive before setup.py handles it."""

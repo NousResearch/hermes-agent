@@ -1457,7 +1457,19 @@ class SlackAdapter(BasePlatformAdapter):
                 is_parent = msg_ts == thread_ts
                 prefix = "[thread parent] " if is_parent else ""
                 name = await self._resolve_user_name(msg_user, chat_id=channel_id)
-                context_parts.append(f"{prefix}{name}: {msg_text}")
+
+                # Tag messages from users not on the allowlist
+                trust_tag = ""
+                allow_all = os.getenv("SLACK_ALLOW_ALL_USERS", "").lower() in ("true", "1", "yes") or \
+                    os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in ("true", "1", "yes")
+                if not allow_all:
+                    allowed_csv = os.getenv("SLACK_ALLOWED_USERS", "").strip()
+                    if allowed_csv:
+                        allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
+                        if "*" not in allowed_ids and msg_user not in allowed_ids:
+                            trust_tag = "[Message from untrusted user] "
+
+                context_parts.append(f"{prefix}{trust_tag}{name}: {msg_text}")
 
             content = ""
             if context_parts:

@@ -19,17 +19,34 @@ def test_session_finalize_on_reset(mock_invoke_hook):
     cli = HermesCLI()
     cli.agent = MagicMock()
     cli.agent.session_id = "test-session-id"
+    cli.conversation_history = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "hello"},
+    ]
 
     # Simulate /new command which triggers on_session_finalize for the old session
     cli.new_session(silent=True)
 
     # Check if on_session_finalize was called for the old session
     mock_invoke_hook.assert_any_call(
-        "on_session_finalize", session_id="test-session-id", platform="cli"
+        "on_session_finalize",
+        session_id="test-session-id",
+        old_session_id="test-session-id",
+        previous_messages=[
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "hello"},
+        ],
+        previous_message_count=2,
+        platform="cli",
     )
     # Check if on_session_reset was called for the new session
     mock_invoke_hook.assert_any_call(
-        "on_session_reset", session_id=cli.session_id, platform="cli"
+        "on_session_reset",
+        session_id=cli.session_id,
+        old_session_id="test-session-id",
+        new_session_id=cli.session_id,
+        carry_over_context=True,
+        platform="cli",
     )
 
 

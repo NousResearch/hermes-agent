@@ -39,6 +39,8 @@ class TestProviderRegistry:
         ("copilot-acp", "GitHub Copilot ACP", "external_process"),
         ("copilot", "GitHub Copilot", "api_key"),
         ("huggingface", "Hugging Face", "api_key"),
+        ("siliconflow", "SiliconFlow", "api_key"),
+        ("siliconflow-cn", "SiliconFlow (China)", "api_key"),
         ("zai", "Z.AI / GLM", "api_key"),
         ("xai", "xAI", "api_key"),
         ("kimi-coding", "Kimi / Moonshot", "api_key"),
@@ -64,6 +66,18 @@ class TestProviderRegistry:
         assert pconfig.api_key_env_vars == ("XAI_API_KEY",)
         assert pconfig.base_url_env_var == "XAI_BASE_URL"
         assert pconfig.inference_base_url == "https://api.x.ai/v1"
+
+    def test_siliconflow_env_vars(self):
+        pconfig = PROVIDER_REGISTRY["siliconflow"]
+        assert pconfig.api_key_env_vars == ("SILICONFLOW_API_KEY",)
+        assert pconfig.base_url_env_var == "SILICONFLOW_BASE_URL"
+        assert pconfig.inference_base_url == "https://api.siliconflow.com/v1"
+
+    def test_siliconflow_cn_env_vars(self):
+        pconfig = PROVIDER_REGISTRY["siliconflow-cn"]
+        assert pconfig.api_key_env_vars == ("SILICONFLOW_CN_API_KEY",)
+        assert pconfig.base_url_env_var == "SILICONFLOW_CN_BASE_URL"
+        assert pconfig.inference_base_url == "https://api.siliconflow.cn/v1"
 
     def test_copilot_env_vars(self):
         pconfig = PROVIDER_REGISTRY["copilot"]
@@ -110,6 +124,8 @@ class TestProviderRegistry:
         assert PROVIDER_REGISTRY["ai-gateway"].inference_base_url == "https://ai-gateway.vercel.sh/v1"
         assert PROVIDER_REGISTRY["kilocode"].inference_base_url == "https://api.kilo.ai/api/gateway"
         assert PROVIDER_REGISTRY["huggingface"].inference_base_url == "https://router.huggingface.co/v1"
+        assert PROVIDER_REGISTRY["siliconflow"].inference_base_url == "https://api.siliconflow.com/v1"
+        assert PROVIDER_REGISTRY["siliconflow-cn"].inference_base_url == "https://api.siliconflow.cn/v1"
 
     def test_oauth_providers_unchanged(self):
         """Ensure we didn't break the existing OAuth providers."""
@@ -127,6 +143,8 @@ PROVIDER_ENV_VARS = (
     "OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN",
     "CLAUDE_CODE_OAUTH_TOKEN",
     "GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY",
+    "SILICONFLOW_API_KEY", "SILICONFLOW_BASE_URL",
+    "SILICONFLOW_CN_API_KEY", "SILICONFLOW_CN_BASE_URL",
     "KIMI_API_KEY", "KIMI_BASE_URL", "MINIMAX_API_KEY", "MINIMAX_CN_API_KEY",
     "AI_GATEWAY_API_KEY", "AI_GATEWAY_BASE_URL",
     "KILOCODE_API_KEY", "KILOCODE_BASE_URL",
@@ -149,6 +167,12 @@ class TestResolveProvider:
 
     def test_explicit_zai(self):
         assert resolve_provider("zai") == "zai"
+
+    def test_explicit_siliconflow(self):
+        assert resolve_provider("siliconflow") == "siliconflow"
+
+    def test_explicit_siliconflow_cn(self):
+        assert resolve_provider("siliconflow-cn") == "siliconflow-cn"
 
     def test_explicit_kimi_coding(self):
         assert resolve_provider("kimi-coding") == "kimi-coding"

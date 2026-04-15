@@ -132,6 +132,18 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         base_url_override="https://api.x.ai/v1",
         base_url_env_var="XAI_BASE_URL",
     ),
+    "siliconflow": HermesOverlay(
+        transport="openai_chat",
+        is_aggregator=True,
+        base_url_override="https://api.siliconflow.com/v1",
+        base_url_env_var="SILICONFLOW_BASE_URL",
+    ),
+    "siliconflow-cn": HermesOverlay(
+        transport="openai_chat",
+        is_aggregator=True,
+        base_url_override="https://api.siliconflow.cn/v1",
+        base_url_env_var="SILICONFLOW_CN_BASE_URL",
+    ),
     "xiaomi": HermesOverlay(
         transport="openai_chat",
         base_url_env_var="XIAOMI_BASE_URL",
@@ -260,6 +272,8 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "nous": "Nous Portal",
     "openai-codex": "OpenAI Codex",
     "copilot-acp": "GitHub Copilot ACP",
+    "siliconflow": "SiliconFlow",
+    "siliconflow-cn": "SiliconFlow (China)",
     "xiaomi": "Xiaomi MiMo",
     "local": "Local endpoint",
 }

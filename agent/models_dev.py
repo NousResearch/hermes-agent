@@ -162,6 +162,7 @@ PROVIDER_TO_MODELS_DEV: Dict[str, str] = {
     "gemini": "google",
     "google": "google",
     "xai": "xai",
+    "siliconflow": "siliconflow",
     "xiaomi": "xiaomi",
     "nvidia": "nvidia",
     "groq": "groq",
@@ -581,5 +582,4 @@ def get_model_info(
             return _parse_model_info(mid, mdata, mdev_id)
 
     return None
-
 

@@ -420,6 +420,10 @@ class TrajectoryCompressor:
             return "zai"
         if "moonshot.ai" in url or "moonshot.cn" in url or "api.kimi.com" in url:
             return "kimi-coding"
+        if "siliconflow.cn" in url:
+            return "siliconflow-cn"
+        if "siliconflow.com" in url:
+            return "siliconflow"
         if "arcee.ai" in url:
             return "arcee"
         if "minimaxi.com" in url:

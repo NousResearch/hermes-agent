@@ -26,6 +26,8 @@ _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "gemini", "zai", "kimi-coding", "kimi-coding-cn", "minimax", "minimax-cn", "anthropic", "deepseek",
     "opencode-zen", "opencode-go", "ai-gateway", "kilocode", "alibaba",
     "qwen-oauth",
+    "siliconflow",
+    "siliconflow-cn",
     "xiaomi",
     "arcee",
     "custom", "local",
@@ -237,6 +239,8 @@ _URL_TO_PROVIDER: Dict[str, str] = {
     "api.fireworks.ai": "fireworks",
     "opencode.ai": "opencode-go",
     "api.x.ai": "xai",
+    "api.siliconflow.com": "siliconflow",
+    "api.siliconflow.cn": "siliconflow-cn",
     "api.xiaomimimo.com": "xiaomi",
     "xiaomimimo.com": "xiaomi",
 }

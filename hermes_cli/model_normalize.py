@@ -62,6 +62,8 @@ _VENDOR_PREFIXES: dict[str, str] = {
 _AGGREGATOR_PROVIDERS: frozenset[str] = frozenset({
     "openrouter",
     "nous",
+    "siliconflow",
+    "siliconflow-cn",
     "ai-gateway",
     "kilocode",
 })
@@ -403,4 +405,3 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
 # ---------------------------------------------------------------------------
 # Batch / convenience helpers
 # ---------------------------------------------------------------------------
-

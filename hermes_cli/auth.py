@@ -222,6 +222,22 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("XAI_API_KEY",),
         base_url_env_var="XAI_BASE_URL",
     ),
+    "siliconflow": ProviderConfig(
+        id="siliconflow",
+        name="SiliconFlow",
+        auth_type="api_key",
+        inference_base_url="https://api.siliconflow.com/v1",
+        api_key_env_vars=("SILICONFLOW_API_KEY",),
+        base_url_env_var="SILICONFLOW_BASE_URL",
+    ),
+    "siliconflow-cn": ProviderConfig(
+        id="siliconflow-cn",
+        name="SiliconFlow (China)",
+        auth_type="api_key",
+        inference_base_url="https://api.siliconflow.cn/v1",
+        api_key_env_vars=("SILICONFLOW_CN_API_KEY",),
+        base_url_env_var="SILICONFLOW_CN_BASE_URL",
+    ),
     "ai-gateway": ProviderConfig(
         id="ai-gateway",
         name="Vercel AI Gateway",

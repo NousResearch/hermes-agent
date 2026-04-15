@@ -266,9 +266,25 @@ def read_runtime_status() -> Optional[dict[str, Any]]:
 
 
 def remove_pid_file() -> None:
-    """Remove the gateway PID file if it exists."""
+    """Remove the gateway PID file, but only if it belongs to this process.
+
+    During --replace handoffs, the old process's atexit handler can fire AFTER
+    the new process has written its own PID file.  Blindly removing the file
+    would delete the new process's record, leaving the gateway running with no
+    PID file (invisible to ``get_running_pid()``).
+    """
     try:
-        _get_pid_path().unlink(missing_ok=True)
+        path = _get_pid_path()
+        record = _read_json_file(path)
+        if record is not None:
+            try:
+                file_pid = int(record["pid"])
+            except (KeyError, TypeError, ValueError):
+                file_pid = None
+            if file_pid is not None and file_pid != os.getpid():
+                # PID file belongs to a different process — leave it alone.
+                return
+        path.unlink(missing_ok=True)
     except Exception:
         pass
 
@@ -290,6 +306,15 @@ def acquire_scoped_lock(scope: str, identity: str, metadata: Optional[dict[str, 
     }
 
     existing = _read_json_file(lock_path)
+    if existing is None and lock_path.exists():
+        # Lock file exists but is empty or contains invalid JSON — treat as
+        # stale.  This happens when a previous process was killed between
+        # O_CREAT|O_EXCL and the subsequent json.dump() (e.g. DNS failure
+        # during rapid Slack reconnect retries).
+        try:
+            lock_path.unlink(missing_ok=True)
+        except OSError:
+            pass
     if existing:
         try:
             existing_pid = int(existing["pid"])

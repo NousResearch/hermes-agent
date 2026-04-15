@@ -308,6 +308,34 @@ class TestMinimaxPreserveDots:
         from run_agent import AIAgent
         assert AIAgent._anthropic_preserve_dots(agent) is False
 
+    def test_opencode_zen_provider_preserves_dots(self):
+        from types import SimpleNamespace
+        agent = SimpleNamespace(provider="opencode-zen", base_url="")
+        from run_agent import AIAgent
+        assert AIAgent._anthropic_preserve_dots(agent) is True
+
+    def test_opencode_zen_url_preserves_dots(self):
+        from types import SimpleNamespace
+        agent = SimpleNamespace(provider="custom", base_url="https://opencode.ai/zen/v1")
+        from run_agent import AIAgent
+        assert AIAgent._anthropic_preserve_dots(agent) is True
+
+    def test_zai_provider_preserves_dots(self):
+        from types import SimpleNamespace
+        agent = SimpleNamespace(provider="zai", base_url="")
+        from run_agent import AIAgent
+        assert AIAgent._anthropic_preserve_dots(agent) is True
+
+    def test_bigmodel_cn_url_preserves_dots(self):
+        from types import SimpleNamespace
+        agent = SimpleNamespace(provider="custom", base_url="https://open.bigmodel.cn/api/paas/v4")
+        from run_agent import AIAgent
+        assert AIAgent._anthropic_preserve_dots(agent) is True
+
+    def test_normalize_preserves_m25_free_dot(self):
+        from agent.anthropic_adapter import normalize_model_name
+        assert normalize_model_name("minimax-m2.5-free", preserve_dots=True) == "minimax-m2.5-free"
+
     def test_normalize_preserves_m27_dot(self):
         from agent.anthropic_adapter import normalize_model_name
         assert normalize_model_name("MiniMax-M2.7", preserve_dots=True) == "MiniMax-M2.7"

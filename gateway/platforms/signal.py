@@ -17,7 +17,6 @@ import json
 import logging
 import os
 import random
-import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -780,21 +779,6 @@ class SignalAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
     # Typing Indicators
     # ------------------------------------------------------------------
-
-    async def _start_typing_indicator(self, chat_id: str) -> None:
-        """Start a typing indicator loop for a chat."""
-        if chat_id in self._typing_tasks:
-            return  # Already running
-
-        async def _typing_loop():
-            try:
-                while True:
-                    await self.send_typing(chat_id)
-                    await asyncio.sleep(TYPING_INTERVAL)
-            except asyncio.CancelledError:
-                pass
-
-        self._typing_tasks[chat_id] = asyncio.create_task(_typing_loop())
 
     async def _stop_typing_indicator(self, chat_id: str) -> None:
         """Stop a typing indicator loop for a chat."""

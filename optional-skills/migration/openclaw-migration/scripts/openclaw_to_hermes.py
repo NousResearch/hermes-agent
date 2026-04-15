@@ -1995,7 +1995,9 @@ class Migrator:
             if compaction.get("timeout"):
                 pass  # No direct mapping
             if compaction.get("model"):
-                compression["summary_model"] = compaction["model"]
+                aux = hermes_cfg.setdefault("auxiliary", {})
+                aux_comp = aux.setdefault("compression", {})
+                aux_comp["model"] = compaction["model"]
             hermes_cfg["compression"] = compression
             changes = True
 

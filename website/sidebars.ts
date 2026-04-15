@@ -75,6 +75,13 @@ const sidebars: SidebarsConfig = {
         },
         {
           type: 'category',
+          label: 'Management',
+          items: [
+            'user-guide/features/web-dashboard',
+          ],
+        },
+        {
+          type: 'category',
           label: 'Advanced',
           items: [
             'user-guide/features/rl-training',
@@ -85,6 +92,7 @@ const sidebars: SidebarsConfig = {
           label: 'Skills',
           items: [
             'user-guide/skills/godmode',
+            'user-guide/skills/google-workspace',
           ],
         },
       ],

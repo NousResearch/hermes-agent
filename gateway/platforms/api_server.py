@@ -10,6 +10,7 @@ Exposes an HTTP server with endpoints:
 - POST /v1/runs                    — start a run, returns run_id immediately (202)
 - GET  /v1/runs/{run_id}/events    — SSE stream of structured lifecycle events
 - GET  /health                     — health check
+- GET  /health/detailed            — rich status for cross-container dashboard probing
 
 Any OpenAI-compatible frontend (Open WebUI, LobeChat, LibreChat,
 AnythingLLM, NextChat, ChatBox, etc.) can connect to hermes-agent
@@ -54,6 +55,66 @@ DEFAULT_PORT = 8642
 MAX_STORED_RESPONSES = 100
 MAX_REQUEST_BYTES = 1_000_000  # 1 MB default limit for POST bodies
 CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 30.0
+MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
+MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
+
+
+def _normalize_chat_content(
+    content: Any, *, _max_depth: int = 10, _depth: int = 0,
+) -> str:
+    """Normalize OpenAI chat message content into a plain text string.
+
+    Some clients (Open WebUI, LobeChat, etc.) send content as an array of
+    typed parts instead of a plain string::
+
+        [{"type": "text", "text": "hello"}, {"type": "input_text", "text": "..."}]
+
+    This function flattens those into a single string so the agent pipeline
+    (which expects strings) doesn't choke.
+
+    Defensive limits prevent abuse: recursion depth, list size, and output
+    length are all bounded.
+    """
+    if _depth > _max_depth:
+        return ""
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content[:MAX_NORMALIZED_TEXT_LENGTH] if len(content) > MAX_NORMALIZED_TEXT_LENGTH else content
+
+    if isinstance(content, list):
+        parts: List[str] = []
+        items = content[:MAX_CONTENT_LIST_SIZE] if len(content) > MAX_CONTENT_LIST_SIZE else content
+        for item in items:
+            if isinstance(item, str):
+                if item:
+                    parts.append(item[:MAX_NORMALIZED_TEXT_LENGTH])
+            elif isinstance(item, dict):
+                item_type = str(item.get("type") or "").strip().lower()
+                if item_type in {"text", "input_text", "output_text"}:
+                    text = item.get("text", "")
+                    if text:
+                        try:
+                            parts.append(str(text)[:MAX_NORMALIZED_TEXT_LENGTH])
+                        except Exception:
+                            pass
+                # Silently skip image_url / other non-text parts
+            elif isinstance(item, list):
+                nested = _normalize_chat_content(item, _max_depth=_max_depth, _depth=_depth + 1)
+                if nested:
+                    parts.append(nested)
+            # Check accumulated size
+            if sum(len(p) for p in parts) >= MAX_NORMALIZED_TEXT_LENGTH:
+                break
+        result = "\n".join(parts)
+        return result[:MAX_NORMALIZED_TEXT_LENGTH] if len(result) > MAX_NORMALIZED_TEXT_LENGTH else result
+
+    # Fallback for unexpected types (int, float, bool, etc.)
+    try:
+        result = str(content)
+        return result[:MAX_NORMALIZED_TEXT_LENGTH] if len(result) > MAX_NORMALIZED_TEXT_LENGTH else result
+    except Exception:
+        return ""
 
 
 def check_api_server_requirements() -> bool:
@@ -505,6 +566,27 @@ class APIServerAdapter(BasePlatformAdapter):
         """GET /health — simple health check."""
         return web.json_response({"status": "ok", "platform": "hermes-agent"})
 
+    async def _handle_health_detailed(self, request: "web.Request") -> "web.Response":
+        """GET /health/detailed — rich status for cross-container dashboard probing.
+
+        Returns gateway state, connected platforms, PID, and uptime so the
+        dashboard can display full status without needing a shared PID file or
+        /proc access.  No authentication required.
+        """
+        from gateway.status import read_runtime_status
+
+        runtime = read_runtime_status() or {}
+        return web.json_response({
+            "status": "ok",
+            "platform": "hermes-agent",
+            "gateway_state": runtime.get("gateway_state"),
+            "platforms": runtime.get("platforms", {}),
+            "active_agents": runtime.get("active_agents", 0),
+            "exit_reason": runtime.get("exit_reason"),
+            "updated_at": runtime.get("updated_at"),
+            "pid": os.getpid(),
+        })
+
     async def _handle_models(self, request: "web.Request") -> "web.Response":
         """GET /v1/models — return hermes-agent as an available model."""
         auth_err = self._check_auth(request)
@@ -553,7 +635,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
         for msg in messages:
             role = msg.get("role", "")
-            content = msg.get("content", "")
+            content = _normalize_chat_content(msg.get("content", ""))
             if role == "system":
                 # Accumulate system messages
                 if system_prompt is None:
@@ -926,18 +1008,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     input_messages.append({"role": "user", "content": item})
                 elif isinstance(item, dict):
                     role = item.get("role", "user")
-                    content = item.get("content", "")
-                    # Handle content that may be a list of content parts
-                    if isinstance(content, list):
-                        text_parts = []
-                        for part in content:
-                            if isinstance(part, dict) and part.get("type") == "input_text":
-                                text_parts.append(part.get("text", ""))
-                            elif isinstance(part, dict) and part.get("type") == "output_text":
-                                text_parts.append(part.get("text", ""))
-                            elif isinstance(part, str):
-                                text_parts.append(part)
-                        content = "\n".join(text_parts)
+                    content = _normalize_chat_content(item.get("content", ""))
                     input_messages.append({"role": role, "content": content})
         else:
             return web.json_response(_openai_error("'input' must be a string or array"), status=400)
@@ -1734,6 +1805,7 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app = web.Application(middlewares=mws)
             self._app["api_server_adapter"] = self
             self._app.router.add_get("/health", self._handle_health)
+            self._app.router.add_get("/health/detailed", self._handle_health_detailed)
             self._app.router.add_get("/v1/health", self._handle_health)
             self._app.router.add_get("/v1/models", self._handle_models)
             self._app.router.add_post("/v1/chat/completions", self._handle_chat_completions)
@@ -1769,6 +1841,23 @@ class APIServerAdapter(BasePlatformAdapter):
                     self.name, self._host,
                 )
                 return False
+
+            # Refuse to start network-accessible with a placeholder key.
+            # Ported from openclaw/openclaw#64586.
+            if is_network_accessible(self._host) and self._api_key:
+                try:
+                    from hermes_cli.auth import has_usable_secret
+                    if not has_usable_secret(self._api_key, min_length=8):
+                        logger.error(
+                            "[%s] Refusing to start: API_SERVER_KEY is set to a "
+                            "placeholder value. Generate a real secret "
+                            "(e.g. `openssl rand -hex 32`) and set API_SERVER_KEY "
+                            "before exposing the API server on %s.",
+                            self.name, self._host,
+                        )
+                        return False
+                except ImportError:
+                    pass
 
             # Port conflict detection — fail fast if port is already in use
             try:

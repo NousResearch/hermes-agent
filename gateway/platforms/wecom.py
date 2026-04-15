@@ -37,7 +37,6 @@ import logging
 import mimetypes
 import os
 import re
-import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -266,7 +265,7 @@ class WeComAdapter(BasePlatformAdapter):
     async def _open_connection(self) -> None:
         """Open and authenticate a websocket connection."""
         await self._cleanup_ws()
-        self._session = aiohttp.ClientSession()
+        self._session = aiohttp.ClientSession(trust_env=True)
         self._ws = await self._session.ws_connect(
             self._ws_url,
             heartbeat=HEARTBEAT_INTERVAL_SECONDS * 2,

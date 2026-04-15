@@ -25,6 +25,7 @@ model:
   #   "minimax-cn"   - MiniMax China (requires: MINIMAX_CN_API_KEY)
   #   "huggingface"  - Hugging Face Inference (requires: HF_TOKEN)
   #   "xiaomi"       - Xiaomi MiMo (requires: XIAOMI_API_KEY)
+  #   "arcee"        - Arcee AI Trinity models (requires: ARCEEAI_API_KEY)
   #   "kilocode"     - KiloCode gateway (requires: KILOCODE_API_KEY)
   #   "ai-gateway"   - Vercel AI Gateway (requires: AI_GATEWAY_API_KEY)
   #
@@ -309,15 +310,8 @@ compression:
   # compression of older turns.
   protect_last_n: 20
 
-  # Model to use for generating summaries (fast/cheap recommended)
-  # This model compresses the middle turns into a concise summary.
-  # IMPORTANT: it receives the full middle section of the conversation, so it
-  # MUST support a context length at least as large as your main model's.
-  summary_model: "google/gemini-3-flash-preview"
-  
-  # Provider for the summary model (default: "auto")
-  # Options: "auto", "openrouter", "nous", "main"
-  # summary_provider: "auto"
+  # To pin a specific model/provider for compression summaries, use the
+  # auxiliary section below (auxiliary.compression.provider / model).
 
 # =============================================================================
 # Auxiliary Models (Advanced — Experimental)
@@ -529,7 +523,7 @@ agent:
 #   - A preset like "hermes-cli" or "hermes-telegram" (curated tool set)
 #   - A list of individual toolsets to compose your own (see list below)
 #
-# Supported platform keys: cli, telegram, discord, whatsapp, slack
+# Supported platform keys: cli, telegram, discord, whatsapp, slack, qqbot
 #
 # Examples:
 #
@@ -558,6 +552,7 @@ agent:
 #   slack:         hermes-slack          (same as telegram)
 #   signal:        hermes-signal         (same as telegram)
 #   homeassistant: hermes-homeassistant  (same as telegram)
+#   qqbot:            hermes-qqbot            (same as telegram)
 #
 platform_toolsets:
   cli: [hermes-cli]
@@ -567,6 +562,7 @@ platform_toolsets:
   slack: [hermes-slack]
   signal: [hermes-signal]
   homeassistant: [hermes-homeassistant]
+  qqbot: [hermes-qqbot]
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Available toolsets (use these names in platform_toolsets or the toolsets list)

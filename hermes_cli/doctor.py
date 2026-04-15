@@ -42,6 +42,7 @@ _PROVIDER_ENV_HINTS = (
     "ZAI_API_KEY",
     "Z_AI_API_KEY",
     "KIMI_API_KEY",
+    "KIMI_CN_API_KEY",
     "MINIMAX_API_KEY",
     "MINIMAX_CN_API_KEY",
     "KILOCODE_API_KEY",
@@ -721,13 +722,15 @@ def run_doctor(args):
     _apikey_providers = [
         ("Z.AI / GLM",      ("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"), "https://api.z.ai/api/paas/v4/models", "GLM_BASE_URL", True),
         ("Kimi / Moonshot",  ("KIMI_API_KEY",),                              "https://api.moonshot.ai/v1/models",   "KIMI_BASE_URL", True),
+        ("Kimi / Moonshot (China)", ("KIMI_CN_API_KEY",),                    "https://api.moonshot.cn/v1/models",   None, True),
+        ("Arcee AI",         ("ARCEEAI_API_KEY",),                            "https://api.arcee.ai/api/v1/models",  "ARCEE_BASE_URL", True),
         ("DeepSeek",         ("DEEPSEEK_API_KEY",),                           "https://api.deepseek.com/v1/models",  "DEEPSEEK_BASE_URL", True),
         ("Hugging Face",     ("HF_TOKEN",),                                   "https://router.huggingface.co/v1/models", "HF_BASE_URL", True),
         ("Alibaba/DashScope", ("DASHSCOPE_API_KEY",),                         "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models", "DASHSCOPE_BASE_URL", True),
         # MiniMax: the /anthropic endpoint doesn't support /models, but the /v1 endpoint does.
         ("MiniMax",          ("MINIMAX_API_KEY",),                            "https://api.minimax.io/v1/models",    "MINIMAX_BASE_URL", True),
         ("MiniMax (China)",  ("MINIMAX_CN_API_KEY",),                         "https://api.minimaxi.com/v1/models",  "MINIMAX_CN_BASE_URL", True),
-        ("AI Gateway",       ("AI_GATEWAY_API_KEY",),                          "https://ai-gateway.vercel.sh/v1/models", "AI_GATEWAY_BASE_URL", True),
+        ("Vercel AI Gateway",       ("AI_GATEWAY_API_KEY",),                          "https://ai-gateway.vercel.sh/v1/models", "AI_GATEWAY_BASE_URL", True),
         ("Kilo Code",        ("KILOCODE_API_KEY",),                            "https://api.kilo.ai/api/gateway/models",  "KILOCODE_BASE_URL", True),
         ("OpenCode Zen",     ("OPENCODE_ZEN_API_KEY",),                        "https://opencode.ai/zen/v1/models",  "OPENCODE_ZEN_BASE_URL", True),
         ("OpenCode Go",      ("OPENCODE_GO_API_KEY",),                         "https://opencode.ai/zen/go/v1/models", "OPENCODE_GO_BASE_URL", True),
@@ -747,7 +750,7 @@ def run_doctor(args):
             print(f"  Checking {_pname} API...", end="", flush=True)
             try:
                 import httpx
-                _base = os.getenv(_base_env, "")
+                _base = os.getenv(_base_env, "") if _base_env else ""
                 # Auto-detect Kimi Code keys (sk-kimi-) → api.kimi.com
                 if not _base and _key.startswith("sk-kimi-"):
                     _base = "https://api.kimi.com/coding/v1"

@@ -48,6 +48,7 @@ def _make_event(
     room_id="!room1:example.org",
     formatted_body=None,
     thread_id=None,
+    mention_user_ids=None,
 ):
     """Create a fake room message event.
 
@@ -59,6 +60,9 @@ def _make_event(
     if formatted_body:
         content["formatted_body"] = formatted_body
         content["format"] = "org.matrix.custom.html"
+
+    if mention_user_ids is not None:
+        content["m.mentions"] = {"user_ids": mention_user_ids}
 
     relates_to = {}
     if thread_id:
@@ -107,6 +111,44 @@ class TestIsBotMentioned:
     def test_partial_localpart_no_match(self):
         # "hermesbot" should not match word-boundary check for "hermes"
         assert not self.adapter._is_bot_mentioned("hermesbot is here")
+
+    # m.mentions.user_ids — MSC3952 / Matrix v1.7 authoritative mentions
+    # Ported from openclaw/openclaw#64796
+
+    def test_m_mentions_user_ids_authoritative(self):
+        """m.mentions.user_ids alone is sufficient — no body text needed."""
+        assert self.adapter._is_bot_mentioned(
+            "please reply",  # no @hermes anywhere in body
+            mention_user_ids=["@hermes:example.org"],
+        )
+
+    def test_m_mentions_user_ids_with_body_mention(self):
+        """Both m.mentions and body mention — should still be True."""
+        assert self.adapter._is_bot_mentioned(
+            "hey @hermes:example.org help",
+            mention_user_ids=["@hermes:example.org"],
+        )
+
+    def test_m_mentions_user_ids_other_user_only(self):
+        """m.mentions with a different user — bot is NOT mentioned."""
+        assert not self.adapter._is_bot_mentioned(
+            "hello",
+            mention_user_ids=["@alice:example.org"],
+        )
+
+    def test_m_mentions_user_ids_empty_list(self):
+        """Empty user_ids list — falls through to text detection."""
+        assert not self.adapter._is_bot_mentioned(
+            "hello everyone",
+            mention_user_ids=[],
+        )
+
+    def test_m_mentions_user_ids_none(self):
+        """None mention_user_ids — falls through to text detection."""
+        assert not self.adapter._is_bot_mentioned(
+            "hello everyone",
+            mention_user_ids=None,
+        )
 
 
 class TestStripMention:
@@ -174,6 +216,44 @@ async def test_require_mention_html_pill(monkeypatch):
 
     await adapter._on_room_message(event)
     adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_require_mention_m_mentions_user_ids(monkeypatch):
+    """m.mentions.user_ids is authoritative per MSC3952 — no body mention needed.
+
+    Ported from openclaw/openclaw#64796.
+    """
+    monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
+
+    adapter = _make_adapter()
+    # Body has NO mention, but m.mentions.user_ids includes the bot.
+    event = _make_event(
+        "please reply",
+        mention_user_ids=["@hermes:example.org"],
+    )
+
+    await adapter._on_room_message(event)
+    adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_require_mention_m_mentions_other_user_ignored(monkeypatch):
+    """m.mentions.user_ids mentioning another user should NOT activate the bot."""
+    monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
+
+    adapter = _make_adapter()
+    event = _make_event(
+        "hey alice check this",
+        mention_user_ids=["@alice:example.org"],
+    )
+
+    await adapter._on_room_message(event)
+    adapter.handle_message.assert_not_awaited()
 
 
 @pytest.mark.asyncio

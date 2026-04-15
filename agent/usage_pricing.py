@@ -575,25 +575,6 @@ def has_known_pricing(
     return entry is not None
 
 
-def get_pricing(
-    model_name: str,
-    provider: Optional[str] = None,
-    base_url: Optional[str] = None,
-    api_key: Optional[str] = None,
-) -> Dict[str, float]:
-    """Backward-compatible thin wrapper for legacy callers.
-
-    Returns only non-cache input/output fields when a pricing entry exists.
-    Unknown routes return zeroes.
-    """
-    entry = get_pricing_entry(model_name, provider=provider, base_url=base_url, api_key=api_key)
-    if not entry:
-        return {"input": 0.0, "output": 0.0}
-    return {
-        "input": float(entry.input_cost_per_million or _ZERO),
-        "output": float(entry.output_cost_per_million or _ZERO),
-    }
-
 
 def format_duration_compact(seconds: float) -> str:
     if seconds < 60:

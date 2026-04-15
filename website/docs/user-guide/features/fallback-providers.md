@@ -51,6 +51,7 @@ Both `provider` and `model` are **required**. If either is missing, the fallback
 | OpenCode Go | `opencode-go` | `OPENCODE_GO_API_KEY` |
 | Kilo Code | `kilocode` | `KILOCODE_API_KEY` |
 | Xiaomi MiMo | `xiaomi` | `XIAOMI_API_KEY` |
+| Arcee AI | `arcee` | `ARCEEAI_API_KEY` |
 | Alibaba / DashScope | `alibaba` | `DASHSCOPE_API_KEY` |
 | Hugging Face | `huggingface` | `HF_TOKEN` |
 | Custom endpoint | `custom` | `base_url` + `api_key_env` (see below) |
@@ -156,7 +157,7 @@ Hermes uses separate lightweight models for side tasks. Each task has its own pr
 |------|-------------|-----------|
 | Vision | Image analysis, browser screenshots | `auxiliary.vision` |
 | Web Extract | Web page summarization | `auxiliary.web_extract` |
-| Compression | Context compression summaries | `auxiliary.compression` or `compression.summary_provider` |
+| Compression | Context compression summaries | `auxiliary.compression` |
 | Session Search | Past session summarization | `auxiliary.session_search` |
 | Skills Hub | Skill search and discovery | `auxiliary.skills_hub` |
 | MCP | MCP helper operations | `auxiliary.mcp` |
@@ -219,13 +220,14 @@ auxiliary:
     model: ""
 ```
 
-Every task above follows the same **provider / model / base_url** pattern. Context compression uses its own top-level block:
+Every task above follows the same **provider / model / base_url** pattern. Context compression is configured under `auxiliary.compression`:
 
 ```yaml
-compression:
-  summary_provider: main                             # Same provider options as auxiliary tasks
-  summary_model: google/gemini-3-flash-preview
-  summary_base_url: null                             # Custom OpenAI-compatible endpoint
+auxiliary:
+  compression:
+    provider: main                                    # Same provider options as other auxiliary tasks
+    model: google/gemini-3-flash-preview
+    base_url: null                                    # Custom OpenAI-compatible endpoint
 ```
 
 And the fallback model uses:
@@ -270,15 +272,18 @@ auxiliary:
 
 ## Context Compression Fallback
 
-Context compression has a legacy configuration path in addition to the auxiliary system:
+Context compression uses the `auxiliary.compression` config block to control which model and provider handles summarization:
 
 ```yaml
-compression:
-  summary_provider: "auto"                    # auto | openrouter | nous | main
-  summary_model: "google/gemini-3-flash-preview"
+auxiliary:
+  compression:
+    provider: "auto"                              # auto | openrouter | nous | main
+    model: "google/gemini-3-flash-preview"
 ```
 
-This is equivalent to configuring `auxiliary.compression.provider` and `auxiliary.compression.model`. If both are set, the `auxiliary.compression` values take precedence.
+:::info Legacy migration
+Older configs with `compression.summary_model` / `compression.summary_provider` / `compression.summary_base_url` are automatically migrated to `auxiliary.compression.*` on first load (config version 17).
+:::
 
 If no provider is available for compression, Hermes drops middle conversation turns without generating a summary rather than failing the session.
 
@@ -325,7 +330,7 @@ See [Scheduled Tasks (Cron)](/docs/user-guide/features/cron) for full configurat
 | Main agent model | `fallback_model` in config.yaml — one-shot failover on errors | `fallback_model:` (top-level) |
 | Vision | Auto-detection chain + internal OpenRouter retry | `auxiliary.vision` |
 | Web extraction | Auto-detection chain + internal OpenRouter retry | `auxiliary.web_extract` |
-| Context compression | Auto-detection chain, degrades to no-summary if unavailable | `auxiliary.compression` or `compression.summary_provider` |
+| Context compression | Auto-detection chain, degrades to no-summary if unavailable | `auxiliary.compression` |
 | Session search | Auto-detection chain | `auxiliary.session_search` |
 | Skills hub | Auto-detection chain | `auxiliary.skills_hub` |
 | MCP helpers | Auto-detection chain | `auxiliary.mcp` |

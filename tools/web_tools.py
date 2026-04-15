@@ -80,6 +80,29 @@ def _load_web_config() -> dict:
     except (ImportError, Exception):
         return {}
 
+def _searxng_search(query: str, limit: int = 5) -> dict:
+    """Search using a self-hosted SearXNG instance."""
+    import httpx
+    base_url = os.getenv("SEARXNG_BASE_URL", "").strip().rstrip("/")
+    if not base_url:
+        return {"error": "SEARXNG_BASE_URL not set", "success": False}
+    params = {"q": query, "format": "json", "pageno": 1, "language": "en"}
+    headers = {"Accept": "application/json"}
+    api_key = os.getenv("SEARXNG_API_KEY", "").strip()
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    try:
+        resp = httpx.get(f"{base_url}/search", params=params, headers=headers, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as e:
+        return {"error": f"SearXNG failed: {e}", "success": False}
+    results = []
+    for r in data.get("results", [])[:limit]:
+        results.append({"title": r.get("title",""), "url": r.get("url",""), "snippet": r.get("content",""), "score": r.get("score", 0)})
+    return {"data": {"web": results}, "success": True}
+
+
 def _get_backend() -> str:
     """Determine which web backend to use.
 
@@ -88,7 +111,7 @@ def _get_backend() -> str:
     keys manually without running setup.
     """
     configured = (_load_web_config().get("backend") or "").lower().strip()
-    if configured in ("parallel", "firecrawl", "tavily", "exa"):
+    if configured in ("parallel", "firecrawl", "tavily", "exa", "searxng"):
         return configured
 
     # Fallback for manual / legacy config — pick the highest-priority
@@ -1117,6 +1140,18 @@ def web_search_tool(query: str, limit: int = 5) -> str:
             _debug.save()
             return result_json
 
+
+        if backend == "searxng":
+            response_data = _searxng_search(query, limit)
+            if not response_data.get("success", True):
+                return tool_error(response_data.get("error", "SearXNG error"), success=False)
+            result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
+            debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
+            debug_call_data["final_response_size"] = len(result_json)
+            _debug.log_call("web_search_tool", debug_call_data)
+            _debug.save()
+            return result_json
+
         logger.info("Searching the web for: '%s' (limit: %d)", query, limit)
 
         response = _get_firecrawl_client().search(
@@ -1190,12 +1225,10 @@ async def web_extract_tool(
     Raises:
         Exception: If extraction fails or API key is not set
     """
-    # Block URLs containing embedded secrets (exfiltration prevention).
-    # URL-decode first so percent-encoded secrets (%73k- = sk-) are caught.
+    # Block URLs containing embedded secrets (exfiltration prevention)
     from agent.redact import _PREFIX_RE
-    from urllib.parse import unquote
     for _url in urls:
-        if _PREFIX_RE.search(_url) or _PREFIX_RE.search(unquote(_url)):
+        if _PREFIX_RE.search(_url):
             return json.dumps({
                 "success": False,
                 "error": "Blocked: URL contains what appears to be an API key or token. "

@@ -871,7 +871,7 @@ def _configure_tool_category(ts_key: str, cat: dict, config: dict):
             provider_choices.append(f"{p['name']}{badge}{tag}{configured}")
 
         # Add skip option
-        provider_choices.append("Skip — keep defaults / configure later")
+        provider_choices.append("건너뛰기 — 기본값 유지 / 나중에 설정")
 
         # Detect current provider as default
         default_idx = _detect_active_provider_index(providers, config)
@@ -880,7 +880,7 @@ def _configure_tool_category(ts_key: str, cat: dict, config: dict):
 
         # Skip selected
         if provider_idx >= len(providers):
-            _print_info(f"  Skipped {name}")
+            _print_info(f"  {name} 설정을 건너뛰었어요")
             return
 
         _configure_provider(providers[provider_idx], config)
@@ -996,9 +996,9 @@ def _configure_provider(provider: dict, config: dict):
 
             if value:
                 save_env_value(var["key"], value)
-                _print_success("    Saved")
+                _print_success("    저장했어요")
             else:
-                _print_warning("    Skipped")
+                _print_warning("    건너뛰었어요")
                 all_configured = False
 
     # Run post-setup hooks if needed
@@ -1027,9 +1027,9 @@ def _configure_simple_requirements(ts_key: str):
             value = _prompt("    OPENROUTER_API_KEY", password=True)
             if value and value.strip():
                 save_env_value("OPENROUTER_API_KEY", value.strip())
-                _print_success("    Saved")
+                _print_success("    저장했어요")
             else:
-                _print_warning("    Skipped")
+                _print_warning("    건너뛰었어요")
         elif idx == 1:
             base_url = _prompt("    OPENAI_BASE_URL (blank for OpenAI)").strip() or "https://api.openai.com/v1"
             key_label = "    OPENAI_API_KEY" if "api.openai.com" in base_url.lower() else "    API key"
@@ -1044,9 +1044,9 @@ def _configure_simple_requirements(ts_key: str):
                 save_config(_cfg)
                 if "api.openai.com" in base_url.lower():
                     save_env_value("AUXILIARY_VISION_MODEL", "gpt-4o-mini")
-                _print_success("    Saved")
+                _print_success("    저장했어요")
             else:
-                _print_warning("    Skipped")
+                _print_warning("    건너뛰었어요")
         return
 
     requirements = TOOLSET_ENV_REQUIREMENTS.get(ts_key, [])
@@ -1063,13 +1063,13 @@ def _configure_simple_requirements(ts_key: str):
 
     for var, url in missing:
         if url:
-            _print_info(f"  Get key at: {url}")
+            _print_info(f"  키 발급 링크: {url}")
         value = _prompt(f"    {var}", password=True)
         if value and value.strip():
             save_env_value(var, value.strip())
-            _print_success("    Saved")
+            _print_success("    저장했어요")
         else:
-            _print_warning("    Skipped")
+            _print_warning("    건너뛰었어요")
 
 
 def _reconfigure_tool(config: dict):
@@ -1216,13 +1216,13 @@ def _reconfigure_simple_requirements(ts_key: str):
         if existing:
             _print_info(f"  {var}: configured ({existing[:8]}...)")
         if url:
-            _print_info(f"  Get key at: {url}")
+            _print_info(f"  키 발급 링크: {url}")
         value = _prompt(f"    {var} (Enter to keep current)", password=True)
         if value and value.strip():
             save_env_value(var, value.strip())
-            _print_success("    Updated")
+            _print_success("    업데이트했어요")
         else:
-            _print_info("    Kept current")
+            _print_info("    현재 값을 유지했어요")
 
 
 # ─── Main Entry Point ─────────────────────────────────────────────────────────

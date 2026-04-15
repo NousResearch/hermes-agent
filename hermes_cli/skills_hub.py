@@ -759,7 +759,7 @@ def do_publish(skill_path: str, target: str = "github", repo: str = "",
     name = fm.get("name", path.name)
     description = fm.get("description", "")
     if not description:
-        c.print("[bold red]Error:[/] SKILL.md must have a 'description' in frontmatter.\n")
+        c.print("[bold red]오류:[/] SKILL.md frontmatter에는 'description'이 꼭 있어야 해요.\n")
         return
 
     # Self-scan before publishing
@@ -772,14 +772,14 @@ def do_publish(skill_path: str, target: str = "github", repo: str = "",
 
     if target == "github":
         if not repo:
-            c.print("[bold red]Error:[/] --repo required for GitHub publish.\n"
-                    "Usage: hermes skills publish <path> --to github --repo owner/repo\n")
+            c.print("[bold red]오류:[/] GitHub 게시에는 --repo가 필요해요.\n"
+                    "사용법: hermes skills publish <path> --to github --repo owner/repo\n")
             return
 
         auth = GitHubAuth()
         if not auth.is_authenticated():
-            c.print("[bold red]Error:[/] GitHub authentication required.\n"
-                    f"Set GITHUB_TOKEN in {display_hermes_home()}/.env or run 'gh auth login'.\n")
+            c.print("[bold red]오류:[/] GitHub 인증이 필요해요.\n"
+                    f"{display_hermes_home()}/.env 에 GITHUB_TOKEN을 설정하거나 'gh auth login'을 실행하세요.\n")
             return
 
         c.print(f"[bold]Publishing '{name}' to {repo}...[/]")
@@ -787,13 +787,13 @@ def do_publish(skill_path: str, target: str = "github", repo: str = "",
         if success:
             c.print(f"[bold green]{msg}[/]\n")
         else:
-            c.print(f"[bold red]Error:[/] {msg}\n")
+            c.print(f"[bold red]오류:[/] {msg}\n")
 
     elif target == "clawhub":
-        c.print("[yellow]ClawHub publishing is not yet supported. "
-                "Submit manually at https://clawhub.ai/submit[/]\n")
+        c.print("[yellow]ClawHub 게시 기능은 아직 지원하지 않아요. "
+                "https://clawhub.ai/submit 에서 수동으로 제출해 주세요.[/]\n")
     else:
-        c.print(f"[bold red]Unknown target:[/] {target}. Use 'github' or 'clawhub'.\n")
+        c.print(f"[bold red]알 수 없는 대상:[/] {target}. 'github' 또는 'clawhub'를 사용하세요.\n")
 
 
 def _github_publish(skill_path: Path, skill_name: str, target_repo: str,
@@ -941,13 +941,13 @@ def do_snapshot_import(input_path: str, force: bool = False,
     c = console or _console
     inp = Path(input_path)
     if not inp.exists():
-        c.print(f"[bold red]Error:[/] File not found: {inp}\n")
+        c.print(f"[bold red]오류:[/] 파일을 찾지 못했어요: {inp}\n")
         return
 
     try:
         snapshot = json.loads(inp.read_text())
     except json.JSONDecodeError:
-        c.print(f"[bold red]Error:[/] Invalid JSON in {inp}\n")
+        c.print(f"[bold red]오류:[/] {inp} 안의 JSON 형식이 올바르지 않아요\n")
         return
 
     # Restore taps first
@@ -963,7 +963,7 @@ def do_snapshot_import(input_path: str, force: bool = False,
     # Install skills
     skills = snapshot.get("skills", [])
     if not skills:
-        c.print("[dim]No skills in snapshot to install.[/]\n")
+        c.print("[dim]snapshot에 설치할 skill이 없어요.[/]\n")
         return
 
     c.print(f"[bold]Importing {len(skills)} skill(s) from snapshot...[/]\n")
@@ -1020,17 +1020,17 @@ def skills_command(args) -> None:
         elif snap_action == "import":
             do_snapshot_import(args.input, force=getattr(args, "force", False))
         else:
-            _console.print("Usage: hermes skills snapshot [export|import]\n")
+            _console.print("사용법: hermes skills snapshot [export|import]\n")
     elif action == "tap":
         tap_action = getattr(args, "tap_action", None)
         repo = getattr(args, "repo", "") or getattr(args, "name", "")
         if not tap_action:
-            _console.print("Usage: hermes skills tap [list|add|remove]\n")
+            _console.print("사용법: hermes skills tap [list|add|remove]\n")
             return
         do_tap(tap_action, repo=repo)
     else:
-        _console.print("Usage: hermes skills [browse|search|install|inspect|list|check|update|audit|uninstall|publish|snapshot|tap]\n")
-        _console.print("Run 'hermes skills <command> --help' for details.\n")
+        _console.print("사용법: hermes skills [browse|search|install|inspect|list|check|update|audit|uninstall|publish|snapshot|tap]\n")
+        _console.print("자세한 내용은 'hermes skills <command> --help'를 실행하세요.\n")
 
 
 # ---------------------------------------------------------------------------
@@ -1098,7 +1098,7 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
 
     elif action == "search":
         if not args:
-            c.print("[bold red]Usage:[/] /skills search <query> [--source skills-sh|well-known|github|official] [--limit N]\n")
+            c.print("[bold red]사용법:[/] /skills search <query> [--source skills-sh|well-known|github|official] [--limit N]\n")
             return
         source = "all"
         limit = 10
@@ -1121,7 +1121,7 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
 
     elif action == "install":
         if not args:
-            c.print("[bold red]Usage:[/] /skills install <identifier> [--category <cat>] [--force] [--now]\n")
+            c.print("[bold red]사용법:[/] /skills install <identifier> [--category <cat>] [--force] [--now]\n")
             return
         identifier = args[0]
         category = ""
@@ -1141,7 +1141,7 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
 
     elif action == "inspect":
         if not args:
-            c.print("[bold red]Usage:[/] /skills inspect <identifier>\n")
+            c.print("[bold red]사용법:[/] /skills inspect <identifier>\n")
             return
         do_inspect(args[0], console=c)
 
@@ -1167,7 +1167,7 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
 
     elif action == "uninstall":
         if not args:
-            c.print("[bold red]Usage:[/] /skills uninstall <name> [--now]\n")
+            c.print("[bold red]사용법:[/] /skills uninstall <name> [--now]\n")
             return
         # Slash commands run inside prompt_toolkit where input() hangs.
         skip_confirm = True
@@ -1177,7 +1177,7 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
 
     elif action == "publish":
         if not args:
-            c.print("[bold red]Usage:[/] /skills publish <skill-path> [--to github] [--repo owner/repo]\n")
+            c.print("[bold red]사용법:[/] /skills publish <skill-path> [--to github] [--repo owner/repo]\n")
             return
         skill_path = args[0]
         target = "github"
@@ -1191,7 +1191,7 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
 
     elif action == "snapshot":
         if not args:
-            c.print("[bold red]Usage:[/] /skills snapshot export <file> | /skills snapshot import <file>\n")
+            c.print("[bold red]사용법:[/] /skills snapshot export <file> | /skills snapshot import <file>\n")
             return
         snap_action = args[0]
         if snap_action == "export" and len(args) > 1:
@@ -1200,7 +1200,7 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
             force = "--force" in args
             do_snapshot_import(args[1], force=force, console=c)
         else:
-            c.print("[bold red]Usage:[/] /skills snapshot export <file> | /skills snapshot import <file>\n")
+            c.print("[bold red]사용법:[/] /skills snapshot export <file> | /skills snapshot import <file>\n")
 
     elif action == "tap":
         if not args:

@@ -1384,14 +1384,10 @@ def terminal_tool(
                 if pty_disabled_reason:
                     result_data["pty_note"] = pty_disabled_reason
 
-                # Mark for agent notification on completion
-                if notify_on_complete and background:
-                    proc_session.notify_on_complete = True
-                    result_data["notify_on_complete"] = True
-
-                    # In gateway mode, auto-register a fast watcher so the
-                    # gateway can detect completion and trigger a new agent
-                    # turn.  CLI mode uses the completion_queue directly.
+                # Populate routing metadata on the session so that
+                # watch-pattern and completion notifications can be
+                # routed back to the correct chat/thread.
+                if background and (notify_on_complete or watch_patterns):
                     from gateway.session_context import get_session_env as _gse
                     _gw_platform = _gse("HERMES_SESSION_PLATFORM", "")
                     if _gw_platform:
@@ -1404,16 +1400,26 @@ def terminal_tool(
                         proc_session.watcher_user_id = _gw_user_id
                         proc_session.watcher_user_name = _gw_user_name
                         proc_session.watcher_thread_id = _gw_thread_id
+
+                # Mark for agent notification on completion
+                if notify_on_complete and background:
+                    proc_session.notify_on_complete = True
+                    result_data["notify_on_complete"] = True
+
+                    # In gateway mode, auto-register a fast watcher so the
+                    # gateway can detect completion and trigger a new agent
+                    # turn.  CLI mode uses the completion_queue directly.
+                    if proc_session.watcher_platform:
                         proc_session.watcher_interval = 5
                         process_registry.pending_watchers.append({
                             "session_id": proc_session.id,
                             "check_interval": 5,
                             "session_key": session_key,
-                            "platform": _gw_platform,
-                            "chat_id": _gw_chat_id,
-                            "user_id": _gw_user_id,
-                            "user_name": _gw_user_name,
-                            "thread_id": _gw_thread_id,
+                            "platform": proc_session.watcher_platform,
+                            "chat_id": proc_session.watcher_chat_id,
+                            "user_id": proc_session.watcher_user_id,
+                            "user_name": proc_session.watcher_user_name,
+                            "thread_id": proc_session.watcher_thread_id,
                             "notify_on_complete": True,
                         })
 

@@ -193,6 +193,37 @@ class TelegramAdapter(BasePlatformAdapter):
             pass
         return isinstance(error, OSError)
 
+    # Bootstrap guard for Updater.start_polling. The initial getUpdates
+    # handshake can hang indefinitely if Telegram is slow to respond
+    # (observed on gateway startup after a previous crash and on flaky
+    # links). Wrapping the call in asyncio.wait_for turns the hang into
+    # a TimeoutError the caller can surface or retry.
+    _POLLING_START_TIMEOUT = 30  # seconds
+
+    async def _start_polling_with_timeout(
+        self,
+        *,
+        drop_pending_updates: bool,
+        error_callback,
+    ) -> None:
+        """Start Telegram long-polling with a bootstrap timeout guard.
+
+        python-telegram-bot's ``Updater.start_polling`` performs an initial
+        ``getUpdates`` handshake before returning. In rare cases this call
+        hangs indefinitely (network slow path, Telegram backend lag, DNS
+        fallback). Wrapping it in ``asyncio.wait_for`` converts the hang
+        into a ``TimeoutError`` so callers fail fast and either retry or
+        propagate to the supervisor.
+        """
+        await asyncio.wait_for(
+            self._app.updater.start_polling(
+                allowed_updates=Update.ALL_TYPES,
+                drop_pending_updates=drop_pending_updates,
+                error_callback=error_callback,
+            ),
+            timeout=self._POLLING_START_TIMEOUT,
+        )
+
     async def _handle_polling_network_error(self, error: Exception) -> None:
         """Reconnect polling after a transient network interruption.
 
@@ -239,8 +270,7 @@ class TelegramAdapter(BasePlatformAdapter):
             pass
 
         try:
-            await self._app.updater.start_polling(
-                allowed_updates=Update.ALL_TYPES,
+            await self._start_polling_with_timeout(
                 drop_pending_updates=False,
                 error_callback=self._polling_error_callback_ref,
             )
@@ -251,8 +281,9 @@ class TelegramAdapter(BasePlatformAdapter):
             self._polling_network_error_count = 0
         except Exception as retry_err:
             logger.warning("[%s] Telegram polling reconnect failed: %s", self.name, retry_err)
-            # start_polling failed — polling is dead and no further error
-            # callbacks will fire, so schedule the next retry ourselves.
+            # start_polling failed or timed out — polling is dead and no
+            # further error callbacks will fire, so schedule the next retry
+            # ourselves. TimeoutError from the bootstrap guard lands here too.
             if not self.has_fatal_error:
                 task = asyncio.ensure_future(
                     self._handle_polling_network_error(retry_err)
@@ -286,8 +317,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 pass
             await asyncio.sleep(RETRY_DELAY)
             try:
-                await self._app.updater.start_polling(
-                    allowed_updates=Update.ALL_TYPES,
+                await self._start_polling_with_timeout(
                     drop_pending_updates=False,
                     error_callback=self._polling_error_callback_ref,
                 )
@@ -298,6 +328,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 logger.warning("[%s] Telegram polling retry failed: %s", self.name, retry_err)
                 # Don't fall through to fatal yet — wait for the next conflict
                 # to trigger another retry attempt (up to MAX_CONFLICT_RETRIES).
+                # TimeoutError from the bootstrap guard is treated the same way.
                 return
 
         # Exhausted retries — fatal
@@ -674,8 +705,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 # Store reference for retry use in _handle_polling_conflict
                 self._polling_error_callback_ref = _polling_error_callback
 
-                await self._app.updater.start_polling(
-                    allowed_updates=Update.ALL_TYPES,
+                await self._start_polling_with_timeout(
                     drop_pending_updates=True,
                     error_callback=_polling_error_callback,
                 )

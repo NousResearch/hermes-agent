@@ -24,17 +24,14 @@ def _make_adapter() -> WeixinAdapter:
 
 
 class TestWeixinFormatting:
-    def test_format_message_preserves_markdown_and_rewrites_headers(self):
+    def test_format_message_preserves_markdown(self):
         adapter = _make_adapter()
 
         content = "# Title\n\n## Plan\n\nUse **bold** and [docs](https://example.com)."
 
-        assert (
-            adapter.format_message(content)
-            == "【Title】\n\n**Plan**\n\nUse **bold** and docs (https://example.com)."
-        )
+        assert adapter.format_message(content) == content
 
-    def test_format_message_rewrites_markdown_tables(self):
+    def test_format_message_preserves_markdown_tables(self):
         adapter = _make_adapter()
 
         content = (
@@ -44,19 +41,14 @@ class TestWeixinFormatting:
             "| Retries | 3 |\n"
         )
 
-        assert adapter.format_message(content) == (
-            "- Setting: Timeout\n"
-            "  Value: 30s\n"
-            "- Setting: Retries\n"
-            "  Value: 3"
-        )
+        assert adapter.format_message(content) == content.strip()
 
     def test_format_message_preserves_fenced_code_blocks(self):
         adapter = _make_adapter()
 
         content = "## Snippet\n\n```python\nprint('hi')\n```"
 
-        assert adapter.format_message(content) == "**Snippet**\n\n```python\nprint('hi')\n```"
+        assert adapter.format_message(content) == content
 
     def test_format_message_returns_empty_string_for_none(self):
         adapter = _make_adapter()
@@ -102,7 +94,7 @@ class TestWeixinChunking:
         content = adapter.format_message("## 结论\n这是正文")
         chunks = adapter._split_text(content)
 
-        assert chunks == ["**结论**\n这是正文"]
+        assert chunks == ["## 结论\n这是正文"]
 
     def test_split_text_keeps_short_reformatted_table_in_single_chunk(self):
         adapter = _make_adapter()
@@ -378,16 +370,13 @@ class TestWeixinRemoteMediaSafety:
 
 
 class TestWeixinMarkdownLinks:
-    """Markdown links should be converted to plaintext since WeChat can't render them."""
+    """Markdown links should be preserved so WeChat can render them natively."""
 
-    def test_format_message_converts_markdown_links_to_plain_text(self):
+    def test_format_message_preserves_markdown_links(self):
         adapter = _make_adapter()
 
         content = "Check [the docs](https://example.com) and [GitHub](https://github.com) for details"
-        assert (
-            adapter.format_message(content)
-            == "Check the docs (https://example.com) and GitHub (https://github.com) for details"
-        )
+        assert adapter.format_message(content) == content
 
     def test_format_message_preserves_links_inside_code_blocks(self):
         adapter = _make_adapter()

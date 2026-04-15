@@ -90,7 +90,7 @@ The adapter will restore saved credentials, connect to the iLink API, and begin 
 - **Media support** — images, video, files, and voice messages
 - **AES-128-ECB encrypted CDN** — automatic encryption/decryption for all media transfers
 - **Context token persistence** — disk-backed reply continuity across restarts
-- **Markdown formatting** — headers, tables, and code blocks are reformatted for WeChat readability
+- **Markdown formatting** — preserves Markdown, including headers, tables, and code blocks, so WeChat clients that support Markdown can render it natively
 - **Smart message chunking** — messages stay as a single bubble when under the limit; only oversized payloads split at logical boundaries
 - **Typing indicators** — shows "typing…" status in the WeChat client while the agent processes
 - **SSRF protection** — outbound media URLs are validated before download
@@ -206,12 +206,12 @@ This ensures reply continuity even after gateway restarts.
 
 ## Markdown Formatting
 
-WeChat's personal chat does not natively render full Markdown. The adapter reformats content for better readability:
+WeChat clients connected through the iLink Bot API can render Markdown directly, so the adapter preserves Markdown instead of rewriting it:
 
-- **Headers** (`# Title`) → converted to `【Title】` (level 1) or `**Title**` (level 2+)
-- **Tables** → reformatted as labeled key-value lists (e.g., `- Column: Value`)
-- **Code fences** → preserved as-is (WeChat renders these adequately)
-- **Excessive blank lines** → collapsed to double newlines
+- **Headers** stay as Markdown headings (`#`, `##`, ...)
+- **Tables** stay as Markdown tables
+- **Code fences** stay as fenced code blocks
+- **Excessive blank lines** are collapsed to double newlines outside fenced code blocks
 
 ## Message Chunking
 

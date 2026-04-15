@@ -185,7 +185,7 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
         "image_generate": "prompt",
         "lumenfall_image_generate": "prompt", "lumenfall_video_generate": "prompt",
         "lumenfall_list_models": "capability",
-        "lumenfall_image_edit": "prompt",
+        "lumenfall_image_edit": "image_url",
         "text_to_speech": "text",
         "vision_analyze": "question", "mixture_of_agents": "user_prompt",
         "skill_view": "name", "skills_list": "category",
@@ -919,7 +919,8 @@ def get_cute_tool_message(
     if tool_name == "lumenfall_video_generate":
         return _wrap(f"┊ 🎬 video     {_trunc(args.get('prompt', ''), 35)}  {dur}")
     if tool_name == "lumenfall_image_edit":
-        return _wrap(f"┊ ✏️  edit      {_trunc(args.get('prompt', ''), 35)}  {dur}")
+        label = args.get("prompt") or args.get("image_url", "")
+        return _wrap(f"┊ ✏️  edit      {_trunc(label, 35)}  {dur}")
     if tool_name == "lumenfall_list_models":
         cap = args.get("capability", "all")
         return _wrap(f"┊ 📋 models    {cap}  {dur}")

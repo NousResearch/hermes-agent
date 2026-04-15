@@ -51,9 +51,10 @@ def _get_api_key() -> Optional[str]:
     key = os.environ.get("LUMENFALL_API_KEY")
     if key:
         return key
-    # Fallback: load directly from ~/.hermes/.env if the env var
+    # Fallback: load directly from HERMES_HOME/.env if the env var
     # wasn't propagated by the dotenv loader at startup.
-    env_file = os.path.join(os.path.expanduser("~"), ".hermes", ".env")
+    from hermes_constants import get_hermes_home
+    env_file = get_hermes_home() / ".env"
     try:
         with open(env_file) as f:
             for line in f:
@@ -374,7 +375,16 @@ def poll_video(
                     error_code="timeout",
                 )
 
-            response = client.get(url, headers=headers)
+            try:
+                response = client.get(url, headers=headers)
+            except (httpx.TimeoutException, httpx.ConnectError) as exc:
+                logger.warning(
+                    "Transient error polling video %s (%.0fs elapsed): %s",
+                    video_id, elapsed, exc,
+                )
+                time.sleep(poll_interval)
+                continue
+
             if response.status_code >= 400:
                 _handle_error_response(response)
 

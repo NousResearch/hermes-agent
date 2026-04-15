@@ -172,7 +172,7 @@ def lumenfall_video_generate_tool(
         response_data = {
             "success": True,
             "video_url": video_url,
-            "duration": final.get("seconds"),
+            "duration": final.get("seconds") or duration,
             "model": executed_model,
             "provider": provider,
         }
@@ -300,7 +300,7 @@ def _handle_lumenfall_video_generate(args, **kw):
 
 registry.register(
     name="lumenfall_video_generate",
-    toolset="lumenfall_video_gen",
+    toolset="lumenfall",
     schema=LUMENFALL_VIDEO_GENERATE_SCHEMA,
     handler=_handle_lumenfall_video_generate,
     check_fn=check_lumenfall_available,

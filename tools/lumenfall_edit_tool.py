@@ -171,8 +171,7 @@ LUMENFALL_IMAGE_EDIT_SCHEMA = {
     "description": (
         "Edit images using Lumenfall. Supports inpainting, background removal, "
         "upscaling, and general edits. Provide a source image URL and an optional "
-        "prompt describing the desired edit. Use lumenfall_list_models with "
-        "capability 'image-edit' to see available models. "
+        "prompt describing the desired edit. "
         "Returns an image URL. Display it using markdown: ![description](URL)"
     ),
     "parameters": {
@@ -195,8 +194,7 @@ LUMENFALL_IMAGE_EDIT_SCHEMA = {
             "model": {
                 "type": "string",
                 "description": (
-                    "Image edit model to use. Use lumenfall_list_models "
-                    "with capability 'image-edit' to see available models. "
+                    "Image edit model to use. "
                     "Leave empty for the best available default."
                 ),
             },
@@ -229,7 +227,7 @@ def _handle_lumenfall_image_edit(args, **kw):
 
 registry.register(
     name="lumenfall_image_edit",
-    toolset="lumenfall_image_edit",
+    toolset="lumenfall",
     schema=LUMENFALL_IMAGE_EDIT_SCHEMA,
     handler=_handle_lumenfall_image_edit,
     check_fn=check_lumenfall_available,

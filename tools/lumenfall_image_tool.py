@@ -258,7 +258,7 @@ def _handle_lumenfall_image_generate(args, **kw):
 
 registry.register(
     name="lumenfall_image_generate",
-    toolset="lumenfall_image_gen",
+    toolset="lumenfall",
     schema=LUMENFALL_IMAGE_GENERATE_SCHEMA,
     handler=_handle_lumenfall_image_generate,
     check_fn=check_lumenfall_available,

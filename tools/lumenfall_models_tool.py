@@ -111,7 +111,7 @@ def _handle_lumenfall_list_models(args, **kw):
 
 registry.register(
     name="lumenfall_list_models",
-    toolset="lumenfall_models",
+    toolset="lumenfall",
     schema=LUMENFALL_LIST_MODELS_SCHEMA,
     handler=_handle_lumenfall_list_models,
     check_fn=check_lumenfall_available,

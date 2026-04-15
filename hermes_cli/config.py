@@ -1096,10 +1096,10 @@ OPTIONAL_ENV_VARS = {
         "category": "tool",
     },
     "LUMENFALL_API_KEY": {
-        "description": "Lumenfall API key for image and video generation",
+        "description": "Lumenfall API key for image generation, video generation, image editing, and model discovery",
         "prompt": "Lumenfall API key",
         "url": "https://lumenfall.ai",
-        "tools": ["lumenfall_image_generate", "lumenfall_video_generate"],
+        "tools": ["lumenfall_image_generate", "lumenfall_video_generate", "lumenfall_image_edit", "lumenfall_list_models"],
         "password": True,
         "category": "tool",
     },

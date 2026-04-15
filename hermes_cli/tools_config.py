@@ -54,7 +54,7 @@ CONFIGURABLE_TOOLSETS = [
     ("code_execution",  "⚡ Code Execution",            "execute_code"),
     ("vision",          "👁️  Vision / Image Analysis",  "vision_analyze"),
     ("image_gen",       "🎨 Image Generation",          "image_generate"),
-    ("lumenfall",       "✨ Lumenfall Image & Video",    "generate, edit, list models (200+ models)"),
+    ("lumenfall",       "✨ Lumenfall Image & Video",    "image, video, edit, list models"),
     ("moa",             "🧠 Mixture of Agents",         "mixture_of_agents"),
     ("tts",             "🔊 Text-to-Speech",            "text_to_speech"),
     ("skills",          "📚 Skills",                    "list, view, manage"),
@@ -259,6 +259,7 @@ TOOL_CATEGORIES = {
         "providers": [
             {
                 "name": "Lumenfall",
+                "badge": "free tier",
                 "tag": "Unified API for 200+ image & video models, $1 free credit",
                 "env_vars": [
                     {"key": "LUMENFALL_API_KEY", "prompt": "Lumenfall API key", "url": "https://lumenfall.ai"},

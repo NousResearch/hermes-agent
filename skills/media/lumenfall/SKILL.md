@@ -52,7 +52,7 @@ Image generation takes 5-30 seconds, video generation 30 seconds to 5 minutes de
 
 ## Troubleshooting
 
-- **401 Unauthorized**: Check `LUMENFALL_API_KEY` in `~/.hermes/.env`.
+- **401 Unauthorized**: Check `LUMENFALL_API_KEY` in your Hermes `.env` file (run `hermes config` to locate it).
 - **402 Payment Required**: Account balance is empty. Top up at lumenfall.ai.
 - **500 Provider Error**: Try a different model family (e.g., switch from FLUX to Imagen).
 - **Video timeout**: Video generation can take 2-5 minutes. The tool polls automatically for up to 10 minutes.

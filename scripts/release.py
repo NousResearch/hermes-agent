@@ -62,6 +62,7 @@ AUTHOR_MAP = {
     "258577966+voidborne-d@users.noreply.github.com": "voidborne-d",
     "70424851+insecurejezza@users.noreply.github.com": "insecurejezza",
     "259807879+Bartok9@users.noreply.github.com": "Bartok9",
+    "268667990+Roy-oss1@users.noreply.github.com": "Roy-oss1",
     # contributors (manual mapping from git names)
     "dmayhem93@gmail.com": "dmahan93",
     "samherring99@gmail.com": "samherring99",
@@ -94,10 +95,13 @@ AUTHOR_MAP = {
     "vincentcharlebois@gmail.com": "vincentcharlebois",
     "aryan@synvoid.com": "aryansingh",
     "johnsonblake1@gmail.com": "blakejohnson",
+    "greer.guthrie@gmail.com": "g-guthrie",
     "kennyx102@gmail.com": "bobashopcashier",
+    "shokatalishaikh95@gmail.com": "areu01or00",
     "bryan@intertwinesys.com": "bryanyoung",
     "christo.mitov@gmail.com": "christomitov",
     "hermes@nousresearch.com": "NousResearch",
+    "chinmingcock@gmail.com": "ChimingLiu",
     "openclaw@sparklab.ai": "openclaw",
     "semihcvlk53@gmail.com": "Himess",
     "erenkar950@gmail.com": "erenkarakus",
@@ -113,6 +117,8 @@ AUTHOR_MAP = {
     "m@statecraft.systems": "mbierling",
     "balyan.sid@gmail.com": "balyansid",
     "oluwadareab12@gmail.com": "bennytimz",
+    "simon@simonmarcus.org": "simon-marcus",
+    "1243352777@qq.com": "zons-zhaozhy",
     # ── bulk addition: 75 emails resolved via API, PR salvage bodies, noreply
     #    crossref, and GH contributor list matching (April 2026 audit) ──
     "1115117931@qq.com": "aaronagent",

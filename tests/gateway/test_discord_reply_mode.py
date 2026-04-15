@@ -4,9 +4,12 @@ Covers the threading behavior control for multi-chunk replies:
 - "off": Never reply-reference to original message
 - "first": Only first chunk uses reply reference (default)
 - "all": All chunks reply-reference the original message
+
+Also covers reply_to_text extraction from incoming messages.
 """
 import os
 import sys
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import MagicMock, AsyncMock, patch
 
@@ -275,3 +278,107 @@ class TestEnvVarOverride:
             _apply_env_overrides(config)
         assert Platform.DISCORD in config.platforms
         assert config.platforms[Platform.DISCORD].reply_to_mode == "off"
+
+
+# ------------------------------------------------------------------
+# Tests for reply_to_text extraction in _handle_message
+# ------------------------------------------------------------------
+
+class FakeDMChannel:
+    """Minimal DM channel stub (skips mention / channel-allow checks)."""
+    def __init__(self, channel_id: int = 100, name: str = "dm"):
+        self.id = channel_id
+        self.name = name
+
+
+def _make_message(*, content: str = "hi", reference=None):
+    """Build a mock Discord message for _handle_message tests."""
+    author = SimpleNamespace(id=42, display_name="TestUser", name="TestUser")
+    return SimpleNamespace(
+        id=999,
+        content=content,
+        mentions=[],
+        attachments=[],
+        reference=reference,
+        created_at=datetime.now(timezone.utc),
+        channel=FakeDMChannel(),
+        author=author,
+    )
+
+
+@pytest.fixture
+def reply_text_adapter(monkeypatch):
+    """DiscordAdapter wired for _handle_message → handle_message capture."""
+    import gateway.platforms.discord as discord_platform
+
+    monkeypatch.setattr(discord_platform.discord, "DMChannel", FakeDMChannel, raising=False)
+
+    config = PlatformConfig(enabled=True, token="fake-token")
+    adapter = DiscordAdapter(config)
+    adapter._client = SimpleNamespace(user=SimpleNamespace(id=999))
+    adapter._text_batch_delay_seconds = 0
+    adapter.handle_message = AsyncMock()
+    return adapter
+
+
+class TestReplyToText:
+    """Tests for reply_to_text populated by _handle_message."""
+
+    @pytest.mark.asyncio
+    async def test_no_reference_both_none(self, reply_text_adapter):
+        message = _make_message(reference=None)
+
+        await reply_text_adapter._handle_message(message)
+
+        event = reply_text_adapter.handle_message.await_args.args[0]
+        assert event.reply_to_message_id is None
+        assert event.reply_to_text is None
+
+    @pytest.mark.asyncio
+    async def test_reference_without_resolved(self, reply_text_adapter):
+        ref = SimpleNamespace(message_id=555, resolved=None)
+        message = _make_message(reference=ref)
+
+        await reply_text_adapter._handle_message(message)
+
+        event = reply_text_adapter.handle_message.await_args.args[0]
+        assert event.reply_to_message_id == "555"
+        assert event.reply_to_text is None
+
+    @pytest.mark.asyncio
+    async def test_reference_with_resolved_content(self, reply_text_adapter):
+        resolved_msg = SimpleNamespace(content="original message text")
+        ref = SimpleNamespace(message_id=555, resolved=resolved_msg)
+        message = _make_message(reference=ref)
+
+        await reply_text_adapter._handle_message(message)
+
+        event = reply_text_adapter.handle_message.await_args.args[0]
+        assert event.reply_to_message_id == "555"
+        assert event.reply_to_text == "original message text"
+
+    @pytest.mark.asyncio
+    async def test_reference_with_empty_resolved_content(self, reply_text_adapter):
+        """Empty string content should become None, not leak as empty string."""
+        resolved_msg = SimpleNamespace(content="")
+        ref = SimpleNamespace(message_id=555, resolved=resolved_msg)
+        message = _make_message(reference=ref)
+
+        await reply_text_adapter._handle_message(message)
+
+        event = reply_text_adapter.handle_message.await_args.args[0]
+        assert event.reply_to_message_id == "555"
+        assert event.reply_to_text is None
+
+    @pytest.mark.asyncio
+    async def test_reference_with_deleted_message(self, reply_text_adapter):
+        """Deleted messages lack .content — getattr guard should return None."""
+        resolved_deleted = SimpleNamespace(id=555)
+        ref = SimpleNamespace(message_id=555, resolved=resolved_deleted)
+        message = _make_message(reference=ref)
+
+        await reply_text_adapter._handle_message(message)
+
+        event = reply_text_adapter.handle_message.await_args.args[0]
+        assert event.reply_to_message_id == "555"
+        assert event.reply_to_text is None

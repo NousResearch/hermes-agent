@@ -92,6 +92,7 @@ const sidebars: SidebarsConfig = {
           label: 'Skills',
           items: [
             'user-guide/skills/godmode',
+            'user-guide/skills/google-workspace',
           ],
         },
       ],
@@ -118,7 +119,6 @@ const sidebars: SidebarsConfig = {
         'user-guide/messaging/wecom-callback',
         'user-guide/messaging/weixin',
         'user-guide/messaging/bluebubbles',
-        'user-guide/messaging/qqbot',
         'user-guide/messaging/open-webui',
         'user-guide/messaging/webhooks',
       ],

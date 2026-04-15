@@ -69,7 +69,7 @@ Usage:
 import json
 import logging
 
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home, display_hermes_home
 import os
 import re
 from enum import Enum
@@ -124,6 +124,20 @@ class SkillReadinessStatus(str, Enum):
     AVAILABLE = "available"
     SETUP_NEEDED = "setup_needed"
     UNSUPPORTED = "unsupported"
+
+
+# Prompt injection detection — shared by local-skill and plugin-skill paths.
+_INJECTION_PATTERNS: list = [
+    "ignore previous instructions",
+    "ignore all previous",
+    "you are now",
+    "disregard your",
+    "forget your instructions",
+    "new instructions:",
+    "system prompt:",
+    "<system>",
+    "]]>",
+]
 
 
 def set_secret_capture_callback(callback) -> None:
@@ -394,7 +408,7 @@ def _gateway_setup_hint() -> str:
 
         return GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE
     except Exception:
-        return "Secure secret entry is not available. Load this skill in the local CLI to be prompted, or add the key to ~/.hermes/.env manually."
+        return f"Secure secret entry is not available. Load this skill in the local CLI to be prompted, or add the key to {display_hermes_home()}/.env manually."
 
 
 def _build_setup_note(
@@ -652,7 +666,7 @@ def skills_list(category: str = None, task_id: str = None) -> str:
                     "success": True,
                     "skills": [],
                     "categories": [],
-                    "message": "No skills found. Skills directory created at ~/.hermes/skills/",
+                    "message": f"No skills found. Skills directory created at {display_hermes_home()}/skills/",
                 },
                 ensure_ascii=False,
             )
@@ -698,12 +712,102 @@ def skills_list(category: str = None, task_id: str = None) -> str:
         return tool_error(str(e), success=False)
 
 
+# ── Plugin skill serving ──────────────────────────────────────────────────
+
+
+def _serve_plugin_skill(
+    skill_md: Path,
+    namespace: str,
+    bare: str,
+) -> str:
+    """Read a plugin-provided skill, apply guards, return JSON."""
+    from hermes_cli.plugins import _get_disabled_plugins, get_plugin_manager
+
+    if namespace in _get_disabled_plugins():
+        return json.dumps(
+            {
+                "success": False,
+                "error": (
+                    f"Plugin '{namespace}' is disabled. "
+                    f"Re-enable with: hermes plugins enable {namespace}"
+                ),
+            },
+            ensure_ascii=False,
+        )
+
+    try:
+        content = skill_md.read_text(encoding="utf-8")
+    except Exception as e:
+        return json.dumps(
+            {"success": False, "error": f"Failed to read skill '{namespace}:{bare}': {e}"},
+            ensure_ascii=False,
+        )
+
+    parsed_frontmatter: Dict[str, Any] = {}
+    try:
+        parsed_frontmatter, _ = _parse_frontmatter(content)
+    except Exception:
+        pass
+
+    if not skill_matches_platform(parsed_frontmatter):
+        return json.dumps(
+            {
+                "success": False,
+                "error": f"Skill '{namespace}:{bare}' is not supported on this platform.",
+                "readiness_status": SkillReadinessStatus.UNSUPPORTED.value,
+            },
+            ensure_ascii=False,
+        )
+
+    # Injection scan — log but still serve (matches local-skill behaviour)
+    if any(p in content.lower() for p in _INJECTION_PATTERNS):
+        logger.warning(
+            "Plugin skill '%s:%s' contains patterns that may indicate prompt injection",
+            namespace, bare,
+        )
+
+    description = str(parsed_frontmatter.get("description", ""))
+    if len(description) > MAX_DESCRIPTION_LENGTH:
+        description = description[: MAX_DESCRIPTION_LENGTH - 3] + "..."
+
+    # Bundle context banner — tells the agent about sibling skills
+    try:
+        siblings = [
+            s for s in get_plugin_manager().list_plugin_skills(namespace)
+            if s != bare
+        ]
+        if siblings:
+            sib_list = ", ".join(siblings)
+            banner = (
+                f"[Bundle context: This skill is part of the '{namespace}' plugin.\n"
+                f"Sibling skills: {sib_list}.\n"
+                f"Use qualified form to invoke siblings (e.g. {namespace}:{siblings[0]}).]\n\n"
+            )
+        else:
+            banner = f"[Bundle context: This skill is part of the '{namespace}' plugin.]\n\n"
+    except Exception:
+        banner = ""
+
+    return json.dumps(
+        {
+            "success": True,
+            "name": f"{namespace}:{bare}",
+            "content": f"{banner}{content}" if banner else content,
+            "description": description,
+            "linked_files": None,
+            "readiness_status": SkillReadinessStatus.AVAILABLE.value,
+        },
+        ensure_ascii=False,
+    )
+
+
 def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
     """
     View the content of a skill or a specific file within a skill directory.
 
     Args:
-        name: Name or path of the skill (e.g., "axolotl" or "03-fine-tuning/axolotl")
+        name: Name or path of the skill (e.g., "axolotl" or "03-fine-tuning/axolotl").
+            Qualified names like "plugin:skill" resolve to plugin-provided skills.
         file_path: Optional path to a specific file within the skill (e.g., "references/api.md")
         task_id: Optional task identifier used to probe the active backend
 
@@ -711,6 +815,63 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
         JSON string with skill content or error message
     """
     try:
+        # ── Qualified name dispatch (plugin skills) ──────────────────
+        # Names containing ':' are routed to the plugin skill registry.
+        # Bare names fall through to the existing flat-tree scan below.
+        if ":" in name:
+            from agent.skill_utils import is_valid_namespace, parse_qualified_name
+            from hermes_cli.plugins import discover_plugins, get_plugin_manager
+
+            namespace, bare = parse_qualified_name(name)
+            if not is_valid_namespace(namespace):
+                return json.dumps(
+                    {
+                        "success": False,
+                        "error": (
+                            f"Invalid namespace '{namespace}' in '{name}'. "
+                            f"Namespaces must match [a-zA-Z0-9_-]+."
+                        ),
+                    },
+                    ensure_ascii=False,
+                )
+
+            discover_plugins()  # idempotent
+            pm = get_plugin_manager()
+            plugin_skill_md = pm.find_plugin_skill(name)
+
+            if plugin_skill_md is not None:
+                if not plugin_skill_md.exists():
+                    # Stale registry entry — file deleted out of band
+                    pm.remove_plugin_skill(name)
+                    return json.dumps(
+                        {
+                            "success": False,
+                            "error": (
+                                f"Skill '{name}' file no longer exists at "
+                                f"{plugin_skill_md}. The registry entry has "
+                                f"been cleaned up — try again after the "
+                                f"plugin is reloaded."
+                            ),
+                        },
+                        ensure_ascii=False,
+                    )
+                return _serve_plugin_skill(plugin_skill_md, namespace, bare)
+
+            # Plugin exists but this specific skill is missing?
+            available = pm.list_plugin_skills(namespace)
+            if available:
+                return json.dumps(
+                    {
+                        "success": False,
+                        "error": f"Skill '{bare}' not found in plugin '{namespace}'.",
+                        "available_skills": [f"{namespace}:{s}" for s in available],
+                        "hint": f"The '{namespace}' plugin provides {len(available)} skill(s).",
+                    },
+                    ensure_ascii=False,
+                )
+            # Plugin itself not found — fall through to flat-tree scan
+            # which will return a normal "not found" with suggestions.
+
         from agent.skill_utils import get_external_skills_dirs
 
         # Build list of all skill directories to search
@@ -805,17 +966,7 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
                 continue
 
         # Security: detect common prompt injection patterns
-        _INJECTION_PATTERNS = [
-            "ignore previous instructions",
-            "ignore all previous",
-            "you are now",
-            "disregard your",
-            "forget your instructions",
-            "new instructions:",
-            "system prompt:",
-            "<system>",
-            "]]>",
-        ]
+        # (pattern list at module level as _INJECTION_PATTERNS)
         _content_lower = content.lower()
         _injection_detected = any(p in _content_lower for p in _INJECTION_PATTERNS)
 
@@ -1235,7 +1386,7 @@ SKILL_VIEW_SCHEMA = {
         "properties": {
             "name": {
                 "type": "string",
-                "description": "The skill name (use skills_list to see available skills)",
+                "description": "The skill name (use skills_list to see available skills). For plugin-provided skills, use the qualified form 'plugin:skill' (e.g. 'superpowers:writing-plans').",
             },
             "file_path": {
                 "type": "string",

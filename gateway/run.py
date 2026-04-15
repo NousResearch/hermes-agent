@@ -573,6 +573,7 @@ class GatewayRunner:
         self._running_agents: Dict[str, Any] = {}
         self._running_agents_ts: Dict[str, float] = {}  # start timestamp per session
         self._pending_messages: Dict[str, str] = {}  # Queued messages during interrupt
+        self._busy_ack_ts: Dict[str, float] = {}  # last busy-ack timestamp per session (debounce)
 
         # Cache AIAgent instances per session to preserve prompt caching.
         # Without this, a new AIAgent is created per message, rebuilding the
@@ -1329,26 +1330,100 @@ class GatewayRunner:
         merge_pending_message_event(adapter._pending_messages, session_key, event)
 
     async def _handle_active_session_busy_message(self, event: MessageEvent, session_key: str) -> bool:
-        if not self._draining:
-            return False
+        # --- Draining case (gateway restarting/stopping) ---
+        if self._draining:
+            adapter = self.adapters.get(event.source.platform)
+            if not adapter:
+                return True
+
+            thread_meta = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+            if self._queue_during_drain_enabled():
+                self._queue_or_replace_pending_event(session_key, event)
+                message = f"⏳ Gateway {self._status_action_gerund()} — queued for the next turn after it comes back."
+            else:
+                message = f"⏳ Gateway is {self._status_action_gerund()} and is not accepting another turn right now."
+
+            await adapter._send_with_retry(
+                chat_id=event.source.chat_id,
+                content=message,
+                reply_to=event.message_id,
+                metadata=thread_meta,
+            )
+            return True
+
+        # --- Normal busy case (agent actively running a task) ---
+        # The user sent a message while the agent is working.  Interrupt the
+        # agent immediately so it stops the current tool-calling loop and
+        # processes the new message.  The pending message is stored in the
+        # adapter so the base adapter picks it up once the interrupted run
+        # returns.  A brief ack tells the user what's happening (debounced
+        # to avoid spam when they fire multiple messages quickly).
 
         adapter = self.adapters.get(event.source.platform)
         if not adapter:
-            return True
+            return False  # let default path handle it
+
+        # Store the message so it's processed as the next turn after the
+        # interrupt causes the current run to exit.
+        from gateway.platforms.base import merge_pending_message_event
+        merge_pending_message_event(adapter._pending_messages, session_key, event)
+
+        # Interrupt the running agent — this aborts in-flight tool calls and
+        # causes the agent loop to exit at the next check point.
+        running_agent = self._running_agents.get(session_key)
+        if running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
+            try:
+                running_agent.interrupt(event.text)
+            except Exception:
+                pass  # don't let interrupt failure block the ack
+
+        # Debounce: only send an acknowledgment once every 30 seconds per session
+        # to avoid spamming the user when they send multiple messages quickly
+        _BUSY_ACK_COOLDOWN = 30
+        now = time.time()
+        last_ack = self._busy_ack_ts.get(session_key, 0)
+        if now - last_ack < _BUSY_ACK_COOLDOWN:
+            return True  # interrupt sent, ack already delivered recently
+
+        self._busy_ack_ts[session_key] = now
+
+        # Build a status-rich acknowledgment
+        status_parts = []
+        if running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
+            try:
+                summary = running_agent.get_activity_summary()
+                iteration = summary.get("api_call_count", 0)
+                max_iter = summary.get("max_iterations", 0)
+                current_tool = summary.get("current_tool")
+                start_ts = self._running_agents_ts.get(session_key, 0)
+                if start_ts:
+                    elapsed_min = int((now - start_ts) / 60)
+                    if elapsed_min > 0:
+                        status_parts.append(f"{elapsed_min} min elapsed")
+                if max_iter:
+                    status_parts.append(f"iteration {iteration}/{max_iter}")
+                if current_tool:
+                    status_parts.append(f"running: {current_tool}")
+            except Exception:
+                pass
+
+        status_detail = f" ({', '.join(status_parts)})" if status_parts else ""
+        message = (
+            f"⚡ Interrupting current task{status_detail}. "
+            f"I'll respond to your message shortly."
+        )
 
         thread_meta = {"thread_id": event.source.thread_id} if event.source.thread_id else None
-        if self._queue_during_drain_enabled():
-            self._queue_or_replace_pending_event(session_key, event)
-            message = f"⏳ Gateway {self._status_action_gerund()} — queued for the next turn after it comes back."
-        else:
-            message = f"⏳ Gateway is {self._status_action_gerund()} and is not accepting another turn right now."
+        try:
+            await adapter._send_with_retry(
+                chat_id=event.source.chat_id,
+                content=message,
+                reply_to=event.message_id,
+                metadata=thread_meta,
+            )
+        except Exception as e:
+            logger.debug("Failed to send busy-ack: %s", e)
 
-        await adapter._send_with_retry(
-            chat_id=event.source.chat_id,
-            content=message,
-            reply_to=event.message_id,
-            metadata=thread_meta,
-        )
         return True
 
     async def _drain_active_agents(self, timeout: float) -> tuple[Dict[str, Any], bool]:
@@ -1391,6 +1466,65 @@ class GatewayRunner:
             except Exception as e:
                 logger.debug("Failed interrupting agent during shutdown: %s", e)
 
+    async def _notify_active_sessions_of_shutdown(self) -> None:
+        """Send a notification to every chat with an active agent.
+
+        Called at the very start of stop() — adapters are still connected so
+        messages can be delivered.  Best-effort: individual send failures are
+        logged and swallowed so they never block the shutdown sequence.
+        """
+        active = self._snapshot_running_agents()
+        if not active:
+            return
+
+        action = "restarting" if self._restart_requested else "shutting down"
+        hint = (
+            "Your current task will be interrupted. "
+            "Send any message after restart to resume where it left off."
+            if self._restart_requested
+            else "Your current task will be interrupted."
+        )
+        msg = f"⚠️ Gateway {action} — {hint}"
+
+        notified: set = set()
+        for session_key in active:
+            # Parse platform + chat_id from the session key.
+            # Format: agent:main:{platform}:{chat_type}:{chat_id}[:{extra}...]
+            parts = session_key.split(":")
+            if len(parts) < 5:
+                continue
+            platform_str = parts[2]
+            chat_id = parts[4]
+
+            # Deduplicate: one notification per chat, even if multiple
+            # sessions (different users/threads) share the same chat.
+            dedup_key = (platform_str, chat_id)
+            if dedup_key in notified:
+                continue
+
+            try:
+                platform = Platform(platform_str)
+                adapter = self.adapters.get(platform)
+                if not adapter:
+                    continue
+
+                # Include thread_id if present so the message lands in the
+                # correct forum topic / thread.
+                thread_id = parts[5] if len(parts) > 5 else None
+                metadata = {"thread_id": thread_id} if thread_id else None
+
+                await adapter.send(chat_id, msg, metadata=metadata)
+                notified.add(dedup_key)
+                logger.info(
+                    "Sent shutdown notification to %s:%s",
+                    platform_str, chat_id,
+                )
+            except Exception as e:
+                logger.debug(
+                    "Failed to send shutdown notification to %s:%s: %s",
+                    platform_str, chat_id, e,
+                )
+
     def _finalize_shutdown_agents(self, active_agents: Dict[str, Any]) -> None:
         for agent in active_agents.values():
             try:
@@ -1415,6 +1549,106 @@ class GatewayRunner:
                     agent.close()
             except Exception:
                 pass
+
+    _STUCK_LOOP_THRESHOLD = 3  # restarts while active before auto-suspend
+    _STUCK_LOOP_FILE = ".restart_failure_counts"
+
+    def _increment_restart_failure_counts(self, active_session_keys: set) -> None:
+        """Increment restart-failure counters for sessions active at shutdown.
+
+        Persists to a JSON file so counters survive across restarts.
+        Sessions NOT in active_session_keys are removed (they completed
+        successfully, so the loop is broken).
+        """
+        import json
+
+        path = _hermes_home / self._STUCK_LOOP_FILE
+        try:
+            counts = json.loads(path.read_text()) if path.exists() else {}
+        except Exception:
+            counts = {}
+
+        # Increment active sessions, remove inactive ones (loop broken)
+        new_counts = {}
+        for key in active_session_keys:
+            new_counts[key] = counts.get(key, 0) + 1
+        # Keep any entries that are still above 0 even if not active now
+        # (they might become active again next restart)
+
+        try:
+            path.write_text(json.dumps(new_counts))
+        except Exception:
+            pass
+
+    def _suspend_stuck_loop_sessions(self) -> int:
+        """Suspend sessions that have been active across too many restarts.
+
+        Returns the number of sessions suspended.  Called on gateway startup
+        AFTER suspend_recently_active() to catch the stuck-loop pattern:
+        session loads → agent gets stuck → gateway restarts → repeat.
+        """
+        import json
+
+        path = _hermes_home / self._STUCK_LOOP_FILE
+        if not path.exists():
+            return 0
+
+        try:
+            counts = json.loads(path.read_text())
+        except Exception:
+            return 0
+
+        suspended = 0
+        stuck_keys = [k for k, v in counts.items() if v >= self._STUCK_LOOP_THRESHOLD]
+
+        for session_key in stuck_keys:
+            try:
+                entry = self.session_store._entries.get(session_key)
+                if entry and not entry.suspended:
+                    entry.suspended = True
+                    suspended += 1
+                    logger.warning(
+                        "Auto-suspended stuck session %s (active across %d "
+                        "consecutive restarts — likely a stuck loop)",
+                        session_key[:30], counts[session_key],
+                    )
+            except Exception:
+                pass
+
+        if suspended:
+            try:
+                self.session_store._save()
+            except Exception:
+                pass
+
+        # Clear the file — counters start fresh after suspension
+        try:
+            path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+        return suspended
+
+    def _clear_restart_failure_count(self, session_key: str) -> None:
+        """Clear the restart-failure counter for a session that completed OK.
+
+        Called after a successful agent turn to signal the loop is broken.
+        """
+        import json
+
+        path = _hermes_home / self._STUCK_LOOP_FILE
+        if not path.exists():
+            return
+        try:
+            counts = json.loads(path.read_text())
+            if session_key in counts:
+                del counts[session_key]
+                if counts:
+                    path.write_text(json.dumps(counts))
+                else:
+                    path.unlink(missing_ok=True)
+        except Exception:
+            pass
 
     async def _launch_detached_restart_command(self) -> None:
         import shutil
@@ -1558,6 +1792,17 @@ class GatewayRunner:
                     logger.info("Suspended %d in-flight session(s) from previous run", suspended)
             except Exception as e:
                 logger.warning("Session suspension on startup failed: %s", e)
+
+        # Stuck-loop detection (#7536): if a session has been active across
+        # 3+ consecutive restarts, it's probably stuck in a loop (the same
+        # history keeps causing the agent to hang).  Auto-suspend it so the
+        # user gets a clean slate on the next message.
+        try:
+            stuck = self._suspend_stuck_loop_sessions()
+            if stuck:
+                logger.warning("Auto-suspended %d stuck-loop session(s)", stuck)
+        except Exception as e:
+            logger.debug("Stuck-loop detection failed: %s", e)
 
         connected_count = 0
         enabled_platform_count = 0
@@ -2018,6 +2263,10 @@ class GatewayRunner:
             self._running = False
             self._draining = True
 
+            # Notify all chats with active agents BEFORE draining.
+            # Adapters are still connected here, so messages can be sent.
+            await self._notify_active_sessions_of_shutdown()
+
             timeout = self._restart_drain_timeout
             active_agents, timed_out = await self._drain_active_agents(timeout)
             if timed_out:
@@ -2063,6 +2312,8 @@ class GatewayRunner:
             self._running_agents.clear()
             self._pending_messages.clear()
             self._pending_approvals.clear()
+            if hasattr(self, '_busy_ack_ts'):
+                self._busy_ack_ts.clear()
             self._shutdown_event.set()
 
             # Global cleanup: kill any remaining tool subprocesses not tied
@@ -2088,12 +2339,31 @@ class GatewayRunner:
 
             # Write a clean-shutdown marker so the next startup knows this
             # wasn't a crash.  suspend_recently_active() only needs to run
-            # after unexpected exits — graceful shutdowns already drain
-            # active agents, so there's no stuck-session risk.
-            try:
-                (_hermes_home / ".clean_shutdown").touch()
-            except Exception:
-                pass
+            # after unexpected exits.  However, if the drain timed out and
+            # agents were force-interrupted, their sessions may be in an
+            # incomplete state (trailing tool response, no final assistant
+            # message).  Skip the marker in that case so the next startup
+            # suspends those sessions — giving users a clean slate instead
+            # of resuming a half-finished tool loop.
+            if not timed_out:
+                try:
+                    (_hermes_home / ".clean_shutdown").touch()
+                except Exception:
+                    pass
+            else:
+                logger.info(
+                    "Skipping .clean_shutdown marker — drain timed out with "
+                    "interrupted agents; next startup will suspend recently "
+                    "active sessions."
+                )
+
+            # Track sessions that were active at shutdown for stuck-loop
+            # detection (#7536).  On each restart, the counter increments
+            # for sessions that were running.  If a session hits the
+            # threshold (3 consecutive restarts while active), the next
+            # startup auto-suspends it — breaking the loop.
+            if active_agents:
+                self._increment_restart_failure_counts(set(active_agents.keys()))
 
             if self._restart_requested and self._restart_via_service:
                 self._exit_code = GATEWAY_SERVICE_RESTART_EXIT_CODE
@@ -2528,6 +2798,7 @@ class GatewayRunner:
                 )
                 del self._running_agents[_quick_key]
                 self._running_agents_ts.pop(_quick_key, None)
+                self._busy_ack_ts.pop(_quick_key, None)
 
         if _quick_key in self._running_agents:
             if event.get_command() == "status":
@@ -3593,6 +3864,12 @@ class GatewayRunner:
                 _response_time, _api_calls, _resp_len,
             )
 
+            # Successful turn — clear any stuck-loop counter for this session.
+            # This ensures the counter only accumulates across CONSECUTIVE
+            # restarts where the session was active (never completed).
+            if session_key:
+                self._clear_restart_failure_count(session_key)
+
             # Surface error details when the agent failed silently (final_response=None)
             if not response and agent_result.get("failed"):
                 error_detail = agent_result.get("error", "unknown error")
@@ -3699,19 +3976,34 @@ class GatewayRunner:
             # intermediate reasoning) so sessions can be resumed with full context
             # and transcripts are useful for debugging and training data.
             #
-            # IMPORTANT: When the agent failed before producing any response
-            # (e.g. context-overflow 400), do NOT persist the user's message.
+            # IMPORTANT: When the agent failed (e.g. context-overflow 400,
+            # compression exhausted), do NOT persist the user's message.
             # Persisting it would make the session even larger, causing the
-            # same failure on the next attempt — an infinite loop. (#1630)
-            agent_failed_early = (
-                agent_result.get("failed")
-                and not agent_result.get("final_response")
-            )
+            # same failure on the next attempt — an infinite loop. (#1630, #9893)
+            agent_failed_early = bool(agent_result.get("failed"))
             if agent_failed_early:
                 logger.info(
                     "Skipping transcript persistence for failed request in "
                     "session %s to prevent session growth loop.",
                     session_entry.session_id,
+                )
+
+            # When compression is exhausted, the session is permanently too
+            # large to process.  Auto-reset it so the next message starts
+            # fresh instead of replaying the same oversized context in an
+            # infinite fail loop.  (#9893)
+            if agent_result.get("compression_exhausted") and session_entry and session_key:
+                logger.info(
+                    "Auto-resetting session %s after compression exhaustion.",
+                    session_entry.session_id,
+                )
+                self.session_store.reset_session(session_key)
+                self._evict_cached_agent(session_key)
+                self._session_model_overrides.pop(session_key, None)
+                response = (response or "") + (
+                    "\n\n🔄 Session auto-reset — the conversation exceeded the "
+                    "maximum context size and could not be compressed further. "
+                    "Your next message will start a fresh session."
                 )
 
             ts = datetime.now().isoformat()
@@ -3821,6 +4113,8 @@ class GatewayRunner:
             _hist_len = len(history) if 'history' in locals() else 0
             if status_code == 401:
                 status_hint = " Check your API key or run `claude /login` to refresh OAuth credentials."
+            elif status_code == 402:
+                status_hint = " Your API balance or quota is exhausted. Check your provider dashboard."
             elif status_code == 429:
                 # Check if this is a plan usage limit (resets on a schedule) vs a transient rate limit
                 _err_body = getattr(e, "response", None)
@@ -3971,6 +4265,11 @@ class GatewayRunner:
                 _cached = self._agent_cache.get(session_key)
                 _old_agent = _cached[0] if isinstance(_cached, tuple) else _cached if _cached else None
             if _old_agent is not None:
+                try:
+                    if hasattr(_old_agent, "shutdown_memory_provider"):
+                        _old_agent.shutdown_memory_provider()
+                except Exception:
+                    pass
                 try:
                     if hasattr(_old_agent, "close"):
                         _old_agent.close()
@@ -7403,6 +7702,263 @@ class GatewayRunner:
             with _lock:
                 self._agent_cache.pop(session_key, None)
 
+    # ------------------------------------------------------------------
+    # Proxy mode: forward messages to a remote Hermes API server
+    # ------------------------------------------------------------------
+
+    def _get_proxy_url(self) -> Optional[str]:
+        """Return the proxy URL if proxy mode is configured, else None.
+
+        Checks GATEWAY_PROXY_URL env var first (convenient for Docker),
+        then ``gateway.proxy_url`` in config.yaml.
+        """
+        url = os.getenv("GATEWAY_PROXY_URL", "").strip()
+        if url:
+            return url.rstrip("/")
+        cfg = _load_gateway_config()
+        url = (cfg.get("gateway") or {}).get("proxy_url", "").strip()
+        if url:
+            return url.rstrip("/")
+        return None
+
+    async def _run_agent_via_proxy(
+        self,
+        message: str,
+        context_prompt: str,
+        history: List[Dict[str, Any]],
+        source: "SessionSource",
+        session_id: str,
+        session_key: str = None,
+        event_message_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Forward the message to a remote Hermes API server instead of
+        running a local AIAgent.
+
+        When ``GATEWAY_PROXY_URL`` (or ``gateway.proxy_url`` in config.yaml)
+        is set, the gateway becomes a thin relay: it handles platform I/O
+        (encryption, threading, media) and delegates all agent work to the
+        remote server via ``POST /v1/chat/completions`` with SSE streaming.
+
+        This lets a Docker container handle Matrix E2EE while the actual
+        agent runs on the host with full access to local files, memory,
+        skills, and a unified session store.
+        """
+        try:
+            from aiohttp import ClientSession as _AioClientSession, ClientTimeout
+        except ImportError:
+            return {
+                "final_response": "⚠️ Proxy mode requires aiohttp. Install with: pip install aiohttp",
+                "messages": [],
+                "api_calls": 0,
+                "tools": [],
+            }
+
+        proxy_url = self._get_proxy_url()
+        if not proxy_url:
+            return {
+                "final_response": "⚠️ Proxy URL not configured (GATEWAY_PROXY_URL or gateway.proxy_url)",
+                "messages": [],
+                "api_calls": 0,
+                "tools": [],
+            }
+
+        proxy_key = os.getenv("GATEWAY_PROXY_KEY", "").strip()
+
+        # Build messages in OpenAI chat format --------------------------
+        #
+        # The remote api_server can maintain session continuity via
+        # X-Hermes-Session-Id, so it loads its own history.  We only
+        # need to send the current user message.  If the remote has
+        # no history for this session yet, include what we have locally
+        # so the first exchange has context.
+        #
+        # We always include the current message.  For history, send a
+        # compact version (text-only user/assistant turns) — the remote
+        # handles tool replay and system prompts.
+        api_messages: List[Dict[str, str]] = []
+
+        if context_prompt:
+            api_messages.append({"role": "system", "content": context_prompt})
+
+        for msg in history:
+            role = msg.get("role")
+            content = msg.get("content")
+            if role in ("user", "assistant") and content:
+                api_messages.append({"role": role, "content": content})
+
+        api_messages.append({"role": "user", "content": message})
+
+        # HTTP headers ---------------------------------------------------
+        headers: Dict[str, str] = {"Content-Type": "application/json"}
+        if proxy_key:
+            headers["Authorization"] = f"Bearer {proxy_key}"
+        if session_id:
+            headers["X-Hermes-Session-Id"] = session_id
+
+        body = {
+            "model": "hermes-agent",
+            "messages": api_messages,
+            "stream": True,
+        }
+
+        # Set up platform streaming if available -------------------------
+        _stream_consumer = None
+        _scfg = getattr(getattr(self, "config", None), "streaming", None)
+        if _scfg is None:
+            from gateway.config import StreamingConfig
+            _scfg = StreamingConfig()
+
+        platform_key = _platform_config_key(source.platform)
+        user_config = _load_gateway_config()
+        from gateway.display_config import resolve_display_setting
+        _plat_streaming = resolve_display_setting(
+            user_config, platform_key, "streaming"
+        )
+        _streaming_enabled = (
+            _scfg.enabled and _scfg.transport != "off"
+            if _plat_streaming is None
+            else bool(_plat_streaming)
+        )
+
+        if source.thread_id:
+            _thread_metadata: Optional[Dict[str, Any]] = {"thread_id": source.thread_id}
+        else:
+            _thread_metadata = None
+
+        if _streaming_enabled:
+            try:
+                from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+                from gateway.config import Platform
+                _adapter = self.adapters.get(source.platform)
+                if _adapter:
+                    _adapter_supports_edit = getattr(_adapter, "SUPPORTS_MESSAGE_EDITING", True)
+                    _effective_cursor = _scfg.cursor if _adapter_supports_edit else ""
+                    if source.platform == Platform.MATRIX:
+                        _effective_cursor = ""
+                    _consumer_cfg = StreamConsumerConfig(
+                        edit_interval=_scfg.edit_interval,
+                        buffer_threshold=_scfg.buffer_threshold,
+                        cursor=_effective_cursor,
+                    )
+                    _stream_consumer = GatewayStreamConsumer(
+                        adapter=_adapter,
+                        chat_id=source.chat_id,
+                        config=_consumer_cfg,
+                        metadata=_thread_metadata,
+                    )
+            except Exception as _sc_err:
+                logger.debug("Proxy: could not set up stream consumer: %s", _sc_err)
+
+        # Run the stream consumer task in the background
+        stream_task = None
+        if _stream_consumer:
+            stream_task = asyncio.create_task(_stream_consumer.run())
+
+        # Send typing indicator
+        _adapter = self.adapters.get(source.platform)
+        if _adapter:
+            try:
+                await _adapter.send_typing(source.chat_id, metadata=_thread_metadata)
+            except Exception:
+                pass
+
+        # Make the HTTP request with SSE streaming -----------------------
+        full_response = ""
+        _start = time.time()
+
+        try:
+            _timeout = ClientTimeout(total=0, sock_read=1800)
+            async with _AioClientSession(timeout=_timeout) as session:
+                async with session.post(
+                    f"{proxy_url}/v1/chat/completions",
+                    json=body,
+                    headers=headers,
+                ) as resp:
+                    if resp.status != 200:
+                        error_text = await resp.text()
+                        logger.warning(
+                            "Proxy error (%d) from %s: %s",
+                            resp.status, proxy_url, error_text[:500],
+                        )
+                        return {
+                            "final_response": f"⚠️ Proxy error ({resp.status}): {error_text[:300]}",
+                            "messages": [],
+                            "api_calls": 0,
+                            "tools": [],
+                        }
+
+                    # Parse SSE stream
+                    buffer = ""
+                    async for chunk in resp.content.iter_any():
+                        text = chunk.decode("utf-8", errors="replace")
+                        buffer += text
+
+                        # Process complete SSE lines
+                        while "\n" in buffer:
+                            line, buffer = buffer.split("\n", 1)
+                            line = line.strip()
+                            if not line:
+                                continue
+                            if line.startswith("data: "):
+                                data = line[6:]
+                                if data.strip() == "[DONE]":
+                                    break
+                                try:
+                                    obj = json.loads(data)
+                                    choices = obj.get("choices", [])
+                                    if choices:
+                                        delta = choices[0].get("delta", {})
+                                        content = delta.get("content", "")
+                                        if content:
+                                            full_response += content
+                                            if _stream_consumer:
+                                                _stream_consumer.on_delta(content)
+                                except json.JSONDecodeError:
+                                    pass
+
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error("Proxy connection error to %s: %s", proxy_url, e)
+            if not full_response:
+                return {
+                    "final_response": f"⚠️ Proxy connection error: {e}",
+                    "messages": [],
+                    "api_calls": 0,
+                    "tools": [],
+                }
+            # Partial response — return what we got
+        finally:
+            # Finalize stream consumer
+            if _stream_consumer:
+                _stream_consumer.finish()
+            if stream_task:
+                try:
+                    await asyncio.wait_for(stream_task, timeout=5.0)
+                except (asyncio.TimeoutError, asyncio.CancelledError):
+                    stream_task.cancel()
+
+        _elapsed = time.time() - _start
+        logger.info(
+            "proxy response: url=%s session=%s time=%.1fs response=%d chars",
+            proxy_url, (session_id or "")[:20], _elapsed, len(full_response),
+        )
+
+        return {
+            "final_response": full_response or "(No response from remote agent)",
+            "messages": [
+                {"role": "user", "content": message},
+                {"role": "assistant", "content": full_response},
+            ],
+            "api_calls": 1,
+            "tools": [],
+            "history_offset": len(history),
+            "session_id": session_id,
+            "response_previewed": _stream_consumer is not None and bool(full_response),
+        }
+
+    # ------------------------------------------------------------------
+
     async def _run_agent(
         self,
         message: str,
@@ -7426,6 +7982,18 @@ class GatewayRunner:
         This is run in a thread pool to not block the event loop.
         Supports interruption via new messages.
         """
+        # ---- Proxy mode: delegate to remote API server ----
+        if self._get_proxy_url():
+            return await self._run_agent_via_proxy(
+                message=message,
+                context_prompt=context_prompt,
+                history=history,
+                source=source,
+                session_id=session_id,
+                session_key=session_key,
+                event_message_id=event_message_id,
+            )
+
         from run_agent import AIAgent
         import queue
         
@@ -7890,6 +8458,12 @@ class GatewayRunner:
                     cached = _cache.get(session_key)
                     if cached and cached[1] == _sig:
                         agent = cached[0]
+                        # Reset activity timestamp so the inactivity timeout
+                        # handler doesn't see stale idle time from the previous
+                        # turn and immediately kill this agent.  (#9051)
+                        agent._last_activity_ts = time.time()
+                        agent._last_activity_desc = "starting new turn (cached)"
+                        agent._api_call_count = 0
                         logger.debug("Reusing cached agent for session %s", session_key)
 
             if agent is None:
@@ -8102,6 +8676,21 @@ class GatewayRunner:
             if _msn:
                 message = _msn + "\n\n" + message
 
+            # Auto-continue: if the loaded history ends with a tool result,
+            # the previous agent turn was interrupted mid-work (gateway
+            # restart, crash, SIGTERM).  Prepend a system note so the model
+            # finishes processing the pending tool results before addressing
+            # the user's new message.  (#4493)
+            if agent_history and agent_history[-1].get("role") == "tool":
+                message = (
+                    "[System note: Your previous turn was interrupted before you could "
+                    "process the last tool result(s). The conversation history contains "
+                    "tool outputs you haven't responded to yet. Please finish processing "
+                    "those results and summarize what was accomplished, then address the "
+                    "user's new message below.]\n\n"
+                    + message
+                )
+
             _approval_session_key = session_key or ""
             _approval_session_token = set_current_session_key(_approval_session_key)
             register_gateway_notify(_approval_session_key, _approval_notify_sync)
@@ -8136,6 +8725,8 @@ class GatewayRunner:
                     "final_response": error_msg,
                     "messages": result.get("messages", []),
                     "api_calls": result.get("api_calls", 0),
+                    "failed": result.get("failed", False),
+                    "compression_exhausted": result.get("compression_exhausted", False),
                     "tools": tools_holder[0] or [],
                     "history_offset": len(agent_history),
                     "last_prompt_tokens": _last_prompt_toks,
@@ -8640,15 +9231,11 @@ class GatewayRunner:
                                 pass
                         except Exception as e:
                             logger.debug("Stream consumer wait before queued message failed: %s", e)
-                    _response_previewed = bool(result.get("response_previewed"))
                     _already_streamed = bool(
                         _sc
                         and (
                             getattr(_sc, "final_response_sent", False)
-                            or (
-                                _response_previewed
-                                and getattr(_sc, "already_sent", False)
-                            )
+                            or getattr(_sc, "already_sent", False)
                         )
                     )
                     first_response = result.get("final_response", "")
@@ -8732,13 +9319,9 @@ class GatewayRunner:
         # them even if streaming had sent earlier partial output.
         _sc = stream_consumer_holder[0]
         if _sc and isinstance(response, dict) and not response.get("failed"):
-            _response_previewed = bool(response.get("response_previewed"))
             if (
                 getattr(_sc, "final_response_sent", False)
-                or (
-                    _response_previewed
-                    and getattr(_sc, "already_sent", False)
-                )
+                or getattr(_sc, "already_sent", False)
             ):
                 response["already_sent"] = True
         
@@ -8913,8 +9496,41 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
 
     runner = GatewayRunner(config)
     
+    # Track whether a signal initiated the shutdown (vs. internal request).
+    # When an unexpected SIGTERM kills the gateway, we exit non-zero so
+    # systemd's Restart=on-failure revives the process.  systemctl stop
+    # is safe: systemd tracks stop-requested state independently of exit
+    # code, so Restart= never fires for a deliberate stop.
+    _signal_initiated_shutdown = False
+
     # Set up signal handlers
     def shutdown_signal_handler():
+        nonlocal _signal_initiated_shutdown
+        _signal_initiated_shutdown = True
+        logger.info("Received SIGTERM/SIGINT — initiating shutdown")
+        # Diagnostic: log all hermes-related processes so we can identify
+        # what triggered the signal (hermes update, hermes gateway restart,
+        # a stale detached subprocess, etc.).
+        try:
+            import subprocess as _sp
+            _ps = _sp.run(
+                ["ps", "aux"],
+                capture_output=True, text=True, timeout=3,
+            )
+            _hermes_procs = [
+                line for line in _ps.stdout.splitlines()
+                if ("hermes" in line.lower() or "gateway" in line.lower())
+                and str(os.getpid()) not in line.split()[1:2]  # exclude self
+            ]
+            if _hermes_procs:
+                logger.warning(
+                    "Shutdown diagnostic — other hermes processes running:\n  %s",
+                    "\n  ".join(_hermes_procs),
+                )
+            else:
+                logger.info("Shutdown diagnostic — no other hermes processes found")
+        except Exception:
+            pass
         asyncio.create_task(runner.stop())
 
     def restart_signal_handler():
@@ -8983,6 +9599,21 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
 
     if runner.exit_code is not None:
         raise SystemExit(runner.exit_code)
+
+    # When a signal (SIGTERM/SIGINT) caused the shutdown and it wasn't a
+    # planned restart (/restart, /update, SIGUSR1), exit non-zero so
+    # systemd's Restart=on-failure revives the process.  This covers:
+    #   - hermes update killing the gateway mid-work
+    #   - External kill commands
+    #   - WSL2/container runtime sending unexpected signals
+    # systemctl stop is safe: systemd tracks "stop requested" state
+    # independently of exit code, so Restart= never fires for it.
+    if _signal_initiated_shutdown and not runner._restart_requested:
+        logger.info(
+            "Exiting with code 1 (signal-initiated shutdown without restart "
+            "request) so systemd Restart=on-failure can revive the gateway."
+        )
+        return False  # → sys.exit(1) in the caller
 
     return True
 

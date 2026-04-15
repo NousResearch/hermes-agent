@@ -10122,7 +10122,14 @@ class AIAgent:
                         elif self.quiet_mode:
                             clean = self._strip_think_blocks(turn_content).strip()
                             if clean:
-                                self._vprint(f"  ┊ 💬 {clean}")
+                                relayed = False
+                                if (
+                                    self.tool_progress_callback
+                                    and getattr(self, "platform", "") == "tui"
+                                ):
+                                    relayed = True
+                                if not relayed:
+                                    self._vprint(f"  ┊ 💬 {clean}")
                     
                     # Pop thinking-only prefill message(s) before appending
                     # (tool-call path — same rationale as the final-response path).

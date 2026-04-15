@@ -4,6 +4,7 @@ import type { CompletionItem } from '../app/interfaces.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { CompletionResponse } from '../gatewayTypes.js'
 import { asRpcResult } from '../lib/rpc.js'
+
 const TAB_PATH_RE = /((?:["']?(?:[A-Za-z]:[\\/]|\.{1,2}\/|~\/|\/|@|[^"'`\s]+\/))[^\s]*)$/
 
 export function useCompletion(input: string, blocked: boolean, gw: GatewayClient) {

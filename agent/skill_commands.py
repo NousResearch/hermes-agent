@@ -99,6 +99,25 @@ _KEYWORD_HINTS = [
     ("workflow", ("建立工作流、流程規格與自動化路徑", "你要我設計 SOP、agent flow 或營運流程時")),
 ]
 
+_CURATED_SKILL_ZH_HINTS = {
+    "gstack": "做什麼：Garry Tan 的 AI software factory 方法包，整合 office-hours、plan-review、review、qa、ship、browse 等完整 sprint 角色；適合：你要我用一整套高強度產品/工程流程來推大任務時",
+    "thinking-hound-mode": "做什麼：來自 asterwei416/thinking-hound-mode 的工程紀律模式，會在 planner 與 execution 之間切節奏，先研究再下手；適合：你要我先想清楚、查最新官方資料、再動手做大功能或高風險改動時",
+    "web-access": "做什麼：來自 eze-is/web-access 的完整上網技能，會在搜尋、抓取、CDP 瀏覽器操作之間選最有效通道，包含登入態與動態頁；適合：你要我真正上網查、讀、點、登入、抓內容或操作網站時",
+    "playwright": "做什麼：基於 Playwright 的真實瀏覽器自動化與驗證，適合穩定重跑 flow、表單、截圖與回歸測試；適合：你要我把網站流程測到可重現、可驗證、可 script 化時",
+    "dogfood": "做什麼：把產品當成真使用者去跑一遍，系統化找 bug、截證據、整理 QA 報告；適合：功能做完後要做體驗驗證、找缺陷、確認能不能交付時",
+    "github-pr-workflow": "做什麼：把 PR 從 branch、commit、push、開 PR、追 CI 到 merge 整段管完；適合：你要我直接推 GitHub PR 流程而不是只做局部 git 操作時",
+    "github-code-review": "做什麼：針對 diff / PR 做結構化 code review，找 correctness、安全性、測試缺口與可維護性問題；適合：你要我審 PR、審 diff、合併前把風險挑出來時",
+    "systematic-debugging": "做什麼：用 root-cause-first 的方式 debug，先重現、讀錯誤、追資料流，再動手修；適合：bug、測試失敗、行為異常，而且不能靠猜的時候",
+    "subagent-driven-development": "做什麼：把實作拆成多個子代理 lane 去並行完成，並帶 spec review / quality review；適合：任務大、可以切 lane，而且你要我用多代理同步推進時",
+    "requesting-code-review": "做什麼：在 commit 或 push 前做驗證管線，包含安全掃描、測試、獨立 reviewer 與修正迴圈；適合：改完一批東西後要先驗證品質，再送出去時",
+    "phase-based-autonomous-delivery": "做什麼：把長任務變成 phase ladder，一段做完就自動推下一段，不因小中斷停住；適合：你要我 one-shot 持續推進，不要每個 phase 都回頭問時",
+    "parallel-architecture-review": "做什麼：把大型架構題拆成多角度平行審查，再收斂成一份 canonical blueprint；適合：重建系統、重做 workflow、做 operating model 時",
+    "boss-mode-mobile-decision-ui": "做什麼：把充滿內部術語的工程後台翻成老闆看得懂、手機上可決策的 UI；適合：你要我把 agent / approval / project 介面改成 boss-mode 時",
+    "hermes-dashboard-project-control-plane": "做什麼：把 Hermes 9119 dashboard 從狀態頁升級成真正的專案控制台，能看到 project、approval、autopilot 與推進狀態；適合：你要我把 Hermes 前台變成可控的 project OS 時",
+    "slack-mcp-boss-mode-control-layer": "做什麼：把 Slack 變成 Hermes 的 boss-mode 控制層，用主頻道交辦、thread 執行、摘要回主頻道；適合：你要把 Slack 當成主要管理介面時",
+    "hermes-agent-web-dashboard": "做什麼：啟動、驗證與延伸 Hermes 內建 web dashboard，處理 build、health check、臨時曝光與介面驗證；適合：你要我直接把 9119 dashboard 跑起來、測起來、改起來時",
+}
+
 
 def _category_zh(category: str) -> str:
     return _CATEGORY_ZH.get(category, category or "未分類")
@@ -150,6 +169,10 @@ def _build_generated_skill_zh_description(name: str, category: str, description:
 
 
 def _extract_skill_zh_description(frontmatter: dict[str, Any], name: str, category: str, description: str) -> str:
+    curated = _CURATED_SKILL_ZH_HINTS.get(name)
+    if curated:
+        return curated
+
     zh_description = frontmatter.get("zh_description")
     if isinstance(zh_description, str) and zh_description.strip():
         return zh_description.strip()

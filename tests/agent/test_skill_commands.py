@@ -114,6 +114,18 @@ class TestScanSkillCommands:
         assert result["/hound-mode"]["zh_description"] == "思維獵犬模式（規劃／執行節奏控制）"
         assert result["/hound-mode"]["category"] == "software-development"
 
+    def test_curated_skill_hint_overrides_generic_generation(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "gstack",
+                body="",
+                frontmatter_extra="description: Some generic description.\n",
+                category="openclaw-transfer",
+            )
+            result = scan_skill_commands()
+        assert result["/gstack"]["zh_description"].startswith("做什麼：Garry Tan 的 AI software factory 方法包")
+
     def test_generates_traditional_chinese_hint_from_english_description(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
             _make_skill(

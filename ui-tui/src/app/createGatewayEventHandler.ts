@@ -1,72 +1,18 @@
-import type { Dispatch, MutableRefObject, SetStateAction } from 'react'
-
 import type { GatewayEvent } from '../gatewayClient.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
-import { buildToolTrailLine, isToolTrailResultLine, sameToolTrailGroup, toolTrailLabel } from '../lib/text.js'
+import {
+  buildToolTrailLine,
+  estimateTokensRough,
+  isToolTrailResultLine,
+  sameToolTrailGroup,
+  toolTrailLabel
+} from '../lib/text.js'
 import { fromSkin } from '../theme.js'
-import type { Msg, SlashCatalog } from '../types.js'
 
 import { introMsg, toTranscriptMessages } from './helpers.js'
-import type { GatewayServices } from './interfaces.js'
+import type { GatewayEventHandlerContext } from './interfaces.js'
 import { patchOverlayState } from './overlayStore.js'
 import { getUiState, patchUiState } from './uiStore.js'
-import type { TurnActions, TurnRefs } from './useTurnState.js'
-
-export interface GatewayEventHandlerContext {
-  composer: {
-    dequeue: () => string | undefined
-    queueEditRef: MutableRefObject<number | null>
-    sendQueued: (text: string) => void
-  }
-  gateway: GatewayServices
-  session: {
-    STARTUP_RESUME_ID: string
-    colsRef: MutableRefObject<number>
-    newSession: (msg?: string) => void
-    resetSession: () => void
-    setCatalog: Dispatch<SetStateAction<SlashCatalog | null>>
-  }
-  system: {
-    bellOnComplete: boolean
-    stdout?: NodeJS.WriteStream
-    sys: (text: string) => void
-  }
-  transcript: {
-    appendMessage: (msg: Msg) => void
-    setHistoryItems: Dispatch<SetStateAction<Msg[]>>
-    setMessages: Dispatch<SetStateAction<Msg[]>>
-  }
-  turn: {
-    actions: Pick<
-      TurnActions,
-      | 'clearReasoning'
-      | 'endReasoningPhase'
-      | 'idle'
-      | 'pruneTransient'
-      | 'pulseReasoningStreaming'
-      | 'pushActivity'
-      | 'pushTrail'
-      | 'scheduleReasoning'
-      | 'scheduleStreaming'
-      | 'setActivity'
-      | 'setStreaming'
-      | 'setTools'
-      | 'setTurnTrail'
-    >
-    refs: Pick<
-      TurnRefs,
-      | 'bufRef'
-      | 'interruptedRef'
-      | 'lastStatusNoteRef'
-      | 'persistedToolLabelsRef'
-      | 'protocolWarnedRef'
-      | 'reasoningRef'
-      | 'statusTimerRef'
-      | 'toolCompleteRibbonRef'
-      | 'turnToolsRef'
-    >
-  }
-}
 
 export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev: GatewayEvent) => void {
   const { dequeue, queueEditRef, sendQueued } = ctx.composer
@@ -86,12 +32,15 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
     scheduleReasoning,
     scheduleStreaming,
     setActivity,
+    setReasoningTokens,
     setStreaming,
+    setToolTokens,
     setTools,
     setTurnTrail
   } = ctx.turn.actions
 
   const {
+    activeToolsRef,
     bufRef,
     interruptedRef,
     lastStatusNoteRef,
@@ -99,6 +48,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
     protocolWarnedRef,
     reasoningRef,
     statusTimerRef,
+    toolTokenAccRef,
     toolCompleteRibbonRef,
     turnToolsRef
   } = ctx.turn.refs
@@ -210,8 +160,12 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         clearReasoning()
         setActivity([])
         setTurnTrail([])
+        activeToolsRef.current = []
+        setTools([])
         turnToolsRef.current = []
         persistedToolLabelsRef.current.clear()
+        toolTokenAccRef.current = 0
+        setToolTokens(0)
 
         break
 
@@ -286,21 +240,46 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       case 'reasoning.delta':
         if (p?.text) {
           reasoningRef.current += p.text
+          setReasoningTokens(estimateTokensRough(reasoningRef.current))
           scheduleReasoning()
           pulseReasoningStreaming()
         }
 
         break
+      case 'reasoning.available': {
+        const incoming = String(p?.text ?? '').trim()
+
+        if (!incoming) {
+          break
+        }
+
+        const current = reasoningRef.current.trim()
+
+        // `reasoning.available` is a backend fallback preview that can arrive after
+        // streamed reasoning. Preserve the live-visible reasoning/counts if we
+        // already saw deltas; only hydrate from this event when streaming gave us
+        // nothing.
+        if (!current) {
+          reasoningRef.current = incoming
+          setReasoningTokens(estimateTokensRough(reasoningRef.current))
+          scheduleReasoning()
+          pulseReasoningStreaming()
+        }
+
+        break
+      }
 
       case 'tool.progress':
         if (p?.preview) {
-          setTools(prev => {
-            const index = prev.findIndex(tool => tool.name === p.name)
+          const index = activeToolsRef.current.findIndex(tool => tool.name === p.name)
 
-            return index >= 0
-              ? [...prev.slice(0, index), { ...prev[index]!, context: p.preview as string }, ...prev.slice(index + 1)]
-              : prev
-          })
+          if (index >= 0) {
+            const next = [...activeToolsRef.current]
+
+            next[index] = { ...next[index]!, context: p.preview as string }
+            activeToolsRef.current = next
+            setTools(next)
+          }
         }
 
         break
@@ -311,44 +290,47 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         }
 
         break
-
-      case 'tool.start':
+      case 'tool.start': {
         pruneTransient()
         endReasoningPhase()
-        setTools(prev => [
-          ...prev,
-          { id: p.tool_id, name: p.name, context: (p.context as string) || '', startedAt: Date.now() }
-        ])
+        const ctx = (p.context as string) || ''
+        const sample = `${String(p.name ?? '')} ${ctx}`.trim()
+        toolTokenAccRef.current += sample ? estimateTokensRough(sample) : 0
+        setToolTokens(toolTokenAccRef.current)
+        activeToolsRef.current = [
+          ...activeToolsRef.current,
+          { id: p.tool_id, name: p.name, context: ctx, startedAt: Date.now() }
+        ]
+        setTools(activeToolsRef.current)
 
         break
+      }
+
       case 'tool.complete': {
         toolCompleteRibbonRef.current = null
-        setTools(prev => {
-          const done = prev.find(tool => tool.id === p.tool_id)
-          const name = done?.name ?? p.name
-          const label = toolTrailLabel(name)
+        const done = activeToolsRef.current.find(tool => tool.id === p.tool_id)
+        const name = done?.name ?? p.name
+        const label = toolTrailLabel(name)
 
-          const line = buildToolTrailLine(
-            name,
-            done?.context || '',
-            !!p.error,
-            (p.error as string) || (p.summary as string) || ''
-          )
+        const line = buildToolTrailLine(
+          name,
+          done?.context || '',
+          !!p.error,
+          (p.error as string) || (p.summary as string) || ''
+        )
 
-          const next = [...turnToolsRef.current.filter(item => !sameToolTrailGroup(label, item)), line]
-          const remaining = prev.filter(tool => tool.id !== p.tool_id)
+        const next = [...turnToolsRef.current.filter(item => !sameToolTrailGroup(label, item)), line]
 
-          toolCompleteRibbonRef.current = { label, line }
+        activeToolsRef.current = activeToolsRef.current.filter(tool => tool.id !== p.tool_id)
+        setTools(activeToolsRef.current)
+        toolCompleteRibbonRef.current = { label, line }
 
-          if (!remaining.length) {
-            next.push('analyzing tool output…')
-          }
+        if (!activeToolsRef.current.length) {
+          next.push('analyzing tool output…')
+        }
 
-          turnToolsRef.current = next.slice(-8)
-          setTurnTrail(turnToolsRef.current)
-
-          return remaining
-        })
+        turnToolsRef.current = next.slice(-8)
+        setTurnTrail(turnToolsRef.current)
 
         if (p?.inline_diff) {
           sys(p.inline_diff as string)
@@ -419,6 +401,8 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         const finalText = (p?.rendered ?? p?.text ?? bufRef.current).trimStart()
         const persisted = persistedToolLabelsRef.current
         const savedReasoning = reasoningRef.current.trim()
+        const savedReasoningTokens = savedReasoning ? estimateTokensRough(savedReasoning) : 0
+        const savedToolTokens = toolTokenAccRef.current
 
         const savedTools = turnToolsRef.current.filter(
           line => isToolTrailResultLine(line) && ![...persisted].some(item => sameToolTrailGroup(item, line))
@@ -426,15 +410,13 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         const wasInterrupted = interruptedRef.current
 
-        idle()
-        clearReasoning()
-        setStreaming('')
-
         if (!wasInterrupted) {
           appendMessage({
             role: 'assistant',
             text: finalText,
             thinking: savedReasoning || undefined,
+            thinkingTokens: savedReasoning ? savedReasoningTokens : undefined,
+            toolTokens: savedTools.length ? savedToolTokens : undefined,
             tools: savedTools.length ? savedTools : undefined
           })
 
@@ -442,6 +424,9 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
             stdout.write('\x07')
           }
         }
+
+        idle()
+        clearReasoning()
 
         turnToolsRef.current = []
         persistedToolLabelsRef.current.clear()

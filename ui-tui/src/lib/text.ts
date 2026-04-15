@@ -211,7 +211,7 @@ const COMPACT_NUMBER = new Intl.NumberFormat('en-US', {
   notation: 'compact'
 })
 
-export const fmtK = (n: number) => COMPACT_NUMBER.format(n)
+export const fmtK = (n: number) => COMPACT_NUMBER.format(n).replace(/[KMBT]$/, s => s.toLowerCase())
 
 export const hasInterpolation = (s: string) => {
   INTERPOLATION_RE.lastIndex = 0

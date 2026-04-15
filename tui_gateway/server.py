@@ -619,9 +619,13 @@ def _on_tool_progress(
     _args: dict | None = None,
     **_kwargs,
 ):
-    if not _tool_progress_enabled(sid) or event_type != "tool.started" or not name:
+    if not _tool_progress_enabled(sid):
         return
-    _emit("tool.progress", sid, {"name": name, "preview": preview or ""})
+    if event_type == "tool.started" and name:
+        _emit("tool.progress", sid, {"name": name, "preview": preview or ""})
+        return
+    if event_type == "reasoning.available" and preview and _reasoning_visible(sid):
+        _emit("reasoning.available", sid, {"text": str(preview)})
 
 
 def _agent_cbs(sid: str) -> dict:

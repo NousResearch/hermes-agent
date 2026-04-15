@@ -1,83 +1,18 @@
-import { AlternateScreen, Box, NoSelect, ScrollBox, type ScrollBoxHandle, Text } from '@hermes/ink'
+import { AlternateScreen, Box, NoSelect, ScrollBox, Text } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
-import type { RefObject } from 'react'
 
 import { PLACEHOLDER } from '../app/constants.js'
-import type { CompletionItem, TranscriptRow, VirtualHistoryState } from '../app/interfaces.js'
+import type { AppLayoutProps } from '../app/interfaces.js'
 import { $isBlocked } from '../app/overlayStore.js'
 import { $uiState } from '../app/uiStore.js'
-import type { ActiveTool, ActivityItem, Msg } from '../types.js'
 
 import { StatusRule, StickyPromptTracker, TranscriptScrollbar } from './appChrome.js'
 import { AppOverlays } from './appOverlays.js'
 import { Banner, Panel, SessionPanel } from './branding.js'
 import { MessageLine } from './messageLine.js'
 import { QueuedMessages } from './queuedMessages.js'
-import type { PasteEvent } from './textInput.js'
 import { TextInput } from './textInput.js'
 import { ToolTrail } from './thinking.js'
-
-export interface AppLayoutActions {
-  answerApproval: (choice: string) => void
-  answerClarify: (answer: string) => void
-  answerSecret: (value: string) => void
-  answerSudo: (pw: string) => void
-  onModelSelect: (value: string) => void
-  resumeById: (id: string) => void
-  setStickyPrompt: (value: string) => void
-}
-
-export interface AppLayoutComposerProps {
-  cols: number
-  compIdx: number
-  completions: CompletionItem[]
-  empty: boolean
-  handleTextPaste: (event: PasteEvent) => { cursor: number; value: string } | null
-  input: string
-  inputBuf: string[]
-  pagerPageSize: number
-  queueEditIdx: number | null
-  queuedDisplay: string[]
-  submit: (value: string) => void
-  updateInput: (next: string) => void
-}
-
-export interface AppLayoutProgressProps {
-  activity: ActivityItem[]
-  reasoning: string
-  reasoningActive: boolean
-  reasoningStreaming: boolean
-  showProgressArea: boolean
-  showStreamingArea: boolean
-  streaming: string
-  tools: ActiveTool[]
-  turnTrail: string[]
-}
-
-export interface AppLayoutStatusProps {
-  cwdLabel: string
-  durationLabel: string
-  showStickyPrompt: boolean
-  statusColor: string
-  stickyPrompt: string
-  voiceLabel: string
-}
-
-export interface AppLayoutTranscriptProps {
-  historyItems: Msg[]
-  scrollRef: RefObject<ScrollBoxHandle | null>
-  virtualHistory: VirtualHistoryState
-  virtualRows: TranscriptRow[]
-}
-
-export interface AppLayoutProps {
-  actions: AppLayoutActions
-  composer: AppLayoutComposerProps
-  mouseTracking: boolean
-  progress: AppLayoutProgressProps
-  status: AppLayoutStatusProps
-  transcript: AppLayoutTranscriptProps
-}
 
 export function AppLayout({ actions, composer, mouseTracking, progress, status, transcript }: AppLayoutProps) {
   const ui = useStore($uiState)
@@ -125,8 +60,10 @@ export function AppLayout({ actions, composer, mouseTracking, progress, status, 
                   reasoning={progress.reasoning}
                   reasoningActive={progress.reasoningActive}
                   reasoningStreaming={progress.reasoningStreaming}
+                  reasoningTokens={progress.reasoningTokens}
                   t={ui.theme}
                   tools={progress.tools}
+                  toolTokens={progress.toolTokens}
                   trail={progress.turnTrail}
                 />
               )}

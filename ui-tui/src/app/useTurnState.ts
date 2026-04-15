@@ -1,89 +1,26 @@
-import {
-  type Dispatch,
-  type MutableRefObject,
-  type SetStateAction,
-  useCallback,
-  useEffect,
-  useRef,
-  useState
-} from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { isTransientTrailLine, sameToolTrailGroup } from '../lib/text.js'
-import type { ActiveTool, ActivityItem, Msg } from '../types.js'
+import type { ActiveTool, ActivityItem } from '../types.js'
 
 import { REASONING_PULSE_MS, STREAM_BATCH_MS } from './constants.js'
-import type { ToolCompleteRibbon } from './interfaces.js'
+import type { InterruptTurnOptions, ToolCompleteRibbon, UseTurnStateResult } from './interfaces.js'
 import { resetOverlayState } from './overlayStore.js'
 import { patchUiState } from './uiStore.js'
-
-export interface InterruptTurnOptions {
-  appendMessage: (msg: Msg) => void
-  gw: { request: (method: string, params?: Record<string, unknown>) => Promise<unknown> }
-  sid: string
-  sys: (text: string) => void
-}
-
-export interface TurnActions {
-  clearReasoning: () => void
-  endReasoningPhase: () => void
-  idle: () => void
-  interruptTurn: (options: InterruptTurnOptions) => void
-  pruneTransient: () => void
-  pulseReasoningStreaming: () => void
-  pushActivity: (text: string, tone?: ActivityItem['tone'], replaceLabel?: string) => void
-  pushTrail: (line: string) => void
-  scheduleReasoning: () => void
-  scheduleStreaming: () => void
-  setActivity: Dispatch<SetStateAction<ActivityItem[]>>
-  setReasoning: Dispatch<SetStateAction<string>>
-  setReasoningActive: Dispatch<SetStateAction<boolean>>
-  setReasoningStreaming: Dispatch<SetStateAction<boolean>>
-  setStreaming: Dispatch<SetStateAction<string>>
-  setTools: Dispatch<SetStateAction<ActiveTool[]>>
-  setTurnTrail: Dispatch<SetStateAction<string[]>>
-}
-
-export interface TurnRefs {
-  bufRef: MutableRefObject<string>
-  interruptedRef: MutableRefObject<boolean>
-  lastStatusNoteRef: MutableRefObject<string>
-  persistedToolLabelsRef: MutableRefObject<Set<string>>
-  protocolWarnedRef: MutableRefObject<boolean>
-  reasoningRef: MutableRefObject<string>
-  reasoningStreamingTimerRef: MutableRefObject<ReturnType<typeof setTimeout> | null>
-  reasoningTimerRef: MutableRefObject<ReturnType<typeof setTimeout> | null>
-  statusTimerRef: MutableRefObject<ReturnType<typeof setTimeout> | null>
-  streamTimerRef: MutableRefObject<ReturnType<typeof setTimeout> | null>
-  toolCompleteRibbonRef: MutableRefObject<ToolCompleteRibbon | null>
-  turnToolsRef: MutableRefObject<string[]>
-}
-
-export interface TurnState {
-  activity: ActivityItem[]
-  reasoning: string
-  reasoningActive: boolean
-  reasoningStreaming: boolean
-  streaming: string
-  tools: ActiveTool[]
-  turnTrail: string[]
-}
-
-export interface UseTurnStateResult {
-  actions: TurnActions
-  refs: TurnRefs
-  state: TurnState
-}
 
 export function useTurnState(): UseTurnStateResult {
   const [activity, setActivity] = useState<ActivityItem[]>([])
   const [reasoning, setReasoning] = useState('')
+  const [reasoningTokens, setReasoningTokens] = useState(0)
   const [reasoningActive, setReasoningActive] = useState(false)
+  const [toolTokens, setToolTokens] = useState(0)
   const [reasoningStreaming, setReasoningStreaming] = useState(false)
   const [streaming, setStreaming] = useState('')
   const [tools, setTools] = useState<ActiveTool[]>([])
   const [turnTrail, setTurnTrail] = useState<string[]>([])
 
   const activityIdRef = useRef(0)
+  const activeToolsRef = useRef<ActiveTool[]>([])
   const bufRef = useRef('')
   const interruptedRef = useRef(false)
   const lastStatusNoteRef = useRef('')
@@ -94,6 +31,7 @@ export function useTurnState(): UseTurnStateResult {
   const reasoningTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const statusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const streamTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const toolTokenAccRef = useRef(0)
   const toolCompleteRibbonRef = useRef<ToolCompleteRibbon | null>(null)
   const turnToolsRef = useRef<string[]>([])
 
@@ -200,11 +138,15 @@ export function useTurnState(): UseTurnStateResult {
     }
 
     reasoningRef.current = ''
+    toolTokenAccRef.current = 0
     setReasoning('')
+    setReasoningTokens(0)
+    setToolTokens(0)
   }, [])
 
   const idle = useCallback(() => {
     endReasoningPhase()
+    activeToolsRef.current = []
     setTools([])
     setTurnTrail([])
     patchUiState({ busy: false })
@@ -263,13 +205,16 @@ export function useTurnState(): UseTurnStateResult {
       scheduleStreaming,
       setActivity,
       setReasoning,
+      setReasoningTokens,
       setReasoningActive,
+      setToolTokens,
       setReasoningStreaming,
       setStreaming,
       setTools,
       setTurnTrail
     },
     refs: {
+      activeToolsRef,
       bufRef,
       interruptedRef,
       lastStatusNoteRef,
@@ -280,13 +225,16 @@ export function useTurnState(): UseTurnStateResult {
       reasoningTimerRef,
       statusTimerRef,
       streamTimerRef,
+      toolTokenAccRef,
       toolCompleteRibbonRef,
       turnToolsRef
     },
     state: {
       activity,
       reasoning,
+      reasoningTokens,
       reasoningActive,
+      toolTokens,
       reasoningStreaming,
       streaming,
       tools,

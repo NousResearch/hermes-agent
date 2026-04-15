@@ -16,7 +16,7 @@ The client entrypoint is `src/entry.tsx`. It exits early if `stdin` is not a TTY
 python -m tui_gateway.entry
 ```
 
-By default it uses `venv/bin/python` from the repo root. Set `HERMES_PYTHON` to override.
+Interpreter resolution order is: `HERMES_PYTHON` → `PYTHON` → `$VIRTUAL_ENV/bin/python` → `./.venv/bin/python` → `./venv/bin/python` → `python3` (or `python` on Windows).
 
 The transport is newline-delimited JSON-RPC over stdio:
 
@@ -224,6 +224,7 @@ Primary event types the client handles today:
 | `message.complete`       | `{ text, rendered?, usage, status }`            |
 | `thinking.delta`         | `{ text }`                                      |
 | `reasoning.delta`        | `{ text }`                                      |
+| `reasoning.available`    | `{ text }`                                      |
 | `status.update`          | `{ kind, text }`                                |
 | `tool.start`             | `{ tool_id, name, context? }`                   |
 | `tool.progress`          | `{ name, preview }`                             |

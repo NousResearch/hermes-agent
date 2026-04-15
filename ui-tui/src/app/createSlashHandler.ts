@@ -1,56 +1,13 @@
-import type { Dispatch, MutableRefObject, SetStateAction } from 'react'
-
 import { HOTKEYS } from '../constants.js'
 import { writeOsc52Clipboard } from '../lib/osc52.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
 import { fmtK } from '../lib/text.js'
-import type { DetailsMode, Msg, PanelSection, SessionInfo, SlashCatalog } from '../types.js'
+import type { DetailsMode, PanelSection } from '../types.js'
 
 import { imageTokenMeta, introMsg, nextDetailsMode, parseDetailsMode, toTranscriptMessages } from './helpers.js'
-import type { GatewayServices } from './interfaces.js'
+import type { SlashHandlerContext } from './interfaces.js'
 import { patchOverlayState } from './overlayStore.js'
 import { getUiState, patchUiState } from './uiStore.js'
-
-export interface SlashHandlerContext {
-  composer: {
-    enqueue: (text: string) => void
-    hasSelection: boolean
-    paste: (quiet?: boolean) => void
-    queueRef: MutableRefObject<string[]>
-    selection: {
-      copySelection: () => string
-    }
-    setInput: Dispatch<SetStateAction<string>>
-  }
-  gateway: GatewayServices
-  local: {
-    catalog: SlashCatalog | null
-    lastUserMsg: string
-    maybeWarn: (value: any) => void
-    messages: Msg[]
-  }
-  session: {
-    closeSession: (targetSid?: string | null) => Promise<unknown>
-    die: () => void
-    guardBusySessionSwitch: (what?: string) => boolean
-    newSession: (msg?: string) => void
-    resetVisibleHistory: (info?: SessionInfo | null) => void
-    resumeById: (id: string) => void
-    setSessionStartedAt: Dispatch<SetStateAction<number>>
-  }
-  transcript: {
-    page: (text: string, title?: string) => void
-    panel: (title: string, sections: PanelSection[]) => void
-    send: (text: string) => void
-    setHistoryItems: Dispatch<SetStateAction<Msg[]>>
-    setMessages: Dispatch<SetStateAction<Msg[]>>
-    sys: (text: string) => void
-    trimLastExchange: (items: Msg[]) => Msg[]
-  }
-  voice: {
-    setVoiceEnabled: Dispatch<SetStateAction<boolean>>
-  }
-}
 
 export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => boolean {
   const { enqueue, hasSelection, paste, queueRef, selection, setInput } = ctx.composer

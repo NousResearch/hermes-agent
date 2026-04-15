@@ -3,11 +3,6 @@ import type { DetailsMode, Msg, SessionInfo } from '../types.js'
 
 const DETAILS_MODES: DetailsMode[] = ['hidden', 'collapsed', 'expanded']
 
-export interface PasteSnippet {
-  label: string
-  text: string
-}
-
 export const parseDetailsMode = (v: unknown): DetailsMode | null => {
   const s = typeof v === 'string' ? v.trim().toLowerCase() : ''
 

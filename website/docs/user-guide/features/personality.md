@@ -201,6 +201,27 @@ Hermes ships with built-in personalities you can switch to with `/personality`.
 /personality technical
 ```
 
+### Viewing current personality
+
+Simply run `/personality` without arguments to see which personality is currently active:
+
+```text
++--------------------------------------------------+
+|          (^o^)/ Personalities              |
++--------------------------------------------------+
+
+  Current:    technical
+
+  none         - (no personality overlay)
+  kawaii       - You are a kawaii assistant!
+  professional - You are a professional assistant.
+  technical    - You are a technical expert.
+
+  Usage: /personality <name>
+```
+
+This helps you quickly identify which personality is active without having to remember or check the config.
+
 ### Messaging platforms
 
 ```text

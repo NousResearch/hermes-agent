@@ -4908,6 +4908,23 @@ class HermesCLI:
             return "\n".join(p for p in parts if p)
         return str(value)
 
+    def _get_current_personality(self) -> str:
+        """Determine the currently active personality name from system_prompt."""
+        current_prompt = self.system_prompt
+        
+        # Check for special personalities (handles both None and "")
+        if not current_prompt:
+            return "none"
+        
+        # Check each personality by comparing system_prompt
+        for name, prompt in self.personalities.items():
+            resolved = HermesCLI._resolve_personality_prompt(prompt)
+            if resolved == current_prompt:
+                return name
+        
+        # If no exact match, return "custom"
+        return "custom"
+
     def _handle_personality_command(self, cmd: str):
         """Handle the /personality command to set predefined personalities."""
         parts = cmd.split(maxsplit=1)
@@ -4937,10 +4954,14 @@ class HermesCLI:
                 print(f"  Available: none, {', '.join(self.personalities.keys())}")
         else:
             # Show available personalities
+            current_personality = self._get_current_personality()
+            
             print()
             print("+" + "-" * 50 + "+")
             print("|" + " " * 12 + "(^o^)/ Personalities" + " " * 15 + "|")
             print("+" + "-" * 50 + "+")
+            print()
+            print(f"  Current:   {current_personality:^12}")
             print()
             print(f"  {'none':<12} - (no personality overlay)")
             for name, prompt in self.personalities.items():

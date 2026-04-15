@@ -79,6 +79,7 @@ AUTHOR_MAP = {
     "alireza78.crypto@gmail.com": "alireza78a",
     "brooklyn.bb.nicholson@gmail.com": "brooklynnicholson",
     "4317663+helix4u@users.noreply.github.com": "helix4u",
+    "331214+counterposition@users.noreply.github.com": "counterposition",
     "gpickett00@gmail.com": "gpickett00",
     "mcosma@gmail.com": "wakamex",
     "clawdia.nash@proton.me": "clawdia-nash",

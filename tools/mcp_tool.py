@@ -167,6 +167,10 @@ _MCP_HTTP_AVAILABLE = False
 _MCP_SAMPLING_TYPES = False
 _MCP_NOTIFICATION_TYPES = False
 _MCP_MESSAGE_HANDLER_SUPPORTED = False
+# Conservative fallback for SDK builds that don't export LATEST_PROTOCOL_VERSION.
+# Streamable HTTP was introduced by 2025-03-26, so this remains valid for the
+# HTTP transport path even on older-but-supported SDK versions.
+LATEST_PROTOCOL_VERSION = "2025-03-26"
 try:
     from mcp import ClientSession, StdioServerParameters
     from mcp.client.stdio import stdio_client
@@ -183,6 +187,10 @@ try:
         _MCP_NEW_HTTP = True
     except ImportError:
         _MCP_NEW_HTTP = False
+    try:
+        from mcp.types import LATEST_PROTOCOL_VERSION
+    except ImportError:
+        logger.debug("mcp.types.LATEST_PROTOCOL_VERSION not available -- using fallback protocol version")
     # Sampling types -- separated so older SDK versions don't break MCP support
     try:
         from mcp.types import (
@@ -1075,6 +1083,12 @@ class MCPServerTask:
 
         url = config["url"]
         headers = dict(config.get("headers") or {})
+        # Some MCP servers require MCP-Protocol-Version on the initial
+        # initialize request and reject session-less POSTs otherwise.
+        # Seed it as a client-level default, but treat user overrides as
+        # case-insensitive so conventional casing is preserved.
+        if not any(key.lower() == "mcp-protocol-version" for key in headers):
+            headers["mcp-protocol-version"] = LATEST_PROTOCOL_VERSION
         connect_timeout = config.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT)
         ssl_verify = config.get("ssl_verify", True)
 

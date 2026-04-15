@@ -9725,9 +9725,9 @@ def main():
     
     config = None
     if args.config:
-        import json
+        import yaml
         with open(args.config, encoding="utf-8") as f:
-            data = json.load(f)
+            data = yaml.safe_load(f)
             config = GatewayConfig.from_dict(data)
     
     # Run the gateway - exit with code 1 if no platforms connected,

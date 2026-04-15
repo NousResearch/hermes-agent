@@ -187,6 +187,32 @@ curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scri
 
 ### Provider & Model Issues
 
+#### `/model` only shows one provider / can't switch providers
+
+**Cause:** `/model` (inside a chat session) can only switch between providers you've **already configured**. If you've only set up OpenRouter, that's all `/model` will show.
+
+**Solution:** Exit your session and use `hermes model` from your terminal to add new providers:
+
+```bash
+# Exit the Hermes chat session first (Ctrl+C or /quit)
+
+# Run the full provider setup wizard
+hermes model
+
+# This lets you: add providers, run OAuth, enter API keys, configure endpoints
+```
+
+After adding a new provider via `hermes model`, start a new chat session — `/model` will now show all your configured providers.
+
+:::tip Quick reference
+| Want to... | Use |
+|-----------|-----|
+| Add a new provider | `hermes model` (from terminal) |
+| Enter/change API keys | `hermes model` (from terminal) |
+| Switch model mid-session | `/model <name>` (inside session) |
+| Switch to different configured provider | `/model provider:model` (inside session) |
+:::
+
 #### API key not working
 
 **Cause:** Key is missing, expired, incorrectly set, or for the wrong provider.

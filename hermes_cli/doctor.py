@@ -8,6 +8,7 @@ import os
 import sys
 import subprocess
 import shutil
+from pathlib import Path
 
 from hermes_cli.config import get_project_root, get_hermes_home, get_env_path
 from hermes_constants import display_hermes_home
@@ -513,7 +514,87 @@ def run_doctor(args):
             pass
 
     _check_gateway_service_linger(issues)
-    
+
+    # =========================================================================
+    # Check: Command installation (hermes bin symlink)
+    # =========================================================================
+    if sys.platform != "win32":
+        print()
+        print(color("◆ Command Installation", Colors.CYAN, Colors.BOLD))
+
+        # Determine the venv entry point location
+        _venv_bin = None
+        for _venv_name in ("venv", ".venv"):
+            _candidate = PROJECT_ROOT / _venv_name / "bin" / "hermes"
+            if _candidate.exists():
+                _venv_bin = _candidate
+                break
+
+        # Determine the expected command link directory (mirrors install.sh logic)
+        _prefix = os.environ.get("PREFIX", "")
+        _is_termux_env = bool(os.environ.get("TERMUX_VERSION")) or "com.termux/files/usr" in _prefix
+        if _is_termux_env and _prefix:
+            _cmd_link_dir = Path(_prefix) / "bin"
+            _cmd_link_display = "$PREFIX/bin"
+        else:
+            _cmd_link_dir = Path.home() / ".local" / "bin"
+            _cmd_link_display = "~/.local/bin"
+        _cmd_link = _cmd_link_dir / "hermes"
+
+        if _venv_bin is None:
+            check_warn(
+                "Venv entry point not found",
+                "(hermes not in venv/bin/ or .venv/bin/ — reinstall with pip install -e '.[all]')"
+            )
+            manual_issues.append(
+                f"Reinstall entry point: cd {PROJECT_ROOT} && source venv/bin/activate && pip install -e '.[all]'"
+            )
+        else:
+            check_ok(f"Venv entry point exists ({_venv_bin.relative_to(PROJECT_ROOT)})")
+
+            # Check the symlink at the command link location
+            if _cmd_link.is_symlink():
+                _target = _cmd_link.resolve()
+                _expected = _venv_bin.resolve()
+                if _target == _expected:
+                    check_ok(f"{_cmd_link_display}/hermes → correct target")
+                else:
+                    check_warn(
+                        f"{_cmd_link_display}/hermes points to wrong target",
+                        f"(→ {_target}, expected → {_expected})"
+                    )
+                    if should_fix:
+                        _cmd_link.unlink()
+                        _cmd_link.symlink_to(_venv_bin)
+                        check_ok(f"Fixed symlink: {_cmd_link_display}/hermes → {_venv_bin}")
+                        fixed_count += 1
+                    else:
+                        issues.append(f"Broken symlink at {_cmd_link_display}/hermes — run 'hermes doctor --fix'")
+            elif _cmd_link.exists():
+                # It's a regular file, not a symlink — possibly a wrapper script
+                check_ok(f"{_cmd_link_display}/hermes exists (non-symlink)")
+            else:
+                check_fail(
+                    f"{_cmd_link_display}/hermes not found",
+                    "(hermes command may not work outside the venv)"
+                )
+                if should_fix:
+                    _cmd_link_dir.mkdir(parents=True, exist_ok=True)
+                    _cmd_link.symlink_to(_venv_bin)
+                    check_ok(f"Created symlink: {_cmd_link_display}/hermes → {_venv_bin}")
+                    fixed_count += 1
+
+                    # Check if the link dir is on PATH
+                    _path_dirs = os.environ.get("PATH", "").split(os.pathsep)
+                    if str(_cmd_link_dir) not in _path_dirs:
+                        check_warn(
+                            f"{_cmd_link_display} is not on your PATH",
+                            "(add it to your shell config: export PATH=\"$HOME/.local/bin:$PATH\")"
+                        )
+                        manual_issues.append(f"Add {_cmd_link_display} to your PATH")
+                else:
+                    issues.append(f"Missing {_cmd_link_display}/hermes symlink — run 'hermes doctor --fix'")
+
     # =========================================================================
     # Check: External tools
     # =========================================================================

@@ -336,6 +336,29 @@ def _make_adapter():
 
 
 # ---------------------------------------------------------------------------
+# Typing indicator
+# ---------------------------------------------------------------------------
+
+class TestMatrixTypingIndicator:
+    def setup_method(self):
+        self.adapter = _make_adapter()
+        self.adapter._client = MagicMock()
+        self.adapter._client.set_typing = AsyncMock()
+
+    @pytest.mark.asyncio
+    async def test_stop_typing_clears_matrix_typing_state(self):
+        """stop_typing() should send typing=false instead of waiting for timeout expiry."""
+        from gateway.platforms.matrix import RoomID
+
+        await self.adapter.stop_typing("!room:example.org")
+
+        self.adapter._client.set_typing.assert_awaited_once_with(
+            RoomID("!room:example.org"),
+            timeout=0,
+        )
+
+
+# ---------------------------------------------------------------------------
 # mxc:// URL conversion
 # ---------------------------------------------------------------------------
 
@@ -1829,6 +1852,5 @@ class TestMatrixPresence:
         self.adapter._client = None
         result = await self.adapter.set_presence("online")
         assert result is False
-
 
 

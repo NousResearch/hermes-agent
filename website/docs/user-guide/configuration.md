@@ -86,7 +86,30 @@ terminal:
   singularity_image: "docker://nikolaik/python-nodejs:python3.11-nodejs20"  # Container image for Singularity backend
   modal_image: "nikolaik/python-nodejs:python3.11-nodejs20"                 # Container image for Modal backend
   daytona_image: "nikolaik/python-nodejs:python3.11-nodejs20"               # Container image for Daytona backend
+  rtk:
+    enabled: auto              # auto | true | false
+    binary: rtk                # Override RTK binary/path if needed
+    rewrite_timeout_seconds: 2 # Fail open if `rtk rewrite` hangs
+    log_rewrites: false        # Log command rewrites at info level
 ```
+
+### RTK command compression
+
+Hermes now ships with a built-in `rtk-rewrite` plugin. When [RTK](https://github.com/rtk-ai/rtk) is installed and `terminal.rtk.enabled` is left at `auto`, Hermes rewrites supported terminal commands through `rtk rewrite` before they execute. Restart Hermes after installing RTK so the plugin can register. That means shell-heavy workflows such as `git status`, `pytest`, `cargo test`, `docker ps`, and `rg` send dramatically smaller outputs back into the model context.
+
+```bash
+brew install rtk
+rtk --version
+rtk gain
+```
+
+`terminal.rtk.enabled` modes:
+
+- `auto` — preferred default. Enable RTK only when the binary is present.
+- `true` — force RTK on. Hermes still fails open if the binary is missing or rewrite times out.
+- `false` — disable RTK entirely.
+
+Hermes never blocks terminal execution because of RTK. If the binary is missing, `rtk rewrite` times out, or RTK has no rewrite for a command, Hermes runs the original command unchanged.
 
 For cloud sandboxes such as Modal and Daytona, `container_persistent: true` means Hermes will try to preserve filesystem state across sandbox recreation. It does not promise that the same live sandbox, PID space, or background processes will still be running later.
 

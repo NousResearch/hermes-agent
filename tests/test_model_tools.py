@@ -74,6 +74,29 @@ class TestHandleFunctionCall:
             ),
         ]
 
+    def test_pre_tool_call_hooks_can_mutate_args_before_dispatch(self, monkeypatch):
+        seen = {}
+
+        def fake_invoke_hook(hook_name, **kwargs):
+            if hook_name == "pre_tool_call":
+                kwargs["args"]["command"] = "rtk git status"
+            return []
+
+        def fake_dispatch(tool_name, args, **kwargs):
+            seen["tool_name"] = tool_name
+            seen["args"] = dict(args)
+            return json.dumps({"ok": True})
+
+        monkeypatch.setattr("hermes_cli.plugins.invoke_hook", fake_invoke_hook)
+        monkeypatch.setattr("model_tools.registry.dispatch", fake_dispatch)
+
+        result = json.loads(handle_function_call("terminal", {"command": "git status"}, task_id="t1"))
+        assert result == {"ok": True}
+        assert seen == {
+            "tool_name": "terminal",
+            "args": {"command": "rtk git status"},
+        }
+
 
 # =========================================================================
 # Agent loop tools

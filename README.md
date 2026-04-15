@@ -46,6 +46,16 @@ source ~/.bashrc    # reload shell (or: source ~/.zshrc)
 hermes              # start chatting!
 ```
 
+Optional but highly recommended for shell-heavy workflows:
+
+```bash
+brew install rtk    # or use the RTK install script
+rtk --version
+rtk gain
+```
+
+Hermes includes a built-in RTK rewrite plugin, so once the `rtk` binary is on your PATH and you restart Hermes, terminal tool calls are automatically compressed before they hit the model context. For standalone Claude Code and Codex, you can also install RTK's native hooks with `rtk init -g` and `rtk init -g --codex`.
+
 ---
 
 ## Getting Started

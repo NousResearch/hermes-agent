@@ -160,6 +160,29 @@ process(action="write", session_id="proc_abc123", data="y")  # Send input
 
 PTY mode (`pty=true`) enables interactive CLI tools like Codex and Claude Code.
 
+## RTK output compression
+
+If the [RTK](https://github.com/rtk-ai/rtk) binary is installed, Hermes auto-loads a built-in `rtk-rewrite` plugin and rewrites supported terminal commands through `rtk rewrite` before execution. Restart Hermes after installing RTK. This trims terminal noise before it lands in the model context, which is where the token savings come from.
+
+```bash
+brew install rtk
+rtk --version
+rtk gain
+```
+
+RTK only touches the `terminal` tool. Hermes-native file tools like `read_file`, `patch`, `search_files`, and `write_file` are unaffected.
+
+### Claude Code and Codex
+
+When you launch Claude Code or Codex through Hermes terminal sessions, Hermes benefits from RTK for the outer shell commands it runs. To optimize the shell calls made by standalone Claude Code or Codex themselves, install RTK's native hooks too:
+
+```bash
+rtk init -g          # Claude Code / Copilot shell hook
+rtk init -g --codex  # Codex prompt/bootstrap integration
+```
+
+That gives you both layers: Hermes terminal compression and agent-native compression inside external coding CLIs.
+
 ## Sudo Support
 
 If a command needs sudo, you'll be prompted for your password (cached for the session). Or set `SUDO_PASSWORD` in `~/.hermes/.env`.

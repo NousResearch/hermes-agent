@@ -114,6 +114,33 @@ class TestSaveAndLoadRoundtrip:
             reloaded = load_config()
             assert reloaded["terminal"]["timeout"] == 999
 
+    def test_terminal_rtk_defaults_present(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            config = load_config()
+            assert config["terminal"]["rtk"] == {
+                "enabled": "auto",
+                "binary": "rtk",
+                "rewrite_timeout_seconds": 2,
+                "log_rewrites": False,
+            }
+
+    def test_terminal_rtk_nested_values_preserved(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            config = load_config()
+            config["terminal"]["rtk"]["enabled"] = True
+            config["terminal"]["rtk"]["binary"] = "/opt/rtk/bin/rtk"
+            config["terminal"]["rtk"]["rewrite_timeout_seconds"] = 5
+            config["terminal"]["rtk"]["log_rewrites"] = True
+            save_config(config)
+
+            reloaded = load_config()
+            assert reloaded["terminal"]["rtk"] == {
+                "enabled": True,
+                "binary": "/opt/rtk/bin/rtk",
+                "rewrite_timeout_seconds": 5,
+                "log_rewrites": True,
+            }
+
 
 class TestSaveEnvValueSecure:
     def test_save_env_value_writes_without_stdout(self, tmp_path, capsys):

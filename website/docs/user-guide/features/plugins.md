@@ -77,6 +77,8 @@ Drop both files into `~/.hermes/plugins/hello-world/`, restart Hermes, and the m
 
 Project-local plugins under `./.hermes/plugins/` are disabled by default. Enable them only for trusted repositories by setting `HERMES_ENABLE_PROJECT_PLUGINS=true` before starting Hermes.
 
+Hermes also ships a first-party pip entry-point plugin named `rtk-rewrite`. When the optional [RTK](https://github.com/rtk-ai/rtk) binary is installed, it hooks `pre_tool_call` and rewrites supported `terminal` commands to their RTK-optimized equivalents automatically.
+
 ## What plugins can do
 
 | Capability | How |

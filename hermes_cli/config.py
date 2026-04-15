@@ -383,6 +383,16 @@ DEFAULT_CONFIG = {
         # Enabled by default for non-local backends (SSH); local is always opt-in
         # via TERMINAL_LOCAL_PERSISTENT env var.
         "persistent_shell": True,
+        # RTK (https://github.com/rtk-ai/rtk) can rewrite shell commands to
+        # compact equivalents before execution, shrinking terminal output sent
+        # back into the model context. "auto" enables it only when the RTK
+        # binary is installed; true/false force on/off.
+        "rtk": {
+            "enabled": "auto",
+            "binary": "rtk",
+            "rewrite_timeout_seconds": 2,
+            "log_rewrites": False,
+        },
     },
     
     "browser": {

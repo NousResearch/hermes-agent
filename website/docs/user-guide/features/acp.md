@@ -149,6 +149,17 @@ The underlying `AIAgent` still uses Hermes' normal persistence/logging paths, bu
 
 ACP sessions bind the editor's cwd to the Hermes task ID so file and terminal tools run relative to the editor workspace, not the server process cwd.
 
+## RTK command compression
+
+ACP terminal sessions inherit the same built-in `rtk-rewrite` plugin as the CLI. If the [RTK](https://github.com/rtk-ai/rtk) binary is available, supported shell commands are rewritten through `rtk rewrite` before execution so the editor receives much smaller terminal outputs. Restart Hermes after installing RTK so the plugin is loaded into the ACP server process.
+
+For standalone Claude Code or Codex sessions running outside Hermes, install RTK's native integrations too:
+
+```bash
+rtk init -g
+rtk init -g --codex
+```
+
 ## Approvals
 
 Dangerous terminal commands can be routed back to the editor as approval prompts. ACP approval options are simpler than the CLI flow:

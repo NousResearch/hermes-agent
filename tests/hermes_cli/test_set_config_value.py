@@ -117,6 +117,18 @@ class TestConfigYamlRouting:
         config = _read_config(_isolated_hermes_home)
         assert "python:3.12" in config
 
+    def test_terminal_rtk_binary_goes_to_config(self, _isolated_hermes_home):
+        set_config_value("terminal.rtk.binary", "/usr/local/bin/rtk")
+        config = _read_config(_isolated_hermes_home)
+        assert "/usr/local/bin/rtk" in config
+        assert "TERMINAL_RTK_BINARY" not in _read_env(_isolated_hermes_home)
+
+    def test_terminal_rtk_enabled_goes_to_config(self, _isolated_hermes_home):
+        set_config_value("terminal.rtk.enabled", "false")
+        config = _read_config(_isolated_hermes_home)
+        assert "enabled: 'false'" in config or "enabled: false" in config
+        assert "TERMINAL_RTK_ENABLED" not in _read_env(_isolated_hermes_home)
+
     def test_terminal_docker_cwd_mount_flag_goes_to_config_and_env(self, _isolated_hermes_home):
         set_config_value("terminal.docker_mount_cwd_to_workspace", "true")
         config = _read_config(_isolated_hermes_home)

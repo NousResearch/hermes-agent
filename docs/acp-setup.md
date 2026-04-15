@@ -134,6 +134,15 @@ shows them in an integrated terminal. Depending on your settings:
 - Commands may run automatically
 - Or you may be prompted to **approve** each command
 
+If [RTK](https://github.com/rtk-ai/rtk) is installed, ACP sessions inherit the same built-in `rtk-rewrite` plugin as the CLI. Supported shell commands are rewritten through `rtk rewrite` before they execute, which keeps editor-side tool output much leaner. Restart Hermes after installing RTK so the ACP server loads the plugin.
+
+If you also run standalone Claude Code or Codex outside Hermes, install RTK's native integrations too:
+
+```bash
+rtk init -g
+rtk init -g --codex
+```
+
 ### Approval Flow
 For potentially destructive operations, the editor will prompt you for
 approval before Hermes proceeds. This includes:

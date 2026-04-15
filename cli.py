@@ -990,6 +990,7 @@ def _prune_orphaned_branches(repo_root: str) -> None:
 _ACCENT_ANSI_DEFAULT = "\033[1;38;2;255;215;0m"  # True-color #FFD700 bold — fallback
 _BOLD = "\033[1m"
 _RST = "\033[0m"
+_STREAM_PAD = "    "  # 4-space indent for streamed response text (matches Panel padding)
 
 
 def _hex_to_ansi(hex_color: str, *, bold: bool = False) -> str:
@@ -1713,9 +1714,9 @@ class HermesCLI:
         # Parse and validate toolsets
         self.enabled_toolsets = toolsets
         if toolsets and "all" not in toolsets and "*" not in toolsets:
-            # Validate each toolset — MCP server names are added by
-            # _get_platform_tools() but aren't registered in TOOLSETS yet
-            # (that happens later in _sync_mcp_toolsets), so exclude them.
+            # Validate each toolset — MCP server names are resolved via
+            # live registry aliases (registered during discover_mcp_tools),
+            # but discovery hasn't run yet at this point, so exclude them.
             mcp_names = set((CLI_CONFIG.get("mcp_servers") or {}).keys())
             invalid = [t for t in toolsets if not validate_toolset(t) and t not in mcp_names]
             if invalid:
@@ -2581,7 +2582,7 @@ class HermesCLI:
         _tc = getattr(self, "_stream_text_ansi", "")
         while "\n" in self._stream_buf:
             line, self._stream_buf = self._stream_buf.split("\n", 1)
-            _cprint(f"{_tc}{line}{_RST}" if _tc else line)
+            _cprint(f"{_STREAM_PAD}{_tc}{line}{_RST}" if _tc else f"{_STREAM_PAD}{line}")
 
     def _flush_stream(self) -> None:
         """Emit any remaining partial line from the stream buffer and close the box."""
@@ -2598,7 +2599,7 @@ class HermesCLI:
 
         if self._stream_buf:
             _tc = getattr(self, "_stream_text_ansi", "")
-            _cprint(f"{_tc}{self._stream_buf}{_RST}" if _tc else self._stream_buf)
+            _cprint(f"{_STREAM_PAD}{_tc}{self._stream_buf}{_RST}" if _tc else f"{_STREAM_PAD}{self._stream_buf}")
             self._stream_buf = ""
 
         # Close the response box
@@ -5762,7 +5763,7 @@ class HermesCLI:
                         border_style=_resp_color,
                         style=_resp_text,
                         box=rich_box.HORIZONTALS,
-                        padding=(1, 2),
+                        padding=(1, 4),
                     ))
                 else:
                     _cprint("  (No response generated)")
@@ -5886,7 +5887,7 @@ class HermesCLI:
                         title_align="left",
                         border_style=_resp_color,
                         box=rich_box.HORIZONTALS,
-                        padding=(1, 2),
+                        padding=(1, 4),
                     ))
                 else:
                     _cprint("  💬 /btw: (no response)")
@@ -7649,7 +7650,7 @@ class HermesCLI:
                         label = " ⚕ Hermes "
                         fill = w - 2 - len(label)
                         _cprint(f"\n{_ACCENT}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
-                    _cprint(sentence.rstrip())
+                    _cprint(f"{_STREAM_PAD}{sentence.rstrip()}")
 
                 tts_thread = threading.Thread(
                     target=stream_tts_to_speaker,
@@ -7880,7 +7881,7 @@ class HermesCLI:
                         border_style=_resp_color,
                         style=_resp_text,
                         box=rich_box.HORIZONTALS,
-                        padding=(1, 2),
+                        padding=(1, 4),
                     ))
 
 
@@ -8632,6 +8633,24 @@ class HermesCLI:
             self._should_exit = True
             event.app.exit()
 
+        _modal_prompt_active = Condition(
+            lambda: bool(self._secret_state or self._sudo_state)
+        )
+
+        @kb.add('escape', filter=_modal_prompt_active, eager=True)
+        def handle_escape_modal(event):
+            """ESC cancels active secret/sudo prompts."""
+            if self._secret_state:
+                self._cancel_secret_capture()
+                event.app.current_buffer.reset()
+                event.app.invalidate()
+                return
+            if self._sudo_state:
+                self._sudo_state["response_queue"].put("")
+                self._sudo_state = None
+                event.app.invalidate()
+                return
+
         @kb.add('c-z')
         def handle_ctrl_z(event):
             """Handle Ctrl+Z - suspend process to background (Unix only)."""
@@ -8929,9 +8948,9 @@ class HermesCLI:
             if cli_ref._voice_processing:
                 return "transcribing..."
             if cli_ref._sudo_state:
-                return "type password (hidden), Enter to skip"
+                return "type password (hidden), Enter to submit · ESC to skip"
             if cli_ref._secret_state:
-                return "type secret (hidden), Enter to skip"
+                return "type secret (hidden), Enter to submit · ESC to skip"
             if cli_ref._approval_state:
                 return ""
             if cli_ref._clarify_freetext:
@@ -9174,7 +9193,7 @@ class HermesCLI:
             prompt = state.get("prompt") or f"Enter value for {state.get('var_name', 'secret')}"
             metadata = state.get("metadata") or {}
             help_text = metadata.get("help")
-            body = 'Enter secret below (hidden), or press Enter to skip'
+            body = 'Enter secret below (hidden), ESC or Ctrl+C to skip'
             content_lines = [prompt, body]
             if help_text:
                 content_lines.insert(1, str(help_text))

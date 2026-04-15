@@ -52,6 +52,7 @@ class ToolRegistry:
     def __init__(self):
         self._tools: Dict[str, ToolEntry] = {}
         self._toolset_checks: Dict[str, Callable] = {}
+        self._toolset_aliases: Dict[str, str] = {}
         # MCP dynamic refresh can mutate the registry while other threads are
         # reading tool metadata, so keep mutations serialized and readers on
         # stable snapshots.
@@ -96,6 +97,27 @@ class ToolRegistry:
             if entry.toolset == toolset
         )
 
+    def register_toolset_alias(self, alias: str, toolset: str) -> None:
+        """Register an explicit alias for a canonical toolset name."""
+        with self._lock:
+            existing = self._toolset_aliases.get(alias)
+            if existing and existing != toolset:
+                logger.warning(
+                    "Toolset alias collision: '%s' (%s) overwritten by %s",
+                    alias, existing, toolset,
+                )
+            self._toolset_aliases[alias] = toolset
+
+    def get_registered_toolset_aliases(self) -> Dict[str, str]:
+        """Return a snapshot of ``{alias: canonical_toolset}`` mappings."""
+        with self._lock:
+            return dict(self._toolset_aliases)
+
+    def get_toolset_alias_target(self, alias: str) -> Optional[str]:
+        """Return the canonical toolset name for an alias, or None."""
+        with self._lock:
+            return self._toolset_aliases.get(alias)
+
     # ------------------------------------------------------------------
     # Registration
     # ------------------------------------------------------------------
@@ -117,11 +139,27 @@ class ToolRegistry:
         with self._lock:
             existing = self._tools.get(name)
             if existing and existing.toolset != toolset:
-                logger.warning(
-                    "Tool name collision: '%s' (toolset '%s') is being "
-                    "overwritten by toolset '%s'",
-                    name, existing.toolset, toolset,
+                # Allow MCP-to-MCP overwrites (legitimate: server refresh,
+                # or two MCP servers with overlapping tool names).
+                both_mcp = (
+                    existing.toolset.startswith("mcp-")
+                    and toolset.startswith("mcp-")
                 )
+                if both_mcp:
+                    logger.debug(
+                        "Tool '%s': MCP toolset '%s' overwriting MCP toolset '%s'",
+                        name, toolset, existing.toolset,
+                    )
+                else:
+                    # Reject shadowing — prevent plugins/MCP from overwriting
+                    # built-in tools or vice versa.
+                    logger.error(
+                        "Tool registration REJECTED: '%s' (toolset '%s') would "
+                        "shadow existing tool from toolset '%s'. Deregister the "
+                        "existing tool first if this is intentional.",
+                        name, toolset, existing.toolset,
+                    )
+                    return
             self._tools[name] = ToolEntry(
                 name=name,
                 toolset=toolset,
@@ -148,11 +186,18 @@ class ToolRegistry:
             entry = self._tools.pop(name, None)
             if entry is None:
                 return
-            # Drop the toolset check if this was the last tool in that toolset
-            if entry.toolset in self._toolset_checks and not any(
+            # Drop the toolset check and aliases if this was the last tool in
+            # that toolset.
+            toolset_still_exists = any(
                 e.toolset == entry.toolset for e in self._tools.values()
-            ):
+            )
+            if not toolset_still_exists:
                 self._toolset_checks.pop(entry.toolset, None)
+                self._toolset_aliases = {
+                    alias: target
+                    for alias, target in self._toolset_aliases.items()
+                    if target != entry.toolset
+                }
         logger.debug("Deregistered tool: %s", name)
 
     # ------------------------------------------------------------------

@@ -62,6 +62,7 @@ AUTHOR_MAP = {
     "258577966+voidborne-d@users.noreply.github.com": "voidborne-d",
     "70424851+insecurejezza@users.noreply.github.com": "insecurejezza",
     "259807879+Bartok9@users.noreply.github.com": "Bartok9",
+    "268667990+Roy-oss1@users.noreply.github.com": "Roy-oss1",
     # contributors (manual mapping from git names)
     "dmayhem93@gmail.com": "dmahan93",
     "samherring99@gmail.com": "samherring99",
@@ -94,7 +95,9 @@ AUTHOR_MAP = {
     "vincentcharlebois@gmail.com": "vincentcharlebois",
     "aryan@synvoid.com": "aryansingh",
     "johnsonblake1@gmail.com": "blakejohnson",
+    "greer.guthrie@gmail.com": "g-guthrie",
     "kennyx102@gmail.com": "bobashopcashier",
+    "shokatalishaikh95@gmail.com": "areu01or00",
     "bryan@intertwinesys.com": "bryanyoung",
     "christo.mitov@gmail.com": "christomitov",
     "hermes@nousresearch.com": "NousResearch",

@@ -7,7 +7,7 @@ import type { AppLayoutProps } from '../app/interfaces.js'
 import { $isBlocked } from '../app/overlayStore.js'
 import { $uiState } from '../app/uiStore.js'
 
-import { StatusRule, StickyPromptTracker, TranscriptScrollbar } from './appChrome.js'
+import { GoodVibesHeart, StatusRule, StickyPromptTracker, TranscriptScrollbar } from './appChrome.js'
 import { AppOverlays } from './appOverlays.js'
 import { Banner, Panel, SessionPanel } from './branding.js'
 import { MessageLine } from './messageLine.js'
@@ -106,7 +106,6 @@ const ComposerPane = memo(function ComposerPane({
 }: Pick<AppLayoutProps, 'actions' | 'composer' | 'status'>) {
   const ui = useStore($uiState)
   const isBlocked = useStore($isBlocked)
-
   const sh = (composer.inputBuf[0] ?? composer.input).startsWith('!')
   const pw = sh ? 2 : 3
 
@@ -177,7 +176,7 @@ const ComposerPane = memo(function ComposerPane({
             </Box>
           ))}
 
-          <Box>
+          <Box position="relative">
             <Box width={pw}>
               {sh ? (
                 <Text color={ui.theme.color.shellDollar as any}>$ </Text>
@@ -188,14 +187,19 @@ const ComposerPane = memo(function ComposerPane({
               )}
             </Box>
 
-            <TextInput
-              columns={Math.max(20, composer.cols - pw)}
-              onChange={composer.updateInput}
-              onPaste={composer.handleTextPaste}
-              onSubmit={composer.submit}
-              placeholder={composer.empty ? PLACEHOLDER : ui.busy ? 'Ctrl+C to interrupt…' : ''}
-              value={composer.input}
-            />
+            <Box flexGrow={1} position="relative">
+              <TextInput
+                columns={Math.max(20, composer.cols - pw)}
+                onChange={composer.updateInput}
+                onPaste={composer.handleTextPaste}
+                onSubmit={composer.submit}
+                placeholder={composer.empty ? PLACEHOLDER : ui.busy ? 'Ctrl+C to interrupt…' : ''}
+                value={composer.input}
+              />
+              <Box position="absolute" right={0}>
+                <GoodVibesHeart t={ui.theme} tick={status.goodVibesTick} />
+              </Box>
+            </Box>
           </Box>
         </Box>
       )}

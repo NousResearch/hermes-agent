@@ -17,6 +17,56 @@ import type { SlashHandlerContext } from './interfaces.js'
 import { patchOverlayState } from './overlayStore.js'
 import { getUiState, patchUiState } from './uiStore.js'
 
+const FORTUNES = [
+  'you are one clean refactor away from clarity',
+  'a tiny rename today prevents a huge bug tomorrow',
+  'your next commit message will be immaculate',
+  'the edge case you are ignoring is already solved in your head',
+  'minimal diff, maximal calm',
+  'today favors bold deletions over new abstractions',
+  'the right helper is already in your codebase',
+  'you will ship before overthinking catches up',
+  'tests are about to save your future self',
+  'your instincts are correctly suspicious of that one branch'
+]
+
+const LEGENDARY_FORTUNES = [
+  'legendary drop: one-line fix, first try',
+  'legendary drop: every flaky test passes cleanly',
+  'legendary drop: your diff teaches by itself'
+]
+
+const hash = (input: string) => {
+  let out = 2166136261
+
+  for (let i = 0; i < input.length; i++) {
+    out ^= input.charCodeAt(i)
+    out = Math.imul(out, 16777619)
+  }
+
+  return out >>> 0
+}
+
+const fortuneFromScore = (score: number) => {
+  const rare = score % 20 === 0
+  const bag = rare ? LEGENDARY_FORTUNES : FORTUNES
+
+  return `${rare ? '🌟' : '🔮'} ${bag[score % bag.length]}`
+}
+
+const randomFortune = () => {
+  const score = Math.floor(Math.random() * 0x7fffffff)
+
+  return fortuneFromScore(score)
+}
+
+const dailyFortune = (sid: string | null) => {
+  const seed = `${sid || 'anon'}|${new Date().toDateString()}`
+  const score = hash(seed)
+
+  return fortuneFromScore(score)
+}
+
 export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => boolean {
   const { enqueue, hasSelection, paste, queueRef, selection, setInput } = ctx.composer
   const { gw, rpc } = ctx.gateway
@@ -71,7 +121,10 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
 
         sections.push({
           title: 'TUI',
-          rows: [['/details [hidden|collapsed|expanded|cycle]', 'set agent detail visibility mode']]
+          rows: [
+            ['/details [hidden|collapsed|expanded|cycle]', 'set agent detail visibility mode'],
+            ['/fortune [random|daily]', 'show a random or daily local fortune']
+          ]
         })
 
         sections.push({ title: 'Hotkeys', rows: HOTKEYS })
@@ -170,6 +223,23 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
           rpc('config.set', { key: 'details_mode', value: next }).catch(() => {})
           sys(`details: ${next}`)
         }
+
+        return true
+
+      case 'fortune':
+        if (!arg || arg.trim().toLowerCase() === 'random') {
+          sys(randomFortune())
+
+          return true
+        }
+
+        if (['daily', 'today', 'stable'].includes(arg.trim().toLowerCase())) {
+          sys(dailyFortune(sid))
+
+          return true
+        }
+
+        sys('usage: /fortune [random|daily]')
 
         return true
       case 'copy': {

@@ -29,6 +29,13 @@ import { asRpcResult, rpcErrorMessage } from './lib/rpc.js'
 import { buildToolTrailLine, hasInterpolation, sameToolTrailGroup, toolTrailLabel } from './lib/text.js'
 import type { Msg, PanelSection, SessionInfo, SlashCatalog } from './types.js'
 
+const GOOD_VIBES_RE = /\b(good bot|thanks|thank you|thx|ty|ily|love you)\b/i
+const LONG_RUN_CHARM_DELAY_MS = 8_000
+const LONG_RUN_CHARM_INTERVAL_MS = 10_000
+const LONG_RUN_CHARM_MAX = 2
+
+const LONG_RUN_CHARMS = ['still cooking…', 'polishing edges…', 'asking the void nicely…']
+
 // ── App ──────────────────────────────────────────────────────────────
 
 export function App({ gw }: { gw: GatewayClient }) {
@@ -68,6 +75,7 @@ export function App({ gw }: { gw: GatewayClient }) {
   const [voiceRecording, setVoiceRecording] = useState(false)
   const [voiceProcessing, setVoiceProcessing] = useState(false)
   const [sessionStartedAt, setSessionStartedAt] = useState(() => Date.now())
+  const [goodVibesTick, setGoodVibesTick] = useState(0)
   const [bellOnComplete, setBellOnComplete] = useState(false)
   const ui = useStore($uiState)
   const overlay = useStore($overlayState)
@@ -85,6 +93,7 @@ export function App({ gw }: { gw: GatewayClient }) {
   const configMtimeRef = useRef(0)
   const historyItemsRef = useRef(historyItems)
   const lastUserMsgRef = useRef(lastUserMsg)
+  const longRunCharmRef = useRef(new Map<string, { count: number; lastAt: number }>())
   const msgIdsRef = useRef(new WeakMap<Msg, string>())
   const nextMsgIdRef = useRef(0)
   colsRef.current = cols
@@ -224,6 +233,17 @@ export function App({ gw }: { gw: GatewayClient }) {
       }
     },
     [sys]
+  )
+
+  const maybeGoodVibes = useCallback(
+    (text: string) => {
+      if (!GOOD_VIBES_RE.test(text)) {
+        return
+      }
+
+      setGoodVibesTick(v => v + 1)
+    },
+    []
   )
 
   const applyDisplayConfig = useCallback((cfg: ConfigFullResponse | null) => {
@@ -571,6 +591,7 @@ export function App({ gw }: { gw: GatewayClient }) {
           turnRefs.statusTimerRef.current = null
         }
 
+        maybeGoodVibes(submitText)
         setLastUserMsg(text)
         appendMessage({ role: 'user', text: displayText })
         patchUiState({ busy: true, status: 'running…' })
@@ -610,7 +631,7 @@ export function App({ gw }: { gw: GatewayClient }) {
         })
         .catch(() => startSubmit(text, expandPasteSnips(text)))
     },
-    [appendMessage, composerState.pasteSnips, gw, turnActions, sys, turnRefs]
+    [appendMessage, composerState.pasteSnips, gw, maybeGoodVibes, turnActions, sys, turnRefs]
   )
 
   const shellExec = useCallback(
@@ -909,6 +930,50 @@ export function App({ gw }: { gw: GatewayClient }) {
     }
   }, [gw, turnActions, sys])
 
+  useEffect(() => {
+    if (!ui.busy || !turnState.tools.length) {
+      longRunCharmRef.current.clear()
+
+      return
+    }
+
+    const tick = () => {
+      const now = Date.now()
+      const liveIds = new Set(turnState.tools.map(tool => tool.id))
+
+      for (const key of [...longRunCharmRef.current.keys()]) {
+        if (!liveIds.has(key)) {
+          longRunCharmRef.current.delete(key)
+        }
+      }
+
+      for (const tool of turnState.tools) {
+        if (!tool.startedAt || now - tool.startedAt < LONG_RUN_CHARM_DELAY_MS) {
+          continue
+        }
+
+        const slot = longRunCharmRef.current.get(tool.id) ?? { count: 0, lastAt: 0 }
+
+        if (slot.count >= LONG_RUN_CHARM_MAX || now - slot.lastAt < LONG_RUN_CHARM_INTERVAL_MS) {
+          continue
+        }
+
+        slot.count += 1
+        slot.lastAt = now
+        longRunCharmRef.current.set(tool.id, slot)
+
+        const charm = LONG_RUN_CHARMS[Math.floor(Math.random() * LONG_RUN_CHARMS.length)]!
+        const sec = Math.round((now - tool.startedAt) / 1000)
+        turnActions.pushActivity(`${charm} (${toolTrailLabel(tool.name)} · ${sec}s)`)
+      }
+    }
+
+    tick()
+    const id = setInterval(tick, 1000)
+
+    return () => clearInterval(id)
+  }, [turnActions, turnState.tools, ui.busy])
+
   // ── Slash commands ───────────────────────────────────────────────
 
   const slash = useMemo(
@@ -1198,13 +1263,14 @@ export function App({ gw }: { gw: GatewayClient }) {
   const appStatus = useMemo(
     () => ({
       cwdLabel,
+      goodVibesTick,
       sessionStartedAt: sessionStarted,
       showStickyPrompt,
       statusColor,
       stickyPrompt,
       voiceLabel
     }),
-    [cwdLabel, sessionStarted, showStickyPrompt, statusColor, stickyPrompt, voiceLabel]
+    [cwdLabel, goodVibesTick, sessionStarted, showStickyPrompt, statusColor, stickyPrompt, voiceLabel]
   )
 
   const appTranscript = useMemo(

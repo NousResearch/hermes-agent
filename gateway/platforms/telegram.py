@@ -839,6 +839,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 msg = None
                 for _send_attempt in range(3):
                     try:
+                        logger.info("[%s] Sending chunk %d/%d to chat %s (attempt %d)", self.name, i+1, len(chunks), chat_id, _send_attempt+1)
                         # Try Markdown first, fall back to plain text if it fails
                         try:
                             msg = await self._bot.send_message(
@@ -862,8 +863,10 @@ class TelegramAdapter(BasePlatformAdapter):
                                 )
                             else:
                                 raise
+                        logger.info("[%s] Send succeeded: message_id=%s", self.name, msg.message_id if msg else None)
                         break  # success
                     except _NetErr as send_err:
+                        logger.error("[%s] Send network error: %s", self.name, send_err)
                         # BadRequest is a subclass of NetworkError in
                         # python-telegram-bot but represents permanent errors
                         # (not transient network issues). Detect and handle

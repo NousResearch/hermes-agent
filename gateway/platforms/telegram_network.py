@@ -46,7 +46,25 @@ _SEED_FALLBACK_IPS: list[str] = ["149.154.167.220"]
 def _resolve_proxy_url() -> str | None:
     # Delegate to shared implementation (env vars + macOS system proxy detection)
     from gateway.platforms.base import resolve_proxy_url
-    return resolve_proxy_url()
+    proxy_url = resolve_proxy_url()
+    logger.info("[Telegram] Proxy from env/system: %s", proxy_url)
+    # Fallback to local mihomo/clash proxy if no proxy configured
+    # This is needed when Gateway starts without shell env vars
+    if not proxy_url:
+        import socket
+        try:
+            # Check if local proxy is running
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(1)
+            result = sock.connect_ex(('127.0.0.1', 7890))
+            sock.close()
+            logger.info("[Telegram] Local proxy port check result: %d", result)
+            if result == 0:
+                proxy_url = "http://127.0.0.1:7890"
+                logger.info("[Telegram] Using local fallback proxy http://127.0.0.1:7890")
+        except Exception as e:
+            logger.warning("[Telegram] Local proxy check failed: %s", e)
+    return proxy_url
 
 
 class TelegramFallbackTransport(httpx.AsyncBaseTransport):
@@ -61,16 +79,29 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
     def __init__(self, fallback_ips: Iterable[str], **transport_kwargs):
         self._fallback_ips = [ip for ip in dict.fromkeys(_normalize_fallback_ips(fallback_ips))]
         proxy_url = _resolve_proxy_url()
+        self._proxy_url = proxy_url  # Store for later use
+        # Apply proxy to transport (works for hostname-based requests)
         if proxy_url and "proxy" not in transport_kwargs:
             transport_kwargs["proxy"] = proxy_url
+        # Single transport for all requests - proxy handles hostname resolution
         self._primary = httpx.AsyncHTTPTransport(**transport_kwargs)
-        self._fallbacks = {
-            ip: httpx.AsyncHTTPTransport(**transport_kwargs) for ip in self._fallback_ips
-        }
+        # Build fallback transports for direct IP connections when no proxy is available
+        self._fallbacks: dict[str, httpx.AsyncHTTPTransport] = {}
+        if not proxy_url and self._fallback_ips:
+            for ip in self._fallback_ips:
+                # Create transport without proxy for direct IP connections
+                self._fallbacks[ip] = httpx.AsyncHTTPTransport(**{k: v for k, v in transport_kwargs.items() if k != "proxy"})
         self._sticky_ip: Optional[str] = None
         self._sticky_lock = asyncio.Lock()
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        # If we have a proxy, let it handle DNS resolution (bypasses poisoned DNS)
+        # If no proxy, use fallback IPs for direct connections
+        if self._proxy_url:
+            # Proxy handles everything - just pass the request through
+            return await self._primary.handle_async_request(request)
+        
+        # No proxy: use fallback IPs for direct connections
         if request.url.host != _TELEGRAM_API_HOST or not self._fallback_ips:
             return await self._primary.handle_async_request(request)
 
@@ -243,4 +274,7 @@ def _rewrite_request_for_ip(request: httpx.Request, ip: str) -> httpx.Request:
 
 
 def _is_retryable_connect_error(exc: Exception) -> bool:
-    return isinstance(exc, (httpx.ConnectTimeout, httpx.ConnectError))
+    # ConnectTimeout/ConnectError: network-level failures
+    # RemoteProtocolError: proxy disconnected, TLS errors, etc.
+    # ReadTimeout: server hung during response
+    return isinstance(exc, (httpx.ConnectTimeout, httpx.ConnectError, httpx.RemoteProtocolError, httpx.ReadTimeout))

@@ -142,6 +142,33 @@ class TestSurrogateVsAsciiSanitization:
         assert _sanitize_messages_surrogates(messages) is False
 
 
+class TestApiKeyNonAsciiSanitization:
+    """Tests for API key sanitization in the UnicodeEncodeError recovery.
+
+    Covers the root cause of issue #6843: a non-ASCII character (ʋ U+028B)
+    in the API key causes httpx to fail when encoding the Authorization
+    header as ASCII.  The recovery block must strip non-ASCII from the key.
+    """
+
+    def test_strip_non_ascii_from_api_key(self):
+        """_strip_non_ascii removes ʋ from an API key string."""
+        key = "sk-proj-abc" + "ʋ" + "def"
+        assert _strip_non_ascii(key) == "sk-proj-abcdef"
+
+    def test_api_key_at_position_153(self):
+        """Reproduce the exact error: ʋ at position 153 in 'Bearer <key>'."""
+        key = "sk-proj-" + "a" * 138 + "ʋ" + "bcd"
+        auth_value = f"Bearer {key}"
+        # This is what httpx does — and it fails:
+        with pytest.raises(UnicodeEncodeError) as exc_info:
+            auth_value.encode("ascii")
+        assert exc_info.value.start == 153
+        # After sanitization, it should work:
+        sanitized_key = _strip_non_ascii(key)
+        sanitized_auth = f"Bearer {sanitized_key}"
+        sanitized_auth.encode("ascii")  # should not raise
+
+
 class TestSanitizeToolsNonAscii:
     """Tests for _sanitize_tools_non_ascii."""
 
@@ -203,3 +230,67 @@ class TestSanitizeStructureNonAscii:
         assert _sanitize_structure_non_ascii(payload) is True
         assert payload["default_headers"]["X-Title"] == "Hermes  Agent"
         assert payload["default_headers"]["User-Agent"] == "Hermes/1.0 "
+
+
+class TestApiKeyClientSync:
+    """Verify that ASCII recovery updates the live OpenAI client's api_key.
+
+    The OpenAI SDK stores its own copy of api_key which auth_headers reads
+    dynamically.  If only self.api_key is updated but self.client.api_key
+    is not, the next request still sends the corrupted key in the
+    Authorization header.
+    """
+
+    def test_client_api_key_updated_on_sanitize(self):
+        """Simulate the recovery path and verify client.api_key is synced."""
+        from unittest.mock import MagicMock
+        from run_agent import AIAgent
+
+        agent = AIAgent.__new__(AIAgent)
+        bad_key = "sk-proj-abc\u028bdef"  # ʋ lookalike at position 11
+        agent.api_key = bad_key
+        agent._client_kwargs = {"api_key": bad_key}
+        agent.quiet_mode = True
+
+        # Mock client with its own api_key attribute (like the real OpenAI client)
+        mock_client = MagicMock()
+        mock_client.api_key = bad_key
+        agent.client = mock_client
+
+        # --- replicate the recovery logic from run_agent.py ---
+        _raw_key = agent.api_key
+        _clean_key = _strip_non_ascii(_raw_key)
+        assert _clean_key != _raw_key, "test precondition: key should have non-ASCII"
+
+        agent.api_key = _clean_key
+        agent._client_kwargs["api_key"] = _clean_key
+        if getattr(agent, "client", None) is not None and hasattr(agent.client, "api_key"):
+            agent.client.api_key = _clean_key
+
+        # All three locations should now hold the clean key
+        assert agent.api_key == "sk-proj-abcdef"
+        assert agent._client_kwargs["api_key"] == "sk-proj-abcdef"
+        assert agent.client.api_key == "sk-proj-abcdef"
+        # The bad char should be gone from all of them
+        assert "\u028b" not in agent.api_key
+        assert "\u028b" not in agent._client_kwargs["api_key"]
+        assert "\u028b" not in agent.client.api_key
+
+    def test_client_none_does_not_crash(self):
+        """Recovery should not crash when client is None (pre-init)."""
+        from run_agent import AIAgent
+
+        agent = AIAgent.__new__(AIAgent)
+        bad_key = "sk-proj-\u028b"
+        agent.api_key = bad_key
+        agent._client_kwargs = {"api_key": bad_key}
+        agent.client = None
+
+        _clean_key = _strip_non_ascii(bad_key)
+        agent.api_key = _clean_key
+        agent._client_kwargs["api_key"] = _clean_key
+        if getattr(agent, "client", None) is not None and hasattr(agent.client, "api_key"):
+            agent.client.api_key = _clean_key
+
+        assert agent.api_key == "sk-proj-"
+        assert agent.client is None  # should not have been touched

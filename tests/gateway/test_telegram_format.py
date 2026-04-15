@@ -408,6 +408,27 @@ class TestFormatMessageBlockquote:
         result = adapter.format_message("5 > 3")
         assert "\\>" in result
 
+    def test_expandable_blockquote(self, adapter):
+        """Expandable blockquote prefix **> and trailing || must NOT be escaped."""
+        result = adapter.format_message("**> Hidden content||")
+        assert "**>" in result
+        assert "||" in result
+        assert "\\*" not in result  # asterisks in prefix must not be escaped
+        assert "\\>" not in result  # > in prefix must not be escaped
+
+    def test_single_asterisk_gt_not_blockquote(self, adapter):
+        """Single asterisk before > should not be treated as blockquote prefix."""
+        result = adapter.format_message("*> not a quote")
+        assert "\\*" in result
+        assert "\\>" in result
+
+    def test_regular_blockquote_with_pipes_escaped(self, adapter):
+        """Regular blockquote ending with || should escape the pipes."""
+        result = adapter.format_message("> not expandable||")
+        assert "> not expandable" in result
+        assert "\\|" in result
+        assert "\\>" not in result
+
 
 # =========================================================================
 # format_message - mixed/complex

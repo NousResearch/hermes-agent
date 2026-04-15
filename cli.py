@@ -4692,16 +4692,19 @@ class HermesCLI:
                 self._close_model_picker()
                 return
             provider_data = providers[selected]
-            model_list = []
-            try:
-                from hermes_cli.models import provider_model_ids
-                live = provider_model_ids(provider_data["slug"])
-                if live:
-                    model_list = live
-            except Exception:
-                pass
+            # Use the curated model list from list_authenticated_providers()
+            # (same lists as `hermes model` and gateway pickers).
+            # Only fall back to the live provider catalog when the curated
+            # list is empty (e.g. user-defined endpoints with no curated list).
+            model_list = provider_data.get("models", [])
             if not model_list:
-                model_list = provider_data.get("models", [])
+                try:
+                    from hermes_cli.models import provider_model_ids
+                    live = provider_model_ids(provider_data["slug"])
+                    if live:
+                        model_list = live
+                except Exception:
+                    pass
             state["stage"] = "model"
             state["provider_data"] = provider_data
             state["model_list"] = model_list
@@ -6061,7 +6064,7 @@ class HermesCLI:
         parts = cmd.strip().split(None, 1)
         sub = parts[1].lower().strip() if len(parts) > 1 else "status"
 
-        _DEFAULT_CDP = "http://localhost:9222"
+        _DEFAULT_CDP = "http://127.0.0.1:9222"
         current = os.environ.get("BROWSER_CDP_URL", "").strip()
 
         if sub.startswith("connect"):

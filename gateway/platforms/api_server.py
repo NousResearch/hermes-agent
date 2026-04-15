@@ -1949,15 +1949,10 @@ class APIServerAdapter(BasePlatformAdapter):
                         "call_id": tc.get("id", ""),
                     })
             elif role == "tool":
-                output_content = msg.get("content", "")
-                if isinstance(output_content, list):
-                    output = output_content
-                else:
-                    output = [{"type": "input_text", "text": str(output_content)}]
                 items.append({
                     "type": "function_call_output",
                     "call_id": msg.get("tool_call_id", ""),
-                    "output": output,
+                    "output": msg.get("content", ""),
                 })
 
         # Final assistant message

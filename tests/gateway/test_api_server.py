@@ -1547,7 +1547,7 @@ class TestToolCallsInOutput:
             assert output[0]["call_id"] == "call_abc123"
             assert output[1]["type"] == "function_call_output"
             assert output[1]["call_id"] == "call_abc123"
-            assert output[1]["output"] == [{"type": "input_text", "text": "42"}]
+            assert output[1]["output"] == "42"
             assert output[2]["type"] == "message"
             assert output[2]["content"][0]["text"] == "The result is 42."
 

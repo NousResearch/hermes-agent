@@ -12,9 +12,9 @@ from hermes_cli.setup import setup_model_provider
 
 
 def _maybe_keep_current_tts(question, choices):
-    if question != "Select TTS provider:":
+    if question != "TTS provider를 선택하세요:":
         return None
-    assert choices[-1].startswith("Keep current (")
+    assert choices[-1].startswith("현재 설정 유지 (")
     return len(choices) - 1
 
 
@@ -368,9 +368,9 @@ def test_modal_setup_can_use_nous_subscription_without_modal_creds(tmp_path, mon
     config = load_config()
 
     def fake_prompt_choice(question, choices, default=0):
-        if question == "Select terminal backend:":
+        if question == "터미널 백엔드를 선택하세요:":
             return 2
-        if question == "Select how Modal execution should be billed:":
+        if question == "Modal 실행 과금 방식을 선택하세요:":
             return 0
         raise AssertionError(f"Unexpected prompt_choice call: {question}")
 
@@ -412,9 +412,9 @@ def test_modal_setup_persists_direct_mode_when_user_chooses_their_own_account(tm
     config = load_config()
 
     def fake_prompt_choice(question, choices, default=0):
-        if question == "Select terminal backend:":
+        if question == "터미널 백엔드를 선택하세요:":
             return 2
-        if question == "Select how Modal execution should be billed:":
+        if question == "Modal 실행 과금 방식을 선택하세요:":
             return 1
         raise AssertionError(f"Unexpected prompt_choice call: {question}")
 

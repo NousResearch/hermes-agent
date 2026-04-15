@@ -576,15 +576,15 @@ def _prompt_container_resources(config: dict):
     terminal = config.setdefault("terminal", {})
 
     print()
-    print_info("Container Resource Settings:")
+    print_info("컨테이너 리소스 설정:")
 
     # Persistence
     current_persist = terminal.get("container_persistent", True)
     persist_label = "yes" if current_persist else "no"
-    print_info("  Persistent filesystem keeps files between sessions.")
-    print_info("  Set to 'no' for ephemeral sandboxes that reset each time.")
+    print_info("  영구 파일시스템을 켜면 세션 사이에도 파일이 유지됩니다.")
+    print_info("  매번 초기화되는 임시 샌드박스를 원하면 'no'로 설정하세요.")
     persist_str = prompt(
-        "  Persist filesystem across sessions? (yes/no)", persist_label
+        "  세션 간 파일시스템을 유지할까요? (yes/no)", persist_label
     )
     terminal["container_persistent"] = persist_str.lower() in ("yes", "true", "y", "1")
 
@@ -927,8 +927,8 @@ def _setup_tts_provider(config: dict):
     current_label = provider_labels.get(current_provider, current_provider)
 
     print()
-    print_header("Text-to-Speech Provider (optional)")
-    print_info(f"Current: {current_label}")
+    print_header("텍스트 음성 변환 provider (선택 사항)")
+    print_info(f"현재 설정: {current_label}")
     print()
 
     choices = []
@@ -947,9 +947,9 @@ def _setup_tts_provider(config: dict):
         ]
     )
     providers.extend(["edge", "elevenlabs", "openai", "minimax", "mistral", "neutts"])
-    choices.append(f"Keep current ({current_label})")
+    choices.append(f"현재 설정 유지 ({current_label})")
     keep_current_idx = len(choices) - 1
-    idx = prompt_choice("Select TTS provider:", choices, keep_current_idx)
+    idx = prompt_choice("TTS provider를 선택하세요:", choices, keep_current_idx)
 
     if idx == keep_current_idx:
         return
@@ -1088,11 +1088,11 @@ def setup_terminal_backend(config: dict):
 
     # Add keep current option
     keep_current_idx = next_idx
-    terminal_choices.append(f"Keep current ({current_backend})")
+    terminal_choices.append(f"현재 설정 유지 ({current_backend})")
     idx_to_backend[keep_current_idx] = current_backend
 
     terminal_idx = prompt_choice(
-        "Select terminal backend:", terminal_choices, keep_current_idx
+        "터미널 백엔드를 선택하세요:", terminal_choices, keep_current_idx
     )
 
     selected_backend = idx_to_backend.get(terminal_idx)
@@ -1202,7 +1202,7 @@ def setup_terminal_backend(config: dict):
             else:
                 default_modal_idx = 1 if get_env_value("MODAL_TOKEN_ID") else 0
             modal_mode_idx = prompt_choice(
-                "Select how Modal execution should be billed:",
+                "Modal 실행 과금 방식을 선택하세요:",
                 modal_choices,
                 default_modal_idx,
             )

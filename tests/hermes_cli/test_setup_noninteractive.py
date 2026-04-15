@@ -103,6 +103,12 @@ class TestNonInteractiveSetup:
         assert '웹 검색 및 추출' in source
         assert '이제 사용할 준비가 되었습니다!' in source
         assert '설정을 수정하려면:' in source
+        assert '텍스트 음성 변환 provider (선택 사항)' in source
+        assert 'TTS provider를 선택하세요:' in source
+        assert '터미널 백엔드를 선택하세요:' in source
+        assert 'Modal 실행 과금 방식을 선택하세요:' in source
+        assert '컨테이너 리소스 설정:' in source
+        assert '세션 간 파일시스템을 유지할까요? (yes/no)' in source
 
     def test_cmd_setup_allows_noninteractive_flag_without_tty(self):
         """The CLI entrypoint should not block --non-interactive before setup.py handles it."""

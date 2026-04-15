@@ -13,9 +13,9 @@ from hermes_cli.setup import _print_setup_summary, setup_model_provider
 
 
 def _maybe_keep_current_tts(question, choices):
-    if question != "Select TTS provider:":
+    if question != "TTS provider를 선택하세요:":
         return None
-    assert choices[-1].startswith("Keep current (")
+    assert choices[-1].startswith("현재 설정 유지 (")
     return len(choices) - 1
 
 

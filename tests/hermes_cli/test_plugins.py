@@ -201,6 +201,7 @@ class TestPluginHooks:
     def test_valid_hooks_include_request_scoped_api_hooks(self):
         assert "pre_api_request" in VALID_HOOKS
         assert "post_api_request" in VALID_HOOKS
+        assert "transform_terminal_output" in VALID_HOOKS
 
     def test_register_and_invoke_hook(self, tmp_path, monkeypatch):
         """Registered hooks are called on invoke_hook()."""
@@ -296,6 +297,30 @@ class TestPluginHooks:
             max_tokens=8192,
         )
         assert results == [{"seen": 2, "mc": 5, "tc": 3}]
+
+    def test_transform_terminal_output_hook_can_be_registered_and_invoked(self, tmp_path, monkeypatch):
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(
+            plugins_dir, "transform_hook",
+            register_body=(
+                'ctx.register_hook("transform_terminal_output", '
+                'lambda **kw: f"{kw[\'command\']}|{kw[\'returncode\']}|{kw[\'env_type\']}|{kw[\'task_id\']}|{len(kw[\'output\'])}")'
+            ),
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        results = mgr.invoke_hook(
+            "transform_terminal_output",
+            command="echo hello",
+            output="abcdef",
+            returncode=7,
+            task_id="task-1",
+            env_type="local",
+        )
+        assert results == ["echo hello|7|local|task-1|6"]
 
     def test_invalid_hook_name_warns(self, tmp_path, monkeypatch, caplog):
         """Registering an unknown hook name logs a warning."""

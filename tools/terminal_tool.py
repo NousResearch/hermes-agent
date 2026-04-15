@@ -1721,6 +1721,27 @@ def terminal_tool(
             
             # Add helpful message for sudo failures in messaging context
             output = _handle_sudo_failure(output, env_type)
+
+            # Foreground terminal output canonicalization seam: plugins receive
+            # the full output string before default truncation and may only
+            # replace it by returning a string from transform_terminal_output.
+            # The hook is fail-open, and the first valid string return wins.
+            try:
+                from hermes_cli.plugins import invoke_hook
+                hook_results = invoke_hook(
+                    "transform_terminal_output",
+                    command=command,
+                    output=output,
+                    returncode=returncode,
+                    task_id=effective_task_id or "",
+                    env_type=env_type,
+                )
+                for hook_result in hook_results:
+                    if isinstance(hook_result, str):
+                        output = hook_result
+                        break
+            except Exception:
+                pass
             
             # Truncate output if too long, keeping both head and tail
             MAX_OUTPUT_CHARS = 50000

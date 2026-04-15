@@ -3905,19 +3905,34 @@ class GatewayRunner:
             # intermediate reasoning) so sessions can be resumed with full context
             # and transcripts are useful for debugging and training data.
             #
-            # IMPORTANT: When the agent failed before producing any response
-            # (e.g. context-overflow 400), do NOT persist the user's message.
+            # IMPORTANT: When the agent failed (e.g. context-overflow 400,
+            # compression exhausted), do NOT persist the user's message.
             # Persisting it would make the session even larger, causing the
-            # same failure on the next attempt — an infinite loop. (#1630)
-            agent_failed_early = (
-                agent_result.get("failed")
-                and not agent_result.get("final_response")
-            )
+            # same failure on the next attempt — an infinite loop. (#1630, #9893)
+            agent_failed_early = bool(agent_result.get("failed"))
             if agent_failed_early:
                 logger.info(
                     "Skipping transcript persistence for failed request in "
                     "session %s to prevent session growth loop.",
                     session_entry.session_id,
+                )
+
+            # When compression is exhausted, the session is permanently too
+            # large to process.  Auto-reset it so the next message starts
+            # fresh instead of replaying the same oversized context in an
+            # infinite fail loop.  (#9893)
+            if agent_result.get("compression_exhausted") and session_entry and session_key:
+                logger.info(
+                    "Auto-resetting session %s after compression exhaustion.",
+                    session_entry.session_id,
+                )
+                self.session_store.reset_session(session_key)
+                self._evict_cached_agent(session_key)
+                self._session_model_overrides.pop(session_key, None)
+                response = (response or "") + (
+                    "\n\n🔄 Session auto-reset — the conversation exceeded the "
+                    "maximum context size and could not be compressed further. "
+                    "Your next message will start a fresh session."
                 )
 
             ts = datetime.now().isoformat()
@@ -4027,6 +4042,8 @@ class GatewayRunner:
             _hist_len = len(history) if 'history' in locals() else 0
             if status_code == 401:
                 status_hint = " Check your API key or run `claude /login` to refresh OAuth credentials."
+            elif status_code == 402:
+                status_hint = " Your API balance or quota is exhausted. Check your provider dashboard."
             elif status_code == 429:
                 # Check if this is a plan usage limit (resets on a schedule) vs a transient rate limit
                 _err_body = getattr(e, "response", None)
@@ -8721,6 +8738,8 @@ class GatewayRunner:
                     "final_response": error_msg,
                     "messages": result.get("messages", []),
                     "api_calls": result.get("api_calls", 0),
+                    "failed": result.get("failed", False),
+                    "compression_exhausted": result.get("compression_exhausted", False),
                     "tools": tools_holder[0] or [],
                     "history_offset": len(agent_history),
                     "last_prompt_tokens": _last_prompt_toks,

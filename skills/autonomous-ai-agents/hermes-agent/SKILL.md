@@ -650,9 +650,9 @@ registry.register(
 )
 ```
 
-**2. Add import** in `model_tools.py` → `_discover_tools()` list.
+**2. Add to `toolsets.py`** → `_HERMES_CORE_TOOLS` list.
 
-**3. Add to `toolsets.py`** → `_HERMES_CORE_TOOLS` list.
+Auto-discovery: any `tools/*.py` file with a top-level `registry.register()` call is imported automatically — no manual list needed.
 
 All handlers must return JSON strings. Use `get_hermes_home()` for paths, never hardcode `~/.hermes`.
 

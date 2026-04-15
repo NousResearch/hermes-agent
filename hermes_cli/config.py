@@ -488,7 +488,7 @@ DEFAULT_CONFIG = {
             "model": "",
             "base_url": "",
             "api_key": "",
-            "timeout": 30,
+            "timeout": 45,
         },
     },
     
@@ -586,8 +586,10 @@ DEFAULT_CONFIG = {
     "memory": {
         "memory_enabled": True,
         "user_profile_enabled": True,
-        "memory_char_limit": 2200,   # ~800 tokens at 2.75 chars/token
-        "user_char_limit": 1375,     # ~500 tokens at 2.75 chars/token
+        "memory_char_limit": 20000,  # ~7.3k tokens at 2.75 chars/token
+        "user_char_limit": 10000,    # ~3.6k tokens at 2.75 chars/token
+        "nudge_interval": 4,
+        "flush_min_turns": 2,
         # External memory provider plugin (empty = built-in only).
         # Set to a provider name to activate: "openviking", "mem0",
         # "hindsight", "holographic", "retaindb", "byterover".

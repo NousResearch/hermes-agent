@@ -1072,6 +1072,16 @@ def _cprint(text: str):
     _pt_print(_PT_ANSI(text))
 
 
+def _cprint_inline(text: str):
+    """Print ANSI-colored text *without* a trailing newline.
+
+    Used for character-level streaming so partial lines render immediately
+    as tokens arrive, producing a smooth typewriter effect instead of
+    waiting for a complete line.
+    """
+    _pt_print(_PT_ANSI(text), end="")
+
+
 # ---------------------------------------------------------------------------
 # File-drop / local attachment detection — extracted as pure helpers for tests.
 # ---------------------------------------------------------------------------
@@ -1634,13 +1644,19 @@ class HermesCLI:
         # streaming: stream tokens to the terminal as they arrive (display.streaming in config.yaml)
         self.streaming_enabled = CLI_CONFIG["display"].get("streaming", False)
 
+        # Streaming buffer mode: "character" (smoothest), "word" (balanced), "line" (legacy)
+        # Controls how aggressively partial lines are flushed during streaming.
+        _sbm = CLI_CONFIG["display"].get("streaming_buffer_mode", "character")
+        self._streaming_buffer_mode = _sbm if _sbm in ("character", "word", "line") else "character"
+
         # Inline diff previews for write actions (display.inline_diffs in config.yaml)
         self._inline_diffs_enabled = CLI_CONFIG["display"].get("inline_diffs", True)
 
         # Streaming display state
-        self._stream_buf = ""        # Partial line buffer for line-buffered rendering
+        self._stream_buf = ""        # Partial line buffer for streaming rendering
         self._stream_started = False  # True once first delta arrives
         self._stream_box_opened = False  # True once the response box header is printed
+        self._stream_partial_line_open = False  # True when an inline partial line is on screen
         self._reasoning_preview_buf = ""  # Coalesce tiny reasoning chunks for [thinking] output
         self._pending_edit_snapshots = {}
         
@@ -2393,11 +2409,12 @@ class HermesCLI:
                 self._emit_stream_text(deferred)
 
     def _stream_delta(self, text) -> None:
-        """Line-buffered streaming callback for real-time token rendering.
+        """Streaming callback for real-time token rendering.
 
-        Receives text deltas from the agent as tokens arrive. Buffers
-        partial lines and emits complete lines via _cprint to work
-        reliably with prompt_toolkit's patch_stdout.
+        Receives text deltas from the agent as tokens arrive. Depending
+        on the ``display.streaming_buffer_mode`` setting, text is emitted
+        at character, word, or line granularity via _cprint/_cprint_inline
+        to work reliably with prompt_toolkit's patch_stdout.
 
         Reasoning/thinking blocks (<REASONING_SCRATCHPAD>, <think>, etc.)
         are suppressed during streaming since they'd display raw XML tags.
@@ -2533,7 +2550,14 @@ class HermesCLI:
             return
 
     def _emit_stream_text(self, text: str) -> None:
-        """Emit filtered text to the streaming display."""
+        """Emit filtered text to the streaming display.
+
+        Complete lines are always emitted immediately.  For partial lines
+        (no trailing newline), the behaviour depends on streaming_buffer_mode:
+        - "character": flush every token immediately (smoothest).
+        - "word": flush at word/punctuation boundaries (balanced).
+        - "line": keep buffered until a newline arrives (legacy).
+        """
         if not text:
             return
 
@@ -2580,8 +2604,50 @@ class HermesCLI:
         # Emit complete lines, keep partial remainder in buffer
         _tc = getattr(self, "_stream_text_ansi", "")
         while "\n" in self._stream_buf:
-            line, self._stream_buf = self._stream_buf.split("\n", 1)
-            _cprint(f"{_STREAM_PAD}{_tc}{line}{_RST}" if _tc else f"{_STREAM_PAD}{line}")
+            # If a partial line was already printed inline (character/word
+            # mode), the current terminal line already has content.  Emit
+            # the rest of the line *without* re-printing the left padding,
+            # then reset the flag.
+            if getattr(self, "_stream_partial_line_open", False):
+                line, self._stream_buf = self._stream_buf.split("\n", 1)
+                _cprint(f"{_tc}{line}{_RST}" if _tc else line)
+                self._stream_partial_line_open = False
+            else:
+                line, self._stream_buf = self._stream_buf.split("\n", 1)
+                _cprint(f"{_STREAM_PAD}{_tc}{line}{_RST}" if _tc else f"{_STREAM_PAD}{line}")
+
+        # ── Flush partial lines for smoother streaming ──
+        # In "line" mode (legacy) we keep the remainder buffered until a
+        # newline arrives.  In "word" or "character" mode we flush earlier
+        # so text appears progressively — like a typewriter.
+        _mode = getattr(self, "_streaming_buffer_mode", "character")
+        if _mode != "line" and self._stream_buf:
+            if _mode == "character":
+                # Flush everything immediately for maximum smoothness.
+                _partial = self._stream_buf
+                self._stream_buf = ""
+            else:
+                # "word" mode: flush up to the last word boundary
+                # (space, tab, punctuation).  Keep the trailing partial
+                # word in the buffer so it renders as a whole unit.
+                _last_boundary = -1
+                for _ch in (" ", "\t", ".", "!", "?", ",", ";", ":", ")", "]", "}"):
+                    _pos = self._stream_buf.rfind(_ch)
+                    if _pos > _last_boundary:
+                        _last_boundary = _pos
+                if _last_boundary != -1:
+                    _partial = self._stream_buf[:_last_boundary + 1]
+                    self._stream_buf = self._stream_buf[_last_boundary + 1:]
+                else:
+                    _partial = ""
+
+            if _partial:
+                if not getattr(self, "_stream_partial_line_open", False):
+                    # First chunk on this line — prepend the padding
+                    _cprint_inline(f"{_STREAM_PAD}{_tc}{_partial}{_RST}" if _tc else f"{_STREAM_PAD}{_partial}")
+                    self._stream_partial_line_open = True
+                else:
+                    _cprint_inline(f"{_tc}{_partial}{_RST}" if _tc else _partial)
 
     def _flush_stream(self) -> None:
         """Emit any remaining partial line from the stream buffer and close the box."""
@@ -2598,8 +2664,19 @@ class HermesCLI:
 
         if self._stream_buf:
             _tc = getattr(self, "_stream_text_ansi", "")
-            _cprint(f"{_STREAM_PAD}{_tc}{self._stream_buf}{_RST}" if _tc else f"{_STREAM_PAD}{self._stream_buf}")
+            if getattr(self, "_stream_partial_line_open", False):
+                # Partial line was already started inline — finish it with
+                # the remaining buffer content and a newline.
+                _cprint(f"{_tc}{self._stream_buf}{_RST}" if _tc else self._stream_buf)
+            else:
+                _cprint(f"{_STREAM_PAD}{_tc}{self._stream_buf}{_RST}" if _tc else f"{_STREAM_PAD}{self._stream_buf}")
             self._stream_buf = ""
+        elif getattr(self, "_stream_partial_line_open", False):
+            # No remaining buffer but an inline partial is open — close the
+            # line with a newline so the box border starts on a fresh line.
+            _cprint("")
+
+        self._stream_partial_line_open = False
 
         # Close the response box
         if self._stream_box_opened:
@@ -2615,6 +2692,7 @@ class HermesCLI:
         self._stream_prefilt = ""
         self._in_reasoning_block = False
         self._stream_last_was_newline = True
+        self._stream_partial_line_open = False
         self._reasoning_box_opened = False
         self._reasoning_buf = ""
         self._reasoning_preview_buf = ""

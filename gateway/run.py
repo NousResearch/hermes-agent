@@ -633,11 +633,48 @@ class GatewayRunner:
 
         # Track background tasks to prevent garbage collection mid-execution
         self._background_tasks: set = set()
+        # Deferred background-review notification releases keyed by session.
+        # The review itself can run immediately, but its user-visible
+        # "💾 Skill created" / "💾 Memory updated" notification should not race
+        # ahead of the main assistant reply for the turn.
+        self._deferred_bg_review_releases: Dict[str, Any] = {}
+        self._deferred_bg_review_lock = threading.Lock()
 
 
 
 
     # -- Setup skill availability ----------------------------------------
+
+    def _register_deferred_background_review_release(
+        self, session_key: Optional[str], release_fn: Optional[callable]
+    ) -> None:
+        """Register a one-shot release hook for deferred background-review notifications."""
+        if not session_key or release_fn is None:
+            return
+        if not hasattr(self, "_deferred_bg_review_releases"):
+            self._deferred_bg_review_releases = {}
+        if not hasattr(self, "_deferred_bg_review_lock"):
+            self._deferred_bg_review_lock = threading.Lock()
+        with self._deferred_bg_review_lock:
+            self._deferred_bg_review_releases[session_key] = release_fn
+
+    def _release_deferred_background_reviews(self, session_key: Optional[str]) -> None:
+        """Release any queued background-review notifications for *session_key*."""
+        if not session_key:
+            return
+        release_fn = None
+        if hasattr(self, "_deferred_bg_review_releases"):
+            lock = getattr(self, "_deferred_bg_review_lock", None)
+            if lock is None:
+                release_fn = self._deferred_bg_review_releases.pop(session_key, None)
+            else:
+                with lock:
+                    release_fn = self._deferred_bg_review_releases.pop(session_key, None)
+        if release_fn is not None:
+            try:
+                release_fn()
+            except Exception as exc:
+                logger.debug("Deferred background review release failed: %s", exc)
 
     def _has_setup_skill(self) -> bool:
         """Check if the hermes-agent-setup skill is installed."""
@@ -8508,8 +8545,11 @@ class GatewayRunner:
             agent.service_tier = self._service_tier
             agent.request_overrides = turn_route.get("request_overrides")
 
-            # Background review delivery — send "💾 Memory updated" etc. to user
-            def _bg_review_send(message: str) -> None:
+            _bg_review_release = threading.Event()
+            _bg_review_pending: list[str] = []
+            _bg_review_pending_lock = threading.Lock()
+
+            def _deliver_bg_review_message(message: str) -> None:
                 if not _status_adapter:
                     return
                 try:
@@ -8524,7 +8564,30 @@ class GatewayRunner:
                 except Exception as _e:
                     logger.debug("background_review_callback error: %s", _e)
 
+            def _release_bg_review_messages() -> None:
+                _bg_review_release.set()
+                with _bg_review_pending_lock:
+                    pending = list(_bg_review_pending)
+                    _bg_review_pending.clear()
+                for queued in pending:
+                    _deliver_bg_review_message(queued)
+
+            # Background review delivery — send "💾 Memory updated" etc. to user
+            def _bg_review_send(message: str) -> None:
+                if not _status_adapter:
+                    return
+                if not _bg_review_release.is_set():
+                    with _bg_review_pending_lock:
+                        if not _bg_review_release.is_set():
+                            _bg_review_pending.append(message)
+                            return
+                _deliver_bg_review_message(message)
+
             agent.background_review_callback = _bg_review_send
+            self._register_deferred_background_review_release(
+                session_key,
+                _release_bg_review_messages,
+            )
 
             # Store agent reference for interrupt support
             agent_holder[0] = agent
@@ -9252,6 +9315,7 @@ class GatewayRunner:
                             )
                         except Exception as e:
                             logger.warning("Failed to send first response before queued message: %s", e)
+                    self._release_deferred_background_reviews(session_key)
                 # else: interrupted — discard the interrupted response ("Operation
                 # interrupted." is just noise; the user already knows they sent a
                 # new message).

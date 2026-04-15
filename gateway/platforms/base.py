@@ -1845,6 +1845,16 @@ class BasePlatformAdapter(ABC):
             except Exception:
                 pass  # Last resort — don't let error reporting crash the handler
         finally:
+            # If the gateway handler deferred background-review notifications
+            # for this turn, release them only after the main response path
+            # completed (send, stream, or error handling).
+            try:
+                _handler_owner = getattr(self._message_handler, "__self__", None)
+                _release_bg = getattr(_handler_owner, "_release_deferred_background_reviews", None)
+                if callable(_release_bg):
+                    _release_bg(session_key)
+            except Exception:
+                pass
             # Stop typing indicator
             typing_task.cancel()
             try:

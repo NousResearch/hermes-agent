@@ -1,5 +1,6 @@
 """Tests for topic-aware gateway progress updates."""
 
+import asyncio
 import importlib
 import sys
 import time
@@ -415,6 +416,21 @@ class QueuedCommentaryAgent:
         }
 
 
+class BackgroundReviewAgent:
+    def __init__(self, **kwargs):
+        self.background_review_callback = kwargs.get("background_review_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        if self.background_review_callback:
+            self.background_review_callback("💾 Skill 'prospect-scanner' created.")
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
 class VerboseAgent:
     """Agent that emits a tool call with args whose JSON exceeds 200 chars."""
     LONG_CODE = "x" * 300
@@ -666,6 +682,68 @@ async def test_run_agent_queued_message_does_not_treat_commentary_as_final(monke
     assert result["final_response"] == "final response 2"
     assert "I'll inspect the repo first." in sent_texts
     assert "final response 1" in sent_texts
+
+
+@pytest.mark.asyncio
+async def test_run_agent_defers_background_review_notification_until_release(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        BackgroundReviewAgent,
+        session_id="sess-bg-review-order",
+        config_data={"display": {"interim_assistant_messages": True}},
+    )
+
+    assert result["final_response"] == "done"
+    assert adapter.sent == []
+
+
+class DeferredReleaseHandler:
+    def __init__(self, adapter):
+        self.adapter = adapter
+        self.released = []
+
+    async def handle(self, event):
+        return "done"
+
+    def _release_deferred_background_reviews(self, session_key):
+        self.released.append(session_key)
+        self.adapter.sent.append(
+            {
+                "chat_id": "bg-review",
+                "content": "💾 Skill 'prospect-scanner' created.",
+                "reply_to": None,
+                "metadata": None,
+            }
+        )
+
+
+@pytest.mark.asyncio
+async def test_base_processing_releases_deferred_background_reviews_after_main_send():
+    adapter = ProgressCaptureAdapter()
+    handler = DeferredReleaseHandler(adapter)
+    adapter.set_message_handler(handler.handle)
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="-1001",
+        chat_type="group",
+        thread_id="17585",
+    )
+    event = MessageEvent(
+        text="hello",
+        message_type=MessageType.TEXT,
+        source=source,
+        message_id="msg-1",
+    )
+    session_key = "agent:main:telegram:group:-1001:17585"
+    adapter._active_sessions[session_key] = asyncio.Event()
+
+    await adapter._process_message_background(event, session_key)
+
+    sent_texts = [call["content"] for call in adapter.sent]
+    assert sent_texts == ["done", "💾 Skill 'prospect-scanner' created."]
+    assert handler.released == [session_key]
 
 
 @pytest.mark.asyncio

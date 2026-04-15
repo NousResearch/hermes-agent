@@ -371,10 +371,10 @@ export default class Output {
             continue
           }
 
-          // Skip rows covered by an absolute-positioned node's clear.
+          // Exclude cells covered by an absolute-positioned node's clear.
           // Absolute nodes overlay normal-flow siblings, so prevScreen in
-          // that region holds the absolute node's stale paint — blitting
-          // it back would ghost. See absoluteClears collection above.
+          // that region holds stale overlay paint. If we blit those cells
+          // back, removed/moved overlays ghost as a duplicate.
           if (absoluteClears.length === 0) {
             blitRegion(screen, src, startX, startY, maxX, maxY)
             blitCells += (maxY - startY) * (maxX - startX)
@@ -382,20 +382,45 @@ export default class Output {
             continue
           }
 
-          let rowStart = startY
+          for (let row = startY; row < maxY; row++) {
+            let spans: [number, number][] = [[startX, maxX]]
 
-          for (let row = startY; row <= maxY; row++) {
-            const excluded =
-              row < maxY &&
-              absoluteClears.some(r => row >= r.y && row < r.y + r.height && startX >= r.x && maxX <= r.x + r.width)
-
-            if (excluded || row === maxY) {
-              if (row > rowStart) {
-                blitRegion(screen, src, startX, rowStart, maxX, row)
-                blitCells += (row - rowStart) * (maxX - startX)
+            for (const r of absoluteClears) {
+              if (row < r.y || row >= r.y + r.height || !spans.length) {
+                break
               }
 
-              rowStart = row + 1
+              const cs = Math.max(startX, r.x)
+              const ce = Math.min(maxX, r.x + r.width)
+
+              if (cs >= ce) {
+                continue
+              }
+
+              const next: [number, number][] = []
+
+              for (const [sx, ex] of spans) {
+                if (ce <= sx || cs >= ex) {
+                  next.push([sx, ex])
+
+                  continue
+                }
+
+                if (sx < cs) {
+                  next.push([sx, cs])
+                }
+
+                if (ce < ex) {
+                  next.push([ce, ex])
+                }
+              }
+
+              spans = next
+            }
+
+            for (const [sx, ex] of spans) {
+              blitRegion(screen, src, sx, row, ex, row + 1)
+              blitCells += ex - sx
             }
           }
 

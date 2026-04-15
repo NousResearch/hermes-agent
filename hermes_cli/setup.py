@@ -2978,6 +2978,17 @@ def _resolve_hermes_chat_argv() -> Optional[list[str]]:
 def _offer_launch_chat():
     """Prompt the user to jump straight into chat after setup."""
     print()
+
+    from hermes_cli.main import can_launch_chat_interactively
+
+    can_launch, reason = can_launch_chat_interactively()
+    if not can_launch:
+        print_info("Skipping automatic chat launch.")
+        if reason:
+            print_info(reason)
+        print_info("Run 'hermes chat' directly in your terminal when you're ready.")
+        return
+
     if not prompt_yes_no("Launch hermes chat now?", True):
         return
 

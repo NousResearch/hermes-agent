@@ -1,6 +1,7 @@
 import importlib
 import os
 import sys
+import types
 from pathlib import Path
 
 from hermes_cli.env_loader import load_hermes_dotenv
@@ -68,3 +69,27 @@ def test_main_import_applies_user_env_over_shell_values(tmp_path, monkeypatch):
 
     assert os.getenv("OPENAI_BASE_URL") == "https://new.example/v1"
     assert os.getenv("HERMES_INFERENCE_PROVIDER") == "custom"
+
+
+def test_env_loader_uses_live_dotenv_after_module_imported_under_stub(tmp_path, monkeypatch):
+    home = tmp_path / "hermes"
+    home.mkdir()
+    env_file = home / ".env"
+    env_file.write_text("OPENAI_BASE_URL=https://new.example/v1\n", encoding="utf-8")
+
+    env_loader_module = importlib.import_module("hermes_cli.env_loader")
+    real_dotenv = importlib.import_module("dotenv")
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://old.example/v1")
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+    importlib.reload(env_loader_module)
+    monkeypatch.setitem(sys.modules, "dotenv", real_dotenv)
+
+    try:
+        loaded = env_loader_module.load_hermes_dotenv(hermes_home=home)
+        assert loaded == [env_file]
+        assert os.getenv("OPENAI_BASE_URL") == "https://new.example/v1"
+    finally:
+        importlib.reload(env_loader_module)

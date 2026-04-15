@@ -724,6 +724,28 @@ class TestSendMethods(unittest.TestCase):
         self.assertIn("https://img.com/photo.jpg", body)
         self.assertIn("My photo", body)
 
+    def test_send_image_accepts_metadata(self):
+        """send_image should preserve the base adapter metadata contract."""
+        import asyncio
+        from unittest.mock import AsyncMock
+        adapter = self._make_adapter()
+
+        adapter.send = AsyncMock(return_value=SendResult(success=True))
+
+        asyncio.run(
+            adapter.send_image(
+                "user@test.com",
+                "https://img.com/photo.jpg",
+                "My photo",
+                metadata={"thread_id": "ignored-for-email"},
+            )
+        )
+
+        self.assertEqual(
+            adapter.send.call_args.kwargs["metadata"],
+            {"thread_id": "ignored-for-email"},
+        )
+
     def test_send_document_with_attachment(self):
         """send_document should send email with file attachment."""
         import asyncio
@@ -753,6 +775,41 @@ class TestSendMethods(unittest.TestCase):
                     for p in parts
                 )
                 self.assertTrue(has_attachment)
+        finally:
+            os.unlink(tmp_path)
+
+    def test_send_document_uses_explicit_reply_to(self):
+        """send_document should thread attachments from the caller-specified reply target."""
+        import asyncio
+        import tempfile
+        adapter = self._make_adapter()
+        adapter._thread_context["user@test.com"] = {
+            "subject": "Existing thread",
+            "message_id": "<context@test.com>",
+        }
+
+        with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as f:
+            f.write(b"Test document content")
+            tmp_path = f.name
+
+        try:
+            with patch("smtplib.SMTP") as mock_smtp:
+                mock_server = MagicMock()
+                mock_smtp.return_value = mock_server
+
+                result = asyncio.run(
+                    adapter.send_document(
+                        "user@test.com",
+                        tmp_path,
+                        "Here is the file",
+                        reply_to="<explicit@test.com>",
+                    )
+                )
+
+                self.assertTrue(result.success)
+                sent_msg = mock_server.send_message.call_args[0][0]
+                self.assertEqual(sent_msg["In-Reply-To"], "<explicit@test.com>")
+                self.assertEqual(sent_msg["References"], "<explicit@test.com>")
         finally:
             os.unlink(tmp_path)
 

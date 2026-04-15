@@ -193,7 +193,7 @@ async def test_shutdown_notification_says_restarting_when_restart_requested():
 
     assert len(adapter.sent) == 1
     assert "restarting" in adapter.sent[0]
-    assert "/retry" in adapter.sent[0]
+    assert "resume" in adapter.sent[0]
 
 
 @pytest.mark.asyncio

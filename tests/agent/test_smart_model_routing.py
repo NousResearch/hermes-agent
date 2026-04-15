@@ -53,9 +53,25 @@ def test_resolve_turn_route_falls_back_to_primary_when_route_runtime_cannot_be_r
             "provider": "openrouter",
             "base_url": "https://openrouter.ai/api/v1",
             "api_mode": "chat_completions",
-            "api_key": "sk-primary",
+            "api_key": "***",
         },
     )
     assert result["model"] == "anthropic/claude-sonnet-4"
     assert result["runtime"]["provider"] == "openrouter"
     assert result["label"] is None
+
+
+def test_resolve_turn_route_includes_primary_in_result():
+    from agent.smart_model_routing import resolve_turn_route
+
+    primary = {
+        "model": "anthropic/claude-sonnet-4",
+        "provider": "openrouter",
+        "base_url": "https://openrouter.ai/api/v1",
+        "api_mode": "chat_completions",
+        "api_key": "***",
+    }
+    result = resolve_turn_route("hi", _BASE_CONFIG, primary)
+    assert "primary" in result
+    assert result["primary"]["model"] == primary["model"]
+    assert result["primary"]["provider"] == primary["provider"]

@@ -2798,7 +2798,7 @@ class HermesCLI:
         route["request_overrides"] = overrides
         return route
 
-    def _init_agent(self, *, model_override: str = None, runtime_override: dict = None, route_label: str = None, request_overrides: dict | None = None) -> bool:
+    def _init_agent(self, *, model_override: str = None, runtime_override: dict = None, route_label: str = None, request_overrides: dict | None = None, smart_routed_primary: dict | None = None) -> bool:
         """
         Initialize the agent on first use.
         When resuming a session, restores conversation history from SQLite.
@@ -2900,6 +2900,7 @@ class HermesCLI:
                 reasoning_callback=self._current_reasoning_callback(),
 
                 fallback_model=self._fallback_model,
+                smart_routed_primary=smart_routed_primary,
                 thinking_callback=self._on_thinking,
                 checkpoints_enabled=self.checkpoints_enabled,
                 checkpoint_max_snapshots=self.checkpoint_max_snapshots,
@@ -5711,6 +5712,7 @@ class HermesCLI:
                     provider_require_parameters=self._provider_require_params,
                     provider_data_collection=self._provider_data_collection,
                     fallback_model=self._fallback_model,
+                    smart_routed_primary=turn_route.get("primary"),
                 )
                 # Silence raw spinner; route thinking through TUI widget when no foreground agent is active.
                 bg_agent._print_fn = lambda *_a, **_kw: None
@@ -5848,6 +5850,7 @@ class HermesCLI:
                     provider_require_parameters=self._provider_require_params,
                     provider_data_collection=self._provider_data_collection,
                     fallback_model=self._fallback_model,
+                    smart_routed_primary=turn_route.get("primary"),
                     session_db=None,
                     skip_memory=True,
                     skip_context_files=True,
@@ -7551,6 +7554,7 @@ class HermesCLI:
             runtime_override=turn_route["runtime"],
             route_label=turn_route["label"],
             request_overrides=turn_route.get("request_overrides"),
+            smart_routed_primary=turn_route.get("primary"),
         ):
             return None
         
@@ -10005,6 +10009,7 @@ def main(
                     runtime_override=turn_route["runtime"],
                     route_label=turn_route["label"],
                     request_overrides=turn_route.get("request_overrides"),
+                    smart_routed_primary=turn_route.get("primary"),
                 ):
                     cli.agent.quiet_mode = True
                     cli.agent.suppress_status_output = True

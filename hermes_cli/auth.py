@@ -164,7 +164,7 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         id="kimi-coding-cn",
         name="Kimi / Moonshot (China)",
         auth_type="api_key",
-        inference_base_url="https://api.moonshot.cn/v1",
+        inference_base_url="https://api.kimi.com/coding/v1",
         api_key_env_vars=("KIMI_CN_API_KEY",),
     ),
     "arcee": ProviderConfig(

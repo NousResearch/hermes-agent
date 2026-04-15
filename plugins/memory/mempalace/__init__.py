@@ -28,6 +28,7 @@ import sqlite3
 import subprocess
 import threading
 import os
+import sys
 import zlib
 import re
 from collections import OrderedDict
@@ -83,7 +84,7 @@ class WorkingMemory:
 
     def add_turn(self, role: str, content: str, speaker: str = "hermes",
                  topic: str = "", importance: float = 0.5) -> str:
-        """Add a turn to working memory AND persist to L3 ChromaDB episodic storage."""
+        """Add a turn to working memory. Episodic persistence is handled by sync_turn()."""
         import threading as _t
 
         timestamp = datetime.now().isoformat()
@@ -104,19 +105,6 @@ class WorkingMemory:
             while len(self._turns) > self._max:
                 self._turns.popitem(last=False)
 
-        # Fire-and-forget: persist to L3 Episodic in background thread (never blocks agent)
-        def _persist():
-            _episode_store(
-                speaker=speaker,
-                role=role,
-                content=content,
-                timestamp=timestamp,
-                topic=detected_topic,
-                importance=importance,
-                session_id=self._session_id or "global",
-            )
-
-        _t.Thread(target=_persist, daemon=True).start()
         return turn_id
 
     def _add_turn_no_persist(self, role: str, content: str, speaker: str = "hermes",
@@ -209,81 +197,43 @@ class WorkingMemory:
 # Collection: "episodes" with speaker/time/topic metadata.
 # -------------------------------------------------------------------
 
-def _episode_store(speaker: str, role: str, content: str,
-                   timestamp: str, topic: str, importance: float,
-                   session_id: str) -> bool:
-    """
-    Store a single conversation turn in ChromaDB 'episodes' collection.
-    Fire-and-forget — errors are logged but never block the agent.
-    """
-    palace_s = _HERMES_PALACE.replace("'", "\\'")
-    speaker_s = speaker.replace("'", "\\'")
-    role_s = role.replace("'", "\\'")
-    content_s = content[:10000].replace("'", "\\'")  # cap at 10k chars
-    topic_s = (topic or "").replace("'", "\\'")
-    ts_s = (timestamp or "").replace("'", "\\'")
-    sid_s = (session_id or "global").replace("'", "\\'")
-
-    script = (
-        "import chromadb\n"
-        "client = chromadb.PersistentClient(path='REPLACEME_PALACE')\n"
-        "col = client.get_or_create_collection('episodes')\n"
-        "import uuid, datetime\n"
-        "doc = 'REPLACEME_CONTENT'\n"
-        "meta = {\n"
-        "    'speaker': 'REPLACEME_SPEAKER',\n"
-        "    'role': 'REPLACEME_ROLE',\n"
-        "    'topic': 'REPLACEME_TOPIC',\n"
-        "    'importance': REPLACEME_IMP,\n"
-        "    'session_id': 'REPLACEME_SID',\n"
-        "    'timestamp': 'REPLACEME_TS',\n"
-        "    'date': 'REPLACEME_TS'[:10],\n"
-        "}\n"
-        "eid = str(uuid.uuid4())\n"
-        "col.add(documents=[doc], metadatas=[meta], ids=[eid])\n"
-        "print('episode:' + eid)\n"
-    ).replace("REPLACEME_PALACE", palace_s).replace(
-        "REPLACEME_SPEAKER", speaker_s
-    ).replace("REPLACEME_ROLE", role_s).replace(
-        "REPLACEME_CONTENT", content_s
-    ).replace("REPLACEME_TOPIC", topic_s).replace(
-        "REPLACEME_SID", sid_s
-    ).replace("REPLACEME_TS", ts_s).replace(
-        "REPLACEME_IMP", str(float(importance))
-    )
-    code, stdout, stderr = _run_python(script, timeout=10)
-    return code == 0
-
 
 def _episode_get_recent(speaker: str = None, topic: str = None,
-                        limit: int = 20) -> str:
+                        session_id: str = None, limit: int = 20) -> str:
     """
     Retrieve recent episodic turns from ChromaDB 'episodes' collection.
     Returns JSON string with episodes list.
 
-    IMPORTANT: ChromaDB col.get(limit=N) returns the FIRST N items (oldest),
-    not the most recent. We fetch ALL and take the last N by timestamp to
-    get the actual newest episodes.
+    Uses offset+limit pagination: first count matching IDs, then fetch only
+    the last LIMIT items. Avoids loading all documents into memory.
     """
-    palace_s = _HERMES_PALACE.replace("'", "\\'")
-    speaker_s = ("'" + speaker.replace("'", "\\'") + "'") if speaker else "None"
-    topic_s = ("'" + topic.replace("'", "\\'") + "'") if topic else "None"
-
     script = (
         "import chromadb, json\n"
-        "client = chromadb.PersistentClient(path='REPLACEME_PALACE')\n"
+        "client = chromadb.PersistentClient(path=REPLACEME_PALACE)\n"
         "col = client.get_or_create_collection('episodes')\n"
         "where = {}\n"
         "if SPEAKER_VAL is not None:\n"
         "    where['speaker'] = SPEAKER_VAL\n"
         "if TOPIC_VAL is not None:\n"
         "    where['topic'] = TOPIC_VAL\n"
-        "# NOTE: col.get(limit=N) returns OLDEST N, not newest.\n"
-        "# Fetch all, sort by timestamp descending, take newest LIMIT_VAL.\n"
-        "results = col.get(\n"
-        "    where=where if where else None,\n"
-        "    include=['documents', 'metadatas']\n"
-        ")\n"
+        "if SESSION_ID_VAL is not None:\n"
+        "    where['session_id'] = SESSION_ID_VAL\n"
+        "# 1) Count matching IDs (lightweight, no docs)\n"
+        "id_results = col.get(where=where if where else None, include=[])\n"
+        "matched_ids = id_results.get('ids', [])\n"
+        "total = len(matched_ids)\n"
+        "limit = LIMIT_VAL\n"
+        "offset = max(0, total - limit)\n"
+        "# 2) Fetch only the last LIMIT items\n"
+        "if offset < total:\n"
+        "    results = col.get(\n"
+        "        where=where if where else None,\n"
+        "        offset=offset,\n"
+        "        limit=limit,\n"
+        "        include=['documents', 'metadatas']\n"
+        "    )\n"
+        "else:\n"
+        "    results = {'documents': [], 'metadatas': []}\n"
         "episodes = []\n"
         "for doc, meta in zip(results.get('documents', []), results.get('metadatas', [])):\n"
         "    episodes.append({\n"
@@ -295,20 +245,19 @@ def _episode_get_recent(speaker: str = None, topic: str = None,
         "        'importance': meta.get('importance', 0.5),\n"
         "        'session_id': meta.get('session_id', ''),\n"
         "    })\n"
-        "# Sort by timestamp descending (newest first), take newest LIMIT_VAL\n"
+        "# Sort by timestamp descending (newest first)\n"
         "episodes.sort(key=lambda e: e.get('timestamp', ''), reverse=True)\n"
-        "episodes = episodes[:LIMIT_VAL]\n"
-        "print(json.dumps({'episodes': episodes, 'count': len(episodes)}))\n"
-    ).replace("REPLACEME_PALACE", palace_s).replace(
-        "SPEAKER_VAL", speaker_s
-    ).replace("TOPIC_VAL", topic_s).replace(
+        "print(json.dumps({'episodes': episodes, 'count': len(episodes), 'total': total}))\n"
+    ).replace("REPLACEME_PALACE", repr(_HERMES_PALACE)).replace(
+        "SPEAKER_VAL", repr(speaker)
+    ).replace("TOPIC_VAL", repr(topic)).replace(
+        "SESSION_ID_VAL", repr(session_id)
+    ).replace(
         "LIMIT_VAL", str(limit)
     )
 
-    # Use venv Python to avoid system Python numpy conflicts
-    _PY = "/Users/mars/hermes-agent/.venv/bin/python3"
     result = subprocess.run(
-        [_PY, "-c", script],
+        [sys.executable, "-c", script],
         capture_output=True, text=True, timeout=15
     )
     code, stdout, stderr = result.returncode, result.stdout, result.stderr
@@ -399,16 +348,18 @@ def _store_triple_with_inverse(
     def _store():
         try:
             conn = sqlite3.connect(_HERMES_KG)
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA busy_timeout=5000")
             cur = conn.cursor()
 
             # ── Contradiction detection: check for active (S, P, old_O) ──
             contradictions_found = []
             cur.execute(
-                "SELECT id, object, valid_from FROM triples WHERE subject=? AND predicate=? AND valid_to IS NULL",
+                "SELECT id, object, valid_from FROM triples WHERE subject=? AND predicate=? AND (valid_to IS NULL OR valid_to='')",
                 (subject, predicate)
             )
-            existing = cur.fetchone()
-            if existing:
+            existing_rows = cur.fetchall()
+            for existing in existing_rows:
                 old_triple_id, old_obj, old_valid_from = existing
                 if old_obj != obj:
                     # Contradiction: new value differs from old value
@@ -431,15 +382,15 @@ def _store_triple_with_inverse(
                     )
                     # Also invalidate inverse of old triple
                     cur.execute(
-                        "UPDATE triples SET valid_to=? WHERE subject=? AND predicate=? AND valid_to IS NULL",
+                        "UPDATE triples SET valid_to=? WHERE subject=? AND predicate=? AND (valid_to IS NULL OR valid_to='')",
                         (today, old_obj, inverse_pred or predicate)
                     )
 
             sid = str(uuid.uuid4())
-            # Main triple (valid_to=NULL for active triples)
+            # Main triple (valid_to='' for active triples)
             cur.execute(
                 "INSERT INTO triples VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (sid, subject, predicate, obj, valid_from, None, confidence,
+                (sid, subject, predicate, obj, valid_from, '', confidence,
                  '', '', today, inverse_pred or '', context, source, subject_type, object_type)
             )
             # Inverse triple
@@ -447,7 +398,7 @@ def _store_triple_with_inverse(
                 inv_sid = str(uuid.uuid4())
                 cur.execute(
                     "INSERT INTO triples VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                    (inv_sid, obj, inverse_pred, subject, valid_from, None, confidence,
+                    (inv_sid, obj, inverse_pred, subject, valid_from, '', confidence,
                      '', '', today, predicate, context, source, object_type, subject_type)
                 )
             # Record in belief_history
@@ -479,11 +430,13 @@ def _store_triple_with_inverse(
     t = threading.Thread(target=_run)
     t.start()
     t.join(timeout=5)
+    if result[0] is None:
+        return False, "KG write timed out after 5 seconds"
     return result[0]
 
 # Path to system Python that has mempalace installed
-_SYSTEM_PYTHON = "/usr/bin/python3"
-_MEMPALACE_CLI = [_SYSTEM_PYTHON, "-m", "mempalace"]
+_MEMPALACE_PYTHON = sys.executable
+_MEMPALACE_CLI = [_MEMPALACE_PYTHON, "-m", "mempalace"]
 
 # Default palace path — Hermes has its OWN independent palace
 _DEFAULT_PALACE_PATH = Path.home() / ".mempalace_hermes"
@@ -1026,8 +979,7 @@ def _has_mempalace_cli() -> bool:
 def _run_cli(args: List[str], timeout: int = 30) -> tuple[int, str, str]:
     """Run mempalace CLI command targeting Hermes's independent palace."""
     # --palace is a GLOBAL arg on the main parser; must come before subcommand
-    palace_path = str(Path.home() / ".mempalace_hermes/palace")
-    cmd = _MEMPALACE_CLI + ["--palace", palace_path] + args
+    cmd = _MEMPALACE_CLI + ["--palace", _HERMES_PALACE] + args
     try:
         result = subprocess.run(
             cmd,
@@ -1039,16 +991,16 @@ def _run_cli(args: List[str], timeout: int = 30) -> tuple[int, str, str]:
     except subprocess.TimeoutExpired:
         return -1, "", "Command timed out"
     except FileNotFoundError:
-        return -1, "", f"System Python not found: {_SYSTEM_PYTHON}"
+        return -1, "", f"System Python not found: {_MEMPALACE_PYTHON}"
     except Exception as e:
         return -1, "", str(e)
 
 
 def _run_python(script: str, timeout: int = 15) -> tuple[int, str, str]:
-    """Run inline Python script with system Python. Returns (exit_code, stdout, stderr)."""
+    """Run inline Python script with the same Python running Hermes. Returns (exit_code, stdout, stderr)."""
     try:
         result = subprocess.run(
-            [_SYSTEM_PYTHON, "-c", script],
+            [_MEMPALACE_PYTHON, "-c", script],
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -1057,7 +1009,7 @@ def _run_python(script: str, timeout: int = 15) -> tuple[int, str, str]:
     except subprocess.TimeoutExpired:
         return -1, "", "Python command timed out"
     except FileNotFoundError:
-        return -1, "", f"System Python not found: {_SYSTEM_PYTHON}"
+        return -1, "", f"System Python not found: {_MEMPALACE_PYTHON}"
     except Exception as e:
         return -1, "", str(e)
 
@@ -1075,12 +1027,7 @@ _OPENCLAW_KG = str(Path.home() / ".mempalace/knowledge_graph.sqlite3")
 
 def _run_mempalace(script: str, timeout: int = 30) -> tuple[int, str, str]:
     """Run mempalace Python API with Hermes's independent palace paths."""
-    full_script = f"""
-import sys
-sys.path.insert(0, '/Users/mars/Library/Python/3.9/lib/python/site-packages')
-{script}
-"""
-    return _run_python(full_script, timeout=timeout)
+    return _run_python(script, timeout=timeout)
 
 
 def _cli_search_with_explanation(query: str, wing: str = None, room: str = None,
@@ -1091,8 +1038,6 @@ def _cli_search_with_explanation(query: str, wing: str = None, room: str = None,
     2. Apply BM25 keyword reranking to re-score results
     3. Return enriched results with bm25_score, keyword explanation, recency
     """
-    palace_s = _HERMES_PALACE.replace("'", "\\'")
-    query_s = query.replace("'", "\\'")
     n_fetch = min(n_results * 3, 30)  # Over-fetch for BM25 reranking
 
     script = (
@@ -1100,13 +1045,13 @@ def _cli_search_with_explanation(query: str, wing: str = None, room: str = None,
         "import chromadb, json, re\n"
         "from datetime import datetime\n"
         "\n"
-        "client = chromadb.PersistentClient(path='REPLACEME_PALACE')\n"
+        "client = chromadb.PersistentClient(path=REPLACEME_PALACE)\n"
         "\n"
         "# Query mempalace_drawers collection for semantic matches\n"
         "try:\n"
         "    col = client.get_collection('mempalace_drawers')\n"
         "    raw_results = col.query(\n"
-        "        query_texts=['REPLACEME_QUERY'],\n"
+        "        query_texts=[REPLACEME_QUERY],\n"
         "        n_results=REPLACEME_N,\n"
         "        include=['documents', 'metadatas', 'distances']\n"
         "    )\n"
@@ -1142,14 +1087,14 @@ def _cli_search_with_explanation(query: str, wing: str = None, room: str = None,
         "        corpus_texts = [item['document'] for item in items]\n"
         "        tokenized = [tokenize(doc) for doc in corpus_texts]\n"
         "        bm25 = BM25Okapi(tokenized)\n"
-        "        q_tokens = tokenize('REPLACEME_QUERY')\n"
+        "        q_tokens = tokenize(REPLACEME_QUERY)\n"
         "        raw_scores = bm25.get_scores(q_tokens)\n"
         "        bm25_scores = [float(s) for s in raw_scores]\n"
         "    except Exception as e:\n"
         "        pass  # BM25 not available — use chroma_distance fallback\n"
         "\n"
         "# ── Enrich with keyword/explanation ─────────────────────────────\n"
-        "q_lower = 'REPLACEME_QUERY'.lower()\n"
+        "q_lower = REPLACEME_QUERY.lower()\n"
         "english_words = re.findall(r'[a-zA-Z0-9]+', q_lower)\n"
         "chinese_chars = [c for c in q_lower if not c.isalnum() and not c.isspace()]\n"
         "\n"
@@ -1200,19 +1145,17 @@ def _cli_search_with_explanation(query: str, wing: str = None, room: str = None,
         "\n"
         "print(json.dumps({\n"
         "    'results': enriched,\n"
-        "    'query': 'REPLACEME_QUERY',\n"
+        "    'query': REPLACEME_QUERY,\n"
         "    'count': len(enriched),\n"
         "    'reranking': 'bm25',\n"
         "}))\n"
-    ).replace("REPLACEME_PALACE", palace_s).replace(
-        "REPLACEME_QUERY", query_s
+    ).replace("REPLACEME_PALACE", repr(_HERMES_PALACE)).replace(
+        "REPLACEME_QUERY", repr(query)
     ).replace("REPLACEME_N", str(n_fetch)
     )
 
-    # Use venv Python (3.14) so rank_bm25 + nltk are available
-    _PY = "/Users/mars/hermes-agent/.venv/bin/python3"
     result = subprocess.run(
-        [_PY, "-c", script],
+        [sys.executable, "-c", script],
         capture_output=True, text=True, timeout=30
     )
     code, stdout, stderr = result.returncode, result.stdout, result.stderr
@@ -1223,14 +1166,18 @@ def _cli_search_with_explanation(query: str, wing: str = None, room: str = None,
 
 def _cli_search(query: str, wing: str = None, room: str = None, n_results: int = 8) -> str:
     """Run mempalace search via Python API (Hermes's independent palace)."""
-    wing_arg = f"'{wing}'" if wing else "None"
-    room_arg = f"'{room}'" if room else "None"
-    script = f"""
-from mempalace.layers import MemoryStack
-stack = MemoryStack(palace_path='{_HERMES_PALACE}', identity_path='{_HERMES_IDENTITY}')
-result = stack.search('{query}', wing={wing_arg}, room={room_arg}, n_results={n_results})
-print(result)
-"""
+    script = (
+        "from mempalace.layers import MemoryStack\n"
+        "stack = MemoryStack(palace_path=REPLACEME_PALACE, identity_path=REPLACEME_IDENTITY)\n"
+        "result = stack.search(REPLACEME_QUERY, wing=REPLACEME_WING, room=REPLACEME_ROOM, n_results=REPLACEME_N)\n"
+        "print(result)\n"
+    ).replace("REPLACEME_PALACE", repr(_HERMES_PALACE)).replace(
+        "REPLACEME_IDENTITY", repr(_HERMES_IDENTITY)
+    ).replace("REPLACEME_QUERY", repr(query)).replace(
+        "REPLACEME_WING", repr(wing)
+    ).replace("REPLACEME_ROOM", repr(room)).replace(
+        "REPLACEME_N", str(n_results)
+    )
     code, stdout, stderr = _run_mempalace(script)
     if code != 0:
         return f"Search error: {stderr}"
@@ -1239,13 +1186,14 @@ print(result)
 
 def _cli_wakeup(wing: str = None) -> str:
     """Run mempalace wake-up via Python API (Hermes's independent palace)."""
-    wing_arg = f"'{wing}'" if wing else "None"
-    script = f"""
-from mempalace.layers import MemoryStack
-stack = MemoryStack(palace_path='{_HERMES_PALACE}', identity_path='{_HERMES_IDENTITY}')
-result = stack.wake_up(wing={wing_arg})
-print(result)
-"""
+    script = (
+        "from mempalace.layers import MemoryStack\n"
+        "stack = MemoryStack(palace_path=REPLACEME_PALACE, identity_path=REPLACEME_IDENTITY)\n"
+        "result = stack.wake_up(wing=REPLACEME_WING)\n"
+        "print(result)\n"
+    ).replace("REPLACEME_PALACE", repr(_HERMES_PALACE)).replace(
+        "REPLACEME_IDENTITY", repr(_HERMES_IDENTITY)
+    ).replace("REPLACEME_WING", repr(wing))
     code, stdout, stderr = _run_mempalace(script, timeout=20)
     if code != 0:
         return f"Wake-up error: {stderr}"
@@ -1254,12 +1202,14 @@ print(result)
 
 def _cli_status() -> Dict[str, Any]:
     """Run mempalace status via Python API."""
-    script = f"""
-from mempalace.layers import MemoryStack
-stack = MemoryStack(palace_path='{_HERMES_PALACE}', identity_path='{_HERMES_IDENTITY}')
-import json
-print(json.dumps(stack.status()))
-"""
+    script = (
+        "from mempalace.layers import MemoryStack\n"
+        "stack = MemoryStack(palace_path=REPLACEME_PALACE, identity_path=REPLACEME_IDENTITY)\n"
+        "import json\n"
+        "print(json.dumps(stack.status()))\n"
+    ).replace("REPLACEME_PALACE", repr(_HERMES_PALACE)).replace(
+        "REPLACEME_IDENTITY", repr(_HERMES_IDENTITY)
+    )
     code, stdout, stderr = _run_mempalace(script)
     if code != 0:
         return {"error": f"Status error: {stderr}"}
@@ -1271,32 +1221,29 @@ print(json.dumps(stack.status()))
 
 def _cli_list_wings() -> List[Dict[str, Any]]:
     """Get wing list by querying ChromaDB metadata for distinct wing values."""
-    script = f"""
-import chromadb
-import json
-
-palace_path = '{_HERMES_PALACE}'
-client = chromadb.PersistentClient(path=palace_path)
-try:
-    col = client.get_collection('mempalace_drawers')
-except Exception:
-    print('[]')
-    exit(0)
-
-# Peek at all metadata to extract distinct wings
-try:
-    data = col.get(limit=1000, include=['metadatas'])
-    wings = {{}}
-    for meta in (data.get('metadatas') or []):
-        w = meta.get('wing', 'unknown')
-        if w not in wings:
-            wings[w] = {{'wing': w, 'drawer_count': 0}}
-        wings[w]['drawer_count'] += 1
-    result = list(wings.values())
-except Exception:
-    result = []
-print(json.dumps(result))
-"""
+    script = (
+        "import chromadb\n"
+        "import json\n"
+        "palace_path = REPLACEME_PALACE\n"
+        "client = chromadb.PersistentClient(path=palace_path)\n"
+        "try:\n"
+        "    col = client.get_collection('mempalace_drawers')\n"
+        "except Exception:\n"
+        "    print('[]')\n"
+        "    exit(0)\n"
+        "try:\n"
+        "    data = col.get(limit=1000, include=['metadatas'])\n"
+        "    wings = {}\n"
+        "    for meta in (data.get('metadatas') or []):\n"
+        "        w = meta.get('wing', 'unknown')\n"
+        "        if w not in wings:\n"
+        "            wings[w] = {'wing': w, 'drawer_count': 0}\n"
+        "        wings[w]['drawer_count'] += 1\n"
+        "    result = list(wings.values())\n"
+        "except Exception:\n"
+        "    result = []\n"
+        "print(json.dumps(result))\n"
+    ).replace("REPLACEME_PALACE", repr(_HERMES_PALACE))
     code, stdout, stderr = _run_python(script)
     if code != 0:
         logger.warning("list_wings failed: %s", stderr)
@@ -1324,39 +1271,43 @@ def _detect_language(text: str) -> str:
     return "en"
 
 
-def _store_episodic_turn(speaker: str, role: str, content: str, timestamp: str) -> None:
+def _store_episodic_turn(speaker: str, role: str, content: str, timestamp: str, session_id: str = "") -> None:
     """Store a single turn in the 'episodes' ChromaDB collection (L3 episodic memory)."""
     topic = WorkingMemory._detect_topic(content) or "general"
     lang = _detect_language(content)
-    escaped = content.replace("'", "\\'").replace("\n", " ").replace("\r", "")[:4000]
 
-    script = f"""
-import chromadb
-import uuid
-
-palace_path = '{_HERMES_PALACE}'
-client = chromadb.PersistentClient(path=palace_path)
-try:
-    col = client.get_collection('episodes')
-except Exception:
-    col = client.create_collection('episodes')
-
-episode_id = str(uuid.uuid4())
-col.add(
-    ids=[episode_id],
-    documents=["{escaped}"],
-    metadatas=[{{
-        'speaker': '{speaker}',
-        'role': '{role}',
-        'timestamp': '{timestamp}',
-        'topic': '{topic}',
-        'language': '{lang}',
-        'importance': 0.5,
-        'source': 'hermes-sync'
-    }}]
-)
-print('ok:' + episode_id)
-"""
+    script = (
+        "import chromadb, uuid\n"
+        "client = chromadb.PersistentClient(path=REPLACEME_PALACE)\n"
+        "try:\n"
+        "    col = client.get_collection('episodes')\n"
+        "except Exception:\n"
+        "    col = client.create_collection('episodes')\n"
+        "episode_id = str(uuid.uuid4())\n"
+        "col.add(\n"
+        "    ids=[episode_id],\n"
+        "    documents=[REPLACEME_CONTENT],\n"
+        "    metadatas=[{\n"
+        "        'speaker': REPLACEME_SPEAKER,\n"
+        "        'role': REPLACEME_ROLE,\n"
+        "        'timestamp': REPLACEME_TS,\n"
+        "        'topic': REPLACEME_TOPIC,\n"
+        "        'language': REPLACEME_LANG,\n"
+        "        'importance': 0.5,\n"
+        "        'source': 'hermes-sync',\n"
+        "        'session_id': REPLACEME_SID\n"
+        "    }]\n"
+        ")\n"
+        "print('ok:' + episode_id)\n"
+    ).replace("REPLACEME_PALACE", repr(_HERMES_PALACE)).replace(
+        "REPLACEME_CONTENT", repr(content[:4000])
+    ).replace("REPLACEME_SPEAKER", repr(speaker)).replace(
+        "REPLACEME_ROLE", repr(role)
+    ).replace("REPLACEME_TS", repr(timestamp)).replace(
+        "REPLACEME_TOPIC", repr(topic)
+    ).replace("REPLACEME_LANG", repr(lang)).replace(
+        "REPLACEME_SID", repr(session_id or "global")
+    )
     code, stdout, stderr = _run_python(script, timeout=10)
     if code != 0:
         logger.debug("episodic store failed: %s", stderr)
@@ -1368,14 +1319,18 @@ print('ok:' + episode_id)
 
 def _openclaw_search(query: str, wing: str = None, room: str = None, n_results: int = 8) -> str:
     """Search OpenClaw palace memories (READ-ONLY)."""
-    wing_arg = f"'{wing}'" if wing else "None"
-    room_arg = f"'{room}'" if room else "None"
-    script = f"""
-from mempalace.layers import MemoryStack
-stack = MemoryStack(palace_path='{_OPENCLAW_PALACE}', identity_path='{_OPENCLAW_IDENTITY}')
-result = stack.search('{query}', wing={wing_arg}, room={room_arg}, n_results={n_results})
-print(result)
-"""
+    script = (
+        "from mempalace.layers import MemoryStack\n"
+        "stack = MemoryStack(palace_path=REPLACEME_PALACE, identity_path=REPLACEME_IDENTITY)\n"
+        "result = stack.search(REPLACEME_QUERY, wing=REPLACEME_WING, room=REPLACEME_ROOM, n_results=REPLACEME_N)\n"
+        "print(result)\n"
+    ).replace("REPLACEME_PALACE", repr(_OPENCLAW_PALACE)).replace(
+        "REPLACEME_IDENTITY", repr(_OPENCLAW_IDENTITY)
+    ).replace("REPLACEME_QUERY", repr(query)).replace(
+        "REPLACEME_WING", repr(wing)
+    ).replace("REPLACEME_ROOM", repr(room)).replace(
+        "REPLACEME_N", str(n_results)
+    )
     code, stdout, stderr = _run_mempalace(script)
     if code != 0:
         return f"OpenClaw search error: {stderr}"
@@ -1384,13 +1339,14 @@ print(result)
 
 def _openclaw_wakeup(wing: str = None) -> str:
     """Wake-up OpenClaw palace (READ-ONLY)."""
-    wing_arg = f"'{wing}'" if wing else "None"
-    script = f"""
-from mempalace.layers import MemoryStack
-stack = MemoryStack(palace_path='{_OPENCLAW_PALACE}', identity_path='{_OPENCLAW_IDENTITY}')
-result = stack.wake_up(wing={wing_arg})
-print(result)
-"""
+    script = (
+        "from mempalace.layers import MemoryStack\n"
+        "stack = MemoryStack(palace_path=REPLACEME_PALACE, identity_path=REPLACEME_IDENTITY)\n"
+        "result = stack.wake_up(wing=REPLACEME_WING)\n"
+        "print(result)\n"
+    ).replace("REPLACEME_PALACE", repr(_OPENCLAW_PALACE)).replace(
+        "REPLACEME_IDENTITY", repr(_OPENCLAW_IDENTITY)
+    ).replace("REPLACEME_WING", repr(wing))
     code, stdout, stderr = _run_mempalace(script, timeout=20)
     if code != 0:
         return f"OpenClaw wake-up error: {stderr}"
@@ -1399,12 +1355,14 @@ print(result)
 
 def _openclaw_status() -> Dict[str, Any]:
     """Get OpenClaw palace status (READ-ONLY)."""
-    script = f"""
-from mempalace.layers import MemoryStack
-stack = MemoryStack(palace_path='{_OPENCLAW_PALACE}', identity_path='{_OPENCLAW_IDENTITY}')
-import json
-print(json.dumps(stack.status()))
-"""
+    script = (
+        "from mempalace.layers import MemoryStack\n"
+        "stack = MemoryStack(palace_path=REPLACEME_PALACE, identity_path=REPLACEME_IDENTITY)\n"
+        "import json\n"
+        "print(json.dumps(stack.status()))\n"
+    ).replace("REPLACEME_PALACE", repr(_OPENCLAW_PALACE)).replace(
+        "REPLACEME_IDENTITY", repr(_OPENCLAW_IDENTITY)
+    )
     code, stdout, stderr = _run_mempalace(script)
     if code != 0:
         return {"error": f"OpenClaw status error: {stderr}"}
@@ -1416,23 +1374,19 @@ print(json.dumps(stack.status()))
 
 def _openclaw_kg_query(entity: str, as_of: str = None) -> str:
     """Query OpenClaw knowledge graph (READ-ONLY)."""
-    script = f"""
-import sqlite3
-import json
-
-kg_path = '{_OPENCLAW_KG}'
-conn = sqlite3.connect(kg_path)
-cur = conn.cursor()
-
-query = "SELECT subject, predicate, object, valid_from, valid_to FROM triples WHERE subject=? AND (valid_to IS NULL OR valid_to='')"
-params = ['{entity}']
-
-rows = cur.execute(query, params).fetchall()
-cols = [d[0] for d in cur.description]
-result = [dict(zip(cols, r)) for r in rows]
-print(json.dumps(result))
-conn.close()
-"""
+    script = (
+        "import sqlite3\n"
+        "import json\n"
+        "conn = sqlite3.connect(REPLACEME_KG)\nconn.execute('PRAGMA journal_mode=WAL')\nconn.execute('PRAGMA busy_timeout=5000')\n"
+        "cur = conn.cursor()\n"
+        "query = \"SELECT subject, predicate, object, valid_from, valid_to FROM triples WHERE subject=? AND (valid_to IS NULL OR valid_to='')\"\n"
+        "params = REPLACEME_PARAMS\n"
+        "rows = cur.execute(query, params).fetchall()\n"
+        "cols = [d[0] for d in cur.description]\n"
+        "result = [dict(zip(cols, r)) for r in rows]\n"
+        "print(json.dumps(result))\n"
+        "conn.close()\n"
+    ).replace("REPLACEME_KG", repr(_OPENCLAW_KG)).replace("REPLACEME_PARAMS", repr([entity]))
     code, stdout, stderr = _run_python(script)
     if code != 0:
         return f"OpenClaw KG query error: {stderr}"
@@ -1550,7 +1504,7 @@ class MemPalaceMemoryProvider(MemoryProvider):
         its first message.
         """
         try:
-            raw = _episode_get_recent(limit=MAX_WORKING_MEMORY_TURNS)
+            raw = _episode_get_recent(session_id=session_id, limit=MAX_WORKING_MEMORY_TURNS)
             data = json.loads(raw)
             episodes = data.get("episodes", [])
             # Populate working memory (oldest first, newest last)
@@ -1642,12 +1596,14 @@ class MemPalaceMemoryProvider(MemoryProvider):
                     role="user",
                     content=user_content,
                     timestamp=today,
+                    session_id=session_id or _working_memory._session_id or "global",
                 )
                 _store_episodic_turn(
                     speaker="hermes",
                     role="assistant",
                     content=assistant_content,
                     timestamp=today,
+                    session_id=session_id or _working_memory._session_id or "global",
                 )
 
             except Exception as e:
@@ -1897,84 +1853,144 @@ class MemPalaceMemoryProvider(MemoryProvider):
         content_hash = str(zlib.crc32(content.encode("utf-8")) & 0xFFFFFFFF)
 
         lang = _detect_language(content)
-        content_escaped = content.replace("'", "\\'")
-        l0_escaped = l0.replace("'", "\\'")
-        l1_escaped = l1.replace("'", "\\'")
-        wing_esc = wing.replace("'", "\\'")
-        room_esc = room.replace("'", "\\'")
-        hall_esc = hall.replace("'", "\\'")
 
-        # Check for duplicate (exact hash match)
+        # Check for duplicate (exact hash match + simhash near-duplicate)
         check_script = (
-            "import chromadb\n"
-            "client = chromadb.PersistentClient(path='REPLACEME_PALACE')\n"
+            "import chromadb, hashlib, json\n"
+            "def simhash(s):\n"
+            "    sig = [0] * 64\n"
+            "    words = s.lower().split()\n"
+            "    for w in words:\n"
+            "        h = hashlib.md5(w.encode()).digest()\n"
+            "        for i in range(64):\n"
+            "            sig[i] += 1 if h[i % 16] > 127 else -1\n"
+            "    return sum((1 << i) if s > 0 else 0 for i, s in enumerate(sig))\n"
+            "client = chromadb.PersistentClient(path=REPLACEME_PALACE)\n"
             "try:\n"
-            "    col = client.get_collection('REPLACEME_WING')\n"
-            "    data = col.get(limit=500, include=['metadatas'])\n"
-            "    for meta in (data.get('metadatas') or []):\n"
-            "        if meta and meta.get('content_hash') == 'REPLACEME_HASH':\n"
-            "            print('duplicate:' + str(meta.get('created_at', '')))\n"
-            "            break\n"
-            "    else:\n"
-            "        print('new')\n"
+            "    col = client.get_collection(REPLACEME_WING)\n"
+            "    data = col.get(limit=500, include=['metadatas', 'documents'])\n"
             "except Exception:\n"
-            "    print('new')\n"
-        ).replace("REPLACEME_PALACE", _HERMES_PALACE.replace("'", "\\'")).replace(
-            "REPLACEME_WING", wing_esc
-        ).replace("REPLACEME_HASH", content_hash)
+            "    print(json.dumps({'result': 'new'}))\n"
+            "    exit(0)\n"
+            "metas = data.get('metadatas') or []\n"
+            "docs = data.get('documents') or []\n"
+            "ids = data.get('ids') or []\n"
+            "new_hash = REPLACEME_HASH\n"
+            "new_doc = REPLACEME_DOC\n"
+            "new_sim = simhash(new_doc)\n"
+            "for i, meta in enumerate(metas):\n"
+            "    if not meta:\n"
+            "        continue\n"
+            "    if meta.get('content_hash') == new_hash:\n"
+            "        print(json.dumps({'result': 'duplicate', 'id': ids[i], 'created_at': str(meta.get('created_at', ''))}))\n"
+            "        break\n"
+            "    if i < len(docs) and simhash(docs[i]) is not None:\n"
+            "        diff = bin(new_sim ^ simhash(docs[i])).count('1')\n"
+            "        if diff <= 5:\n"
+            "            print(json.dumps({'result': 'near_duplicate', 'id': ids[i], 'diff': diff}))\n"
+            "            break\n"
+            "else:\n"
+            "    print(json.dumps({'result': 'new'}))\n"
+        ).replace("REPLACEME_PALACE", repr(_HERMES_PALACE)).replace(
+            "REPLACEME_WING", repr(wing)
+        ).replace("REPLACEME_HASH", repr(content_hash)).replace(
+            "REPLACEME_DOC", repr(content[:8000])
+        )
         check_code, check_stdout, check_stderr = _run_python(check_script)
-        if check_stdout.strip().startswith("duplicate:"):
-            dup_time = check_stdout.strip().split(":", 1)[1]
+        try:
+            check_result = json.loads(check_stdout.strip()) if check_stdout.strip() else {"result": "new"}
+        except Exception:
+            check_result = {"result": "new"}
+
+        if check_result.get("result") == "duplicate":
             return json.dumps({
                 "result": "Duplicate skipped",
                 "content_hash": content_hash,
-                "existing_stored_at": dup_time,
+                "existing_stored_at": check_result.get("created_at", ""),
                 "message": "Content appears to be a duplicate (content_hash match). Skipped.",
             })
+
+        if check_result.get("result") == "near_duplicate":
+            # Update last_accessed / access_count of the near-duplicate instead of inserting
+            near_id = check_result.get("id")
+            update_script = (
+                "import chromadb\n"
+                "from datetime import datetime\n"
+                "client = chromadb.PersistentClient(path=REPLACEME_PALACE)\n"
+                "col = client.get_collection(REPLACEME_WING)\n"
+                "data = col.get(ids=[REPLACEME_ID], include=['metadatas'])\n"
+                "meta = (data.get('metadatas') or [{}])[0] or {}\n"
+                "meta['last_accessed'] = datetime.now().isoformat()\n"
+                "meta['access_count'] = meta.get('access_count', 0) + 1\n"
+                "col.update(ids=[REPLACEME_ID], metadatas=[meta])\n"
+                "print('merged:' + REPLACEME_ID)\n"
+            ).replace("REPLACEME_PALACE", repr(_HERMES_PALACE)).replace(
+                "REPLACEME_WING", repr(wing)
+            ).replace("REPLACEME_ID", repr(near_id))
+            up_code, up_stdout, up_stderr = _run_python(update_script)
+            if up_code == 0 and up_stdout.strip().startswith("merged:"):
+                return json.dumps({
+                    "result": "Near-duplicate merged",
+                    "merged_into_id": near_id,
+                    "simhash_diff": check_result.get("diff", 0),
+                    "message": "Content is very similar to an existing drawer. Updated last_accessed instead of inserting.",
+                })
+            # If update fails, fall through to normal insert
 
         # ── Store in ChromaDB ──────────────────────────────────────────────
         script = (
             "import chromadb, uuid, zlib\n"
             "from datetime import datetime\n"
-            "palace_path = 'REPLACEME_PALACE'\n"
-            "client = chromadb.PersistentClient(path=palace_path)\n"
+            "client = chromadb.PersistentClient(path=REPLACEME_PALACE)\n"
             "try:\n"
-            "    col = client.get_collection('REPLACEME_WING')\n"
+            "    col = client.get_collection(REPLACEME_WING)\n"
             "except Exception:\n"
-            "    col = client.create_collection('REPLACEME_WING')\n"
+            "    col = client.create_collection(REPLACEME_WING)\n"
             "drawer_id = str(uuid.uuid4())\n"
             "now = datetime.now().isoformat()\n"
             "col.add(\n"
             "    ids=[drawer_id],\n"
-            "    documents=['REPLACEME_DOC'],\n"
+            "    documents=[REPLACEME_DOC],\n"
             "    metadatas=[{\n"
-            "        'wing': 'REPLACEME_WING',\n"
-            "        'room': 'REPLACEME_ROOM',\n"
-            "        'hall': 'REPLACEME_HALL',\n"
+            "        'wing': REPLACEME_WING_V,\n"
+            "        'room': REPLACEME_ROOM_V,\n"
+            "        'hall': REPLACEME_HALL_V,\n"
             "        'importance': REPLACEME_IMP,\n"
-            "        'language': 'REPLACEME_LANG',\n"
+            "        'language': REPLACEME_LANG,\n"
             "        'source_file': 'hermes-tool',\n"
             "        'created_at': now,\n"
             "        'last_accessed': now,\n"
             "        'access_count': 0,\n"
-            "        'content_hash': 'REPLACEME_HASH',\n"
-            "        'l0': 'REPLACEME_L0',\n"
-            "        'l1': 'REPLACEME_L1',\n"
+            "        'content_hash': REPLACEME_HASH,\n"
+            "        'l0': REPLACEME_L0_V,\n"
+            "        'l1': REPLACEME_L1_V,\n"
             "        'original_length': REPLACEME_ORIG_LEN,\n"
             "    }]\n"
             ")\n"
             "print('ok:' + drawer_id)\n"
-        ).replace("REPLACEME_PALACE", _HERMES_PALACE.replace("'", "\\'")).replace(
-            "REPLACEME_WING", wing_esc
-        ).replace("REPLACEME_ROOM", room_esc).replace(
-            "REPLACEME_HALL", hall_esc
-        ).replace("REPLACEME_IMP", str(importance)).replace(
-            "REPLACEME_LANG", lang
-        ).replace("REPLACEME_DOC", content_escaped[:8000]).replace(
-            "REPLACEME_HASH", content_hash
-        ).replace("REPLACEME_L0", l0_escaped[:50]).replace(
-            "REPLACEME_L1", l1_escaped[:300]
-        ).replace("REPLACEME_ORIG_LEN", str(content_len))
+        ).replace("REPLACEME_PALACE", repr(_HERMES_PALACE)).replace(
+            "REPLACEME_WING", repr(wing)
+        ).replace(
+            "REPLACEME_DOC", repr(content[:8000])
+        ).replace(
+            "REPLACEME_WING_V", repr(wing)
+        ).replace(
+            "REPLACEME_ROOM_V", repr(room)
+        ).replace(
+            "REPLACEME_HALL_V", repr(hall)
+        ).replace(
+            "REPLACEME_IMP", str(importance)
+        ).replace(
+            "REPLACEME_LANG", repr(lang)
+        ).replace(
+            "REPLACEME_HASH", repr(content_hash)
+        ).replace(
+            "REPLACEME_L0_V", repr(l0[:50]) if l0 else repr("")
+        ).replace(
+            "REPLACEME_L1_V", repr(l1[:300]) if l1 else repr("")
+        ).replace(
+            "REPLACEME_ORIG_LEN", str(content_len)
+        )
         code, stdout, stderr = _run_python(script, timeout=15)
         if code != 0 or not stdout.strip().startswith("ok:"):
             return tool_error("Add drawer failed: %s" % (stderr or stdout))
@@ -2012,19 +2028,23 @@ class MemPalaceMemoryProvider(MemoryProvider):
 
         as_of = args.get("as_of")
         query = (
-            f"SELECT subject, predicate, object, valid_from, valid_to "
-            f"FROM triples WHERE subject=? AND (valid_to IS NULL OR valid_to='')"
+            "SELECT subject, predicate, object, valid_from, valid_to "
+            "FROM triples WHERE subject=? AND (valid_to IS NULL OR valid_to='')"
         )
+        params = [entity]
         if as_of:
-            query += f" AND (valid_from IS NULL OR valid_from <= '{as_of}')"
+            query += " AND (valid_from IS NULL OR valid_from <= ?)"
+            params.append(as_of)
 
         script = (
-            f"import sqlite3,json; conn=sqlite3.connect('{kg_path}'); "
-            f"cur=conn.cursor(); "
-            f"rows=cur.execute(\"SELECT subject, predicate, object, valid_from, valid_to FROM triples WHERE subject=? AND (valid_to IS NULL OR valid_to='')\",['{entity}']).fetchall(); "
-            f"cols=[d[0] for d in cur.description]; "
-            f"print(json.dumps([dict(zip(cols,r)) for r in rows]))"
-        )
+            "import sqlite3,json; conn=sqlite3.connect(REPLACEME_KG); conn.execute('PRAGMA journal_mode=WAL'); conn.execute('PRAGMA busy_timeout=5000'); "
+            "cur=conn.cursor(); "
+            "rows=cur.execute(REPLACEME_QUERY, REPLACEME_PARAMS).fetchall(); "
+            "cols=[d[0] for d in cur.description]; "
+            "print(json.dumps([dict(zip(cols,r)) for r in rows]))"
+        ).replace("REPLACEME_KG", repr(kg_path)).replace(
+            "REPLACEME_QUERY", repr(query)
+        ).replace("REPLACEME_PARAMS", repr(params))
         code, stdout, stderr = _run_python(script)
         if code != 0:
             return tool_error(f"KG query failed: {stderr}")
@@ -2087,41 +2107,36 @@ class MemPalaceMemoryProvider(MemoryProvider):
         ended = ended or date.today().isoformat()
         today = date.today().isoformat()
 
-        # Update triple + record in belief_history
-        script = f"""
-import sqlite3
-conn = sqlite3.connect('{kg_path}')
-cur = conn.cursor()
-
-# Get current triple to record in belief_history
-cur.execute(
-    "SELECT object, valid_from, confidence, source FROM triples WHERE subject=? AND predicate=? AND valid_to IS NULL",
-    ('{subject}', '{predicate}')
-)
-row = cur.fetchone()
-old_value = row[0] if row else ''
-old_valid_from = row[1] if row else ''
-old_confidence = row[2] if row else 1.0
-old_source = row[3] if row else ''
-
-# Invalidate the triple
-cur.execute(
-    "UPDATE triples SET valid_to=? WHERE subject=? AND predicate=? AND object=? AND (valid_to IS NULL OR valid_to='')",
-    ('{ended}', '{subject}', '{predicate}', '{obj}')
-)
-
-# Record in belief_history
-import uuid
-belief_id = str(uuid.uuid4())
-cur.execute(
-    "INSERT INTO belief_history VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
-    (belief_id, '{subject}', '{predicate}', old_value, '{obj}', 'invalidated', '{today}', old_source, old_confidence, '', old_valid_from, '{ended}')
-)
-
-conn.commit()
-print('ok')
-conn.close()
-"""
+        script = (
+            "import sqlite3, uuid\n"
+            "conn = sqlite3.connect(REPLACEME_KG)\nconn.execute('PRAGMA journal_mode=WAL')\nconn.execute('PRAGMA busy_timeout=5000')\n"
+            "cur = conn.cursor()\n"
+            "cur.execute(\n"
+            "    \"SELECT object, valid_from, confidence, source FROM triples WHERE subject=? AND predicate=? AND (valid_to IS NULL OR valid_to='')\",\n"
+            "    REPLACEME_SUBJ_PRED)\n"
+            "row = cur.fetchone()\n"
+            "old_value = row[0] if row else ''\n"
+            "old_valid_from = row[1] if row else ''\n"
+            "old_confidence = row[2] if row else 1.0\n"
+            "old_source = row[3] if row else ''\n"
+            "cur.execute(\n"
+            "    \"UPDATE triples SET valid_to=? WHERE subject=? AND predicate=? AND object=? AND (valid_to IS NULL OR valid_to='')\",\n"
+            "    REPLACEME_ENDED_SUBJ_PRED_OBJ)\n"
+            "belief_id = str(uuid.uuid4())\n"
+            "cur.execute(\n"
+            "    \"INSERT INTO belief_history VALUES(?,?,?,?,?,?,?,?,?,?,?,?)\",\n"
+            "    (belief_id, REPLACEME_SUBJECT, REPLACEME_PREDICATE, old_value, '', 'invalidated', REPLACEME_TODAY, old_source, old_confidence, '', old_valid_from, REPLACEME_ENDED))\n"
+            "conn.commit()\n"
+            "print('ok')\n"
+            "conn.close()\n"
+        ).replace("REPLACEME_KG", repr(kg_path)).replace(
+            "REPLACEME_SUBJ_PRED", repr((subject, predicate))
+        ).replace("REPLACEME_ENDED_SUBJ_PRED_OBJ", repr((ended, subject, predicate, obj))
+        ).replace("REPLACEME_SUBJECT", repr(subject)).replace(
+            "REPLACEME_PREDICATE", repr(predicate)
+        ).replace("REPLACEME_TODAY", repr(today)).replace(
+            "REPLACEME_ENDED", repr(ended)
+        )
         code, stdout, stderr = _run_python(script)
         if code != 0:
             return tool_error(f"KG invalidate failed: {stderr}")
@@ -2140,12 +2155,13 @@ conn.close()
             return tool_error("Knowledge graph not found")
 
         script = (
-            f"import sqlite3,json; conn=sqlite3.connect('{kg_path}'); "
-            f"cur=conn.cursor(); "
-            f"e=cur.execute('SELECT count(*) FROM entities').fetchone()[0]; "
-            f"t=cur.execute('SELECT count(*) FROM triples').fetchone()[0]; "
-            f"print(json.dumps({{'entities':e,'triples':t}}))"
-        )
+            "import sqlite3,json; conn=sqlite3.connect(REPLACEME_KG); conn.execute('PRAGMA journal_mode=WAL'); conn.execute('PRAGMA busy_timeout=5000'); "
+            "cur=conn.cursor(); "
+            "cur.execute(\"SELECT DISTINCT subject FROM triples WHERE valid_to IS NULL OR valid_to='' UNION SELECT DISTINCT object FROM triples WHERE valid_to IS NULL OR valid_to=''\"); "
+            "e=len(cur.fetchall()); "
+            "t=cur.execute(\"SELECT count(*) FROM triples WHERE valid_to IS NULL OR valid_to=''\").fetchone()[0]; "
+            "print(json.dumps({'entities':e,'triples':t}))"
+        ).replace("REPLACEME_KG", repr(kg_path))
         code, stdout, stderr = _run_python(script)
         if code != 0:
             return tool_error(f"KG stats failed: {stderr}")
@@ -2231,19 +2247,16 @@ conn.close()
         where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
         sql = f"SELECT subject, predicate, object, valid_from, valid_to, confidence, context, source, subject_type, object_type FROM triples WHERE {where_sql} AND (valid_to IS NULL OR valid_to='') ORDER BY valid_from DESC LIMIT 50"
 
-        # Escape for Python string injection
-        script = f"""
-import sqlite3, json
-conn = sqlite3.connect('{kg_path}')
-cur = conn.cursor()
-query = \"\"\"{sql}\"\"\"
-params = {params}
-rows = cur.execute(query, params).fetchall()
-cols = ['subject', 'predicate', 'object', 'valid_from', 'valid_to', 'confidence', 'context', 'source', 'subject_type', 'object_type']
-result = [dict(zip(cols, r)) for r in rows]
-print(json.dumps(result))
-conn.close()
-"""
+        script = (
+            "import sqlite3, json\n"
+            "conn = sqlite3.connect(REPLACEME_KG)\nconn.execute('PRAGMA journal_mode=WAL')\nconn.execute('PRAGMA busy_timeout=5000')\n"
+            "cur = conn.cursor()\n"
+            "rows = cur.execute(REPLACEME_QUERY, REPLACEME_PARAMS).fetchall()\n"
+            "cols = ['subject', 'predicate', 'object', 'valid_from', 'valid_to', 'confidence', 'context', 'source', 'subject_type', 'object_type']\n"
+            "result = [dict(zip(cols, r)) for r in rows]\n"
+            "print(json.dumps(result))\n"
+            "conn.close()\n"
+        ).replace("REPLACEME_KG", repr(kg_path)).replace("REPLACEME_QUERY", repr(sql)).replace("REPLACEME_PARAMS", repr(params))
         code, stdout, stderr = _run_python(script)
         if code != 0:
             return tool_error(f"Query decomposed failed: {stderr}")
@@ -2345,17 +2358,16 @@ conn.close()
             where += " AND (valid_to IS NULL OR valid_to='' OR valid_to>=?)"
             params.append(as_of)
 
-        script = f"""
-import sqlite3, json
-conn = sqlite3.connect('{kg_path}')
-cur = conn.cursor()
-query = f\"SELECT belief_id, entity, predicate, old_value, new_value, change_type, changed_at, source, confidence, context, valid_from, valid_to FROM belief_history WHERE {where} ORDER BY changed_at DESC LIMIT 50\"
-rows = cur.execute(query, {params}).fetchall()
-cols = ['belief_id', 'entity', 'predicate', 'old_value', 'new_value', 'change_type', 'changed_at', 'source', 'confidence', 'context', 'valid_from', 'valid_to']
-result = [dict(zip(cols, r)) for r in rows]
-print(json.dumps(result))
-conn.close()
-"""
+        script = (
+            "import sqlite3, json\n"
+            "conn = sqlite3.connect(REPLACEME_KG)\nconn.execute('PRAGMA journal_mode=WAL')\nconn.execute('PRAGMA busy_timeout=5000')\n"
+            "cur = conn.cursor()\n"
+            "rows = cur.execute(\"SELECT belief_id, entity, predicate, old_value, new_value, change_type, changed_at, source, confidence, context, valid_from, valid_to FROM belief_history WHERE REPLACEME_WHERE ORDER BY changed_at DESC LIMIT 50\", REPLACEME_PARAMS).fetchall()\n"
+            "cols = ['belief_id', 'entity', 'predicate', 'old_value', 'new_value', 'change_type', 'changed_at', 'source', 'confidence', 'context', 'valid_from', 'valid_to']\n"
+            "result = [dict(zip(cols, r)) for r in rows]\n"
+            "print(json.dumps(result))\n"
+            "conn.close()\n"
+        ).replace("REPLACEME_KG", repr(kg_path)).replace("REPLACEME_WHERE", where).replace("REPLACEME_PARAMS", repr(params))
         code, stdout, stderr = _run_python(script)
         if code != 0:
             return tool_error(f"Belief history query failed: {stderr}")
@@ -2592,13 +2604,13 @@ conn.close()
                 where_clause = " OR ".join(cond_parts)
                 # Escape % in where_clause to avoid outer %-format conflict
                 where_clause_esc = where_clause.replace("%", "%%")
-                # Get active triples (valid_to IS NULL)
+                # Get active triples (valid_to IS NULL OR valid_to='')
                 params_tuple = tuple(params)
                 script = (
                     "import sqlite3, json\n"
-                    "conn = sqlite3.connect('REPLACEME_KG')\n"
+                    "conn = sqlite3.connect('REPLACEME_KG')\nconn.execute('PRAGMA journal_mode=WAL')\nconn.execute('PRAGMA busy_timeout=5000')\n"
                     "cur = conn.cursor()\n"
-                    "cur.execute(\"SELECT subject, predicate, object, subject_type, object_type, confidence, valid_from, context FROM triples WHERE (REPLACEME_WHERE) AND valid_to IS NULL LIMIT 30\", REPLACEME_PARAMS)\n"
+                    "cur.execute(\"SELECT subject, predicate, object, subject_type, object_type, confidence, valid_from, context FROM triples WHERE (REPLACEME_WHERE) AND (valid_to IS NULL OR valid_to='') LIMIT 30\", REPLACEME_PARAMS)\n"
                     "rows = cur.fetchall()\n"
                     "conn.close()\n"
                     "results = [dict(subject=r[0], predicate=r[1], object=r[2], subject_type=r[3] or 'unknown', object_type=r[4] or 'unknown', confidence=r[5], valid_from=r[6], context=r[7] or '') for r in rows]\n"
@@ -2625,24 +2637,24 @@ conn.close()
         # ── Step 3: ChromaDB drawer search (medium + deep) ──────────────────
         drawer_results = []
         if depth in ("medium", "deep"):
-            palace_s = _HERMES_PALACE.replace("'", "\\'")
-            topic_s = topic.replace("'", "\\'")
-            context_s = context.replace("'", "\\'") if context else ""
+            full_query_text = (topic + " " + context).strip()[:500]
             drawer_script = (
                 "import chromadb, json\n"
-                "client = chromadb.PersistentClient(path='%s')\n"
+                "client = chromadb.PersistentClient(path=REPLACEME_PALACE)\n"
                 "all_results = []\n"
                 "for col in client.list_collections():\n"
                 "    try:\n"
-                "        c = client.get_collection(col['name'])\n"
-                "        r = c.query(query_texts=['%s %s'], n_results=3)\n"
+                "        c = client.get_collection((col.name if hasattr(col, 'name') else col['name']))\n"
+                "        r = c.query(query_texts=[REPLACEME_QUERY], n_results=3)\n"
                 "        for i, doc in enumerate(r.get('documents', [[]])[0]):\n"
                 "            meta = (r.get('metadatas', [[{}]])[0] or [{}])[i] or {}\n"
-                "            all_results.append({'document': doc[:300], 'collection': col['name'], 'metadata': meta})\n"
+                "            all_results.append({'document': doc[:300], 'collection': (col.name if hasattr(col, 'name') else col['name']), 'metadata': meta})\n"
                 "    except Exception:\n"
                 "        pass\n"
                 "print(json.dumps(all_results[:15]))"
-            ) % (palace_s, topic_s, context_s)
+            ).replace("REPLACEME_PALACE", repr(_HERMES_PALACE)).replace(
+                "REPLACEME_QUERY", repr(full_query_text)
+            )
             code, stdout, stderr = _run_python(drawer_script)
             if code == 0 and stdout.strip():
                 try:
@@ -2653,14 +2665,12 @@ conn.close()
         # ── Step 4: Episode search (deep only) ─────────────────────────────
         episode_results = []
         if depth == "deep":
-            palace_s = _HERMES_PALACE.replace("'", "\\'")
-            topic_s = topic.replace("'", "\\'")
             episode_script = (
                 "import chromadb, json\n"
-                "client = chromadb.PersistentClient(path='%s')\n"
+                "client = chromadb.PersistentClient(path=REPLACEME_PALACE)\n"
                 "try:\n"
                 "    col = client.get_collection('episodes')\n"
-                "    r = col.query(query_texts=['%s'], n_results=5)\n"
+                "    r = col.query(query_texts=[REPLACEME_QUERY], n_results=5)\n"
                 "    results = []\n"
                 "    for i, doc in enumerate(r.get('documents', [[]])[0]):\n"
                 "        meta = (r.get('metadatas', [[{}]])[0] or [{}])[i] or {}\n"
@@ -2668,7 +2678,9 @@ conn.close()
                 "    print(json.dumps(results))\n"
                 "except Exception:\n"
                 "    print(json.dumps([]))"
-            ) % (palace_s, topic_s)
+            ).replace("REPLACEME_PALACE", repr(_HERMES_PALACE)).replace(
+                "REPLACEME_QUERY", repr(topic[:200])
+            )
             code, stdout, stderr = _run_python(episode_script)
             if code == 0 and stdout.strip():
                 try:
@@ -2761,71 +2773,47 @@ conn.close()
         issues = []
         fixes_applied = []
 
-        # ── Issue 1: KG orphaned entities (no relations) ─────────────────
-        orphaned_entities = []
-        if Path(kg_path).exists():
-            script = (
-                "import sqlite3, json\n"
-                "conn = sqlite3.connect('REPLACEME_KG')\n"
-                "cur = conn.cursor()\n"
-                "cur.execute(\"SELECT name FROM entities\")\n"
-                "entities = [r[0] for r in cur.fetchall()]\n"
-                "orphaned = []\n"
-                "for e in entities:\n"
-                "    cur.execute(\"SELECT count(*) FROM triples WHERE (subject=? OR object=?) AND valid_to IS NULL\", (e, e))\n"
-                "    if cur.fetchone()[0] == 0:\n"
-                "        orphaned.append(e)\n"
-                "conn.close()\n"
-                "print(json.dumps(orphaned))"
-            ).replace("REPLACEME_KG", kg_path.replace("'", "\\'"))
-            code, stdout, stderr = _run_python(script)
-            if code == 0 and stdout.strip():
-                try:
-                    orphaned_entities = json.loads(stdout.strip())
-                except Exception:
-                    pass
-
-        if orphaned_entities:
-            issues.append({
-                "type": "orphaned_entities",
-                "severity": "low",
-                "count": len(orphaned_entities),
-                "entities": orphaned_entities[:20],
-                "description": "%d entities exist but have no relations in KG" % len(orphaned_entities),
-                "suggestion": "Delete entities or add relations to connect them",
-            })
-            if fix:
-                fix_script = (
-                    "import sqlite3\n"
-                    "conn = sqlite3.connect('REPLACEME_KG')\n"
-                    "cur = conn.cursor()\n"
-                    "for e in REPLACEME_ORPHANS:\n"
-                    "    cur.execute(\"DELETE FROM entities WHERE name=?\", (e,))\n"
-                    "conn.commit()\n"
-                    "conn.close()\n"
-                    "print('deleted:' + str(REPLACEME_ORPHANS))"
-                ).replace("REPLACEME_KG", kg_path.replace("'", "\\'")).replace(
-                    "REPLACEME_ORPHANS", str(orphaned_entities[:20])
-                )
-                code, stdout, stderr = _run_python(fix_script)
-                if code == 0:
-                    fixes_applied.append("Deleted %d orphaned entities" % min(len(orphaned_entities), 20))
-
-        # ── Issue 2: Dangling relations (object doesn't exist) ─────────
+        # ── Issue 1: KG dangling provenance triples
+        #
+        #    The entities table is always empty in this plugin (entity names are
+        #    stored directly in triples, not via an ID indirect layer), so we CANNOT
+        #    use "object not in entities" as the dangling criterion — that would
+        #    flag EVERY triple as dangling.
+        #
+        #    The only truly dangling KG triples are `mentioned_in <session_uuid>`
+        #    where the session UUID no longer exists in ChromaDB (session was GC'd).
+        #    These are provenance records pointing to dead conversation logs.
+        #
         dangling_rels = []
-        if Path(kg_path).exists():
+        if Path(kg_path).exists() and Path(palace_path).exists():
             script = (
-                "import sqlite3, json\n"
-                "conn = sqlite3.connect('REPLACEME_KG')\n"
+                "import sqlite3, json, re, chromadb\n"
+                "conn = sqlite3.connect(REPLACEME_KG)\nconn.execute('PRAGMA journal_mode=WAL')\nconn.execute('PRAGMA busy_timeout=5000')\n"
                 "cur = conn.cursor()\n"
-                "cur.execute(\"SELECT subject, predicate, object FROM triples WHERE valid_to IS NULL\")\n"
-                "rows = cur.fetchall()\n"
-                "cur.execute(\"SELECT name FROM entities\")\n"
-                "entities = set(r[0] for r in cur.fetchall())\n"
-                "dangling = [(s, p, o) for s, p, o in rows if o not in entities]\n"
+                "cur.execute(\"SELECT subject, predicate, object FROM triples WHERE (valid_to IS NULL OR valid_to='')\")\n"
+                "triples = cur.fetchall()\n"
                 "conn.close()\n"
-                "print(json.dumps(dangling[:20]))"
-            ).replace("REPLACEME_KG", kg_path.replace("'", "\\'"))
+                "# Collect all ChromaDB document IDs\n"
+                "client = chromadb.PersistentClient(path=REPLACEME_PALACE)\n"
+                "chromadb_ids = set()\n"
+                "for col_info in client.list_collections():\n"
+                "    try:\n"
+                "        col = client.get_collection((col_info.name if hasattr(col_info, 'name') else col_info['name']))\n"
+                "        data = col.get(limit=100000, include=[])\n"
+                "        chromadb_ids.update(data.get('ids', []))\n"
+                "    except Exception:\n"
+                "        pass\n"
+                "# Session UUID pattern: 8-4-4-4-12 hex groups\n"
+                "uuid_pat = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', re.I)\n"
+                "dangling = []\n"
+                "for s, p, o in triples:\n"
+                "    # mentioned_in <session_uuid> where session is gone = dangling provenance\n"
+                "    if p == 'mentioned_in' and uuid_pat.match(str(o)) and o not in chromadb_ids:\n"
+                "        dangling.append((s, p, o))\n"
+                "print(json.dumps(dangling[:50]))\n"
+            ).replace("REPLACEME_KG", repr(kg_path)).replace(
+                "REPLACEME_PALACE", repr(palace_path)
+            )
             code, stdout, stderr = _run_python(script)
             if code == 0 and stdout.strip():
                 try:
@@ -2845,15 +2833,18 @@ conn.close()
             if fix:
                 fix_script = (
                     "import sqlite3\n"
-                    "conn = sqlite3.connect('REPLACEME_KG')\n"
+                    "from datetime import date\n"
+                    "conn = sqlite3.connect(REPLACEME_KG)\nconn.execute('PRAGMA journal_mode=WAL')\nconn.execute('PRAGMA busy_timeout=5000')\n"
                     "cur = conn.cursor()\n"
+                    "today = date.today().isoformat()\n"
                     "for s, p, o in REPLACEME_DANGLING:\n"
-                    "    cur.execute(\"UPDATE triples SET valid_to='2099-12-31' WHERE subject=? AND predicate=? AND object=? AND valid_to IS NULL\", (s, p, o))\n"
+                    "    cur.execute(\"UPDATE triples SET valid_to=? WHERE subject=? AND predicate=? AND object=? AND (valid_to IS NULL OR valid_to='')\", (today, s, p, o))\n"
                     "conn.commit()\n"
                     "conn.close()\n"
-                    "print('fixed:' + str(len(REPLACEME_DANGLING)))"
-                ).replace("REPLACEME_KG", kg_path.replace("'", "\\'")).replace(
-                    "REPLACEME_DANGLING", str(dangling_rels)
+                    "print('fixed:' + str(len(REPLACEME_DANGLING)))\n"
+                    "print('date:' + date.today().isoformat())\n"
+                ).replace("REPLACEME_KG", repr(kg_path)).replace(
+                    "REPLACEME_DANGLING", repr(dangling_rels)
                 )
                 code, stdout, stderr = _run_python(fix_script)
                 if code == 0:
@@ -2864,46 +2855,46 @@ conn.close()
         if Path(palace_path).exists():
             script = (
                 "import chromadb, json, hashlib\n"
-                "client = chromadb.PersistentClient(path='REPLACEME_PALACE')\n"
-                "all_docs = []\n"
-                "for col_info in client.list_collections():\n"
-                "    try:\n"
-                "        col = client.get_collection(col_info['name'])\n"
-                "        data = col.get(limit=1000, include=['documents', 'metadatas'])\n"
-                "        for i, doc in enumerate(data.get('documents', []) or []):\n"
-                "            meta = (data.get('metadatas') or [{}])[i] or {}\n"
-                "            all_docs.append({'doc': doc[:500], 'col': col_info['name'], 'id': data['ids'][i] if 'ids' in data else str(i), 'meta': meta})\n"
-                "    except Exception:\n"
-                "        pass\n"
+                "client = chromadb.PersistentClient(path=REPLACEME_PALACE)\n"
                 "def simhash(s):\n"
-                "    import struct\n"
-                "    sig = [0] * 8\n"
+                "    sig = [0] * 64\n"
                 "    words = s.lower().split()\n"
                 "    for w in words:\n"
                 "        h = hashlib.md5(w.encode()).digest()\n"
-                "        for i in range(8):\n"
-                "            sig[i] += 1 if h[i] > 127 else -1\n"
+                "        for i in range(64):\n"
+                "            sig[i] += 1 if h[i % 16] > 127 else -1\n"
                 "    return sum((1 << i) if s > 0 else 0 for i, s in enumerate(sig))\n"
                 "dup_groups = []\n"
-                "used = set()\n"
-                "for i in range(len(all_docs)):\n"
-                "    if all_docs[i]['id'] in used:\n"
-                "        continue\n"
-                "    group = [all_docs[i]]\n"
-                "    h1 = simhash(all_docs[i]['doc'])\n"
-                "    for j in range(i + 1, len(all_docs)):\n"
-                "        if all_docs[j]['id'] in used:\n"
-                "            continue\n"
-                "        h2 = simhash(all_docs[j]['doc'])\n"
-                "        diff = bin(h1 ^ h2).count('1')\n"
-                "        if diff <= 5:  # very similar\n"
-                "            group.append(all_docs[j])\n"
-                "            used.add(all_docs[j]['id'])\n"
-                "    if len(group) > 1:\n"
-                "        used.add(group[0]['id'])\n"
-                "        dup_groups.append([{'doc': g['doc'][:100], 'col': g['col'], 'id': g['id']} for g in group])\n"
-                "print(json.dumps(dup_groups[:10]))"
-            ).replace("REPLACEME_PALACE", palace_path.replace("'", "\\'"))
+                "for col_info in client.list_collections():\n"
+                "    col_name = (col_info.name if hasattr(col_info, 'name') else col_info['name'])\n"
+                "    try:\n"
+                "        col = client.get_collection(col_name)\n"
+                "        data = col.get(limit=1000, include=['documents', 'metadatas'])\n"
+                "        docs = []\n"
+                "        for i, doc in enumerate(data.get('documents', []) or []):\n"
+                "            meta = (data.get('metadatas') or [{}])[i] or {}\n"
+                "            docs.append({'doc': doc[:500], 'col': col_name, 'id': data['ids'][i] if 'ids' in data else str(i), 'meta': meta})\n"
+                "        used = set()\n"
+                "        for i in range(len(docs)):\n"
+                "            if docs[i]['id'] in used:\n"
+                "                continue\n"
+                "            group = [docs[i]]\n"
+                "            h1 = simhash(docs[i]['doc'])\n"
+                "            for j in range(i + 1, len(docs)):\n"
+                "                if docs[j]['id'] in used:\n"
+                "                    continue\n"
+                "                h2 = simhash(docs[j]['doc'])\n"
+                "                diff = bin(h1 ^ h2).count('1')\n"
+                "                if diff <= 5:\n"
+                "                    group.append(docs[j])\n"
+                "                    used.add(docs[j]['id'])\n"
+                "            if len(group) > 1:\n"
+                "                used.add(group[0]['id'])\n"
+                "                dup_groups.append([{'doc': g['doc'][:100], 'col': g['col'], 'id': g['id']} for g in group])\n"
+                "    except Exception:\n"
+                "        pass\n"
+                "print(json.dumps(dup_groups[:50]))\n"
+            ).replace("REPLACEME_PALACE", repr(palace_path))
             code, stdout, stderr = _run_python(script)
             if code == 0 and stdout.strip():
                 try:
@@ -2920,6 +2911,79 @@ conn.close()
                 "description": "%d groups of near-identical drawers found (simhash diff <= 5)" % len(duplicate_groups),
                 "suggestion": "Merge or delete duplicate drawers manually",
             })
+            if fix:
+                fix_script = (
+                    "import chromadb, sqlite3, hashlib, json\n"
+                    "from datetime import datetime\n"
+                    "client = chromadb.PersistentClient(path=REPLACEME_PALACE)\n"
+                    "def simhash(s):\n"
+                    "    sig = [0] * 64\n"
+                    "    words = s.lower().split()\n"
+                    "    for w in words:\n"
+                    "        h = hashlib.md5(w.encode()).digest()\n"
+                    "        for i in range(64):\n"
+                    "            sig[i] += 1 if h[i % 16] > 127 else -1\n"
+                    "    return sum((1 << i) if s > 0 else 0 for i, s in enumerate(sig))\n"
+                    "dup_groups = []\n"
+                    "for col_info in client.list_collections():\n"
+                    "    col_name = (col_info.name if hasattr(col_info, 'name') else col_info['name'])\n"
+                    "    try:\n"
+                    "        col = client.get_collection(col_name)\n"
+                    "        data = col.get(limit=1000, include=['documents', 'metadatas'])\n"
+                    "        docs = []\n"
+                    "        for i, doc in enumerate(data.get('documents', []) or []):\n"
+                    "            meta = (data.get('metadatas') or [{}])[i] or {}\n"
+                    "            docs.append({'doc': doc[:500], 'col': col_name, 'id': data['ids'][i], 'meta': meta})\n"
+                    "        used = set()\n"
+                    "        for i in range(len(docs)):\n"
+                    "            if docs[i]['id'] in used:\n"
+                    "                continue\n"
+                    "            group = [docs[i]]\n"
+                    "            h1 = simhash(docs[i]['doc'])\n"
+                    "            for j in range(i + 1, len(docs)):\n"
+                    "                if docs[j]['id'] in used:\n"
+                    "                    continue\n"
+                    "                h2 = simhash(docs[j]['doc'])\n"
+                    "                diff = bin(h1 ^ h2).count('1')\n"
+                    "                if diff <= 5:\n"
+                    "                    group.append(docs[j])\n"
+                    "                    used.add(docs[j]['id'])\n"
+                    "            if len(group) > 1:\n"
+                    "                used.add(group[0]['id'])\n"
+                    "                dup_groups.append(group)\n"
+                    "    except Exception:\n"
+                    "        pass\n"
+                    "deleted_total = 0\n"
+                    "kg_updated = 0\n"
+                    "conn = sqlite3.connect(REPLACEME_KG)\n"
+                    "conn.execute('PRAGMA journal_mode=WAL')\n"
+                    "conn.execute('PRAGMA busy_timeout=5000')\n"
+                    "cur = conn.cursor()\n"
+                    "for group in dup_groups:\n"
+                    "    group.sort(key=lambda x: x['meta'].get('created_at', '9999'))\n"
+                    "    keeper = group[0]\n"
+                    "    to_delete = group[1:]\n"
+                    "    col = client.get_collection(keeper['col'])\n"
+                    "    for d in to_delete:\n"
+                    "        try:\n"
+                    "            col.delete(ids=[d['id']])\n"
+                    "            deleted_total += 1\n"
+                    "        except Exception:\n"
+                    "            pass\n"
+                    "        cur.execute(\"UPDATE triples SET object=? WHERE predicate='mentioned_in' AND object=? AND (valid_to IS NULL OR valid_to='')\", (keeper['id'], d['id']))\n"
+                    "        kg_updated += cur.rowcount\n"
+                    "conn.commit()\n"
+                    "conn.close()\n"
+                    "print(json.dumps({'deleted': deleted_total, 'kg_updated': kg_updated}))\n"
+                ).replace("REPLACEME_PALACE", repr(palace_path)).replace("REPLACEME_KG", repr(kg_path))
+                code, stdout, stderr = _run_python(fix_script)
+                if code == 0 and stdout.strip():
+                    try:
+                        fix_result = json.loads(stdout.strip())
+                        fixes_applied.append("Merged %d duplicate drawers, updated %d KG provenance triples" % (fix_result.get("deleted", 0), fix_result.get("kg_updated", 0)))
+                    except Exception:
+                        pass
+
 
         # ── Issue 4: Stale high-importance drawers ─────────────────────
         stale_high = []
@@ -2927,12 +2991,12 @@ conn.close()
             script = (
                 "import chromadb, json\n"
                 "from datetime import datetime, timedelta\n"
-                "client = chromadb.PersistentClient(path='REPLACEME_PALACE')\n"
+                "client = chromadb.PersistentClient(path=REPLACEME_PALACE)\n"
                 "threshold = (datetime.now() - timedelta(days=90)).isoformat()\n"
                 "stale = []\n"
                 "for col_info in client.list_collections():\n"
                 "    try:\n"
-                "        col = client.get_collection(col_info['name'])\n"
+                "        col = client.get_collection((col_info.name if hasattr(col_info, 'name') else col_info['name']))\n"
                 "        data = col.get(limit=1000, include=['metadatas'])\n"
                 "        for i, meta in enumerate((data.get('metadatas') or []) or []):\n"
                 "            if not meta:\n"
@@ -2940,11 +3004,11 @@ conn.close()
                 "            last_access = meta.get('last_accessed', '')\n"
                 "            importance = meta.get('importance', 0.5)\n"
                 "            if last_access and last_access < threshold and importance >= 0.7:\n"
-                "                stale.append({'id': data['ids'][i] if 'ids' in data else str(i), 'last_accessed': last_access, 'importance': importance, 'col': col_info['name']})\n"
+                "                stale.append({'id': data['ids'][i] if 'ids' in data else str(i), 'last_accessed': last_access, 'importance': importance, 'col': (col_info.name if hasattr(col_info, 'name') else col_info['name'])})\n"
                 "    except Exception:\n"
                 "        pass\n"
-                "print(json.dumps(stale[:20]))"
-            ).replace("REPLACEME_PALACE", palace_path.replace("'", "\\'"))
+                "print(json.dumps(stale[:20]))\n"
+            ).replace("REPLACEME_PALACE", repr(palace_path))
             code, stdout, stderr = _run_python(script)
             if code == 0 and stdout.strip():
                 try:
@@ -2967,9 +3031,9 @@ conn.close()
         if Path(kg_path).exists():
             script = (
                 "import sqlite3, json\n"
-                "conn = sqlite3.connect('REPLACEME_KG')\n"
+                "conn = sqlite3.connect(REPLACEME_KG)\nconn.execute('PRAGMA journal_mode=WAL')\nconn.execute('PRAGMA busy_timeout=5000')\n"
                 "cur = conn.cursor()\n"
-                "cur.execute(\"SELECT id, subject, predicate, object, inverse_predicate FROM triples WHERE valid_to IS NULL AND inverse_predicate != '' LIMIT 200\")\n"
+                "cur.execute(\"SELECT id, subject, predicate, object, inverse_predicate FROM triples WHERE (valid_to IS NULL OR valid_to='') AND inverse_predicate != '' LIMIT 200\")\n"
                 "rows = cur.fetchall()\n"
                 "mismatches = []\n"
                 "for r in rows:\n"
@@ -2978,8 +3042,8 @@ conn.close()
                 "    if expected_inv and inv_pred != expected_inv and inv_pred != r[2]:\n"
                 "        mismatches.append({'id': r[0], 'triple': (r[1], r[2], r[3]), 'inverse_pred': inv_pred, 'expected': expected_inv})\n"
                 "conn.close()\n"
-                "print(json.dumps(mismatches[:20]))"
-            ).replace("REPLACEME_KG", kg_path.replace("'", "\\'"))
+                "print(json.dumps(mismatches[:20]))\n"
+            ).replace("REPLACEME_KG", repr(kg_path))
             code, stdout, stderr = _run_python(script)
             if code == 0 and stdout.strip():
                 try:
@@ -3058,17 +3122,17 @@ conn.close()
         belief_id = str(_uuid.uuid4())
         script = (
             "import sqlite3, json\n"
-            "conn = sqlite3.connect(REPLACEME_KG)\n"
+            "conn = sqlite3.connect(REPLACEME_KG)\nconn.execute('PRAGMA journal_mode=WAL')\nconn.execute('PRAGMA busy_timeout=5000')\n"
             "cur = conn.cursor()\n"
             "cur.execute("
             "'INSERT INTO belief_history "
             "(belief_id, entity, predicate, old_value, new_value, change_type, "
-            "changed_at, source, confidence, context, valid_from) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?)', "
+            "changed_at, source, confidence, context, valid_from, valid_to) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)', "
             "(REPLACEME_BID, REPLACEME_SUBJECT, 'corrected', "
             "REPLACEME_WRONG, REPLACEME_CORRECT, 'corrected', "
             "REPLACEME_NOW, 'user-feedback', 1.0, "
-            "REPLACEME_CONTEXT, REPLACEME_NOW))\n"
+            "REPLACEME_CONTEXT, REPLACEME_NOW, ''))\n"
             "conn.commit()\n"
             "conn.close()\n"
             "print('ok')\n"
@@ -3115,7 +3179,7 @@ conn.close()
         script = (
             "import chromadb, json\n"
             "from datetime import datetime, timedelta\n"
-            "client = chromadb.PersistentClient(path='REPLACEME_PALACE')\n"
+            "client = chromadb.PersistentClient(path=REPLACEME_PALACE)\n"
             "now = datetime.now()\n"
             "threshold_30 = (now - timedelta(days=30)).isoformat()\n"
             "threshold_90 = (now - timedelta(days=90)).isoformat()\n"
@@ -3124,7 +3188,7 @@ conn.close()
             "details = []\n"
             "for col_info in client.list_collections():\n"
             "    try:\n"
-            "        col = client.get_collection(col_info['name'])\n"
+            "        col = client.get_collection((col_info.name if hasattr(col_info, 'name') else col_info['name']))\n"
             "        data = col.get(limit=1000, include=['documents', 'metadatas', 'ids'])\n"
             "        ids_to_upd = []\n"
             "        metas_to_upd = []\n"
@@ -3168,8 +3232,8 @@ conn.close()
             "                    pass\n"
             "    except Exception:\n"
             "        pass\n"
-            "print(json.dumps({'total_updated': total_updated, 'total_l2_evicted': total_l2_evicted, 'details': details[:30]}))"
-        ).replace("REPLACEME_PALACE", palace_path.replace("'", "\\'")).replace(
+            "print(json.dumps({'total_updated': total_updated, 'total_l2_evicted': total_l2_evicted, 'details': details[:30]}))\n"
+        ).replace("REPLACEME_PALACE", repr(palace_path)).replace(
             "REPLACEME_DRYRUN", "True" if dry_run else "False"
         )
         code, stdout, stderr = _run_python(script, timeout=60)
@@ -3189,14 +3253,16 @@ conn.close()
         if Path(kg_path).exists() and not dry_run:
             vacuum_script = (
                 "import sqlite3\n"
-                "conn = sqlite3.connect('REPLACEME_KG')\n"
+                "from datetime import date, timedelta\n"
+                "threshold = (date.today() - timedelta(days=365)).isoformat()\n"
+                "conn = sqlite3.connect(REPLACEME_KG)\nconn.execute('PRAGMA journal_mode=WAL')\nconn.execute('PRAGMA busy_timeout=5000')\n"
                 "cur = conn.cursor()\n"
-                "cur.execute(\"DELETE FROM triples WHERE valid_to IS NOT NULL AND valid_to != '' AND valid_to < '2020-01-01'\")\n"
+                "cur.execute(\"DELETE FROM triples WHERE valid_to IS NOT NULL AND valid_to != '' AND valid_to < ?\", (threshold,))\n"
                 "deleted = cur.rowcount\n"
                 "conn.commit()\n"
                 "conn.close()\n"
                 "print('vacuum_deleted:' + str(deleted))"
-            ).replace("REPLACEME_KG", kg_path.replace("'", "\\'"))
+            ).replace("REPLACEME_KG", repr(kg_path))
             code, stdout, stderr = _run_python(vacuum_script)
             if code == 0:
                 changes.append("Vacuumed old invalid triples")
@@ -3220,12 +3286,12 @@ conn.close()
             return
         script = (
             "import sqlite3\n"
-            "conn = sqlite3.connect('REPLACEME_KG')\n"
+            "conn = sqlite3.connect(REPLACEME_KG)\nconn.execute('PRAGMA journal_mode=WAL')\nconn.execute('PRAGMA busy_timeout=5000')\n"
             "cur = conn.cursor()\n"
             "cur.execute(\"CREATE TABLE IF NOT EXISTS entity_aliases (id TEXT PRIMARY KEY, entity TEXT NOT NULL, alias TEXT NOT NULL, entity_type TEXT DEFAULT '', palace TEXT DEFAULT 'shared', created_at TEXT, UNIQUE(entity, alias))\")\n"
             "conn.commit()\n"
             "conn.close()\n"
-        ).replace("REPLACEME_KG", _HERMES_KG.replace("'", "\\'"))
+        ).replace("REPLACEME_KG", repr(_HERMES_KG))
         _run_python(script)
 
     def _handle_kg_alias_add(self, args: Dict[str, Any]) -> str:
@@ -3244,20 +3310,20 @@ conn.close()
         today = datetime.now().isoformat()
         script = (
             "import sqlite3\n"
-            "conn = sqlite3.connect('REPLACEME_KG')\n"
+            "conn = sqlite3.connect(REPLACEME_KG)\nconn.execute('PRAGMA journal_mode=WAL')\nconn.execute('PRAGMA busy_timeout=5000')\n"
             "cur = conn.cursor()\n"
-            "cur.execute(\"INSERT OR IGNORE INTO entity_aliases VALUES(?,?,?,?,?,?)\", ('REPLACEME_ID', 'REPLACEME_ENTITY', 'REPLACEME_ALIAS', 'REPLACEME_TYPE', 'REPLACEME_PALACE', 'REPLACEME_TODAY'))\n"
+            "cur.execute(\"INSERT OR IGNORE INTO entity_aliases VALUES(?,?,?,?,?,?)\", (REPLACEME_ID, REPLACEME_ENTITY, REPLACEME_ALIAS, REPLACEME_TYPE, REPLACEME_PALACE, REPLACEME_TODAY))\n"
             "rows = cur.execute(\"SELECT changes()\").fetchone()[0]\n"
             "conn.commit()\n"
             "conn.close()\n"
             "print('ok' if rows > 0 else 'duplicate')\n"
-        ).replace("REPLACEME_KG", _HERMES_KG.replace("'", "\\'")).replace(
-            "REPLACEME_ID", str(uuid.uuid4())
-        ).replace("REPLACEME_ENTITY", entity.replace("'", "\\'")).replace(
-            "REPLACEME_ALIAS", alias.replace("'", "\\'")
-        ).replace("REPLACEME_TYPE", entity_type).replace(
-            "REPLACEME_PALACE", palace
-        ).replace("REPLACEME_TODAY", today)
+        ).replace("REPLACEME_KG", repr(_HERMES_KG)).replace(
+            "REPLACEME_ID", repr(str(uuid.uuid4()))
+        ).replace("REPLACEME_ENTITY", repr(entity)).replace(
+            "REPLACEME_ALIAS", repr(alias)
+        ).replace("REPLACEME_TYPE", repr(entity_type)).replace(
+            "REPLACEME_PALACE", repr(palace)
+        ).replace("REPLACEME_TODAY", repr(today))
         code, stdout, stderr = _run_python(script)
         if code != 0:
             return tool_error("Alias add failed: %s" % stderr)
@@ -3279,22 +3345,22 @@ conn.close()
 
         script = (
             "import sqlite3, json\n"
-            "conn = sqlite3.connect('REPLACEME_KG')\n"
+            "conn = sqlite3.connect(REPLACEME_KG)\nconn.execute('PRAGMA journal_mode=WAL')\nconn.execute('PRAGMA busy_timeout=5000')\n"
             "cur = conn.cursor()\n"
-            "cur.execute(\"SELECT entity, alias, entity_type, palace FROM entity_aliases WHERE entity=? OR alias=? ORDER BY palace\", ('REPLACEME_ENTITY', 'REPLACEME_ENTITY'))\n"
+            "cur.execute(\"SELECT entity, alias, entity_type, palace FROM entity_aliases WHERE entity=? OR alias=? ORDER BY palace\", (REPLACEME_ENTITY, REPLACEME_ENTITY))\n"
             "rows = cur.fetchall()\n"
             "by_palace = {'hermes': [], 'openclaw': [], 'shared': []}\n"
-            "canonical = 'REPLACEME_ENTITY'\n"
+            "canonical = REPLACEME_ENTITY\n"
             "for r in rows:\n"
-            "    if r[0] == 'REPLACEME_ENTITY':\n"
+            "    if r[0] == REPLACEME_ENTITY:\n"
             "        canonical = r[0]\n"
             "        by_palace.get(r[3], by_palace['shared']).append(r[1])\n"
-            "    elif r[1] == 'REPLACEME_ENTITY':\n"
+            "    elif r[1] == REPLACEME_ENTITY:\n"
             "        canonical = r[0]\n"
             "conn.close()\n"
             "print(json.dumps({'canonical': canonical, 'by_palace': by_palace, 'total_aliases': sum(len(v) for v in by_palace.values())}))\n"
-        ).replace("REPLACEME_KG", _HERMES_KG.replace("'", "\\'")).replace(
-            "REPLACEME_ENTITY", entity.replace("'", "\\'")
+        ).replace("REPLACEME_KG", repr(_HERMES_KG)).replace(
+            "REPLACEME_ENTITY", repr(entity)
         )
         code, stdout, stderr = _run_python(script)
         if code != 0:
@@ -3336,7 +3402,7 @@ conn.close()
         if Path(_HERMES_KG).exists():
             script = (
                 "import sqlite3, json\n"
-                "conn = sqlite3.connect('REPLACEME_KG')\n"
+                "conn = sqlite3.connect(REPLACEME_KG)\nconn.execute('PRAGMA journal_mode=WAL')\nconn.execute('PRAGMA busy_timeout=5000')\n"
                 "cur = conn.cursor()\n"
                 "cur.execute(\"SELECT * FROM triples\")\n"
                 "cols = [d[0] for d in cur.description]\n"
@@ -3352,7 +3418,7 @@ conn.close()
                 "    ea = []\n"
                 "conn.close()\n"
                 "print(json.dumps({'triples': triples, 'belief_history': bh, 'entity_aliases': ea}))\n"
-            ).replace("REPLACEME_KG", _HERMES_KG.replace("'", "\\'"))
+            ).replace("REPLACEME_KG", repr(_HERMES_KG))
             code, stdout, stderr = _run_python(script)
             if code == 0 and stdout.strip():
                 try:
@@ -3367,21 +3433,21 @@ conn.close()
         if include_chromadb and Path(_HERMES_PALACE).exists():
             script = (
                 "import chromadb, json\n"
-                "client = chromadb.PersistentClient(path='REPLACEME_PALACE')\n"
+                "client = chromadb.PersistentClient(path=REPLACEME_PALACE)\n"
                 "result = {}\n"
                 "for col_info in client.list_collections():\n"
                 "    try:\n"
-                "        col = client.get_collection(col_info['name'])\n"
+                "        col = client.get_collection((col_info.name if hasattr(col_info, 'name') else col_info['name']))\n"
                 "        data = col.get(limit=1000, include=['documents', 'metadatas', 'ids'])\n"
-                "        result[col_info['name']] = {\n"
+                "        result[(col_info.name if hasattr(col_info, 'name') else col_info['name'])] = {\n"
                 "            'ids': data.get('ids', []),\n"
                 "            'documents': [d[:1000] if d else '' for d in (data.get('documents') or [])],\n"
                 "            'metadatas': data.get('metadatas') or [],\n"
                 "        }\n"
                 "    except Exception:\n"
                 "        pass\n"
-                "print(json.dumps(result))"
-            ).replace("REPLACEME_PALACE", _HERMES_PALACE.replace("'", "\\'"))
+                "print(json.dumps(result))\n"
+            ).replace("REPLACEME_PALACE", repr(_HERMES_PALACE))
             code, stdout, stderr = _run_python(script, timeout=30)
             if code == 0 and stdout.strip():
                 try:
@@ -3444,16 +3510,16 @@ conn.close()
             # Check duplicate
             check_script = (
                 "import sqlite3\n"
-                "conn = sqlite3.connect('REPLACEME_KG')\n"
+                "conn = sqlite3.connect(REPLACEME_KG)\nconn.execute('PRAGMA journal_mode=WAL')\nconn.execute('PRAGMA busy_timeout=5000')\n"
                 "cur = conn.cursor()\n"
-                "cur.execute(\"SELECT count(*) FROM triples WHERE subject=? AND predicate=? AND object=? AND valid_to IS NULL\", ('REPLACEME_S', 'REPLACEME_P', 'REPLACEME_O'))\n"
+                "cur.execute(\"SELECT count(*) FROM triples WHERE subject=? AND predicate=? AND object=? AND (valid_to IS NULL OR valid_to='')\", (REPLACEME_S, REPLACEME_P, REPLACEME_O))\n"
                 "count = cur.fetchone()[0]\n"
                 "conn.close()\n"
                 "print(count)\n"
-            ).replace("REPLACEME_KG", _HERMES_KG.replace("'", "\\'")).replace(
-                "REPLACEME_S", s.replace("'", "\\'")
-            ).replace("REPLACEME_P", p.replace("'", "\\'")).replace(
-                "REPLACEME_O", o.replace("'", "\\'")
+            ).replace("REPLACEME_KG", repr(_HERMES_KG)).replace(
+                "REPLACEME_S", repr(s)
+            ).replace("REPLACEME_P", repr(p)).replace(
+                "REPLACEME_O", repr(o)
             )
             code, stdout, stderr = _run_python(check_script)
             if code == 0 and stdout.strip() == "0":
@@ -3481,20 +3547,20 @@ conn.close()
 
             alias_script = (
                 "import sqlite3\n"
-                "conn = sqlite3.connect('REPLACEME_KG')\n"
+                "conn = sqlite3.connect(REPLACEME_KG)\nconn.execute('PRAGMA journal_mode=WAL')\nconn.execute('PRAGMA busy_timeout=5000')\n"
                 "cur = conn.cursor()\n"
-                "cur.execute(\"INSERT OR IGNORE INTO entity_aliases VALUES(?,?,?,?,?,?)\", ('REPLACEME_ID', 'REPLACEME_ENTITY', 'REPLACEME_ALIAS', 'REPLACEME_TYPE', 'REPLACEME_PALACE', 'REPLACEME_TODAY'))\n"
+                "cur.execute(\"INSERT OR IGNORE INTO entity_aliases VALUES(?,?,?,?,?,?)\", (REPLACEME_ID, REPLACEME_ENTITY, REPLACEME_ALIAS, REPLACEME_TYPE, REPLACEME_PALACE, REPLACEME_TODAY))\n"
                 "rows = cur.execute(\"SELECT changes()\").fetchone()[0]\n"
                 "conn.commit()\n"
                 "conn.close()\n"
                 "print(rows)\n"
-            ).replace("REPLACEME_KG", _HERMES_KG.replace("'", "\\'")).replace(
-                "REPLACEME_ID", str(alias_rec.get("id", ""))
-            ).replace("REPLACEME_ENTITY", entity.replace("'", "\\'")).replace(
-                "REPLACEME_ALIAS", alias.replace("'", "\\'")
-            ).replace("REPLACEME_TYPE", alias_rec.get("entity_type", "")).replace(
-                "REPLACEME_PALACE", alias_rec.get("palace", "shared")
-            ).replace("REPLACEME_TODAY", alias_rec.get("created_at", datetime.now().isoformat()))
+            ).replace("REPLACEME_KG", repr(_HERMES_KG)).replace(
+                "REPLACEME_ID", repr(str(alias_rec.get("id", "")))
+            ).replace("REPLACEME_ENTITY", repr(entity)).replace(
+                "REPLACEME_ALIAS", repr(alias)
+            ).replace("REPLACEME_TYPE", repr(alias_rec.get("entity_type", ""))).replace(
+                "REPLACEME_PALACE", repr(alias_rec.get("palace", "shared"))
+            ).replace("REPLACEME_TODAY", repr(alias_rec.get("created_at", datetime.now().isoformat())))
             code, stdout, stderr = _run_python(alias_script)
             if code == 0 and stdout.strip() == "1":
                 imported["entity_aliases"] += 1
@@ -3526,26 +3592,36 @@ conn.close()
 
                     col_script = (
                         "import chromadb, uuid\n"
-                        "client = chromadb.PersistentClient(path='REPLACEME_PALACE')\n"
+                        "client = chromadb.PersistentClient(path=REPLACEME_PALACE)\n"
                         "try:\n"
-                        "    col = client.get_collection('REPLACEME_COL')\n"
+                        "    col = client.get_collection(REPLACEME_COL)\n"
                         "except Exception:\n"
-                        "    col = client.create_collection('REPLACEME_COL')\n"
-                        "col.add(ids=['REPLACEME_ID'], documents=['REPLACEME_DOC'], metadatas=[{'wing': 'REPLACEME_WING', 'room': 'REPLACEME_ROOM', 'hall': 'REPLACEME_HALL', 'importance': REPLACEME_IMP, 'language': 'REPLACEME_LANG', 'l0': 'REPLACEME_L0', 'l1': 'REPLACEME_L1', 'created_at': 'REPLACEME_CREATED', 'last_accessed': 'REPLACEME_CREATED', 'access_count': 0}])\n"
+                        "    col = client.create_collection(REPLACEME_COL)\n"
+                        "col.add(ids=[REPLACEME_ID], documents=[REPLACEME_DOC], metadatas=[{'wing': REPLACEME_WING, 'room': REPLACEME_ROOM, 'hall': REPLACEME_HALL, 'importance': REPLACEME_IMP, 'language': REPLACEME_LANG, 'l0': REPLACEME_L0, 'l1': REPLACEME_L1, 'created_at': REPLACEME_CREATED, 'last_accessed': REPLACEME_CREATED, 'access_count': 0}])\n"
                         "print('ok')\n"
-                    ).replace("REPLACEME_PALACE", _HERMES_PALACE.replace("'", "\\'")).replace(
-                        "REPLACEME_COL", col_name.replace("'", "\\'")
-                    ).replace("REPLACEME_ID", drawer_id.replace("'", "\\'")).replace(
-                        "REPLACEME_DOC", doc.replace("'", "\\'")[:4000]
-                    ).replace("REPLACEME_WING", wing.replace("'", "\\'")).replace(
-                        "REPLACEME_ROOM", room.replace("'", "\\'")
-                    ).replace("REPLACEME_HALL", hall.replace("'", "\\'")).replace(
-                        "REPLACEME_IMP", str(imp)
-                    ).replace("REPLACEME_LANG", lang).replace(
-                        "REPLACEME_L0", l0.replace("'", "\\'")[:50] if l0 else ""
+                    ).replace("REPLACEME_PALACE", repr(_HERMES_PALACE)).replace(
+                        "REPLACEME_COL", repr(col_name)
                     ).replace(
-                        "REPLACEME_L1", l1.replace("'", "\\'")[:300] if l1 else ""
-                    ).replace("REPLACEME_CREATED", created_at)
+                        "REPLACEME_ID", repr(drawer_id)
+                    ).replace(
+                        "REPLACEME_DOC", repr(doc[:4000])
+                    ).replace(
+                        "REPLACEME_WING", repr(wing)
+                    ).replace(
+                        "REPLACEME_ROOM", repr(room)
+                    ).replace(
+                        "REPLACEME_HALL", repr(hall)
+                    ).replace(
+                        "REPLACEME_IMP", repr(imp)
+                    ).replace(
+                        "REPLACEME_LANG", repr(lang)
+                    ).replace(
+                        "REPLACEME_L0", repr(l0[:50]) if l0 else repr("")
+                    ).replace(
+                        "REPLACEME_L1", repr(l1[:300]) if l1 else repr("")
+                    ).replace(
+                        "REPLACEME_CREATED", repr(created_at)
+                    )
                     code, stdout, stderr = _run_python(col_script)
                     if code == 0:
                         imported["chromadb"] += 1

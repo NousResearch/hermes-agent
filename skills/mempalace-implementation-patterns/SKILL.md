@@ -2,7 +2,7 @@
 name: mempalace-implementation-patterns
 description: MemPalace 插件实现中的字符串脚本构建模式、Python f-string 作用域坑、SQL LIKE 通配符转义
 category: devops
-version: 1.0
+version: 1.1
 ---
 
 # MemPalace 实现模式与坑
@@ -219,6 +219,33 @@ def _run_python(script: str, timeout: int = 10) -> tuple[int, str, str]:
 | `_handle_kg_belief_history` f-string | 内部 WHERE 子句用外部 `where` 变量 | 改用完整脚本字符串传入 |
 | ChromaDB 路径 | `~/.mempalace_hermes/palace`（注意 .palace 子目录） | 不能写成 `~/.mempalace_hermes/` |
 | MemPalaceMemoryProvider 调用 | instance method，非 module function | `p=Provider(); p.initialize(); p.handle_tool_call()` |
+|| `col.get(limit=N)` 返回最老 N 条 | ChromaDB 按插入顺序，返回最旧条目 | 获取全部，按 timestamp 倒序，取前 N 条 ||
+|| `_restore_episodes()` daemon 线程 | `initialize()` 返回时 WM 仍为空 | 改为同步调用，不在后台线程 ||
+|| `_episode_store(topic=None)` 崩溃 | `topic.replace()` 对 None 调用 | `(topic or "").replace()` 兜底 ||
+
+### Gateway 日志调试：发现 CLI 测不出的问题
+
+CLI 测试正常 ≠ Gateway 进程正常。Gateway 用 Python 3.14 独立进程，加载自己的 MemPalace 实例。
+
+**关键发现**：这次所有严重 bug 都是从 `gateway.error.log` 发现的，CLI 测试全部通过：
+- CLI 测试时 `topic` 从未传 None
+- Gateway 真实运行时 WorkingMemory 有机会以 `topic=None` 调用 `_episode_store`
+
+**必须同时检查两个日志**：
+```bash
+# Gateway 错误日志
+grep -i 'mempalace\|memory.*error\|episode.*error\|chroma.*error' \
+  /Users/mars/.hermes/logs/gateway.error.log
+
+# 搜索 AttributeError
+grep "AttributeError" /Users/mars/.hermes/logs/gateway.error.log
+
+# 查看 memory 相关的 Memory updated 确认正常运行
+grep "Memory updated" /Users/mars/.hermes/logs/gateway.log
+
+# Gateway 进程是否加载了 MemPalace
+ps aux | grep hermes-gateway | grep -v grep
+```
 
 ### 验证命令
 ```bash

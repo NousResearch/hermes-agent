@@ -446,3 +446,319 @@ class TestRestoreInRunConversation:
         assert agent._fallback_index == 0
         assert agent.provider == "custom"
         assert agent.base_url == "https://my-llm.example.com/v1"
+
+
+# =============================================================================
+# _try_restore_smart_routed_primary()
+# =============================================================================
+
+class TestTryRestoreSmartRoutedPrimary:
+    def test_noop_without_smart_routed_primary(self):
+        agent = _make_agent()
+        assert agent._try_restore_smart_routed_primary() is False
+
+    def test_noop_when_already_restored(self):
+        agent = _make_agent()
+        agent._smart_routed_primary = {
+            "provider": "openrouter",
+            "model": "anthropic/claude-sonnet-4",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_mode": "chat_completions",
+            "api_key": "test-key",
+        }
+        agent._smart_routed_primary_restored = True
+        assert agent._try_restore_smart_routed_primary() is False
+
+    def test_restores_model_provider_and_client(self):
+        agent = _make_agent(provider="custom", base_url="https://my-llm.example.com/v1")
+        agent.model = "cheap-model"
+        agent.provider = "cheap-provider"
+        agent.base_url = "https://bad-url.example.com/v1"
+        agent._smart_routed_primary = {
+            "provider": "openrouter",
+            "model": "anthropic/claude-sonnet-4",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_mode": "chat_completions",
+            "api_key": "primary-key",
+        }
+
+        mock_client = _mock_resolve(
+            api_key="primary-key",
+            base_url="https://openrouter.ai/api/v1",
+        )
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(mock_client, "anthropic/claude-sonnet-4"),
+        ):
+            result = agent._try_restore_smart_routed_primary()
+
+        assert result is True
+        assert agent._smart_routed_primary_restored is True
+        assert agent.model == "anthropic/claude-sonnet-4"
+        assert agent.provider == "openrouter"
+        assert agent.base_url == "https://openrouter.ai/api/v1"
+        assert agent.client is mock_client
+
+    def test_returns_false_when_primary_client_unresolvable(self):
+        agent = _make_agent()
+        agent._smart_routed_primary = {
+            "provider": "openrouter",
+            "model": "anthropic/claude-sonnet-4",
+        }
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(None, None),
+        ):
+            assert agent._try_restore_smart_routed_primary() is False
+
+    def test_prompt_caching_restored_for_claude_on_openrouter(self):
+        agent = _make_agent()
+        agent._smart_routed_primary = {
+            "provider": "openrouter",
+            "model": "anthropic/claude-sonnet-4",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_mode": "chat_completions",
+            "api_key": "key",
+        }
+        mock_client = _mock_resolve(base_url="https://openrouter.ai/api/v1")
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(mock_client, "anthropic/claude-sonnet-4"),
+        ):
+            agent._try_restore_smart_routed_primary()
+            assert agent._use_prompt_caching is True
+
+    def test_prompt_caching_restored_for_native_anthropic(self):
+        with (
+            patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
+        ):
+            agent = AIAgent(
+                api_key="sk-ant...5678",
+                base_url="https://api.anthropic.com",
+                provider="anthropic",
+                api_mode="anthropic_messages",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+        agent._smart_routed_primary = {
+            "provider": "anthropic",
+            "model": "claude-opus-4",
+            "base_url": "https://api.anthropic.com",
+            "api_mode": "anthropic_messages",
+            "api_key": "sk-ant-primary",
+        }
+        mock_client = _mock_resolve(
+            api_key="sk-ant-primary",
+            base_url="https://api.anthropic.com",
+        )
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(mock_client, "claude-opus-4"),
+        ):
+            agent._try_restore_smart_routed_primary()
+
+        assert agent._anthropic_api_key == "sk-ant-primary"
+        assert agent.api_mode == "anthropic_messages"
+
+
+# =============================================================================
+# Integration: smart-routed primary restore in run_conversation
+# =============================================================================
+
+class TestSmartRoutedRestoreInRunConversation:
+    """Verify that a 4xx from a smart-routed cheap model triggers primary restore."""
+
+    def _make_smart_routed_agent(self):
+        with (
+            patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            agent = AIAgent(
+                api_key="cheap-key",
+                base_url="https://bad-endpoint.example.com/v1",
+                provider="custom",
+                model="cheap-model",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+                smart_routed_primary={
+                    "provider": "openrouter",
+                    "model": "anthropic/claude-sonnet-4",
+                    "base_url": "https://openrouter.ai/api/v1",
+                    "api_mode": "chat_completions",
+                    "api_key": "primary-key",
+                },
+            )
+            agent.client = MagicMock()
+            return agent
+
+    def test_client_error_restores_primary_before_fallback_chain(self):
+        agent = self._make_smart_routed_agent()
+
+        # First call: 404 client error from the cheap model
+        class FakeNotFoundError(Exception):
+            pass
+        FakeNotFoundError.__name__ = "NotFoundError"
+
+        not_found = FakeNotFoundError("404 Not Found")
+        not_found.status_code = 404
+
+        # Second call: success from the restored primary
+        # Use SimpleNamespace to avoid MagicMock auto-return issues
+        success_response = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content="Hello from primary",
+                        tool_calls=None,
+                        role="assistant",
+                    ),
+                    finish_reason="stop",
+                )
+            ],
+            usage=SimpleNamespace(total_tokens=10),
+        )
+
+        primary_client = _mock_resolve(
+            api_key="primary-key",
+            base_url="https://openrouter.ai/api/v1",
+        )
+        primary_client.chat.completions.create = MagicMock(return_value=success_response)
+
+        cheap_client_create = MagicMock(side_effect=not_found)
+        agent.client.chat.completions.create = cheap_client_create
+
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(primary_client, "anthropic/claude-sonnet-4"),
+        ):
+            result = agent.run_conversation("hi")
+
+        assert result["completed"] is True
+        assert result["final_response"] == "Hello from primary"
+        assert agent.model == "anthropic/claude-sonnet-4"
+        assert agent.provider == "openrouter"
+        assert agent._smart_routed_primary_restored is True
+        # Ensure cheap client was called once and primary client was called once
+        cheap_client_create.assert_called_once()
+        primary_client.chat.completions.create.assert_called_once()
+
+    def test_max_retries_exhausted_restores_primary(self):
+        """If cheap model fails 3 times (transport error), restore primary on max retries."""
+        agent = self._make_smart_routed_agent()
+
+        class FakeServiceUnavailableError(Exception):
+            pass
+        FakeServiceUnavailableError.__name__ = "ServiceUnavailableError"
+
+        err = FakeServiceUnavailableError("503 Service Unavailable")
+        err.status_code = 503
+
+        success_response = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content="Hello after retries",
+                        tool_calls=None,
+                        role="assistant",
+                    ),
+                    finish_reason="stop",
+                )
+            ],
+            usage=SimpleNamespace(total_tokens=10),
+        )
+
+        primary_client = _mock_resolve(
+            api_key="primary-key",
+            base_url="https://openrouter.ai/api/v1",
+        )
+        primary_client.chat.completions.create = MagicMock(return_value=success_response)
+
+        cheap_client_create = MagicMock(side_effect=err)
+        agent.client.chat.completions.create = cheap_client_create
+
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(primary_client, "anthropic/claude-sonnet-4"),
+        ):
+            result = agent.run_conversation("hi")
+
+        assert result["completed"] is True
+        assert result["final_response"] == "Hello after retries"
+        assert agent.model == "anthropic/claude-sonnet-4"
+        assert agent._smart_routed_primary_restored is True
+        # cheap model got its 3 retries, then primary succeeded
+        assert cheap_client_create.call_count == 3
+        primary_client.chat.completions.create.assert_called_once()
+
+    def test_primary_restore_fails_then_fallback_chain_kicks_in(self):
+        """If cheap model fails and restored primary also fails, general fallback activates."""
+        agent = self._make_smart_routed_agent()
+        agent._fallback_chain = [
+            {"provider": "zai", "model": "glm-5"},
+        ]
+
+        class FakeNotFoundError(Exception):
+            pass
+        FakeNotFoundError.__name__ = "NotFoundError"
+
+        not_found = FakeNotFoundError("404 Not Found")
+        not_found.status_code = 404
+
+        success_response = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content="Hello from fallback",
+                        tool_calls=None,
+                        role="assistant",
+                    ),
+                    finish_reason="stop",
+                )
+            ],
+            usage=SimpleNamespace(total_tokens=10),
+        )
+
+        primary_client = _mock_resolve(
+            api_key="primary-key",
+            base_url="https://openrouter.ai/api/v1",
+        )
+        primary_client.chat.completions.create = MagicMock(side_effect=not_found)
+
+        cheap_client_create = MagicMock(side_effect=not_found)
+        agent.client.chat.completions.create = cheap_client_create
+
+        fallback_client = _mock_resolve(
+            api_key="zai-key",
+            base_url="https://open.z.ai/api/v1",
+        )
+        fallback_client.chat.completions.create = MagicMock(return_value=success_response)
+
+        def resolve_side_effect(provider, **kwargs):
+            if provider == "openrouter":
+                return (primary_client, "anthropic/claude-sonnet-4")
+            if provider == "zai":
+                return (fallback_client, "glm-5")
+            return (None, None)
+
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            side_effect=resolve_side_effect,
+        ):
+            result = agent.run_conversation("hi")
+
+        assert result["completed"] is True
+        assert result["final_response"] == "Hello from fallback"
+        assert agent._smart_routed_primary_restored is True
+        assert agent._fallback_activated is True
+        assert agent.model == "glm-5"
+        assert agent.provider == "zai"
+        # cheap model called once, primary called once, fallback called once
+        cheap_client_create.assert_called_once()
+        primary_client.chat.completions.create.assert_called_once()
+        fallback_client.chat.completions.create.assert_called_once()

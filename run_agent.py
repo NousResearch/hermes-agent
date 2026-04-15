@@ -599,6 +599,7 @@ class AIAgent:
         parent_session_id: str = None,
         iteration_budget: "IterationBudget" = None,
         fallback_model: Dict[str, Any] = None,
+        smart_routed_primary: Dict[str, Any] = None,
         credential_pool=None,
         checkpoints_enabled: bool = False,
         checkpoint_max_snapshots: int = 50,
@@ -1007,6 +1008,8 @@ class AIAgent:
         self._fallback_activated = False
         # Legacy attribute kept for backward compat (tests, external callers)
         self._fallback_model = self._fallback_chain[0] if self._fallback_chain else None
+        self._smart_routed_primary = smart_routed_primary
+        self._smart_routed_primary_restored = False
         if self._fallback_chain and not self.quiet_mode:
             if len(self._fallback_chain) == 1:
                 fb = self._fallback_chain[0]
@@ -2228,6 +2231,7 @@ class AIAgent:
                         quiet_mode=True,
                         platform=self.platform,
                         provider=self.provider,
+                        skip_memory=True,
                     )
                     review_agent._memory_store = self._memory_store
                     review_agent._memory_enabled = self._memory_enabled
@@ -5748,6 +5752,110 @@ class AIAgent:
             logging.error("Failed to activate fallback %s: %s", fb_model, e)
             return self._try_activate_fallback()  # try next in chain
 
+    def _try_restore_smart_routed_primary(self) -> bool:
+        """Restore the primary model/runtime when a smart-routed cheap model fails.
+
+        Called before fallback chain activation so that a misconfigured
+        cheap_model (bad base_url, invalid key, etc.) automatically falls
+        back to the primary provider instead of surfacing a hard error.
+        """
+        primary = getattr(self, "_smart_routed_primary", None)
+        if not primary:
+            return False
+        if getattr(self, "_smart_routed_primary_restored", False):
+            return False
+
+        pri_provider = (primary.get("provider") or "").strip().lower()
+        pri_model = (primary.get("model") or "").strip()
+        if not pri_provider or not pri_model:
+            return False
+
+        try:
+            from agent.auxiliary_client import resolve_provider_client
+            pri_base_url_hint = (primary.get("base_url") or "").strip() or None
+            pri_api_key_hint = (primary.get("api_key") or "").strip() or None
+            pri_client, _resolved_pri_model = resolve_provider_client(
+                pri_provider,
+                model=pri_model,
+                raw_codex=True,
+                explicit_base_url=pri_base_url_hint,
+                explicit_api_key=pri_api_key_hint,
+            )
+            if pri_client is None:
+                return False
+
+            try:
+                from hermes_cli.model_normalize import normalize_model_for_provider
+                pri_model = normalize_model_for_provider(pri_model, pri_provider)
+            except Exception:
+                pass
+
+            pri_api_mode = primary.get("api_mode", "chat_completions")
+            pri_base_url = str(pri_client.base_url)
+
+            old_model = self.model
+            self.model = pri_model
+            self.provider = pri_provider
+            self.base_url = pri_base_url
+            self.api_mode = pri_api_mode
+            self._smart_routed_primary_restored = True
+
+            if pri_api_mode == "anthropic_messages":
+                from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token, _is_oauth_token
+                effective_key = (pri_client.api_key or resolve_anthropic_token() or "") if pri_provider == "anthropic" else (pri_client.api_key or "")
+                self.api_key = effective_key
+                self._anthropic_api_key = effective_key
+                self._anthropic_base_url = pri_base_url
+                self._anthropic_client = build_anthropic_client(effective_key, self._anthropic_base_url)
+                self._is_anthropic_oauth = _is_oauth_token(effective_key)
+                self.client = None
+                self._client_kwargs = {}
+            else:
+                self.api_key = pri_client.api_key
+                self.client = pri_client
+                pri_headers = getattr(pri_client, "_custom_headers", None) or getattr(pri_client, "default_headers", None)
+                self._client_kwargs = {
+                    "api_key": pri_client.api_key,
+                    "base_url": pri_base_url,
+                }
+                if pri_headers:
+                    self._client_kwargs["default_headers"] = dict(pri_headers)
+
+            # Re-evaluate prompt caching for the restored primary
+            is_native_anthropic = pri_api_mode == "anthropic_messages" and pri_provider == "anthropic"
+            self._use_prompt_caching = (
+                ("openrouter" in pri_base_url.lower() and "claude" in pri_model.lower())
+                or is_native_anthropic
+            )
+
+            # Update context compressor limits for the restored primary model.
+            if hasattr(self, 'context_compressor') and self.context_compressor:
+                from agent.model_metadata import get_model_context_length
+                pri_context_length = get_model_context_length(
+                    self.model, base_url=self.base_url,
+                    api_key=self.api_key, provider=self.provider,
+                )
+                self.context_compressor.update_model(
+                    model=self.model,
+                    context_length=pri_context_length,
+                    base_url=self.base_url,
+                    api_key=getattr(self, "api_key", ""),
+                    provider=self.provider,
+                )
+
+            self._emit_status(
+                f"🔄 Smart route failed — restoring primary: "
+                f"{pri_model} via {pri_provider}"
+            )
+            logging.info(
+                "Smart-routed primary restored: %s → %s (%s)",
+                old_model, pri_model, pri_provider,
+            )
+            return True
+        except Exception as exc:
+            logging.warning("Failed to restore smart-routed primary: %s", exc)
+            return False
+
     # ── Per-turn primary restoration ─────────────────────────────────────
 
     def _restore_primary_runtime(self) -> bool:
@@ -7842,6 +7950,10 @@ class AIAgent:
         # No-op when _fallback_activated is False (gateway, first turn, etc.).
         self._restore_primary_runtime()
 
+        # Reset the smart-route restore guard so a new turn can attempt
+        # primary restoration again if the cheap model is still broken.
+        self._smart_routed_primary_restored = False
+
         # Sanitize surrogate characters from user input.  Clipboard paste from
         # rich-text editors (Google Docs, Word, etc.) can inject lone surrogates
         # that are invalid UTF-8 and crash JSON serialization in the OpenAI SDK.
@@ -9551,6 +9663,15 @@ class AIAgent:
                     ) and not is_context_length_error
 
                     if is_client_error:
+                        # If this turn was smart-routed to a cheap model and it
+                        # failed with a client error (bad endpoint, auth, etc.),
+                        # restore the primary model/runtime first before trying
+                        # the general fallback chain.
+                        if self._try_restore_smart_routed_primary():
+                            retry_count = 0
+                            compression_attempts = 0
+                            primary_recovery_attempted = False
+                            continue
                         # Try fallback before aborting — a different provider
                         # may not have the same issue (rate limit, auth, etc.)
                         self._emit_status(f"⚠️ Non-retryable error (HTTP {status_code}) — trying fallback...")
@@ -9621,6 +9742,11 @@ class AIAgent:
                             continue
                         # Try fallback before giving up entirely
                         self._emit_status(f"⚠️ Max retries ({max_retries}) exhausted — trying fallback...")
+                        if self._try_restore_smart_routed_primary():
+                            retry_count = 0
+                            compression_attempts = 0
+                            primary_recovery_attempted = False
+                            continue
                         if self._try_activate_fallback():
                             retry_count = 0
                             compression_attempts = 0

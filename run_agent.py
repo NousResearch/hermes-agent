@@ -721,8 +721,11 @@ class AIAgent:
         # Responses there. ACP runtimes are excluded: CopilotACPClient
         # handles its own routing and does not implement the Responses API
         # surface.
+        # When api_mode was explicitly provided, respect it — the user
+        # knows what their endpoint supports (#10473).
         if (
-            self.api_mode == "chat_completions"
+            api_mode is None
+            and self.api_mode == "chat_completions"
             and self.provider != "copilot-acp"
             and not str(self.base_url or "").lower().startswith("acp://copilot")
             and not str(self.base_url or "").lower().startswith("acp+tcp://")

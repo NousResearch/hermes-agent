@@ -623,42 +623,31 @@ def _rewrite_table_block_for_weixin(lines: List[str]) -> str:
 def _normalize_markdown_blocks(content: str) -> str:
     lines = content.splitlines()
     result: List[str] = []
-    i = 0
     in_code_block = False
+    blank_run = 0
 
-    while i < len(lines):
-        line = lines[i].rstrip()
-        fence_match = _FENCE_RE.match(line.strip())
-        if fence_match:
+    for raw_line in lines:
+        line = raw_line.rstrip()
+        if _FENCE_RE.match(line.strip()):
             in_code_block = not in_code_block
             result.append(line)
-            i += 1
+            blank_run = 0
             continue
 
         if in_code_block:
             result.append(line)
-            i += 1
             continue
 
-        if (
-            i + 1 < len(lines)
-            and "|" in lines[i]
-            and _TABLE_RULE_RE.match(lines[i + 1].rstrip())
-        ):
-            table_lines = [lines[i].rstrip(), lines[i + 1].rstrip()]
-            i += 2
-            while i < len(lines) and "|" in lines[i]:
-                table_lines.append(lines[i].rstrip())
-                i += 1
-            result.append(_rewrite_table_block_for_weixin(table_lines))
+        if not line.strip():
+            blank_run += 1
+            if blank_run <= 1:
+                result.append("")
             continue
 
-        result.append(_MARKDOWN_LINK_RE.sub(r"\1 (\2)", _rewrite_headers_for_weixin(line)))
-        i += 1
+        blank_run = 0
+        result.append(line)
 
-    normalized = "\n".join(item.rstrip() for item in result)
-    normalized = re.sub(r"\n{3,}", "\n\n", normalized)
-    return normalized.strip()
+    return "\n".join(result).strip()
 
 
 def _split_markdown_blocks(content: str) -> List[str]:
@@ -704,8 +693,8 @@ def _split_delivery_units_for_weixin(content: str) -> List[str]:
 
     Weixin can render Markdown, but chat readability is better when top-level
     line breaks become separate messages. Keep fenced code blocks intact and
-    attach indented continuation lines to the previous top-level line so
-    transformed tables/lists do not get torn apart.
+    attach indented continuation lines to the previous top-level line so nested
+    list items do not get torn apart.
     """
     units: List[str] = []
 
@@ -747,7 +736,9 @@ def _looks_like_chatty_line_for_weixin(line: str) -> bool:
         return False
     if line.startswith((" ", "\t")):
         return False
-    if stripped.startswith((">", "-", "*", "【")):
+    if stripped.startswith((">", "-", "*", "【", "#", "|")):
+        return False
+    if _TABLE_RULE_RE.match(stripped):
         return False
     if re.match(r"^\*\*[^*]+\*\*$", stripped):
         return False
@@ -757,10 +748,12 @@ def _looks_like_chatty_line_for_weixin(line: str) -> bool:
 
 
 def _looks_like_heading_line_for_weixin(line: str) -> bool:
-    """Return True when a short line behaves like a plain-text heading."""
+    """Return True when a short line behaves like a heading."""
     stripped = line.strip()
     if not stripped:
         return False
+    if _HEADER_RE.match(stripped):
+        return True
     return len(stripped) <= 24 and stripped.endswith((":", "："))
 
 

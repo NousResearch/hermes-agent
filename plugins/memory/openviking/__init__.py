@@ -533,6 +533,34 @@ class OpenVikingMemoryProvider(MemoryProvider):
         except Exception as e:
             return tool_error(str(e))
 
+    def reset_session(self, new_session_id: str) -> None:
+        """Transition to a new session without tearing down the HTTP client.
+
+        Called by MemoryManager.restart_session() after on_session_end() has
+        committed the old session (e.g. after CLI /new or context compression).
+        Lighter than shutdown() + initialize(): keeps the httpx client alive,
+        resets per-session counters, and creates the new OV session.
+        """
+        for t in (self._sync_thread, self._prefetch_thread):
+            if t and t.is_alive():
+                t.join(timeout=5.0)
+
+        self._session_id = new_session_id
+        self._turn_count = 0
+        self._prefetch_result = ""
+        self._sync_thread = None
+        self._prefetch_thread = None
+
+        if self._client:
+            try:
+                self._client.post("/api/v1/sessions", {"session_id": self._session_id})
+                logger.info("OpenViking new session %s created", self._session_id)
+            except Exception as e:
+                logger.debug("OpenViking session creation on reset: %s", e)
+
+        global _last_active_provider
+        _last_active_provider = self
+
     def shutdown(self) -> None:
         # Wait for background threads to finish
         for t in (self._sync_thread, self._prefetch_thread):

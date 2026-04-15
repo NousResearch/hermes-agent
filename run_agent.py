@@ -3040,6 +3040,34 @@ class AIAgent:
             except Exception:
                 pass
     
+    def commit_memory_session(self, messages: list = None) -> None:
+        """Commit external memory providers for the current session.
+
+        Calls on_session_end() WITHOUT shutting down providers — the session
+        data (e.g. OpenViking) is committed for extraction, but the HTTP
+        client and provider state remain alive for the next session.
+        Called before session_id changes (e.g. /new, context compression).
+        """
+        if self._memory_manager:
+            try:
+                self._memory_manager.on_session_end(messages or [])
+            except Exception:
+                pass
+
+    def reinitialize_memory_session(self, new_session_id: str) -> None:
+        """Transition memory providers to a new session after commit.
+
+        Calls restart_session() which uses reset_session() on providers that
+        support it (cheap: keeps HTTP client, resets per-session counters) or
+        falls back to initialize() for providers that don't.
+        Called after session_id has been assigned (e.g. /new, compression).
+        """
+        if self._memory_manager:
+            try:
+                self._memory_manager.restart_session(new_session_id)
+            except Exception:
+                pass
+
     def close(self) -> None:
         """Release all resources held by this agent instance.
 
@@ -6826,9 +6854,14 @@ class AIAgent:
             try:
                 # Propagate title to the new session with auto-numbering
                 old_title = self._session_db.get_session_title(self.session_id)
+                # Commit external memory (e.g. OpenViking) before session_id
+                # changes so extraction runs on the correct session.
+                self.commit_memory_session([])
                 self._session_db.end_session(self.session_id, "compression")
                 old_session_id = self.session_id
                 self.session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+                # Transition external memory providers to the new session_id.
+                self.reinitialize_memory_session(self.session_id)
                 # Update session_log_file to point to the new session's JSON file
                 self.session_log_file = self.logs_dir / f"session_{self.session_id}.json"
                 self._session_db.create_session(

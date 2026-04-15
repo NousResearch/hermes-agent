@@ -383,15 +383,27 @@ def test_parse_session_key_valid():
 
 
 def test_parse_session_key_with_extra_parts():
-    """Thread ID (6th part) is extracted; further parts are ignored."""
+    """6th part in a group key may be a user_id, not a thread_id — omit it."""
     result = _parse_session_key("agent:main:discord:group:chan123:thread456")
-    assert result == {"platform": "discord", "chat_type": "group", "chat_id": "chan123", "thread_id": "thread456"}
+    assert result == {"platform": "discord", "chat_type": "group", "chat_id": "chan123"}
 
 
 def test_parse_session_key_with_user_id_part():
-    """7th part (user_id) is ignored — only up to thread_id is extracted."""
-    result = _parse_session_key("agent:main:telegram:group:chat1:thread42:user99")
-    assert result == {"platform": "telegram", "chat_type": "group", "chat_id": "chat1", "thread_id": "thread42"}
+    """Group keys with per-user isolation have user_id as 6th part — don't return as thread_id."""
+    result = _parse_session_key("agent:main:telegram:group:chat1:user99")
+    assert result == {"platform": "telegram", "chat_type": "group", "chat_id": "chat1"}
+
+
+def test_parse_session_key_dm_with_thread():
+    """DM keys use parts[5] as thread_id unambiguously."""
+    result = _parse_session_key("agent:main:telegram:dm:chat1:topic42")
+    assert result == {"platform": "telegram", "chat_type": "dm", "chat_id": "chat1", "thread_id": "topic42"}
+
+
+def test_parse_session_key_thread_chat_type():
+    """Thread-typed keys use parts[5] as thread_id unambiguously."""
+    result = _parse_session_key("agent:main:discord:thread:chan1:thread99")
+    assert result == {"platform": "discord", "chat_type": "thread", "chat_id": "chan1", "thread_id": "thread99"}
 
 
 def test_parse_session_key_too_short():

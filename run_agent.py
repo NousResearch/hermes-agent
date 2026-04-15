@@ -8987,12 +8987,35 @@ class AIAgent:
                             if isinstance(_default_headers, dict):
                                 _headers_sanitized = _sanitize_structure_non_ascii(_default_headers)
 
+                            # Sanitize the API key — non-ASCII characters in
+                            # credentials (e.g. ʋ instead of v from a bad
+                            # copy-paste) cause httpx to fail when encoding
+                            # the Authorization header as ASCII.  This is the
+                            # most common cause of persistent UnicodeEncodeError
+                            # that survives message/tool sanitization (#6843).
+                            _credential_sanitized = False
+                            _raw_key = getattr(self, "api_key", None) or ""
+                            if _raw_key:
+                                _clean_key = _strip_non_ascii(_raw_key)
+                                if _clean_key != _raw_key:
+                                    self.api_key = _clean_key
+                                    if isinstance(getattr(self, "_client_kwargs", None), dict):
+                                        self._client_kwargs["api_key"] = _clean_key
+                                    _credential_sanitized = True
+                                    self._vprint(
+                                        f"{self.log_prefix}⚠️  API key contained non-ASCII characters "
+                                        f"(bad copy-paste?) — stripped them. If auth fails, "
+                                        f"re-copy the key from your provider's dashboard.",
+                                        force=True,
+                                    )
+
                             if (
                                 _messages_sanitized
                                 or _prefill_sanitized
                                 or _tools_sanitized
                                 or _system_sanitized
                                 or _headers_sanitized
+                                or _credential_sanitized
                             ):
                                 self._unicode_sanitization_passes += 1
                                 self._vprint(

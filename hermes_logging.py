@@ -358,6 +358,7 @@ def _add_rotating_handler(
     path.parent.mkdir(parents=True, exist_ok=True)
     handler = _ManagedRotatingFileHandler(
         str(path), maxBytes=max_bytes, backupCount=backup_count,
+        encoding="utf-8",
     )
     handler.setLevel(level)
     handler.setFormatter(formatter)

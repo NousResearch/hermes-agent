@@ -1985,15 +1985,32 @@ class AIAgent:
         content = re.sub(r'</?(?:think|thinking|reasoning|thought|REASONING_SCRATCHPAD)>\s*', '', content, flags=re.IGNORECASE)
         return content
 
-    def _looks_like_codex_intermediate_ack(
+    def _looks_like_intermediate_ack(
         self,
         user_message: str,
         assistant_content: str,
         messages: List[Dict[str, Any]],
     ) -> bool:
-        """Detect a planning/ack message that should continue instead of ending the turn."""
-        if any(isinstance(msg, dict) and msg.get("role") == "tool" for msg in messages):
-            return False
+        """Detect a planning/ack message that should continue instead of ending the turn.
+
+        Many models (GLM, Codex, smaller open-source LLMs) sometimes respond
+        with a planning message ("I'll look into the codebase...") instead of
+        actually calling tools.  This detector catches those and injects a
+        continuation prompt so the model proceeds with tool calls.
+
+        Two modes:
+        1. First-turn ack: no tool results yet, model says "I'll look into..."
+           -> broad detection (workspace + action markers).
+        2. Mid-task ack: tools already used this turn, model suddenly produces
+           a short planning message instead of continuing with tool calls
+           -> stricter detection (must have future-tense intent + action verb,
+           and the response must be short -- a genuine final answer is usually
+           longer than a planning blurb).
+        """
+        has_tool_results = any(
+            isinstance(msg, dict) and msg.get("role") == "tool"
+            for msg in messages
+        )
 
         assistant_text = self._strip_think_blocks(assistant_content or "").strip().lower()
         if not assistant_text:
@@ -2002,9 +2019,15 @@ class AIAgent:
             return False
 
         has_future_ack = bool(
-            re.search(r"\b(i['’]ll|i will|let me|i can do that|i can help with that)\b", assistant_text)
+            re.search(r"\b(i[\'\'\u2019]ll|i will|let me|i can do that|i can help with that)\b", assistant_text)
         )
-        if not has_future_ack:
+
+        # Chinese planning patterns (common with GLM and other Chinese LLMs)
+        has_cn_future_ack = bool(
+            re.search(r"(现在|接下来|马上|然后).{0,10}(分析|写入|处理|执行|开始|继续|导出|生成|创建)", assistant_text)
+        )
+
+        if not has_future_ack and not has_cn_future_ack:
             return False
 
         action_markers = (
@@ -2027,6 +2050,10 @@ class AIAgent:
             "walkthrough",
             "report back",
             "summarize",
+            "write",
+            "create",
+            "export",
+            "process",
         )
         workspace_markers = (
             "directory",
@@ -2044,18 +2071,32 @@ class AIAgent:
             "path",
         )
 
-        user_text = (user_message or "").strip().lower()
-        user_targets_workspace = (
-            any(marker in user_text for marker in workspace_markers)
-            or "~/" in user_text
-            or "/" in user_text
-        )
         assistant_mentions_action = any(marker in assistant_text for marker in action_markers)
-        assistant_targets_workspace = any(
-            marker in assistant_text for marker in workspace_markers
-        )
-        return (user_targets_workspace or assistant_targets_workspace) and assistant_mentions_action
-    
+
+        if not has_tool_results:
+            # First-turn mode: original broad detection
+            user_text = (user_message or "").strip().lower()
+            user_targets_workspace = (
+                any(marker in user_text for marker in workspace_markers)
+                or "~/" in user_text
+                or "/" in user_text
+            )
+            assistant_targets_workspace = any(
+                marker in assistant_text for marker in workspace_markers
+            )
+            return (user_targets_workspace or assistant_targets_workspace) and assistant_mentions_action
+
+        # Mid-task mode: tools already used, model produced a short planning
+        # blurb instead of continuing.  Be stricter to avoid catching genuine
+        # final answers -- require the response to be short (< 400 chars) and
+        # contain a clear future-tense action intent.
+        if len(assistant_text) > 400:
+            return False
+        # Chinese ack alone is sufficient (it already implies action intent)
+        if has_cn_future_ack:
+            return True
+        return has_future_ack and assistant_mentions_action
+
     
     def _extract_reasoning(self, assistant_message) -> Optional[str]:
         """
@@ -8104,7 +8145,7 @@ class AIAgent:
         api_call_count = 0
         final_response = None
         interrupted = False
-        codex_ack_continuations = 0
+        ack_continuations = 0
         length_continue_retries = 0
         truncated_tool_call_retries = 0
         truncated_response_prefix = ""
@@ -8226,6 +8267,11 @@ class AIAgent:
                     if reasoning_text:
                         # Add reasoning_content for API compatibility (Moonshot AI, Novita, OpenRouter)
                         api_msg["reasoning_content"] = reasoning_text
+                    elif msg.get("tool_calls"):
+                        # Kimi API requires reasoning_content field for tool call messages
+                        # when thinking is enabled. Ensure the field exists even if empty.
+                        if "reasoning_content" not in api_msg:
+                            api_msg["reasoning_content"] = ""
 
                 # Remove 'reasoning' field - it's for trajectory storage only
                 # We've copied it to 'reasoning_content' for the API above
@@ -10491,16 +10537,15 @@ class AIAgent:
                     self._thinking_prefill_retries = 0
 
                     if (
-                        self.api_mode == "codex_responses"
-                        and self.valid_tool_names
-                        and codex_ack_continuations < 2
-                        and self._looks_like_codex_intermediate_ack(
+                        self.valid_tool_names
+                        and ack_continuations < 2
+                        and self._looks_like_intermediate_ack(
                             user_message=user_message,
                             assistant_content=final_response,
                             messages=messages,
                         )
                     ):
-                        codex_ack_continuations += 1
+                        ack_continuations += 1
                         interim_msg = self._build_assistant_message(assistant_message, "incomplete")
                         messages.append(interim_msg)
                         self._emit_interim_assistant_message(interim_msg)
@@ -10517,7 +10562,7 @@ class AIAgent:
                         self._save_session_log(messages)
                         continue
 
-                    codex_ack_continuations = 0
+                    ack_continuations = 0
 
                     if truncated_response_prefix:
                         final_response = truncated_response_prefix + final_response

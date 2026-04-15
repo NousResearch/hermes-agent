@@ -10945,8 +10945,9 @@ class AIAgent:
                             #   tool(result) → assistant("(empty)") → user(nudge)
                             # Without this, we'd have tool → user which most
                             # APIs reject as an invalid sequence.
-                            assistant_msg["content"] = "(empty)"
-                            messages.append(assistant_msg)
+                            _nudge_msg = self._build_assistant_message(assistant_message, finish_reason)
+                            _nudge_msg["content"] = "(empty)"
+                            messages.append(_nudge_msg)
                             messages.append({
                                 "role": "user",
                                 "content": (

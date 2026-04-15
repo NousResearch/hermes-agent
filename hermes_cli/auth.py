@@ -274,6 +274,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("XIAOMI_API_KEY",),
         base_url_env_var="XIAOMI_BASE_URL",
     ),
+    "bedrock": ProviderConfig(
+        id="bedrock",
+        name="AWS Bedrock",
+        auth_type="aws_sdk",
+        inference_base_url="https://bedrock-runtime.us-east-1.amazonaws.com",
+        api_key_env_vars=(),
+        base_url_env_var="BEDROCK_BASE_URL",
+    ),
 }
 
 
@@ -924,6 +932,7 @@ def resolve_provider(
         "qwen-portal": "qwen-oauth", "qwen-cli": "qwen-oauth", "qwen-oauth": "qwen-oauth",
         "hf": "huggingface", "hugging-face": "huggingface", "huggingface-hub": "huggingface",
         "mimo": "xiaomi", "xiaomi-mimo": "xiaomi",
+        "aws": "bedrock", "aws-bedrock": "bedrock", "amazon-bedrock": "bedrock", "amazon": "bedrock",
         "go": "opencode-go", "opencode-go-sub": "opencode-go",
         "kilo": "kilocode", "kilo-code": "kilocode", "kilo-gateway": "kilocode",
         # Local server aliases — route through the generic custom provider
@@ -979,6 +988,15 @@ def resolve_provider(
         for env_var in pconfig.api_key_env_vars:
             if has_usable_secret(os.getenv(env_var, "")):
                 return pid
+
+    # AWS Bedrock — detect via boto3 credential chain (IAM roles, SSO, env vars).
+    # This runs after API-key providers so explicit keys always win.
+    try:
+        from agent.bedrock_adapter import has_aws_credentials
+        if has_aws_credentials():
+            return "bedrock"
+    except ImportError:
+        pass  # boto3 not installed — skip Bedrock auto-detection
 
     raise AuthError(
         "No inference provider configured. Run 'hermes model' to choose a "
@@ -2446,6 +2464,13 @@ def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
     pconfig = PROVIDER_REGISTRY.get(target)
     if pconfig and pconfig.auth_type == "api_key":
         return get_api_key_provider_status(target)
+    # AWS SDK providers (Bedrock) — check via boto3 credential chain
+    if pconfig and pconfig.auth_type == "aws_sdk":
+        try:
+            from agent.bedrock_adapter import has_aws_credentials
+            return {"logged_in": has_aws_credentials(), "provider": target}
+        except ImportError:
+            return {"logged_in": False, "provider": target, "error": "boto3 not installed"}
     return {"logged_in": False}
 
 

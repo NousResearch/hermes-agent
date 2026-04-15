@@ -491,6 +491,187 @@ def build_session_key(
     return ":".join(key_parts)
 
 
+def get_transcript_path(sessions_dir: Path, session_id: str) -> Path:
+    """Return the legacy JSONL transcript path for a session."""
+    return sessions_dir / f"{session_id}.jsonl"
+
+
+def find_matching_session_id(
+    sessions_dir: Path,
+    platform: str,
+    chat_id: str,
+    *,
+    thread_id: Optional[str] = None,
+) -> Optional[str]:
+    """Return the most recently updated session ID matching a delivery target."""
+    sessions_index = sessions_dir / "sessions.json"
+    if not sessions_index.exists():
+        return None
+
+    try:
+        with open(sessions_index, encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return None
+
+    platform_lower = platform.lower()
+    best_match = None
+    best_updated = ""
+
+    for entry in data.values():
+        origin = entry.get("origin") or {}
+        entry_platform = (origin.get("platform") or entry.get("platform", "")).lower()
+        if entry_platform != platform_lower:
+            continue
+
+        if str(origin.get("chat_id", "")) != str(chat_id):
+            continue
+
+        origin_thread_id = origin.get("thread_id")
+        if thread_id is not None and str(origin_thread_id or "") != str(thread_id):
+            continue
+
+        updated = entry.get("updated_at", "")
+        if updated > best_updated:
+            best_updated = updated
+            best_match = entry.get("session_id")
+
+    return best_match
+
+
+def _append_message_to_session_db(
+    session_db: Any,
+    session_id: str,
+    message: Dict[str, Any],
+    *,
+    include_reasoning: bool = False,
+) -> None:
+    """Append a single transcript message to SQLite when available."""
+    if not session_db:
+        return
+
+    role = message.get("role", "unknown")
+    kwargs: Dict[str, Any] = {
+        "session_id": session_id,
+        "role": role,
+        "content": message.get("content"),
+        "tool_name": message.get("tool_name"),
+        "tool_calls": message.get("tool_calls"),
+        "tool_call_id": message.get("tool_call_id"),
+    }
+    if include_reasoning and role == "assistant":
+        kwargs["reasoning"] = message.get("reasoning")
+        kwargs["reasoning_details"] = message.get("reasoning_details")
+        kwargs["codex_reasoning_items"] = message.get("codex_reasoning_items")
+    session_db.append_message(**kwargs)
+
+
+def _append_message_to_jsonl(
+    sessions_dir: Path,
+    session_id: str,
+    message: Dict[str, Any],
+) -> None:
+    """Append a single transcript message to the legacy JSONL store."""
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+    transcript_path = get_transcript_path(sessions_dir, session_id)
+    with open(transcript_path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(message, ensure_ascii=False) + "\n")
+
+
+def _read_jsonl_transcript(sessions_dir: Path, session_id: str) -> List[Dict[str, Any]]:
+    """Load transcript messages from the legacy JSONL store."""
+    transcript_path = get_transcript_path(sessions_dir, session_id)
+    jsonl_messages: List[Dict[str, Any]] = []
+    if not transcript_path.exists():
+        return jsonl_messages
+
+    with open(transcript_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                jsonl_messages.append(json.loads(line))
+            except json.JSONDecodeError:
+                logger.warning(
+                    "Skipping corrupt line in transcript %s: %s",
+                    session_id, line[:120],
+                )
+    return jsonl_messages
+
+
+def append_transcript_message(
+    sessions_dir: Path,
+    session_db: Any,
+    session_id: str,
+    message: Dict[str, Any],
+    *,
+    skip_db: bool = False,
+) -> None:
+    """Persist one transcript message via the canonical gateway storage path."""
+    if session_db and not skip_db:
+        try:
+            _append_message_to_session_db(session_db, session_id, message)
+        except Exception as e:
+            logger.debug("Session DB operation failed: %s", e)
+
+    _append_message_to_jsonl(sessions_dir, session_id, message)
+
+
+def rewrite_transcript_messages(
+    sessions_dir: Path,
+    session_db: Any,
+    session_id: str,
+    messages: List[Dict[str, Any]],
+) -> None:
+    """Replace a session transcript in both SQLite and legacy JSONL stores."""
+    if session_db:
+        try:
+            session_db.clear_messages(session_id)
+            for msg in messages:
+                _append_message_to_session_db(
+                    session_db,
+                    session_id,
+                    msg,
+                    include_reasoning=True,
+                )
+        except Exception as e:
+            logger.debug("Failed to rewrite transcript in DB: %s", e)
+
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+    transcript_path = get_transcript_path(sessions_dir, session_id)
+    with open(transcript_path, "w", encoding="utf-8") as f:
+        for msg in messages:
+            f.write(json.dumps(msg, ensure_ascii=False) + "\n")
+
+
+def load_transcript_messages(
+    sessions_dir: Path,
+    session_db: Any,
+    session_id: str,
+) -> List[Dict[str, Any]]:
+    """Load transcript messages, preferring the longer of SQLite and JSONL."""
+    db_messages: List[Dict[str, Any]] = []
+    if session_db:
+        try:
+            db_messages = session_db.get_messages_as_conversation(session_id)
+        except Exception as e:
+            logger.debug("Could not load messages from DB: %s", e)
+
+    jsonl_messages = _read_jsonl_transcript(sessions_dir, session_id)
+
+    if len(jsonl_messages) > len(db_messages):
+        if db_messages:
+            logger.debug(
+                "Session %s: JSONL has %d messages vs SQLite %d — "
+                "using JSONL (legacy session not yet fully migrated)",
+                session_id, len(jsonl_messages), len(db_messages),
+            )
+        return jsonl_messages
+
+    return db_messages
+
+
 class SessionStore:
     """
     Manages session storage and retrieval.
@@ -942,7 +1123,7 @@ class SessionStore:
     
     def get_transcript_path(self, session_id: str) -> Path:
         """Get the path to a session's legacy transcript file."""
-        return self.sessions_dir / f"{session_id}.jsonl"
+        return get_transcript_path(self.sessions_dir, session_id)
     
     def append_to_transcript(self, session_id: str, message: Dict[str, Any], skip_db: bool = False) -> None:
         """Append a message to a session's transcript (SQLite + legacy JSONL).
@@ -953,24 +1134,13 @@ class SessionStore:
                      via its own _flush_messages_to_session_db(), preventing
                      the duplicate-write bug (#860).
         """
-        # Write to SQLite (unless the agent already handled it)
-        if self._db and not skip_db:
-            try:
-                self._db.append_message(
-                    session_id=session_id,
-                    role=message.get("role", "unknown"),
-                    content=message.get("content"),
-                    tool_name=message.get("tool_name"),
-                    tool_calls=message.get("tool_calls"),
-                    tool_call_id=message.get("tool_call_id"),
-                )
-            except Exception as e:
-                logger.debug("Session DB operation failed: %s", e)
-        
-        # Also write legacy JSONL (keeps existing tooling working during transition)
-        transcript_path = self.get_transcript_path(session_id)
-        with open(transcript_path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(message, ensure_ascii=False) + "\n")
+        append_transcript_message(
+            self.sessions_dir,
+            self._db,
+            session_id,
+            message,
+            skip_db=skip_db,
+        )
     
     def rewrite_transcript(self, session_id: str, messages: List[Dict[str, Any]]) -> None:
         """Replace the entire transcript for a session with new messages.
@@ -978,59 +1148,10 @@ class SessionStore:
         Used by /retry, /undo, and /compress to persist modified conversation history.
         Rewrites both SQLite and legacy JSONL storage.
         """
-        # SQLite: clear old messages and re-insert
-        if self._db:
-            try:
-                self._db.clear_messages(session_id)
-                for msg in messages:
-                    role = msg.get("role", "unknown")
-                    self._db.append_message(
-                        session_id=session_id,
-                        role=role,
-                        content=msg.get("content"),
-                        tool_name=msg.get("tool_name"),
-                        tool_calls=msg.get("tool_calls"),
-                        tool_call_id=msg.get("tool_call_id"),
-                        reasoning=msg.get("reasoning") if role == "assistant" else None,
-                        reasoning_details=msg.get("reasoning_details") if role == "assistant" else None,
-                        codex_reasoning_items=msg.get("codex_reasoning_items") if role == "assistant" else None,
-                    )
-            except Exception as e:
-                logger.debug("Failed to rewrite transcript in DB: %s", e)
-        
-        # JSONL: overwrite the file
-        transcript_path = self.get_transcript_path(session_id)
-        with open(transcript_path, "w", encoding="utf-8") as f:
-            for msg in messages:
-                f.write(json.dumps(msg, ensure_ascii=False) + "\n")
+        rewrite_transcript_messages(self.sessions_dir, self._db, session_id, messages)
 
     def load_transcript(self, session_id: str) -> List[Dict[str, Any]]:
         """Load all messages from a session's transcript."""
-        db_messages = []
-        # Try SQLite first
-        if self._db:
-            try:
-                db_messages = self._db.get_messages_as_conversation(session_id)
-            except Exception as e:
-                logger.debug("Could not load messages from DB: %s", e)
-
-        # Load legacy JSONL transcript (may contain more history than SQLite
-        # for sessions created before the DB layer was introduced).
-        transcript_path = self.get_transcript_path(session_id)
-        jsonl_messages = []
-        if transcript_path.exists():
-            with open(transcript_path, "r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if line:
-                        try:
-                            jsonl_messages.append(json.loads(line))
-                        except json.JSONDecodeError:
-                            logger.warning(
-                                "Skipping corrupt line in transcript %s: %s",
-                                session_id, line[:120],
-                            )
-
         # Prefer whichever source has more messages.
         #
         # Background: when a session pre-dates SQLite storage (or when the DB
@@ -1041,16 +1162,7 @@ class SessionStore:
         # turn load_transcript returns those few SQLite rows and ignores the
         # full JSONL history — the model sees a context of 1-4 messages instead
         # of hundreds.  Using the longer source prevents this silent truncation.
-        if len(jsonl_messages) > len(db_messages):
-            if db_messages:
-                logger.debug(
-                    "Session %s: JSONL has %d messages vs SQLite %d — "
-                    "using JSONL (legacy session not yet fully migrated)",
-                    session_id, len(jsonl_messages), len(db_messages),
-                )
-            return jsonl_messages
-
-        return db_messages
+        return load_transcript_messages(self.sessions_dir, self._db, session_id)
 
 
 def build_session_context(

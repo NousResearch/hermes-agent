@@ -8,6 +8,26 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+
+def _ensure_discord_mock():
+    if "discord" in sys.modules and hasattr(sys.modules["discord"], "__file__"):
+        return
+    discord_mod = types.ModuleType("discord")
+    discord_mod.Intents = MagicMock()
+    discord_mod.Intents.default.return_value = MagicMock()
+    discord_mod.DMChannel = type("DMChannel", (), {})
+    discord_mod.Thread = type("Thread", (), {})
+    discord_mod.ForumChannel = type("ForumChannel", (), {})
+    discord_mod.Interaction = object
+    ext_mod = MagicMock()
+    commands_mod = MagicMock()
+    commands_mod.Bot = MagicMock
+    ext_mod.commands = commands_mod
+    sys.modules.setdefault("discord", discord_mod)
+    sys.modules.setdefault("discord.ext", ext_mod)
+    sys.modules.setdefault("discord.ext.commands", commands_mod)
+
+
 import gateway.run as gateway_run
 from gateway.config import Platform
 from gateway.platforms.base import MessageEvent
@@ -37,6 +57,7 @@ def _install_fake_agent(monkeypatch):
 
 
 def _make_adapter():
+    _ensure_discord_mock()
     from gateway.platforms.discord import DiscordAdapter
 
     adapter = object.__new__(DiscordAdapter)

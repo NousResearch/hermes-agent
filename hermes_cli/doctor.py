@@ -181,32 +181,32 @@ def run_doctor(args):
     # Check: Python version
     # =========================================================================
     print()
-    print(color("◆ Python Environment", Colors.CYAN, Colors.BOLD))
+    print(color("◆ Python 환경", Colors.CYAN, Colors.BOLD))
     
     py_version = sys.version_info
     if py_version >= (3, 11):
         check_ok(f"Python {py_version.major}.{py_version.minor}.{py_version.micro}")
     elif py_version >= (3, 10):
         check_ok(f"Python {py_version.major}.{py_version.minor}.{py_version.micro}")
-        check_warn("Python 3.11+ recommended for RL Training tools (tinker requires >= 3.11)")
+        check_warn("RL 학습 도구에는 Python 3.11+를 권장해요 (tinker는 3.11 이상 필요)")
     elif py_version >= (3, 8):
-        check_warn(f"Python {py_version.major}.{py_version.minor}.{py_version.micro}", "(3.10+ recommended)")
+        check_warn(f"Python {py_version.major}.{py_version.minor}.{py_version.micro}", "(3.10+ 권장)")
     else:
-        check_fail(f"Python {py_version.major}.{py_version.minor}.{py_version.micro}", "(3.10+ required)")
-        issues.append("Upgrade Python to 3.10+")
+        check_fail(f"Python {py_version.major}.{py_version.minor}.{py_version.micro}", "(3.10+ 필요)")
+        issues.append("Python을 3.10 이상으로 업그레이드하세요")
     
     # Check if in virtual environment
     in_venv = sys.prefix != sys.base_prefix
     if in_venv:
-        check_ok("Virtual environment active")
+        check_ok("가상환경 활성화됨")
     else:
-        check_warn("Not in virtual environment", "(recommended)")
+        check_warn("가상환경 안에서 실행 중이 아님", "(권장)")
     
     # =========================================================================
     # Check: Required packages
     # =========================================================================
     print()
-    print(color("◆ Required Packages", Colors.CYAN, Colors.BOLD))
+    print(color("◆ 필수 패키지", Colors.CYAN, Colors.BOLD))
     
     required_packages = [
         ("openai", "OpenAI SDK"),
@@ -227,71 +227,71 @@ def run_doctor(args):
             __import__(module)
             check_ok(name)
         except ImportError:
-            check_fail(name, "(missing)")
-            issues.append(f"Install {name}: {_python_install_cmd()} {module}")
+            check_fail(name, "(없음)")
+            issues.append(f"{name} 설치: {_python_install_cmd()} {module}")
     
     for module, name in optional_packages:
         try:
             __import__(module)
-            check_ok(name, "(optional)")
+            check_ok(name, "(선택 사항)")
         except ImportError:
-            check_warn(name, "(optional, not installed)")
+            check_warn(name, "(선택 사항, 설치되지 않음)")
     
     # =========================================================================
     # Check: Configuration files
     # =========================================================================
     print()
-    print(color("◆ Configuration Files", Colors.CYAN, Colors.BOLD))
+    print(color("◆ 설정 파일", Colors.CYAN, Colors.BOLD))
     
     # Check ~/.hermes/.env (primary location for user config)
     env_path = HERMES_HOME / '.env'
     if env_path.exists():
-        check_ok(f"{_DHH}/.env file exists")
+        check_ok(f"{_DHH}/.env 파일이 있어요")
         
         # Check for common issues
         content = env_path.read_text()
         if _has_provider_env_config(content):
-            check_ok("API key or custom endpoint configured")
+            check_ok("API key 또는 custom endpoint가 설정되어 있어요")
         else:
-            check_warn(f"No API key found in {_DHH}/.env")
-            issues.append("Run 'hermes setup' to configure API keys")
+            check_warn(f"{_DHH}/.env에서 API key를 찾지 못했어요")
+            issues.append("API key를 설정하려면 'hermes setup'을 실행하세요")
     else:
         # Also check project root as fallback
         fallback_env = PROJECT_ROOT / '.env'
         if fallback_env.exists():
-            check_ok(".env file exists (in project directory)")
+            check_ok("프로젝트 디렉터리에 .env 파일이 있어요")
         else:
-            check_fail(f"{_DHH}/.env file missing")
+            check_fail(f"{_DHH}/.env 파일이 없어요")
             if should_fix:
                 env_path.parent.mkdir(parents=True, exist_ok=True)
                 env_path.touch()
-                check_ok(f"Created empty {_DHH}/.env")
-                check_info("Run 'hermes setup' to configure API keys")
+                check_ok(f"비어 있는 {_DHH}/.env 파일을 만들었어요")
+                check_info("API key를 설정하려면 'hermes setup'을 실행하세요")
                 fixed_count += 1
             else:
-                check_info("Run 'hermes setup' to create one")
-                issues.append("Run 'hermes setup' to create .env")
+                check_info("만들려면 'hermes setup'을 실행하세요")
+                issues.append(".env를 만들려면 'hermes setup'을 실행하세요")
     
     # Check ~/.hermes/config.yaml (primary) or project cli-config.yaml (fallback)
     config_path = HERMES_HOME / 'config.yaml'
     if config_path.exists():
-        check_ok(f"{_DHH}/config.yaml exists")
+        check_ok(f"{_DHH}/config.yaml 파일이 있어요")
     else:
         fallback_config = PROJECT_ROOT / 'cli-config.yaml'
         if fallback_config.exists():
-            check_ok("cli-config.yaml exists (in project directory)")
+            check_ok("프로젝트 디렉터리에 cli-config.yaml이 있어요")
         else:
             example_config = PROJECT_ROOT / 'cli-config.yaml.example'
             if should_fix and example_config.exists():
                 config_path.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(str(example_config), str(config_path))
-                check_ok(f"Created {_DHH}/config.yaml from cli-config.yaml.example")
+                check_ok(f"cli-config.yaml.example로 {_DHH}/config.yaml을 만들었어요")
                 fixed_count += 1
             elif should_fix:
-                check_warn("config.yaml not found and no example to copy from")
-                manual_issues.append(f"Create {_DHH}/config.yaml manually")
+                check_warn("config.yaml이 없고 복사할 예제 파일도 없어요")
+                manual_issues.append(f"{_DHH}/config.yaml을 수동으로 만드세요")
             else:
-                check_warn("config.yaml not found", "(using defaults)")
+                check_warn("config.yaml이 없어요", "(기본값 사용 중)")
 
     # Check config version and stale keys
     config_path = HERMES_HOME / 'config.yaml'
@@ -301,21 +301,21 @@ def run_doctor(args):
             current_ver, latest_ver = check_config_version()
             if current_ver < latest_ver:
                 check_warn(
-                    f"Config version outdated (v{current_ver} → v{latest_ver})",
-                    "(new settings available)"
+                    f"설정 버전이 오래됐어요 (v{current_ver} → v{latest_ver})",
+                    "(새 설정을 사용할 수 있어요)"
                 )
                 if should_fix:
                     try:
                         migrate_config(interactive=False, quiet=False)
-                        check_ok("Config migrated to latest version")
+                        check_ok("설정을 최신 버전으로 마이그레이션했어요")
                         fixed_count += 1
                     except Exception as mig_err:
-                        check_warn(f"Auto-migration failed: {mig_err}")
-                        issues.append("Run 'hermes setup' to migrate config")
+                        check_warn(f"자동 마이그레이션에 실패했어요: {mig_err}")
+                        issues.append("설정을 마이그레이션하려면 'hermes setup'을 실행하세요")
                 else:
-                    issues.append("Run 'hermes doctor --fix' or 'hermes setup' to migrate config")
+                    issues.append("설정을 마이그레이션하려면 'hermes doctor --fix' 또는 'hermes setup'을 실행하세요")
             else:
-                check_ok(f"Config version up to date (v{current_ver})")
+                check_ok(f"설정 버전이 최신이에요 (v{current_ver})")
         except Exception:
             pass
 
@@ -327,8 +327,8 @@ def run_doctor(args):
             stale_root_keys = [k for k in ("provider", "base_url") if k in raw_config and isinstance(raw_config[k], str)]
             if stale_root_keys:
                 check_warn(
-                    f"Stale root-level config keys: {', '.join(stale_root_keys)}",
-                    "(should be under 'model:' section)"
+                    f"루트 레벨의 오래된 설정 키가 있어요: {', '.join(stale_root_keys)}",
+                    "('model:' 섹션 아래에 있어야 해요)"
                 )
                 if should_fix:
                     model_section = raw_config.setdefault("model", {})
@@ -339,10 +339,10 @@ def run_doctor(args):
                             raw_config.pop(k)
                     from utils import atomic_yaml_write
                     atomic_yaml_write(config_path, raw_config)
-                    check_ok("Migrated stale root-level keys into model section")
+                    check_ok("오래된 루트 레벨 키를 model 섹션으로 옮겼어요")
                     fixed_count += 1
                 else:
-                    issues.append("Stale root-level provider/base_url in config.yaml — run 'hermes doctor --fix'")
+                    issues.append("config.yaml에 오래된 루트 레벨 provider/base_url이 있어요 — 'hermes doctor --fix'를 실행하세요")
         except Exception:
             pass
 
@@ -352,7 +352,7 @@ def run_doctor(args):
             config_issues = validate_config_structure()
             if config_issues:
                 print()
-                print(color("◆ Config Structure", Colors.CYAN, Colors.BOLD))
+                print(color("◆ 설정 구조", Colors.CYAN, Colors.BOLD))
                 for ci in config_issues:
                     if ci.severity == "error":
                         check_fail(ci.message)

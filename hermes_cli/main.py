@@ -6068,8 +6068,10 @@ Examples:
             sys.stderr = _io.StringIO()
             args = parser.parse_args(_processed_argv)
             sys.stderr = _saved_stderr
-        except SystemExit:
+        except SystemExit as e:
             sys.stderr = _saved_stderr
+            if e.code == 0:
+                raise  # Re-raise clean exits (e.g. --help) to avoid double-printing
             # Subcommand name was consumed as a flag value (e.g. -c model).
             # Fall back to optional subparsers so argparse handles it normally.
             subparsers.required = False

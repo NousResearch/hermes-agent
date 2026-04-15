@@ -1214,6 +1214,37 @@ class TestMCPServerTask:
 
         asyncio.run(_test())
 
+    @pytest.mark.parametrize(
+        ("config_key", "config_value", "expected_cwd"),
+        [
+            ("workdir", "~/repo", os.path.expanduser("~/repo")),
+            ("cwd", "/tmp/mcp-server", "/tmp/mcp-server"),
+        ],
+    )
+    def test_stdio_honors_configured_workdir(self, config_key, config_value, expected_cwd):
+        """Stdio MCP servers pass configured workdir/cwd through to the SDK."""
+        from tools.mcp_tool import MCPServerTask
+
+        mock_session = MagicMock()
+        mock_session.initialize = AsyncMock()
+        mock_session.list_tools = AsyncMock(
+            return_value=SimpleNamespace(tools=[])
+        )
+
+        p_stdio, p_cs, _, _ = self._mock_stdio_and_session(mock_session)
+
+        async def _test():
+            with patch("tools.mcp_tool.StdioServerParameters") as mock_params, p_stdio, p_cs:
+                server = MCPServerTask("srv")
+                await server.start({"command": "node", config_key: config_value})
+
+                call_kwargs = mock_params.call_args
+                assert call_kwargs.kwargs.get("cwd") == expected_cwd
+
+                await server.shutdown()
+
+        asyncio.run(_test())
+
     def test_shutdown_signals_task_exit(self):
         """shutdown() signals the event and waits for task completion."""
         from tools.mcp_tool import MCPServerTask

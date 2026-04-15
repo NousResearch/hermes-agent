@@ -1224,14 +1224,21 @@ class AIAgent:
                 self._memory_manager = None
 
         # Inject memory provider tool schemas into the tool surface
-        if self._memory_manager and self.tools is not None:
+        # Respect both enabled and disabled toolsets configurations
+        _memory_allowed = True
+        if self.enabled_toolsets is not None and "memory" not in self.enabled_toolsets:
+            _memory_allowed = False
+        if self.disabled_toolsets is not None and "memory" in self.disabled_toolsets:
+            _memory_allowed = False
+
+        if self._memory_manager and self.tools is not None and _memory_allowed:
             for _schema in self._memory_manager.get_all_tool_schemas():
                 _wrapped = {"type": "function", "function": _schema}
                 self.tools.append(_wrapped)
                 _tname = _schema.get("name", "")
                 if _tname:
                     self.valid_tool_names.add(_tname)
-
+                    
         # Skills config: nudge interval for skill creation reminders
         self._skill_nudge_interval = 10
         try:

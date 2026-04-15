@@ -36,6 +36,7 @@ _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "opencode", "zen", "go", "vercel", "kilo", "dashscope", "aliyun", "qwen",
     "mimo", "xiaomi-mimo",
     "arcee-ai", "arceeai",
+    "xai", "x-ai", "x.ai", "grok",
     "qwen-portal",
 })
 

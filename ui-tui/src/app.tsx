@@ -288,9 +288,17 @@ function StatusRule({
 
 // ── PromptBox ────────────────────────────────────────────────────────
 
-function PromptBox({ children, color }: { children: React.ReactNode; color: string }) {
+function FloatBox({ children, color }: { children: React.ReactNode; color: string }) {
   return (
-    <Box borderColor={color} borderStyle="round" flexDirection="column" marginTop={1} paddingX={1}>
+    <Box
+      alignSelf="flex-start"
+      borderColor={color}
+      borderStyle="double"
+      flexDirection="column"
+      marginTop={1}
+      opaque
+      paddingX={1}
+    >
       {children}
     </Box>
   )
@@ -558,28 +566,6 @@ export function App({ gw }: { gw: GatewayClient }) {
 
   const { historyRef, historyIdx, setHistoryIdx, historyDraftRef, pushHistory } = useInputHistory()
   const { completions, compIdx, setCompIdx, compReplace } = useCompletion(input, blocked(), gw)
-
-  const applyCompletion = useCallback(
-    (value = input) => {
-      const row = completions[compIdx]
-
-      if (!row?.text) {
-        return false
-      }
-
-      const text = value.startsWith('/') && row.text.startsWith('/') && compReplace > 0 ? row.text.slice(1) : row.text
-      const next = value.slice(0, compReplace) + text
-
-      if (next === value) {
-        return false
-      }
-
-      setInput(next)
-
-      return true
-    },
-    [compIdx, compReplace, completions, input]
-  )
 
   const pulseReasoningStreaming = useCallback(() => {
     if (reasoningStreamingTimerRef.current) {
@@ -1503,7 +1489,12 @@ export function App({ gw }: { gw: GatewayClient }) {
     }
 
     if (key.tab && completions.length) {
-      applyCompletion()
+      const row = completions[compIdx]
+
+      if (row?.text) {
+        const text = input.startsWith('/') && row.text.startsWith('/') && compReplace > 0 ? row.text.slice(1) : row.text
+        setInput(input.slice(0, compReplace) + text)
+      }
 
       return
     }
@@ -3080,6 +3071,23 @@ export function App({ gw }: { gw: GatewayClient }) {
 
   const submit = useCallback(
     (value: string) => {
+      if (value.startsWith('/') && completions.length) {
+        const row = completions[compIdx]
+
+        if (row?.text) {
+          const text =
+            value.startsWith('/') && row.text.startsWith('/') && compReplace > 0 ? row.text.slice(1) : row.text
+
+          const next = value.slice(0, compReplace) + text
+
+          if (next !== value) {
+            setInput(next)
+
+            return
+          }
+        }
+      }
+
       if (!value.trim() && !inputBuf.length) {
         const now = Date.now()
         const dbl = now - lastEmptyAt.current < 450
@@ -3137,18 +3145,7 @@ export function App({ gw }: { gw: GatewayClient }) {
 
       dispatchSubmission([...inputBuf, value].join('\n'))
     },
-    [dequeue, dispatchSubmission, inputBuf, sid]
-  )
-
-  const submitOrComplete = useCallback(
-    (value: string) => {
-      if (value.startsWith('/') && completions.length && applyCompletion(value)) {
-        return
-      }
-
-      submit(value)
-    },
-    [applyCompletion, completions.length, submit]
+    [compIdx, compReplace, completions, dequeue, dispatchSubmission, inputBuf, sid]
   )
 
   // ── Derived ──────────────────────────────────────────────────────
@@ -3243,102 +3240,6 @@ export function App({ gw }: { gw: GatewayClient }) {
         </Box>
 
         <NoSelect flexDirection="column" flexShrink={0} fromLeftEdge paddingX={1}>
-          {clarify && (
-            <PromptBox color={theme.color.bronze}>
-              <ClarifyPrompt
-                cols={cols}
-                onAnswer={answerClarify}
-                onCancel={() => answerClarify('')}
-                req={clarify}
-                t={theme}
-              />
-            </PromptBox>
-          )}
-
-          {approval && (
-            <PromptBox color={theme.color.bronze}>
-              <ApprovalPrompt
-                onChoice={choice => {
-                  rpc('approval.respond', { choice, session_id: sid }).then(r => {
-                    if (!r) {
-                      return
-                    }
-
-                    setApproval(null)
-                    sys(choice === 'deny' ? 'denied' : `approved (${choice})`)
-                    setStatus('running…')
-                  })
-                }}
-                req={approval}
-                t={theme}
-              />
-            </PromptBox>
-          )}
-
-          {sudo && (
-            <PromptBox color={theme.color.bronze}>
-              <MaskedPrompt
-                cols={cols}
-                icon="🔐"
-                label="sudo password required"
-                onSubmit={pw => {
-                  rpc('sudo.respond', { request_id: sudo.requestId, password: pw }).then(r => {
-                    if (!r) {
-                      return
-                    }
-
-                    setSudo(null)
-                    setStatus('running…')
-                  })
-                }}
-                t={theme}
-              />
-            </PromptBox>
-          )}
-
-          {secret && (
-            <PromptBox color={theme.color.bronze}>
-              <MaskedPrompt
-                cols={cols}
-                icon="🔑"
-                label={secret.prompt}
-                onSubmit={val => {
-                  rpc('secret.respond', { request_id: secret.requestId, value: val }).then(r => {
-                    if (!r) {
-                      return
-                    }
-
-                    setSecret(null)
-                    setStatus('running…')
-                  })
-                }}
-                sub={`for ${secret.envVar}`}
-                t={theme}
-              />
-            </PromptBox>
-          )}
-
-          {picker && (
-            <PromptBox color={theme.color.bronze}>
-              <SessionPicker gw={gw} onCancel={() => setPicker(false)} onSelect={resumeById} t={theme} />
-            </PromptBox>
-          )}
-
-          {modelPicker && (
-            <PromptBox color={theme.color.bronze}>
-              <ModelPicker
-                gw={gw}
-                onCancel={() => setModelPicker(false)}
-                onSelect={value => {
-                  setModelPicker(false)
-                  slash(`/model ${value}`)
-                }}
-                sessionId={sid}
-                t={theme}
-              />
-            </PromptBox>
-          )}
-
           <QueuedMessages cols={cols} queued={queuedDisplay} queueEditIdx={queueEditIdx} t={theme} />
 
           {bgTasks.size > 0 && (
@@ -3356,44 +3257,177 @@ export function App({ gw }: { gw: GatewayClient }) {
             <Text> </Text>
           )}
 
-          {statusBar && (
-            <StatusRule
-              bgCount={bgTasks.size}
-              cols={cols}
-              cwdLabel={cwdLabel}
-              durationLabel={durationLabel}
-              model={info?.model?.split('/').pop() ?? ''}
-              status={status}
-              statusColor={statusColor}
-              t={theme}
-              usage={usage}
-              voiceLabel={voiceLabel}
-            />
-          )}
+          <Box flexDirection="column" position="relative">
+            {statusBar && (
+              <StatusRule
+                bgCount={bgTasks.size}
+                cols={cols}
+                cwdLabel={cwdLabel}
+                durationLabel={durationLabel}
+                model={info?.model?.split('/').pop() ?? ''}
+                status={status}
+                statusColor={statusColor}
+                t={theme}
+                usage={usage}
+                voiceLabel={voiceLabel}
+              />
+            )}
 
-          {pager && (
-            <Box borderColor={theme.color.bronze} borderStyle="round" flexDirection="column" paddingX={2} paddingY={1}>
-              {pager.title && (
-                <Box justifyContent="center" marginBottom={1}>
-                  <Text bold color={theme.color.gold}>
-                    {pager.title}
-                  </Text>
-                </Box>
-              )}
+            {(clarify || approval || sudo || secret || picker || modelPicker || pager || completions.length > 0) && (
+              <Box alignItems="flex-start" bottom="100%" flexDirection="column" left={0} position="absolute" right={0}>
+                {clarify && (
+                  <FloatBox color={theme.color.bronze}>
+                    <ClarifyPrompt
+                      cols={cols}
+                      onAnswer={answerClarify}
+                      onCancel={() => answerClarify('')}
+                      req={clarify}
+                      t={theme}
+                    />
+                  </FloatBox>
+                )}
 
-              {pager.lines.slice(pager.offset, pager.offset + pagerPageSize).map((line, i) => (
-                <Text key={i}>{line}</Text>
-              ))}
+                {approval && (
+                  <FloatBox color={theme.color.bronze}>
+                    <ApprovalPrompt
+                      onChoice={choice => {
+                        rpc('approval.respond', { choice, session_id: sid }).then(r => {
+                          if (!r) {
+                            return
+                          }
 
-              <Box marginTop={1}>
-                <Text color={theme.color.dim}>
-                  {pager.offset + pagerPageSize < pager.lines.length
-                    ? `Enter/Space for more · q to close (${Math.min(pager.offset + pagerPageSize, pager.lines.length)}/${pager.lines.length})`
-                    : `end · q to close (${pager.lines.length} lines)`}
-                </Text>
+                          setApproval(null)
+                          sys(choice === 'deny' ? 'denied' : `approved (${choice})`)
+                          setStatus('running…')
+                        })
+                      }}
+                      req={approval}
+                      t={theme}
+                    />
+                  </FloatBox>
+                )}
+
+                {sudo && (
+                  <FloatBox color={theme.color.bronze}>
+                    <MaskedPrompt
+                      cols={cols}
+                      icon="🔐"
+                      label="sudo password required"
+                      onSubmit={pw => {
+                        rpc('sudo.respond', { request_id: sudo.requestId, password: pw }).then(r => {
+                          if (!r) {
+                            return
+                          }
+
+                          setSudo(null)
+                          setStatus('running…')
+                        })
+                      }}
+                      t={theme}
+                    />
+                  </FloatBox>
+                )}
+
+                {secret && (
+                  <FloatBox color={theme.color.bronze}>
+                    <MaskedPrompt
+                      cols={cols}
+                      icon="🔑"
+                      label={secret.prompt}
+                      onSubmit={val => {
+                        rpc('secret.respond', { request_id: secret.requestId, value: val }).then(r => {
+                          if (!r) {
+                            return
+                          }
+
+                          setSecret(null)
+                          setStatus('running…')
+                        })
+                      }}
+                      sub={`for ${secret.envVar}`}
+                      t={theme}
+                    />
+                  </FloatBox>
+                )}
+
+                {picker && (
+                  <FloatBox color={theme.color.bronze}>
+                    <SessionPicker gw={gw} onCancel={() => setPicker(false)} onSelect={resumeById} t={theme} />
+                  </FloatBox>
+                )}
+
+                {modelPicker && (
+                  <FloatBox color={theme.color.bronze}>
+                    <ModelPicker
+                      gw={gw}
+                      onCancel={() => setModelPicker(false)}
+                      onSelect={value => {
+                        setModelPicker(false)
+                        slash(`/model ${value}`)
+                      }}
+                      sessionId={sid}
+                      t={theme}
+                    />
+                  </FloatBox>
+                )}
+
+                {pager && (
+                  <FloatBox color={theme.color.bronze}>
+                    <Box flexDirection="column" paddingX={1} paddingY={1}>
+                      {pager.title && (
+                        <Box justifyContent="center" marginBottom={1}>
+                          <Text bold color={theme.color.gold}>
+                            {pager.title}
+                          </Text>
+                        </Box>
+                      )}
+
+                      {pager.lines.slice(pager.offset, pager.offset + pagerPageSize).map((line, i) => (
+                        <Text key={i}>{line}</Text>
+                      ))}
+
+                      <Box marginTop={1}>
+                        <Text color={theme.color.dim}>
+                          {pager.offset + pagerPageSize < pager.lines.length
+                            ? `Enter/Space for more · q to close (${Math.min(pager.offset + pagerPageSize, pager.lines.length)}/${pager.lines.length})`
+                            : `end · q to close (${pager.lines.length} lines)`}
+                        </Text>
+                      </Box>
+                    </Box>
+                  </FloatBox>
+                )}
+
+                {!!completions.length && (
+                  <FloatBox color={theme.color.bronze}>
+                    <Box flexDirection="column">
+                      {completions.slice(Math.max(0, compIdx - 8), compIdx + 8).map((item, i) => {
+                        const active = Math.max(0, compIdx - 8) + i === compIdx
+
+                        const bg = active ? theme.color.dim : undefined
+                        const fg = theme.color.cornsilk
+
+                        return (
+                          <Box backgroundColor={bg as any} key={item.text}>
+                            <Text backgroundColor={bg as any} bold={active} color={fg}>
+                              {' '}
+                              {item.display}
+                            </Text>
+
+                            {item.meta ? (
+                              <Text backgroundColor={bg as any} color={active ? fg : theme.color.dim}>
+                                {' '}
+                                {item.meta}
+                              </Text>
+                            ) : null}
+                          </Box>
+                        )
+                      })}
+                    </Box>
+                  </FloatBox>
+                )}
               </Box>
-            </Box>
-          )}
+            )}
+          </Box>
 
           {!isBlocked && (
             <Box flexDirection="column" marginBottom={1}>
@@ -3418,28 +3452,11 @@ export function App({ gw }: { gw: GatewayClient }) {
                   columns={Math.max(20, cols - 3)}
                   onChange={setInput}
                   onPaste={handleTextPaste}
-                  onSubmit={submitOrComplete}
+                  onSubmit={submit}
                   placeholder={empty ? PLACEHOLDER : busy ? 'Ctrl+C to interrupt…' : ''}
                   value={input}
                 />
               </Box>
-            </Box>
-          )}
-
-          {!!completions.length && (
-            <Box borderColor={theme.color.bronze} borderStyle="single" flexDirection="column" paddingX={1}>
-              {completions.slice(Math.max(0, compIdx - 8), compIdx + 8).map((item, i) => {
-                const active = Math.max(0, compIdx - 8) + i === compIdx
-
-                return (
-                  <Text key={item.text}>
-                    <Text bold={active} color={active ? theme.color.amber : theme.color.cornsilk}>
-                      {item.display}
-                    </Text>
-                    {item.meta ? <Text color={theme.color.dim}> {item.meta}</Text> : null}
-                  </Text>
-                )
-              })}
             </Box>
           )}
 

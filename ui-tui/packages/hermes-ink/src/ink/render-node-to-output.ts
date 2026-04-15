@@ -30,13 +30,19 @@ function isXtermJsHost(): boolean {
 // shift layout → narrow damage bounds → O(changed cells) diff instead of
 // O(rows×cols).
 let layoutShifted = false
+let absoluteOverlayMoved = false
 
 export function resetLayoutShifted(): void {
   layoutShifted = false
+  absoluteOverlayMoved = false
 }
 
 export function didLayoutShift(): boolean {
   return layoutShifted
+}
+
+export function didAbsoluteOverlayMove(): boolean {
+  return absoluteOverlayMoved
 }
 
 // DECSTBM scroll optimization hint. When a ScrollBox's scrollTop changes
@@ -496,6 +502,7 @@ function renderNodeToOutput(
 
     if (positionChanged) {
       layoutShifted = true
+      absoluteOverlayMoved ||= node.style.position === 'absolute'
     }
 
     if (cached && (node.dirty || positionChanged)) {

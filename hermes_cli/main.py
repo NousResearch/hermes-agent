@@ -2816,6 +2816,46 @@ def cmd_debug(args):
     run_debug(args)
 
 
+def cmd_evolve(args):
+    """Generate self-evolution reports from recent sessions and trajectories."""
+    if getattr(args, "evolve_action", None) != "report":
+        raise SystemExit("Error: expected 'report' subcommand")
+
+    from hermes_state import SessionDB
+    from agent.evolution import analyze_sessions, load_trajectory_entries, render_markdown_report
+
+    db = SessionDB()
+    try:
+        sessions = db.list_sessions_rich(source=args.source, limit=args.limit)
+        for session in sessions:
+            session["messages"] = db.get_messages(session["id"])
+
+        trajectory_entries = []
+        for trajectory_path in getattr(args, "trajectory", []) or []:
+            trajectory_entries.extend(load_trajectory_entries(trajectory_path))
+
+        report = analyze_sessions(
+            sessions,
+            trajectory_entries=trajectory_entries,
+            min_count=args.min_count,
+        )
+        markdown = render_markdown_report(report)
+    except Exception as exc:
+        print(f"Error: failed to generate evolution report: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc
+    finally:
+        db.close()
+
+    output_path = getattr(args, "output", "-") or "-"
+    if output_path == "-":
+        print(markdown, end="")
+        return
+
+    target = Path(output_path).expanduser()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(markdown, encoding="utf-8")
+
+
 def cmd_config(args):
     """Configuration management."""
     from hermes_cli.config import config_command
@@ -5058,6 +5098,49 @@ Examples:
         help="Print the report locally instead of uploading",
     )
     debug_parser.set_defaults(func=cmd_debug)
+
+    # =========================================================================
+    # evolve command
+    # =========================================================================
+    evolve_parser = subparsers.add_parser(
+        "evolve",
+        help="Self-evolution report tools",
+        description="Analyze recent sessions and optional trajectories for repeated failure patterns",
+    )
+    evolve_subparsers = evolve_parser.add_subparsers(dest="evolve_action")
+    evolve_report = evolve_subparsers.add_parser(
+        "report",
+        help="Generate a Markdown self-evolution report",
+    )
+    evolve_report.add_argument(
+        "--source",
+        default=None,
+        help="Session source tag to analyze (default: all sources)",
+    )
+    evolve_report.add_argument(
+        "--limit",
+        type=int,
+        default=20,
+        help="Number of recent sessions to analyze (default: 20)",
+    )
+    evolve_report.add_argument(
+        "--trajectory",
+        action="append",
+        default=[],
+        help="Optional trajectory JSONL file to include (repeat flag for multiple files)",
+    )
+    evolve_report.add_argument(
+        "--min-count",
+        type=int,
+        default=2,
+        help="Minimum repeated count required to surface a finding (default: 2)",
+    )
+    evolve_report.add_argument(
+        "--output", "-o",
+        default="-",
+        help="Write report to this path instead of stdout ('-' for stdout)",
+    )
+    evolve_report.set_defaults(func=cmd_evolve)
 
     # =========================================================================
     # backup command

@@ -8660,6 +8660,53 @@ class AIAgent:
             api_kwargs = None  # Guard against UnboundLocalError in except handler
 
             while retry_count < max_retries:
+                # ── Nous Portal rate limit guard ──────────────────────
+                # If another session already recorded that Nous is rate-
+                # limited, skip the API call entirely.  Each attempt
+                # (including SDK-level retries) counts against RPH and
+                # deepens the rate limit hole.
+                if self.provider == "nous":
+                    try:
+                        from agent.nous_rate_guard import (
+                            nous_rate_limit_remaining,
+                            format_remaining as _fmt_nous_remaining,
+                        )
+                        _nous_remaining = nous_rate_limit_remaining()
+                        if _nous_remaining is not None and _nous_remaining > 0:
+                            _nous_msg = (
+                                f"Nous Portal rate limit active — "
+                                f"resets in {_fmt_nous_remaining(_nous_remaining)}."
+                            )
+                            self._vprint(
+                                f"{self.log_prefix}⏳ {_nous_msg} Trying fallback...",
+                                force=True,
+                            )
+                            self._emit_status(f"⏳ {_nous_msg}")
+                            if self._try_activate_fallback():
+                                retry_count = 0
+                                compression_attempts = 0
+                                primary_recovery_attempted = False
+                                continue
+                            # No fallback available — return with clear message
+                            self._persist_session(messages, conversation_history)
+                            return {
+                                "final_response": (
+                                    f"⏳ {_nous_msg}\n\n"
+                                    "No fallback provider available. "
+                                    "Try again after the reset, or add a "
+                                    "fallback provider in config.yaml."
+                                ),
+                                "messages": messages,
+                                "api_calls": api_call_count,
+                                "completed": False,
+                                "failed": True,
+                                "error": _nous_msg,
+                            }
+                    except ImportError:
+                        pass
+                    except Exception:
+                        pass  # Never let rate guard break the agent loop
+
                 try:
                     self._reset_stream_delivery_tracking()
                     api_kwargs = self._build_api_kwargs(api_messages)
@@ -9248,6 +9295,15 @@ class AIAgent:
                                 self._vprint(f"{self.log_prefix}   💾 Cache: {cached:,}/{prompt:,} tokens ({hit_pct:.0f}% hit, {written:,} written)")
                     
                     has_retried_429 = False  # Reset on success
+                    # Clear Nous rate limit state on successful request —
+                    # proves the limit has reset and other sessions can
+                    # resume hitting Nous.
+                    if self.provider == "nous":
+                        try:
+                            from agent.nous_rate_guard import clear_nous_rate_limit
+                            clear_nous_rate_limit()
+                        except Exception:
+                            pass
                     self._touch_activity(f"API call #{api_call_count} completed")
                     break  # Success, exit retry loop
 
@@ -9658,6 +9714,38 @@ class AIAgent:
                                 compression_attempts = 0
                                 primary_recovery_attempted = False
                                 continue
+
+                    # ── Nous Portal: record rate limit & skip retries ─────
+                    # When Nous returns a 429, record the reset time to a
+                    # shared file so ALL sessions (cron, gateway, auxiliary)
+                    # know not to pile on.  Then skip further retries —
+                    # each one burns another RPH request and deepens the
+                    # rate limit hole.  The retry loop's top-of-iteration
+                    # guard will catch this on the next pass and try
+                    # fallback or bail with a clear message.
+                    if (
+                        is_rate_limited
+                        and self.provider == "nous"
+                        and classified.reason == FailoverReason.rate_limit
+                        and not recovered_with_pool
+                    ):
+                        try:
+                            from agent.nous_rate_guard import record_nous_rate_limit
+                            _err_resp = getattr(api_error, "response", None)
+                            _err_hdrs = (
+                                getattr(_err_resp, "headers", None)
+                                if _err_resp else None
+                            )
+                            record_nous_rate_limit(
+                                headers=_err_hdrs,
+                                error_context=error_context,
+                            )
+                        except Exception:
+                            pass
+                        # Skip straight to max_retries — the top-of-loop
+                        # guard will handle fallback or bail cleanly.
+                        retry_count = max_retries
+                        continue
 
                     is_payload_too_large = (
                         classified.reason == FailoverReason.payload_too_large

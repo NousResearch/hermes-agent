@@ -775,6 +775,21 @@ def _try_openrouter() -> Tuple[Optional[OpenAI], Optional[str]]:
 
 
 def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
+    # Check cross-session rate limit guard before attempting Nous —
+    # if another session already recorded a 429, skip Nous entirely
+    # to avoid piling more requests onto the tapped RPH bucket.
+    try:
+        from agent.nous_rate_guard import nous_rate_limit_remaining
+        _remaining = nous_rate_limit_remaining()
+        if _remaining is not None and _remaining > 0:
+            logger.debug(
+                "Auxiliary: skipping Nous Portal (rate-limited, resets in %.0fs)",
+                _remaining,
+            )
+            return None, None
+    except Exception:
+        pass
+
     nous = _read_nous_auth()
     if not nous:
         return None, None

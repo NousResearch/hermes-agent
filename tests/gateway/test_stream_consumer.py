@@ -9,6 +9,16 @@ import pytest
 from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 
 
+async def _wait_for_mock_call_count(mock, count: int, *, timeout: float = 0.5) -> None:
+    deadline = asyncio.get_running_loop().time() + timeout
+    while mock.call_count < count and asyncio.get_running_loop().time() < deadline:
+        await asyncio.sleep(0.01)
+
+    assert mock.call_count >= count, (
+        f"Timed out waiting for {mock!r} to reach {count} calls; got {mock.call_count}"
+    )
+
+
 # ── _clean_for_display unit tests ────────────────────────────────────────
 
 
@@ -239,6 +249,47 @@ class TestSendOrEditMediaStripping:
         assert result is True
         adapter.edit_message.assert_called_once()
 
+    @pytest.mark.asyncio
+    async def test_silent_placeholder_skips_send(self):
+        """Silent placeholder text should not be streamed to the platform."""
+        adapter = MagicMock()
+        adapter.send = AsyncMock()
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        consumer = GatewayStreamConsumer(adapter, "chat_123")
+        await consumer._send_or_edit("(No message)")
+
+        adapter.send.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_silent_placeholder_with_cursor_skips_send(self):
+        """Cursor updates should still suppress exact silence markers."""
+        adapter = MagicMock()
+        adapter.send = AsyncMock()
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_123",
+            StreamConsumerConfig(cursor=" ..."),
+        )
+        await consumer._send_or_edit("(No message) ...")
+
+        adapter.send.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_commentary_silent_placeholder_skips_send(self):
+        """Completed commentary placeholders should also stay hidden."""
+        adapter = MagicMock()
+        adapter.send = AsyncMock()
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        consumer = GatewayStreamConsumer(adapter, "chat_123")
+        sent = await consumer._send_commentary("[SILENT]")
+
+        assert sent is False
+        adapter.send.assert_not_called()
+
 
 # ── Integration: full stream run ─────────────────────────────────────────
 
@@ -277,6 +328,27 @@ class TestStreamRunMediaStripping:
             assert "MEDIA:" not in sent_text, f"MEDIA: leaked into display: {sent_text!r}"
 
         assert consumer.already_sent
+
+    @pytest.mark.asyncio
+    async def test_stream_with_silent_placeholder_sends_nothing(self):
+        """A final streamed silence marker should produce no visible message."""
+        adapter = MagicMock()
+        adapter.send = AsyncMock()
+        adapter.edit_message = AsyncMock()
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        config = StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5)
+        consumer = GatewayStreamConsumer(adapter, "chat_123", config)
+
+        consumer.on_delta("(No message)")
+        consumer.finish()
+
+        await consumer.run()
+
+        adapter.send.assert_not_called()
+        adapter.edit_message.assert_not_called()
+        assert consumer.already_sent is False
+        assert consumer.final_response_sent is True
 
 
 # ── Segment break (tool boundary) tests ──────────────────────────────────
@@ -439,10 +511,11 @@ class TestSegmentBreakOnToolBoundary:
 
         config = StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5, cursor=" ▉")
         consumer = GatewayStreamConsumer(adapter, "chat_123", config)
+        consumer._MAX_FLOOD_STRIKES = 1
 
         consumer.on_delta("Hello")
         task = asyncio.create_task(consumer.run())
-        await asyncio.sleep(0.08)
+        await _wait_for_mock_call_count(adapter.send, 1)
         consumer.on_delta(" world")
         await asyncio.sleep(0.08)
         consumer.finish()
@@ -469,10 +542,11 @@ class TestSegmentBreakOnToolBoundary:
 
         config = StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5, cursor=" ▉")
         consumer = GatewayStreamConsumer(adapter, "chat_123", config)
+        consumer._MAX_FLOOD_STRIKES = 1
 
         consumer.on_delta("Hello")
         task = asyncio.create_task(consumer.run())
-        await asyncio.sleep(0.08)
+        await _wait_for_mock_call_count(adapter.send, 1)
         consumer.on_delta(" world")
         await asyncio.sleep(0.08)
         consumer.on_delta(None)
@@ -502,7 +576,7 @@ class TestSegmentBreakOnToolBoundary:
 
         consumer.on_delta("Hello")
         task = asyncio.create_task(consumer.run())
-        await asyncio.sleep(0.08)
+        await _wait_for_mock_call_count(adapter.send, 1)
         consumer.on_delta(" world, this is a longer response.")
         await asyncio.sleep(0.08)
         consumer.finish()
@@ -590,12 +664,13 @@ class TestSegmentBreakOnToolBoundary:
 
         config = StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5, cursor=" ▉")
         consumer = GatewayStreamConsumer(adapter, "chat_123", config)
+        consumer._MAX_FLOOD_STRIKES = 1
 
         prefix = "Hello world"
         tail = "x" * 620
         consumer.on_delta(prefix)
         task = asyncio.create_task(consumer.run())
-        await asyncio.sleep(0.08)
+        await _wait_for_mock_call_count(adapter.send, 1)
         consumer.on_delta(tail)
         await asyncio.sleep(0.08)
         consumer.finish()
@@ -673,7 +748,7 @@ class TestInterimCommentaryMessages:
 
         consumer.on_delta("Hello")
         task = asyncio.create_task(consumer.run())
-        await asyncio.sleep(0.08)
+        await _wait_for_mock_call_count(adapter.send, 1)
         consumer.on_delta(" world")
         await asyncio.sleep(0.08)
         consumer.finish()

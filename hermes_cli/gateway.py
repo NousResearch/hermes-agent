@@ -584,11 +584,11 @@ def _default_system_service_user() -> str | None:
 
 def prompt_linux_gateway_install_scope() -> str | None:
     choice = prompt_choice(
-        "  Choose how the gateway should run in the background:",
+        "  게이트웨이를 백그라운드에서 어떻게 실행할지 선택해 주세요:",
         [
-            "User service (no sudo; best for laptops/dev boxes; may need linger after logout)",
-            "System service (starts on boot; requires sudo; still runs as your user)",
-            "Skip service install for now",
+            "사용자 서비스 (sudo 불필요, 노트북/개발 환경에 적합, 로그아웃 후 linger 설정이 필요할 수 있음)",
+            "시스템 서비스 (부팅 시 시작, sudo 필요, 실제 실행은 현재 사용자 계정으로 진행)",
+            "지금은 서비스 설치 건너뛰기",
         ],
         default=0,
     )
@@ -603,12 +603,12 @@ def install_linux_gateway_from_setup(force: bool = False) -> tuple[str | None, b
     if scope == "system":
         run_as_user = _default_system_service_user()
         if os.geteuid() != 0:
-            print_warning("  System service install requires sudo, so Hermes can't create it from this user session.")
+            print_warning("  시스템 서비스 설치에는 sudo가 필요해서, 현재 사용자 세션에서는 Hermes가 바로 생성할 수 없어요.")
             if run_as_user:
-                print_info(f"  After setup, run: sudo hermes gateway install --system --run-as-user {run_as_user}")
+                print_info(f"  설정이 끝난 뒤 다음 명령을 실행하세요: sudo hermes gateway install --system --run-as-user {run_as_user}")
             else:
-                print_info("  After setup, run: sudo hermes gateway install --system --run-as-user <your-user>")
-            print_info("  Then start it with: sudo hermes gateway start --system")
+                print_info("  설정이 끝난 뒤 다음 명령을 실행하세요: sudo hermes gateway install --system --run-as-user <your-user>")
+            print_info("  그다음 다음 명령으로 시작하세요: sudo hermes gateway start --system")
             return scope, False
 
         if not run_as_user:
@@ -617,7 +617,7 @@ def install_linux_gateway_from_setup(force: bool = False) -> tuple[str | None, b
                 run_as_user = (run_as_user or "").strip()
                 if run_as_user:
                     break
-                print_error("  Enter a username.")
+                print_error("  사용자 이름을 입력해 주세요.")
 
         systemd_install(force=force, system=True, run_as_user=run_as_user)
         return scope, True
@@ -681,13 +681,13 @@ def print_systemd_linger_guidance() -> None:
     """Print the current linger status and the fix when it is disabled."""
     linger_enabled, linger_detail = get_systemd_linger_status()
     if linger_enabled is True:
-        print("✓ Systemd linger is enabled (service survives logout)")
+        print("✓ systemd linger가 활성화되어 있어요 (로그아웃 후에도 서비스가 유지돼요)")
     elif linger_enabled is False:
-        print("⚠ Systemd linger is disabled (gateway may stop when you log out)")
-        print("  Run: sudo loginctl enable-linger $USER")
+        print("⚠ systemd linger가 비활성화되어 있어요 (로그아웃하면 gateway가 멈출 수 있어요)")
+        print("  실행: sudo loginctl enable-linger $USER")
     else:
-        print(f"⚠ Could not verify systemd linger ({linger_detail})")
-        print("  If you want the gateway user service to survive logout, run:")
+        print(f"⚠ systemd linger 상태를 확인하지 못했어요 ({linger_detail})")
+        print("  로그아웃 후에도 gateway 사용자 서비스를 유지하려면 다음 명령을 실행하세요:")
         print("  sudo loginctl enable-linger $USER")
 
 def _launchd_user_home() -> Path:

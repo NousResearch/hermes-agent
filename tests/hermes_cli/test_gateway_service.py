@@ -12,6 +12,62 @@ from gateway.restart import (
 )
 
 
+def test_prompt_linux_gateway_install_scope_is_localized(monkeypatch):
+    captured = {}
+
+    def fake_prompt_choice(title, options, default=0):
+        captured["title"] = title
+        captured["options"] = options
+        captured["default"] = default
+        return 2
+
+    monkeypatch.setattr(gateway_cli, "prompt_choice", fake_prompt_choice)
+
+    result = gateway_cli.prompt_linux_gateway_install_scope()
+
+    assert result is None
+    assert captured["title"] == "  게이트웨이를 백그라운드에서 어떻게 실행할지 선택해 주세요:"
+    assert captured["options"] == [
+        "사용자 서비스 (sudo 불필요, 노트북/개발 환경에 적합, 로그아웃 후 linger 설정이 필요할 수 있음)",
+        "시스템 서비스 (부팅 시 시작, sudo 필요, 실제 실행은 현재 사용자 계정으로 진행)",
+        "지금은 서비스 설치 건너뛰기",
+    ]
+    assert captured["default"] == 0
+
+
+
+def test_print_systemd_linger_guidance_is_localized_enabled(monkeypatch, capsys):
+    monkeypatch.setattr(gateway_cli, "get_systemd_linger_status", lambda: (True, ""))
+
+    gateway_cli.print_systemd_linger_guidance()
+
+    out = capsys.readouterr().out
+    assert "systemd linger가 활성화되어 있어요" in out
+
+
+
+def test_print_systemd_linger_guidance_is_localized_disabled(monkeypatch, capsys):
+    monkeypatch.setattr(gateway_cli, "get_systemd_linger_status", lambda: (False, ""))
+
+    gateway_cli.print_systemd_linger_guidance()
+
+    out = capsys.readouterr().out
+    assert "systemd linger가 비활성화되어 있어요" in out
+    assert "실행: sudo loginctl enable-linger $USER" in out
+
+
+
+def test_print_systemd_linger_guidance_is_localized_unknown(monkeypatch, capsys):
+    monkeypatch.setattr(gateway_cli, "get_systemd_linger_status", lambda: (None, "loginctl not found"))
+
+    gateway_cli.print_systemd_linger_guidance()
+
+    out = capsys.readouterr().out
+    assert "systemd linger 상태를 확인하지 못했어요" in out
+    assert "loginctl not found" in out
+    assert "gateway 사용자 서비스를 유지하려면" in out
+
+
 class TestSystemdServiceRefresh:
     def test_systemd_install_repairs_outdated_unit_without_force(self, tmp_path, monkeypatch):
         unit_path = tmp_path / "hermes-gateway.service"

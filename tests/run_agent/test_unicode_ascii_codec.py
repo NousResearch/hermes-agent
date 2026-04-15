@@ -268,9 +268,9 @@ class TestApiKeyClientSync:
             agent.client.api_key = _clean_key
 
         # All three locations should now hold the clean key
-        assert agent.api_key == "***"
-        assert agent._client_kwargs["api_key"] == "***"
-        assert agent.client.api_key == "***"
+        assert agent.api_key == "sk-proj-abcdef"
+        assert agent._client_kwargs["api_key"] == "sk-proj-abcdef"
+        assert agent.client.api_key == "sk-proj-abcdef"
         # The bad char should be gone from all of them
         assert "\u028b" not in agent.api_key
         assert "\u028b" not in agent._client_kwargs["api_key"]
@@ -355,3 +355,18 @@ class TestApiMessagesAndApiKwargsSanitized:
         # api_messages sanitize must catch the dirty reasoning_content
         assert _sanitize_messages_non_ascii(api_messages) is True
         assert "\xab" not in api_messages[1]["reasoning_content"]
+
+    def test_reasoning_field_in_canonical_messages_is_sanitized(self):
+        """The canonical messages list stores reasoning as 'reasoning', not
+        'reasoning_content'.  The extra-fields loop must catch it."""
+        messages = [
+            {"role": "user", "content": "hello"},
+            {
+                "role": "assistant",
+                "content": "ok",
+                "reasoning": "Let me think \xab carefully \xbb",
+            },
+        ]
+        assert _sanitize_messages_non_ascii(messages) is True
+        assert "\xab" not in messages[1]["reasoning"]
+        assert "\xbb" not in messages[1]["reasoning"]

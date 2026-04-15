@@ -97,6 +97,10 @@ _SENSITIVE_PATH_PREFIXES = (
     "/private/etc/", "/private/var/",
 )
 _SENSITIVE_EXACT_PATHS = {"/var/run/docker.sock", "/run/docker.sock"}
+_SENSITIVE_PREFIX_EXCEPTIONS = (
+    "/var/folders/",
+    "/private/var/folders/",
+)
 
 
 def _check_sensitive_path(filepath: str) -> str | None:
@@ -110,6 +114,9 @@ def _check_sensitive_path(filepath: str) -> str | None:
         f"Refusing to write to sensitive system path: {filepath}\n"
         "Use the terminal tool with sudo if you need to modify system files."
     )
+    for prefix in _SENSITIVE_PREFIX_EXCEPTIONS:
+        if resolved.startswith(prefix) or normalized.startswith(prefix):
+            return None
     for prefix in _SENSITIVE_PATH_PREFIXES:
         if resolved.startswith(prefix) or normalized.startswith(prefix):
             return _err

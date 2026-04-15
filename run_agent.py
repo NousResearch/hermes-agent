@@ -2949,7 +2949,7 @@ class AIAgent:
         # Signal all tools to abort any in-flight operations immediately.
         # Scope the interrupt to this agent's execution thread so other
         # agents running in the same process (gateway) are not affected.
-        _set_interrupt(True, self._execution_thread_id)
+        _set_interrupt(True, getattr(self, "_execution_thread_id", None))
         # Propagate interrupt to any running child agents (subagent delegation)
         with self._active_children_lock:
             children_copy = list(self._active_children)
@@ -2965,7 +2965,7 @@ class AIAgent:
         """Clear any pending interrupt request and the per-thread tool interrupt signal."""
         self._interrupt_requested = False
         self._interrupt_message = None
-        _set_interrupt(False, self._execution_thread_id)
+        _set_interrupt(False, getattr(self, "_execution_thread_id", None))
 
     def _touch_activity(self, desc: str) -> None:
         """Update the last-activity timestamp and description (thread-safe)."""

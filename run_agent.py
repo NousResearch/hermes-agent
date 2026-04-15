@@ -1399,6 +1399,7 @@ class AIAgent:
                 api_mode=self.api_mode,
             )
         self.compression_enabled = compression_enabled
+        self._compressing = False  # True while compression is in-flight
 
         # Reject models whose context window is below the minimum required
         # for reliable tool-calling workflows (64K tokens).
@@ -10243,11 +10244,15 @@ class AIAgent:
 
                     if self.compression_enabled and _compressor.should_compress(_real_tokens):
                         self._safe_print("  ⟳ compacting context…")
-                        messages, active_system_prompt = self._compress_context(
-                            messages, system_message,
-                            approx_tokens=self.context_compressor.last_prompt_tokens,
-                            task_id=effective_task_id,
-                        )
+                        self._compressing = True
+                        try:
+                            messages, active_system_prompt = self._compress_context(
+                                messages, system_message,
+                                approx_tokens=self.context_compressor.last_prompt_tokens,
+                                task_id=effective_task_id,
+                            )
+                        finally:
+                            self._compressing = False
                         # Compression created a new session — clear history so
                         # _flush_messages_to_session_db writes compressed messages
                         # to the new session (see preflight compression comment).

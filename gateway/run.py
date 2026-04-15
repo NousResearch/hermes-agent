@@ -8616,8 +8616,11 @@ class GatewayRunner:
             agent.service_tier = self._service_tier
             agent.request_overrides = turn_route.get("request_overrides")
 
-            # Background review delivery — send "💾 Memory updated" etc. to user
-            def _bg_review_send(message: str) -> None:
+            _bg_review_release = threading.Event()
+            _bg_review_pending: list[str] = []
+            _bg_review_pending_lock = threading.Lock()
+
+            def _deliver_bg_review_message(message: str) -> None:
                 if not _status_adapter:
                     return
                 try:
@@ -8632,7 +8635,32 @@ class GatewayRunner:
                 except Exception as _e:
                     logger.debug("background_review_callback error: %s", _e)
 
+            def _release_bg_review_messages() -> None:
+                _bg_review_release.set()
+                with _bg_review_pending_lock:
+                    pending = list(_bg_review_pending)
+                    _bg_review_pending.clear()
+                for queued in pending:
+                    _deliver_bg_review_message(queued)
+
+            # Background review delivery — send "💾 Memory updated" etc. to user
+            def _bg_review_send(message: str) -> None:
+                if not _status_adapter:
+                    return
+                if not _bg_review_release.is_set():
+                    with _bg_review_pending_lock:
+                        if not _bg_review_release.is_set():
+                            _bg_review_pending.append(message)
+                            return
+                _deliver_bg_review_message(message)
+
             agent.background_review_callback = _bg_review_send
+            # Register the release hook on the adapter so base.py's finally
+            # block can fire it after delivering the main response.
+            if _status_adapter and session_key:
+                _pdc = getattr(_status_adapter, "_post_delivery_callbacks", None)
+                if _pdc is not None:
+                    _pdc[session_key] = _release_bg_review_messages
 
             # Store agent reference for interrupt support
             agent_holder[0] = agent
@@ -9356,6 +9384,17 @@ class GatewayRunner:
                             )
                         except Exception as e:
                             logger.warning("Failed to send first response before queued message: %s", e)
+                    # Release deferred bg-review notifications now that the
+                    # first response has been delivered.  Pop from the
+                    # adapter's callback dict (prevents double-fire in
+                    # base.py's finally block) and call it.
+                    if adapter and hasattr(adapter, "_post_delivery_callbacks"):
+                        _bg_cb = adapter._post_delivery_callbacks.pop(session_key, None)
+                        if callable(_bg_cb):
+                            try:
+                                _bg_cb()
+                            except Exception:
+                                pass
                 # else: interrupted — discard the interrupted response ("Operation
                 # interrupted." is just noise; the user already knows they sent a
                 # new message).

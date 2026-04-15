@@ -194,11 +194,17 @@ class PairingStore:
         """
         Approve a pairing code. Adds the user to the approved list.
 
-        Returns {user_id, user_name} on success, None if code is invalid/expired.
+        Returns {user_id, user_name} on success, None if code is invalid/expired
+        or the platform is currently locked out due to too many failed attempts.
         """
         with self._lock:
             self._cleanup_expired(platform)
             code = code.upper().strip()
+
+            # Check lockout before validating the code — prevents brute-force
+            # bypass by guessing or reusing a valid code during lockout.
+            if self._is_locked_out(platform):
+                return None
 
             pending = self._load_json(self._pending_path(platform))
             if code not in pending:

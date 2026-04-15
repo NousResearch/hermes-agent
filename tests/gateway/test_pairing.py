@@ -252,6 +252,27 @@ class TestLockout:
 
             assert store._is_locked_out("telegram") is False
 
+    def test_lockout_blocks_valid_code_approval(self, tmp_path):
+        """A valid pairing code must NOT be approved while the platform is locked out."""
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            store = PairingStore()
+            valid_code = store.generate_code("telegram", "user1", "Alice")
+            assert valid_code is not None
+
+            # Exhaust failed attempts to trigger lockout
+            for _ in range(MAX_FAILED_ATTEMPTS):
+                result = store.approve_code("telegram", "WRONGCODE")
+                assert result is None
+
+            assert store._is_locked_out("telegram") is True
+
+            # Attempting to approve the valid code during lockout must fail
+            result = store.approve_code("telegram", valid_code)
+            assert result is None
+
+            # User should NOT be added to the approved list
+            assert store.is_approved("telegram", "user1") is False
+
 
 # ---------------------------------------------------------------------------
 # Code expiry

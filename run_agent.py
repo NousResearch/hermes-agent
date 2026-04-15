@@ -4206,6 +4206,9 @@ class AIAgent:
         return False
 
     def _create_openai_client(self, client_kwargs: dict, *, reason: str, shared: bool) -> Any:
+        from agent.auxiliary_client import _validate_base_url, _validate_proxy_env_urls
+        _validate_proxy_env_urls()
+        _validate_base_url(client_kwargs.get("base_url"))
         if self.provider == "copilot-acp" or str(client_kwargs.get("base_url", "")).startswith("acp://copilot"):
             from agent.copilot_acp_client import CopilotACPClient
 

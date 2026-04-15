@@ -1942,7 +1942,8 @@ def _run_on_mcp_loop(coro, timeout: float = 30):
     if loop is None or not loop.is_running():
         raise RuntimeError("MCP event loop is not running")
     future = asyncio.run_coroutine_threadsafe(coro, loop)
-    deadline = None if timeout is None else time.monotonic() + timeout
+    start_time = time.monotonic()
+    deadline = None if timeout is None else start_time + timeout
 
     while True:
         if is_interrupted():
@@ -1953,7 +1954,12 @@ def _run_on_mcp_loop(coro, timeout: float = 30):
         if deadline is not None:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                return future.result(timeout=0)
+                future.cancel()
+                elapsed = time.monotonic() - start_time
+                raise TimeoutError(
+                    f"MCP call timed out after {elapsed:.1f}s "
+                    f"(configured timeout: {float(timeout):.1f}s)"
+                )
             wait_timeout = min(wait_timeout, remaining)
 
         try:

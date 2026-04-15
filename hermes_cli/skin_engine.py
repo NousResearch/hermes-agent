@@ -178,11 +178,11 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
         },
         "branding": {
             "agent_name": "Hermes Agent",
-            "welcome": "Welcome to Hermes Agent! Type your message or /help for commands.",
-            "goodbye": "Goodbye! ⚕",
+            "welcome": "Hermes Agent에 오신 것을 환영합니다! 메시지를 입력하거나 /help로 명령어를 확인하세요.",
+            "goodbye": "안녕히 가세요! ⚕",
             "response_label": " ⚕ Hermes ",
             "prompt_symbol": "❯ ",
-            "help_header": "(^_^)? Available Commands",
+            "help_header": "(^_^) 사용 가능한 명령어",
         },
         "tool_prefix": "┊",
     },
@@ -273,11 +273,11 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
         "spinner": {},
         "branding": {
             "agent_name": "Hermes Agent",
-            "welcome": "Welcome to Hermes Agent! Type your message or /help for commands.",
-            "goodbye": "Goodbye! ⚕",
+            "welcome": "Hermes Agent에 오신 것을 환영합니다! 메시지를 입력하거나 /help로 명령어를 확인하세요.",
+            "goodbye": "안녕히 가세요! ⚕",
             "response_label": " ⚕ Hermes ",
             "prompt_symbol": "❯ ",
-            "help_header": "[?] Available Commands",
+            "help_header": "[?] 사용 가능한 명령어",
         },
         "tool_prefix": "┊",
     },
@@ -304,11 +304,11 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
         "spinner": {},
         "branding": {
             "agent_name": "Hermes Agent",
-            "welcome": "Welcome to Hermes Agent! Type your message or /help for commands.",
-            "goodbye": "Goodbye! ⚕",
+            "welcome": "Hermes Agent에 오신 것을 환영합니다! 메시지를 입력하거나 /help로 명령어를 확인하세요.",
+            "goodbye": "안녕히 가세요! ⚕",
             "response_label": " ⚕ Hermes ",
             "prompt_symbol": "❯ ",
-            "help_header": "(^_^)? Available Commands",
+            "help_header": "(^_^) 사용 가능한 명령어",
         },
         "tool_prefix": "┊",
     },
@@ -341,11 +341,11 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
         "spinner": {},
         "branding": {
             "agent_name": "Hermes Agent",
-            "welcome": "Welcome to Hermes Agent! Type your message or /help for commands.",
-            "goodbye": "Goodbye! ⚕",
+            "welcome": "Hermes Agent에 오신 것을 환영합니다! 메시지를 입력하거나 /help로 명령어를 확인하세요.",
+            "goodbye": "안녕히 가세요! ⚕",
             "response_label": " ⚕ Hermes ",
             "prompt_symbol": "❯ ",
-            "help_header": "[?] Available Commands",
+            "help_header": "[?] 사용 가능한 명령어",
         },
         "tool_prefix": "│",
     },
@@ -378,11 +378,11 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
         "spinner": {},
         "branding": {
             "agent_name": "Hermes Agent",
-            "welcome": "Welcome to Hermes Agent! Type your message or /help for commands.",
-            "goodbye": "Goodbye! \u2695",
+            "welcome": "Hermes Agent에 오신 것을 환영합니다! 메시지를 입력하거나 /help로 명령어를 확인하세요.",
+            "goodbye": "안녕히 가세요! \u2695",
             "response_label": " \u2695 Hermes ",
             "prompt_symbol": "\u276f ",
-            "help_header": "(^_^)? Available Commands",
+            "help_header": "(^_^) 사용 가능한 명령어",
         },
         "tool_prefix": "\u250a",
     },
@@ -730,7 +730,7 @@ def get_active_prompt_symbol(fallback: str = "❯ ") -> str:
 
 
 
-def get_active_help_header(fallback: str = "(^_^)? Available Commands") -> str:
+def get_active_help_header(fallback: str = "(^_^) 사용 가능한 명령어") -> str:
     """Get the /help header from the active skin."""
     try:
         return get_active_skin().get_branding("help_header", fallback)
@@ -739,7 +739,7 @@ def get_active_help_header(fallback: str = "(^_^)? Available Commands") -> str:
 
 
 
-def get_active_goodbye(fallback: str = "Goodbye! ⚕") -> str:
+def get_active_goodbye(fallback: str = "안녕히 가세요! ⚕") -> str:
     """Get the goodbye line from the active skin."""
     try:
         return get_active_skin().get_branding("goodbye", fallback)

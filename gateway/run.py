@@ -4398,20 +4398,20 @@ class GatewayRunner:
         """Handle /help command - list available commands."""
         from hermes_cli.commands import gateway_help_lines
         lines = [
-            "📖 **Hermes Commands**\n",
+            "📖 **Hermes 명령어**\n",
             *gateway_help_lines(),
         ]
         try:
             from agent.skill_commands import get_skill_commands
             skill_cmds = get_skill_commands()
             if skill_cmds:
-                lines.append(f"\n⚡ **Skill Commands** ({len(skill_cmds)} active):")
+                lines.append(f"\n⚡ **스킬 명령어** ({len(skill_cmds)}개 활성):")
                 # Show first 10, then point to /commands for the rest
                 sorted_cmds = sorted(skill_cmds)
                 for cmd in sorted_cmds[:10]:
                     lines.append(f"`{cmd}` — {skill_cmds[cmd]['description']}")
                 if len(sorted_cmds) > 10:
-                    lines.append(f"\n... and {len(sorted_cmds) - 10} more. Use `/commands` for the full paginated list.")
+                    lines.append(f"\n... 외 {len(sorted_cmds) - 10}개가 더 있습니다. 전체 페이지 목록은 `/commands`를 사용하세요.")
         except Exception:
             pass
         return "\n".join(lines)
@@ -4425,7 +4425,7 @@ class GatewayRunner:
             try:
                 requested_page = int(raw_args)
             except ValueError:
-                return "Usage: `/commands [page]`"
+                return "사용법: `/commands [page]`"
         else:
             requested_page = 1
 
@@ -4436,15 +4436,15 @@ class GatewayRunner:
             skill_cmds = get_skill_commands()
             if skill_cmds:
                 entries.append("")
-                entries.append("⚡ **Skill Commands**:")
+                entries.append("⚡ **스킬 명령어**:")
                 for cmd in sorted(skill_cmds):
-                    desc = skill_cmds[cmd].get("description", "").strip() or "Skill command"
+                    desc = skill_cmds[cmd].get("description", "").strip() or "스킬 명령어"
                     entries.append(f"`{cmd}` — {desc}")
         except Exception:
             pass
 
         if not entries:
-            return "No commands available."
+            return "사용 가능한 명령어가 없습니다."
 
         from gateway.config import Platform
         page_size = 15 if event.source.platform == Platform.TELEGRAM else 20
@@ -4454,19 +4454,19 @@ class GatewayRunner:
         page_entries = entries[start:start + page_size]
 
         lines = [
-            f"📚 **Commands** ({len(entries)} total, page {page}/{total_pages})",
+            f"📚 **명령어** ({len(entries)}개, 페이지 {page}/{total_pages})",
             "",
             *page_entries,
         ]
         if total_pages > 1:
             nav_parts = []
             if page > 1:
-                nav_parts.append(f"`/commands {page - 1}` ← prev")
+                nav_parts.append(f"`/commands {page - 1}` ← 이전")
             if page < total_pages:
-                nav_parts.append(f"next → `/commands {page + 1}`")
+                nav_parts.append(f"다음 → `/commands {page + 1}`")
             lines.extend(["", " | ".join(nav_parts)])
         if page != requested_page:
-            lines.append(f"_(Requested page {requested_page} was out of range, showing page {page}.)_")
+            lines.append(f"_(요청한 페이지 {requested_page}는 범위를 벗어나 페이지 {page}를 표시합니다.)_")
         return "\n".join(lines)
     
     async def _handle_model_command(self, event: MessageEvent) -> Optional[str]:

@@ -1,7 +1,13 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from cli import HermesCLI, _build_compact_banner, _rich_text_from_ansi
+from cli import (
+    HermesCLI,
+    _build_compact_banner,
+    _center_display_text,
+    _display_cell_width,
+    _rich_text_from_ansi,
+)
 from hermes_cli.skin_engine import get_active_skin, set_active_skin
 
 
@@ -131,6 +137,14 @@ class TestCompactBannerSkinIntegration:
 
 
 class TestAnsiRichTextHelper:
+    def test_center_display_text_preserves_cjk_terminal_width(self):
+        centered = _center_display_text("(^_^) 사용 가능한 명령어", 20)
+        assert _display_cell_width(centered) == 20
+
+    def test_center_display_text_truncates_by_display_width(self):
+        centered = _center_display_text("가나다라마바사", 8)
+        assert _display_cell_width(centered) == 8
+
     def test_preserves_literal_brackets(self):
         text = _rich_text_from_ansi("[notatag] literal")
         assert text.plain == "[notatag] literal"

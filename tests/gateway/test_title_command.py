@@ -200,6 +200,15 @@ class TestTitleInHelp:
         result = await runner._handle_help_command(event)
         assert "/title" in result
 
+    @pytest.mark.asyncio
+    async def test_help_output_header_is_localized_to_korean(self):
+        runner = _make_runner()
+        event = _make_event(text="/help")
+        from gateway.hooks import HookRegistry
+        runner.hooks = HookRegistry()
+        result = await runner._handle_help_command(event)
+        assert "📖 **Hermes 명령어**" in result
+
     def test_title_is_known_command(self):
         """The /title command is in the _known_commands set."""
         from gateway.run import GatewayRunner

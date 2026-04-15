@@ -146,6 +146,9 @@ class TestDerivedDicts:
         for cmd, desc in COMMANDS.items():
             assert isinstance(desc, str) and len(desc) > 0, f"{cmd} has empty description"
 
+    def test_help_description_is_localized_to_korean(self):
+        assert "사용 가능한 명령어" in COMMANDS["/help"]
+
 
 # ---------------------------------------------------------------------------
 # Gateway helpers
@@ -198,6 +201,11 @@ class TestGatewayHelpLines:
         bg_line = [l for l in lines if "/background" in l]
         assert len(bg_line) == 1
         assert "/bg" in bg_line[0]
+
+    def test_help_line_is_localized_to_korean(self):
+        lines = gateway_help_lines()
+        help_line = next(l for l in lines if l.startswith("`/help`"))
+        assert "사용 가능한 명령어" in help_line
 
 
 class TestTelegramBotCommands:
@@ -339,7 +347,7 @@ class TestSlashCommandCompleter:
     def test_builtin_completion_display_meta_shows_description(self):
         completions = _completions(SlashCommandCompleter(), "/help")
         assert len(completions) == 1
-        assert completions[0].display_meta_text == "Show available commands"
+        assert completions[0].display_meta_text == "사용 가능한 명령어 표시"
 
     # -- exact-match trailing space --------------------------------------
 

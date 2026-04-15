@@ -225,6 +225,15 @@ class TestDisplayIntegration:
 
 
 class TestCliBrandingHelpers:
+    def test_default_skin_branding_is_localized_to_korean(self):
+        from hermes_cli.skin_engine import get_active_skin, set_active_skin
+
+        set_active_skin("default")
+        skin = get_active_skin()
+        assert skin.get_branding("welcome", "") == "Hermes Agent에 오신 것을 환영합니다! 메시지를 입력하거나 /help로 명령어를 확인하세요."
+        assert skin.get_branding("goodbye", "") == "안녕히 가세요! ⚕"
+        assert skin.get_branding("help_header", "") == "(^_^) 사용 가능한 명령어"
+
     def test_active_prompt_symbol_default(self):
         from hermes_cli.skin_engine import get_active_prompt_symbol
 

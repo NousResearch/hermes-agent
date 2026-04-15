@@ -1053,6 +1053,41 @@ def _accent_hex() -> str:
         return "#FFBF00"
 
 
+def _display_cell_width(text: str) -> int:
+    """Approximate terminal cell width for Unicode text, including CJK characters."""
+    import unicodedata
+
+    width = 0
+    for ch in text:
+        if unicodedata.combining(ch):
+            continue
+        width += 2 if unicodedata.east_asian_width(ch) in {"F", "W"} else 1
+    return width
+
+
+def _center_display_text(text: str, width: int) -> str:
+    """Center text by terminal display width, truncating safely when needed."""
+    import unicodedata
+
+    if width <= 0:
+        return ""
+
+    pieces: list[str] = []
+    used = 0
+    for ch in text:
+        ch_width = 0 if unicodedata.combining(ch) else (2 if unicodedata.east_asian_width(ch) in {"F", "W"} else 1)
+        if used + ch_width > width:
+            break
+        pieces.append(ch)
+        used += ch_width
+
+    trimmed = "".join(pieces)
+    pad = max(0, width - used)
+    left = pad // 2
+    right = pad - left
+    return (" " * left) + trimmed + (" " * right)
+
+
 def _rich_text_from_ansi(text: str) -> _RichText:
     """Safely render assistant/tool output that may contain ANSI escapes.
 
@@ -3738,15 +3773,13 @@ class HermesCLI:
 
         try:
             from hermes_cli.skin_engine import get_active_help_header
-            header = get_active_help_header("(^_^)? Available Commands")
+            header = get_active_help_header("(^_^) 사용 가능한 명령어")
         except Exception:
-            header = "(^_^)? Available Commands"
-        header = (header or "").strip() or "(^_^)? Available Commands"
+            header = "(^_^) 사용 가능한 명령어"
+        header = (header or "").strip() or "(^_^) 사용 가능한 명령어"
         inner_width = 55
-        if len(header) > inner_width:
-            header = header[:inner_width]
         _cprint(f"\n{_BOLD}+{'-' * inner_width}+{_RST}")
-        _cprint(f"{_BOLD}|{header:^{inner_width}}|{_RST}")
+        _cprint(f"{_BOLD}|{_center_display_text(header, inner_width)}|{_RST}")
         _cprint(f"{_BOLD}+{'-' * inner_width}+{_RST}")
 
         for category, commands in COMMANDS_BY_CATEGORY.items():
@@ -3763,12 +3796,12 @@ class HermesCLI:
                     f"    [bold {_accent_hex()}]{cmd:<22}[/] [dim]-[/] {_escape(info['description'])}"
                 )
 
-        _cprint(f"\n  {_DIM}Tip: Just type your message to chat with Hermes!{_RST}")
-        _cprint(f"  {_DIM}Multi-line: Alt+Enter for a new line{_RST}")
+        _cprint(f"\n  {_DIM}팁: 메시지를 바로 입력하면 Hermes와 대화할 수 있어요!{_RST}")
+        _cprint(f"  {_DIM}여러 줄 입력: Alt+Enter{_RST}")
         if _is_termux_environment():
-            _cprint(f"  {_DIM}Attach image: /image {_termux_example_image_path()} or start your prompt with a local image path{_RST}\n")
+            _cprint(f"  {_DIM}이미지 첨부: /image {_termux_example_image_path()} 또는 프롬프트 시작에 로컬 이미지 경로 입력{_RST}\n")
         else:
-            _cprint(f"  {_DIM}Paste image: Alt+V (or /paste){_RST}\n")
+            _cprint(f"  {_DIM}이미지 붙여넣기: Alt+V (또는 /paste){_RST}\n")
     
     def show_tools(self):
         """Display available tools with kawaii ASCII art."""
@@ -7992,9 +8025,9 @@ class HermesCLI:
         else:
             try:
                 from hermes_cli.skin_engine import get_active_goodbye
-                goodbye = get_active_goodbye("Goodbye! ⚕")
+                goodbye = get_active_goodbye("안녕히 가세요! ⚕")
             except Exception:
-                goodbye = "Goodbye! ⚕"
+                goodbye = "안녕히 가세요! ⚕"
             print(goodbye)
 
     def _get_tui_prompt_symbols(self) -> tuple[str, str]:
@@ -8206,10 +8239,10 @@ class HermesCLI:
         try:
             from hermes_cli.skin_engine import get_active_skin
             _welcome_skin = get_active_skin()
-            _welcome_text = _welcome_skin.get_branding("welcome", "Welcome to Hermes Agent! Type your message or /help for commands.")
+            _welcome_text = _welcome_skin.get_branding("welcome", "Hermes Agent에 오신 것을 환영합니다! 메시지를 입력하거나 /help로 명령어를 확인하세요.")
             _welcome_color = _welcome_skin.get_color("banner_text", "#FFF8DC")
         except Exception:
-            _welcome_text = "Welcome to Hermes Agent! Type your message or /help for commands."
+            _welcome_text = "Hermes Agent에 오신 것을 환영합니다! 메시지를 입력하거나 /help로 명령어를 확인하세요."
             _welcome_color = "#FFF8DC"
         self.console.print(f"[{_welcome_color}]{_welcome_text}[/]")
         # Show a random tip to help users discover features

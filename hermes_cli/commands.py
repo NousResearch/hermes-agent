@@ -58,112 +58,112 @@ class CommandDef:
 
 COMMAND_REGISTRY: list[CommandDef] = [
     # Session
-    CommandDef("new", "Start a new session (fresh session ID + history)", "Session",
+    CommandDef("new", "새 세션 시작(새 세션 ID와 기록으로 초기화)", "Session",
                aliases=("reset",)),
-    CommandDef("clear", "Clear screen and start a new session", "Session",
+    CommandDef("clear", "화면을 지우고 새 세션 시작", "Session",
                cli_only=True),
-    CommandDef("history", "Show conversation history", "Session",
+    CommandDef("history", "대화 기록 표시", "Session",
                cli_only=True),
-    CommandDef("save", "Save the current conversation", "Session",
+    CommandDef("save", "현재 대화 저장", "Session",
                cli_only=True),
-    CommandDef("retry", "Retry the last message (resend to agent)", "Session"),
-    CommandDef("undo", "Remove the last user/assistant exchange", "Session"),
-    CommandDef("title", "Set a title for the current session", "Session",
+    CommandDef("retry", "마지막 메시지 다시 시도(에이전트에 재전송)", "Session"),
+    CommandDef("undo", "마지막 사용자/어시스턴트 교환 제거", "Session"),
+    CommandDef("title", "현재 세션 제목 설정", "Session",
                args_hint="[name]"),
-    CommandDef("branch", "Branch the current session (explore a different path)", "Session",
+    CommandDef("branch", "현재 세션에서 분기 생성(다른 경로 탐색)", "Session",
                aliases=("fork",), args_hint="[name]"),
-    CommandDef("compress", "Manually compress conversation context", "Session",
+    CommandDef("compress", "대화 컨텍스트를 수동으로 압축", "Session",
                args_hint="[focus topic]"),
-    CommandDef("rollback", "List or restore filesystem checkpoints", "Session",
+    CommandDef("rollback", "파일시스템 체크포인트 목록 표시 또는 복원", "Session",
                args_hint="[number]"),
-    CommandDef("snapshot", "Create or restore state snapshots of Hermes config/state", "Session",
+    CommandDef("snapshot", "Hermes 설정/상태 스냅샷 생성 또는 복원", "Session",
                aliases=("snap",), args_hint="[create|restore <id>|prune]"),
-    CommandDef("stop", "Kill all running background processes", "Session"),
-    CommandDef("approve", "Approve a pending dangerous command", "Session",
+    CommandDef("stop", "실행 중인 백그라운드 프로세스 모두 종료", "Session"),
+    CommandDef("approve", "대기 중인 위험 명령 승인", "Session",
                gateway_only=True, args_hint="[session|always]"),
-    CommandDef("deny", "Deny a pending dangerous command", "Session",
+    CommandDef("deny", "대기 중인 위험 명령 거부", "Session",
                gateway_only=True),
-    CommandDef("background", "Run a prompt in the background", "Session",
+    CommandDef("background", "프롬프트를 백그라운드에서 실행", "Session",
                aliases=("bg",), args_hint="<prompt>"),
-    CommandDef("btw", "Ephemeral side question using session context (no tools, not persisted)", "Session",
+    CommandDef("btw", "세션 컨텍스트를 이용한 임시 사이드 질문(도구 사용 없음, 저장 안 함)", "Session",
                args_hint="<question>"),
-    CommandDef("queue", "Queue a prompt for the next turn (doesn't interrupt)", "Session",
+    CommandDef("queue", "다음 턴에 실행할 프롬프트 대기열에 추가(즉시 끼어들지 않음)", "Session",
                aliases=("q",), args_hint="<prompt>"),
-    CommandDef("status", "Show session info", "Session"),
-    CommandDef("profile", "Show active profile name and home directory", "Info"),
-    CommandDef("sethome", "Set this chat as the home channel", "Session",
+    CommandDef("status", "세션 정보 표시", "Session"),
+    CommandDef("profile", "현재 활성 프로필 이름과 홈 디렉터리 표시", "Info"),
+    CommandDef("sethome", "이 채팅을 홈 채널로 설정", "Session",
                gateway_only=True, aliases=("set-home",)),
-    CommandDef("resume", "Resume a previously-named session", "Session",
+    CommandDef("resume", "이전에 이름 붙인 세션 다시 열기", "Session",
                args_hint="[name]"),
 
     # Configuration
-    CommandDef("config", "Show current configuration", "Configuration",
+    CommandDef("config", "현재 설정 표시", "Configuration",
                cli_only=True),
-    CommandDef("model", "Switch model for this session", "Configuration", args_hint="[model] [--global]"),
-    CommandDef("provider", "Show available providers and current provider",
+    CommandDef("model", "이 세션에서 사용할 모델 전환", "Configuration", args_hint="[model] [--global]"),
+    CommandDef("provider", "사용 가능한 provider와 현재 provider 표시",
                "Configuration"),
 
-    CommandDef("personality", "Set a predefined personality", "Configuration",
+    CommandDef("personality", "미리 정의된 personality 설정", "Configuration",
                args_hint="[name]"),
-    CommandDef("statusbar", "Toggle the context/model status bar", "Configuration",
+    CommandDef("statusbar", "컨텍스트/모델 상태바 토글", "Configuration",
                cli_only=True, aliases=("sb",)),
-    CommandDef("verbose", "Cycle tool progress display: off -> new -> all -> verbose",
+    CommandDef("verbose", "도구 진행 표시 순환: off -> new -> all -> verbose",
                "Configuration", cli_only=True,
                gateway_config_gate="display.tool_progress_command"),
-    CommandDef("yolo", "Toggle YOLO mode (skip all dangerous command approvals)",
+    CommandDef("yolo", "YOLO 모드 토글(위험 명령 승인 전부 건너뜀)",
                "Configuration"),
-    CommandDef("reasoning", "Manage reasoning effort and display", "Configuration",
+    CommandDef("reasoning", "추론 강도와 표시 방식 관리", "Configuration",
                args_hint="[level|show|hide]",
                subcommands=("none", "minimal", "low", "medium", "high", "xhigh", "show", "hide", "on", "off")),
-    CommandDef("fast", "Toggle fast mode — OpenAI Priority Processing / Anthropic Fast Mode (Normal/Fast)", "Configuration",
+    CommandDef("fast", "고속 모드 토글 — OpenAI Priority Processing / Anthropic Fast Mode", "Configuration",
                args_hint="[normal|fast|status]",
                subcommands=("normal", "fast", "status", "on", "off")),
-    CommandDef("skin", "Show or change the display skin/theme", "Configuration",
+    CommandDef("skin", "표시 스킨/테마 표시 또는 변경", "Configuration",
                cli_only=True, args_hint="[name]"),
-    CommandDef("voice", "Toggle voice mode", "Configuration",
+    CommandDef("voice", "음성 모드 토글", "Configuration",
                args_hint="[on|off|tts|status]", subcommands=("on", "off", "tts", "status")),
 
     # Tools & Skills
-    CommandDef("tools", "Manage tools: /tools [list|disable|enable] [name...]", "Tools & Skills",
+    CommandDef("tools", "도구 관리: /tools [list|disable|enable] [name...]", "Tools & Skills",
                args_hint="[list|disable|enable] [name...]", cli_only=True),
-    CommandDef("toolsets", "List available toolsets", "Tools & Skills",
+    CommandDef("toolsets", "사용 가능한 toolset 목록 표시", "Tools & Skills",
                cli_only=True),
-    CommandDef("skills", "Search, install, inspect, or manage skills",
+    CommandDef("skills", "skill 검색, 설치, 미리보기 또는 관리",
                "Tools & Skills", cli_only=True,
                subcommands=("search", "browse", "inspect", "install")),
-    CommandDef("cron", "Manage scheduled tasks", "Tools & Skills",
+    CommandDef("cron", "예약 작업 관리", "Tools & Skills",
                cli_only=True, args_hint="[subcommand]",
                subcommands=("list", "add", "create", "edit", "pause", "resume", "run", "remove")),
-    CommandDef("reload", "Reload .env variables into the running session", "Tools & Skills"),
-    CommandDef("reload-mcp", "Reload MCP servers from config", "Tools & Skills",
+    CommandDef("reload", ".env 변수를 현재 세션에 다시 불러오기", "Tools & Skills"),
+    CommandDef("reload-mcp", "config에서 MCP 서버 다시 불러오기", "Tools & Skills",
                aliases=("reload_mcp",)),
-    CommandDef("browser", "Connect browser tools to your live Chrome via CDP", "Tools & Skills",
+    CommandDef("browser", "브라우저 도구를 실행 중인 Chrome에 CDP로 연결", "Tools & Skills",
                cli_only=True, args_hint="[connect|disconnect|status]",
                subcommands=("connect", "disconnect", "status")),
-    CommandDef("plugins", "List installed plugins and their status",
+    CommandDef("plugins", "설치된 plugin과 상태 목록 표시",
                "Tools & Skills", cli_only=True),
 
     # Info
-    CommandDef("commands", "Browse all commands and skills (paginated)", "Info",
+    CommandDef("commands", "모든 명령어와 skill 목록을 페이지 단위로 표시", "Info",
                gateway_only=True, args_hint="[page]"),
-    CommandDef("help", "Show available commands", "Info"),
-    CommandDef("restart", "Gracefully restart the gateway after draining active runs", "Session",
+    CommandDef("help", "사용 가능한 명령어 표시", "Info"),
+    CommandDef("restart", "진행 중인 작업을 정리한 뒤 gateway를 안전하게 재시작", "Session",
                gateway_only=True),
-    CommandDef("usage", "Show token usage and rate limits for the current session", "Info"),
-    CommandDef("insights", "Show usage insights and analytics", "Info",
+    CommandDef("usage", "현재 세션의 토큰 사용량과 속도 제한 표시", "Info"),
+    CommandDef("insights", "사용량 인사이트와 분석 표시", "Info",
                args_hint="[days]"),
-    CommandDef("platforms", "Show gateway/messaging platform status", "Info",
+    CommandDef("platforms", "gateway/메시징 플랫폼 상태 표시", "Info",
                cli_only=True, aliases=("gateway",)),
-    CommandDef("paste", "Check clipboard for an image and attach it", "Info",
+    CommandDef("paste", "클립보드의 이미지를 확인해 다음 프롬프트에 첨부", "Info",
                cli_only=True),
-    CommandDef("image", "Attach a local image file for your next prompt", "Info",
+    CommandDef("image", "다음 프롬프트에 사용할 로컬 이미지 파일 첨부", "Info",
                cli_only=True, args_hint="<path>"),
-    CommandDef("update", "Update Hermes Agent to the latest version", "Info",
+    CommandDef("update", "Hermes Agent를 최신 버전으로 업데이트", "Info",
                gateway_only=True),
-    CommandDef("debug", "Upload debug report (system info + logs) and get shareable links", "Info"),
+    CommandDef("debug", "디버그 리포트(시스템 정보 + 로그)를 업로드하고 공유 링크 생성", "Info"),
 
     # Exit
-    CommandDef("quit", "Exit the CLI", "Exit",
+    CommandDef("quit", "CLI 종료", "Exit",
                cli_only=True, aliases=("exit", "q")),
 ]
 
@@ -196,7 +196,7 @@ def resolve_command(name: str) -> CommandDef | None:
 def _build_description(cmd: CommandDef) -> str:
     """Build a CLI-facing description string including usage hint."""
     if cmd.args_hint:
-        return f"{cmd.description} (usage: /{cmd.name} {cmd.args_hint})"
+        return f"{cmd.description} (사용법: /{cmd.name} {cmd.args_hint})"
     return cmd.description
 
 
@@ -206,7 +206,7 @@ for _cmd in COMMAND_REGISTRY:
     if not _cmd.gateway_only:
         COMMANDS[f"/{_cmd.name}"] = _build_description(_cmd)
         for _alias in _cmd.aliases:
-            COMMANDS[f"/{_alias}"] = f"{_cmd.description} (alias for /{_cmd.name})"
+            COMMANDS[f"/{_alias}"] = f"{_cmd.description} (/{_cmd.name}의 별칭)"
 
 # Backwards-compatible categorized dict
 COMMANDS_BY_CATEGORY: dict[str, dict[str, str]] = {}
@@ -312,7 +312,7 @@ def gateway_help_lines() -> list[str]:
             if a.replace("-", "_") == cmd.name.replace("-", "_") and a != cmd.name:
                 continue
             alias_parts.append(f"`/{a}`")
-        alias_note = f" (alias: {', '.join(alias_parts)})" if alias_parts else ""
+        alias_note = f" (별칭: {', '.join(alias_parts)})" if alias_parts else ""
         lines.append(f"`/{cmd.name}{args}` -- {cmd.description}{alias_note}")
     return lines
 

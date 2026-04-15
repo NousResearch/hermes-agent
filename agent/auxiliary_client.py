@@ -697,6 +697,25 @@ def _read_main_model() -> str:
     return ""
 
 
+def _read_main_provider() -> str:
+    """Read the user's configured main provider from config.yaml.
+
+    config.yaml model.provider is the single source of truth for the active
+    provider. Returns an empty string if not set or on any error.
+    """
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        model_cfg = cfg.get("model", {})
+        if isinstance(model_cfg, dict):
+            provider = str(model_cfg.get("provider") or "").strip().lower()
+            if provider:
+                return provider
+    except Exception:
+        pass
+    return ""
+
+
 def _resolve_custom_runtime() -> Tuple[Optional[str], Optional[str]]:
     """Resolve the active custom/main endpoint the same way the main CLI does.
 
@@ -1584,6 +1603,16 @@ def _resolve_task_provider_model(
             return "custom", resolved_model, cfg_base_url, cfg_api_key
         if cfg_provider and cfg_provider != "auto":
             return cfg_provider, resolved_model, None, None
+
+        # For compression with auto provider and no explicit model,
+        # use the main provider/model instead of falling through to
+        # OpenRouter which may not be configured or may 404.
+        if task == "compression" and not resolved_model:
+            main_prov = _read_main_provider()
+            main_mod = _read_main_model()
+            if main_prov and main_prov not in ("auto", "openrouter", "nous", ""):
+                return main_prov, main_mod, None, None
+
         return "auto", resolved_model, None, None
 
     return "auto", resolved_model, None, None

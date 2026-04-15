@@ -252,8 +252,9 @@ class DingTalkAdapter(BasePlatformAdapter):
     def _is_duplicate(self, msg_id: str) -> bool:
         """Check and record a message ID. Returns True if already seen."""
         now = time.time()
-        if len(self._seen_messages) > DEDUP_MAX_SIZE:
-            cutoff = now - DEDUP_WINDOW_SECONDS
+        cutoff = now - DEDUP_WINDOW_SECONDS
+
+        if len(self._seen_messages) > DEDUP_MAX_SIZE or msg_id in self._seen_messages:
             self._seen_messages = {k: v for k, v in self._seen_messages.items() if v > cutoff}
 
         if msg_id in self._seen_messages:

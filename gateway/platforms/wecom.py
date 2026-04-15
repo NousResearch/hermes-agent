@@ -734,8 +734,10 @@ class WeComAdapter(BasePlatformAdapter):
 
     def _is_duplicate(self, msg_id: str) -> bool:
         now = time.time()
-        if len(self._seen_messages) > DEDUP_MAX_SIZE:
-            cutoff = now - DEDUP_WINDOW_SECONDS
+        cutoff = now - DEDUP_WINDOW_SECONDS
+
+        # Prune expired entries (always, not just when over max_size)
+        if len(self._seen_messages) > DEDUP_MAX_SIZE or msg_id in self._seen_messages:
             self._seen_messages = {
                 key: ts for key, ts in self._seen_messages.items() if ts > cutoff
             }

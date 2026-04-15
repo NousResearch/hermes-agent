@@ -3537,7 +3537,26 @@ class AIAgent:
                 self._client_log_context(),
             )
             return client
-        client = OpenAI(**client_kwargs)
+        # Add TCP keepalive so the kernel detects dead connections
+        # (CLOSE-WAIT) and wakes epoll_wait instead of hanging forever.
+        # Keepalive probes start after 30s idle, retry every 10s, give up
+        # after 3 failures (~60s worst-case detection window).
+        try:
+            import socket as _socket
+            import httpx as _httpx
+            _keepalive_transport = _httpx.HTTPTransport(
+                socket_options=[
+                    (_socket.SOL_SOCKET, _socket.SO_KEEPALIVE, 1),
+                    (_socket.IPPROTO_TCP, _socket.TCP_KEEPIDLE, 30),
+                    (_socket.IPPROTO_TCP, _socket.TCP_KEEPINTVL, 10),
+                    (_socket.IPPROTO_TCP, _socket.TCP_KEEPCNT, 3),
+                ]
+            )
+            _http_client = _httpx.Client(transport=_keepalive_transport)
+            client = OpenAI(**client_kwargs, http_client=_http_client)
+        except Exception:
+            # Fallback if TCP keepalive options are unavailable (non-Linux)
+            client = OpenAI(**client_kwargs)
         logger.info(
             "OpenAI client created (%s, shared=%s) %s",
             reason,

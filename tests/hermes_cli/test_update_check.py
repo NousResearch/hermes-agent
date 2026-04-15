@@ -2,6 +2,7 @@
 
 import json
 import os
+import sys
 import threading
 import time
 from pathlib import Path
@@ -168,3 +169,165 @@ def test_invalidate_update_cache_no_profiles_dir(tmp_path):
         _invalidate_update_cache()
 
     assert not (default_home / ".update_check").exists()
+
+
+def test_startup_update_prompt_accepts_and_reexecs(monkeypatch):
+    import hermes_cli.main as main
+
+    monkeypatch.delenv("HERMES_AUTO_UPDATE_REEXECED", raising=False)
+    monkeypatch.setattr(sys, "argv", ["hermes", "chat"])
+    monkeypatch.setattr(main, "__file__", "/tmp/hermes_cli/main.py")
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+
+    branch = MagicMock(returncode=0, stdout="main\n")
+    clean = MagicMock(returncode=0, stdout="")
+
+    with patch("hermes_cli.config.is_managed", return_value=False), \
+         patch("hermes_cli.config.load_config", return_value={"startup": {"update_on_launch": "ask"}}), \
+         patch("hermes_cli.banner.check_for_updates", return_value=2), \
+         patch("hermes_cli.main.subprocess.run", side_effect=[branch, clean]) as mock_run, \
+         patch("builtins.input", return_value="y"), \
+         patch.object(main, "cmd_update") as mock_update, \
+         patch("hermes_cli.main.os.execv") as mock_execv:
+        main._maybe_auto_update_before_chat_launch()
+
+    mock_update.assert_called_once()
+    update_args = mock_update.call_args.args[0]
+    assert update_args.gateway is False
+    assert update_args.auto_startup is True
+    mock_execv.assert_called_once_with(
+        sys.executable,
+        [sys.executable, str(Path("/tmp/hermes_cli/main.py").resolve()), "chat"],
+    )
+    assert os.environ["HERMES_AUTO_UPDATE_REEXECED"] == "1"
+    assert mock_run.call_count == 2
+
+
+def test_startup_update_prompt_decline_skips_update(monkeypatch):
+    import hermes_cli.main as main
+
+    monkeypatch.delenv("HERMES_AUTO_UPDATE_REEXECED", raising=False)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+
+    branch = MagicMock(returncode=0, stdout="main\n")
+    clean = MagicMock(returncode=0, stdout="")
+
+    with patch("hermes_cli.config.is_managed", return_value=False), \
+         patch("hermes_cli.config.load_config", return_value={"startup": {"update_on_launch": "ask"}}), \
+         patch("hermes_cli.banner.check_for_updates", return_value=2), \
+         patch("hermes_cli.main.subprocess.run", side_effect=[branch, clean]), \
+         patch("builtins.input", return_value="n"), \
+         patch.object(main, "cmd_update") as mock_update, \
+         patch("hermes_cli.main.os.execv") as mock_execv:
+        main._maybe_auto_update_before_chat_launch()
+
+    mock_update.assert_not_called()
+    mock_execv.assert_not_called()
+
+
+def test_startup_auto_policy_runs_update_and_reexec(monkeypatch):
+    import hermes_cli.main as main
+
+    monkeypatch.delenv("HERMES_AUTO_UPDATE_REEXECED", raising=False)
+    monkeypatch.setattr(sys, "argv", ["hermes", "chat"])
+    monkeypatch.setattr(main, "__file__", "/tmp/hermes_cli/main.py")
+
+    branch = MagicMock(returncode=0, stdout="main\n")
+    clean = MagicMock(returncode=0, stdout="")
+
+    with patch("hermes_cli.config.is_managed", return_value=False), \
+         patch("hermes_cli.config.load_config", return_value={"startup": {"update_on_launch": "auto"}}), \
+         patch("hermes_cli.banner.check_for_updates", return_value=2), \
+         patch("hermes_cli.main.subprocess.run", side_effect=[branch, clean]) as mock_run, \
+         patch.object(main, "cmd_update") as mock_update, \
+         patch("hermes_cli.main.os.execv") as mock_execv:
+        main._maybe_auto_update_before_chat_launch()
+
+    mock_update.assert_called_once()
+    update_args = mock_update.call_args.args[0]
+    assert update_args.gateway is False
+    assert update_args.auto_startup is True
+    mock_execv.assert_called_once_with(
+        sys.executable,
+        [sys.executable, str(Path("/tmp/hermes_cli/main.py").resolve()), "chat"],
+    )
+    assert os.environ["HERMES_AUTO_UPDATE_REEXECED"] == "1"
+    assert mock_run.call_count == 2
+
+
+def test_startup_update_off_skips_update(monkeypatch):
+    import hermes_cli.main as main
+
+    monkeypatch.delenv("HERMES_AUTO_UPDATE_REEXECED", raising=False)
+
+    with patch("hermes_cli.config.is_managed", return_value=False), \
+         patch("hermes_cli.config.load_config", return_value={"startup": {"update_on_launch": "off"}}), \
+         patch("hermes_cli.banner.check_for_updates") as mock_check, \
+         patch.object(main, "cmd_update") as mock_update, \
+         patch("hermes_cli.main.os.execv") as mock_execv:
+        main._maybe_auto_update_before_chat_launch()
+
+    mock_check.assert_not_called()
+    mock_update.assert_not_called()
+    mock_execv.assert_not_called()
+
+
+def test_startup_update_legacy_true_maps_to_auto(monkeypatch):
+    import hermes_cli.main as main
+
+    monkeypatch.delenv("HERMES_AUTO_UPDATE_REEXECED", raising=False)
+    monkeypatch.setattr(sys, "argv", ["hermes", "chat"])
+    monkeypatch.setattr(main, "__file__", "/tmp/hermes_cli/main.py")
+
+    branch = MagicMock(returncode=0, stdout="main\n")
+    clean = MagicMock(returncode=0, stdout="")
+
+    with patch("hermes_cli.config.is_managed", return_value=False), \
+         patch("hermes_cli.config.load_config", return_value={"startup": {"auto_update_on_launch": True}}), \
+         patch("hermes_cli.banner.check_for_updates", return_value=1), \
+         patch("hermes_cli.main.subprocess.run", side_effect=[branch, clean]), \
+         patch.object(main, "cmd_update") as mock_update, \
+         patch("hermes_cli.main.os.execv") as mock_execv:
+        main._maybe_auto_update_before_chat_launch()
+
+    mock_update.assert_called_once()
+    mock_execv.assert_called_once()
+
+
+def test_startup_update_legacy_false_maps_to_off(monkeypatch):
+    import hermes_cli.main as main
+
+    monkeypatch.delenv("HERMES_AUTO_UPDATE_REEXECED", raising=False)
+
+    with patch("hermes_cli.config.is_managed", return_value=False), \
+         patch("hermes_cli.config.load_config", return_value={"startup": {"auto_update_on_launch": False}}), \
+         patch("hermes_cli.banner.check_for_updates") as mock_check, \
+         patch.object(main, "cmd_update") as mock_update, \
+         patch("hermes_cli.main.os.execv") as mock_execv:
+        main._maybe_auto_update_before_chat_launch()
+
+    mock_check.assert_not_called()
+    mock_update.assert_not_called()
+    mock_execv.assert_not_called()
+
+
+def test_startup_update_skips_dirty_repo(monkeypatch):
+    import hermes_cli.main as main
+
+    monkeypatch.delenv("HERMES_AUTO_UPDATE_REEXECED", raising=False)
+
+    branch = MagicMock(returncode=0, stdout="main\n")
+    dirty = MagicMock(returncode=0, stdout=" M cli.py\n")
+
+    with patch("hermes_cli.config.is_managed", return_value=False), \
+         patch("hermes_cli.config.load_config", return_value={"startup": {"update_on_launch": "auto"}}), \
+         patch("hermes_cli.banner.check_for_updates", return_value=3), \
+         patch("hermes_cli.main.subprocess.run", side_effect=[branch, dirty]), \
+         patch.object(main, "cmd_update") as mock_update, \
+         patch("hermes_cli.main.os.execv") as mock_execv:
+        main._maybe_auto_update_before_chat_launch()
+
+    mock_update.assert_not_called()
+    mock_execv.assert_not_called()

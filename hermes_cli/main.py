@@ -292,6 +292,118 @@ def _has_any_provider_configured() -> bool:
     return False
 
 
+def _maybe_auto_update_before_chat_launch() -> None:
+    """Handle startup update policy before launching interactive chat.
+
+    Safe-guards are intentionally conservative: only act on a clean checkout on
+    ``main``. If the repo is dirty, detached, on a feature branch, or the check
+    fails, Hermes skips startup updating and continues launching normally.
+    """
+    from hermes_cli.config import is_managed, load_config
+
+    if os.environ.get("HERMES_AUTO_UPDATE_REEXECED") == "1":
+        return
+
+    if is_managed():
+        return
+
+    try:
+        config = load_config()
+    except Exception:
+        return
+
+    startup_cfg = config.get("startup") if isinstance(config, dict) else None
+    policy = "ask"
+    if isinstance(startup_cfg, dict):
+        raw_policy = startup_cfg.get("update_on_launch")
+        if isinstance(raw_policy, str) and raw_policy.strip().lower() in {"ask", "auto", "off"}:
+            policy = raw_policy.strip().lower()
+        elif startup_cfg.get("auto_update_on_launch") is True:
+            policy = "auto"
+        elif startup_cfg.get("auto_update_on_launch") is False and "update_on_launch" not in startup_cfg:
+            policy = "off"
+
+    if policy == "off":
+        return
+
+    try:
+        from hermes_cli.banner import check_for_updates
+        behind = check_for_updates()
+    except Exception:
+        return
+
+    if not behind or behind <= 0:
+        return
+
+    git_cmd = ["git"]
+    if sys.platform == "win32":
+        git_cmd = ["git", "-c", "windows.appendAtomically=false"]
+
+    try:
+        branch_result = subprocess.run(
+            git_cmd + ["rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=True,
+        )
+        current_branch = (branch_result.stdout or "").strip()
+    except Exception:
+        return
+
+    if current_branch != "main":
+        print(
+            f"↻ Startup update skipped: checkout is on '{current_branch or 'unknown'}', not 'main'."
+        )
+        return
+
+    try:
+        status_result = subprocess.run(
+            git_cmd + ["status", "--porcelain"],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=True,
+        )
+    except Exception:
+        return
+
+    if (status_result.stdout or "").strip():
+        print("↻ Startup update skipped: local changes detected in the repo.")
+        return
+
+    if policy == "ask":
+        if not (sys.stdin.isatty() and sys.stdout.isatty()):
+            print("↻ Hermes update available, but startup prompt skipped in non-interactive mode.")
+            return
+        try:
+            reply = input(
+                f"↻ Hermes update available ({behind} commit{'s' if behind != 1 else ''}). "
+                "Update before launch? [Y/n] "
+            ).strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            reply = "n"
+        if reply not in ("", "y", "yes"):
+            print("↻ Skipping startup update and launching current checkout.")
+            return
+
+    elif policy == "auto":
+        print(f"↻ Auto-update: found {behind} new commit(s); updating before launch...")
+
+    try:
+        cmd_update(argparse.Namespace(gateway=False, auto_startup=True))
+    except SystemExit as exc:
+        if exc.code not in (0, None):
+            print("⚠ Startup update failed; continuing with the current checkout.")
+        return
+
+    print("↻ Restarting Hermes on the updated checkout...")
+    os.environ["HERMES_AUTO_UPDATE_REEXECED"] = "1"
+    os.execv(sys.executable, [sys.executable, str(Path(__file__).resolve()), *sys.argv[1:]])
+
+
 def _session_browse_picker(sessions: list) -> Optional[str]:
     """Interactive curses-based session browser with live search filtering.
 
@@ -731,6 +843,11 @@ def cmd_chat(args):
         print()
         print("You can run 'hermes setup' at any time to configure.")
         sys.exit(1)
+
+    try:
+        _maybe_auto_update_before_chat_launch()
+    except Exception:
+        pass
 
     # Start update check in background (runs while other init happens)
     try:
@@ -3621,6 +3738,7 @@ def cmd_update(args):
         return
 
     gateway_mode = getattr(args, "gateway", False)
+    auto_startup = getattr(args, "auto_startup", False)
     # In gateway mode, use file-based IPC for prompts instead of stdin
     gw_input_fn = (lambda prompt, default="": _gateway_prompt(prompt, default)) if gateway_mode else None
     
@@ -3935,7 +4053,11 @@ def cmd_update(args):
                 print(f"  ℹ️  {len(missing_config)} new config option(s) available")
             
             print()
-            if gateway_mode:
+            if auto_startup:
+                print("  ℹ Startup auto-update mode: skipping interactive config migration prompt.")
+                print("    Run 'hermes config migrate' later to review new options.")
+                response = "n"
+            elif gateway_mode:
                 response = _gateway_prompt(
                     "Would you like to configure new options now? [Y/n]", "n"
                 ).strip().lower()

@@ -510,6 +510,17 @@ DEFAULT_CONFIG = {
         "platforms": {},  # Per-platform display overrides: {"telegram": {"tool_progress": "all"}, "slack": {"tool_progress": "off"}}
     },
 
+    "startup": {
+        # Startup update policy for git checkouts:
+        # - "ask" (default UX): prompt before launching when updates exist
+        # - "auto": update immediately before launching
+        # - "off": never check/apply launch-time updates
+        # Back-compat: older configs may still use boolean auto_update_on_launch
+        # where true => "auto" and false => "off".
+        "update_on_launch": "ask",
+        "auto_update_on_launch": False,
+    },
+
     # Privacy settings
     "privacy": {
         "redact_pii": False,  # When True, hash user IDs and strip phone numbers from LLM context
@@ -1785,7 +1796,7 @@ def check_config_version() -> Tuple[int, int]:
 _KNOWN_ROOT_KEYS = {
     "_config_version", "model", "providers", "fallback_model",
     "fallback_providers", "credential_pool_strategies", "toolsets",
-    "agent", "terminal", "display", "compression", "delegation",
+    "agent", "terminal", "display", "startup", "compression", "delegation",
     "auxiliary", "custom_providers", "context", "memory", "gateway",
 }
 

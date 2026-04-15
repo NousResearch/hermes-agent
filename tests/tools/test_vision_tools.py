@@ -315,6 +315,36 @@ class TestErrorLoggingExcInfo:
             assert any(r.exc_info and r.exc_info[0] is not None for r in error_records)
 
     @pytest.mark.asyncio
+    async def test_authentication_error_mentions_env_hint(self, tmp_path):
+        async def fake_download(url, dest, max_retries=3):
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(b"\xff\xd8\xff" + b"\x00" * 16)
+            return dest
+
+        with (
+            patch("tools.vision_tools._validate_image_url", return_value=True),
+            patch("tools.vision_tools._download_image", side_effect=fake_download),
+            patch("tools.vision_tools._detect_image_mime_type", return_value="image/jpeg"),
+            patch("tools.vision_tools._image_to_base64_data_url", return_value="data:image/jpeg;base64,abc"),
+            patch(
+                "tools.vision_tools.async_call_llm",
+                new_callable=AsyncMock,
+                side_effect=Exception("Error code: 401 - Missing Authentication header"),
+            ),
+        ):
+            result = json.loads(
+                await vision_analyze_tool(
+                    "https://example.com/img.jpg",
+                    "describe this",
+                    "test/model",
+                )
+            )
+
+        assert result["success"] is False
+        assert "OPENROUTER_API_KEY" in result["analysis"]
+        assert "AUXILIARY_VISION_API_KEY" in result["analysis"]
+
+    @pytest.mark.asyncio
     async def test_cleanup_error_logs_exc_info(self, tmp_path, caplog):
         """Temp file cleanup failure should log warning with exc_info."""
         # Create a real temp file that will be "downloaded"

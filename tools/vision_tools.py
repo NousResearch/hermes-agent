@@ -632,6 +632,16 @@ async def vision_analyze_tool(
                 f"API provider account and try again. Error: {e}"
             )
         elif any(hint in err_str for hint in (
+            "401", "unauthorized", "missing authentication header", "authentication header",
+        )):
+            analysis = (
+                "Vision authentication failed. Add a vision-capable API key to "
+                "~/.hermes/.env, usually OPENROUTER_API_KEY, or explicitly set "
+                "AUXILIARY_VISION_PROVIDER / AUXILIARY_VISION_MODEL / "
+                "AUXILIARY_VISION_API_KEY if you use a separate vision backend. "
+                f"Error: {e}"
+            )
+        elif any(hint in err_str for hint in (
             "does not support", "not support image",
             "content_policy", "multimodal",
             "unrecognized request argument", "image input",

@@ -7345,11 +7345,20 @@ class GatewayRunner:
                         f"image_url: {path} ~]"
                     )
                 else:
-                    enriched_parts.append(
-                        "[The user sent an image but I couldn't quite see it "
-                        "this time (>_<) You can try looking at it yourself "
-                        f"with vision_analyze using image_url: {path}]"
-                    )
+                    failure_detail = str(result.get("analysis") or result.get("error") or "").strip()
+                    if failure_detail:
+                        enriched_parts.append(
+                            "[The user sent an image but I couldn't quite see it "
+                            "this time (>_<) "
+                            f"Auto-analysis said: {failure_detail} "
+                            f"You can try looking at it yourself with vision_analyze using image_url: {path}]"
+                        )
+                    else:
+                        enriched_parts.append(
+                            "[The user sent an image but I couldn't quite see it "
+                            "this time (>_<) You can try looking at it yourself "
+                            f"with vision_analyze using image_url: {path}]"
+                        )
             except Exception as e:
                 logger.error("Vision auto-analysis error: %s", e)
                 enriched_parts.append(

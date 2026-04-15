@@ -7,6 +7,23 @@ tools marked with requires_confirmation=True. Integrates with:
 - Audit: logs all approval decisions to session state
 
 Inspired by agno's @approval decorator and RequiredAction system.
+
+Relationship to ``tools/approval.py`` — IMPORTANT to understand:
+
+    ``agent/approval.py``  (this file)     per-TOOL requires_confirmation
+                                           flag — applied to every tool
+                                           call regardless of arg contents
+    ``tools/approval.py``                  regex-based COMMAND safety gate
+                                           — fires on shell strings before
+                                           subprocess.run
+
+Both systems coexist. The bridge is ONE function call: in gateway mode
+(line ~174 below), ``resolve_action`` delegates to
+``tools.approval.submit_pending()`` so the gateway SSE approval flow can
+reuse the existing companion-UI approval pipeline. That is deliberate —
+the companion does not know about per-tool flags, only command strings.
+
+See ``docs/approval-architecture.md`` for the full picture (F-I1 audit).
 """
 
 import json

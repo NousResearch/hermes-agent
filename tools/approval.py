@@ -1,11 +1,30 @@
 """Dangerous command approval -- detection, prompting, and per-session state.
 
-This module is the single source of truth for the dangerous command system:
+This module is the single source of truth for the dangerous COMMAND system:
 - Pattern detection (DANGEROUS_PATTERNS, detect_dangerous_command)
 - Per-session approval state (thread-safe, keyed by session_key)
 - Approval prompting (CLI interactive + gateway async)
 - Smart approval via auxiliary LLM (auto-approve low-risk commands)
 - Permanent allowlist persistence (config.yaml)
+
+Relationship to ``agent/approval.py`` — IMPORTANT to understand:
+
+    ``tools/approval.py``  (this file)     regex-based COMMAND safety gate
+                                           fires on shell strings before
+                                           subprocess.run
+    ``agent/approval.py``                  per-TOOL `requires_confirmation`
+                                           flag (HITL) applied to every
+                                           tool call regardless of contents
+
+Both systems coexist. They share NO state except the ``HERMES_SESSION_KEY``
++ ``HERMES_GATEWAY_SESSION`` env-var / contextvar contract. The one bridge
+point is ``agent.approval.ApprovalManager.resolve_action()`` line ~174,
+which calls our ``submit_pending()`` in gateway mode so the gateway SSE
+approval flow can forward to the companion UI. That bridge is intentional
+and must be preserved — renaming ``submit_pending`` or its signature
+breaks gateway HITL.
+
+See ``docs/approval-architecture.md`` for the full picture (F-I1 audit).
 """
 
 import contextvars

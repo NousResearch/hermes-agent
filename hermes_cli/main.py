@@ -3572,10 +3572,24 @@ def _install_python_dependencies_with_optional_fallback(
     *,
     env: dict[str, str] | None = None,
 ) -> None:
-    """Install base deps plus as many optional extras as the environment supports."""
+    """Install base deps plus as many optional extras as the environment supports.
+
+    On Termux/Android, uses the ``[termux]`` extras group and
+    ``constraints-termux.txt`` instead of ``[all]`` to avoid pulling in
+    heavy C-extension packages (voice, matrix, messaging) that require
+    source compilation on ARM and can hang for 30+ minutes.
+    """
+    from hermes_constants import is_termux as _is_termux
+
+    extras_group = "termux" if _is_termux() else "all"
+    install_args = ["install", "-e", f".[{extras_group}]", "--quiet"]
+    if _is_termux():
+        constraints = PROJECT_ROOT / "constraints-termux.txt"
+        if constraints.exists():
+            install_args += ["-c", str(constraints)]
     try:
         subprocess.run(
-            install_cmd_prefix + ["install", "-e", ".[all]", "--quiet"],
+            install_cmd_prefix + install_args,
             cwd=PROJECT_ROOT,
             check=True,
             env=env,

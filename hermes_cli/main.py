@@ -6046,7 +6046,37 @@ Examples:
         sys.exit(1)
 
     _processed_argv = _coalesce_session_name_args(sys.argv[1:])
-    args = parser.parse_args(_processed_argv)
+
+    # ── Defensive subparser routing (bpo-9338 workaround) ───────────
+    # On some Python versions (notably <3.11), argparse fails to route
+    # subcommand tokens when the parent parser has nargs='?' optional
+    # arguments (--continue).  The symptom: "unrecognized arguments: model"
+    # even though 'model' is a registered subcommand.
+    #
+    # Fix: when argv contains a token matching a known subcommand, set
+    # subparsers.required=True to force deterministic routing.  If that
+    # fails (e.g. 'hermes -c model' where 'model' is consumed as the
+    # session name for --continue), fall back to the default behaviour.
+    import io as _io
+    _known_cmds = set(subparsers.choices.keys()) if hasattr(subparsers, "choices") else set()
+    _has_cmd_token = any(t in _known_cmds for t in _processed_argv if not t.startswith("-"))
+
+    if _has_cmd_token:
+        subparsers.required = True
+        _saved_stderr = sys.stderr
+        try:
+            sys.stderr = _io.StringIO()
+            args = parser.parse_args(_processed_argv)
+            sys.stderr = _saved_stderr
+        except SystemExit:
+            sys.stderr = _saved_stderr
+            # Subcommand name was consumed as a flag value (e.g. -c model).
+            # Fall back to optional subparsers so argparse handles it normally.
+            subparsers.required = False
+            args = parser.parse_args(_processed_argv)
+    else:
+        subparsers.required = False
+        args = parser.parse_args(_processed_argv)
 
     # Handle --version flag
     if args.version:

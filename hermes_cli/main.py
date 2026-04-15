@@ -3534,6 +3534,26 @@ def _invalidate_update_cache():
             pass
 
 
+def _check_for_updates_only():
+    """Check for updates without installing them (used by --check flag)."""
+    from hermes_cli.banner import check_for_updates
+    
+    print("Checking for updates...")
+    print()
+    
+    commits_behind = check_for_updates()
+    
+    if commits_behind is None:
+        print("✗ Could not check for updates (not a git repository or no network)")
+        sys.exit(1)
+    elif commits_behind == 0:
+        print("✓ Hermes is up to date")
+    else:
+        print(f"⚠ Hermes is {commits_behind} commit(s) behind origin/main")
+        print()
+        print("Run `hermes update` to install the latest version.")
+
+
 def _load_installable_optional_extras() -> list[str]:
     """Return the optional extras referenced by the ``all`` group.
 
@@ -3621,8 +3641,15 @@ def cmd_update(args):
         return
 
     gateway_mode = getattr(args, "gateway", False)
+    check_mode = getattr(args, "check", False)
+    
     # In gateway mode, use file-based IPC for prompts instead of stdin
     gw_input_fn = (lambda prompt, default="": _gateway_prompt(prompt, default)) if gateway_mode else None
+    
+    # Handle --check mode: just check for updates without installing
+    if check_mode:
+        _check_for_updates_only()
+        return
     
     print("⚕ Updating Hermes Agent...")
     print()
@@ -5854,6 +5881,10 @@ Examples:
     update_parser.add_argument(
         "--gateway", action="store_true", default=False,
         help="Gateway mode: use file-based IPC for prompts instead of stdin (used internally by /update)"
+    )
+    update_parser.add_argument(
+        "--check", action="store_true", default=False,
+        help="Check for updates without installing them"
     )
     update_parser.set_defaults(func=cmd_update)
     

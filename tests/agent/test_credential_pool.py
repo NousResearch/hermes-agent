@@ -1091,6 +1091,7 @@ def test_load_pool_seeds_copilot_via_gh_auth_token(tmp_path, monkeypatch):
     assert len(entries) == 1
     assert entries[0].source == "gh_cli"
     assert entries[0].access_token == "gho_fake_token_abc123"
+    assert entries[0].base_url == "https://api.githubcopilot.com"
 
 
 def test_load_pool_does_not_seed_copilot_when_no_token(tmp_path, monkeypatch):

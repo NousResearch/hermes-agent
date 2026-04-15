@@ -164,7 +164,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
 
     # Exit
     CommandDef("quit", "Exit the CLI", "Exit",
-               cli_only=True, aliases=("exit", "q")),
+               cli_only=True, aliases=("exit",)),
 ]
 
 

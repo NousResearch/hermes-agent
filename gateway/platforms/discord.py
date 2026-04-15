@@ -1802,6 +1802,76 @@ class DiscordAdapter(BasePlatformAdapter):
         async def slash_btw(interaction: discord.Interaction, question: str):
             await self._run_simple_slash(interaction, f"/btw {question}")
 
+        # ── Auto-register any gateway-available commands not yet on the tree ──
+        # This ensures new commands added to COMMAND_REGISTRY in
+        # hermes_cli/commands.py automatically appear as Discord slash
+        # commands without needing a manual entry here.
+        try:
+            from hermes_cli.commands import COMMAND_REGISTRY, _is_gateway_available, _resolve_config_gates
+
+            already_registered = set()
+            try:
+                already_registered = {cmd.name for cmd in tree.get_commands()}
+            except Exception:
+                pass
+
+            config_overrides = _resolve_config_gates()
+
+            for cmd_def in COMMAND_REGISTRY:
+                if not _is_gateway_available(cmd_def, config_overrides):
+                    continue
+                # Discord command names: lowercase, hyphens OK, max 32 chars.
+                discord_name = cmd_def.name.lower()[:32]
+                if discord_name in already_registered:
+                    continue
+                # Skip aliases that overlap with already-registered names
+                # (aliases for explicitly registered commands are handled above).
+                desc = (cmd_def.description or f"Run /{cmd_def.name}")[:100]
+                has_args = bool(cmd_def.args_hint)
+
+                if has_args:
+                    # Command takes optional arguments — create handler with
+                    # an optional ``args`` string parameter.
+                    def _make_args_handler(_name: str, _hint: str):
+                        @discord.app_commands.describe(args=f"Arguments: {_hint}"[:100])
+                        async def _handler(interaction: discord.Interaction, args: str = ""):
+                            await self._run_simple_slash(
+                                interaction, f"/{_name} {args}".strip()
+                            )
+                        _handler.__name__ = f"auto_slash_{_name.replace('-', '_')}"
+                        return _handler
+
+                    handler = _make_args_handler(cmd_def.name, cmd_def.args_hint)
+                else:
+                    # Parameterless command.
+                    def _make_simple_handler(_name: str):
+                        async def _handler(interaction: discord.Interaction):
+                            await self._run_simple_slash(interaction, f"/{_name}")
+                        _handler.__name__ = f"auto_slash_{_name.replace('-', '_')}"
+                        return _handler
+
+                    handler = _make_simple_handler(cmd_def.name)
+
+                auto_cmd = discord.app_commands.Command(
+                    name=discord_name,
+                    description=desc,
+                    callback=handler,
+                )
+                try:
+                    tree.add_command(auto_cmd)
+                    already_registered.add(discord_name)
+                except Exception:
+                    # Silently skip commands that fail registration (e.g.
+                    # name conflict with a subcommand group).
+                    pass
+
+            logger.debug(
+                "Discord auto-registered %d commands from COMMAND_REGISTRY",
+                len(already_registered),
+            )
+        except Exception as e:
+            logger.warning("Discord auto-register from COMMAND_REGISTRY failed: %s", e)
+
         # Register skills under a single /skill command group with category
         # subcommand groups.  This uses 1 top-level slot instead of N,
         # supporting up to 25 categories × 25 skills = 625 skills.

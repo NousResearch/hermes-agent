@@ -8,10 +8,21 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _isolate(tmp_path, monkeypatch):
-    """Redirect HERMES_HOME and clear module caches."""
+    """Redirect HERMES_HOME and clear CI-leaky auxiliary env overrides."""
     hermes_home = tmp_path / ".hermes"
     hermes_home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    for key in (
+        "AUXILIARY_VISION_PROVIDER",
+        "AUXILIARY_VISION_MODEL",
+        "AUXILIARY_VISION_BASE_URL",
+        "AUXILIARY_VISION_API_KEY",
+        "AUXILIARY_WEB_EXTRACT_PROVIDER",
+        "AUXILIARY_WEB_EXTRACT_MODEL",
+        "AUXILIARY_WEB_EXTRACT_BASE_URL",
+        "AUXILIARY_WEB_EXTRACT_API_KEY",
+    ):
+        monkeypatch.delenv(key, raising=False)
     # Write a minimal config so load_config doesn't fail
     (hermes_home / "config.yaml").write_text("model:\n  default: test-model\n")
 

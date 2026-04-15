@@ -125,34 +125,41 @@ def test_bridge_main_injects_token_env(bridge_module, tmp_path):
 
 
 def test_api_calendar_list_uses_agenda_by_default(api_module):
-    """calendar list without dates uses +agenda helper."""
+    """calendar list without dates uses gws +agenda when gws is available."""
     captured = {}
+    _write_token(api_module.TOKEN_PATH)
 
     def capture_run(cmd, **kwargs):
         captured["cmd"] = cmd
-        return MagicMock(returncode=0)
+        return MagicMock(returncode=0, stdout=json.dumps({"items": []}), stderr="")
 
     args = api_module.argparse.Namespace(
         start="", end="", max=25, calendar="primary", func=api_module.calendar_list,
     )
 
-    with patch.object(subprocess, "run", side_effect=capture_run):
-        with pytest.raises(SystemExit):
+    with patch.dict(os.environ, {"HERMES_GWS_BIN": "gws"}, clear=False):
+        with patch.object(subprocess, "run", side_effect=capture_run):
             api_module.calendar_list(args)
 
-    gws_args = captured["cmd"][2:]  # skip python + bridge path
-    assert "calendar" in gws_args
-    assert "+agenda" in gws_args
-    assert "--days" in gws_args
+    gws_args = captured["cmd"]
+    assert gws_args[:3] == ["gws", "calendar", "events"]
+    assert "list" in gws_args
+    params_idx = gws_args.index("--params")
+    params = json.loads(gws_args[params_idx + 1])
+    assert params["calendarId"] == "primary"
+    assert params["maxResults"] == 25
+    assert params["singleEvents"] is True
+    assert params["orderBy"] == "startTime"
 
 
 def test_api_calendar_list_respects_date_range(api_module):
-    """calendar list with --start/--end uses raw events list API."""
+    """calendar list with --start/--end forwards the explicit time window to gws."""
     captured = {}
+    _write_token(api_module.TOKEN_PATH)
 
     def capture_run(cmd, **kwargs):
         captured["cmd"] = cmd
-        return MagicMock(returncode=0)
+        return MagicMock(returncode=0, stdout=json.dumps({"items": []}), stderr="")
 
     args = api_module.argparse.Namespace(
         start="2026-04-01T00:00:00Z",
@@ -162,13 +169,12 @@ def test_api_calendar_list_respects_date_range(api_module):
         func=api_module.calendar_list,
     )
 
-    with patch.object(subprocess, "run", side_effect=capture_run):
-        with pytest.raises(SystemExit):
+    with patch.dict(os.environ, {"HERMES_GWS_BIN": "gws"}, clear=False):
+        with patch.object(subprocess, "run", side_effect=capture_run):
             api_module.calendar_list(args)
 
-    gws_args = captured["cmd"][2:]
-    assert "events" in gws_args
-    assert "list" in gws_args
+    gws_args = captured["cmd"]
+    assert gws_args[:4] == ["gws", "calendar", "events", "list"]
     params_idx = gws_args.index("--params")
     params = json.loads(gws_args[params_idx + 1])
     assert params["timeMin"] == "2026-04-01T00:00:00Z"

@@ -10,10 +10,11 @@ from gateway.config import PlatformConfig
 
 
 def _ensure_discord_mock():
-    if "discord" in sys.modules and hasattr(sys.modules["discord"], "__file__"):
+    existing = sys.modules.get("discord")
+    if existing is not None and hasattr(existing, "__file__"):
         return
 
-    discord_mod = MagicMock()
+    discord_mod = existing or MagicMock()
     discord_mod.Intents.default.return_value = MagicMock()
     discord_mod.DMChannel = type("DMChannel", (), {})
     discord_mod.Thread = type("Thread", (), {})
@@ -41,22 +42,24 @@ def _ensure_discord_mock():
             self.callback = callback
             self.parent = parent
 
-    discord_mod.app_commands = SimpleNamespace(
-        describe=lambda **kwargs: (lambda fn: fn),
-        choices=lambda **kwargs: (lambda fn: fn),
-        Choice=lambda **kwargs: SimpleNamespace(**kwargs),
-        Group=_FakeGroup,
-        Command=_FakeCommand,
-    )
+    app_commands = getattr(discord_mod, "app_commands", None)
+    if not isinstance(app_commands, SimpleNamespace):
+        app_commands = SimpleNamespace()
+    app_commands.describe = lambda **kwargs: (lambda fn: fn)
+    app_commands.choices = lambda **kwargs: (lambda fn: fn)
+    app_commands.Choice = lambda **kwargs: SimpleNamespace(**kwargs)
+    app_commands.Group = _FakeGroup
+    app_commands.Command = _FakeCommand
+    discord_mod.app_commands = app_commands
 
-    ext_mod = MagicMock()
-    commands_mod = MagicMock()
+    ext_mod = sys.modules.get("discord.ext") or MagicMock()
+    commands_mod = sys.modules.get("discord.ext.commands") or MagicMock()
     commands_mod.Bot = MagicMock
     ext_mod.commands = commands_mod
 
-    sys.modules.setdefault("discord", discord_mod)
-    sys.modules.setdefault("discord.ext", ext_mod)
-    sys.modules.setdefault("discord.ext.commands", commands_mod)
+    sys.modules["discord"] = discord_mod
+    sys.modules["discord.ext"] = ext_mod
+    sys.modules["discord.ext.commands"] = commands_mod
 
 
 _ensure_discord_mock()

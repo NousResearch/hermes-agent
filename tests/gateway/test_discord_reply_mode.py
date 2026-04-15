@@ -105,7 +105,6 @@ def _make_discord_adapter(reply_to_mode: str = "first"):
     config = PlatformConfig(enabled=True, token="test-token", reply_to_mode=reply_to_mode)
     adapter = DiscordAdapter(config)
 
-    # Mock the Discord client and channel
     mock_channel = AsyncMock()
     ref_message = MagicMock()
     mock_channel.fetch_message = AsyncMock(return_value=ref_message)
@@ -131,9 +130,7 @@ class TestSendWithReplyToMode:
 
         await adapter.send("12345", "test content", reply_to="999")
 
-        # Should never try to fetch the reference message
         channel.fetch_message.assert_not_called()
-        # All chunks sent without reference
         for call in channel.send.call_args_list:
             assert call.kwargs.get("reference") is None
 
@@ -144,7 +141,6 @@ class TestSendWithReplyToMode:
 
         await adapter.send("12345", "test content", reply_to="999")
 
-        # Should fetch the reference message
         channel.fetch_message.assert_called_once_with(999)
         calls = channel.send.call_args_list
         assert len(calls) == 3
@@ -311,7 +307,14 @@ def reply_text_adapter(monkeypatch):
     """DiscordAdapter wired for _handle_message → handle_message capture."""
     import gateway.platforms.discord as discord_platform
 
+    if discord_platform.discord is None:
+        discord_platform.discord = SimpleNamespace()
     monkeypatch.setattr(discord_platform.discord, "DMChannel", FakeDMChannel, raising=False)
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.delenv("DISCORD_ALLOWED_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_IGNORED_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_NO_THREAD_CHANNELS", raising=False)
 
     config = PlatformConfig(enabled=True, token="fake-token")
     adapter = DiscordAdapter(config)

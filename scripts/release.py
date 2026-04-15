@@ -197,6 +197,8 @@ AUTHOR_MAP = {
     "zhouboli@gmail.com": "zhouboli",
     "zqiao@microsoft.com": "tomqiaozc",
     "zzn+pa@zzn.im": "xinbenlv",
+    "jeff@Jeffs-Mac-mini.local": "jescalan",
+    "jeff@jeffs-mac-mini.lan": "jescalan",
 }
 
 

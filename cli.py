@@ -5519,6 +5519,8 @@ class HermesCLI:
             self._handle_skin_command(cmd_original)
         elif canonical == "voice":
             self._handle_voice_command(cmd_original)
+        elif canonical == "sleep":
+            self._handle_sleep_command(cmd_original)
         else:
             # Check for user-defined quick commands (bypass agent loop, no LLM call)
             base_cmd = cmd_lower.split()[0]
@@ -6168,6 +6170,89 @@ class HermesCLI:
         if self._apply_tui_skin_style():
             print("  Prompt + TUI colors updated.")
 
+    def _handle_sleep_command(self, cmd: str):
+        """Handle /sleep [deep|quick] [--apply] — preview or apply memory consolidation."""
+        try:
+            from agent.sleep_engine import SleepEngine, format_sleep_report
+        except ImportError as e:
+            print(f"  Sleep engine not available: {e}")
+            return
+        
+        # Parse mode / flags
+        parts = cmd.strip().split()
+        mode = "quick"
+        apply_changes = False
+        for raw_arg in parts[1:]:
+            arg = raw_arg.strip().lower()
+            if arg in ("deep", "深度", "彻底"):
+                mode = "deep"
+            elif arg in ("quick", "快速", "快"):
+                mode = "quick"
+            elif arg == "--apply":
+                apply_changes = True
+            else:
+                print(f"  Unknown argument: {raw_arg}. Use 'deep', 'quick', or '--apply'.")
+                return
+        
+        print(f"\n🌙 Hermes is entering sleep mode ({mode})...")
+        print("  This may take 30-60 seconds while I analyze your session history.")
+        if apply_changes:
+            print("  Changes will be written to MEMORY.md after the analysis completes.")
+        else:
+            print("  This run is a preview only. Re-run with --apply to persist changes.")
+        print("  During sleep, I will clean redundant memories and consolidate important information.")
+        print("")
+        
+        # Get memory store from agent or create a new one
+        memory_store = None
+        if hasattr(self, 'agent') and self.agent:
+            # Try to get memory store from AIAgent
+            if hasattr(self.agent, '_memory_store'):
+                memory_store = self.agent._memory_store
+            elif hasattr(self.agent, 'memory_store'):
+                memory_store = self.agent.memory_store
+        
+        # If not available from agent, create a new one
+        if memory_store is None:
+            try:
+                from tools.memory_tool import MemoryStore
+                memory_store = MemoryStore()
+                memory_store.load_from_disk()
+            except ImportError as e:
+                print(f"  Cannot access memory system: {e}")
+                return
+        
+        # Create sleep engine
+        engine = SleepEngine(memory_store)
+        
+        # Progress callback for visual feedback
+        def progress_callback(stage: str, progress: float, message: str = ""):
+            bar_length = 20
+            filled = int(bar_length * progress)
+            bar = "█" * filled + "░" * (bar_length - filled)
+            percent = int(progress * 100)
+            stage_display = stage.capitalize()
+            msg_display = f": {message}" if message else ""
+            print(f"\r  [{bar}] {stage_display} {percent}%{msg_display}", end="", flush=True)
+        
+        engine.set_progress_callback(progress_callback)
+        
+        try:
+            # Run sleep
+            print("  Starting memory consolidation...")
+            report = engine.sleep(mode, apply_changes=apply_changes)
+            
+            # Clear progress line
+            print("\r" + " " * 80 + "\r", end="")
+            
+            # Display results
+            print(format_sleep_report(report))
+            
+        except Exception as e:
+            print(f"\n  ❌ Sleep failed with error: {e}")
+            import traceback
+            traceback.print_exc()
+    
     def _toggle_verbose(self):
         """Cycle tool progress mode: off → new → all → verbose → off."""
         cycle = ["off", "new", "all", "verbose"]

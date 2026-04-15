@@ -75,10 +75,13 @@ Hermes has two entry points: start the terminal UI with `hermes`, or run the gat
 | Change model | `/model [provider:model]` | `/model [provider:model]` |
 | Set a personality | `/personality [name]` | `/personality [name]` |
 | Retry or undo the last turn | `/retry`, `/undo` | `/retry`, `/undo` |
+| Consolidate memory manually | `/sleep [quick|deep] [--apply]` | Not available |
 | Compress context / check usage | `/compress`, `/usage`, `/insights [--days N]` | `/compress`, `/usage`, `/insights [days]` |
 | Browse skills | `/skills` or `/<skill-name>` | `/skills` or `/<skill-name>` |
 | Interrupt current work | `Ctrl+C` or send a new message | `/stop` or send a new message |
 | Platform-specific status | `/platforms` | `/status`, `/sethome` |
+
+`/sleep` is a manual memory-consolidation pass for the CLI. It analyzes prior session history to learn which conversations tend to matter for a given user, scores curated memory entries against those learned patterns, and proposes low-value entries for removal from `MEMORY.md` while leaving `USER.md` untouched. By default it runs in preview mode; add `--apply` to persist the suggested changes. `quick` uses the default threshold; `deep` is more aggressive.
 
 For the full command lists, see the [CLI guide](https://hermes-agent.nousresearch.com/docs/user-guide/cli) and the [Messaging Gateway guide](https://hermes-agent.nousresearch.com/docs/user-guide/messaging).
 

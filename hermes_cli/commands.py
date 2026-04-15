@@ -165,6 +165,9 @@ COMMAND_REGISTRY: list[CommandDef] = [
     # Exit
     CommandDef("quit", "Exit the CLI", "Exit",
                cli_only=True, aliases=("exit", "q")),
+    # Sleep
+    CommandDef("sleep", "Enter sleep mode to clean redundant memories and consolidate important information", "Session",
+               aliases=("休眠", "休息"), args_hint="[deep|quick] [--apply]"),
 ]
 
 

@@ -594,16 +594,28 @@ class OpenVikingMemoryProvider(MemoryProvider):
 
         level = args.get("level", "overview")
 
-        # OpenViking v0.3.3 expects directory URIs for abstract/overview.
-        resolved_uri = self._normalize_summary_uri(uri) if level in ("abstract", "overview") else uri
+        summary_level = level in ("abstract", "overview")
+        # OpenViking expects directory URIs for pseudo summary files
+        # (e.g. viking://user/hermes/.overview.md).
+        resolved_uri = self._normalize_summary_uri(uri) if summary_level else uri
+        used_fallback = False
 
-        # Map our level names to OpenViking GET endpoints
+        # Map our level names to OpenViking GET endpoints.
+        endpoint = "/api/v1/content/read"
         if level == "abstract":
-            resp = self._client.get("/api/v1/content/abstract", params={"uri": resolved_uri})
-        elif level == "full":
-            resp = self._client.get("/api/v1/content/read", params={"uri": resolved_uri})
-        else:  # overview
-            resp = self._client.get("/api/v1/content/overview", params={"uri": resolved_uri})
+            endpoint = "/api/v1/content/abstract"
+        elif level == "overview":
+            endpoint = "/api/v1/content/overview"
+
+        try:
+            resp = self._client.get(endpoint, params={"uri": resolved_uri})
+        except Exception:
+            # OpenViking may return HTTP 500 for abstract/overview reads on normal
+            # file URIs (mem_*.md). For those, gracefully fallback to full read.
+            if not summary_level or resolved_uri != uri:
+                raise
+            resp = self._client.get("/api/v1/content/read", params={"uri": uri})
+            used_fallback = True
 
         result = self._unwrap_result(resp)
         # Content endpoints may return either plain strings or objects.
@@ -614,16 +626,26 @@ class OpenVikingMemoryProvider(MemoryProvider):
         else:
             content = ""
 
-        # Truncate very long content to avoid flooding the context
-        if len(content) > 8000:
-            content = content[:8000] + "\n\n[... truncated, use a more specific URI or abstract level]"
+        # Truncate long content to avoid flooding context.
+        max_len = 8000
+        if level == "overview":
+            max_len = 4000
+        elif level == "abstract":
+            max_len = 1200
 
-        return json.dumps({
+        if len(content) > max_len:
+            content = content[:max_len] + "\n\n[... truncated, use a more specific URI or full level]"
+
+        payload = {
             "uri": uri,
             "resolved_uri": resolved_uri,
             "level": level,
             "content": content,
-        }, ensure_ascii=False)
+        }
+        if used_fallback:
+            payload["fallback"] = "content/read"
+
+        return json.dumps(payload, ensure_ascii=False)
 
     def _tool_browse(self, args: dict) -> str:
         action = args.get("action", "list")

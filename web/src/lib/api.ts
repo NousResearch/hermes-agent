@@ -1,11 +1,22 @@
 const BASE = "";
 
-// Ephemeral session token for protected endpoints (reveal).
-// Fetched once on first reveal request and cached in memory.
+// Ephemeral session token for protected endpoints.
+// Injected into index.html by the server — never fetched via API.
+declare global {
+  interface Window {
+    __HERMES_SESSION_TOKEN__?: string;
+  }
+}
 let _sessionToken: string | null = null;
 
 async function fetchJSON<T>(url: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE}${url}`, init);
+  // Inject the session token into all /api/ requests.
+  const headers = new Headers(init?.headers);
+  const token = window.__HERMES_SESSION_TOKEN__;
+  if (token && !headers.has("Authorization")) {
+    headers.set("Authorization", `Bearer ${token}`);
+  }
+  const res = await fetch(`${BASE}${url}`, { ...init, headers });
   if (!res.ok) {
     const text = await res.text().catch(() => res.statusText);
     throw new Error(`${res.status}: ${text}`);
@@ -15,9 +26,12 @@ async function fetchJSON<T>(url: string, init?: RequestInit): Promise<T> {
 
 async function getSessionToken(): Promise<string> {
   if (_sessionToken) return _sessionToken;
-  const resp = await fetchJSON<{ token: string }>("/api/auth/session-token");
-  _sessionToken = resp.token;
-  return _sessionToken;
+  const injected = window.__HERMES_SESSION_TOKEN__;
+  if (injected) {
+    _sessionToken = injected;
+    return _sessionToken;
+  }
+  throw new Error("Session token not available — page must be served by the Hermes dashboard server");
 }
 
 export const api = {
@@ -43,6 +57,7 @@ export const api = {
   getConfig: () => fetchJSON<Record<string, unknown>>("/api/config"),
   getDefaults: () => fetchJSON<Record<string, unknown>>("/api/config/defaults"),
   getSchema: () => fetchJSON<{ fields: Record<string, unknown>; category_order: string[] }>("/api/config/schema"),
+  getModelInfo: () => fetchJSON<ModelInfoResponse>("/api/model/info"),
   saveConfig: (config: Record<string, unknown>) =>
     fetchJSON<{ ok: boolean }>("/api/config", {
       method: "PUT",
@@ -323,6 +338,24 @@ export interface SessionSearchResult {
 
 export interface SessionSearchResponse {
   results: SessionSearchResult[];
+}
+
+// ── Model info types ──────────────────────────────────────────────────
+
+export interface ModelInfoResponse {
+  model: string;
+  provider: string;
+  auto_context_length: number;
+  config_context_length: number;
+  effective_context_length: number;
+  capabilities: {
+    supports_tools?: boolean;
+    supports_vision?: boolean;
+    supports_reasoning?: boolean;
+    context_window?: number;
+    max_output_tokens?: number;
+    model_family?: string;
+  };
 }
 
 // ── OAuth provider types ────────────────────────────────────────────────

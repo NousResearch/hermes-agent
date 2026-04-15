@@ -752,6 +752,38 @@ class TestParseTargetRefDiscord:
         assert is_explicit is True
 
 
+class TestParseTargetRefMatrix:
+    """_parse_target_ref correctly handles Matrix room IDs and user MXIDs."""
+
+    def test_matrix_room_id_is_explicit(self):
+        """Matrix room IDs (!) are recognized as explicit targets."""
+        chat_id, thread_id, is_explicit = _parse_target_ref("matrix", "!HLOQwxYGgFPMPJUSNR:matrix.org")
+        assert chat_id == "!HLOQwxYGgFPMPJUSNR:matrix.org"
+        assert thread_id is None
+        assert is_explicit is True
+
+    def test_matrix_user_mxid_is_explicit(self):
+        """Matrix user MXIDs (@) are recognized as explicit targets."""
+        chat_id, thread_id, is_explicit = _parse_target_ref("matrix", "@hermes:matrix.org")
+        assert chat_id == "@hermes:matrix.org"
+        assert thread_id is None
+        assert is_explicit is True
+
+    def test_matrix_alias_is_not_explicit(self):
+        """Matrix room aliases (#) are NOT explicit — they need resolution."""
+        chat_id, thread_id, is_explicit = _parse_target_ref("matrix", "#general:matrix.org")
+        assert chat_id is None
+        assert is_explicit is False
+
+    def test_matrix_prefix_only_matches_matrix_platform(self):
+        """! and @ prefixes are only treated as explicit for the matrix platform."""
+        chat_id, _, is_explicit = _parse_target_ref("telegram", "!something")
+        assert is_explicit is False
+
+        chat_id, _, is_explicit = _parse_target_ref("discord", "@someone")
+        assert is_explicit is False
+
+
 class TestSendDiscordThreadId:
     """_send_discord uses thread_id when provided."""
 
@@ -854,3 +886,39 @@ class TestSendToPlatformDiscordThread:
         send_mock.assert_awaited_once()
         _, call_kwargs = send_mock.await_args
         assert call_kwargs["thread_id"] is None
+
+
+class TestSendMatrixUrlEncoding:
+    """_send_matrix URL-encodes Matrix room IDs in the API path."""
+
+    def test_room_id_is_percent_encoded_in_url(self):
+        """Matrix room IDs with ! and : are percent-encoded in the PUT URL."""
+        import aiohttp
+
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value={"event_id": "$evt123"})
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=None)
+
+        mock_session = MagicMock()
+        mock_session.put = MagicMock(return_value=mock_resp)
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=None)
+
+        with patch("aiohttp.ClientSession", return_value=mock_session):
+            from tools.send_message_tool import _send_matrix
+            result = asyncio.get_event_loop().run_until_complete(
+                _send_matrix(
+                    "test_token",
+                    {"homeserver": "https://matrix.example.org"},
+                    "!HLOQwxYGgFPMPJUSNR:matrix.org",
+                    "hello",
+                )
+            )
+
+        assert result["success"] is True
+        # Verify the URL was called with percent-encoded room ID
+        put_url = mock_session.put.call_args[0][0]
+        assert "%21HLOQwxYGgFPMPJUSNR%3Amatrix.org" in put_url
+        assert "!HLOQwxYGgFPMPJUSNR:matrix.org" not in put_url

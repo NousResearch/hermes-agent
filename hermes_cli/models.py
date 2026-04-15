@@ -29,6 +29,7 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     ("qwen/qwen3.6-plus",               ""),
     ("anthropic/claude-sonnet-4.5",     ""),
     ("anthropic/claude-haiku-4.5",      ""),
+    ("openrouter/elephant-alpha",       "free"),
     ("openai/gpt-5.4",                  ""),
     ("openai/gpt-5.4-mini",             ""),
     ("xiaomi/mimo-v2-pro",               ""),
@@ -43,6 +44,7 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     ("minimax/minimax-m2.7",            ""),
     ("minimax/minimax-m2.5",            ""),
     ("z-ai/glm-5.1",                    ""),
+    ("z-ai/glm-5v-turbo",               ""),
     ("z-ai/glm-5-turbo",                ""),
     ("moonshotai/kimi-k2.5",            ""),
     ("x-ai/grok-4.20",                  ""),
@@ -88,6 +90,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "minimax/minimax-m2.7",
         "minimax/minimax-m2.5",
         "z-ai/glm-5.1",
+        "z-ai/glm-5v-turbo",
         "z-ai/glm-5-turbo",
         "moonshotai/kimi-k2.5",
         "x-ai/grok-4.20-beta",
@@ -97,6 +100,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "arcee-ai/trinity-large-thinking",
         "openai/gpt-5.4-pro",
         "openai/gpt-5.4-nano",
+        "openrouter/elephant-alpha",
     ],
     "openai-codex": _codex_curated_models(),
     "copilot-acp": [
@@ -132,6 +136,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     "zai": [
         "glm-5.1",
         "glm-5",
+        "glm-5v-turbo",
         "glm-5-turbo",
         "glm-4.7",
         "glm-4.5",
@@ -199,6 +204,11 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "mimo-v2-pro",
         "mimo-v2-omni",
         "mimo-v2-flash",
+    ],
+    "arcee": [
+        "trinity-large-thinking",
+        "trinity-large-preview",
+        "trinity-mini",
     ],
     "opencode-zen": [
         "gpt-5.4-pro",
@@ -493,42 +503,39 @@ def check_nous_free_tier() -> bool:
 # Fields:
 #   slug        — internal provider ID (used in config.yaml, --provider flag)
 #   label       — short display name
-#   tier        — "top" (shown first) or "extended" (behind "More...")
 #   tui_desc    — longer description for the `hermes model` interactive picker
 # ---------------------------------------------------------------------------
 
 class ProviderEntry(NamedTuple):
     slug: str
     label: str
-    tier: str       # "top" or "extended"
     tui_desc: str   # detailed description for `hermes model` TUI
 
 
 CANONICAL_PROVIDERS: list[ProviderEntry] = [
-    # -- Top tier (shown by default) --
-    ProviderEntry("nous",         "Nous Portal",              "top",      "Nous Portal (Nous Research subscription)"),
-    ProviderEntry("openrouter",   "OpenRouter",               "top",      "OpenRouter (100+ models, pay-per-use)"),
-    ProviderEntry("anthropic",    "Anthropic",                "top",      "Anthropic (Claude models — API key or Claude Code)"),
-    ProviderEntry("openai-codex", "OpenAI Codex",             "top",      "OpenAI Codex"),
-    ProviderEntry("qwen-oauth",   "Qwen OAuth (Portal)",      "top",      "Qwen OAuth (reuses local Qwen CLI login)"),
-    ProviderEntry("copilot",      "GitHub Copilot",           "top",      "GitHub Copilot (uses GITHUB_TOKEN or gh auth token)"),
-    ProviderEntry("huggingface",  "Hugging Face",             "top",      "Hugging Face Inference Providers (20+ open models)"),
-    # -- Extended tier (behind "More..." in hermes model) --
-    ProviderEntry("copilot-acp",    "GitHub Copilot ACP",       "extended", "GitHub Copilot ACP (spawns `copilot --acp --stdio`)"),
-    ProviderEntry("gemini",         "Google AI Studio",         "extended", "Google AI Studio (Gemini models — OpenAI-compatible endpoint)"),
-    ProviderEntry("deepseek",       "DeepSeek",                 "extended", "DeepSeek (DeepSeek-V3, R1, coder — direct API)"),
-    ProviderEntry("xai",            "xAI",                      "extended", "xAI (Grok models — direct API)"),
-    ProviderEntry("zai",            "Z.AI / GLM",               "extended", "Z.AI / GLM (Zhipu AI direct API)"),
-    ProviderEntry("kimi-coding",    "Kimi / Moonshot",          "extended", "Kimi / Moonshot (Moonshot AI direct API)"),
-    ProviderEntry("kimi-coding-cn", "Kimi / Moonshot (China)",  "extended", "Kimi / Moonshot China (Moonshot CN direct API)"),
-    ProviderEntry("minimax",        "MiniMax",                  "extended", "MiniMax (global direct API)"),
-    ProviderEntry("minimax-cn",     "MiniMax (China)",          "extended", "MiniMax China (domestic direct API)"),
-    ProviderEntry("kilocode",       "Kilo Code",                "extended", "Kilo Code (Kilo Gateway API)"),
-    ProviderEntry("opencode-zen",   "OpenCode Zen",             "extended", "OpenCode Zen (35+ curated models, pay-as-you-go)"),
-    ProviderEntry("opencode-go",    "OpenCode Go",              "extended", "OpenCode Go (open models, $10/month subscription)"),
-    ProviderEntry("ai-gateway",     "AI Gateway",               "extended", "AI Gateway (Vercel — 200+ models, pay-per-use)"),
-    ProviderEntry("alibaba",        "Alibaba Cloud (DashScope)","extended", "Alibaba Cloud / DashScope Coding (Qwen + multi-provider)"),
-    ProviderEntry("xiaomi",         "Xiaomi MiMo",              "extended", "Xiaomi MiMo (MiMo-V2 models — pro, omni, flash)"),
+    ProviderEntry("nous",           "Nous Portal",              "Nous Portal (Nous Research subscription)"),
+    ProviderEntry("openrouter",     "OpenRouter",               "OpenRouter (100+ models, pay-per-use)"),
+    ProviderEntry("anthropic",      "Anthropic",                "Anthropic (Claude models — API key or Claude Code)"),
+    ProviderEntry("openai-codex",   "OpenAI Codex",             "OpenAI Codex"),
+    ProviderEntry("xiaomi",         "Xiaomi MiMo",              "Xiaomi MiMo (MiMo-V2 models — pro, omni, flash)"),
+    ProviderEntry("qwen-oauth",     "Qwen OAuth (Portal)",      "Qwen OAuth (reuses local Qwen CLI login)"),
+    ProviderEntry("copilot",        "GitHub Copilot",           "GitHub Copilot (uses GITHUB_TOKEN or gh auth token)"),
+    ProviderEntry("copilot-acp",    "GitHub Copilot ACP",       "GitHub Copilot ACP (spawns `copilot --acp --stdio`)"),
+    ProviderEntry("huggingface",    "Hugging Face",             "Hugging Face Inference Providers (20+ open models)"),
+    ProviderEntry("gemini",         "Google AI Studio",         "Google AI Studio (Gemini models — OpenAI-compatible endpoint)"),
+    ProviderEntry("deepseek",       "DeepSeek",                 "DeepSeek (DeepSeek-V3, R1, coder — direct API)"),
+    ProviderEntry("xai",            "xAI",                      "xAI (Grok models — direct API)"),
+    ProviderEntry("zai",            "Z.AI / GLM",               "Z.AI / GLM (Zhipu AI direct API)"),
+    ProviderEntry("kimi-coding",    "Kimi / Moonshot",          "Kimi / Moonshot (Moonshot AI direct API)"),
+    ProviderEntry("kimi-coding-cn", "Kimi / Moonshot (China)",  "Kimi / Moonshot China (Moonshot CN direct API)"),
+    ProviderEntry("minimax",        "MiniMax",                  "MiniMax (global direct API)"),
+    ProviderEntry("minimax-cn",     "MiniMax (China)",          "MiniMax China (domestic direct API)"),
+    ProviderEntry("alibaba",        "Alibaba Cloud (DashScope)","Alibaba Cloud / DashScope Coding (Qwen + multi-provider)"),
+    ProviderEntry("arcee",          "Arcee AI",                 "Arcee AI (Trinity models — direct API)"),
+    ProviderEntry("kilocode",       "Kilo Code",                "Kilo Code (Kilo Gateway API)"),
+    ProviderEntry("opencode-zen",   "OpenCode Zen",             "OpenCode Zen (35+ curated models, pay-as-you-go)"),
+    ProviderEntry("opencode-go",    "OpenCode Go",              "OpenCode Go (open models, $10/month subscription)"),
+    ProviderEntry("ai-gateway",     "Vercel AI Gateway",        "Vercel AI Gateway (200+ models, pay-per-use)"),
 ]
 
 # Derived dicts — used throughout the codebase
@@ -553,6 +560,8 @@ _PROVIDER_ALIASES = {
     "moonshot": "kimi-coding",
     "kimi-cn": "kimi-coding-cn",
     "moonshot-cn": "kimi-coding-cn",
+    "arcee-ai": "arcee",
+    "arceeai": "arcee",
     "minimax-china": "minimax-cn",
     "minimax_cn": "minimax-cn",
     "claude": "anthropic",
@@ -1814,6 +1823,17 @@ def validate_requested_model(
                     "message": None,
                 }
 
+            # Auto-correct if the top match is very similar (e.g. typo)
+            auto = get_close_matches(requested_for_lookup, api_models, n=1, cutoff=0.9)
+            if auto:
+                return {
+                    "accepted": True,
+                    "persist": True,
+                    "recognized": True,
+                    "corrected_model": auto[0],
+                    "message": f"Auto-corrected `{requested}` → `{auto[0]}`",
+                }
+
             suggestions = get_close_matches(requested, api_models, n=3, cutoff=0.5)
             suggestion_text = ""
             if suggestions:
@@ -1865,6 +1885,16 @@ def validate_requested_model(
                     "recognized": True,
                     "message": None,
                 }
+            # Auto-correct if the top match is very similar (e.g. typo)
+            auto = get_close_matches(requested_for_lookup, codex_models, n=1, cutoff=0.9)
+            if auto:
+                return {
+                    "accepted": True,
+                    "persist": True,
+                    "recognized": True,
+                    "corrected_model": auto[0],
+                    "message": f"Auto-corrected `{requested}` → `{auto[0]}`",
+                }
             suggestions = get_close_matches(requested_for_lookup, codex_models, n=3, cutoff=0.5)
             suggestion_text = ""
             if suggestions:
@@ -1897,6 +1927,18 @@ def validate_requested_model(
             # the user may have access to models not shown in the public
             # listing (e.g. Z.AI Pro/Max plans can use glm-5 on coding
             # endpoints even though it's not in /models).  Warn but allow.
+
+            # Auto-correct if the top match is very similar (e.g. typo)
+            auto = get_close_matches(requested_for_lookup, api_models, n=1, cutoff=0.9)
+            if auto:
+                return {
+                    "accepted": True,
+                    "persist": True,
+                    "recognized": True,
+                    "corrected_model": auto[0],
+                    "message": f"Auto-corrected `{requested}` → `{auto[0]}`",
+                }
+
             suggestions = get_close_matches(requested, api_models, n=3, cutoff=0.5)
             suggestion_text = ""
             if suggestions:

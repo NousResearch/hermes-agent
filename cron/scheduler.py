@@ -46,6 +46,7 @@ _KNOWN_DELIVERY_PLATFORMS = frozenset({
     "telegram", "discord", "slack", "whatsapp", "signal",
     "matrix", "mattermost", "homeassistant", "dingtalk", "feishu",
     "wecom", "wecom_callback", "weixin", "sms", "email", "webhook", "bluebubbles",
+    "qqbot",
 })
 
 from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run
@@ -305,6 +306,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None, agent_res
         "email": Platform.EMAIL,
         "sms": Platform.SMS,
         "bluebubbles": Platform.BLUEBUBBLES,
+        "qqbot": Platform.QQBOT,
     }
     platform = platform_map.get(platform_name.lower())
     if not platform:

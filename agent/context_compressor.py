@@ -693,6 +693,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             # Store for iterative updates on next compaction
             self._previous_summary = summary
             self._summary_failure_cooldown_until = 0.0
+            self._summary_model_fallen_back = False
             return self._with_summary_prefix(summary)
         except RuntimeError:
             # No provider configured — long cooldown, unlikely to self-resolve
@@ -703,6 +704,34 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                             _SUMMARY_FAILURE_COOLDOWN_SECONDS)
             return None
         except Exception as e:
+            # If the summary model is different from the main model and the
+            # error looks permanent (model not found, 503, 404), fall back to
+            # using the main model instead of entering cooldown that leaves
+            # context growing unbounded.  (#8620 sub-issue 4)
+            _status = getattr(e, "status_code", None) or getattr(getattr(e, "response", None), "status_code", None)
+            _err_str = str(e).lower()
+            _is_model_not_found = (
+                _status in (404, 503)
+                or "model_not_found" in _err_str
+                or "does not exist" in _err_str
+                or "no available channel" in _err_str
+            )
+            if (
+                _is_model_not_found
+                and self.summary_model
+                and self.summary_model != self.model
+                and not getattr(self, "_summary_model_fallen_back", False)
+            ):
+                self._summary_model_fallen_back = True
+                logging.warning(
+                    "Summary model '%s' not available (%s). "
+                    "Falling back to main model '%s' for compression.",
+                    self.summary_model, e, self.model,
+                )
+                self.summary_model = ""  # empty = use main model
+                self._summary_failure_cooldown_until = 0.0  # no cooldown
+                return self._generate_summary(messages, summary_budget)  # retry immediately
+
             # Transient errors (timeout, rate limit, network) — shorter cooldown
             _transient_cooldown = 60
             self._summary_failure_cooldown_until = time.monotonic() + _transient_cooldown

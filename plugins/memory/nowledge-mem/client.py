@@ -173,6 +173,40 @@ class NowledgeMemClient:
             cmd.extend(["--offset", str(offset)])
         return self._cli(cmd)
 
+    def import_thread(
+        self,
+        thread_id: str,
+        messages: List[Dict[str, Any]],
+        *,
+        title: Optional[str] = None,
+        source: str = "hermes",
+    ) -> Any:
+        """Create or replace a thread from a cleaned transcript batch."""
+        if not messages:
+            return {"success": True, "thread_id": thread_id, "imported": 0}
+        cmd = ["t", "import", "-m", json.dumps(messages, ensure_ascii=False)]
+        if title:
+            cmd.extend(["-t", title])
+        if thread_id:
+            cmd.extend(["--id", thread_id])
+        if source:
+            cmd.extend(["-s", source])
+        return self._cli(cmd)
+
+    def append_thread(self, thread_id: str, messages: List[Dict[str, Any]]) -> Any:
+        """Append cleaned transcript messages to an existing thread."""
+        if not messages:
+            return {"success": True, "thread_id": thread_id, "appended": 0}
+        return self._cli(
+            [
+                "t",
+                "append",
+                thread_id,
+                "-m",
+                json.dumps(messages, ensure_ascii=False),
+            ]
+        )
+
     def _cli(self, args: List[str]) -> Any:
         """Run ``nmem --json <args>`` and return parsed JSON."""
         cmd = ["nmem", "--json"] + args

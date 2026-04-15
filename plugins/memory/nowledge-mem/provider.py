@@ -219,6 +219,8 @@ class NowledgeMemProvider(MemoryProvider):
         self._cron_skipped = False
         self._bg_threads: List[threading.Thread] = []
         self._resolved_space: str | None = None
+        self._session_id = ""
+        self._saved_message_count = 0
 
     @property
     def name(self) -> str:
@@ -255,6 +257,8 @@ class NowledgeMemProvider(MemoryProvider):
             timeout = 30
         self._resolved_space = self._resolve_space(config, kwargs)
         self._client = NowledgeMemClient(timeout=timeout, space=self._resolved_space)
+        self._session_id = session_id or ""
+        self._saved_message_count = 0
 
         if not self._client.health():
             logger.warning("Nowledge Mem not reachable via nmem CLI")
@@ -335,6 +339,54 @@ class NowledgeMemProvider(MemoryProvider):
             "from compressed messages can be recovered via nmem_search. Preserve references "
             "to memory IDs if any were mentioned."
         )
+
+    def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
+        if self._cron_skipped or not self._client:
+            return
+        session_id = (self._session_id or "").strip()
+        if not session_id:
+            return
+
+        cleaned_messages = self._clean_session_messages(messages)
+        if not cleaned_messages:
+            return
+
+        saved_count = int(self._saved_message_count or 0)
+        if saved_count > len(cleaned_messages):
+            saved_count = 0
+
+        if saved_count <= 0:
+            title = self._build_thread_title(cleaned_messages)
+            try:
+                self._client.import_thread(
+                    session_id,
+                    cleaned_messages,
+                    title=title or None,
+                    source="hermes",
+                )
+            except Exception as error:
+                logger.warning(
+                    "Nowledge Mem session import failed for %s: %s",
+                    session_id,
+                    error,
+                )
+                return
+            self._saved_message_count = len(cleaned_messages)
+            return
+
+        delta = cleaned_messages[saved_count:]
+        if not delta:
+            return
+        try:
+            self._client.append_thread(session_id, delta)
+        except Exception as error:
+            logger.warning(
+                "Nowledge Mem session append failed for %s: %s",
+                session_id,
+                error,
+            )
+            return
+        self._saved_message_count = len(cleaned_messages)
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         if self._cron_skipped:
@@ -443,6 +495,8 @@ class NowledgeMemProvider(MemoryProvider):
                 thread.join(timeout=3.0)
         self._bg_threads.clear()
         self._resolved_space = None
+        self._session_id = ""
+        self._saved_message_count = 0
 
     @staticmethod
     def _parse_csv(value: Any) -> Optional[List[str]]:
@@ -563,3 +617,48 @@ class NowledgeMemProvider(MemoryProvider):
         if not lines:
             return ""
         return "## Recalled from Nowledge Mem\n" + "\n".join(lines)
+
+    @staticmethod
+    def _clean_session_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+        cleaned: List[Dict[str, str]] = []
+        for message in messages or []:
+            if not isinstance(message, dict):
+                continue
+            role = str(message.get("role") or "").strip()
+            if role not in {"user", "assistant"}:
+                continue
+            content = NowledgeMemProvider._extract_message_text(message.get("content"))
+            if not content:
+                continue
+            cleaned.append({"role": role, "content": content})
+        return cleaned
+
+    @staticmethod
+    def _extract_message_text(content: Any) -> str:
+        if content is None:
+            return ""
+        if isinstance(content, str):
+            return content.strip()
+        if isinstance(content, list):
+            parts = [NowledgeMemProvider._extract_message_text(item) for item in content]
+            return "\n".join(part for part in parts if part).strip()
+        if isinstance(content, dict):
+            if "text" in content:
+                return NowledgeMemProvider._extract_message_text(content.get("text"))
+            if "content" in content:
+                return NowledgeMemProvider._extract_message_text(content.get("content"))
+            return ""
+        return str(content).strip()
+
+    @staticmethod
+    def _build_thread_title(messages: List[Dict[str, str]]) -> str:
+        for message in messages:
+            if message.get("role") != "user":
+                continue
+            first_line = next(
+                (line.strip() for line in message.get("content", "").splitlines() if line.strip()),
+                "",
+            )
+            if first_line:
+                return first_line[:80]
+        return "Hermes session"

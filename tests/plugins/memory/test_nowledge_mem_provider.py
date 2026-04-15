@@ -16,6 +16,10 @@ class FakeClient:
         self.timeout = timeout
         self.space = space
         self.saved = []
+        self.import_calls = []
+        self.append_calls = []
+        self.fail_import = False
+        self.fail_append = False
 
     @staticmethod
     def is_available():
@@ -57,6 +61,25 @@ class FakeClient:
 
     def thread_messages(self, thread_id, *, limit=50, offset=0):
         return {"thread_id": thread_id, "limit": limit, "offset": offset}
+
+    def import_thread(self, thread_id, messages, *, title=None, source="hermes"):
+        if self.fail_import:
+            raise RuntimeError("import failed")
+        self.import_calls.append(
+            {
+                "thread_id": thread_id,
+                "messages": messages,
+                "title": title,
+                "source": source,
+            }
+        )
+        return {"success": True, "thread_id": thread_id}
+
+    def append_thread(self, thread_id, messages):
+        if self.fail_append:
+            raise RuntimeError("append failed")
+        self.append_calls.append({"thread_id": thread_id, "messages": messages})
+        return {"success": True, "thread_id": thread_id}
 
 
 def test_load_memory_provider_nowledge_mem(monkeypatch):
@@ -236,3 +259,80 @@ def test_resolve_space_non_string_falls_through_to_identity():
         {"agent_identity": "research"},
     )
     assert resolved == "Research Agent"
+
+
+def test_on_session_end_imports_clean_messages_then_appends_delta(monkeypatch, tmp_path):
+    monkeypatch.setattr(provider_module, "NowledgeMemClient", FakeClient)
+    provider = NowledgeMemProvider()
+    provider.initialize("session-1", hermes_home=str(tmp_path), platform="cli")
+
+    first_messages = [
+        {"role": "system", "content": "skip"},
+        {"role": "user", "content": [{"type": "text", "text": " hello "}]},
+        {"role": "assistant", "content": "hi there"},
+        {"role": "tool", "content": "skip"},
+        {"role": "assistant", "content": {"text": " more detail "}},
+    ]
+
+    provider.on_session_end(first_messages)
+
+    assert provider._client.import_calls == [
+        {
+            "thread_id": "session-1",
+            "messages": [
+                {"role": "user", "content": "hello"},
+                {"role": "assistant", "content": "hi there"},
+                {"role": "assistant", "content": "more detail"},
+            ],
+            "title": "hello",
+            "source": "hermes",
+        }
+    ]
+    assert provider._client.append_calls == []
+
+    next_messages = first_messages + [{"role": "user", "content": "next step"}]
+    provider.on_session_end(next_messages)
+
+    assert provider._client.append_calls == [
+        {
+            "thread_id": "session-1",
+            "messages": [{"role": "user", "content": "next step"}],
+        }
+    ]
+
+
+def test_on_session_end_failed_import_does_not_advance_count(monkeypatch, tmp_path):
+    monkeypatch.setattr(provider_module, "NowledgeMemClient", FakeClient)
+    provider = NowledgeMemProvider()
+    provider.initialize("session-2", hermes_home=str(tmp_path), platform="cli")
+    provider._client.fail_import = True
+
+    provider.on_session_end(
+        [
+            "bad",
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": {"content": "world"}},
+        ]
+    )
+
+    assert provider._saved_message_count == 0
+    assert provider._client.import_calls == []
+
+
+def test_on_session_end_failed_append_does_not_advance_count(monkeypatch, tmp_path):
+    monkeypatch.setattr(provider_module, "NowledgeMemClient", FakeClient)
+    provider = NowledgeMemProvider()
+    provider.initialize("session-3", hermes_home=str(tmp_path), platform="cli")
+    provider._saved_message_count = 2
+    provider._client.fail_append = True
+
+    provider.on_session_end(
+        [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "world"},
+            {"role": "user", "content": "next step"},
+        ]
+    )
+
+    assert provider._saved_message_count == 2
+    assert provider._client.append_calls == []

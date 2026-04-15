@@ -1,8 +1,9 @@
 name: nowledge-mem
-version: 0.5.7
+version: 0.5.9
 description: "Cross-tool personal knowledge graph with semantic search, Working Memory, and proactive recall."
 hooks:
   - prefetch
   - on_memory_write
   - on_pre_compress
+  - on_session_end
 author: Nowledge Labs

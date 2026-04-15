@@ -195,7 +195,7 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         name="Alibaba Cloud (DashScope)",
         auth_type="api_key",
         inference_base_url="https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
-        api_key_env_vars=("DASHSCOPE_API_KEY",),
+        api_key_env_vars=("DASHSCOPE_API_KEY", "ALIBABA_API_KEY"),
         base_url_env_var="DASHSCOPE_BASE_URL",
     ),
     "minimax-cn": ProviderConfig(
@@ -374,6 +374,24 @@ def _resolve_api_key_provider_secret(
             return val, env_var
 
     return "", ""
+
+
+def format_api_key_env_var_hint(provider_id: str) -> str:
+    """Return a user-facing env-var hint for a provider's API key."""
+    pconfig = PROVIDER_REGISTRY.get((provider_id or "").strip().lower())
+    if not pconfig or not pconfig.api_key_env_vars:
+        normalized = (provider_id or "").strip().upper()
+        return f"{normalized}_API_KEY" if normalized else "API_KEY"
+
+    env_vars = tuple(ev for ev in pconfig.api_key_env_vars if ev)
+    if not env_vars:
+        normalized = (provider_id or "").strip().upper()
+        return f"{normalized}_API_KEY" if normalized else "API_KEY"
+    if len(env_vars) == 1:
+        return env_vars[0]
+    if len(env_vars) == 2:
+        return f"{env_vars[0]} (or {env_vars[1]})"
+    return f"{', '.join(env_vars[:-1])}, or {env_vars[-1]}"
 
 
 # =============================================================================

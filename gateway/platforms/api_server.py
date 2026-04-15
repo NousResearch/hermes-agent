@@ -602,6 +602,7 @@ class APIServerAdapter(BasePlatformAdapter):
         self._runner: Optional["web.AppRunner"] = None
         self._site: Optional["web.TCPSite"] = None
         self._response_store = ResponseStore()
+        self._response_store_closed = False
         # Active run streams: run_id -> asyncio.Queue of SSE event dicts
         self._run_streams: Dict[str, "asyncio.Queue[Optional[Dict]]"] = {}
         # Creation timestamps for orphaned-run TTL sweep
@@ -681,6 +682,34 @@ class APIServerAdapter(BasePlatformAdapter):
             return False
 
         return "*" in self._cors_origins or origin in self._cors_origins
+
+    def _ensure_response_store(self) -> None:
+        """Reopen the response store if it was closed during app cleanup."""
+        if self._response_store_closed:
+            self._response_store = ResponseStore()
+            self._response_store_closed = False
+
+    def _close_response_store(self) -> None:
+        """Close the response store exactly once per adapter lifecycle."""
+        if self._response_store_closed:
+            return
+        self._response_store_closed = True
+        try:
+            self._response_store.close()
+        except Exception:
+            pass
+
+    async def _on_app_cleanup(self, app: "web.Application") -> None:
+        """Release response-store resources when the aiohttp app is cleaned up."""
+        self._close_response_store()
+
+    def bind_app(self, app: "web.Application") -> "web.Application":
+        """Bind adapter lifecycle hooks to an aiohttp app used by the API server."""
+        self._ensure_response_store()
+        app["api_server_adapter"] = self
+        if self._on_app_cleanup not in app.on_cleanup:
+            app.on_cleanup.append(self._on_app_cleanup)
+        return app
 
     # ------------------------------------------------------------------
     # Auth helper
@@ -3339,8 +3368,9 @@ class APIServerAdapter(BasePlatformAdapter):
 
         try:
             mws = [mw for mw in (cors_middleware, body_limit_middleware, security_headers_middleware) if mw is not None]
-            self._app = web.Application(middlewares=mws, client_max_size=MAX_REQUEST_BYTES)
-            self._app["api_server_adapter"] = self
+            self._app = self.bind_app(
+                web.Application(middlewares=mws, client_max_size=MAX_REQUEST_BYTES)
+            )
             self._app.router.add_get("/health", self._handle_health)
             self._app.router.add_get("/health/detailed", self._handle_health_detailed)
             self._app.router.add_get("/v1/health", self._handle_health)
@@ -3444,6 +3474,7 @@ class APIServerAdapter(BasePlatformAdapter):
             await self._runner.cleanup()
             self._runner = None
         self._app = None
+        self._close_response_store()
         logger.info("[%s] API server stopped", self.name)
 
     async def send(

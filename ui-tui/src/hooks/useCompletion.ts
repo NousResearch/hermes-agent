@@ -2,13 +2,9 @@ import { useEffect, useRef, useState } from 'react'
 
 import type { CompletionItem } from '../app/interfaces.js'
 import type { GatewayClient } from '../gatewayClient.js'
-
+import type { CompletionResponse } from '../gatewayTypes.js'
+import { asRpcResult } from '../lib/rpc.js'
 const TAB_PATH_RE = /((?:["']?(?:[A-Za-z]:[\\/]|\.{1,2}\/|~\/|\/|@|[^"'`\s]+\/))[^\s]*)$/
-
-interface CompletionResult {
-  items?: CompletionItem[]
-  replace_from?: number
-}
 
 export function useCompletion(input: string, blocked: boolean, gw: GatewayClient) {
   const [completions, setCompletions] = useState<CompletionItem[]>([])
@@ -51,12 +47,12 @@ export function useCompletion(input: string, blocked: boolean, gw: GatewayClient
       }
 
       const req = isSlash
-        ? gw.request('complete.slash', { text: input })
-        : gw.request('complete.path', { word: pathWord })
+        ? gw.request<CompletionResponse>('complete.slash', { text: input })
+        : gw.request<CompletionResponse>('complete.path', { word: pathWord })
 
       req
         .then(raw => {
-          const r = raw as CompletionResult | null | undefined
+          const r = asRpcResult<CompletionResponse>(raw)
 
           if (ref.current !== input) {
             return

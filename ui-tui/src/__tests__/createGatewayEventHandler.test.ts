@@ -75,8 +75,7 @@ describe('createGatewayEventHandler', () => {
       },
       transcript: {
         appendMessage: (msg: Msg) => appended.push(msg),
-        setHistoryItems: vi.fn(),
-        setMessages: vi.fn()
+        setHistoryItems: vi.fn()
       },
       turn: {
         actions: {
@@ -191,8 +190,7 @@ describe('createGatewayEventHandler', () => {
         },
         transcript: {
           appendMessage: (msg: Msg) => appended.push(msg),
-          setHistoryItems: vi.fn(),
-          setMessages: vi.fn()
+          setHistoryItems: vi.fn()
         },
         turn: {
           actions: {
@@ -304,8 +302,7 @@ describe('createGatewayEventHandler', () => {
       },
       transcript: {
         appendMessage: (msg: Msg) => appended.push(msg),
-        setHistoryItems: vi.fn(),
-        setMessages: vi.fn()
+        setHistoryItems: vi.fn()
       },
       turn: {
         actions: {

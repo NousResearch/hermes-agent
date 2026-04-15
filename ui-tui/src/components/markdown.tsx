@@ -1,5 +1,5 @@
 import { Box, Text } from '@hermes/ink'
-import type { ReactNode } from 'react'
+import { memo, type ReactNode, useMemo } from 'react'
 
 import type { Theme } from '../theme.js'
 
@@ -212,367 +212,379 @@ function MdInline({ t, text }: { t: Theme; text: string }) {
   return <Text>{parts.length ? parts : <Text>{text}</Text>}</Text>
 }
 
-export function Md({ compact, t, text }: { compact?: boolean; t: Theme; text: string }) {
-  const lines = text.split('\n')
-  const nodes: ReactNode[] = []
-  let i = 0
+interface MdProps {
+  compact?: boolean
+  t: Theme
+  text: string
+}
 
-  let prevKind: 'blank' | 'code' | 'heading' | 'list' | 'paragraph' | 'quote' | 'rule' | 'table' | null = null
+function MdImpl({ compact, t, text }: MdProps) {
+  const nodes = useMemo(() => {
+    const lines = text.split('\n')
+    const nodes: ReactNode[] = []
+    let i = 0
 
-  const gap = () => {
-    if (nodes.length && prevKind !== 'blank') {
-      nodes.push(<Text key={`gap-${nodes.length}`}> </Text>)
-      prevKind = 'blank'
-    }
-  }
+    let prevKind: 'blank' | 'code' | 'heading' | 'list' | 'paragraph' | 'quote' | 'rule' | 'table' | null = null
 
-  const start = (kind: Exclude<typeof prevKind, null | 'blank'>) => {
-    if (prevKind && prevKind !== 'blank' && prevKind !== kind) {
-      gap()
-    }
-
-    prevKind = kind
-  }
-
-  while (i < lines.length) {
-    const line = lines[i]!
-    const key = nodes.length
-
-    if (compact && !line.trim()) {
-      i++
-
-      continue
+    const gap = () => {
+      if (nodes.length && prevKind !== 'blank') {
+        nodes.push(<Text key={`gap-${nodes.length}`}> </Text>)
+        prevKind = 'blank'
+      }
     }
 
-    if (!line.trim()) {
-      gap()
-      i++
-
-      continue
-    }
-
-    const fence = parseFence(line)
-
-    if (fence) {
-      const block: string[] = []
-      const lang = fence.lang
-
-      for (i++; i < lines.length && !isFenceClose(lines[i]!, fence); i++) {
-        block.push(lines[i]!)
+    const start = (kind: Exclude<typeof prevKind, null | 'blank'>) => {
+      if (prevKind && prevKind !== 'blank' && prevKind !== kind) {
+        gap()
       }
 
-      if (i < lines.length) {
+      prevKind = kind
+    }
+
+    while (i < lines.length) {
+      const line = lines[i]!
+      const key = nodes.length
+
+      if (compact && !line.trim()) {
         i++
-      }
-
-      if (isMarkdownFence(lang)) {
-        start('paragraph')
-        nodes.push(<Md compact={compact} key={key} t={t} text={block.join('\n')} />)
 
         continue
       }
 
-      start('code')
+      if (!line.trim()) {
+        gap()
+        i++
 
-      const isDiff = lang === 'diff'
-
-      nodes.push(
-        <Box flexDirection="column" key={key} paddingLeft={2}>
-          {lang && !isDiff && <Text color={t.color.dim}>{'─ ' + lang}</Text>}
-          {block.map((l, j) => {
-            const add = isDiff && l.startsWith('+')
-            const del = isDiff && l.startsWith('-')
-            const hunk = isDiff && l.startsWith('@@')
-
-            return (
-              <Text
-                backgroundColor={add ? t.color.diffAdded : del ? t.color.diffRemoved : undefined}
-                color={add ? t.color.diffAddedWord : del ? t.color.diffRemovedWord : hunk ? t.color.dim : undefined}
-                dimColor={isDiff && !add && !del && !hunk && l.startsWith(' ')}
-                key={j}
-              >
-                {l}
-              </Text>
-            )
-          })}
-        </Box>
-      )
-
-      continue
-    }
-
-    if (line.trim().startsWith('$$')) {
-      start('code')
-
-      const block: string[] = []
-
-      for (i++; i < lines.length; i++) {
-        if (lines[i]!.trim().startsWith('$$')) {
-          i++
-
-          break
-        }
-
-        block.push(lines[i]!)
+        continue
       }
 
-      nodes.push(
-        <Box flexDirection="column" key={key} paddingLeft={2}>
-          <Text color={t.color.dim}>─ math</Text>
-          {block.map((l, j) => (
-            <Text color={t.color.amber} key={j}>
-              {l}
-            </Text>
-          ))}
-        </Box>
-      )
+      const fence = parseFence(line)
 
-      continue
-    }
+      if (fence) {
+        const block: string[] = []
+        const lang = fence.lang
 
-    const heading = line.match(HEADING_RE)
+        for (i++; i < lines.length && !isFenceClose(lines[i]!, fence); i++) {
+          block.push(lines[i]!)
+        }
 
-    if (heading) {
-      start('heading')
-      nodes.push(
-        <Text bold color={t.color.amber} key={key}>
-          {heading[2]}
-        </Text>
-      )
-      i++
+        if (i < lines.length) {
+          i++
+        }
 
-      continue
-    }
+        if (isMarkdownFence(lang)) {
+          start('paragraph')
+          nodes.push(<Md compact={compact} key={key} t={t} text={block.join('\n')} />)
 
-    if (i + 1 < lines.length && line.trim()) {
-      const setext = lines[i + 1]!.match(/^\s{0,3}(=+|-+)\s*$/)
+          continue
+        }
 
-      if (setext) {
+        start('code')
+
+        const isDiff = lang === 'diff'
+
+        nodes.push(
+          <Box flexDirection="column" key={key} paddingLeft={2}>
+            {lang && !isDiff && <Text color={t.color.dim}>{'─ ' + lang}</Text>}
+            {block.map((l, j) => {
+              const add = isDiff && l.startsWith('+')
+              const del = isDiff && l.startsWith('-')
+              const hunk = isDiff && l.startsWith('@@')
+
+              return (
+                <Text
+                  backgroundColor={add ? t.color.diffAdded : del ? t.color.diffRemoved : undefined}
+                  color={add ? t.color.diffAddedWord : del ? t.color.diffRemovedWord : hunk ? t.color.dim : undefined}
+                  dimColor={isDiff && !add && !del && !hunk && l.startsWith(' ')}
+                  key={j}
+                >
+                  {l}
+                </Text>
+              )
+            })}
+          </Box>
+        )
+
+        continue
+      }
+
+      if (line.trim().startsWith('$$')) {
+        start('code')
+
+        const block: string[] = []
+
+        for (i++; i < lines.length; i++) {
+          if (lines[i]!.trim().startsWith('$$')) {
+            i++
+
+            break
+          }
+
+          block.push(lines[i]!)
+        }
+
+        nodes.push(
+          <Box flexDirection="column" key={key} paddingLeft={2}>
+            <Text color={t.color.dim}>─ math</Text>
+            {block.map((l, j) => (
+              <Text color={t.color.amber} key={j}>
+                {l}
+              </Text>
+            ))}
+          </Box>
+        )
+
+        continue
+      }
+
+      const heading = line.match(HEADING_RE)
+
+      if (heading) {
         start('heading')
         nodes.push(
           <Text bold color={t.color.amber} key={key}>
-            {line.trim()}
+            {heading[2]}
           </Text>
         )
-        i += 2
+        i++
 
         continue
       }
-    }
 
-    if (HR_RE.test(line)) {
-      start('rule')
-      nodes.push(
-        <Text color={t.color.dim} key={key}>
-          {'─'.repeat(36)}
-        </Text>
-      )
-      i++
+      if (i + 1 < lines.length && line.trim()) {
+        const setext = lines[i + 1]!.match(/^\s{0,3}(=+|-+)\s*$/)
 
-      continue
-    }
-
-    const footnote = line.match(FOOTNOTE_RE)
-
-    if (footnote) {
-      start('list')
-      nodes.push(
-        <Text color={t.color.dim} key={key}>
-          [{footnote[1]}] <MdInline t={t} text={footnote[2] ?? ''} />
-        </Text>
-      )
-      i++
-
-      while (i < lines.length && /^\s{2,}\S/.test(lines[i]!)) {
-        nodes.push(
-          <Box key={`${key}-cont-${i}`} paddingLeft={2}>
-            <Text color={t.color.dim}>
-              <MdInline t={t} text={lines[i]!.trim()} />
+        if (setext) {
+          start('heading')
+          nodes.push(
+            <Text bold color={t.color.amber} key={key}>
+              {line.trim()}
             </Text>
+          )
+          i += 2
+
+          continue
+        }
+      }
+
+      if (HR_RE.test(line)) {
+        start('rule')
+        nodes.push(
+          <Text color={t.color.dim} key={key}>
+            {'─'.repeat(36)}
+          </Text>
+        )
+        i++
+
+        continue
+      }
+
+      const footnote = line.match(FOOTNOTE_RE)
+
+      if (footnote) {
+        start('list')
+        nodes.push(
+          <Text color={t.color.dim} key={key}>
+            [{footnote[1]}] <MdInline t={t} text={footnote[2] ?? ''} />
+          </Text>
+        )
+        i++
+
+        while (i < lines.length && /^\s{2,}\S/.test(lines[i]!)) {
+          nodes.push(
+            <Box key={`${key}-cont-${i}`} paddingLeft={2}>
+              <Text color={t.color.dim}>
+                <MdInline t={t} text={lines[i]!.trim()} />
+              </Text>
+            </Box>
+          )
+          i++
+        }
+
+        continue
+      }
+
+      if (i + 1 < lines.length && DEF_RE.test(lines[i + 1]!)) {
+        start('list')
+        nodes.push(
+          <Text bold key={key}>
+            {line.trim()}
+          </Text>
+        )
+        i++
+
+        while (i < lines.length) {
+          const def = lines[i]!.match(DEF_RE)
+
+          if (!def) {
+            break
+          }
+
+          nodes.push(
+            <Text key={`${key}-def-${i}`}>
+              <Text color={t.color.dim}> · </Text>
+              <MdInline t={t} text={def[1]!} />
+            </Text>
+          )
+          i++
+        }
+
+        continue
+      }
+
+      const bullet = line.match(/^(\s*)[-+*]\s+(.*)$/)
+
+      if (bullet) {
+        start('list')
+        const depth = indentDepth(bullet[1]!)
+        const task = bullet[2]!.match(/^\[( |x|X)\]\s+(.*)$/)
+        const marker = task ? (task[1]!.toLowerCase() === 'x' ? '☑' : '☐') : '•'
+        const body = task ? task[2]! : bullet[2]!
+
+        nodes.push(
+          <Text key={key}>
+            <Text color={t.color.dim}>
+              {' '.repeat(depth * 2)}
+              {marker}{' '}
+            </Text>
+            <MdInline t={t} text={body} />
+          </Text>
+        )
+        i++
+
+        continue
+      }
+
+      const numbered = line.match(/^(\s*)(\d+)[.)]\s+(.*)$/)
+
+      if (numbered) {
+        start('list')
+        const depth = indentDepth(numbered[1]!)
+
+        nodes.push(
+          <Text key={key}>
+            <Text color={t.color.dim}>
+              {' '.repeat(depth * 2)}
+              {numbered[2]}.{' '}
+            </Text>
+            <MdInline t={t} text={numbered[3]!} />
+          </Text>
+        )
+        i++
+
+        continue
+      }
+
+      if (/^\s*(?:>\s*)+/.test(line)) {
+        start('quote')
+        const quoteLines: Array<{ depth: number; text: string }> = []
+
+        while (i < lines.length && /^\s*(?:>\s*)+/.test(lines[i]!)) {
+          const raw = lines[i]!
+          const prefix = raw.match(/^\s*(?:>\s*)+/)?.[0] ?? ''
+
+          quoteLines.push({
+            depth: (prefix.match(/>/g) ?? []).length,
+            text: raw.slice(prefix.length)
+          })
+          i++
+        }
+
+        nodes.push(
+          <Box flexDirection="column" key={key}>
+            {quoteLines.map((ql, qi) => (
+              <Text color={t.color.dim} key={qi}>
+                {' '.repeat(Math.max(0, ql.depth - 1) * 2)}
+                {'│ '}
+                <MdInline t={t} text={ql.text} />
+              </Text>
+            ))}
           </Box>
         )
-        i++
+
+        continue
       }
 
-      continue
-    }
+      if (line.includes('|') && i + 1 < lines.length && isTableDivider(lines[i + 1]!)) {
+        start('table')
+        const tableRows: string[][] = []
 
-    if (i + 1 < lines.length && DEF_RE.test(lines[i + 1]!)) {
-      start('list')
-      nodes.push(
-        <Text bold key={key}>
-          {line.trim()}
-        </Text>
-      )
-      i++
+        tableRows.push(splitTableRow(line))
+        i += 2
 
-      while (i < lines.length) {
-        const def = lines[i]!.match(DEF_RE)
-
-        if (!def) {
-          break
+        while (i < lines.length && lines[i]!.includes('|') && lines[i]!.trim()) {
+          tableRows.push(splitTableRow(lines[i]!))
+          i++
         }
 
+        nodes.push(renderTable(key, tableRows, t))
+
+        continue
+      }
+
+      if (/^<details\b/i.test(line) || /^<\/details>/i.test(line)) {
+        i++
+
+        continue
+      }
+
+      const summary = line.match(/^<summary>(.*?)<\/summary>$/i)
+
+      if (summary) {
+        start('paragraph')
         nodes.push(
-          <Text key={`${key}-def-${i}`}>
-            <Text color={t.color.dim}> · </Text>
-            <MdInline t={t} text={def[1]!} />
+          <Text color={t.color.dim} key={key}>
+            ▶ {summary[1]}
           </Text>
         )
         i++
+
+        continue
       }
 
-      continue
-    }
-
-    const bullet = line.match(/^(\s*)[-+*]\s+(.*)$/)
-
-    if (bullet) {
-      start('list')
-      const depth = indentDepth(bullet[1]!)
-      const task = bullet[2]!.match(/^\[( |x|X)\]\s+(.*)$/)
-      const marker = task ? (task[1]!.toLowerCase() === 'x' ? '☑' : '☐') : '•'
-      const body = task ? task[2]! : bullet[2]!
-
-      nodes.push(
-        <Text key={key}>
-          <Text color={t.color.dim}>
-            {' '.repeat(depth * 2)}
-            {marker}{' '}
+      if (/^<\/?[^>]+>$/.test(line.trim())) {
+        start('paragraph')
+        nodes.push(
+          <Text color={t.color.dim} key={key}>
+            {line.trim()}
           </Text>
-          <MdInline t={t} text={body} />
-        </Text>
-      )
-      i++
-
-      continue
-    }
-
-    const numbered = line.match(/^(\s*)(\d+)[.)]\s+(.*)$/)
-
-    if (numbered) {
-      start('list')
-      const depth = indentDepth(numbered[1]!)
-
-      nodes.push(
-        <Text key={key}>
-          <Text color={t.color.dim}>
-            {' '.repeat(depth * 2)}
-            {numbered[2]}.{' '}
-          </Text>
-          <MdInline t={t} text={numbered[3]!} />
-        </Text>
-      )
-      i++
-
-      continue
-    }
-
-    if (/^\s*(?:>\s*)+/.test(line)) {
-      start('quote')
-      const quoteLines: Array<{ depth: number; text: string }> = []
-
-      while (i < lines.length && /^\s*(?:>\s*)+/.test(lines[i]!)) {
-        const raw = lines[i]!
-        const prefix = raw.match(/^\s*(?:>\s*)+/)?.[0] ?? ''
-
-        quoteLines.push({
-          depth: (prefix.match(/>/g) ?? []).length,
-          text: raw.slice(prefix.length)
-        })
+        )
         i++
+
+        continue
       }
 
-      nodes.push(
-        <Box flexDirection="column" key={key}>
-          {quoteLines.map((ql, qi) => (
-            <Text color={t.color.dim} key={qi}>
-              {' '.repeat(Math.max(0, ql.depth - 1) * 2)}
-              {'│ '}
-              <MdInline t={t} text={ql.text} />
-            </Text>
-          ))}
-        </Box>
-      )
+      if (line.includes('|') && line.trim().startsWith('|')) {
+        start('table')
+        const tableRows: string[][] = []
 
-      continue
-    }
+        while (i < lines.length && lines[i]!.trim().startsWith('|')) {
+          const row = lines[i]!.trim()
 
-    if (line.includes('|') && i + 1 < lines.length && isTableDivider(lines[i + 1]!)) {
-      start('table')
-      const tableRows: string[][] = []
+          if (!/^[|\s:-]+$/.test(row)) {
+            tableRows.push(splitTableRow(row))
+          }
 
-      tableRows.push(splitTableRow(line))
-      i += 2
-
-      while (i < lines.length && lines[i]!.includes('|') && lines[i]!.trim()) {
-        tableRows.push(splitTableRow(lines[i]!))
-        i++
-      }
-
-      nodes.push(renderTable(key, tableRows, t))
-
-      continue
-    }
-
-    if (/^<details\b/i.test(line) || /^<\/details>/i.test(line)) {
-      i++
-
-      continue
-    }
-
-    const summary = line.match(/^<summary>(.*?)<\/summary>$/i)
-
-    if (summary) {
-      start('paragraph')
-      nodes.push(
-        <Text color={t.color.dim} key={key}>
-          ▶ {summary[1]}
-        </Text>
-      )
-      i++
-
-      continue
-    }
-
-    if (/^<\/?[^>]+>$/.test(line.trim())) {
-      start('paragraph')
-      nodes.push(
-        <Text color={t.color.dim} key={key}>
-          {line.trim()}
-        </Text>
-      )
-      i++
-
-      continue
-    }
-
-    if (line.includes('|') && line.trim().startsWith('|')) {
-      start('table')
-      const tableRows: string[][] = []
-
-      while (i < lines.length && lines[i]!.trim().startsWith('|')) {
-        const row = lines[i]!.trim()
-
-        if (!/^[|\s:-]+$/.test(row)) {
-          tableRows.push(splitTableRow(row))
+          i++
         }
 
-        i++
+        if (tableRows.length) {
+          nodes.push(renderTable(key, tableRows, t))
+        }
+
+        continue
       }
 
-      if (tableRows.length) {
-        nodes.push(renderTable(key, tableRows, t))
-      }
+      start('paragraph')
+      nodes.push(<MdInline key={key} t={t} text={line} />)
 
-      continue
+      i++
     }
 
-    start('paragraph')
-    nodes.push(<MdInline key={key} t={t} text={line} />)
-
-    i++
-  }
+    return nodes
+  }, [compact, t, text])
 
   return <Box flexDirection="column">{nodes}</Box>
 }
+
+export const Md = memo(MdImpl)

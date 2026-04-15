@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
-import { isTransientTrailLine, sameToolTrailGroup } from '../lib/text.js'
-import type { ActiveTool, ActivityItem } from '../types.js'
+import { estimateTokensRough, isTransientTrailLine, sameToolTrailGroup } from '../lib/text.js'
+import type { ActiveTool, ActivityItem, SubagentProgress } from '../types.js'
 
 import { REASONING_PULSE_MS, STREAM_BATCH_MS } from './constants.js'
 import type { InterruptTurnOptions, ToolCompleteRibbon, UseTurnStateResult } from './interfaces.js'
@@ -16,6 +16,7 @@ export function useTurnState(): UseTurnStateResult {
   const [toolTokens, setToolTokens] = useState(0)
   const [reasoningStreaming, setReasoningStreaming] = useState(false)
   const [streaming, setStreaming] = useState('')
+  const [subagents, setSubagents] = useState<SubagentProgress[]>([])
   const [tools, setTools] = useState<ActiveTool[]>([])
   const [turnTrail, setTurnTrail] = useState<string[]>([])
 
@@ -73,6 +74,7 @@ export function useTurnState(): UseTurnStateResult {
     reasoningTimerRef.current = setTimeout(() => {
       reasoningTimerRef.current = null
       setReasoning(reasoningRef.current)
+      setReasoningTokens(estimateTokensRough(reasoningRef.current))
     }, STREAM_BATCH_MS)
   }, [])
 
@@ -147,6 +149,7 @@ export function useTurnState(): UseTurnStateResult {
   const idle = useCallback(() => {
     endReasoningPhase()
     activeToolsRef.current = []
+    setSubagents([])
     setTools([])
     setTurnTrail([])
     patchUiState({ busy: false })
@@ -165,7 +168,7 @@ export function useTurnState(): UseTurnStateResult {
     ({ appendMessage, gw, sid, sys }: InterruptTurnOptions) => {
       interruptedRef.current = true
       gw.request('session.interrupt', { session_id: sid }).catch(() => {})
-      const partial = (streaming || bufRef.current).trimStart()
+      const partial = bufRef.current.trimStart()
 
       if (partial) {
         appendMessage({ role: 'assistant', text: partial + '\n\n*[interrupted]*' })
@@ -188,7 +191,7 @@ export function useTurnState(): UseTurnStateResult {
         patchUiState({ status: 'ready' })
       }, 1500)
     },
-    [clearReasoning, idle, streaming]
+    [clearReasoning, idle]
   )
 
   const actions = useMemo(
@@ -210,6 +213,7 @@ export function useTurnState(): UseTurnStateResult {
       setToolTokens,
       setReasoningStreaming,
       setStreaming,
+      setSubagents,
       setTools,
       setTurnTrail
     }),
@@ -256,10 +260,22 @@ export function useTurnState(): UseTurnStateResult {
       toolTokens,
       reasoningStreaming,
       streaming,
+      subagents,
       tools,
       turnTrail
     }),
-    [activity, reasoning, reasoningTokens, reasoningActive, toolTokens, reasoningStreaming, streaming, tools, turnTrail]
+    [
+      activity,
+      reasoning,
+      reasoningTokens,
+      reasoningActive,
+      toolTokens,
+      reasoningStreaming,
+      streaming,
+      subagents,
+      tools,
+      turnTrail
+    ]
   )
 
   return {

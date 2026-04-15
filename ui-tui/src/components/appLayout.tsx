@@ -1,5 +1,6 @@
 import { AlternateScreen, Box, NoSelect, ScrollBox, Text } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
+import { memo } from 'react'
 
 import { PLACEHOLDER } from '../app/constants.js'
 import type { AppLayoutProps } from '../app/interfaces.js'
@@ -14,172 +15,203 @@ import { QueuedMessages } from './queuedMessages.js'
 import { TextInput } from './textInput.js'
 import { ToolTrail } from './thinking.js'
 
-export function AppLayout({ actions, composer, mouseTracking, progress, status, transcript }: AppLayoutProps) {
+const TranscriptPane = memo(function TranscriptPane({
+  actions,
+  composer,
+  progress,
+  transcript
+}: Pick<AppLayoutProps, 'actions' | 'composer' | 'progress' | 'transcript'>) {
   const ui = useStore($uiState)
-  const isBlocked = useStore($isBlocked)
   const visibleHistory = transcript.virtualRows.slice(transcript.virtualHistory.start, transcript.virtualHistory.end)
 
   return (
-    <AlternateScreen mouseTracking={mouseTracking}>
-      <Box flexDirection="column" flexGrow={1}>
-        <Box flexDirection="row" flexGrow={1}>
-          <ScrollBox flexDirection="column" flexGrow={1} flexShrink={1} ref={transcript.scrollRef} stickyScroll>
-            <Box flexDirection="column" paddingX={1}>
-              {transcript.virtualHistory.topSpacer > 0 ? <Box height={transcript.virtualHistory.topSpacer} /> : null}
+    <>
+      <ScrollBox flexDirection="column" flexGrow={1} flexShrink={1} ref={transcript.scrollRef} stickyScroll>
+        <Box flexDirection="column" paddingX={1}>
+          {transcript.virtualHistory.topSpacer > 0 ? <Box height={transcript.virtualHistory.topSpacer} /> : null}
 
-              {visibleHistory.map(row => (
-                <Box flexDirection="column" key={row.key} ref={transcript.virtualHistory.measureRef(row.key)}>
-                  {row.msg.kind === 'intro' && row.msg.info ? (
-                    <Box flexDirection="column" paddingTop={1}>
-                      <Banner t={ui.theme} />
-                      <SessionPanel info={row.msg.info} sid={ui.sid} t={ui.theme} />
-                    </Box>
-                  ) : row.msg.kind === 'panel' && row.msg.panelData ? (
-                    <Panel sections={row.msg.panelData.sections} t={ui.theme} title={row.msg.panelData.title} />
-                  ) : (
-                    <MessageLine
-                      cols={composer.cols}
-                      compact={ui.compact}
-                      detailsMode={ui.detailsMode}
-                      msg={row.msg}
-                      t={ui.theme}
-                    />
-                  )}
+          {visibleHistory.map(row => (
+            <Box flexDirection="column" key={row.key} ref={transcript.virtualHistory.measureRef(row.key)}>
+              {row.msg.kind === 'intro' && row.msg.info ? (
+                <Box flexDirection="column" paddingTop={1}>
+                  <Banner t={ui.theme} />
+                  <SessionPanel info={row.msg.info} sid={ui.sid} t={ui.theme} />
                 </Box>
-              ))}
-
-              {transcript.virtualHistory.bottomSpacer > 0 ? (
-                <Box height={transcript.virtualHistory.bottomSpacer} />
-              ) : null}
-
-              {progress.showProgressArea && (
-                <ToolTrail
-                  activity={progress.activity}
-                  busy={ui.busy && !progress.streaming}
-                  detailsMode={ui.detailsMode}
-                  reasoning={progress.reasoning}
-                  reasoningActive={progress.reasoningActive}
-                  reasoningStreaming={progress.reasoningStreaming}
-                  reasoningTokens={progress.reasoningTokens}
-                  t={ui.theme}
-                  tools={progress.tools}
-                  toolTokens={progress.toolTokens}
-                  trail={progress.turnTrail}
-                />
-              )}
-
-              {progress.showStreamingArea && (
+              ) : row.msg.kind === 'panel' && row.msg.panelData ? (
+                <Panel sections={row.msg.panelData.sections} t={ui.theme} title={row.msg.panelData.title} />
+              ) : (
                 <MessageLine
                   cols={composer.cols}
                   compact={ui.compact}
                   detailsMode={ui.detailsMode}
-                  isStreaming
-                  msg={{ role: 'assistant', text: progress.streaming }}
+                  msg={row.msg}
                   t={ui.theme}
                 />
               )}
             </Box>
-          </ScrollBox>
+          ))}
 
-          <NoSelect flexShrink={0} marginLeft={1}>
-            <TranscriptScrollbar scrollRef={transcript.scrollRef} t={ui.theme} />
-          </NoSelect>
+          {transcript.virtualHistory.bottomSpacer > 0 ? <Box height={transcript.virtualHistory.bottomSpacer} /> : null}
 
-          <StickyPromptTracker
-            messages={transcript.historyItems}
-            offsets={transcript.virtualHistory.offsets}
-            onChange={actions.setStickyPrompt}
-            scrollRef={transcript.scrollRef}
-          />
-        </Box>
-
-        <NoSelect flexDirection="column" flexShrink={0} fromLeftEdge paddingX={1}>
-          <QueuedMessages
-            cols={composer.cols}
-            queued={composer.queuedDisplay}
-            queueEditIdx={composer.queueEditIdx}
-            t={ui.theme}
-          />
-
-          {ui.bgTasks.size > 0 && (
-            <Text color={ui.theme.color.dim as any}>
-              {ui.bgTasks.size} background {ui.bgTasks.size === 1 ? 'task' : 'tasks'} running
-            </Text>
+          {progress.showProgressArea && (
+            <ToolTrail
+              activity={progress.activity}
+              busy={ui.busy && !progress.streaming}
+              detailsMode={ui.detailsMode}
+              reasoning={progress.reasoning}
+              reasoningActive={progress.reasoningActive}
+              reasoningStreaming={progress.reasoningStreaming}
+              reasoningTokens={progress.reasoningTokens}
+              subagents={progress.subagents}
+              t={ui.theme}
+              tools={progress.tools}
+              toolTokens={progress.toolTokens}
+              trail={progress.turnTrail}
+            />
           )}
 
-          {status.showStickyPrompt ? (
-            <Text color={ui.theme.color.dim as any} wrap="truncate-end">
-              <Text color={ui.theme.color.label as any}>↳ </Text>
-              {status.stickyPrompt}
-            </Text>
-          ) : (
-            <Text> </Text>
-          )}
-
-          <Box flexDirection="column" position="relative">
-            {ui.statusBar && (
-              <StatusRule
-                bgCount={ui.bgTasks.size}
-                cols={composer.cols}
-                cwdLabel={status.cwdLabel}
-                durationLabel={status.durationLabel}
-                model={ui.info?.model?.split('/').pop() ?? ''}
-                status={ui.status}
-                statusColor={status.statusColor}
-                t={ui.theme}
-                usage={ui.usage}
-                voiceLabel={status.voiceLabel}
-              />
-            )}
-
-            <AppOverlays
+          {progress.showStreamingArea && (
+            <MessageLine
               cols={composer.cols}
-              compIdx={composer.compIdx}
-              completions={composer.completions}
-              onApprovalChoice={actions.answerApproval}
-              onClarifyAnswer={actions.answerClarify}
-              onModelSelect={actions.onModelSelect}
-              onPickerSelect={actions.resumeById}
-              onSecretSubmit={actions.answerSecret}
-              onSudoSubmit={actions.answerSudo}
-              pagerPageSize={composer.pagerPageSize}
+              compact={ui.compact}
+              detailsMode={ui.detailsMode}
+              isStreaming
+              msg={{ role: 'assistant', text: progress.streaming }}
+              t={ui.theme}
+            />
+          )}
+        </Box>
+      </ScrollBox>
+
+      <NoSelect flexShrink={0} marginLeft={1}>
+        <TranscriptScrollbar scrollRef={transcript.scrollRef} t={ui.theme} />
+      </NoSelect>
+
+      <StickyPromptTracker
+        messages={transcript.historyItems}
+        offsets={transcript.virtualHistory.offsets}
+        onChange={actions.setStickyPrompt}
+        scrollRef={transcript.scrollRef}
+      />
+    </>
+  )
+})
+
+const ComposerPane = memo(function ComposerPane({
+  actions,
+  composer,
+  status
+}: Pick<AppLayoutProps, 'actions' | 'composer' | 'status'>) {
+  const ui = useStore($uiState)
+  const isBlocked = useStore($isBlocked)
+
+  return (
+    <NoSelect flexDirection="column" flexShrink={0} fromLeftEdge paddingX={1}>
+      <QueuedMessages
+        cols={composer.cols}
+        queued={composer.queuedDisplay}
+        queueEditIdx={composer.queueEditIdx}
+        t={ui.theme}
+      />
+
+      {ui.bgTasks.size > 0 && (
+        <Text color={ui.theme.color.dim as any}>
+          {ui.bgTasks.size} background {ui.bgTasks.size === 1 ? 'task' : 'tasks'} running
+        </Text>
+      )}
+
+      {status.showStickyPrompt ? (
+        <Text color={ui.theme.color.dim as any} wrap="truncate-end">
+          <Text color={ui.theme.color.label as any}>↳ </Text>
+          {status.stickyPrompt}
+        </Text>
+      ) : (
+        <Text> </Text>
+      )}
+
+      <Box flexDirection="column" position="relative">
+        {ui.statusBar && (
+          <StatusRule
+            bgCount={ui.bgTasks.size}
+            cols={composer.cols}
+            cwdLabel={status.cwdLabel}
+            model={ui.info?.model?.split('/').pop() ?? ''}
+            sessionStartedAt={status.sessionStartedAt}
+            status={ui.status}
+            statusColor={status.statusColor}
+            t={ui.theme}
+            usage={ui.usage}
+            voiceLabel={status.voiceLabel}
+          />
+        )}
+
+        <AppOverlays
+          cols={composer.cols}
+          compIdx={composer.compIdx}
+          completions={composer.completions}
+          onApprovalChoice={actions.answerApproval}
+          onClarifyAnswer={actions.answerClarify}
+          onModelSelect={actions.onModelSelect}
+          onPickerSelect={actions.resumeById}
+          onSecretSubmit={actions.answerSecret}
+          onSudoSubmit={actions.answerSudo}
+          pagerPageSize={composer.pagerPageSize}
+        />
+      </Box>
+
+      {!isBlocked && (
+        <Box flexDirection="column" marginBottom={1}>
+          {composer.inputBuf.map((line, i) => (
+            <Box key={i}>
+              <Box width={3}>
+                <Text color={ui.theme.color.dim as any}>{i === 0 ? `${ui.theme.brand.prompt} ` : '  '}</Text>
+              </Box>
+
+              <Text color={ui.theme.color.cornsilk as any}>{line || ' '}</Text>
+            </Box>
+          ))}
+
+          <Box>
+            <Box width={3}>
+              <Text bold color={ui.theme.color.gold as any}>
+                {composer.inputBuf.length ? '  ' : `${ui.theme.brand.prompt} `}
+              </Text>
+            </Box>
+
+            <TextInput
+              columns={Math.max(20, composer.cols - 3)}
+              onChange={composer.updateInput}
+              onPaste={composer.handleTextPaste}
+              onSubmit={composer.submit}
+              placeholder={composer.empty ? PLACEHOLDER : ui.busy ? 'Ctrl+C to interrupt…' : ''}
+              value={composer.input}
             />
           </Box>
+        </Box>
+      )}
 
-          {!isBlocked && (
-            <Box flexDirection="column" marginBottom={1}>
-              {composer.inputBuf.map((line, i) => (
-                <Box key={i}>
-                  <Box width={3}>
-                    <Text color={ui.theme.color.dim as any}>{i === 0 ? `${ui.theme.brand.prompt} ` : '  '}</Text>
-                  </Box>
+      {!composer.empty && !ui.sid && <Text color={ui.theme.color.dim as any}>⚕ {ui.status}</Text>}
+    </NoSelect>
+  )
+})
 
-                  <Text color={ui.theme.color.cornsilk as any}>{line || ' '}</Text>
-                </Box>
-              ))}
+export const AppLayout = memo(function AppLayout({
+  actions,
+  composer,
+  mouseTracking,
+  progress,
+  status,
+  transcript
+}: AppLayoutProps) {
+  return (
+    <AlternateScreen mouseTracking={mouseTracking}>
+      <Box flexDirection="column" flexGrow={1}>
+        <Box flexDirection="row" flexGrow={1}>
+          <TranscriptPane actions={actions} composer={composer} progress={progress} transcript={transcript} />
+        </Box>
 
-              <Box>
-                <Box width={3}>
-                  <Text bold color={ui.theme.color.gold as any}>
-                    {composer.inputBuf.length ? '  ' : `${ui.theme.brand.prompt} `}
-                  </Text>
-                </Box>
-
-                <TextInput
-                  columns={Math.max(20, composer.cols - 3)}
-                  onChange={composer.updateInput}
-                  onPaste={composer.handleTextPaste}
-                  onSubmit={composer.submit}
-                  placeholder={composer.empty ? PLACEHOLDER : ui.busy ? 'Ctrl+C to interrupt…' : ''}
-                  value={composer.input}
-                />
-              </Box>
-            </Box>
-          )}
-
-          {!composer.empty && !ui.sid && <Text color={ui.theme.color.dim as any}>⚕ {ui.status}</Text>}
-        </NoSelect>
+        <ComposerPane actions={actions} composer={composer} status={status} />
       </Box>
     </AlternateScreen>
   )
-}
+})

@@ -29,8 +29,16 @@ const dim = (s: string) => DIM + s + DIM_OFF
 
 let _seg: Intl.Segmenter | null = null
 const seg = () => (_seg ??= new Intl.Segmenter(undefined, { granularity: 'grapheme' }))
+const STOP_CACHE_MAX = 32
+const stopCache = new Map<string, number[]>()
 
 function graphemeStops(s: string) {
+  const hit = stopCache.get(s)
+
+  if (hit) {
+    return hit
+  }
+
   const stops = [0]
 
   for (const { index } of seg().segment(s)) {
@@ -41,6 +49,16 @@ function graphemeStops(s: string) {
 
   if (stops.at(-1) !== s.length) {
     stops.push(s.length)
+  }
+
+  stopCache.set(s, stops)
+
+  if (stopCache.size > STOP_CACHE_MAX) {
+    const oldest = stopCache.keys().next().value
+
+    if (oldest !== undefined) {
+      stopCache.delete(oldest)
+    }
   }
 
   return stops

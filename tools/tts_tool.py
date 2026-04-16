@@ -44,7 +44,7 @@ from hermes_constants import display_hermes_home
 
 logger = logging.getLogger(__name__)
 from tools.managed_tool_gateway import resolve_managed_tool_gateway
-from tools.tool_backend_helpers import managed_nous_tools_enabled, resolve_openai_audio_api_key
+from tools.tool_backend_helpers import managed_nous_tools_enabled, prefers_gateway, resolve_openai_audio_api_key
 from tools.xai_http import hermes_xai_user_agent
 
 # ---------------------------------------------------------------------------
@@ -823,9 +823,13 @@ def check_tts_requirements() -> bool:
 
 
 def _resolve_openai_audio_client_config() -> tuple[str, str]:
-    """Return direct OpenAI audio config or a managed gateway fallback."""
+    """Return direct OpenAI audio config or a managed gateway fallback.
+
+    When ``tts.use_gateway`` is set in config, the Tool Gateway is preferred
+    even if direct OpenAI credentials are present.
+    """
     direct_api_key = resolve_openai_audio_api_key()
-    if direct_api_key:
+    if direct_api_key and not prefers_gateway("tts"):
         return direct_api_key, DEFAULT_OPENAI_BASE_URL
 
     managed_gateway = resolve_managed_tool_gateway("openai-audio")

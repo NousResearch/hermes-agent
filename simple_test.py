@@ -1,14 +1,16 @@
-"""Test script for annotation preservation in create_subset_model."""
+"""Simple test script to verify annotation preservation."""
 
 import sys
 import os
 
-# Add the langchain directory to the Python path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "langchain"))
+# Add the current directory to the Python path
+sys.path.insert(0, os.path.dirname(__file__))
 
 from pydantic import BaseModel, Field
-from typing import Annotated, List, Optional
-from libs.core.langchain_core.utils.pydantic import _create_subset_model_v2
+from typing import List, Optional
+
+# Import the function directly from the file
+from langchain.libs.core.langchain_core.utils.pydantic import _create_subset_model_v2
 
 
 class TestModel(BaseModel):

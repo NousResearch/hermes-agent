@@ -36,7 +36,7 @@ _HERMES_CORE_TOOLS = [
     # File manipulation
     "read_file", "write_file", "patch", "search_files",
     # Vision + image generation
-    "vision_analyze", "image_generate",
+    "vision_analyze", "image_generate", "prompt_faithful_image_generate",
     # Skills
     "skills_list", "skill_view", "skill_manage",
     # Browser automation
@@ -60,6 +60,18 @@ _HERMES_CORE_TOOLS = [
     "cronjob",
     # Cross-platform messaging (gated on gateway running via check_fn)
     "send_message",
+    # Unified QQ/NapCat control plane
+    "qq_control",
+    # Unified Weixin control plane
+    "weixin_control",
+    # QQ social request / profile control
+    "qq_social_control",
+    # QQ intel worker control plane
+    "qq_intel_control",
+    # QQ group inbound policy + archive/report management
+    "qq_group_policy", "qq_group_archive",
+    # Weixin group inbound policy + archive/report management
+    "weixin_group_policy", "weixin_group_archive",
     # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
     "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
 ]
@@ -89,7 +101,7 @@ TOOLSETS = {
     
     "image_gen": {
         "description": "Creative generation tools (images)",
-        "tools": ["image_generate"],
+        "tools": ["image_generate", "prompt_faithful_image_generate"],
         "includes": []
     },
     
@@ -130,7 +142,19 @@ TOOLSETS = {
     
     "messaging": {
         "description": "Cross-platform messaging: send messages to Telegram, Discord, Slack, SMS, etc.",
-        "tools": ["send_message"],
+        "tools": ["send_message", "qq_control", "qq_social_control", "qq_group_policy", "qq_group_archive", "weixin_control", "weixin_group_policy", "weixin_group_archive"],
+        "includes": []
+    },
+
+    "qq": {
+        "description": "Unified QQ/NapCat control plane only. Exposes qq_control as the single model-facing QQ admin/moderation entry point.",
+        "tools": ["qq_control"],
+        "includes": []
+    },
+
+    "weixin": {
+        "description": "Unified Weixin control plane only. Exposes weixin_control as the single model-facing Weixin admin entry point.",
+        "tools": ["weixin_control"],
         "includes": []
     },
     
@@ -367,6 +391,18 @@ TOOLSETS = {
         "includes": []
     },
 
+    "hermes-wecom-callback": {
+        "description": "WeCom callback toolset - enterprise self-built app messaging (full access)",
+        "tools": _HERMES_CORE_TOOLS,
+        "includes": []
+    },
+
+    "hermes-weixin": {
+        "description": "Weixin bot toolset - personal WeChat messaging via iLink (full access)",
+        "tools": _HERMES_CORE_TOOLS,
+        "includes": []
+    },
+
     "hermes-sms": {
         "description": "SMS bot toolset - interact with Hermes via SMS (Twilio)",
         "tools": _HERMES_CORE_TOOLS,
@@ -382,7 +418,7 @@ TOOLSETS = {
     "hermes-gateway": {
         "description": "Gateway toolset - union of all messaging platform tools",
         "tools": [],
-        "includes": ["hermes-telegram", "hermes-discord", "hermes-whatsapp", "hermes-slack", "hermes-signal", "hermes-qq-napcat", "hermes-homeassistant", "hermes-email", "hermes-sms", "hermes-mattermost", "hermes-matrix", "hermes-dingtalk", "hermes-feishu", "hermes-wecom", "hermes-webhook"]
+        "includes": ["hermes-telegram", "hermes-discord", "hermes-whatsapp", "hermes-slack", "hermes-signal", "hermes-qq-napcat", "hermes-homeassistant", "hermes-email", "hermes-sms", "hermes-mattermost", "hermes-matrix", "hermes-dingtalk", "hermes-feishu", "hermes-wecom", "hermes-wecom-callback", "hermes-weixin", "hermes-webhook"]
     }
 }
 
@@ -419,16 +455,24 @@ def resolve_toolset(name: str, visited: Set[str] = None) -> List[str]:
     """
     if visited is None:
         visited = set()
+
+    def _merge_in_order(dest: List[str], seen: Set[str], names: List[str]) -> None:
+        for tool_name in names:
+            if tool_name in seen:
+                continue
+            seen.add(tool_name)
+            dest.append(tool_name)
     
     # Special aliases that represent all tools across every toolset
     # This ensures future toolsets are automatically included without changes.
     if name in {"all", "*"}:
-        all_tools: Set[str] = set()
+        all_tools: List[str] = []
+        seen_tools: Set[str] = set()
         for toolset_name in get_toolset_names():
             # Use a fresh visited set per branch to avoid cross-branch contamination
             resolved = resolve_toolset(toolset_name, visited.copy())
-            all_tools.update(resolved)
-        return list(all_tools)
+            _merge_in_order(all_tools, seen_tools, resolved)
+        return all_tools
 
     # Check for cycles / already-resolved (diamond deps).
     # Silently return [] — either this is a diamond (not a bug, tools already
@@ -451,16 +495,18 @@ def resolve_toolset(name: str, visited: Set[str] = None) -> List[str]:
         return []
 
     # Collect direct tools
-    tools = set(toolset.get("tools", []))
+    tools: List[str] = []
+    seen_tools: Set[str] = set()
+    _merge_in_order(tools, seen_tools, toolset.get("tools", []))
 
     # Recursively resolve included toolsets, sharing the visited set across
     # sibling includes so diamond dependencies are only resolved once and
     # cycle warnings don't fire multiple times for the same cycle.
     for included_name in toolset.get("includes", []):
         included_tools = resolve_toolset(included_name, visited)
-        tools.update(included_tools)
+        _merge_in_order(tools, seen_tools, included_tools)
     
-    return list(tools)
+    return tools
 
 
 def resolve_multiple_toolsets(toolset_names: List[str]) -> List[str]:
@@ -473,13 +519,18 @@ def resolve_multiple_toolsets(toolset_names: List[str]) -> List[str]:
     Returns:
         List[str]: Combined list of all tool names (deduplicated)
     """
-    all_tools = set()
+    all_tools: List[str] = []
+    seen_tools: Set[str] = set()
     
     for name in toolset_names:
         tools = resolve_toolset(name)
-        all_tools.update(tools)
+        for tool_name in tools:
+            if tool_name in seen_tools:
+                continue
+            seen_tools.add(tool_name)
+            all_tools.append(tool_name)
     
-    return list(all_tools)
+    return all_tools
 
 
 def _get_plugin_toolset_names() -> Set[str]:

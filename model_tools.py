@@ -31,6 +31,53 @@ from toolsets import resolve_toolset, validate_toolset
 
 logger = logging.getLogger(__name__)
 
+_QQ_UNIFIED_CONTROL_HIDES = frozenset(
+    {
+        "qq_social_control",
+        "qq_intel_control",
+        "qq_group_policy",
+        "qq_group_archive",
+        "qq_group_moderation",
+        "qq_group_file",
+    }
+)
+
+_WEIXIN_UNIFIED_CONTROL_HIDES = frozenset(
+    {
+        "weixin_group_policy",
+        "weixin_group_archive",
+    }
+)
+
+
+def _strengthen_qq_control_schema(tool_def: Dict[str, Any]) -> Dict[str, Any]:
+    """Add stronger qq_control routing guidance to the model-facing schema."""
+    function = dict(tool_def.get("function") or {})
+    description = str(function.get("description") or "").strip()
+    extra = (
+        " Use this instead of terminal or execute_code for QQ moderation, group policy, "
+        "intel, social, archive, and group file operations. Moderation routed through "
+        "qq_control still goes through approval checks and protected-user safety rules."
+    )
+    if extra.strip().lower() not in description.lower():
+        description = f"{description}{extra}" if description else extra.strip()
+    function["description"] = description
+    return {"type": "function", "function": function}
+
+
+def _strengthen_weixin_control_schema(tool_def: Dict[str, Any]) -> Dict[str, Any]:
+    """Add stronger weixin_control routing guidance to the model-facing schema."""
+    function = dict(tool_def.get("function") or {})
+    description = str(function.get("description") or "").strip()
+    extra = (
+        " Use this instead of terminal or execute_code for Weixin group policy, "
+        "archive/report inspection, and supported outbound messaging."
+    )
+    if extra.strip().lower() not in description.lower():
+        description = f"{description}{extra}" if description else extra.strip()
+    function["description"] = description
+    return {"type": "function", "function": function}
+
 
 # =============================================================================
 # Async Bridging  (single source of truth -- used by registry.dispatch too)
@@ -142,6 +189,7 @@ def _discover_tools():
         "tools.vision_tools",
         "tools.mixture_of_agents_tool",
         "tools.image_generation_tool",
+        "tools.prompt_faithful_image_tool",
         "tools.skills_tool",
         "tools.skill_manager_tool",
         "tools.browser_tool",
@@ -157,8 +205,16 @@ def _discover_tools():
         "tools.delegate_tool",
         "tools.process_registry",
         "tools.send_message_tool",
+        "tools.qq_control_tool",
+        "tools.qq_social_tool",
+        "tools.qq_intel_tool",
+        "tools.qq_group_policy_tool",
+        "tools.qq_group_archive_tool",
         "tools.qq_group_file_tool",
         "tools.qq_group_moderation_tool",
+        "tools.weixin_control_tool",
+        "tools.weixin_group_policy_tool",
+        "tools.weixin_group_archive_tool",
         # "tools.honcho_tools",  # Removed — Honcho is now a memory provider plugin
         "tools.homeassistant_tool",
     ]
@@ -252,19 +308,27 @@ def get_tool_definitions(
     Returns:
         Filtered list of OpenAI-format tool definitions.
     """
-    # Determine which tool names the caller wants
+    # Determine which tool names the caller wants, preserving declared order.
+    desired_tool_order: List[str] = []
     tools_to_include: set = set()
+
+    def _add_tools_in_order(tool_names: List[str]) -> None:
+        for tool_name in tool_names:
+            if tool_name in tools_to_include:
+                continue
+            tools_to_include.add(tool_name)
+            desired_tool_order.append(tool_name)
 
     if enabled_toolsets is not None:
         for toolset_name in enabled_toolsets:
             if validate_toolset(toolset_name):
                 resolved = resolve_toolset(toolset_name)
-                tools_to_include.update(resolved)
+                _add_tools_in_order(resolved)
                 if not quiet_mode:
                     print(f"✅ Enabled toolset '{toolset_name}': {', '.join(resolved) if resolved else 'no tools'}")
             elif toolset_name in _LEGACY_TOOLSET_MAP:
                 legacy_tools = _LEGACY_TOOLSET_MAP[toolset_name]
-                tools_to_include.update(legacy_tools)
+                _add_tools_in_order(legacy_tools)
                 if not quiet_mode:
                     print(f"✅ Enabled legacy toolset '{toolset_name}': {', '.join(legacy_tools)}")
             else:
@@ -274,7 +338,7 @@ def get_tool_definitions(
     elif disabled_toolsets:
         from toolsets import get_all_toolsets
         for ts_name in get_all_toolsets():
-            tools_to_include.update(resolve_toolset(ts_name))
+            _add_tools_in_order(resolve_toolset(ts_name))
 
         for toolset_name in disabled_toolsets:
             if validate_toolset(toolset_name):
@@ -293,7 +357,7 @@ def get_tool_definitions(
     else:
         from toolsets import get_all_toolsets
         for ts_name in get_all_toolsets():
-            tools_to_include.update(resolve_toolset(ts_name))
+            _add_tools_in_order(resolve_toolset(ts_name))
 
     # Plugin-registered tools are now resolved through the normal toolset
     # path — validate_toolset() / resolve_toolset() / get_all_toolsets()
@@ -342,6 +406,43 @@ def get_tool_definitions(
                         "function": {**td["function"], "description": desc},
                     }
                     break
+
+    # When the unified QQ control plane is available, hide the lower-level QQ
+    # tools from the model-facing tool list. They remain registered internally
+    # so qq_control can dispatch to them, and explicit tests/config still work.
+    if "qq_control" in available_tool_names:
+        for i, td in enumerate(filtered_tools):
+            if td.get("function", {}).get("name") == "qq_control":
+                filtered_tools[i] = _strengthen_qq_control_schema(td)
+                break
+        filtered_tools = [
+            td
+            for td in filtered_tools
+            if td.get("function", {}).get("name") not in _QQ_UNIFIED_CONTROL_HIDES
+        ]
+        available_tool_names = {t["function"]["name"] for t in filtered_tools}
+
+    if "weixin_control" in available_tool_names:
+        for i, td in enumerate(filtered_tools):
+            if td.get("function", {}).get("name") == "weixin_control":
+                filtered_tools[i] = _strengthen_weixin_control_schema(td)
+                break
+        filtered_tools = [
+            td
+            for td in filtered_tools
+            if td.get("function", {}).get("name") not in _WEIXIN_UNIFIED_CONTROL_HIDES
+        ]
+        available_tool_names = {t["function"]["name"] for t in filtered_tools}
+
+    order_index = {name: idx for idx, name in enumerate(desired_tool_order)}
+    if order_index:
+        filtered_tools = sorted(
+            filtered_tools,
+            key=lambda td: (
+                order_index.get(td.get("function", {}).get("name"), len(order_index)),
+                td.get("function", {}).get("name", ""),
+            ),
+        )
 
     if not quiet_mode:
         if filtered_tools:

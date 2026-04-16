@@ -136,6 +136,55 @@ def test_aiagent_reuses_existing_errors_log_handler():
             root_logger.addHandler(handler)
 
 
+def test_get_provider_health_snapshot_returns_active_records_and_prunes_expired(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    health_path = tmp_path / "provider_health.json"
+    health_path.write_text(
+        json.dumps(
+            {
+                "runtimes": {
+                    "expired": {
+                        "provider": "custom",
+                        "model": "old-model",
+                        "base_url": "https://expired.example/v1",
+                        "api_mode": "chat_completions",
+                        "reason": "auth_failure",
+                        "unhealthy_until": 900.0,
+                        "updated_at": 800.0,
+                    },
+                    "active": {
+                        "provider": "custom",
+                        "model": "gpt-5.4",
+                        "base_url": "https://alive.example/v1",
+                        "api_mode": "chat_completions",
+                        "reason": "empty_response",
+                        "unhealthy_until": 1120.0,
+                        "updated_at": 950.0,
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    snapshot = run_agent.get_provider_health_snapshot(now_ts=1000.0)
+
+    assert snapshot["count"] == 1
+    assert len(snapshot["runtimes"]) == 1
+    assert snapshot["runtimes"][0]["provider"] == "custom"
+    assert snapshot["runtimes"][0]["model"] == "gpt-5.4"
+    assert snapshot["runtimes"][0]["reason"] == "empty_response"
+    assert snapshot["runtimes"][0]["state"] == "cooldown"
+    assert snapshot["runtimes"][0]["cooldown_seconds"] == 120.0
+    assert snapshot["runtimes"][0]["cooldown_until"] == "1970-01-01T00:18:40+00:00"
+    assert "empty response" in snapshot["runtimes"][0]["summary"]
+    assert snapshot["summary"] == "1 degraded runtime on cooldown"
+
+    persisted = json.loads(health_path.read_text(encoding="utf-8"))
+    assert "expired" not in persisted["runtimes"]
+    assert "active" in persisted["runtimes"]
+
+
 # ---------------------------------------------------------------------------
 # Helper to build mock assistant messages (API response objects)
 # ---------------------------------------------------------------------------
@@ -217,6 +266,24 @@ class TestHasContentAfterThinkBlock:
 
     def test_no_think_block_returns_true(self, agent):
         assert agent._has_content_after_think_block("just normal content") is True
+
+
+class TestStatusEmission:
+    def test_emit_status_coalesces_repeated_fallback_chatter(self, agent):
+        statuses = []
+        agent.status_callback = lambda kind, message: statuses.append((kind, message))
+
+        agent._emit_status("⚠️ Non-retryable error (HTTP 401) — trying fallback...")
+        agent._emit_status("⚠️ Non-retryable error (HTTP 403) — trying fallback...")
+        agent._emit_status("🔄 Primary model failed — switching to fallback: gpt-5.4 via custom")
+        agent._emit_status("⚠️ Rate limited — switching to fallback provider...")
+        agent._emit_status("❌ Non-retryable error (HTTP 403): blocked")
+
+        assert statuses == [
+            ("lifecycle", "⚠️ Non-retryable error (HTTP 401) — trying fallback..."),
+            ("lifecycle", "🔄 Primary model failed — switching to fallback: gpt-5.4 via custom"),
+            ("lifecycle", "❌ Non-retryable error (HTTP 403): blocked"),
+        ]
 
 
 class TestStripThinkBlocks:
@@ -617,6 +684,56 @@ class TestBuildSystemPrompt:
         monkeypatch.setattr(run_agent, "build_nous_subscription_prompt", lambda tool_names: "NOUS SUBSCRIPTION BLOCK")
         prompt = agent._build_system_prompt()
         assert "NOUS SUBSCRIPTION BLOCK" in prompt
+
+    def test_qq_platform_prompt_prefers_moderation_tool_over_scripts(self):
+        with (
+            patch(
+                "run_agent.get_tool_definitions",
+                return_value=_make_tool_defs("web_search", "qq_group_moderation"),
+            ),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            agent = AIAgent(
+                api_key="test-key-1234567890",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+                platform="qq_napcat",
+            )
+            agent.client = MagicMock()
+
+        prompt = agent._build_system_prompt()
+        assert "qq_group_moderation" in prompt
+        assert "不要自己写脚本" in prompt
+
+    def test_qq_platform_prompt_prefers_unified_qq_control_tool(self):
+        with (
+            patch(
+                "run_agent.get_tool_definitions",
+                return_value=_make_tool_defs("web_search", "qq_control"),
+            ),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            agent = AIAgent(
+                api_key="test-key-1234567890",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+                platform="qq_napcat",
+            )
+            agent.client = MagicMock()
+
+        prompt = agent._build_system_prompt()
+        assert "qq_control" in prompt
+        assert "prefer qq_control" in prompt.lower()
+        assert "mute_user" in prompt
+        assert "set_policy" in prompt
+        assert "hire_worker" in prompt
+        assert "list_files" in prompt
+        assert "approval" in prompt.lower()
+        assert "protected user" in prompt.lower()
 
     def test_skills_prompt_derives_available_toolsets_from_loaded_tools(self):
         tools = _make_tool_defs("web_search", "skills_list", "skill_view", "skill_manage")
@@ -1262,6 +1379,38 @@ class TestConcurrentToolExecution:
 
             )
             assert result == "result"
+
+    def test_invoke_tool_reuses_cached_failed_vision_result_for_same_image(self, agent):
+        failure = json.dumps({"success": False, "error": "vision failed"})
+        args = {"image_url": "/tmp/test-image.png", "question": "what is this?"}
+
+        with patch("run_agent.handle_function_call", return_value=failure) as mock_hfc:
+            first = agent._invoke_tool("vision_analyze", dict(args), "task-1")
+            second = agent._invoke_tool(
+                "vision_analyze",
+                {"image_url": "/tmp/test-image.png", "question": "describe in English"},
+                "task-1",
+            )
+
+        assert first == failure
+        assert second == failure
+        mock_hfc.assert_called_once()
+
+    def test_invoke_tool_does_not_cache_successful_vision_result(self, agent):
+        success = json.dumps({"success": True, "analysis": "looks good"})
+        args = {"image_url": "/tmp/test-image.png", "question": "what is this?"}
+
+        with patch("run_agent.handle_function_call", return_value=success) as mock_hfc:
+            first = agent._invoke_tool("vision_analyze", dict(args), "task-1")
+            second = agent._invoke_tool(
+                "vision_analyze",
+                {"image_url": "/tmp/test-image.png", "question": "describe in English"},
+                "task-1",
+            )
+
+        assert first == success
+        assert second == success
+        assert mock_hfc.call_count == 2
 
     def test_sequential_tool_callbacks_fire_in_order(self, agent):
         tool_call = _mock_tool_call(name="web_search", arguments='{"query":"hello"}', call_id="c1")
@@ -2009,6 +2158,22 @@ class TestRetryExhaustion:
         assert "error" in result
         assert "Invalid API response" in result["error"]
 
+    def test_string_response_returns_error_not_typeerror(self, agent):
+        """Malformed string payloads must degrade gracefully instead of crashing in vars()."""
+        self._setup_agent(agent)
+        agent.client.chat.completions.create.return_value = "data: broken payload"
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch("run_agent.time", self._make_fast_time_mock()),
+        ):
+            result = agent.run_conversation("hello")
+        assert result.get("completed") is False
+        assert result.get("failed") is True
+        assert "error" in result
+        assert "Invalid API response" in result["error"]
+
     def test_api_error_returns_gracefully_after_retries(self, agent):
         """Exhausted retries on API errors must return error result, not crash."""
         self._setup_agent(agent)
@@ -2364,9 +2529,12 @@ class TestSystemPromptStability:
     def test_stored_prompt_reused_for_continuing_session(self, agent):
         """When conversation_history is non-empty and session DB has a stored
         prompt, it should be reused instead of rebuilding from disk."""
-        stored = "You are helpful. [stored from turn 1]"
+        stored = agent._build_system_prompt()
         mock_db = MagicMock()
-        mock_db.get_session.return_value = {"system_prompt": stored}
+        mock_db.get_session.return_value = {
+            "model": agent.model,
+            "system_prompt": stored,
+        }
         agent._session_db = mock_db
 
         # Simulate a continuing session with history
@@ -2389,7 +2557,7 @@ class TestSystemPromptStability:
             if conversation_history and agent._session_db:
                 try:
                     session_row = agent._session_db.get_session(agent.session_id)
-                    if session_row:
+                    if agent._can_reuse_stored_system_prompt(session_row):
                         stored_prompt = session_row.get("system_prompt") or None
                 except Exception:
                     pass
@@ -2399,6 +2567,17 @@ class TestSystemPromptStability:
 
         assert agent._cached_system_prompt == stored
         mock_db.get_session.assert_called_once_with(agent.session_id)
+
+    def test_stored_prompt_rebuilt_when_revision_marker_missing(self, agent):
+        """Legacy stored prompts without a revision marker should be rebuilt once."""
+        agent.model = "gpt-5.4"
+        agent.provider = "custom"
+
+        legacy_prompt = "Conversation started: Friday\nModel: gpt-5.4\nProvider: custom"
+
+        assert agent._can_reuse_stored_system_prompt(
+            {"model": "gpt-5.4", "system_prompt": legacy_prompt}
+        ) is False
 
     def test_fresh_build_when_no_history(self, agent):
         """On the first turn (no history), system prompt should be built fresh."""

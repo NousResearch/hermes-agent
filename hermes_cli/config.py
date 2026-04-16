@@ -64,6 +64,70 @@ _MANAGED_SYSTEM_NAMES = {
 }
 
 
+AUXILIARY_TASK_ENV_MAP: Dict[str, Dict[str, str]] = {
+    "vision": {
+        "provider": "AUXILIARY_VISION_PROVIDER",
+        "model": "AUXILIARY_VISION_MODEL",
+        "base_url": "AUXILIARY_VISION_BASE_URL",
+        "api_key": "AUXILIARY_VISION_API_KEY",
+    },
+    "web_extract": {
+        "provider": "AUXILIARY_WEB_EXTRACT_PROVIDER",
+        "model": "AUXILIARY_WEB_EXTRACT_MODEL",
+        "base_url": "AUXILIARY_WEB_EXTRACT_BASE_URL",
+        "api_key": "AUXILIARY_WEB_EXTRACT_API_KEY",
+    },
+    "approval": {
+        "provider": "AUXILIARY_APPROVAL_PROVIDER",
+        "model": "AUXILIARY_APPROVAL_MODEL",
+        "base_url": "AUXILIARY_APPROVAL_BASE_URL",
+        "api_key": "AUXILIARY_APPROVAL_API_KEY",
+    },
+}
+
+
+def _auxiliary_bridge_marker(env_var: str) -> str:
+    return f"HERMES_BRIDGED_{env_var}"
+
+
+def bridge_auxiliary_config_to_env(
+    auxiliary_cfg: Any,
+    *,
+    environ: Optional[Dict[str, str]] = None,
+) -> None:
+    """Bridge auxiliary task config into env vars without leaking stale values.
+
+    Config-provided non-default values are exported to the process environment
+    so legacy helpers that still read ``AUXILIARY_*`` env vars stay in sync.
+    When a field is cleared in config, only values that were previously written
+    by this bridge are removed; user-managed env vars are left intact.
+    """
+    if not isinstance(auxiliary_cfg, dict):
+        return
+
+    target_env = environ if environ is not None else os.environ
+    for task_key, env_map in AUXILIARY_TASK_ENV_MAP.items():
+        task_cfg = auxiliary_cfg.get(task_key, {})
+        if not isinstance(task_cfg, dict):
+            continue
+
+        for cfg_key, env_var in env_map.items():
+            raw_value = str(task_cfg.get(cfg_key, "")).strip()
+            should_set = bool(raw_value)
+            if cfg_key == "provider" and raw_value == "auto":
+                should_set = False
+
+            marker = _auxiliary_bridge_marker(env_var)
+            if should_set:
+                target_env[env_var] = raw_value
+                target_env[marker] = "1"
+                continue
+
+            if target_env.get(marker) == "1":
+                target_env.pop(env_var, None)
+                target_env.pop(marker, None)
+
+
 def get_managed_system() -> Optional[str]:
     """Return the package manager owning this install, if any."""
     raw = os.getenv("HERMES_MANAGED", "").strip()
@@ -211,6 +275,10 @@ DEFAULT_CONFIG = {
         # tools or receiving API responses.  Only fires when the agent has
         # been completely idle for this duration.  0 = unlimited.
         "gateway_timeout": 1800,
+        # Streaming provider silence timeout (seconds). When a provider keeps
+        # the connection open but emits no chunks for this duration, Hermes
+        # closes the stream and retries/fails over.
+        "stream_stale_timeout": 180,
         # Tool-use enforcement: injects system prompt guidance that tells the
         # model to actually call tools instead of describing intended actions.
         # Values: "auto" (default — applies to gpt/codex models), true/false
@@ -542,6 +610,23 @@ DEFAULT_CONFIG = {
         "wrap_response": True,
     },
 
+    "runtime_canary": {
+        "alert_target": "",
+        "throttle_seconds": 1800,
+        "gateway_stale_seconds": 180,
+        "qq_stale_seconds": 900,
+        "session_stuck_seconds": 900,
+        "background_stuck_seconds": 1200,
+        "provider_failure_threshold": 3,
+    },
+
+    # Gateway service generation.
+    # Set gateway_service.code_root to pin systemd/launchd to a canonical
+    # source checkout instead of the installed ~/.hermes/hermes-agent copy.
+    "gateway_service": {
+        "code_root": "",
+    },
+
     # Logging — controls file logging to ~/.hermes/logs/.
     # agent.log captures INFO+ (all agent activity); errors.log captures WARNING+.
     "logging": {
@@ -551,7 +636,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 13,
+    "_config_version": 14,
 }
 
 # =============================================================================

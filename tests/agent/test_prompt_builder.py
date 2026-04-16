@@ -16,6 +16,7 @@ from agent.prompt_builder import (
     _find_hermes_md,
     _find_git_root,
     _strip_yaml_frontmatter,
+    build_platform_tool_guidance,
     build_skills_system_prompt,
     build_nous_subscription_prompt,
     build_context_files_prompt,
@@ -55,8 +56,20 @@ class TestPlatformHints:
 
         assert "QQ" in hint
         assert "NapCat" in hint
-        assert "MEDIA:/absolute/path/to/file" in hint
+        assert "MEDIA:" in hint
+        assert "real absolute path" in hint
         assert "[[NO_REPLY]]" in hint
+
+
+    def test_platform_tool_guidance_prefers_prompt_faithful_image_tool(self):
+        guidance = build_platform_tool_guidance(
+            "qq_napcat",
+            {"prompt_faithful_image_generate"},
+        )
+
+        assert "prompt_faithful_image_generate" in guidance
+        assert "literally" in guidance
+        assert "do not rewrite" in guidance
 
 
 # =========================================================================

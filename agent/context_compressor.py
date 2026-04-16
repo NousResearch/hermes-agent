@@ -17,7 +17,7 @@ import logging
 import time
 from typing import Any, Dict, List, Optional
 
-from agent.auxiliary_client import call_llm
+from agent.auxiliary_client import call_llm, extract_content_or_reasoning
 from agent.model_metadata import (
     get_model_context_length,
     estimate_messages_tokens_rough,
@@ -362,8 +362,10 @@ Write only the summary body. Do not include any preamble or prefix."""
             if self.summary_model:
                 call_kwargs["model"] = self.summary_model
             response = call_llm(**call_kwargs)
-            content = response.choices[0].message.content
-            # Handle cases where content is not a string (e.g., dict from llama.cpp)
+            # Auxiliary backends are not uniform here: some return a normal
+            # chat-completions object, some return SSE text payloads, and some
+            # wrappers surface a plain string on degraded paths.
+            content = extract_content_or_reasoning(response)
             if not isinstance(content, str):
                 content = str(content) if content else ""
             summary = content.strip()

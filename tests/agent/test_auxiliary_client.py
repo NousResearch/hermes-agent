@@ -11,6 +11,7 @@ from agent.auxiliary_client import (
     get_text_auxiliary_client,
     get_vision_auxiliary_client,
     get_available_vision_backends,
+    resolve_vision_request_target,
     resolve_vision_provider_client,
     resolve_provider_client,
     auxiliary_max_tokens_param,
@@ -24,6 +25,7 @@ from agent.auxiliary_client import (
     _try_configured_fallback,
     _resolve_forced_provider,
     _resolve_auto,
+    extract_content_or_reasoning,
 )
 
 
@@ -185,6 +187,20 @@ class TestReadCodexAccessToken:
         assert result == "plain-token-no-jwt"
 
 
+class TestExtractContentOrReasoning:
+    def test_object_response_dict_content_coerces_to_string(self):
+        response = MagicMock()
+        response.choices = [MagicMock()]
+        response.choices[0].message.content = {"text": "summary"}
+        response.choices[0].message.reasoning = None
+        response.choices[0].message.reasoning_content = None
+        response.choices[0].message.reasoning_details = None
+
+        text = extract_content_or_reasoning(response)
+
+        assert text == "{'text': 'summary'}"
+
+
 class TestAnthropicOAuthFlag:
     """Test that OAuth tokens get is_oauth=True in auxiliary Anthropic client."""
 
@@ -337,6 +353,20 @@ class TestExpiredCodexFallback:
                 from agent.auxiliary_client import _resolve_auto
                 client, model = _resolve_auto()
                 assert client is not None
+
+    def test_custom_endpoint_sets_neutral_user_agent(self, monkeypatch):
+        with patch(
+            "agent.auxiliary_client._resolve_custom_runtime",
+            return_value=("https://api.example.com/v1", "sk-dummy"),
+        ), patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            mock_openai.return_value = MagicMock()
+            from agent.auxiliary_client import _try_custom_endpoint
+
+            client, model = _try_custom_endpoint()
+
+        assert client is not None
+        assert model is not None
+        assert mock_openai.call_args.kwargs["default_headers"]["User-Agent"] == "python-requests/2.32.3"
 
 
     def test_hermes_oauth_file_sets_oauth_flag(self, monkeypatch):
@@ -586,6 +616,9 @@ class TestGetTextAuxiliaryClient:
 
     def test_codex_fallback_when_nothing_else(self, codex_auth_dir):
         with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
+             patch("agent.auxiliary_client._read_main_provider", return_value=""), \
+             patch("agent.auxiliary_client._read_main_model", return_value=""), \
+             patch("agent.auxiliary_client._resolve_custom_runtime", return_value=(None, None)), \
              patch("agent.auxiliary_client.OpenAI") as mock_openai:
             client, model = get_text_auxiliary_client()
         assert model == "gpt-5.2-codex"
@@ -768,6 +801,57 @@ class TestAuxiliaryPoolAwareness:
             provider, client, model = resolve_vision_provider_client()
         assert client is not None
         assert provider == "custom:local"
+
+    def test_vision_request_target_uses_named_custom_provider_base_url(self, monkeypatch):
+        config = {
+            "auxiliary": {
+                "vision": {
+                    "provider": "custom:anthropic-lab",
+                    "model": "claude-sonnet-4",
+                }
+            },
+            "custom_providers": [
+                {
+                    "name": "anthropic-lab",
+                    "base_url": "https://vision.example.com/anthropic",
+                    "api_key": "lab-key",
+                }
+            ],
+        }
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: config)
+        monkeypatch.setattr("hermes_cli.runtime_provider.load_config", lambda: config)
+
+        provider, base_url = resolve_vision_request_target()
+
+        assert provider == "custom"
+        assert base_url == "https://vision.example.com/anthropic"
+
+    def test_vision_request_target_auto_uses_named_custom_active_provider_base_url(self, monkeypatch):
+        config = {
+            "model": {
+                "provider": "custom:anthropic-lab",
+                "default": "claude-sonnet-4",
+            },
+            "custom_providers": [
+                {
+                    "name": "anthropic-lab",
+                    "base_url": "https://vision.example.com/anthropic",
+                    "api_key": "lab-key",
+                }
+            ],
+        }
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: config)
+        monkeypatch.setattr("hermes_cli.runtime_provider.load_config", lambda: config)
+
+        with (
+            patch("agent.auxiliary_client._read_nous_auth", return_value=None),
+            patch("agent.auxiliary_client._read_main_provider", return_value="custom:anthropic-lab"),
+        ):
+            provider, base_url = resolve_vision_request_target()
+
+        assert provider == "custom"
+        assert base_url == "https://vision.example.com/anthropic"
 
     def test_vision_direct_endpoint_override(self, monkeypatch):
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
@@ -1294,6 +1378,46 @@ class TestTryConfiguredFallback:
         assert base_url == "https://api.888933.xyz/v1"
         resolve_kwargs = mock_resolve.call_args.kwargs
         assert resolve_kwargs["explicit_base_url"] == "https://api.888933.xyz/v1"
+
+    def test_ignores_disabled_entries(self):
+        backup_client = MagicMock()
+        config = {
+            "fallback_providers": [
+                {
+                    "provider": "custom",
+                    "model": "glm-5.1",
+                    "base_url": "https://wududu.edu.kg/v1",
+                    "api_key": "disabled-key",
+                    "enabled": False,
+                },
+                {
+                    "provider": "custom",
+                    "model": "gpt-5.4",
+                    "base_url": "https://pay.kxaug.xyz/v1",
+                    "api_key": "active-key",
+                    "enabled": True,
+                },
+            ]
+        }
+
+        with (
+            patch("hermes_cli.config.load_config", return_value=config),
+            patch("agent.auxiliary_client.resolve_provider_client",
+                  return_value=(backup_client, "gpt-5.4")) as mock_resolve,
+        ):
+            client, model, label, base_url = _try_configured_fallback(
+                "custom",
+                failed_model="primary-model",
+                failed_base_url="https://primary.example/v1",
+                task="compression",
+            )
+
+        assert client is backup_client
+        assert model == "gpt-5.4"
+        assert label == "custom"
+        assert base_url == "https://pay.kxaug.xyz/v1"
+        resolve_kwargs = mock_resolve.call_args.kwargs
+        assert resolve_kwargs["explicit_base_url"] == "https://pay.kxaug.xyz/v1"
 
 
 class TestCallLlmPaymentFallback:

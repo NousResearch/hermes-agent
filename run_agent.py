@@ -40,7 +40,7 @@ import uuid
 from typing import List, Dict, Any, Optional
 from openai import OpenAI
 import fire
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from hermes_constants import get_hermes_home
@@ -50,6 +50,7 @@ from hermes_constants import get_hermes_home
 from hermes_cli.env_loader import load_hermes_dotenv
 
 _hermes_home = get_hermes_home()
+SYSTEM_PROMPT_REVISION = 1
 _project_env = Path(__file__).parent / '.env'
 _loaded_env_paths = load_hermes_dotenv(hermes_home=_hermes_home, project_env=_project_env)
 if _loaded_env_paths:
@@ -80,7 +81,7 @@ from agent.retry_utils import jittered_backoff
 from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY, PLATFORM_HINTS,
     MEMORY_GUIDANCE, SESSION_SEARCH_GUIDANCE, SKILLS_GUIDANCE,
-    build_nous_subscription_prompt,
+    build_nous_subscription_prompt, build_platform_tool_guidance,
 )
 from agent.model_metadata import (
     fetch_model_metadata,
@@ -100,6 +101,7 @@ from agent.display import (
     _detect_tool_failure,
     get_tool_emoji as _get_tool_emoji,
 )
+from agent.custom_endpoint_headers import generic_custom_endpoint_headers
 from agent.trajectory import (
     convert_scratchpad_to_think, has_incomplete_scratchpad,
     save_trajectory as _save_trajectory_to_file,
@@ -371,6 +373,287 @@ def _runtime_targets_match(
     return bool(norm_provider_a)
 
 
+_PROVIDER_HEALTH_LOCK = threading.Lock()
+_PROVIDER_HEALTH_FILENAME = "provider_health.json"
+_RUNTIME_REASON_LABELS = {
+    "auth_failure": "auth failure",
+    "authorization_failure": "auth failure",
+    "empty_response": "empty response",
+    "stream_drop": "stream drop",
+    "remote_protocol_error": "stream drop",
+    "rate_limited": "rate limited",
+    "rate_limit": "rate limited",
+    "timeout": "timeout",
+}
+
+
+def _provider_health_path() -> Path:
+    return get_hermes_home() / _PROVIDER_HEALTH_FILENAME
+
+
+def _load_provider_health_state_unlocked() -> dict[str, Any]:
+    path = _provider_health_path()
+    if not path.exists():
+        return {"runtimes": {}}
+    try:
+        raw = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return {"runtimes": {}}
+    if not raw:
+        return {"runtimes": {}}
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return {"runtimes": {}}
+    if not isinstance(payload, dict):
+        return {"runtimes": {}}
+    runtimes = payload.get("runtimes")
+    if not isinstance(runtimes, dict):
+        payload["runtimes"] = {}
+    return payload
+
+
+def _save_provider_health_state_unlocked(payload: dict[str, Any]) -> None:
+    path = _provider_health_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = path.with_suffix(".tmp")
+    temp_path.write_text(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True),
+        encoding="utf-8",
+    )
+    os.replace(temp_path, path)
+
+
+def _provider_health_key(
+    provider: str | None,
+    model: str | None,
+    base_url: str | None,
+    api_mode: str | None = None,
+) -> str:
+    blob = json.dumps(
+        {
+            "provider": _normalize_runtime_provider(provider),
+            "model": _normalize_runtime_model(model),
+            "base_url": _normalize_runtime_base_url(base_url),
+            "api_mode": str(api_mode or "").strip().lower(),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def _humanize_runtime_reason(reason: str | None) -> str:
+    normalized = str(reason or "").strip().lower()
+    if not normalized:
+        return "unknown"
+    return _RUNTIME_REASON_LABELS.get(normalized, normalized.replace("_", " "))
+
+
+def _format_runtime_target(
+    *,
+    provider: str | None,
+    model: str | None,
+    base_url: str | None,
+) -> str:
+    normalized_base_url = _normalize_runtime_base_url(base_url)
+    normalized_provider = _normalize_runtime_provider(provider)
+    normalized_model = _normalize_runtime_model(model)
+    if normalized_base_url:
+        return normalized_base_url
+    if normalized_provider and normalized_model:
+        return f"{normalized_provider}/{normalized_model}"
+    if normalized_model:
+        return normalized_model
+    if normalized_provider:
+        return normalized_provider
+    return "unknown runtime"
+
+
+def _format_provider_health_summary(item: dict[str, Any]) -> str:
+    target = str(item.get("display_target") or "unknown runtime").strip()
+    reason = str(item.get("reason_label") or _humanize_runtime_reason(item.get("reason"))).strip()
+    cooldown_seconds = int(max(0.0, float(item.get("cooldown_seconds") or 0.0)))
+    return f"{target} degraded ({reason}); retry in {cooldown_seconds}s"
+
+
+def _mark_runtime_unhealthy(
+    *,
+    provider: str | None,
+    model: str | None,
+    base_url: str | None,
+    api_mode: str | None,
+    reason: str,
+    seconds: float,
+) -> None:
+    try:
+        seconds = float(seconds)
+    except (TypeError, ValueError):
+        return
+    if seconds <= 0:
+        return
+
+    runtime_key = _provider_health_key(provider, model, base_url, api_mode)
+    until = time.time() + seconds
+
+    with _PROVIDER_HEALTH_LOCK:
+        payload = _load_provider_health_state_unlocked()
+        runtimes = payload.setdefault("runtimes", {})
+        existing = runtimes.get(runtime_key) if isinstance(runtimes, dict) else None
+        existing_until = 0.0
+        if isinstance(existing, dict):
+            try:
+                existing_until = float(existing.get("unhealthy_until") or 0.0)
+            except (TypeError, ValueError):
+                existing_until = 0.0
+        runtimes[runtime_key] = {
+            "provider": _normalize_runtime_provider(provider),
+            "model": _normalize_runtime_model(model),
+            "base_url": _normalize_runtime_base_url(base_url),
+            "api_mode": str(api_mode or "").strip().lower(),
+            "reason": str(reason or "").strip(),
+            "unhealthy_until": max(until, existing_until),
+            "updated_at": time.time(),
+        }
+        _save_provider_health_state_unlocked(payload)
+
+
+def _runtime_unhealthy_state(
+    *,
+    provider: str | None,
+    model: str | None,
+    base_url: str | None,
+    api_mode: str | None,
+) -> tuple[float, str]:
+    runtime_key = _provider_health_key(provider, model, base_url, api_mode)
+    now = time.time()
+
+    with _PROVIDER_HEALTH_LOCK:
+        payload = _load_provider_health_state_unlocked()
+        runtimes = payload.setdefault("runtimes", {})
+        record = runtimes.get(runtime_key) if isinstance(runtimes, dict) else None
+        if not isinstance(record, dict):
+            return 0.0, ""
+        try:
+            unhealthy_until = float(record.get("unhealthy_until") or 0.0)
+        except (TypeError, ValueError):
+            unhealthy_until = 0.0
+        if unhealthy_until <= now:
+            runtimes.pop(runtime_key, None)
+            _save_provider_health_state_unlocked(payload)
+            return 0.0, ""
+        return unhealthy_until - now, str(record.get("reason") or "").strip()
+
+
+def _clear_runtime_unhealthy(
+    *,
+    provider: str | None,
+    model: str | None,
+    base_url: str | None,
+    api_mode: str | None,
+) -> None:
+    runtime_key = _provider_health_key(provider, model, base_url, api_mode)
+    with _PROVIDER_HEALTH_LOCK:
+        payload = _load_provider_health_state_unlocked()
+        runtimes = payload.setdefault("runtimes", {})
+        if not isinstance(runtimes, dict) or runtime_key not in runtimes:
+            return
+        runtimes.pop(runtime_key, None)
+        _save_provider_health_state_unlocked(payload)
+
+
+def get_provider_health_snapshot(
+    *,
+    limit: int | None = 10,
+    now_ts: float | None = None,
+) -> dict[str, Any]:
+    """Return active degraded runtime records for status/canary surfaces."""
+    try:
+        now = float(now_ts) if now_ts is not None else time.time()
+    except (TypeError, ValueError):
+        now = time.time()
+
+    with _PROVIDER_HEALTH_LOCK:
+        payload = _load_provider_health_state_unlocked()
+        runtimes = payload.setdefault("runtimes", {})
+        if not isinstance(runtimes, dict):
+            runtimes = {}
+            payload["runtimes"] = runtimes
+
+        items: list[dict[str, Any]] = []
+        stale_keys: list[str] = []
+        for runtime_key, raw in runtimes.items():
+            if not isinstance(raw, dict):
+                stale_keys.append(runtime_key)
+                continue
+            try:
+                unhealthy_until = float(raw.get("unhealthy_until") or 0.0)
+            except (TypeError, ValueError):
+                unhealthy_until = 0.0
+            if unhealthy_until <= now:
+                stale_keys.append(runtime_key)
+                continue
+            try:
+                updated_at = float(raw.get("updated_at") or 0.0)
+            except (TypeError, ValueError):
+                updated_at = 0.0
+            items.append(
+                {
+                    "provider": _normalize_runtime_provider(raw.get("provider")),
+                    "model": _normalize_runtime_model(raw.get("model")),
+                    "base_url": _normalize_runtime_base_url(raw.get("base_url")),
+                    "api_mode": str(raw.get("api_mode") or "").strip().lower(),
+                    "reason": str(raw.get("reason") or "").strip(),
+                    "reason_label": _humanize_runtime_reason(raw.get("reason")),
+                    "state": "cooldown",
+                    "cooldown_seconds": max(0.0, unhealthy_until - now),
+                    "cooldown_until": datetime.fromtimestamp(
+                        unhealthy_until,
+                        tz=timezone.utc,
+                    ).isoformat(),
+                    "display_target": _format_runtime_target(
+                        provider=raw.get("provider"),
+                        model=raw.get("model"),
+                        base_url=raw.get("base_url"),
+                    ),
+                    "updated_at": updated_at,
+                }
+            )
+
+        if stale_keys:
+            for runtime_key in stale_keys:
+                runtimes.pop(runtime_key, None)
+            _save_provider_health_state_unlocked(payload)
+
+    items.sort(
+        key=lambda item: (
+            -float(item.get("cooldown_seconds") or 0.0),
+            -float(item.get("updated_at") or 0.0),
+            str(item.get("provider") or ""),
+            str(item.get("model") or ""),
+        )
+    )
+    total_count = len(items)
+    if limit is not None:
+        try:
+            parsed_limit = max(0, int(limit))
+        except (TypeError, ValueError):
+            parsed_limit = 10
+        items = items[:parsed_limit]
+    for item in items:
+        item["summary"] = _format_provider_health_summary(item)
+    if total_count == 1:
+        summary = "1 degraded runtime on cooldown"
+    else:
+        summary = f"{total_count} degraded runtimes on cooldown" if total_count else "no degraded runtimes"
+    return {
+        "count": total_count,
+        "runtimes": items,
+        "summary": summary,
+    }
+
+
 def _normalize_fallback_chain(
     fallback_model: Any,
     *,
@@ -379,6 +662,13 @@ def _normalize_fallback_chain(
     current_base_url: str | None,
 ) -> list[dict]:
     """Normalize fallback config into a deduplicated ordered provider chain."""
+    def _entry_enabled(value: Any) -> bool:
+        if isinstance(value, str):
+            return value.strip().lower() not in {"0", "false", "no", "off", "disabled"}
+        if value is None:
+            return True
+        return bool(value)
+
     if isinstance(fallback_model, list):
         raw_entries = fallback_model
     elif isinstance(fallback_model, dict):
@@ -389,6 +679,8 @@ def _normalize_fallback_chain(
     normalized_entries: list[dict] = []
     for entry in raw_entries:
         if not isinstance(entry, dict):
+            continue
+        if not _entry_enabled(entry.get("enabled", True)):
             continue
         provider = _normalize_runtime_provider(entry.get("provider"))
         model = _normalize_runtime_model(entry.get("model"))
@@ -468,6 +760,225 @@ def _sanitize_messages_surrogates(messages: list) -> bool:
                         part["text"] = _SURROGATE_RE.sub('\ufffd', text)
                         found = True
     return found
+
+
+def _safe_response_debug_attrs(response: Any) -> dict[str, str]:
+    """Best-effort response preview for malformed provider payloads."""
+    if response is None:
+        return {}
+    if isinstance(response, dict):
+        return {
+            str(k): str(v)[:100]
+            for k, v in response.items()
+            if not str(k).startswith("_")
+        }
+    if hasattr(response, "__dict__"):
+        try:
+            return {
+                str(k): str(v)[:100]
+                for k, v in vars(response).items()
+                if not str(k).startswith("_")
+            }
+        except Exception:
+            pass
+    preview = str(response)
+    if len(preview) > 200:
+        preview = preview[:200] + "..."
+    return {
+        "type": type(response).__name__,
+        "preview": preview,
+    }
+
+
+def _parse_chat_completion_sse_payload(raw_text: str) -> Any | None:
+    """Convert mislabelled SSE chat-completions output into a normal response object.
+
+    Some OpenAI-compatible proxies incorrectly return ``data: {...}`` chunk streams
+    even when ``stream`` was not requested. The OpenAI SDK cannot deserialize that
+    into a chat completion response, but the payload still contains usable deltas.
+    """
+    text = str(raw_text or "").strip()
+    if not text.startswith("data:"):
+        return None
+
+    content_parts: list[str] = []
+    reasoning_parts: list[str] = []
+    tool_calls_acc: dict[int, dict[str, Any]] = {}
+    last_id_at_idx: dict[int, str] = {}
+    active_slot_by_idx: dict[int, int] = {}
+    slot_by_call_id: dict[str, int] = {}
+    finish_reason: str | None = None
+    response_id = "sse-fallback"
+    response_model = None
+    usage = None
+
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line.startswith("data:"):
+            continue
+        payload = line[len("data:"):].strip()
+        if not payload or payload == "[DONE]":
+            continue
+        try:
+            event = json.loads(payload)
+        except Exception:
+            continue
+        if not isinstance(event, dict):
+            continue
+        error_obj = event.get("error")
+        if isinstance(error_obj, dict):
+            message = str(error_obj.get("message") or "Upstream SSE error").strip()
+            raise RuntimeError(message)
+
+        response_id = str(event.get("id") or response_id)
+        response_model = event.get("model") or response_model
+        if event.get("usage") is not None:
+            usage = event.get("usage")
+
+        for choice in event.get("choices") or []:
+            if not isinstance(choice, dict):
+                continue
+            finish_reason = choice.get("finish_reason") or finish_reason
+            delta = choice.get("delta")
+            message = choice.get("message")
+            for container in (delta, message):
+                if not isinstance(container, dict):
+                    continue
+                content = container.get("content")
+                if isinstance(content, str):
+                    content_parts.append(content)
+                reasoning = container.get("reasoning_content") or container.get("reasoning")
+                if isinstance(reasoning, str):
+                    reasoning_parts.append(reasoning)
+                raw_tool_calls = container.get("tool_calls")
+                if isinstance(raw_tool_calls, list):
+                    for tc_delta in raw_tool_calls:
+                        if not isinstance(tc_delta, dict):
+                            continue
+                        raw_idx = tc_delta.get("index")
+                        delta_id = str(tc_delta.get("id") or "").strip()
+
+                        if isinstance(raw_idx, int):
+                            if raw_idx not in active_slot_by_idx:
+                                active_slot_by_idx[raw_idx] = raw_idx
+                            if (
+                                delta_id
+                                and raw_idx in last_id_at_idx
+                                and delta_id != last_id_at_idx[raw_idx]
+                            ):
+                                active_slot_by_idx[raw_idx] = max(tool_calls_acc.keys(), default=-1) + 1
+                            if delta_id:
+                                last_id_at_idx[raw_idx] = delta_id
+                                slot_by_call_id[delta_id] = active_slot_by_idx[raw_idx]
+                            idx = active_slot_by_idx[raw_idx]
+                        elif delta_id and delta_id in slot_by_call_id:
+                            idx = slot_by_call_id[delta_id]
+                        else:
+                            idx = max(tool_calls_acc.keys(), default=-1) + 1
+                            if delta_id:
+                                slot_by_call_id[delta_id] = idx
+
+                        entry = tool_calls_acc.setdefault(
+                            idx,
+                            {
+                                "id": None,
+                                "type": "function",
+                                "function": {"name": "", "arguments": ""},
+                            },
+                        )
+                        if tc_delta.get("id"):
+                            entry["id"] = tc_delta["id"]
+                        if tc_delta.get("type"):
+                            entry["type"] = tc_delta["type"]
+                        fn_delta = tc_delta.get("function")
+                        if isinstance(fn_delta, dict):
+                            fn_name = fn_delta.get("name")
+                            if isinstance(fn_name, str) and fn_name:
+                                current_name = entry["function"]["name"]
+                                if not current_name:
+                                    entry["function"]["name"] = fn_name
+                                elif fn_name.startswith(current_name):
+                                    entry["function"]["name"] = fn_name
+                                elif current_name.startswith(fn_name):
+                                    pass
+                                else:
+                                    entry["function"]["name"] += fn_name
+                            fn_args = fn_delta.get("arguments")
+                            if isinstance(fn_args, str) and fn_args:
+                                current_args = entry["function"]["arguments"]
+                                if not current_args:
+                                    entry["function"]["arguments"] = fn_args
+                                elif fn_args.startswith(current_args):
+                                    entry["function"]["arguments"] = fn_args
+                                elif current_args.startswith(fn_args):
+                                    pass
+                                else:
+                                    entry["function"]["arguments"] += fn_args
+
+    tool_calls = None
+    if tool_calls_acc:
+        tool_calls = []
+        for idx in sorted(tool_calls_acc):
+            tc = tool_calls_acc[idx]
+            tool_calls.append(
+                SimpleNamespace(
+                    id=tc.get("id") or f"sse_call_{idx}",
+                    type=tc.get("type") or "function",
+                    function=SimpleNamespace(
+                        name=tc.get("function", {}).get("name") or "",
+                        arguments=tc.get("function", {}).get("arguments") or "",
+                    ),
+                )
+            )
+
+    if not content_parts and not reasoning_parts and finish_reason is None and not tool_calls:
+        return None
+
+    message = SimpleNamespace(
+        role="assistant",
+        content="".join(content_parts) or None,
+        tool_calls=tool_calls,
+        reasoning_content="".join(reasoning_parts) or None,
+    )
+    return SimpleNamespace(
+        id=response_id,
+        model=response_model or "unknown",
+        choices=[SimpleNamespace(index=0, message=message, finish_reason=finish_reason or "stop")],
+        usage=usage,
+    )
+
+
+def _should_retry_without_optional_tool_controls(error: Exception, api_kwargs: dict) -> bool:
+    """Return True when a strict endpoint rejects optional tool-control fields."""
+    if not isinstance(api_kwargs, dict):
+        return False
+    if "tool_choice" not in api_kwargs and "parallel_tool_calls" not in api_kwargs:
+        return False
+
+    status_code = getattr(error, "status_code", None)
+    if status_code != 400:
+        return False
+
+    text = str(error or "").lower()
+    markers = (
+        "parallel_tool_calls",
+        "tool_choice",
+        "unexpected keyword",
+        "unknown field",
+        "extra inputs are not permitted",
+        "additional properties are not allowed",
+        "unrecognized request argument",
+        "extra_forbidden",
+    )
+    return any(marker in text for marker in markers)
+
+
+def _without_optional_tool_controls(api_kwargs: dict) -> dict:
+    """Return a copy of API kwargs without optional OpenAI tool-control fields."""
+    stripped = dict(api_kwargs)
+    stripped.pop("tool_choice", None)
+    stripped.pop("parallel_tool_calls", None)
+    return stripped
 
 
 def _strip_budget_warnings_from_history(messages: list) -> None:
@@ -692,6 +1203,8 @@ class AIAgent:
         self.stream_delta_callback = stream_delta_callback
         self.status_callback = status_callback
         self.tool_gen_callback = tool_gen_callback
+        self._turn_status_dedupe_keys: set[str] = set()
+        self._turn_status_flags: dict[str, bool] = {}
 
         
         # Tool execution state — allows _vprint during tool execution
@@ -796,6 +1309,10 @@ class AIAgent:
         # single tool loop does not repeatedly re-run auxiliary vision on the
         # same image history.
         self._anthropic_image_fallback_cache: Dict[str, str] = {}
+        # Per-turn cache for failed vision_analyze calls so the same image does
+        # not get hammered repeatedly after an initial failure.
+        self._failed_vision_tool_results: Dict[str, str] = {}
+        self._failed_vision_tool_results_lock = threading.Lock()
 
         # Initialize LLM client via centralized provider router.
         # The router handles auth resolution, base URL, headers, and
@@ -848,6 +1365,10 @@ class AIAgent:
                     client_kwargs["default_headers"] = {
                         "User-Agent": "KimiCLI/1.3",
                     }
+                else:
+                    generic_headers = generic_custom_endpoint_headers(effective_base)
+                    if generic_headers:
+                        client_kwargs["default_headers"] = generic_headers
             else:
                 # No explicit creds — use the centralized provider router
                 from agent.auxiliary_client import resolve_provider_client
@@ -931,6 +1452,10 @@ class AIAgent:
         )
         self._fallback_index = 0
         self._fallback_activated = False
+        self._fallback_sticky_until = 0.0
+        self._fallback_sticky_reason = ""
+        self._turn_primary_failure = None
+        self._empty_response_primary_retry_count = 0
         # Legacy attribute kept for backward compat (tests, external callers)
         self._fallback_model = self._fallback_chain[0] if self._fallback_chain else None
         if self._fallback_chain and not self.quiet_mode:
@@ -1475,6 +2000,8 @@ class AIAgent:
         # ── Reset fallback state ──
         self._fallback_activated = False
         self._fallback_index = 0
+        self._fallback_sticky_until = 0.0
+        self._fallback_sticky_reason = ""
 
         logging.info(
             "Model switched in-place: %s (%s) -> %s (%s)",
@@ -1681,6 +2208,30 @@ class AIAgent:
         This helper never raises — exceptions are swallowed so it cannot
         interrupt the retry/fallback logic.
         """
+        normalized = " ".join(str(message or "").split()).lower()
+        is_detailed_fallback_switch = (
+            "primary model failed" in normalized
+            and "switching to fallback" in normalized
+        )
+        dedupe_key = None
+        if "trying fallback" in normalized:
+            dedupe_key = "fallback_try"
+        elif "switching to fallback" in normalized and not is_detailed_fallback_switch:
+            dedupe_key = "fallback_switch_generic"
+
+        if is_detailed_fallback_switch:
+            self._turn_status_flags["detailed_fallback_switch"] = True
+            self._turn_status_dedupe_keys.add("fallback_switch_generic")
+
+        if dedupe_key:
+            if dedupe_key == "fallback_switch_generic" and self._turn_status_flags.get(
+                "detailed_fallback_switch", False
+            ):
+                return
+            if dedupe_key in self._turn_status_dedupe_keys:
+                return
+            self._turn_status_dedupe_keys.add(dedupe_key)
+
         try:
             self._vprint(f"{self.log_prefix}{message}", force=True)
         except Exception:
@@ -2942,6 +3493,7 @@ class AIAgent:
             timestamp_line += f"\nModel: {self.model}"
         if self.provider:
             timestamp_line += f"\nProvider: {self.provider}"
+        timestamp_line += f"\nSystem Prompt Revision: {SYSTEM_PROMPT_REVISION}"
         prompt_parts.append(timestamp_line)
 
         # Alibaba Coding Plan API always returns "glm-4.7" as model name regardless
@@ -2959,6 +3511,12 @@ class AIAgent:
         platform_key = (self.platform or "").lower().strip()
         if platform_key in PLATFORM_HINTS:
             prompt_parts.append(PLATFORM_HINTS[platform_key])
+        platform_tool_guidance = build_platform_tool_guidance(
+            platform_key,
+            self.valid_tool_names,
+        )
+        if platform_tool_guidance:
+            prompt_parts.append(platform_tool_guidance)
 
         return "\n\n".join(prompt_parts)
 
@@ -2969,6 +3527,19 @@ class AIAgent:
             return ""
         match = re.search(r"^Provider:\s*(.+)$", system_prompt, re.MULTILINE)
         return match.group(1).strip() if match else ""
+
+    @staticmethod
+    def _declared_system_prompt_revision(system_prompt: str) -> int | None:
+        """Extract the stored system prompt revision marker, if present."""
+        if not system_prompt:
+            return None
+        match = re.search(r"^System Prompt Revision:\s*(\d+)$", system_prompt, re.MULTILINE)
+        if not match:
+            return None
+        try:
+            return int(match.group(1))
+        except (TypeError, ValueError):
+            return None
 
     def _can_reuse_stored_system_prompt(self, session_row: Dict[str, Any] | None) -> bool:
         """Return True when a persisted prompt still matches the current runtime."""
@@ -2987,6 +3558,10 @@ class AIAgent:
         if stored_provider and self.provider and stored_provider != self.provider:
             return False
 
+        stored_revision = self._declared_system_prompt_revision(stored_prompt)
+        if stored_revision != SYSTEM_PROMPT_REVISION:
+            return False
+
         return True
 
     # =========================================================================
@@ -3001,6 +3576,99 @@ class AIAgent:
         return getattr(tc, "id", "") or ""
 
     _VALID_API_ROLES = frozenset({"system", "user", "assistant", "tool", "function", "developer"})
+    _QQ_SIGNED_IMAGE_URL_PATTERN = r"https?://multimedia\.nt\.qq\.com\.cn/download\?[^\s\]\"')]+"
+    _QQ_SIGNED_IMAGE_URL_RE = re.compile(_QQ_SIGNED_IMAGE_URL_PATTERN, re.IGNORECASE)
+    _QQ_SIGNED_VISION_HINT_RE = re.compile(
+        rf"vision_analyze(?:\s+with|\s+using)?\s+image_url:\s*{_QQ_SIGNED_IMAGE_URL_PATTERN}",
+        re.IGNORECASE,
+    )
+    _CQ_IMAGE_MARKUP_RE = re.compile(r"\[CQ:image,[^\]]*\]", re.IGNORECASE)
+    _REMOTE_VISION_FETCH_FAILURE_SUMMARY = (
+        "The remote image URL could not be fetched by the vision provider. "
+        "If this image came from the current chat, use the local cached file path "
+        "mentioned in the conversation instead of the remote CDN URL."
+    )
+    _LOW_VALUE_VISION_FAILURE_SUMMARY = (
+        "Vision skipped sticker-like or low-value media to keep chat responsive. "
+        "If details matter, ask the user for a static screenshot or photo instead."
+    )
+
+    @staticmethod
+    def _sanitize_prompt_bound_object(value: Any) -> Any:
+        if isinstance(value, str):
+            return AIAgent._sanitize_prompt_bound_text(value)
+        if isinstance(value, list):
+            return [AIAgent._sanitize_prompt_bound_object(item) for item in value]
+        if isinstance(value, dict):
+            return {
+                key: AIAgent._sanitize_prompt_bound_object(item)
+                for key, item in value.items()
+            }
+        return value
+
+    @staticmethod
+    def _sanitize_prompt_bound_text(content: str) -> str:
+        if not isinstance(content, str) or not content:
+            return content
+
+        sanitized = content
+        sanitized = AIAgent._QQ_SIGNED_VISION_HINT_RE.sub(
+            "vision_analyze using the locally cached image path from this chat",
+            sanitized,
+        )
+        sanitized = AIAgent._CQ_IMAGE_MARKUP_RE.sub("", sanitized)
+        sanitized = AIAgent._QQ_SIGNED_IMAGE_URL_RE.sub(
+            "[remote image url redacted]",
+            sanitized,
+        )
+        sanitized = re.sub(r"\n{3,}", "\n\n", sanitized)
+        sanitized = re.sub(r"[ \t]+\n", "\n", sanitized)
+        return sanitized.strip()
+
+    @staticmethod
+    def _compact_remote_vision_tool_result(content: str) -> str:
+        if not isinstance(content, str) or not content:
+            return content
+
+        lowered = content.lower()
+        if "sticker-like" in lowered or "low-value media skipped" in lowered:
+            payload = None
+            try:
+                payload = json.loads(content)
+            except Exception:
+                payload = None
+
+            if isinstance(payload, dict):
+                payload = dict(payload)
+                payload["error"] = "Vision skipped low-value media"
+                payload["analysis"] = AIAgent._LOW_VALUE_VISION_FAILURE_SUMMARY
+                payload = AIAgent._sanitize_prompt_bound_object(payload)
+                return json.dumps(payload, ensure_ascii=False)
+
+            return AIAgent._LOW_VALUE_VISION_FAILURE_SUMMARY
+
+        if (
+            "failed to fetch input url" not in lowered
+            and "multimedia.nt.qq.com.cn" not in lowered
+        ):
+            return AIAgent._sanitize_prompt_bound_text(content)
+
+        payload = None
+        try:
+            payload = json.loads(content)
+        except Exception:
+            payload = None
+
+        if isinstance(payload, dict):
+            payload = dict(payload)
+            payload["error"] = "Remote image fetch failed"
+            payload["analysis"] = AIAgent._REMOTE_VISION_FETCH_FAILURE_SUMMARY
+            payload = AIAgent._sanitize_prompt_bound_object(payload)
+            return json.dumps(payload, ensure_ascii=False)
+
+        return AIAgent._sanitize_prompt_bound_text(
+            AIAgent._REMOTE_VISION_FETCH_FAILURE_SUMMARY
+        )
 
     @staticmethod
     def _sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -3022,6 +3690,27 @@ class AIAgent:
                 continue
             filtered.append(msg)
         messages = filtered
+
+        sanitized_messages: List[Dict[str, Any]] = []
+        for msg in messages:
+            content = msg.get("content")
+            if not isinstance(content, str):
+                sanitized_messages.append(msg)
+                continue
+
+            if msg.get("role") == "tool":
+                sanitized_content = AIAgent._compact_remote_vision_tool_result(content)
+            else:
+                sanitized_content = AIAgent._sanitize_prompt_bound_text(content)
+
+            if sanitized_content == content:
+                sanitized_messages.append(msg)
+                continue
+
+            sanitized_msg = dict(msg)
+            sanitized_msg["content"] = sanitized_content
+            sanitized_messages.append(sanitized_msg)
+        messages = sanitized_messages
 
         surviving_call_ids: set = set()
         for msg in messages:
@@ -4442,7 +5131,31 @@ class AIAgent:
                     result["response"] = self._anthropic_messages_create(api_kwargs)
                 else:
                     request_client_holder["client"] = self._create_request_openai_client(reason="chat_completion_request")
-                    result["response"] = request_client_holder["client"].chat.completions.create(**api_kwargs)
+                    try:
+                        response = request_client_holder["client"].chat.completions.create(**api_kwargs)
+                        if isinstance(response, str):
+                            parsed_response = _parse_chat_completion_sse_payload(response)
+                            result["response"] = parsed_response if parsed_response is not None else response
+                        else:
+                            result["response"] = response
+                    except Exception as e:
+                        if _should_retry_without_optional_tool_controls(e, api_kwargs):
+                            retry_kwargs = _without_optional_tool_controls(api_kwargs)
+                            response = request_client_holder["client"].chat.completions.create(**retry_kwargs)
+                            if isinstance(response, str):
+                                parsed_response = _parse_chat_completion_sse_payload(response)
+                                result["response"] = parsed_response if parsed_response is not None else response
+                            else:
+                                result["response"] = response
+                            return
+                        fallback_response = self._try_parse_mislabelled_sse_chat_completion(
+                            api_kwargs,
+                            error=e,
+                        )
+                        if fallback_response is not None:
+                            result["response"] = fallback_response
+                        else:
+                            raise
             except Exception as e:
                 result["error"] = e
             finally:
@@ -4477,6 +5190,56 @@ class AIAgent:
         if result["error"] is not None:
             raise result["error"]
         return result["response"]
+
+    def _try_parse_mislabelled_sse_chat_completion(self, api_kwargs: dict, *, error: Exception) -> Any | None:
+        """Recover from custom endpoints that emit SSE chunks for non-stream requests."""
+        if self.api_mode != "chat_completions":
+            return None
+        base_url = str(self.base_url or "").strip()
+        if not base_url or is_local_endpoint(base_url):
+            return None
+
+        err_text = str(error or "").lower()
+        recoverable_markers = (
+            "object has no attribute 'choices'",
+            "expected object",
+            "invalid type for response",
+            "chat.completion.chunk",
+        )
+        if not any(marker in err_text for marker in recoverable_markers):
+            return None
+
+        import httpx
+
+        url = f"{base_url.rstrip('/')}/chat/completions"
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+
+        timeout = api_kwargs.get("timeout")
+        if timeout in (None, "", 0):
+            timeout = 120.0
+
+        raw_kwargs = dict(api_kwargs)
+        raw_kwargs.pop("timeout", None)
+
+        try:
+            response = httpx.post(url, headers=headers, json=raw_kwargs, timeout=timeout)
+            response.raise_for_status()
+        except Exception:
+            return None
+
+        parsed = _parse_chat_completion_sse_payload(response.text)
+        if parsed is None:
+            return None
+
+        logging.warning(
+            "Recovered chat.completions response from mislabelled SSE payload. provider=%s model=%s endpoint=%s",
+            self.provider,
+            self.model,
+            base_url,
+        )
+        return parsed
 
     # ── Unified streaming API call ─────────────────────────────────────────
 
@@ -4626,7 +5389,13 @@ class AIAgent:
             # attempt's start, not a previous attempt's last chunk.
             last_chunk_time["t"] = time.time()
             self._touch_activity("waiting for provider response (streaming)")
-            stream = request_client_holder["client"].chat.completions.create(**stream_kwargs)
+            try:
+                stream = request_client_holder["client"].chat.completions.create(**stream_kwargs)
+            except Exception as e:
+                if not _should_retry_without_optional_tool_controls(e, api_kwargs):
+                    raise
+                stream_kwargs = _without_optional_tool_controls(stream_kwargs)
+                stream = request_client_holder["client"].chat.completions.create(**stream_kwargs)
 
             content_parts: list = []
             tool_calls_acc: dict = {}
@@ -4733,9 +5502,27 @@ class AIAgent:
                             entry["id"] = tc_delta.id
                         if tc_delta.function:
                             if tc_delta.function.name:
-                                entry["function"]["name"] += tc_delta.function.name
+                                incoming_name = tc_delta.function.name
+                                current_name = entry["function"]["name"]
+                                if not current_name:
+                                    entry["function"]["name"] = incoming_name
+                                elif incoming_name.startswith(current_name):
+                                    entry["function"]["name"] = incoming_name
+                                elif current_name.startswith(incoming_name):
+                                    pass
+                                else:
+                                    entry["function"]["name"] += incoming_name
                             if tc_delta.function.arguments:
-                                entry["function"]["arguments"] += tc_delta.function.arguments
+                                incoming_args = tc_delta.function.arguments
+                                current_args = entry["function"]["arguments"]
+                                if not current_args:
+                                    entry["function"]["arguments"] = incoming_args
+                                elif incoming_args.startswith(current_args):
+                                    entry["function"]["arguments"] = incoming_args
+                                elif current_args.startswith(incoming_args):
+                                    pass
+                                else:
+                                    entry["function"]["arguments"] += incoming_args
                         extra = getattr(tc_delta, "extra_content", None)
                         if extra is None and hasattr(tc_delta, "model_extra"):
                             extra = (tc_delta.model_extra or {}).get("extra_content")
@@ -5079,7 +5866,178 @@ class AIAgent:
 
     # ── Provider fallback ──────────────────────────────────────────────────
 
-    def _try_activate_fallback(self) -> bool:
+    _GLOBAL_EMPTY_RESPONSE_UNHEALTHY_SECONDS = 600
+    _AUTH_FAILURE_UNHEALTHY_SECONDS = 90
+    _AUTH_FAILURE_FALLBACK_PIN_SECONDS = 45
+    _TRANSIENT_FAILURE_FALLBACK_PIN_SECONDS = 180
+
+    def _current_runtime_matches_primary(self) -> bool:
+        rt = getattr(self, "_primary_runtime", {}) or {}
+        return _runtime_targets_match(
+            self.provider,
+            self.model,
+            self.base_url,
+            rt.get("provider"),
+            rt.get("model"),
+            rt.get("base_url"),
+        )
+
+    def _mark_current_runtime_unhealthy(self, *, reason: str, seconds: float) -> None:
+        _mark_runtime_unhealthy(
+            provider=self.provider,
+            model=self.model,
+            base_url=self.base_url,
+            api_mode=self.api_mode,
+            reason=reason,
+            seconds=seconds,
+        )
+
+    def _clear_current_runtime_unhealthy(self) -> None:
+        _clear_runtime_unhealthy(
+            provider=self.provider,
+            model=self.model,
+            base_url=self.base_url,
+            api_mode=self.api_mode,
+        )
+
+    def _current_runtime_unhealthy_remaining(self) -> tuple[float, str]:
+        return _runtime_unhealthy_state(
+            provider=self.provider,
+            model=self.model,
+            base_url=self.base_url,
+            api_mode=self.api_mode,
+        )
+
+    def _primary_runtime_unhealthy_remaining(self) -> tuple[float, str]:
+        rt = getattr(self, "_primary_runtime", {}) or {}
+        return _runtime_unhealthy_state(
+            provider=rt.get("provider"),
+            model=rt.get("model"),
+            base_url=rt.get("base_url"),
+            api_mode=rt.get("api_mode"),
+        )
+
+    def _note_runtime_success(self, assistant_message: Any) -> None:
+        if assistant_message is None:
+            return
+        has_tool_calls = bool(getattr(assistant_message, "tool_calls", None))
+        has_structured = bool(
+            getattr(assistant_message, "reasoning", None)
+            or getattr(assistant_message, "reasoning_content", None)
+            or getattr(assistant_message, "reasoning_details", None)
+        )
+        content = getattr(assistant_message, "content", None)
+        has_visible_content = (
+            isinstance(content, str)
+            and self._has_content_after_think_block(content)
+        )
+        if not (has_tool_calls or has_structured or has_visible_content):
+            return
+        self._clear_current_runtime_unhealthy()
+
+    def _record_primary_failure_context(
+        self,
+        *,
+        reason: str,
+        summary: Optional[str],
+        status_code: Optional[int] = None,
+    ) -> None:
+        if not self._current_runtime_matches_primary():
+            return
+        if getattr(self, "_turn_primary_failure", None):
+            return
+        clean_summary = str(summary or "").strip()
+        if not clean_summary:
+            clean_summary = reason or "unknown_error"
+        self._turn_primary_failure = {
+            "reason": str(reason or "").strip(),
+            "summary": clean_summary,
+            "status_code": status_code,
+            "provider": self.provider,
+            "model": self.model,
+            "base_url": self.base_url,
+        }
+
+    def _augment_failure_with_primary_context(self, final_summary: str) -> str:
+        primary_failure = getattr(self, "_turn_primary_failure", None) or {}
+        if not primary_failure:
+            return final_summary
+        if _runtime_targets_match(
+            self.provider,
+            self.model,
+            self.base_url,
+            primary_failure.get("provider"),
+            primary_failure.get("model"),
+            primary_failure.get("base_url"),
+        ):
+            return final_summary
+        primary_label = (
+            f"{primary_failure.get('model') or 'unknown'}"
+            f" via {primary_failure.get('provider') or 'unknown'}"
+        )
+        fallback_label = f"{self.model or 'unknown'} via {self.provider or 'unknown'}"
+        return (
+            f"Primary runtime failed first ({primary_label}): "
+            f"{primary_failure.get('summary') or primary_failure.get('reason') or 'unknown error'}\n"
+            f"Fallback runtime then failed ({fallback_label}): {final_summary}"
+        )
+
+    def _degrade_current_runtime_and_try_fallback(
+        self,
+        *,
+        reason: str,
+        unhealthy_seconds: float,
+        sticky_seconds: float,
+        notify_user: bool = True,
+        cause_summary: Optional[str] = None,
+        status_code: Optional[int] = None,
+    ) -> bool:
+        """Mark the current runtime degraded, then switch and pin a fallback."""
+        if self._fallback_index >= len(self._fallback_chain):
+            return False
+
+        self._record_primary_failure_context(
+            reason=reason,
+            summary=cause_summary,
+            status_code=status_code,
+        )
+
+        self._mark_current_runtime_unhealthy(
+            reason=reason,
+            seconds=unhealthy_seconds,
+        )
+        switched = self._try_activate_fallback(notify_user=notify_user)
+        if switched:
+            self._pin_active_fallback(seconds=sticky_seconds, reason=reason)
+        return switched
+
+    def _activate_fallback_for_unhealthy_primary(self) -> bool:
+        if self._fallback_index >= len(self._fallback_chain):
+            return False
+        if not self._current_runtime_matches_primary():
+            return False
+
+        remaining, reason = self._primary_runtime_unhealthy_remaining()
+        if remaining <= 0:
+            return False
+
+        logging.warning(
+            "Skipping unhealthy primary runtime for %.1fs (reason=%s): provider=%s model=%s endpoint=%s",
+            remaining,
+            reason or "unknown",
+            self.provider,
+            self.model,
+            self.base_url,
+        )
+        switched = self._try_activate_fallback(notify_user=False)
+        if switched:
+            self._pin_active_fallback(
+                seconds=max(remaining, self._EMPTY_RESPONSE_FALLBACK_COOLDOWN_SECONDS),
+                reason=f"shared_{reason or 'unhealthy_runtime'}",
+            )
+        return switched
+
+    def _try_activate_fallback(self, *, notify_user: bool = True) -> bool:
         """Switch to the next fallback model/provider in the chain.
 
         Called when the current model is failing after retries.  Swaps the
@@ -5100,7 +6058,7 @@ class AIAgent:
         fb_model = (fb.get("model") or "").strip()
         fb_base_url_hint = (fb.get("base_url") or "").strip() or None
         if not fb_provider or not fb_model:
-            return self._try_activate_fallback()  # skip invalid, try next
+            return self._try_activate_fallback(notify_user=notify_user)  # skip invalid, try next
         if _runtime_targets_match(
             fb_provider,
             fb_model,
@@ -5109,7 +6067,24 @@ class AIAgent:
             self.model,
             self.base_url,
         ):
-            return self._try_activate_fallback()
+            return self._try_activate_fallback(notify_user=notify_user)
+
+        remaining, reason = _runtime_unhealthy_state(
+            provider=fb_provider,
+            model=fb_model,
+            base_url=fb_base_url_hint,
+            api_mode=fb.get("api_mode"),
+        )
+        if remaining > 0:
+            logging.warning(
+                "Skipping fallback runtime marked unhealthy for %.1fs (reason=%s): provider=%s model=%s endpoint=%s",
+                remaining,
+                reason or "unknown",
+                fb_provider,
+                fb_model,
+                fb_base_url_hint or "",
+            )
+            return self._try_activate_fallback(notify_user=notify_user)
 
         # Use centralized router for client construction.
         # raw_codex=True because the main agent needs direct responses.stream()
@@ -5210,10 +6185,11 @@ class AIAgent:
                     fb_context_length * self.context_compressor.threshold_percent
                 )
 
-            self._emit_status(
-                f"🔄 Primary model failed — switching to fallback: "
-                f"{fb_label} via {fb_provider}"
-            )
+            if notify_user:
+                self._emit_status(
+                    f"🔄 Primary model failed — switching to fallback: "
+                    f"{fb_label} via {fb_provider}"
+                )
             logging.info(
                 "Fallback activated: %s → %s (%s)",
                 old_model, fb_label, fb_provider,
@@ -5221,9 +6197,82 @@ class AIAgent:
             return True
         except Exception as e:
             logging.error("Failed to activate fallback %s: %s", fb_model, e)
-            return self._try_activate_fallback()  # try next in chain
+            return self._try_activate_fallback(notify_user=notify_user)  # try next in chain
+
+    def _try_recover_empty_response(self) -> bool:
+        """Treat a fully empty stop response as fallback-worthy provider failure."""
+        should_retry_primary = (
+            not self._fallback_activated
+            and bool(self.base_url)
+            and not is_local_endpoint(self.base_url)
+            and getattr(self, "_empty_response_primary_retry_count", 0) < 1
+        )
+        if should_retry_primary:
+            self._empty_response_primary_retry_count += 1
+            logging.warning(
+                "Provider returned empty response without content or reasoning. "
+                "Retrying primary runtime once before fallback. provider=%s model=%s endpoint=%s",
+                self.provider,
+                self.model,
+                self.base_url,
+            )
+            return True
+
+        logging.warning(
+            "Provider returned empty response without content or reasoning. "
+            "provider=%s model=%s endpoint=%s",
+            self.provider,
+            self.model,
+            self.base_url,
+        )
+        self._mark_current_runtime_unhealthy(
+            reason="empty_response",
+            seconds=self._GLOBAL_EMPTY_RESPONSE_UNHEALTHY_SECONDS,
+        )
+        if self._fallback_index >= len(self._fallback_chain):
+            return False
+        switched = self._try_activate_fallback(notify_user=False)
+        if switched:
+            self._pin_active_fallback(
+                seconds=self._EMPTY_RESPONSE_FALLBACK_COOLDOWN_SECONDS,
+                reason="empty_response",
+            )
+        return switched
 
     # ── Per-turn primary restoration ─────────────────────────────────────
+
+    _EMPTY_RESPONSE_FALLBACK_COOLDOWN_SECONDS = 120
+
+    def _pin_active_fallback(self, *, seconds: float, reason: str) -> None:
+        """Keep the active fallback runtime for a short cooldown across turns."""
+        if not self._fallback_activated:
+            return
+        try:
+            seconds = float(seconds)
+        except (TypeError, ValueError):
+            return
+        if seconds <= 0:
+            return
+
+        sticky_until = time.time() + seconds
+        if sticky_until > getattr(self, "_fallback_sticky_until", 0.0):
+            self._fallback_sticky_until = sticky_until
+            self._fallback_sticky_reason = str(reason or "").strip()
+
+        logging.info(
+            "Pinned fallback runtime for %.1fs (reason=%s): %s (%s)",
+            seconds,
+            self._fallback_sticky_reason or "unknown",
+            self.model,
+            self.provider,
+        )
+
+    def _has_pinned_fallback(self) -> bool:
+        """Return True when the current fallback should stay active next turn."""
+        return bool(
+            self._fallback_activated
+            and getattr(self, "_fallback_sticky_until", 0.0) > time.time()
+        )
 
     def _restore_primary_runtime(self) -> bool:
         """Restore the primary runtime at the start of a new turn.
@@ -5237,6 +6286,30 @@ class AIAgent:
         there (``_fallback_activated`` is always False at turn start).
         """
         if not self._fallback_activated:
+            return False
+
+        sticky_until = getattr(self, "_fallback_sticky_until", 0.0)
+        remaining = sticky_until - time.time()
+        if remaining > 0:
+            logging.info(
+                "Keeping fallback runtime active for %.1fs (reason=%s): %s (%s)",
+                remaining,
+                getattr(self, "_fallback_sticky_reason", "") or "unknown",
+                self.model,
+                self.provider,
+            )
+            return False
+
+        remaining, reason = self._primary_runtime_unhealthy_remaining()
+        if remaining > 0:
+            logging.info(
+                "Keeping fallback runtime active while primary remains unhealthy for %.1fs "
+                "(reason=%s): %s (%s)",
+                remaining,
+                reason or "unknown",
+                self.model,
+                self.provider,
+            )
             return False
 
         rt = self._primary_runtime
@@ -5279,6 +6352,8 @@ class AIAgent:
             # ── Reset fallback chain for the new turn ──
             self._fallback_activated = False
             self._fallback_index = 0
+            self._fallback_sticky_until = 0.0
+            self._fallback_sticky_reason = ""
 
             logging.info(
                 "Primary runtime restored for new turn: %s (%s)",
@@ -5293,8 +6368,9 @@ class AIAgent:
     # one more attempt with a rebuilt client / connection pool.
     _TRANSIENT_TRANSPORT_ERRORS = frozenset({
         "ReadTimeout", "ConnectTimeout", "PoolTimeout",
-        "ConnectError", "RemoteProtocolError",
+        "ConnectError", "RemoteProtocolError", "APIConnectionError",
     })
+    _TRANSIENT_GATEWAY_STATUS_CODES = frozenset({502, 503, 504})
 
     def _try_recover_primary_transport(
         self, api_error: Exception, *, retry_count: int, max_retries: int,
@@ -5314,9 +6390,12 @@ class AIAgent:
         if self._fallback_activated:
             return False
 
-        # Only for transient transport errors
+        # Only for transient transport errors or upstream gateway hiccups
         error_type = type(api_error).__name__
-        if error_type not in self._TRANSIENT_TRANSPORT_ERRORS:
+        status_code = getattr(api_error, "status_code", None)
+        is_transient_transport = error_type in self._TRANSIENT_TRANSPORT_ERRORS
+        is_transient_gateway = status_code in self._TRANSIENT_GATEWAY_STATUS_CODES
+        if not is_transient_transport and not is_transient_gateway:
             return False
 
         # Skip for aggregator providers — they manage their own retry infra
@@ -5671,6 +6750,8 @@ class AIAgent:
         }
         if self.tools:
             api_kwargs["tools"] = self.tools
+            api_kwargs["tool_choice"] = "auto"
+            api_kwargs["parallel_tool_calls"] = True
 
         if self.max_tokens is not None:
             api_kwargs.update(self._max_tokens_param(self.max_tokens))
@@ -6258,6 +7339,12 @@ class AIAgent:
         tools. Used by the concurrent execution path; the sequential path retains
         its own inline invocation for backward-compatible display handling.
         """
+        cached_failed_result = self._get_cached_failed_vision_tool_result(
+            function_name, function_args
+        )
+        if cached_failed_result is not None:
+            return cached_failed_result
+
         if function_name == "todo":
             from tools.todo_tool import todo_tool as _todo_tool
             return _todo_tool(
@@ -6319,12 +7406,60 @@ class AIAgent:
                 parent_agent=self,
             )
         else:
-            return handle_function_call(
+            result = handle_function_call(
                 function_name, function_args, effective_task_id,
                 tool_call_id=tool_call_id,
                 session_id=self.session_id or "",
                 enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
             )
+            self._cache_failed_vision_tool_result(function_name, function_args, result)
+            return result
+
+    @staticmethod
+    def _vision_tool_cache_key(function_name: str, function_args: dict) -> str:
+        if function_name != "vision_analyze":
+            return ""
+        if not isinstance(function_args, dict):
+            return ""
+        image_url = str(function_args.get("image_url") or "").strip()
+        if not image_url:
+            return ""
+        if AIAgent._QQ_SIGNED_IMAGE_URL_RE.fullmatch(image_url):
+            return "[qq-remote-image-url]"
+        return image_url
+
+    def _get_cached_failed_vision_tool_result(
+        self,
+        function_name: str,
+        function_args: dict,
+    ) -> Optional[str]:
+        cache_key = self._vision_tool_cache_key(function_name, function_args)
+        if not cache_key:
+            return None
+        with self._failed_vision_tool_results_lock:
+            cached = self._failed_vision_tool_results.get(cache_key)
+        if cached is not None:
+            logger.info(
+                "Reusing cached failed vision_analyze result for image in current turn: %s",
+                cache_key[:160],
+            )
+        return cached
+
+    def _cache_failed_vision_tool_result(
+        self,
+        function_name: str,
+        function_args: dict,
+        result: str,
+    ) -> None:
+        cache_key = self._vision_tool_cache_key(function_name, function_args)
+        if not cache_key:
+            return
+        is_failure, _ = _detect_tool_failure(function_name, result)
+        with self._failed_vision_tool_results_lock:
+            if is_failure:
+                self._failed_vision_tool_results[cache_key] = result
+            else:
+                self._failed_vision_tool_results.pop(cache_key, None)
 
     def _execute_tool_calls_concurrent(self, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
         """Execute multiple tool calls concurrently using a thread pool.
@@ -6757,11 +7892,8 @@ class AIAgent:
                     spinner.start()
                 _spinner_result = None
                 try:
-                    function_result = handle_function_call(
-                        function_name, function_args, effective_task_id,
-                        tool_call_id=tool_call.id,
-                        session_id=self.session_id or "",
-                        enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
+                    function_result = self._invoke_tool(
+                        function_name, function_args, effective_task_id, tool_call.id
                     )
                     _spinner_result = function_result
                 except Exception as tool_error:
@@ -6776,11 +7908,8 @@ class AIAgent:
                         self._vprint(f"  {cute_msg}")
             else:
                 try:
-                    function_result = handle_function_call(
-                        function_name, function_args, effective_task_id,
-                        tool_call_id=tool_call.id,
-                        session_id=self.session_id or "",
-                        enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
+                    function_result = self._invoke_tool(
+                        function_name, function_args, effective_task_id, tool_call.id
                     )
                 except Exception as tool_error:
                     function_result = f"Error executing tool '{function_name}': {tool_error}"
@@ -7140,6 +8269,7 @@ class AIAgent:
         # runtime so this turn gets a fresh attempt with the preferred model.
         # No-op when _fallback_activated is False (gateway, first turn, etc.).
         self._restore_primary_runtime()
+        self._activate_fallback_for_unhealthy_primary()
 
         # Sanitize surrogate characters from user input.  Clipboard paste from
         # rich-text editors (Google Docs, Word, etc.) can inject lone surrogates
@@ -7153,6 +8283,9 @@ class AIAgent:
         self._stream_callback = stream_callback
         self._persist_user_message_idx = None
         self._persist_user_message_override = persist_user_message
+        self._turn_status_dedupe_keys = set()
+        self._turn_status_flags = {}
+        self._turn_primary_failure = None
         # Generate unique task_id if not provided to isolate VMs between concurrent tasks
         effective_task_id = task_id or str(uuid.uuid4())
         
@@ -7164,9 +8297,12 @@ class AIAgent:
         self._incomplete_scratchpad_retries = 0
         self._codex_incomplete_retries = 0
         self._thinking_prefill_retries = 0
+        self._empty_response_primary_retry_count = 0
         self._last_content_with_tools = None
         self._mute_post_response = False
         self._surrogate_sanitized = False
+        with self._failed_vision_tool_results_lock:
+            self._failed_vision_tool_results = {}
 
         # Pre-turn connection health check: detect and clean up dead TCP
         # connections left over from provider outages or dropped streams.
@@ -7753,9 +8889,11 @@ class AIAgent:
                         # Eager fallback: empty/malformed responses are a common
                         # rate-limit symptom.  Switch to fallback immediately
                         # rather than retrying with extended backoff.
-                        if self._fallback_index < len(self._fallback_chain):
-                            self._emit_status("⚠️ Empty/malformed response — switching to fallback...")
-                        if self._try_activate_fallback():
+                        if self._degrade_current_runtime_and_try_fallback(
+                            reason="invalid_response",
+                            unhealthy_seconds=self._GLOBAL_EMPTY_RESPONSE_UNHEALTHY_SECONDS,
+                            sticky_seconds=self._EMPTY_RESPONSE_FALLBACK_COOLDOWN_SECONDS,
+                        ):
                             retry_count = 0
                             continue
 
@@ -7777,7 +8915,7 @@ class AIAgent:
                         # Check for x-openrouter-provider or similar metadata
                         if provider_name == "Unknown" and response:
                             # Log all response attributes for debugging
-                            resp_attrs = {k: str(v)[:100] for k, v in vars(response).items() if not k.startswith('_')}
+                            resp_attrs = _safe_response_debug_attrs(response)
                             if self.verbose_logging:
                                 logging.debug(f"Response attributes for invalid response: {resp_attrs}")
                         
@@ -8355,8 +9493,11 @@ class AIAgent:
                         pool = self._credential_pool
                         pool_may_recover = pool is not None and pool.has_available()
                         if not pool_may_recover:
-                            self._emit_status("⚠️ Rate limited — switching to fallback provider...")
-                            if self._try_activate_fallback():
+                            if self._degrade_current_runtime_and_try_fallback(
+                                reason="rate_limited",
+                                unhealthy_seconds=self._TRANSIENT_FAILURE_FALLBACK_PIN_SECONDS,
+                                sticky_seconds=self._TRANSIENT_FAILURE_FALLBACK_PIN_SECONDS,
+                            ):
                                 retry_count = 0
                                 continue
 
@@ -8570,8 +9711,26 @@ class AIAgent:
                     if is_client_error:
                         # Try fallback before aborting — a different provider
                         # may not have the same issue (rate limit, auth, etc.)
-                        self._emit_status(f"⚠️ Non-retryable error (HTTP {status_code}) — trying fallback...")
-                        if self._try_activate_fallback():
+                        is_auth_or_permission_error = (
+                            status_code in (401, 403)
+                            or "unauthorized" in error_msg
+                            or "forbidden" in error_msg
+                            or "invalid api key" in error_msg
+                            or "invalid_api_key" in error_msg
+                            or "authentication" in error_msg
+                        )
+                        if is_auth_or_permission_error:
+                            auth_failure_summary = self._summarize_api_error(api_error)
+                            switched = self._degrade_current_runtime_and_try_fallback(
+                                reason=f"http_{status_code or 'auth'}",
+                                unhealthy_seconds=self._AUTH_FAILURE_UNHEALTHY_SECONDS,
+                                sticky_seconds=self._AUTH_FAILURE_FALLBACK_PIN_SECONDS,
+                                cause_summary=auth_failure_summary,
+                                status_code=status_code,
+                            )
+                        else:
+                            switched = self._try_activate_fallback()
+                        if switched:
                             retry_count = 0
                             continue
                         self._dump_api_request_debug(
@@ -8634,11 +9793,17 @@ class AIAgent:
                             retry_count = 0
                             continue
                         # Try fallback before giving up entirely
-                        self._emit_status(f"⚠️ Max retries ({max_retries}) exhausted — trying fallback...")
-                        if self._try_activate_fallback():
+                        _final_summary = self._summarize_api_error(api_error)
+                        if self._degrade_current_runtime_and_try_fallback(
+                            reason="transport_retry_exhausted",
+                            unhealthy_seconds=self._TRANSIENT_FAILURE_FALLBACK_PIN_SECONDS,
+                            sticky_seconds=self._TRANSIENT_FAILURE_FALLBACK_PIN_SECONDS,
+                            cause_summary=_final_summary,
+                            status_code=status_code,
+                        ):
                             retry_count = 0
                             continue
-                        _final_summary = self._summarize_api_error(api_error)
+                        _final_summary = self._augment_failure_with_primary_context(_final_summary)
                         if is_rate_limited:
                             self._emit_status(f"❌ Rate limited after {max_retries} retries — {_final_summary}")
                         else:
@@ -9110,6 +10275,7 @@ class AIAgent:
                     ):
                         messages.pop()
 
+                    self._note_runtime_success(assistant_message)
                     messages.append(assistant_msg)
 
                     # Close any open streaming display (response box, reasoning
@@ -9195,6 +10361,7 @@ class AIAgent:
                     continue
                 
                 else:
+                    self._note_runtime_success(assistant_message)
                     # No tool calls - this is the final response
                     final_response = assistant_message.content or ""
                     
@@ -9254,6 +10421,9 @@ class AIAgent:
                         # Exhausted prefill attempts or no structured
                         # reasoning — fall through to "(empty)" terminal.
                         reasoning_text = self._extract_reasoning(assistant_message)
+                        if not reasoning_text and self._try_recover_empty_response():
+                            self._thinking_prefill_retries = 0
+                            continue
                         assistant_msg = self._build_assistant_message(assistant_message, finish_reason)
                         assistant_msg["content"] = "(empty)"
                         messages.append(assistant_msg)

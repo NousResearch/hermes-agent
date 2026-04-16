@@ -287,7 +287,7 @@ PLATFORM_HINTS = {
         "You are on a text messaging communication platform, WhatsApp. "
         "Please do not use markdown as it does not render. "
         "You can send media files natively: to deliver a file to the user, "
-        "include MEDIA:/absolute/path/to/file in your response. The file "
+        "include MEDIA: followed by the real absolute path to an existing local file in your response. The file "
         "will be sent as a native WhatsApp attachment — images (.jpg, .png, "
         ".webp) appear as photos, videos (.mp4, .mov) play inline, and other "
         "files arrive as downloadable documents. You can also include image "
@@ -297,21 +297,21 @@ PLATFORM_HINTS = {
         "You are on a text messaging communication platform, Telegram. "
         "Please do not use markdown as it does not render. "
         "You can send media files natively: to deliver a file to the user, "
-        "include MEDIA:/absolute/path/to/file in your response. Images "
+        "include MEDIA: followed by the real absolute path to an existing local file in your response. Images "
         "(.png, .jpg, .webp) appear as photos, audio (.ogg) sends as voice "
         "bubbles, and videos (.mp4) play inline. You can also include image "
         "URLs in markdown format ![alt](url) and they will be sent as native photos."
     ),
     "discord": (
         "You are in a Discord server or group chat communicating with your user. "
-        "You can send media files natively: include MEDIA:/absolute/path/to/file "
+        "You can send media files natively: include MEDIA: followed by the real absolute path to an existing local file "
         "in your response. Images (.png, .jpg, .webp) are sent as photo "
         "attachments, audio as file attachments. You can also include image URLs "
         "in markdown format ![alt](url) and they will be sent as attachments."
     ),
     "slack": (
         "You are in a Slack workspace communicating with your user. "
-        "You can send media files natively: include MEDIA:/absolute/path/to/file "
+        "You can send media files natively: include MEDIA: followed by the real absolute path to an existing local file "
         "in your response. Images (.png, .jpg, .webp) are uploaded as photo "
         "attachments, audio as file attachments. You can also include image URLs "
         "in markdown format ![alt](url) and they will be uploaded as attachments."
@@ -320,14 +320,14 @@ PLATFORM_HINTS = {
         "You are on a text messaging communication platform, Signal. "
         "Please do not use markdown as it does not render. "
         "You can send media files natively: to deliver a file to the user, "
-        "include MEDIA:/absolute/path/to/file in your response. Images "
+        "include MEDIA: followed by the real absolute path to an existing local file in your response. Images "
         "(.png, .jpg, .webp) appear as photos, audio as attachments, and other "
         "files arrive as downloadable documents. You can also include image "
         "URLs in markdown format ![alt](url) and they will be sent as photos."
     ),
     "qq_napcat": (
         "You are on QQ via NapCat. Please use plain text, not markdown. "
-        "You can send media files natively: include MEDIA:/absolute/path/to/file "
+        "You can send media files natively: include MEDIA: followed by the real absolute path to an existing local file "
         "in your response. Images are sent as native photos, audio can be sent "
         "as voice/audio attachments, videos play inline when supported, and other "
         "files arrive as documents. In group chats, if a message does not need a "
@@ -337,7 +337,7 @@ PLATFORM_HINTS = {
         "You are communicating via email. Write clear, well-structured responses "
         "suitable for email. Use plain text formatting (no markdown). "
         "Keep responses concise but complete. You can send file attachments — "
-        "include MEDIA:/absolute/path/to/file in your response. The subject line "
+        "include MEDIA: followed by the real absolute path to an existing local file in your response. The subject line "
         "is preserved for threading. Do not include greetings or sign-offs unless "
         "contextually appropriate."
     ),
@@ -358,6 +358,57 @@ PLATFORM_HINTS = {
         "characters, so be brief and direct."
     ),
 }
+
+
+def build_platform_tool_guidance(
+    platform_key: str,
+    valid_tool_names: "set[str] | None" = None,
+) -> str:
+    """Return dynamic tool-selection guidance for platform-specific actions."""
+    platform = str(platform_key or "").strip().lower()
+    tool_names = set(valid_tool_names or set())
+    hints: list[str] = []
+
+    if "prompt_faithful_image_generate" in tool_names:
+        hints.append(
+            "When the user explicitly asks you to generate, draw, or create an image, "
+            "prefer prompt_faithful_image_generate. Pass the user's image prompt through "
+            "literally, do not rewrite or embellish it unless the user explicitly asks "
+            "for prompt optimization first, and keep the successful response to the image "
+            "itself or the resulting MEDIA path instead of extra narration."
+        )
+
+    if platform == "qq_napcat":
+        if "qq_control" in tool_names:
+            hints.append(
+                "For QQ operations, prefer qq_control as the default entry point. "
+                "Use qq_control for sending QQ messages (send_message), "
+                "group moderation (mute_user, kick_user), "
+                "group listening/report configuration (list_joined_groups, set_policy), "
+                "intel workers (hire_worker, pause_worker, resume_worker, run_report_now), "
+                "group files (list_files, upload_file, delete_file, find_file, get_file_url), "
+                "and social request handling (list_requests, approve_request, reject_request, get_user_profile). "
+                "Keep QQ moderation and admin actions inside qq_control so approval-aware flows "
+                "and protected user safeguards stay active. "
+                "Do not write scripts yourself (不要自己写脚本), do not use shell commands, "
+                "do not use terminal or execute_code for QQ admin work when qq_control supports it, "
+                "and do not fall back to raw NapCat API code when qq_control can perform the action."
+            )
+        if "qq_group_moderation" in tool_names:
+            hints.append(
+                "For QQ group moderation requests such as muting or kicking members, "
+                "call qq_group_moderation directly. It still requires approval and protects owners, admins, "
+                "protected users, and the bot itself. Do not write scripts yourself "
+                "(不要自己写脚本), do not use shell commands, and do not fall back to "
+                "manual workaround instructions when the tool can perform the action."
+            )
+        if "qq_group_file" in tool_names:
+            hints.append(
+                "For QQ group file listing, upload, move, rename, or delete tasks, "
+                "call qq_group_file directly instead of writing scripts or raw NapCat API code."
+            )
+
+    return "\n".join(hints)
 
 CONTEXT_FILE_MAX_CHARS = 20_000
 CONTEXT_TRUNCATE_HEAD_RATIO = 0.7

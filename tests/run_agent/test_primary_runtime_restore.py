@@ -15,7 +15,7 @@ from unittest.mock import MagicMock, patch, PropertyMock
 
 import pytest
 
-from run_agent import AIAgent
+from run_agent import AIAgent, _mark_runtime_unhealthy
 
 
 def _make_tool_defs(*names: str) -> list:
@@ -213,6 +213,65 @@ class TestRestorePrimaryRuntime:
 
         assert result is False
 
+    def test_skips_restore_while_empty_response_fallback_is_pinned(self):
+        agent = _make_agent(
+            fallback_model={"provider": "openrouter", "model": "anthropic/claude-sonnet-4"},
+        )
+        mock_client = _mock_resolve()
+        with patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)):
+            agent._try_activate_fallback()
+        agent._pin_active_fallback(seconds=60, reason="empty_response")
+
+        assert agent._has_pinned_fallback() is True
+        assert agent._restore_primary_runtime() is False
+        assert agent.model == "anthropic/claude-sonnet-4"
+        assert agent.provider == "openrouter"
+
+    def test_restores_primary_after_fallback_pin_expires(self):
+        agent = _make_agent(
+            fallback_model={"provider": "openrouter", "model": "anthropic/claude-sonnet-4"},
+        )
+        original_model = agent.model
+        original_provider = agent.provider
+        mock_client = _mock_resolve()
+        with patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)):
+            agent._try_activate_fallback()
+        agent._pin_active_fallback(seconds=60, reason="empty_response")
+        agent._fallback_sticky_until = time.time() - 1
+
+        with patch("run_agent.OpenAI", return_value=MagicMock()):
+            result = agent._restore_primary_runtime()
+
+        assert result is True
+        assert agent.model == original_model
+        assert agent.provider == original_provider
+
+    def test_skips_restore_while_primary_unhealthy_window_is_still_active(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        agent = _make_agent(
+            fallback_model={"provider": "openrouter", "model": "anthropic/claude-sonnet-4"},
+        )
+        mock_client = _mock_resolve()
+        with patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)):
+            agent._try_activate_fallback()
+
+        _mark_runtime_unhealthy(
+            provider=agent._primary_runtime["provider"],
+            model=agent._primary_runtime["model"],
+            base_url=agent._primary_runtime["base_url"],
+            api_mode=agent._primary_runtime["api_mode"],
+            reason="auth_401",
+            seconds=60,
+        )
+        agent._fallback_sticky_until = time.time() - 1
+
+        assert agent._restore_primary_runtime() is False
+        assert agent.model == "anthropic/claude-sonnet-4"
+        assert agent.provider == "openrouter"
+
 
 # =============================================================================
 # _try_recover_primary_transport()
@@ -222,6 +281,14 @@ def _make_transport_error(error_type="ReadTimeout"):
     """Create an exception whose type().__name__ matches the given name."""
     cls = type(error_type, (Exception,), {})
     return cls("connection timed out")
+
+
+def _make_status_error(status_code: int, error_type="InternalServerError", message="upstream failure"):
+    """Create an exception with both type name and HTTP status_code."""
+    cls = type(error_type, (Exception,), {})
+    err = cls(message)
+    err.status_code = status_code
+    return err
 
 
 class TestTryRecoverPrimaryTransport:
@@ -253,6 +320,30 @@ class TestTryRecoverPrimaryTransport:
     def test_recovers_on_pool_timeout(self):
         agent = _make_agent(provider="zai")
         error = _make_transport_error("PoolTimeout")
+
+        with patch("run_agent.OpenAI", return_value=MagicMock()), \
+             patch("time.sleep"):
+            result = agent._try_recover_primary_transport(
+                error, retry_count=3, max_retries=3,
+            )
+
+        assert result is True
+
+    def test_recovers_on_api_connection_error(self):
+        agent = _make_agent(provider="custom")
+        error = _make_transport_error("APIConnectionError")
+
+        with patch("run_agent.OpenAI", return_value=MagicMock()), \
+             patch("time.sleep"):
+            result = agent._try_recover_primary_transport(
+                error, retry_count=3, max_retries=3,
+            )
+
+        assert result is True
+
+    def test_recovers_on_http_502(self):
+        agent = _make_agent(provider="custom")
+        error = _make_status_error(502)
 
         with patch("run_agent.OpenAI", return_value=MagicMock()), \
              patch("time.sleep"):

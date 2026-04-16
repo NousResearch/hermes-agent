@@ -8,8 +8,10 @@ from pathlib import Path
 from typing import Awaitable
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
+import tools.vision_tools as vision_tools_module
 from tools.vision_tools import (
     _validate_image_url,
     _handle_vision_analyze,
@@ -180,26 +182,26 @@ class TestHandleVisionAnalyze:
             # Clean up the coroutine to avoid RuntimeWarning
             result.close()
 
-    def test_prompt_contains_question(self):
+    @pytest.mark.asyncio
+    async def test_prompt_contains_question(self):
         """The full prompt should incorporate the user's question."""
         with patch(
             "tools.vision_tools.vision_analyze_tool", new_callable=AsyncMock
         ) as mock_tool:
             mock_tool.return_value = json.dumps({"result": "ok"})
-            coro = _handle_vision_analyze(
+            await _handle_vision_analyze(
                 {
                     "image_url": "https://example.com/img.png",
                     "question": "Describe the cat",
                 }
             )
-            # Clean up coroutine
-            coro.close()
             call_args = mock_tool.call_args
             full_prompt = call_args[0][1]  # second positional arg
             assert "Describe the cat" in full_prompt
             assert "Fully describe and explain" in full_prompt
 
-    def test_uses_auxiliary_vision_model_env(self):
+    @pytest.mark.asyncio
+    async def test_uses_auxiliary_vision_model_env(self):
         """AUXILIARY_VISION_MODEL env var should override DEFAULT_VISION_MODEL."""
         with (
             patch(
@@ -208,15 +210,15 @@ class TestHandleVisionAnalyze:
             patch.dict(os.environ, {"AUXILIARY_VISION_MODEL": "custom/model-v1"}),
         ):
             mock_tool.return_value = json.dumps({"result": "ok"})
-            coro = _handle_vision_analyze(
+            await _handle_vision_analyze(
                 {"image_url": "https://example.com/img.png", "question": "test"}
             )
-            coro.close()
             call_args = mock_tool.call_args
             model = call_args[0][2]  # third positional arg
             assert model == "custom/model-v1"
 
-    def test_falls_back_to_default_model(self):
+    @pytest.mark.asyncio
+    async def test_falls_back_to_default_model(self):
         """Without AUXILIARY_VISION_MODEL, model should be None (let call_llm resolve default)."""
         with (
             patch(
@@ -227,10 +229,9 @@ class TestHandleVisionAnalyze:
             # Ensure AUXILIARY_VISION_MODEL is not set
             os.environ.pop("AUXILIARY_VISION_MODEL", None)
             mock_tool.return_value = json.dumps({"result": "ok"})
-            coro = _handle_vision_analyze(
+            await _handle_vision_analyze(
                 {"image_url": "https://example.com/img.png", "question": "test"}
             )
-            coro.close()
             call_args = mock_tool.call_args
             model = call_args[0][2]
             # With no AUXILIARY_VISION_MODEL set, model should be None
@@ -281,6 +282,41 @@ class TestErrorLoggingExcInfo:
             error_records = [r for r in caplog.records if r.levelno >= logging.ERROR]
             assert len(error_records) >= 1
             assert error_records[0].exc_info is not None
+
+    @pytest.mark.asyncio
+    async def test_download_http_403_fails_fast_without_retry(self, tmp_path):
+        """Deterministic 4xx download failures should not consume the whole retry budget."""
+        from tools.vision_tools import _download_image
+
+        class FakeResponse:
+            def __init__(self, url: str):
+                self.url = url
+                self.content = b""
+
+            def raise_for_status(self):
+                request = httpx.Request("GET", self.url)
+                response = httpx.Response(403, request=request)
+                raise httpx.HTTPStatusError(
+                    "Client error '403 Forbidden'",
+                    request=request,
+                    response=response,
+                )
+
+        with patch("tools.vision_tools.httpx.AsyncClient") as mock_client_cls, \
+             pytest.raises(httpx.HTTPStatusError):
+            mock_client = AsyncMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client.get = AsyncMock(return_value=FakeResponse("https://example.com/blocked.jpg"))
+            mock_client_cls.return_value = mock_client
+
+            await _download_image(
+                "https://example.com/blocked.jpg",
+                tmp_path / "blocked.jpg",
+                max_retries=3,
+            )
+
+        assert mock_client.get.await_count == 1
 
     @pytest.mark.asyncio
     async def test_analysis_error_logs_exc_info(self, caplog):
@@ -370,6 +406,47 @@ class TestVisionSafetyGuards:
         mock_llm.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_local_gif_rejected_before_llm_call(self, tmp_path):
+        animated = tmp_path / "animated.gif"
+        animated.write_bytes(b"GIF89a" + b"\x00" * 16)
+
+        with patch("tools.vision_tools.async_call_llm", new_callable=AsyncMock) as mock_llm:
+            result = json.loads(await vision_analyze_tool(str(animated), "extract text"))
+
+        assert result["success"] is False
+        assert "Animated GIF" in result["error"]
+        mock_llm.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_local_sticker_like_webp_rejected_before_llm_call(self, tmp_path):
+        sticker = tmp_path / "qq-sticker.webp"
+        sticker.write_bytes(
+            b"RIFF\x18\x00\x00\x00WEBPVP8 " + b"\x00" * 16
+        )
+
+        with patch("tools.vision_tools.async_call_llm", new_callable=AsyncMock) as mock_llm:
+            result = json.loads(await vision_analyze_tool(str(sticker), "describe"))
+
+        assert result["success"] is False
+        assert "sticker-like" in result["analysis"]
+        mock_llm.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_remote_gif_rejected_before_download(self):
+        with (
+            patch("tools.vision_tools.check_website_access", return_value=None),
+            patch("tools.vision_tools._validate_image_url", return_value=True),
+            patch("tools.vision_tools._download_image", new_callable=AsyncMock) as mock_download,
+        ):
+            result = json.loads(
+                await vision_analyze_tool("https://cdn.example.com/animated.gif", "describe")
+            )
+
+        assert result["success"] is False
+        assert "Animated GIF" in result["error"]
+        mock_download.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_blocked_remote_url_short_circuits_before_download(self):
         blocked = {
             "host": "blocked.test",
@@ -388,6 +465,71 @@ class TestVisionSafetyGuards:
         assert result["success"] is False
         assert "Blocked by website policy" in result["error"]
         mock_download.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_remote_403_error_tells_model_to_use_local_cached_path(self):
+        request = httpx.Request("GET", "https://assets.grok.com/image.jpg")
+        response = httpx.Response(403, request=request)
+        err = httpx.HTTPStatusError(
+            "Client error '403 Forbidden'",
+            request=request,
+            response=response,
+        )
+
+        with (
+            patch("tools.vision_tools._validate_image_url", return_value=True),
+            patch("tools.vision_tools._download_image", new_callable=AsyncMock, side_effect=err),
+        ):
+            result = json.loads(
+                await vision_analyze_tool(
+                    "https://assets.grok.com/image.jpg",
+                    "describe this image",
+                )
+            )
+
+        assert result["success"] is False
+        assert "local cached file path" in result["analysis"]
+
+    @pytest.mark.asyncio
+    async def test_same_image_failure_is_reused_without_second_llm_call(
+        self, tmp_path, monkeypatch
+    ):
+        image = tmp_path / "repeat.png"
+        image.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
+
+        monkeypatch.setattr(vision_tools_module, "_RECENT_VISION_FAILURES", {})
+        monkeypatch.setattr(vision_tools_module, "_VISION_PROVIDER_UNHEALTHY", {})
+
+        mock_llm = AsyncMock(side_effect=RuntimeError("malformed upstream envelope"))
+        with patch("tools.vision_tools.async_call_llm", mock_llm):
+            first = json.loads(await vision_analyze_tool(str(image), "describe"))
+            second = json.loads(await vision_analyze_tool(str(image), "describe"))
+
+        assert first["success"] is False
+        assert second["success"] is False
+        assert mock_llm.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_provider_unhealthy_cooldown_short_circuits_other_images(
+        self, tmp_path, monkeypatch
+    ):
+        first_image = tmp_path / "first.png"
+        first_image.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
+        second_image = tmp_path / "second.png"
+        second_image.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
+
+        monkeypatch.setattr(vision_tools_module, "_RECENT_VISION_FAILURES", {})
+        monkeypatch.setattr(vision_tools_module, "_VISION_PROVIDER_UNHEALTHY", {})
+
+        mock_llm = AsyncMock(side_effect=RuntimeError("payment required by upstream"))
+        with patch("tools.vision_tools.async_call_llm", mock_llm):
+            first = json.loads(await vision_analyze_tool(str(first_image), "describe"))
+            second = json.loads(await vision_analyze_tool(str(second_image), "describe"))
+
+        assert first["success"] is False
+        assert second["success"] is False
+        assert mock_llm.await_count == 1
+        assert "temporarily unavailable" in second["analysis"]
 
     @pytest.mark.asyncio
     async def test_download_blocks_redirected_final_url(self, tmp_path):
@@ -548,6 +690,161 @@ class TestVisionResponseHandling:
 
         assert result["success"] is True
         assert result["analysis"] == "这是一张测试图"
+
+    @pytest.mark.asyncio
+    async def test_remote_url_is_preserved_for_grok_compatible_gateway(self):
+        remote_url = "https://cdn.example.com/demo.png"
+        sse_response = (
+            'data: {"choices":[{"delta":{"content":"远程图像识别成功"}}]}\n\n'
+            "data: [DONE]\n\n"
+        )
+
+        with (
+            patch(
+                "tools.vision_tools.resolve_vision_request_target",
+                return_value=("custom", "https://wududu.edu.kg/v1"),
+            ),
+            patch(
+                "tools.vision_tools.check_website_access",
+                return_value=None,
+            ),
+            patch(
+                "tools.vision_tools._download_image",
+                side_effect=AssertionError("remote URL should not be downloaded"),
+            ),
+            patch(
+                "tools.vision_tools.async_call_llm",
+                new_callable=AsyncMock,
+                return_value=sse_response,
+            ) as mock_llm,
+        ):
+            result = json.loads(
+                await vision_analyze_tool(remote_url, "describe this", "grok-4.20-0309")
+            )
+
+        assert result["success"] is True
+        assert result["analysis"] == "远程图像识别成功"
+        sent_messages = mock_llm.await_args.kwargs["messages"]
+        image_part = sent_messages[0]["content"][1]
+        assert image_part["image_url"]["url"] == remote_url
+
+    def test_should_prefer_remote_vision_source_is_false_for_generic_custom_v1(self):
+        from tools.vision_tools import should_prefer_remote_vision_source
+
+        with patch(
+            "tools.vision_tools.resolve_vision_request_target",
+            return_value=("custom", "https://mynav.website/v1"),
+        ):
+            assert (
+                should_prefer_remote_vision_source("https://cdn.example.com/demo.png") is False
+            )
+
+    def test_should_prefer_remote_vision_source_is_false_for_qq_signed_url(self):
+        from tools.vision_tools import should_prefer_remote_vision_source
+
+        with patch(
+            "tools.vision_tools.resolve_vision_request_target",
+            return_value=("custom", "https://wududu.edu.kg/v1"),
+        ):
+            assert (
+                should_prefer_remote_vision_source(
+                    "https://multimedia.nt.qq.com.cn/download?appid=1406&fileid=abc&rkey=def",
+                    model="grok-4.20-0309",
+                )
+                is False
+            )
+
+    @pytest.mark.asyncio
+    async def test_qq_signed_remote_url_is_localized_before_grok_request(self, tmp_path):
+        remote_url = (
+            "https://multimedia.nt.qq.com.cn/download"
+            "?appid=1406&fileid=abc&rkey=def"
+        )
+        localized = tmp_path / "qq-image.jpg"
+        localized.write_bytes(b"\xff\xd8\xff" + b"\x00" * 16)
+        sse_response = (
+            'data: {"choices":[{"delta":{"content":"本地图像识别成功"}}]}\n\n'
+            "data: [DONE]\n\n"
+        )
+
+        async def _fake_download(url, dest, max_retries=3):
+            assert url == remote_url
+            dest.write_bytes(localized.read_bytes())
+            return dest
+
+        with (
+            patch(
+                "tools.vision_tools.resolve_vision_request_target",
+                return_value=("custom", "https://wududu.edu.kg/v1"),
+            ),
+            patch("tools.vision_tools.check_website_access", return_value=None),
+            patch("tools.vision_tools._download_image", side_effect=_fake_download) as mock_download,
+            patch(
+                "tools.vision_tools.async_call_llm",
+                new_callable=AsyncMock,
+                return_value=sse_response,
+            ) as mock_llm,
+        ):
+            result = json.loads(
+                await vision_analyze_tool(remote_url, "describe this", "grok-4.20-0309")
+            )
+
+        assert result["success"] is True
+        assert result["analysis"] == "本地图像识别成功"
+        mock_download.assert_awaited_once()
+        sent_messages = mock_llm.await_args.kwargs["messages"]
+        image_part = sent_messages[0]["content"][1]
+        assert image_part["image_url"]["url"].startswith("data:image/jpeg;base64,")
+
+    @pytest.mark.asyncio
+    async def test_stream_error_text_is_returned_instead_of_empty_retry_message(self, tmp_path):
+        image = tmp_path / "image.png"
+        image.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
+        error_sse = (
+            'data: {"error":{"message":"Asset upload returned 400","type":"upstream_error"}}\n\n'
+            "data: [DONE]\n\n"
+        )
+
+        with (
+            patch(
+                "tools.vision_tools._image_to_base64_data_url",
+                return_value="data:image/png;base64,abc",
+            ),
+            patch(
+                "tools.vision_tools.async_call_llm",
+                new_callable=AsyncMock,
+                return_value=error_sse,
+            ) as mock_llm,
+            patch(
+                "tools.vision_tools.resolve_vision_request_target",
+                return_value=("custom", "https://wududu.edu.kg/v1"),
+            ),
+        ):
+            result = json.loads(
+                await vision_analyze_tool(str(image), "describe this", "grok-4.20-0309")
+            )
+
+        assert result["success"] is False
+        assert result["analysis"] == "Asset upload returned 400"
+        assert "Asset upload returned 400" in result["error"]
+        assert mock_llm.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_timeout_returns_compact_failure_state(self, tmp_path):
+        image = tmp_path / "image.png"
+        image.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
+
+        with patch(
+            "tools.vision_tools.async_call_llm",
+            new_callable=AsyncMock,
+            side_effect=TimeoutError("vision request timed out"),
+        ):
+            result = json.loads(await vision_analyze_tool(str(image), "describe this"))
+
+        assert result["success"] is False
+        assert result["state"] == "timeout"
+        assert result["error"] == "Vision request timed out."
+        assert "timed out" in result["analysis"]
 
 
 # ---------------------------------------------------------------------------

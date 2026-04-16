@@ -55,6 +55,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from openai import OpenAI
 
 from agent.credential_pool import load_pool
+from agent.custom_endpoint_headers import generic_custom_endpoint_headers
 from hermes_cli.config import get_hermes_home
 from hermes_constants import OPENROUTER_BASE_URL
 
@@ -83,7 +84,7 @@ def _normalize_aux_provider(provider: Optional[str], *, for_vision: bool = False
         suffix = normalized.split(":", 1)[1].strip()
         if not suffix:
             return "custom"
-        normalized = suffix if not for_vision else "custom"
+        normalized = suffix if not for_vision else f"custom:{suffix}"
     if normalized == "codex":
         return "openai-codex"
     if normalized == "main":
@@ -835,6 +836,9 @@ def _read_main_provider() -> str:
         if isinstance(model_cfg, dict):
             provider = model_cfg.get("provider", "")
             if isinstance(provider, str) and provider.strip():
+                raw_provider = provider.strip().lower()
+                if raw_provider.startswith("custom:"):
+                    return raw_provider
                 return _normalize_aux_provider(provider)
     except Exception:
         pass
@@ -921,7 +925,11 @@ def _try_custom_endpoint() -> Tuple[Optional[OpenAI], Optional[str]]:
         return None, None
     model = _read_main_model() or "gpt-4o-mini"
     logger.debug("Auxiliary client: custom endpoint (%s)", model)
-    return OpenAI(api_key=custom_key, base_url=custom_base), model
+    kwargs = {"api_key": custom_key, "base_url": custom_base}
+    generic_headers = generic_custom_endpoint_headers(custom_base)
+    if generic_headers:
+        kwargs["default_headers"] = generic_headers
+    return OpenAI(**kwargs), model
 
 
 def _try_codex() -> Tuple[Optional[Any], Optional[str]]:
@@ -1010,8 +1018,21 @@ def _resolve_forced_provider(forced: str) -> Tuple[Optional[OpenAI], Optional[st
         return client, model
 
     if forced == "main":
-        # "main" = skip OpenRouter/Nous, use the main chat model's credentials.
-        for try_fn in (_try_custom_endpoint, _try_codex, _resolve_api_key_provider):
+        # "main" = skip OpenRouter/Nous and prefer the explicitly configured
+        # main chat provider/model. If nothing explicit is configured, fall
+        # back to Codex first, then generic API-key providers.
+        main_provider = _read_main_provider()
+        main_model = _read_main_model()
+        if (
+            main_provider
+            and main_provider not in _AGGREGATOR_PROVIDERS
+            and main_provider not in ("auto", "")
+        ):
+            client, model = resolve_provider_client(main_provider, main_model)
+            if client is not None:
+                return client, model
+
+        for try_fn in (_try_codex, _resolve_api_key_provider):
             client, model = try_fn()
             if client is not None:
                 return client, model
@@ -1091,6 +1112,14 @@ def _normalize_base_url(value: Optional[str]) -> str:
     return str(value or "").strip().rstrip("/").lower()
 
 
+def _fallback_entry_enabled(value: Any) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() not in {"0", "false", "no", "off", "disabled"}
+    if value is None:
+        return True
+    return bool(value)
+
+
 def _load_ordered_fallback_providers() -> List[Dict[str, Any]]:
     """Load the configured ordered fallback providers from config.yaml."""
     try:
@@ -1112,6 +1141,8 @@ def _load_ordered_fallback_providers() -> List[Dict[str, Any]]:
     result: List[Dict[str, Any]] = []
     for entry in providers:
         if not isinstance(entry, dict):
+            continue
+        if not _fallback_entry_enabled(entry.get("enabled", True)):
             continue
         provider = str(entry.get("provider", "")).strip()
         model = str(entry.get("model", "")).strip()
@@ -1478,7 +1509,11 @@ def resolve_provider_client(
                 )
                 return None, None
             final_model = model or _read_main_model() or "gpt-4o-mini"
-            client = OpenAI(api_key=custom_key, base_url=custom_base)
+            kwargs = {"api_key": custom_key, "base_url": custom_base}
+            generic_headers = generic_custom_endpoint_headers(custom_base)
+            if generic_headers:
+                kwargs["default_headers"] = generic_headers
+            client = OpenAI(**kwargs)
             return (_to_async_client(client, final_model) if async_mode
                     else (client, final_model))
         # Try custom first, then codex, then API-key providers
@@ -1502,7 +1537,11 @@ def resolve_provider_client(
             custom_key = custom_entry.get("api_key", "").strip() or "no-key-required"
             if custom_base:
                 final_model = model or _read_main_model() or "gpt-4o-mini"
-                client = OpenAI(api_key=custom_key, base_url=custom_base)
+                kwargs = {"api_key": custom_key, "base_url": custom_base}
+                generic_headers = generic_custom_endpoint_headers(custom_base)
+                if generic_headers:
+                    kwargs["default_headers"] = generic_headers
+                client = OpenAI(**kwargs)
                 logger.debug(
                     "resolve_provider_client: named custom provider %r (%s)",
                     provider, final_model)
@@ -1654,7 +1693,11 @@ def _strict_vision_backend_available(provider: str) -> bool:
 
 def _preferred_main_vision_provider() -> Optional[str]:
     """Return the selected main provider when it is also a supported vision backend."""
-    provider = _normalize_vision_provider(_read_main_provider())
+    raw_main_provider = str(_read_main_provider() or "").strip().lower()
+    if raw_main_provider.startswith("custom:"):
+        return raw_main_provider
+
+    provider = _normalize_vision_provider(raw_main_provider)
     if provider and provider not in ("auto", ""):
         return provider
 
@@ -1662,6 +1705,23 @@ def _preferred_main_vision_provider() -> Optional[str]:
     if active and active not in ("auto", ""):
         return active
     return None
+
+
+def _named_custom_provider_base_url(provider: Optional[str]) -> Optional[str]:
+    """Return the configured base_url for a named custom provider, if any."""
+    normalized = str(provider or "").strip().lower()
+    if not normalized.startswith("custom:"):
+        return None
+    try:
+        from hermes_cli.runtime_provider import _get_named_custom_provider
+
+        entry = _get_named_custom_provider(normalized)
+    except Exception:
+        return None
+    if not isinstance(entry, dict):
+        return None
+    base_url = str(entry.get("base_url") or "").strip()
+    return base_url or None
 
 
 def resolve_vision_request_target(
@@ -1689,6 +1749,9 @@ def resolve_vision_request_target(
     if requested != "auto":
         if requested == "custom":
             return "custom", _current_custom_base_url() or None
+        named_custom_base_url = _named_custom_provider_base_url(requested)
+        if named_custom_base_url:
+            return "custom", named_custom_base_url
         return requested, None
 
     for candidate in _VISION_AUTO_PROVIDER_ORDER:
@@ -1699,6 +1762,9 @@ def resolve_vision_request_target(
     if main_provider and main_provider not in ("auto", ""):
         if main_provider == "custom":
             return "custom", _current_custom_base_url() or None
+        named_custom_base_url = _named_custom_provider_base_url(main_provider)
+        if named_custom_base_url:
+            return "custom", named_custom_base_url
         return main_provider, None
     return None, None
 
@@ -2423,7 +2489,13 @@ def extract_content_or_reasoning(response) -> str:
         return text if not text.startswith("data:") else ""
 
     msg = response.choices[0].message
-    content = (msg.content or "").strip()
+    raw_content = getattr(msg, "content", "")
+    if isinstance(raw_content, str):
+        content = raw_content.strip()
+    elif raw_content:
+        content = str(raw_content).strip()
+    else:
+        content = ""
 
     if content:
         # Strip inline think/reasoning blocks (mirrors _strip_think_blocks)

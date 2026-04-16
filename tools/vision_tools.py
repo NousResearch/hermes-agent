@@ -33,6 +33,8 @@ import ipaddress
 import json
 import logging
 import os
+import threading
+import time
 import uuid
 from pathlib import Path
 from typing import Any, Awaitable, Dict, Optional
@@ -49,6 +51,44 @@ from tools.website_policy import check_website_access
 logger = logging.getLogger(__name__)
 
 _debug = DebugSession("vision_tools", env_var="VISION_TOOLS_DEBUG")
+
+_VISION_FAILURE_GUARD_LOCK = threading.Lock()
+_RECENT_VISION_FAILURES: Dict[str, Dict[str, Any]] = {}
+_VISION_PROVIDER_UNHEALTHY: Dict[str, Dict[str, Any]] = {}
+_RECENT_VISION_FAILURE_TTL_SECONDS = 45.0
+_VISION_PROVIDER_UNHEALTHY_TTL_SECONDS = 30.0
+_LOW_VALUE_WEBP_HINTS = (
+    "sticker",
+    "emoji",
+    "emote",
+    "reaction",
+    "stamp",
+    "face",
+)
+_LOW_VALUE_MEDIA_SUMMARY = (
+    "This looks like a sticker-like or low-value image, so vision skipped it "
+    "to keep chat responsive. If details matter, ask for a static screenshot "
+    "instead."
+)
+_VISION_PROVIDER_UNHEALTHY_SUMMARY = (
+    "Vision is temporarily unavailable for this provider after a recent "
+    "failure. Please retry shortly or use a different vision backend."
+)
+
+
+def _is_timeout_like_error(exc: BaseException) -> bool:
+    return isinstance(exc, (TimeoutError, httpx.TimeoutException))
+
+
+def _is_qq_signed_image_url(image_url: str) -> bool:
+    value = str(image_url or "").strip()
+    if not value:
+        return False
+    try:
+        parsed = urlparse(value)
+    except Exception:
+        return False
+    return parsed.scheme in {"http", "https"} and (parsed.netloc or "").strip().lower() == "multimedia.nt.qq.com.cn"
 
 # Configurable HTTP download timeout for _download_image().
 # Separate from auxiliary.vision.timeout which governs the LLM API call.
@@ -143,6 +183,223 @@ def _detect_image_mime_type(image_path: Path) -> Optional[str]:
     return None
 
 
+def _image_ref_suffix(ref: str) -> str:
+    value = str(ref or "").strip()
+    if not value:
+        return ""
+    try:
+        parsed = urlparse(value)
+        if parsed.scheme in {"http", "https"}:
+            value = parsed.path
+    except Exception:
+        pass
+    return Path(value).suffix.lower()
+
+
+def _looks_like_animated_gif_ref(ref: str, *, mime_type: Optional[str] = None) -> bool:
+    normalized_mime = str(mime_type or "").strip().lower()
+    if normalized_mime == "image/gif":
+        return True
+    return _image_ref_suffix(ref) == ".gif"
+
+
+def _normalized_ref_text(ref: str) -> str:
+    value = str(ref or "").strip()
+    if not value:
+        return ""
+    try:
+        parsed = urlparse(value)
+        if parsed.scheme in {"http", "https"}:
+            value = f"{parsed.netloc}{parsed.path}"
+    except Exception:
+        pass
+    return value.lower()
+
+
+def _looks_like_sticker_ref(ref: str) -> bool:
+    lowered = _normalized_ref_text(ref)
+    return any(hint in lowered for hint in _LOW_VALUE_WEBP_HINTS)
+
+
+def _normalize_vision_image_cache_key(image_url: str) -> str:
+    value = str(image_url or "").strip()
+    if not value:
+        return ""
+    expanded = Path(os.path.expanduser(value))
+    if _validate_image_url(value):
+        parsed = urlparse(value)
+        if parsed.netloc.lower() == "multimedia.nt.qq.com.cn":
+            return "remote:qq-signed-image"
+        return value
+    try:
+        return f"file:{expanded.resolve(strict=False)}"
+    except Exception:
+        return f"file:{expanded}"
+
+
+def _normalize_vision_provider_key(
+    *,
+    provider: Optional[str],
+    base_url: Optional[str],
+    model: Optional[str],
+) -> str:
+    payload = {
+        "provider": str(provider or "").strip().lower(),
+        "base_url": str(base_url or "").strip().lower().rstrip("/"),
+        "model": str(model or "").strip().lower(),
+    }
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _prune_vision_failure_guards(now: Optional[float] = None) -> None:
+    current = float(now or time.time())
+    for state in (_RECENT_VISION_FAILURES, _VISION_PROVIDER_UNHEALTHY):
+        stale_keys = []
+        for key, entry in state.items():
+            try:
+                expires_at = float(entry.get("expires_at") or 0.0)
+            except (AttributeError, TypeError, ValueError):
+                expires_at = 0.0
+            if expires_at <= current:
+                stale_keys.append(key)
+        for key in stale_keys:
+            state.pop(key, None)
+
+
+def _get_recent_vision_failure(cache_key: str) -> Optional[str]:
+    if not cache_key:
+        return None
+    with _VISION_FAILURE_GUARD_LOCK:
+        _prune_vision_failure_guards()
+        entry = _RECENT_VISION_FAILURES.get(cache_key) or {}
+        result = entry.get("result")
+        return str(result) if isinstance(result, str) else None
+
+
+def _store_recent_vision_failure(cache_key: str, result: str) -> None:
+    if not cache_key or not isinstance(result, str) or not result:
+        return
+    now = time.time()
+    with _VISION_FAILURE_GUARD_LOCK:
+        _prune_vision_failure_guards(now)
+        _RECENT_VISION_FAILURES[cache_key] = {
+            "result": result,
+            "expires_at": now + _RECENT_VISION_FAILURE_TTL_SECONDS,
+        }
+
+
+def _clear_recent_vision_failure(cache_key: str) -> None:
+    if not cache_key:
+        return
+    with _VISION_FAILURE_GUARD_LOCK:
+        _RECENT_VISION_FAILURES.pop(cache_key, None)
+
+
+def _get_provider_unhealthy_reason(provider_key: str) -> tuple[float, str]:
+    if not provider_key:
+        return 0.0, ""
+    now = time.time()
+    with _VISION_FAILURE_GUARD_LOCK:
+        _prune_vision_failure_guards(now)
+        entry = _VISION_PROVIDER_UNHEALTHY.get(provider_key)
+        if not isinstance(entry, dict):
+            return 0.0, ""
+        expires_at = float(entry.get("expires_at") or 0.0)
+        if expires_at <= now:
+            _VISION_PROVIDER_UNHEALTHY.pop(provider_key, None)
+            return 0.0, ""
+        return expires_at - now, str(entry.get("reason") or "").strip()
+
+
+def _mark_provider_unhealthy(provider_key: str, reason: str) -> None:
+    if not provider_key:
+        return
+    now = time.time()
+    with _VISION_FAILURE_GUARD_LOCK:
+        _prune_vision_failure_guards(now)
+        _VISION_PROVIDER_UNHEALTHY[provider_key] = {
+            "reason": str(reason or "").strip(),
+            "expires_at": now + _VISION_PROVIDER_UNHEALTHY_TTL_SECONDS,
+        }
+
+
+def _clear_provider_unhealthy(provider_key: str) -> None:
+    if not provider_key:
+        return
+    with _VISION_FAILURE_GUARD_LOCK:
+        _VISION_PROVIDER_UNHEALTHY.pop(provider_key, None)
+
+
+def _build_vision_failure_result(error: str, analysis: str) -> str:
+    return json.dumps(
+        {
+            "success": False,
+            "error": str(error or "").strip() or "Error analyzing image",
+            "analysis": str(analysis or "").strip() or "Vision analysis failed.",
+        },
+        indent=2,
+        ensure_ascii=False,
+    )
+
+
+def _build_vision_state_result(
+    *,
+    state: str,
+    error: str,
+    analysis: str,
+) -> str:
+    return json.dumps(
+        {
+            "success": False,
+            "state": str(state or "").strip() or "error",
+            "error": str(error or "").strip() or "Vision analysis failed.",
+            "analysis": str(analysis or "").strip() or "Vision analysis failed.",
+        },
+        indent=2,
+        ensure_ascii=False,
+    )
+
+
+def _looks_like_low_value_media(
+    ref: str,
+    *,
+    mime_type: Optional[str] = None,
+) -> Optional[str]:
+    normalized_mime = str(mime_type or "").strip().lower()
+    suffix = _image_ref_suffix(ref)
+    if _looks_like_animated_gif_ref(ref, mime_type=normalized_mime):
+        return "Animated GIF inputs are not supported for vision analysis."
+    if (
+        normalized_mime == "image/webp" or suffix == ".webp"
+    ) and _looks_like_sticker_ref(ref):
+        return "Sticker-like or low-value media skipped"
+    return None
+
+
+def _should_mark_provider_unhealthy(error_text: str) -> bool:
+    lowered = str(error_text or "").strip().lower()
+    if not lowered:
+        return False
+    markers = (
+        "payment required",
+        "insufficient",
+        "credits",
+        "billing",
+        "does not support",
+        "not support image",
+        "invalid_request",
+        "content_policy",
+        "multimodal",
+        "unrecognized request argument",
+        "rate limit",
+        "too many requests",
+        "429",
+        "provider unavailable",
+        "no available channel",
+    )
+    return any(marker in lowered for marker in markers)
+
+
 async def _download_image(image_url: str, destination: Path, max_retries: int = 3) -> Path:
     """
     Download an image from a URL to a local destination (async) with retry logic.
@@ -214,6 +471,16 @@ async def _download_image(image_url: str, destination: Path, max_retries: int = 
             return destination
         except Exception as e:
             last_error = e
+            if isinstance(e, httpx.HTTPStatusError):
+                status_code = getattr(getattr(e, "response", None), "status_code", None)
+                if isinstance(status_code, int) and status_code < 429:
+                    logger.error(
+                        "Image download failed with non-retryable HTTP %s for %s",
+                        status_code,
+                        image_url,
+                        exc_info=True,
+                    )
+                    raise
             if attempt < max_retries - 1:
                 wait_time = 2 ** (attempt + 1)  # 2s, 4s, 8s
                 logger.warning("Image download failed (attempt %s/%s): %s", attempt + 1, max_retries, str(e)[:50])
@@ -301,6 +568,120 @@ def _infer_vision_payload_family(
     return "openai_chat"
 
 
+def _should_use_remote_vision_url(
+    image_url: str,
+    *,
+    provider_family: str,
+    model: Optional[str],
+    base_url: Optional[str],
+) -> bool:
+    """Return True when the provider should receive the original remote URL.
+
+    Some OpenAI-compatible Grok gateways accept remote ``image_url`` inputs but
+    reject uploaded ``data:image/...`` payloads. Preserve the original remote
+    URL for those backends instead of forcing a local download + base64 roundtrip.
+    """
+    if not _validate_image_url(image_url):
+        return False
+    if _is_qq_signed_image_url(image_url):
+        return False
+    normalized_model = str(model or "").strip().lower()
+    normalized_base_url = str(base_url or "").strip().lower()
+    if provider_family != "openai_chat":
+        return False
+    if "grok" in normalized_model:
+        return True
+    if not normalized_model and (
+        "wududu.edu.kg" in normalized_base_url or "x.ai" in normalized_base_url
+    ):
+        return True
+    return False
+
+
+def should_prefer_remote_vision_source(
+    image_url: str,
+    *,
+    model: Optional[str] = None,
+    provider: Optional[str] = None,
+    base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+) -> bool:
+    """Return whether the current vision backend should receive the remote URL.
+
+    This keeps gateway-side image source selection aligned with the actual
+    payload-shaping rules used by ``vision_analyze_tool``. Without that, the
+    gateway can hand the tool a QQ-signed CDN URL that the tool would have
+    preferred to localize first, or preserve remote URLs for providers that do
+    not benefit from them.
+    """
+    resolved_provider, resolved_base_url = resolve_vision_request_target(
+        provider=provider,
+        model=model,
+        base_url=base_url,
+        api_key=api_key,
+    )
+    provider_family = _infer_vision_payload_family(
+        resolved_provider,
+        base_url=resolved_base_url,
+    )
+    return _should_use_remote_vision_url(
+        image_url,
+        provider_family=provider_family,
+        model=model,
+        base_url=resolved_base_url,
+    )
+
+
+def _extract_stream_error_text(response: Any) -> str:
+    """Best-effort extraction of streamed auxiliary error payloads."""
+    if not isinstance(response, str):
+        return ""
+    text = response.strip()
+    if not text.startswith("data:"):
+        return ""
+
+    errors: list[str] = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line.startswith("data:"):
+            continue
+        payload = line[len("data:"):].strip()
+        if not payload or payload == "[DONE]":
+            continue
+        try:
+            parsed = json.loads(payload)
+        except Exception:
+            continue
+        if not isinstance(parsed, dict):
+            continue
+        err = parsed.get("error")
+        if not err:
+            continue
+        if isinstance(err, dict):
+            msg = err.get("message") or err.get("code") or json.dumps(err, ensure_ascii=False)
+        else:
+            msg = str(err)
+        msg = str(msg or "").strip()
+        if msg and msg not in errors:
+            errors.append(msg)
+
+    return "; ".join(errors)
+
+
+def _build_provider_error_analysis(response_error: str, *, image_url: str) -> str:
+    """Map provider-side vision failures to user-facing guidance."""
+    error_text = str(response_error or "").strip()
+    lowered = error_text.lower()
+    if _validate_image_url(image_url) and "failed to fetch input url" in lowered:
+        return (
+            "The remote image URL could not be fetched by the vision provider. "
+            "If this image came from the current chat, use the local cached file "
+            "path mentioned in the conversation instead of the remote CDN URL. "
+            f"Error: {error_text}"
+        )
+    return error_text
+
+
 def _anthropic_image_source(image_data_url: str) -> Dict[str, str]:
     """Convert a data URL or remote URL into Anthropic image source format."""
     url = str(image_data_url or "").strip()
@@ -353,7 +734,7 @@ def _build_vision_messages(
     return [{"role": "user", "content": content}]
 
 
-async def vision_analyze_tool(
+async def _legacy_vision_analyze_tool_impl(
     image_url: str,
     user_prompt: str,
     model: str = None,
@@ -408,6 +789,8 @@ async def vision_analyze_tool(
     # Local files (e.g. from the image cache) should NOT be deleted.
     should_cleanup = True
     detected_mime_type = None
+    image_cache_key = _normalize_vision_image_cache_key(image_url)
+    provider_cache_key = ""
     
     try:
         from tools.interrupt import is_interrupted
@@ -417,49 +800,6 @@ async def vision_analyze_tool(
         logger.info("Analyzing image: %s", image_url[:60])
         logger.info("User prompt: %s", user_prompt[:100])
         
-        # Determine if this is a local file path or a remote URL
-        local_path = Path(os.path.expanduser(image_url))
-        if local_path.is_file():
-            # Local file path (e.g. from platform image cache) -- skip download
-            logger.info("Using local image file: %s", image_url)
-            temp_image_path = local_path
-            should_cleanup = False  # Don't delete cached/local files
-        elif _validate_image_url(image_url):
-            # Remote URL -- download to a temporary location
-            blocked = check_website_access(image_url)
-            if blocked:
-                raise PermissionError(blocked["message"])
-            logger.info("Downloading image from URL...")
-            temp_dir = Path("./temp_vision_images")
-            temp_image_path = temp_dir / f"temp_image_{uuid.uuid4()}.jpg"
-            await _download_image(image_url, temp_image_path)
-            should_cleanup = True
-        else:
-            raise ValueError(
-                "Invalid image source. Provide an HTTP/HTTPS URL or a valid local file path."
-            )
-        
-        # Get image file size for logging
-        image_size_bytes = temp_image_path.stat().st_size
-        image_size_kb = image_size_bytes / 1024
-        logger.info("Image ready (%.1f KB)", image_size_kb)
-
-        detected_mime_type = _detect_image_mime_type(temp_image_path)
-        if not detected_mime_type:
-            raise ValueError("Only real image files are supported for vision analysis.")
-        
-        # Convert image to base64 data URL
-        logger.info("Converting image to base64...")
-        image_data_url = _image_to_base64_data_url(temp_image_path, mime_type=detected_mime_type)
-        # Calculate size in KB for better readability
-        data_size_kb = len(image_data_url) / 1024
-        logger.info("Image converted to base64 (%.1f KB)", data_size_kb)
-        
-        debug_call_data["image_size_bytes"] = image_size_bytes
-        
-        # Use the prompt as provided (model_tools.py now handles full description formatting)
-        comprehensive_prompt = user_prompt
-        
         resolved_provider, resolved_base_url = resolve_vision_request_target(
             model=model
         )
@@ -467,13 +807,150 @@ async def vision_analyze_tool(
             resolved_provider,
             base_url=resolved_base_url,
         )
-        messages = _build_vision_messages(
-            comprehensive_prompt,
-            image_data_url,
-            provider_family=provider_family,
+        provider_cache_key = _normalize_vision_provider_key(
+            provider=resolved_provider,
+            base_url=resolved_base_url,
+            model=model,
         )
         debug_call_data["resolved_provider"] = resolved_provider or "unknown"
         debug_call_data["provider_family"] = provider_family
+
+        cached_failure = _get_recent_vision_failure(image_cache_key)
+        if cached_failure is not None:
+            logger.info("Reusing recent vision failure for %s", image_cache_key[:160])
+            return cached_failure
+
+        remaining_cooldown, cooldown_reason = _get_provider_unhealthy_reason(
+            provider_cache_key
+        )
+        if remaining_cooldown > 0:
+            logger.info(
+                "Skipping vision call for %.1fs due to recent unhealthy provider state (%s)",
+                remaining_cooldown,
+                cooldown_reason or "unknown",
+            )
+            return _build_vision_failure_result(
+                "Error analyzing image: Vision provider temporarily unavailable",
+                _VISION_PROVIDER_UNHEALTHY_SUMMARY,
+            )
+
+        # Determine if this is a local file path or a remote URL
+        local_path = Path(os.path.expanduser(image_url))
+        if local_path.is_file():
+            # Local file path (e.g. from platform image cache) -- skip download
+            logger.info("Using local image file: %s", image_url)
+            temp_image_path = local_path
+            should_cleanup = False  # Don't delete cached/local files
+            image_size_bytes = temp_image_path.stat().st_size
+            image_size_kb = image_size_bytes / 1024
+            logger.info("Image ready (%.1f KB)", image_size_kb)
+
+            detected_mime_type = _detect_image_mime_type(temp_image_path)
+            if not detected_mime_type:
+                raise ValueError("Only real image files are supported for vision analysis.")
+            low_value_reason = _looks_like_low_value_media(
+                image_url,
+                mime_type=detected_mime_type,
+            )
+            if low_value_reason:
+                analysis = (
+                    _LOW_VALUE_MEDIA_SUMMARY
+                    if "sticker-like" in low_value_reason.lower()
+                    else low_value_reason
+                )
+                result = _build_vision_failure_result(
+                    f"Error analyzing image: {low_value_reason}",
+                    analysis,
+                )
+                _store_recent_vision_failure(image_cache_key, result)
+                return result
+
+            logger.info("Converting image to base64...")
+            image_input_ref = _image_to_base64_data_url(
+                temp_image_path,
+                mime_type=detected_mime_type,
+            )
+            data_size_kb = len(image_input_ref) / 1024
+            logger.info("Image converted to base64 (%.1f KB)", data_size_kb)
+        elif _validate_image_url(image_url):
+            low_value_reason = _looks_like_low_value_media(image_url)
+            if low_value_reason:
+                analysis = (
+                    _LOW_VALUE_MEDIA_SUMMARY
+                    if "sticker-like" in low_value_reason.lower()
+                    else low_value_reason
+                )
+                result = _build_vision_failure_result(
+                    f"Error analyzing image: {low_value_reason}",
+                    analysis,
+                )
+                _store_recent_vision_failure(image_cache_key, result)
+                return result
+            blocked = check_website_access(image_url)
+            if blocked:
+                raise PermissionError(blocked["message"])
+            if _should_use_remote_vision_url(
+                image_url,
+                provider_family=provider_family,
+                model=model,
+                base_url=resolved_base_url,
+            ):
+                logger.info("Using remote image URL directly for vision request")
+                image_input_ref = image_url
+                temp_image_path = None
+                should_cleanup = False
+                image_size_bytes = 0
+            else:
+                logger.info("Downloading image from URL...")
+                temp_dir = Path("./temp_vision_images")
+                temp_image_path = temp_dir / f"temp_image_{uuid.uuid4()}.jpg"
+                await _download_image(image_url, temp_image_path)
+                should_cleanup = True
+                image_size_bytes = temp_image_path.stat().st_size
+                image_size_kb = image_size_bytes / 1024
+                logger.info("Image ready (%.1f KB)", image_size_kb)
+
+                detected_mime_type = _detect_image_mime_type(temp_image_path)
+                if not detected_mime_type:
+                    raise ValueError("Only real image files are supported for vision analysis.")
+                low_value_reason = _looks_like_low_value_media(
+                    image_url,
+                    mime_type=detected_mime_type,
+                )
+                if low_value_reason:
+                    analysis = (
+                        _LOW_VALUE_MEDIA_SUMMARY
+                        if "sticker-like" in low_value_reason.lower()
+                        else low_value_reason
+                    )
+                    result = _build_vision_failure_result(
+                        f"Error analyzing image: {low_value_reason}",
+                        analysis,
+                    )
+                    _store_recent_vision_failure(image_cache_key, result)
+                    return result
+
+                logger.info("Converting image to base64...")
+                image_input_ref = _image_to_base64_data_url(
+                    temp_image_path,
+                    mime_type=detected_mime_type,
+                )
+                data_size_kb = len(image_input_ref) / 1024
+                logger.info("Image converted to base64 (%.1f KB)", data_size_kb)
+        else:
+            raise ValueError(
+                "Invalid image source. Provide an HTTP/HTTPS URL or a valid local file path."
+            )
+
+        debug_call_data["image_size_bytes"] = image_size_bytes
+        
+        # Use the prompt as provided (model_tools.py now handles full description formatting)
+        comprehensive_prompt = user_prompt
+        messages = _build_vision_messages(
+            comprehensive_prompt,
+            image_input_ref,
+            provider_family=provider_family,
+        )
 
         logger.info("Processing image with vision model...")
         
@@ -502,12 +979,51 @@ async def vision_analyze_tool(
         
         # Extract the analysis — fall back to reasoning if content is empty
         analysis = extract_content_or_reasoning(response)
+        response_error = _extract_stream_error_text(response)
+
+        if not analysis and response_error:
+            error_msg = f"Error analyzing image: {response_error}"
+            logger.error("Vision LLM returned provider error: %s", response_error)
+            result = {
+                "success": False,
+                "error": error_msg,
+                "analysis": _build_provider_error_analysis(
+                    response_error,
+                    image_url=image_url,
+                ),
+            }
+            debug_call_data["error"] = error_msg
+            _debug.log_call("vision_analyze_tool", debug_call_data)
+            _debug.save()
+            _store_recent_vision_failure(image_cache_key, json.dumps(result, indent=2, ensure_ascii=False))
+            if _should_mark_provider_unhealthy(response_error):
+                _mark_provider_unhealthy(provider_cache_key, response_error)
+            return json.dumps(result, indent=2, ensure_ascii=False)
 
         # Retry once on empty content (reasoning-only response)
         if not analysis:
             logger.warning("Vision LLM returned empty content, retrying once")
             response = await async_call_llm(**call_kwargs)
             analysis = extract_content_or_reasoning(response)
+            response_error = _extract_stream_error_text(response)
+        if not analysis and response_error:
+            error_msg = f"Error analyzing image: {response_error}"
+            logger.error("Vision LLM returned provider error after retry: %s", response_error)
+            result = {
+                "success": False,
+                "error": error_msg,
+                "analysis": _build_provider_error_analysis(
+                    response_error,
+                    image_url=image_url,
+                ),
+            }
+            debug_call_data["error"] = error_msg
+            _debug.log_call("vision_analyze_tool", debug_call_data)
+            _debug.save()
+            _store_recent_vision_failure(image_cache_key, json.dumps(result, indent=2, ensure_ascii=False))
+            if _should_mark_provider_unhealthy(response_error):
+                _mark_provider_unhealthy(provider_cache_key, response_error)
+            return json.dumps(result, indent=2, ensure_ascii=False)
         if not analysis:
             error_msg = "Error analyzing image: Vision model returned empty content after retry"
             logger.error("Vision LLM returned empty content after retry")
@@ -522,6 +1038,8 @@ async def vision_analyze_tool(
             debug_call_data["error"] = error_msg
             _debug.log_call("vision_analyze_tool", debug_call_data)
             _debug.save()
+            serialized_result = json.dumps(result, indent=2, ensure_ascii=False)
+            _store_recent_vision_failure(image_cache_key, serialized_result)
             return json.dumps(result, indent=2, ensure_ascii=False)
 
         analysis_length = len(analysis)
@@ -536,6 +1054,8 @@ async def vision_analyze_tool(
         
         debug_call_data["success"] = True
         debug_call_data["analysis_length"] = analysis_length
+        _clear_recent_vision_failure(image_cache_key)
+        _clear_provider_unhealthy(provider_cache_key)
         
         # Log debug information
         _debug.log_call("vision_analyze_tool", debug_call_data)
@@ -544,6 +1064,22 @@ async def vision_analyze_tool(
         return json.dumps(result, indent=2, ensure_ascii=False)
         
     except Exception as e:
+        if _is_timeout_like_error(e):
+            serialized_result = _build_vision_state_result(
+                state="timeout",
+                error="Vision request timed out.",
+                analysis=(
+                    "Vision timed out for this image, so the turn should continue "
+                    "without blocking on image analysis."
+                ),
+            )
+            logger.warning("Vision request timed out for %s", image_url[:160], exc_info=True)
+            _store_recent_vision_failure(image_cache_key, serialized_result)
+            debug_call_data["error"] = "Vision request timed out."
+            _debug.log_call("vision_analyze_tool", debug_call_data)
+            _debug.save()
+            return serialized_result
+
         error_msg = f"Error analyzing image: {str(e)}"
         logger.error("%s", error_msg, exc_info=True)
         
@@ -566,6 +1102,17 @@ async def vision_analyze_tool(
                 f"{model} does not support vision or our request was not "
                 f"accepted by the server. Error: {e}"
             )
+        elif (
+            isinstance(e, httpx.HTTPStatusError)
+            and getattr(getattr(e, "response", None), "status_code", None) in {401, 403, 404}
+            and _validate_image_url(image_url)
+        ):
+            analysis = (
+                "The remote image URL rejected direct download. If this image came "
+                "from the current chat, use the local cached file path mentioned in "
+                "the conversation instead of the remote CDN URL. "
+                f"Error: {e}"
+            )
         else:
             analysis = (
                 "There was a problem with the request and the image could not "
@@ -573,17 +1120,20 @@ async def vision_analyze_tool(
             )
         
         # Prepare error response
-        result = {
-            "success": False,
-            "error": error_msg,
-            "analysis": analysis,
-        }
+        serialized_result = _build_vision_state_result(
+            state="error",
+            error=error_msg,
+            analysis=analysis,
+        )
+        _store_recent_vision_failure(image_cache_key, serialized_result)
+        if _should_mark_provider_unhealthy(error_msg) or _should_mark_provider_unhealthy(analysis):
+            _mark_provider_unhealthy(provider_cache_key, analysis or error_msg)
         
         debug_call_data["error"] = error_msg
         _debug.log_call("vision_analyze_tool", debug_call_data)
         _debug.save()
         
-        return json.dumps(result, indent=2, ensure_ascii=False)
+        return serialized_result
     
     finally:
         # Clean up temporary image file (but NOT local/cached files)
@@ -695,7 +1245,7 @@ VISION_ANALYZE_SCHEMA = {
 }
 
 
-def _handle_vision_analyze(args: Dict[str, Any], **kw: Any) -> Awaitable[str]:
+async def _handle_vision_analyze(args: Dict[str, Any], **kw: Any) -> str:
     image_url = args.get("image_url", "")
     question = args.get("question", "")
     full_prompt = (
@@ -703,7 +1253,23 @@ def _handle_vision_analyze(args: Dict[str, Any], **kw: Any) -> Awaitable[str]:
         f"following question:\n\n{question}"
     )
     model = os.getenv("AUXILIARY_VISION_MODEL", "").strip() or None
-    return vision_analyze_tool(image_url, full_prompt, model)
+    return await vision_analyze_tool(image_url, full_prompt, model)
+
+
+async def vision_analyze_tool(
+    image_url: str,
+    user_prompt: str,
+    model: str = None,
+) -> str:
+    """Tool wrapper around the shared structured vision backend."""
+    from agent.vision_backend import analyze_image
+
+    result = await analyze_image(
+        image_ref=image_url,
+        user_prompt=user_prompt,
+        model=model,
+    )
+    return json.dumps(result, ensure_ascii=False)
 
 
 registry.register(

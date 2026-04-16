@@ -8,11 +8,13 @@ import pytest
 from model_tools import (
     handle_function_call,
     get_all_tool_names,
+    get_tool_definitions,
     get_toolset_for_tool,
     _AGENT_LOOP_TOOLS,
     _LEGACY_TOOLSET_MAP,
     TOOL_TO_TOOLSET_MAP,
 )
+from toolsets import resolve_toolset
 
 
 # =========================================================================
@@ -125,6 +127,7 @@ class TestBackwardCompat:
         # Should contain well-known tools
         assert "web_search" in names
         assert "terminal" in names
+        assert "qq_control" in names
 
     def test_get_toolset_for_tool(self):
         result = get_toolset_for_tool("web_search")
@@ -138,3 +141,108 @@ class TestBackwardCompat:
     def test_tool_to_toolset_map(self):
         assert isinstance(TOOL_TO_TOOLSET_MAP, dict)
         assert len(TOOL_TO_TOOLSET_MAP) > 0
+
+
+class TestQqUnifiedControlVisibility:
+    def test_unified_qq_toolset_resolves_to_qq_control_only(self):
+        assert set(resolve_toolset("qq")) == {"qq_control"}
+
+    def test_get_tool_definitions_hides_specialized_qq_tools_when_unified_tool_is_available(self):
+        defs = [
+            {
+                "type": "function",
+                "function": {"name": "qq_control", "description": "", "parameters": {"type": "object"}},
+            },
+            {
+                "type": "function",
+                "function": {"name": "qq_social_control", "description": "", "parameters": {"type": "object"}},
+            },
+            {
+                "type": "function",
+                "function": {"name": "qq_intel_control", "description": "", "parameters": {"type": "object"}},
+            },
+            {
+                "type": "function",
+                "function": {"name": "qq_group_policy", "description": "", "parameters": {"type": "object"}},
+            },
+            {
+                "type": "function",
+                "function": {"name": "qq_group_archive", "description": "", "parameters": {"type": "object"}},
+            },
+            {
+                "type": "function",
+                "function": {"name": "qq_group_moderation", "description": "", "parameters": {"type": "object"}},
+            },
+            {
+                "type": "function",
+                "function": {"name": "qq_group_file", "description": "", "parameters": {"type": "object"}},
+            },
+        ]
+
+        with patch("model_tools.registry.get_definitions", return_value=defs):
+            result = get_tool_definitions(quiet_mode=True)
+
+        names = [item["function"]["name"] for item in result]
+        assert "qq_control" in names
+        assert "qq_social_control" not in names
+        assert "qq_intel_control" not in names
+        assert "qq_group_policy" not in names
+        assert "qq_group_archive" not in names
+        assert "qq_group_moderation" not in names
+        assert "qq_group_file" not in names
+
+    def test_unified_qq_toolset_keeps_only_qq_control_and_strengthens_description(self):
+        defs_by_name = {
+            "qq_control": {
+                "type": "function",
+                "function": {
+                    "name": "qq_control",
+                    "description": "Unified QQ control.",
+                    "parameters": {"type": "object"},
+                },
+            }
+        }
+
+        with patch(
+            "model_tools.registry.get_definitions",
+            side_effect=lambda tool_names, quiet=False: [
+                defs_by_name[name] for name in sorted(tool_names) if name in defs_by_name
+            ],
+        ):
+            result = get_tool_definitions(enabled_toolsets=["qq"], quiet_mode=True)
+
+        assert [item["function"]["name"] for item in result] == ["qq_control"]
+        description = result[0]["function"]["description"].lower()
+        assert "terminal" in description
+        assert "execute_code" in description
+        assert "approval" in description
+
+
+class TestToolDefinitionOrdering:
+    def test_get_tool_definitions_preserves_declared_toolset_order(self):
+        defs_by_name = {
+            name: {
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "description": f"{name} tool",
+                    "parameters": {"type": "object"},
+                },
+            }
+            for name in ("patch", "read_file", "search_files", "write_file")
+        }
+
+        with patch(
+            "model_tools.registry.get_definitions",
+            side_effect=lambda tool_names, quiet=False: [
+                defs_by_name[name] for name in sorted(tool_names) if name in defs_by_name
+            ],
+        ):
+            result = get_tool_definitions(enabled_toolsets=["file"], quiet_mode=True)
+
+        assert [item["function"]["name"] for item in result] == [
+            "read_file",
+            "write_file",
+            "patch",
+            "search_files",
+        ]

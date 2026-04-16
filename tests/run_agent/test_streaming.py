@@ -467,6 +467,61 @@ class TestStreamingFallback:
     @patch("run_agent.AIAgent._interruptible_api_call")
     @patch("run_agent.AIAgent._create_request_openai_client")
     @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_stream_400_retries_without_optional_tool_controls_before_fallback(
+        self, mock_close, mock_create, mock_non_stream
+    ):
+        """Strict endpoints should retry the streaming request without optional tool controls."""
+        from run_agent import AIAgent
+
+        class _BadRequest(RuntimeError):
+            def __init__(self, message):
+                super().__init__(message)
+                self.status_code = 400
+
+        chunks = [
+            _make_stream_chunk(content="OK", finish_reason="stop", model="test-model"),
+            _make_empty_chunk(usage=SimpleNamespace(prompt_tokens=10, completion_tokens=1)),
+        ]
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = [
+            _BadRequest("Unknown field: parallel_tool_calls"),
+            iter(chunks),
+        ]
+        mock_create.return_value = mock_client
+
+        agent = AIAgent(
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        response = agent._interruptible_streaming_api_call(
+            {
+                "model": agent.model,
+                "messages": [{"role": "user", "content": "hi"}],
+                "tools": [{"type": "function", "function": {"name": "read_file"}}],
+                "tool_choice": "auto",
+                "parallel_tool_calls": True,
+            }
+        )
+
+        assert response.choices[0].message.content == "OK"
+        assert mock_client.chat.completions.create.call_count == 2
+        first_kwargs = mock_client.chat.completions.create.call_args_list[0].kwargs
+        second_kwargs = mock_client.chat.completions.create.call_args_list[1].kwargs
+        assert first_kwargs["tool_choice"] == "auto"
+        assert first_kwargs["parallel_tool_calls"] is True
+        assert "tool_choice" not in second_kwargs
+        assert "parallel_tool_calls" not in second_kwargs
+        mock_non_stream.assert_not_called()
+
+    @patch("run_agent.AIAgent._interruptible_api_call")
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
     def test_fallback_error_propagates(self, mock_close, mock_create, mock_non_stream):
         """When both streaming AND fallback fail, the fallback error propagates."""
         from run_agent import AIAgent

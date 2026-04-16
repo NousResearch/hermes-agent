@@ -952,6 +952,101 @@ model:
             "model": "gpt-5.4",
         }
 
+    def test_default_config_inheritance(self, monkeypatch, tmp_path):
+        """Tasks inherit provider/model/base_url/api_key from auxiliary.default."""
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir(parents=True, exist_ok=True)
+        (hermes_home / "config.yaml").write_text(
+            """auxiliary:
+  default:
+    provider: openrouter
+    model: google/gemini-2.5-flash
+  compression:
+    timeout: 120
+"""
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        with patch("agent.auxiliary_client.resolve_provider_client", return_value=(MagicMock(), "google/gemini-2.5-flash")) as mock_resolve:
+            client, model = get_text_auxiliary_client("compression")
+
+        assert model == "google/gemini-2.5-flash"
+        # The provider from default should be passed through (first positional arg)
+        assert mock_resolve.call_args.args[0] == "openrouter"
+        # Model passed as keyword arg
+        assert mock_resolve.call_args.kwargs["model"] == "google/gemini-2.5-flash"
+
+    def test_task_config_overrides_default(self, monkeypatch, tmp_path):
+        """Task-specific config overrides default config."""
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir(parents=True, exist_ok=True)
+        (hermes_home / "config.yaml").write_text(
+            """auxiliary:
+  default:
+    provider: openrouter
+    model: google/gemini-2.5-flash
+  compression:
+    provider: anthropic
+    model: claude-haiku-4-5-20251001
+"""
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        with patch("agent.auxiliary_client.resolve_provider_client", return_value=(MagicMock(), "claude-haiku-4-5-20251001")) as mock_resolve:
+            client, model = get_text_auxiliary_client("compression")
+
+        assert model == "claude-haiku-4-5-20251001"
+        # Task-specific provider should override default
+        assert mock_resolve.call_args.args[0] == "anthropic"
+
+    def test_partial_task_override_inherits_rest_from_default(self, monkeypatch, tmp_path):
+        """Task that only overrides model still inherits provider from default."""
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir(parents=True, exist_ok=True)
+        (hermes_home / "config.yaml").write_text(
+            """auxiliary:
+  default:
+    provider: openrouter
+    model: google/gemini-2.5-flash
+  vision:
+    model: gpt-4o
+    timeout: 120
+"""
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        with patch("agent.auxiliary_client.resolve_provider_client", return_value=(MagicMock(), "gpt-4o")) as mock_resolve:
+            client, model = get_text_auxiliary_client("vision")
+
+        assert model == "gpt-4o"
+        # Provider inherited from default (first positional arg)
+        assert mock_resolve.call_args.args[0] == "openrouter"
+        # Model overridden by task - passed as keyword arg
+        assert mock_resolve.call_args.kwargs["model"] == "gpt-4o"
+
+    def test_default_base_url_inheritance(self, monkeypatch, tmp_path):
+        """base_url from default is inherited by tasks."""
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir(parents=True, exist_ok=True)
+        (hermes_home / "config.yaml").write_text(
+            """auxiliary:
+  default:
+    base_url: http://localhost:8080/v1
+    api_key: my-local-key
+    model: llama-3.3
+  session_search:
+    timeout: 30
+"""
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            client, model = get_text_auxiliary_client("session_search")
+
+        assert model == "llama-3.3"
+        assert mock_openai.call_args.kwargs["base_url"] == "http://localhost:8080/v1"
+        assert mock_openai.call_args.kwargs["api_key"] == "my-local-key"
+
 
 def test_resolve_provider_client_supports_copilot_acp_external_process():
     fake_client = MagicMock()

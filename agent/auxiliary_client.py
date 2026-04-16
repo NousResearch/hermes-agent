@@ -2149,14 +2149,34 @@ def _resolve_task_provider_model(
             config = {}
 
         aux = config.get("auxiliary", {}) if isinstance(config, dict) else {}
+        if not isinstance(aux, dict):
+            aux = {}
+        
+        # Get default config (inherited by all tasks)
+        default_config = aux.get("default", {}) if isinstance(aux, dict) else {}
+        if not isinstance(default_config, dict):
+            default_config = {}
+        
+        # Get task-specific config
         task_config = aux.get(task, {}) if isinstance(aux, dict) else {}
         if not isinstance(task_config, dict):
             task_config = {}
-        cfg_provider = str(task_config.get("provider", "")).strip() or None
-        cfg_model = str(task_config.get("model", "")).strip() or None
-        cfg_base_url = str(task_config.get("base_url", "")).strip() or None
-        cfg_api_key = str(task_config.get("api_key", "")).strip() or None
-        cfg_api_mode = str(task_config.get("api_mode", "")).strip() or None
+        
+        # Resolution order: task-specific → default → "auto"/"" 
+        # For each field, prefer task_config, then default_config
+        def _get_config_value(key: str) -> str:
+            """Get config value with inheritance: task → default → empty."""
+            task_val = str(task_config.get(key, "")).strip()
+            if task_val:
+                return task_val
+            default_val = str(default_config.get(key, "")).strip()
+            return default_val if default_val else ""
+        
+        cfg_provider = _get_config_value("provider") or None
+        cfg_model = _get_config_value("model") or None
+        cfg_base_url = _get_config_value("base_url") or None
+        cfg_api_key = _get_config_value("api_key") or None
+        cfg_api_mode = _get_config_value("api_mode") or None
 
     resolved_model = model or cfg_model
     resolved_api_mode = cfg_api_mode
@@ -2182,7 +2202,10 @@ _DEFAULT_AUX_TIMEOUT = 30.0
 
 
 def _get_task_timeout(task: str, default: float = _DEFAULT_AUX_TIMEOUT) -> float:
-    """Read timeout from auxiliary.{task}.timeout in config, falling back to *default*."""
+    """Read timeout from auxiliary.{task}.timeout in config, falling back to default.timeout, then *default*.
+    
+    Resolution order: task-specific timeout → default timeout → function default.
+    """
     if not task:
         return default
     try:
@@ -2191,13 +2214,29 @@ def _get_task_timeout(task: str, default: float = _DEFAULT_AUX_TIMEOUT) -> float
     except ImportError:
         return default
     aux = config.get("auxiliary", {}) if isinstance(config, dict) else {}
+    if not isinstance(aux, dict):
+        return default
+    
+    # Check task-specific timeout first
     task_config = aux.get(task, {}) if isinstance(aux, dict) else {}
-    raw = task_config.get("timeout")
-    if raw is not None:
-        try:
-            return float(raw)
-        except (ValueError, TypeError):
-            pass
+    if isinstance(task_config, dict):
+        raw = task_config.get("timeout")
+        if raw is not None:
+            try:
+                return float(raw)
+            except (ValueError, TypeError):
+                pass
+    
+    # Fall back to default timeout
+    default_config = aux.get("default", {})
+    if isinstance(default_config, dict):
+        raw = default_config.get("timeout")
+        if raw is not None:
+            try:
+                return float(raw)
+            except (ValueError, TypeError):
+                pass
+    
     return default
 
 

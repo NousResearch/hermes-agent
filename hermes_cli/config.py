@@ -475,68 +475,55 @@ DEFAULT_CONFIG = {
         "cheap_model": {},
     },
     
-    # Auxiliary model config — provider:model for each side task.
-    # Format: provider is the provider name, model is the model slug.
+    # Auxiliary model config — provider:model for side tasks (vision, compression, etc).
+    #
+    # SIMPLIFIED CONFIGURATION (recommended):
+    # Set "default" once, all tasks inherit from it:
+    #   auxiliary:
+    #     default:
+    #       provider: "openrouter"
+    #       model: "google/gemini-2.5-flash"
+    #     vision:
+    #       timeout: 120  # only override what differs
+    #
+    # FULL CONFIGURATION (legacy, still supported):
+    # Each task can have its own provider/model/base_url/api_key.
+    #
+    # Resolution order: task-specific → default → "auto"
     # "auto" for provider = auto-detect best available provider.
     # Empty model = use provider's default auxiliary model.
-    # All tasks fall back to openrouter:google/gemini-3-flash-preview if
-    # the configured provider is unavailable.
     "auxiliary": {
-        "vision": {
-            "provider": "auto",    # auto | openrouter | nous | codex | custom
+        # Default config inherited by all tasks (provider, model, base_url, api_key)
+        "default": {
+            "provider": "auto",    # auto | openrouter | nous | codex | anthropic | custom
             "model": "",           # e.g. "google/gemini-2.5-flash", "gpt-4o"
             "base_url": "",        # direct OpenAI-compatible endpoint (takes precedence over provider)
             "api_key": "",         # API key for base_url (falls back to OPENAI_API_KEY)
+        },
+        # Per-task overrides (inherit from default, only specify what differs)
+        "vision": {
             "timeout": 120,        # seconds — LLM API call timeout; vision payloads need generous timeout
             "download_timeout": 30,  # seconds — image HTTP download timeout; increase for slow connections
         },
         "web_extract": {
-            "provider": "auto",
-            "model": "",
-            "base_url": "",
-            "api_key": "",
             "timeout": 360,        # seconds (6min) — per-attempt LLM summarization timeout; increase for slow local models
         },
         "compression": {
-            "provider": "auto",
-            "model": "",
-            "base_url": "",
-            "api_key": "",
             "timeout": 120,        # seconds — compression summarises large contexts; increase for local models
         },
         "session_search": {
-            "provider": "auto",
-            "model": "",
-            "base_url": "",
-            "api_key": "",
             "timeout": 30,
         },
         "skills_hub": {
-            "provider": "auto",
-            "model": "",
-            "base_url": "",
-            "api_key": "",
             "timeout": 30,
         },
         "approval": {
-            "provider": "auto",
-            "model": "",           # fast/cheap model recommended (e.g. gemini-flash, haiku)
-            "base_url": "",
-            "api_key": "",
             "timeout": 30,
         },
         "mcp": {
-            "provider": "auto",
-            "model": "",
-            "base_url": "",
-            "api_key": "",
             "timeout": 30,
         },
         "flush_memories": {
-            "provider": "auto",
-            "model": "",
-            "base_url": "",
-            "api_key": "",
             "timeout": 30,
         },
     },

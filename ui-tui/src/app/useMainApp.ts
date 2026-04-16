@@ -130,6 +130,13 @@ export function useMainApp(gw: GatewayClient) {
   const hasSelection = useHasSelection()
   const selection = useSelection()
 
+  // Bind a uniform selection bg so drag-to-select shows one solid color
+  // across the whole range instead of SGR-inverse (which swaps each cell's
+  // fg → bg and fragments over amber/gold/dim text). Re-fires on skin swap.
+  useEffect(() => {
+    selection.setSelectionBgColor(ui.theme.color.selectionBg)
+  }, [selection, ui.theme.color.selectionBg])
+
   const composer = useComposerState({
     gw,
     onClipboardPaste: quiet => clipboardPasteRef.current(quiet),

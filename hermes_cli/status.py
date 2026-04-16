@@ -79,6 +79,30 @@ def _effective_provider_label() -> str:
     return provider_label(effective)
 
 
+def _terminal_sudo_status(terminal_env: str) -> tuple[bool, str]:
+    """Return whether sudo is available for terminal commands and how."""
+    sudo_password = get_env_value("SUDO_PASSWORD") or os.getenv("SUDO_PASSWORD", "")
+    if sudo_password:
+        return True, "enabled"
+
+    if terminal_env != "local":
+        return False, "disabled"
+
+    try:
+        result = subprocess.run(
+            ["sudo", "-n", "true"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except Exception:
+        return False, "disabled"
+
+    if result.returncode == 0:
+        return True, "enabled (passwordless)"
+    return False, "disabled"
+
+
 from hermes_constants import is_termux as _is_termux
 
 
@@ -282,8 +306,8 @@ def show_status(args):
         daytona_image = os.getenv("TERMINAL_DAYTONA_IMAGE", "nikolaik/python-nodejs:python3.11-nodejs20")
         print(f"  Daytona Image: {daytona_image}")
     
-    sudo_password = os.getenv("SUDO_PASSWORD", "")
-    print(f"  Sudo:         {check_mark(bool(sudo_password))} {'enabled' if sudo_password else 'disabled'}")
+    sudo_enabled, sudo_label = _terminal_sudo_status(terminal_env)
+    print(f"  Sudo:         {check_mark(sudo_enabled)} {sudo_label}")
     
     # =========================================================================
     # Messaging Platforms

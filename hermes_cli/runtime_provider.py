@@ -46,6 +46,27 @@ def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
     return None
 
 
+def _model_requires_responses_api(model: str) -> bool:
+    """Return True for models that require the Responses API path.
+
+    Keep this in sync with ``run_agent.AIAgent._model_requires_responses_api`` so
+    runtime provider resolution and the main agent agree on GPT-5.x routing.
+    """
+    normalized = (model or "").strip().lower()
+    if "/" in normalized:
+        normalized = normalized.rsplit("/", 1)[-1]
+    return normalized.startswith("gpt-5")
+
+
+def _maybe_upgrade_api_mode_for_model(api_mode: Optional[str], model: str) -> Optional[str]:
+    """Promote chat-completions runtimes to Responses API when the model needs it."""
+    if api_mode not in (None, "chat_completions"):
+        return api_mode
+    if _model_requires_responses_api(model):
+        return "codex_responses"
+    return api_mode
+
+
 def _auto_detect_local_model(base_url: str) -> str:
     """Query a local server for its model name when only one model is loaded."""
     if not base_url:
@@ -382,14 +403,19 @@ def _resolve_named_custom_runtime(
     if not base_url:
         return None
 
+    model_name = str(custom_provider.get("model") or "").strip()
+
     # Check if a credential pool exists for this custom endpoint
     pool_result = _try_resolve_from_custom_pool(base_url, "custom", custom_provider.get("api_mode"))
     if pool_result:
         # Propagate the model name even when using pooled credentials —
         # the pool doesn't know about the custom_providers model field.
-        model_name = custom_provider.get("model")
         if model_name:
             pool_result["model"] = model_name
+            pool_result["api_mode"] = _maybe_upgrade_api_mode_for_model(
+                pool_result.get("api_mode"),
+                model_name,
+            ) or pool_result.get("api_mode")
         return pool_result
 
     api_key_candidates = [
@@ -401,19 +427,24 @@ def _resolve_named_custom_runtime(
     ]
     api_key = next((candidate for candidate in api_key_candidates if has_usable_secret(candidate)), "")
 
+    api_mode = (
+        custom_provider.get("api_mode")
+        or _detect_api_mode_for_url(base_url)
+        or "chat_completions"
+    )
+    api_mode = _maybe_upgrade_api_mode_for_model(api_mode, model_name) or api_mode
+
     result = {
         "provider": "custom",
-        "api_mode": custom_provider.get("api_mode")
-        or _detect_api_mode_for_url(base_url)
-        or "chat_completions",
+        "api_mode": api_mode,
         "base_url": base_url,
         "api_key": api_key or "no-key-required",
         "source": f"custom_provider:{custom_provider.get('name', requested_provider)}",
     }
     # Propagate the model name so callers can override self.model when the
     # provider name differs from the actual model string the API expects.
-    if custom_provider.get("model"):
-        result["model"] = custom_provider["model"]
+    if model_name:
+        result["model"] = model_name
     return result
 
 

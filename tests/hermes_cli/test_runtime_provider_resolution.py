@@ -572,6 +572,110 @@ def test_named_custom_provider_uses_saved_credentials(monkeypatch):
     assert resolved["source"] == "custom_provider:Local"
 
 
+def test_named_custom_provider_upgrades_gpt5_models_to_codex_responses(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "custom_providers": [
+                {
+                    "name": "Aixj.vip",
+                    "base_url": "https://aixj.vip/v1",
+                    "api_key": "masked-aixj-key",
+                    "model": "gpt-5.4",
+                }
+            ]
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "resolve_provider",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError(
+                "resolve_provider should not be called for named custom providers"
+            )
+        ),
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="custom:aixj.vip")
+
+    assert resolved["provider"] == "custom"
+    assert resolved["api_mode"] == "codex_responses"
+    assert resolved["base_url"] == "https://aixj.vip/v1"
+    assert resolved["model"] == "gpt-5.4"
+
+
+def test_named_custom_provider_pool_result_also_upgrades_gpt5_models(monkeypatch):
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "custom_providers": [
+                {
+                    "name": "Aixj.vip",
+                    "base_url": "https://aixj.vip/v1",
+                    "model": "gpt-5.4",
+                }
+            ]
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "_try_resolve_from_custom_pool",
+        lambda *a, **k: {
+            "provider": "custom",
+            "api_mode": "chat_completions",
+            "base_url": "https://aixj.vip/v1",
+            "api_key": "pool-token",
+            "source": "pool:custom:https://aixj.vip/v1",
+            "credential_pool": object(),
+        },
+    )
+
+    resolved = rp._resolve_named_custom_runtime(requested_provider="custom:aixj.vip")
+
+    assert resolved is not None
+    assert resolved["api_mode"] == "codex_responses"
+    assert resolved["model"] == "gpt-5.4"
+    assert resolved["api_key"] == "pool-token"
+
+
+def test_named_custom_provider_keeps_chat_completions_for_non_gpt5_models(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "custom_providers": [
+                {
+                    "name": "Generic Proxy",
+                    "base_url": "https://proxy.example.com/v1",
+                    "api_key": "proxy-key",
+                    "model": "gpt-4o",
+                }
+            ]
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "resolve_provider",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError(
+                "resolve_provider should not be called for named custom providers"
+            )
+        ),
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="custom:generic-proxy")
+
+    assert resolved["provider"] == "custom"
+    assert resolved["api_mode"] == "chat_completions"
+    assert resolved["model"] == "gpt-4o"
+
+
 def test_named_custom_provider_uses_providers_dict_when_list_missing(monkeypatch):
     """After v11→v12 migration deletes custom_providers, resolution should
     still find entries in the providers dict via get_compatible_custom_providers."""

@@ -849,3 +849,80 @@ class TestAdversarialEdgeCases:
         )
         result = classify_api_error(e, provider="openrouter")
         assert result.reason == FailoverReason.model_not_found
+
+
+# ── Test: Non-string message field (issue #11233) ────────────────────────
+
+import types
+
+
+class TestNonStringMessageField:
+    """Regression tests for issue #11233: message field can be dict/list, not just str."""
+
+    def test_dict_message_does_not_crash(self):
+        """Pydantic-style validation error: message is a dict."""
+        error = types.SimpleNamespace(
+            status_code=422,
+            body={
+                "object": "error",
+                "message": {
+                    "detail": [
+                        {"type": "extra_forbidden", "loc": ["body", "think"], "msg": "Extra inputs are not permitted"}
+                    ]
+                },
+            },
+        )
+        # Must not raise AttributeError
+        result = classify_api_error(error)
+        assert result is not None
+
+    def test_list_message_does_not_crash(self):
+        """Some providers return message as a list of error entries."""
+        error = types.SimpleNamespace(
+            status_code=400,
+            body={"message": [{"msg": "field required"}]},
+        )
+        result = classify_api_error(error)
+        assert result is not None
+
+    def test_int_message_does_not_crash(self):
+        """Defensive: any non-string type should be handled."""
+        error = types.SimpleNamespace(
+            status_code=500,
+            body={"message": 42},
+        )
+        result = classify_api_error(error)
+        assert result is not None
+
+    def test_dict_message_in_nested_error_object(self):
+        """Dict message inside body['error']['message'] (OpenAI-style wrapper)."""
+        error = types.SimpleNamespace(
+            status_code=422,
+            body={
+                "error": {
+                    "message": {"detail": "bad request"},
+                    "type": "invalid_request_error",
+                }
+            },
+        )
+        result = classify_api_error(error)
+        assert result is not None
+
+    def test_string_message_still_works(self):
+        """Regression: string messages must still classify correctly."""
+        error = types.SimpleNamespace(
+            status_code=429,
+            body={"message": "rate limit exceeded"},
+        )
+        result = classify_api_error(error)
+        assert result is not None
+        # Rate limit classification should still work via string pattern matching
+
+    def test_none_message_still_works(self):
+        """Regression: None fallback (the 'or ""' path) must still work."""
+        error = types.SimpleNamespace(
+            status_code=500,
+            body={"message": None},
+        )
+        result = classify_api_error(error)
+        assert result is not None

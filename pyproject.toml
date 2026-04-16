@@ -63,10 +63,12 @@ homeassistant = ["aiohttp>=3.9.0,<4"]
 sms = ["aiohttp>=3.9.0,<4"]
 acp = ["agent-client-protocol>=0.9.0,<1.0"]
 mistral = ["mistralai>=2.3.0,<3"]
+bedrock = ["boto3>=1.35.0,<2"]
 termux = [
   # Tested Android / Termux path: keeps the core CLI feature-rich while
   # avoiding extras that currently depend on non-Android wheels (notably
   # faster-whisper -> ctranslate2 via the voice extra).
+  "python-telegram-bot[webhooks]>=22.6,<23",
   "hermes-agent[cron]",
   "hermes-agent[cli]",
   "hermes-agent[pty]",
@@ -78,13 +80,13 @@ dingtalk = ["dingtalk-stream>=0.1.0,<1"]
 feishu = ["lark-oapi>=1.5.3,<2"]
 web = ["fastapi>=0.104.0,<1", "uvicorn[standard]>=0.24.0,<1"]
 rl = [
-  "atroposlib @ git+https://github.com/NousResearch/atropos.git",
-  "tinker @ git+https://github.com/thinking-machines-lab/tinker.git",
+  "atroposlib @ git+https://github.com/NousResearch/atropos.git@c20c85256e5a45ad31edf8b7276e9c5ee1995a30",
+  "tinker @ git+https://github.com/thinking-machines-lab/tinker.git@30517b667f18a3dfb7ef33fb56cf686d5820ba2b",
   "fastapi>=0.104.0,<1",
   "uvicorn[standard]>=0.24.0,<1",
   "wandb>=0.15.0,<1",
 ]
-yc-bench = ["yc-bench @ git+https://github.com/collinear-ai/yc-bench.git ; python_version >= '3.12'"]
+yc-bench = ["yc-bench @ git+https://github.com/collinear-ai/yc-bench.git@bfb0c88062450f46341bd9a5298903fc2e952a5c ; python_version >= '3.12'"]
 all = [
   "hermes-agent[modal]",
   "hermes-agent[daytona]",
@@ -108,6 +110,7 @@ all = [
   "hermes-agent[dingtalk]",
   "hermes-agent[feishu]",
   "hermes-agent[mistral]",
+  "hermes-agent[bedrock]",
   "hermes-agent[web]",
 ]
 

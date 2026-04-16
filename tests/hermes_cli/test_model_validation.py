@@ -163,7 +163,7 @@ class TestNormalizeProvider:
 class TestProviderLabel:
     def test_known_labels_and_auto(self):
         assert provider_label("anthropic") == "Anthropic"
-        assert provider_label("kimi") == "Kimi / Moonshot"
+        assert provider_label("kimi") == "Kimi / Kimi Coding Plan"
         assert provider_label("copilot") == "GitHub Copilot"
         assert provider_label("copilot-acp") == "GitHub Copilot ACP"
         assert provider_label("auto") == "Auto"
@@ -436,7 +436,22 @@ class TestValidateApiNotFound:
     def test_warning_includes_suggestions(self):
         result = _validate("anthropic/claude-opus-4.5")
         assert result["accepted"] is True
-        assert "Similar models" in result["message"]
+        # Close match auto-corrects; less similar inputs show suggestions
+        assert "Auto-corrected" in result["message"] or "Similar models" in result["message"]
+
+    def test_auto_correction_returns_corrected_model(self):
+        """When a very close match exists, validate returns corrected_model."""
+        result = _validate("anthropic/claude-opus-4.5")
+        assert result["accepted"] is True
+        assert result.get("corrected_model") == "anthropic/claude-opus-4.6"
+        assert result["recognized"] is True
+
+    def test_dissimilar_model_shows_suggestions_not_autocorrect(self):
+        """Models too different for auto-correction still get suggestions."""
+        result = _validate("anthropic/claude-nonexistent")
+        assert result["accepted"] is True
+        assert result.get("corrected_model") is None
+        assert "not found" in result["message"]
 
 
 # -- validate — API unreachable — accept and persist everything ----------------
@@ -486,3 +501,40 @@ class TestValidateApiFallback:
         assert result["persist"] is True
         assert "http://localhost:8000/v1/models" in result["message"]
         assert "http://localhost:8000/v1" in result["message"]
+
+
+# -- validate — Codex auto-correction ------------------------------------------
+
+class TestValidateCodexAutoCorrection:
+    """Auto-correction for typos on openai-codex provider."""
+
+    def test_missing_dash_auto_corrects(self):
+        """gpt5.3-codex (missing dash) auto-corrects to gpt-5.3-codex."""
+        codex_models = ["gpt-5.4-mini", "gpt-5.4", "gpt-5.3-codex",
+                        "gpt-5.2-codex", "gpt-5.1-codex-max"]
+        with patch("hermes_cli.models.provider_model_ids", return_value=codex_models):
+            result = validate_requested_model("gpt5.3-codex", "openai-codex")
+        assert result["accepted"] is True
+        assert result["recognized"] is True
+        assert result["corrected_model"] == "gpt-5.3-codex"
+        assert "Auto-corrected" in result["message"]
+
+    def test_exact_match_no_correction(self):
+        """Exact model name does not trigger auto-correction."""
+        codex_models = ["gpt-5.4-mini", "gpt-5.4", "gpt-5.3-codex"]
+        with patch("hermes_cli.models.provider_model_ids", return_value=codex_models):
+            result = validate_requested_model("gpt-5.3-codex", "openai-codex")
+        assert result["accepted"] is True
+        assert result["recognized"] is True
+        assert result.get("corrected_model") is None
+        assert result["message"] is None
+
+    def test_very_different_name_falls_to_suggestions(self):
+        """Names too different for auto-correction get the suggestion list."""
+        codex_models = ["gpt-5.4-mini", "gpt-5.4", "gpt-5.3-codex"]
+        with patch("hermes_cli.models.provider_model_ids", return_value=codex_models):
+            result = validate_requested_model("totally-wrong", "openai-codex")
+        assert result["accepted"] is True
+        assert result["recognized"] is False
+        assert result.get("corrected_model") is None
+        assert "not found" in result["message"]

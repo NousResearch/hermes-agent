@@ -369,7 +369,8 @@ class TestAnthropicFastModeAdapter(unittest.TestCase):
             reasoning_config=None,
             fast_mode=True,
         )
-        assert kwargs.get("speed") == "fast"
+        assert kwargs.get("extra_body", {}).get("speed") == "fast"
+        assert "speed" not in kwargs
         assert "extra_headers" in kwargs
         assert _FAST_MODE_BETA in kwargs["extra_headers"].get("anthropic-beta", "")
 
@@ -384,6 +385,7 @@ class TestAnthropicFastModeAdapter(unittest.TestCase):
             reasoning_config=None,
             fast_mode=False,
         )
+        assert kwargs.get("extra_body", {}).get("speed") is None
         assert "speed" not in kwargs
         assert "extra_headers" not in kwargs
 
@@ -400,8 +402,23 @@ class TestAnthropicFastModeAdapter(unittest.TestCase):
             base_url="https://api.minimax.io/anthropic/v1",
         )
         # Third-party endpoints should NOT get speed or fast-mode beta
+        assert kwargs.get("extra_body", {}).get("speed") is None
         assert "speed" not in kwargs
         assert "extra_headers" not in kwargs
+
+    def test_fast_mode_kwargs_are_safe_for_sdk_unpacking(self):
+        from agent.anthropic_adapter import build_anthropic_kwargs
+
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4-6",
+            messages=[{"role": "user", "content": [{"type": "text", "text": "hi"}]}],
+            tools=None,
+            max_tokens=None,
+            reasoning_config=None,
+            fast_mode=True,
+        )
+        assert "speed" not in kwargs
+        assert kwargs.get("extra_body", {}).get("speed") == "fast"
 
 
 class TestConfigDefault(unittest.TestCase):

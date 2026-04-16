@@ -418,6 +418,23 @@ Hermes supports voice on Slack:
 
 ---
 
+## Per-Channel Prompts
+
+Assign ephemeral system prompts to specific Slack channels. The prompt is injected at runtime on every turn — never persisted to transcript history — so changes take effect immediately.
+
+```yaml
+slack:
+  channel_prompts:
+    "C01RESEARCH": |
+      You are a research assistant. Focus on academic sources,
+      citations, and concise synthesis.
+    "C02ENGINEERING": |
+      Code review mode. Be precise about edge cases and
+      performance implications.
+```
+
+Keys are Slack channel IDs (find them via channel details → "About" → scroll to bottom). All messages in the matching channel get the prompt injected as an ephemeral system instruction.
+
 ## Troubleshooting
 
 | Problem | Solution |

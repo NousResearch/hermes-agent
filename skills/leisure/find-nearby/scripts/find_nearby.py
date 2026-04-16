@@ -98,7 +98,7 @@ def find_nearby(lat: float, lon: float, types: list[str], radius: int = 1500, li
         # Get coordinates (nodes have lat/lon directly, ways/relations use center)
         plat = el.get("lat") or (el.get("center", {}) or {}).get("lat")
         plon = el.get("lon") or (el.get("center", {}) or {}).get("lon")
-        if not plat or not plon:
+        if plat is None or plon is None:
             continue
 
         dist = haversine(lat, lon, plat, plon)

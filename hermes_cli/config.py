@@ -45,6 +45,9 @@ _EXTRA_ENV_KEYS = frozenset({
     "WEIXIN_HOME_CHANNEL", "WEIXIN_HOME_CHANNEL_NAME", "WEIXIN_DM_POLICY", "WEIXIN_GROUP_POLICY",
     "WEIXIN_ALLOWED_USERS", "WEIXIN_GROUP_ALLOWED_USERS", "WEIXIN_ALLOW_ALL_USERS",
     "BLUEBUBBLES_SERVER_URL", "BLUEBUBBLES_PASSWORD",
+    "QQ_APP_ID", "QQ_CLIENT_SECRET", "QQ_HOME_CHANNEL", "QQ_HOME_CHANNEL_NAME",
+    "QQ_ALLOWED_USERS", "QQ_GROUP_ALLOWED_USERS", "QQ_ALLOW_ALL_USERS", "QQ_MARKDOWN_SUPPORT",
+    "QQ_STT_API_KEY", "QQ_STT_BASE_URL", "QQ_STT_MODEL",
     "TERMINAL_ENV", "TERMINAL_SSH_KEY", "TERMINAL_SSH_PORT",
     "WHATSAPP_MODE", "WHATSAPP_ENABLED",
     "MATTERMOST_HOME_CHANNEL", "MATTERMOST_REPLY_MODE",
@@ -238,13 +241,41 @@ def _secure_dir(path):
         pass
 
 
+def _is_container() -> bool:
+    """Detect if we're running inside a Docker/Podman/LXC container.
+
+    When Hermes runs in a container with volume-mounted config files, forcing
+    0o600 permissions breaks multi-process setups where the gateway and
+    dashboard run as different UIDs or the volume mount requires broader
+    permissions.
+    """
+    # Explicit opt-out
+    if os.environ.get("HERMES_CONTAINER") or os.environ.get("HERMES_SKIP_CHMOD"):
+        return True
+    # Docker / Podman marker file
+    if os.path.exists("/.dockerenv"):
+        return True
+    # LXC / cgroup-based detection
+    try:
+        with open("/proc/1/cgroup", "r") as f:
+            cgroup_content = f.read()
+        if "docker" in cgroup_content or "lxc" in cgroup_content or "kubepods" in cgroup_content:
+            return True
+    except (OSError, IOError):
+        pass
+    return False
+
+
 def _secure_file(path):
     """Set file to owner-only read/write (0600). No-op on Windows.
 
     Skipped in managed mode — the NixOS activation script sets
     group-readable permissions (0640) on config files.
+
+    Skipped in containers — Docker/Podman volume mounts often need broader
+    permissions.  Set HERMES_SKIP_CHMOD=1 to force-skip on other systems.
     """
-    if is_managed():
+    if is_managed() or _is_container():
         return
     try:
         if os.path.exists(str(path)):
@@ -416,6 +447,27 @@ DEFAULT_CONFIG = {
         "protect_last_n": 20,         # minimum recent messages to keep uncompressed
 
     },
+
+    # AWS Bedrock provider configuration.
+    # Only used when model.provider is "bedrock".
+    "bedrock": {
+        "region": "",  # AWS region for Bedrock API calls (empty = AWS_REGION env var → us-east-1)
+        "discovery": {
+            "enabled": True,           # Auto-discover models via ListFoundationModels
+            "provider_filter": [],     # Only show models from these providers (e.g. ["anthropic", "amazon"])
+            "refresh_interval": 3600,  # Cache discovery results for this many seconds
+        },
+        "guardrail": {
+            # Amazon Bedrock Guardrails — content filtering and safety policies.
+            # Create a guardrail in the Bedrock console, then set the ID and version here.
+            # See: https://docs.aws.amazon.com/bedrock/latest/userguide/guardrails.html
+            "guardrail_identifier": "",  # e.g. "abc123def456"
+            "guardrail_version": "",     # e.g. "1" or "DRAFT"
+            "stream_processing_mode": "async",  # "sync" or "async"
+            "trace": "disabled",         # "enabled", "disabled", or "enabled_full"
+        },
+    },
+
     "smart_model_routing": {
         "enabled": False,
         "max_simple_chars": 160,
@@ -635,6 +687,7 @@ DEFAULT_CONFIG = {
         "allowed_channels": "",        # If set, bot ONLY responds in these channel IDs (whitelist)
         "auto_thread": True,           # Auto-create threads on @mention in channels (like Slack)
         "reactions": True,             # Add 👀/✅/❌ reactions to messages during processing
+        "channel_prompts": {},         # Per-channel ephemeral system prompts (forum parents apply to child threads)
     },
 
     # WhatsApp platform settings (gateway mode)
@@ -643,6 +696,21 @@ DEFAULT_CONFIG = {
         # Default (None) uses the built-in "⚕ *Hermes Agent*" header.
         # Set to "" (empty string) to disable the header entirely.
         # Supports \n for newlines, e.g. "🤖 *My Bot*\n──────\n"
+    },
+
+    # Telegram platform settings (gateway mode)
+    "telegram": {
+        "channel_prompts": {},         # Per-chat/topic ephemeral system prompts (topics inherit from parent group)
+    },
+
+    # Slack platform settings (gateway mode)
+    "slack": {
+        "channel_prompts": {},         # Per-channel ephemeral system prompts
+    },
+
+    # Mattermost platform settings (gateway mode)
+    "mattermost": {
+        "channel_prompts": {},         # Per-channel ephemeral system prompts
     },
 
     # Approval mode for dangerous commands:
@@ -700,7 +768,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 17,
+    "_config_version": 18,
 }
 
 # =============================================================================
@@ -971,6 +1039,22 @@ OPTIONAL_ENV_VARS = {
         "category": "provider",
         "advanced": True,
     },
+    "AWS_REGION": {
+        "description": "AWS region for Bedrock API calls (e.g. us-east-1, eu-central-1)",
+        "prompt": "AWS Region",
+        "url": "https://docs.aws.amazon.com/bedrock/latest/userguide/bedrock-regions.html",
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
+    "AWS_PROFILE": {
+        "description": "AWS named profile for Bedrock authentication (from ~/.aws/credentials)",
+        "prompt": "AWS Profile",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
 
     # ── Tool API keys ──
     "EXA_API_KEY": {
@@ -1168,6 +1252,12 @@ OPTIONAL_ENV_VARS = {
         "password": False,
         "category": "messaging",
     },
+    "TELEGRAM_PROXY": {
+        "description": "Proxy URL for Telegram connections (overrides HTTPS_PROXY). Supports http://, https://, socks5://",
+        "prompt": "Telegram proxy URL (optional)",
+        "password": False,
+        "category": "messaging",
+    },
     "DISCORD_BOT_TOKEN": {
         "description": "Discord bot token from Developer Portal",
         "prompt": "Discord bot token",
@@ -1331,6 +1421,53 @@ OPTIONAL_ENV_VARS = {
         "password": False,
         "category": "messaging",
     },
+    "BLUEBUBBLES_ALLOW_ALL_USERS": {
+        "description": "Allow all BlueBubbles users without allowlist",
+        "prompt": "Allow All BlueBubbles Users",
+        "category": "messaging",
+    },
+    "QQ_APP_ID": {
+        "description": "QQ Bot App ID from QQ Open Platform (q.qq.com)",
+        "prompt": "QQ App ID",
+        "url": "https://q.qq.com",
+        "category": "messaging",
+    },
+    "QQ_CLIENT_SECRET": {
+        "description": "QQ Bot Client Secret from QQ Open Platform",
+        "prompt": "QQ Client Secret",
+        "password": True,
+        "category": "messaging",
+    },
+    "QQ_ALLOWED_USERS": {
+        "description": "Comma-separated QQ user IDs allowed to use the bot",
+        "prompt": "QQ Allowed Users",
+        "category": "messaging",
+    },
+    "QQ_GROUP_ALLOWED_USERS": {
+        "description": "Comma-separated QQ group IDs allowed to interact with the bot",
+        "prompt": "QQ Group Allowed Users",
+        "category": "messaging",
+    },
+    "QQ_ALLOW_ALL_USERS": {
+        "description": "Allow all QQ users without an allowlist (true/false)",
+        "prompt": "Allow All QQ Users",
+        "category": "messaging",
+    },
+    "QQ_HOME_CHANNEL": {
+        "description": "Default QQ channel/group for cron delivery and notifications",
+        "prompt": "QQ Home Channel",
+        "category": "messaging",
+    },
+    "QQ_HOME_CHANNEL_NAME": {
+        "description": "Display name for the QQ home channel",
+        "prompt": "QQ Home Channel Name",
+        "category": "messaging",
+    },
+    "QQ_SANDBOX": {
+        "description": "Enable QQ sandbox mode for development testing (true/false)",
+        "prompt": "QQ Sandbox Mode",
+        "category": "messaging",
+    },
     "GATEWAY_ALLOW_ALL_USERS": {
         "description": "Allow all users to interact with messaging bots (true/false). Default: false.",
         "prompt": "Allow all users (true/false)",
@@ -1376,6 +1513,22 @@ OPTIONAL_ENV_VARS = {
         "prompt": "API server model name",
         "url": None,
         "password": False,
+        "category": "messaging",
+        "advanced": True,
+    },
+    "GATEWAY_PROXY_URL": {
+        "description": "URL of a remote Hermes API server to forward messages to (proxy mode). When set, the gateway handles platform I/O only — all agent work is delegated to the remote server. Use for Docker E2EE containers that relay to a host agent. Also configurable via gateway.proxy_url in config.yaml.",
+        "prompt": "Remote Hermes API server URL (e.g. http://192.168.1.100:8642)",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+        "advanced": True,
+    },
+    "GATEWAY_PROXY_KEY": {
+        "description": "Bearer token for authenticating with the remote Hermes API server (proxy mode). Must match the API_SERVER_KEY on the remote host.",
+        "prompt": "Remote API server auth key",
+        "url": None,
+        "password": True,
         "category": "messaging",
         "advanced": True,
     },
@@ -2700,6 +2853,47 @@ def sanitize_env_file() -> int:
     return fixes
 
 
+def _check_non_ascii_credential(key: str, value: str) -> str:
+    """Warn and strip non-ASCII characters from credential values.
+
+    API keys and tokens must be pure ASCII — they are sent as HTTP header
+    values which httpx/httpcore encode as ASCII.  Non-ASCII characters
+    (commonly introduced by copy-pasting from rich-text editors or PDFs
+    that substitute lookalike Unicode glyphs for ASCII letters) cause
+    ``UnicodeEncodeError: 'ascii' codec can't encode character`` at
+    request time.
+
+    Returns the sanitized (ASCII-only) value.  Prints a warning if any
+    non-ASCII characters were found and removed.
+    """
+    try:
+        value.encode("ascii")
+        return value  # all ASCII — nothing to do
+    except UnicodeEncodeError:
+        pass
+
+    # Build a readable list of the offending characters
+    bad_chars: list[str] = []
+    for i, ch in enumerate(value):
+        if ord(ch) > 127:
+            bad_chars.append(f"  position {i}: {ch!r} (U+{ord(ch):04X})")
+    sanitized = value.encode("ascii", errors="ignore").decode("ascii")
+
+    import sys
+    print(
+        f"\n  Warning: {key} contains non-ASCII characters that will break API requests.\n"
+        f"  This usually happens when copy-pasting from a PDF, rich-text editor,\n"
+        f"  or web page that substitutes lookalike Unicode glyphs for ASCII letters.\n"
+        f"\n"
+        + "\n".join(f"  {line}" for line in bad_chars[:5])
+        + ("\n  ... and more" if len(bad_chars) > 5 else "")
+        + f"\n\n  The non-ASCII characters have been stripped automatically.\n"
+        f"  If authentication fails, re-copy the key from the provider's dashboard.\n",
+        file=sys.stderr,
+    )
+    return sanitized
+
+
 def save_env_value(key: str, value: str):
     """Save or update a value in ~/.hermes/.env."""
     if is_managed():
@@ -2708,6 +2902,8 @@ def save_env_value(key: str, value: str):
     if not _ENV_VAR_NAME_RE.match(key):
         raise ValueError(f"Invalid environment variable name: {key!r}")
     value = value.replace("\n", "").replace("\r", "")
+    # API keys / tokens must be ASCII — strip non-ASCII with a warning.
+    value = _check_non_ascii_credential(key, value)
     ensure_hermes_home()
     env_path = get_env_path()
     
@@ -2738,12 +2934,25 @@ def save_env_value(key: str, value: str):
         lines.append(f"{key}={value}\n")
     
     fd, tmp_path = tempfile.mkstemp(dir=str(env_path.parent), suffix='.tmp', prefix='.env_')
+    # Preserve original permissions so Docker volume mounts aren't clobbered.
+    original_mode = None
+    if env_path.exists():
+        try:
+            original_mode = stat.S_IMODE(env_path.stat().st_mode)
+        except OSError:
+            pass
     try:
         with os.fdopen(fd, 'w', **write_kw) as f:
             f.writelines(lines)
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp_path, env_path)
+        # Restore original permissions before _secure_file may tighten them.
+        if original_mode is not None:
+            try:
+                os.chmod(env_path, original_mode)
+            except OSError:
+                pass
     except BaseException:
         try:
             os.unlink(tmp_path)
@@ -2753,13 +2962,6 @@ def save_env_value(key: str, value: str):
     _secure_file(env_path)
 
     os.environ[key] = value
-
-    # Restrict .env permissions to owner-only (contains API keys)
-    if not _IS_WINDOWS:
-        try:
-            os.chmod(env_path, stat.S_IRUSR | stat.S_IWUSR)
-        except OSError:
-            pass
 
 
 def remove_env_value(key: str) -> bool:
@@ -2789,12 +2991,23 @@ def remove_env_value(key: str) -> bool:
 
     if found:
         fd, tmp_path = tempfile.mkstemp(dir=str(env_path.parent), suffix='.tmp', prefix='.env_')
+        # Preserve original permissions so Docker volume mounts aren't clobbered.
+        original_mode = None
+        try:
+            original_mode = stat.S_IMODE(env_path.stat().st_mode)
+        except OSError:
+            pass
         try:
             with os.fdopen(fd, 'w', **write_kw) as f:
                 f.writelines(new_lines)
                 f.flush()
                 os.fsync(f.fileno())
             os.replace(tmp_path, env_path)
+            if original_mode is not None:
+                try:
+                    os.chmod(env_path, original_mode)
+                except OSError:
+                    pass
         except BaseException:
             try:
                 os.unlink(tmp_path)

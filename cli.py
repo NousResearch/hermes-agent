@@ -988,19 +988,20 @@ def _prune_orphaned_branches(repo_root: str) -> None:
 # ANSI building blocks for conversation display
 _ACCENT_ANSI_DEFAULT = "\033[1;38;2;255;215;0m"  # True-color #FFD700 bold — fallback
 _BOLD = "\033[1m"
-_DIM = "\033[2m"
 _RST = "\033[0m"
+_STREAM_PAD = "    "  # 4-space indent for streamed response text (matches Panel padding)
 
 
-def _hex_to_ansi_bold(hex_color: str) -> str:
-    """Convert a hex color like '#268bd2' to a bold true-color ANSI escape."""
+def _hex_to_ansi(hex_color: str, *, bold: bool = False) -> str:
+    """Convert a hex color like '#268bd2' to a true-color ANSI escape."""
     try:
         r = int(hex_color[1:3], 16)
         g = int(hex_color[3:5], 16)
         b = int(hex_color[5:7], 16)
-        return f"\033[1;38;2;{r};{g};{b}m"
+        prefix = "1;" if bold else ""
+        return f"\033[{prefix}38;2;{r};{g};{b}m"
     except (ValueError, IndexError):
-        return _ACCENT_ANSI_DEFAULT
+        return _ACCENT_ANSI_DEFAULT if bold else "\033[38;2;184;134;11m"
 
 
 class _SkinAwareAnsi:
@@ -1010,20 +1011,22 @@ class _SkinAwareAnsi:
     force re-resolution after a ``/skin`` switch.
     """
 
-    def __init__(self, skin_key: str, fallback_hex: str = "#FFD700"):
+    def __init__(self, skin_key: str, fallback_hex: str = "#FFD700", *, bold: bool = False):
         self._skin_key = skin_key
         self._fallback_hex = fallback_hex
+        self._bold = bold
         self._cached: str | None = None
 
     def __str__(self) -> str:
         if self._cached is None:
             try:
                 from hermes_cli.skin_engine import get_active_skin
-                self._cached = _hex_to_ansi_bold(
-                    get_active_skin().get_color(self._skin_key, self._fallback_hex)
+                self._cached = _hex_to_ansi(
+                    get_active_skin().get_color(self._skin_key, self._fallback_hex),
+                    bold=self._bold,
                 )
             except Exception:
-                self._cached = _hex_to_ansi_bold(self._fallback_hex)
+                self._cached = _hex_to_ansi(self._fallback_hex, bold=self._bold)
         return self._cached
 
     def __add__(self, other: str) -> str:
@@ -1037,7 +1040,8 @@ class _SkinAwareAnsi:
         self._cached = None
 
 
-_ACCENT = _SkinAwareAnsi("response_border", "#FFD700")
+_ACCENT = _SkinAwareAnsi("response_border", "#FFD700", bold=True)
+_DIM = _SkinAwareAnsi("banner_dim", "#B8860B")
 
 
 def _accent_hex() -> str:
@@ -1709,9 +1713,9 @@ class HermesCLI:
         # Parse and validate toolsets
         self.enabled_toolsets = toolsets
         if toolsets and "all" not in toolsets and "*" not in toolsets:
-            # Validate each toolset — MCP server names are added by
-            # _get_platform_tools() but aren't registered in TOOLSETS yet
-            # (that happens later in _sync_mcp_toolsets), so exclude them.
+            # Validate each toolset — MCP server names are resolved via
+            # live registry aliases (registered during discover_mcp_tools),
+            # but discovery hasn't run yet at this point, so exclude them.
             mcp_names = set((CLI_CONFIG.get("mcp_servers") or {}).keys())
             invalid = [t for t in toolsets if not validate_toolset(t) and t not in mcp_names]
             if invalid:
@@ -2577,7 +2581,7 @@ class HermesCLI:
         _tc = getattr(self, "_stream_text_ansi", "")
         while "\n" in self._stream_buf:
             line, self._stream_buf = self._stream_buf.split("\n", 1)
-            _cprint(f"{_tc}{line}{_RST}" if _tc else line)
+            _cprint(f"{_STREAM_PAD}{_tc}{line}{_RST}" if _tc else f"{_STREAM_PAD}{line}")
 
     def _flush_stream(self) -> None:
         """Emit any remaining partial line from the stream buffer and close the box."""
@@ -2594,7 +2598,7 @@ class HermesCLI:
 
         if self._stream_buf:
             _tc = getattr(self, "_stream_text_ansi", "")
-            _cprint(f"{_tc}{self._stream_buf}{_RST}" if _tc else self._stream_buf)
+            _cprint(f"{_STREAM_PAD}{_tc}{self._stream_buf}{_RST}" if _tc else f"{_STREAM_PAD}{self._stream_buf}")
             self._stream_buf = ""
 
         # Close the response box
@@ -3893,23 +3897,14 @@ class HermesCLI:
     
     def _handle_profile_command(self):
         """Display active profile name and home directory."""
-        from hermes_constants import get_hermes_home, display_hermes_home
+        from hermes_constants import display_hermes_home
+        from hermes_cli.profiles import get_active_profile_name
 
-        home = get_hermes_home()
         display = display_hermes_home()
-
-        profiles_parent = Path.home() / ".hermes" / "profiles"
-        try:
-            rel = home.relative_to(profiles_parent)
-            profile_name = str(rel).split("/")[0]
-        except ValueError:
-            profile_name = None
+        profile_name = get_active_profile_name()
 
         print()
-        if profile_name:
-            print(f"  Profile: {profile_name}")
-        else:
-            print("  Profile: default")
+        print(f"  Profile: {profile_name}")
         print(f"  Home:    {display}")
         print()
 
@@ -4096,6 +4091,8 @@ class HermesCLI:
                 self.agent.flush_memories(self.conversation_history)
             except (Exception, KeyboardInterrupt):
                 pass
+            # Trigger memory extraction on the old session before session_id rotates.
+            self.agent.commit_memory_session(self.conversation_history)
             self._notify_session_boundary("on_session_finalize")
         elif self.agent:
             # First session or empty history — still finalize the old session
@@ -4584,16 +4581,19 @@ class HermesCLI:
                 self._close_model_picker()
                 return
             provider_data = providers[selected]
-            model_list = []
-            try:
-                from hermes_cli.models import provider_model_ids
-                live = provider_model_ids(provider_data["slug"])
-                if live:
-                    model_list = live
-            except Exception:
-                pass
+            # Use the curated model list from list_authenticated_providers()
+            # (same lists as `hermes model` and gateway pickers).
+            # Only fall back to the live provider catalog when the curated
+            # list is empty (e.g. user-defined endpoints with no curated list).
+            model_list = provider_data.get("models", [])
             if not model_list:
-                model_list = provider_data.get("models", [])
+                try:
+                    from hermes_cli.models import provider_model_ids
+                    live = provider_model_ids(provider_data["slug"])
+                    if live:
+                        model_list = live
+                except Exception:
+                    pass
             state["stage"] = "model"
             state["provider_data"] = provider_data
             state["model_list"] = model_list
@@ -5484,7 +5484,8 @@ class HermesCLI:
                         version = f" v{p['version']}" if p["version"] else ""
                         tools = f"{p['tools']} tools" if p["tools"] else ""
                         hooks = f"{p['hooks']} hooks" if p["hooks"] else ""
-                        parts = [x for x in [tools, hooks] if x]
+                        commands = f"{p['commands']} commands" if p.get("commands") else ""
+                        parts = [x for x in [tools, hooks, commands] if x]
                         detail = f" ({', '.join(parts)})" if parts else ""
                         error = f" — {p['error']}" if p["error"] else ""
                         print(f"  {status} {p['name']}{version}{detail}{error}")
@@ -5758,7 +5759,7 @@ class HermesCLI:
                         border_style=_resp_color,
                         style=_resp_text,
                         box=rich_box.HORIZONTALS,
-                        padding=(1, 2),
+                        padding=(1, 4),
                     ))
                 else:
                     _cprint("  (No response generated)")
@@ -5882,7 +5883,7 @@ class HermesCLI:
                         title_align="left",
                         border_style=_resp_color,
                         box=rich_box.HORIZONTALS,
-                        padding=(1, 2),
+                        padding=(1, 4),
                     ))
                 else:
                     _cprint("  💬 /btw: (no response)")
@@ -5949,7 +5950,7 @@ class HermesCLI:
         parts = cmd.strip().split(None, 1)
         sub = parts[1].lower().strip() if len(parts) > 1 else "status"
 
-        _DEFAULT_CDP = "http://localhost:9222"
+        _DEFAULT_CDP = "http://127.0.0.1:9222"
         current = os.environ.get("BROWSER_CDP_URL", "").strip()
 
         if sub.startswith("connect"):
@@ -6156,6 +6157,7 @@ class HermesCLI:
 
         set_active_skin(new_skin)
         _ACCENT.reset()  # Re-resolve ANSI color for the new skin
+        _DIM.reset()     # Re-resolve dim/secondary ANSI color for the new skin
         if save_config_value("display.skin", new_skin):
             print(f"  Skin set to: {new_skin} (saved)")
         else:
@@ -7644,7 +7646,7 @@ class HermesCLI:
                         label = " ⚕ Hermes "
                         fill = w - 2 - len(label)
                         _cprint(f"\n{_ACCENT}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
-                    _cprint(sentence.rstrip())
+                    _cprint(f"{_STREAM_PAD}{sentence.rstrip()}")
 
                 tts_thread = threading.Thread(
                     target=stream_tts_to_speaker,
@@ -7875,7 +7877,7 @@ class HermesCLI:
                         border_style=_resp_color,
                         style=_resp_text,
                         box=rich_box.HORIZONTALS,
-                        padding=(1, 2),
+                        padding=(1, 4),
                     ))
 
 
@@ -8627,6 +8629,24 @@ class HermesCLI:
             self._should_exit = True
             event.app.exit()
 
+        _modal_prompt_active = Condition(
+            lambda: bool(self._secret_state or self._sudo_state)
+        )
+
+        @kb.add('escape', filter=_modal_prompt_active, eager=True)
+        def handle_escape_modal(event):
+            """ESC cancels active secret/sudo prompts."""
+            if self._secret_state:
+                self._cancel_secret_capture()
+                event.app.current_buffer.reset()
+                event.app.invalidate()
+                return
+            if self._sudo_state:
+                self._sudo_state["response_queue"].put("")
+                self._sudo_state = None
+                event.app.invalidate()
+                return
+
         @kb.add('c-z')
         def handle_ctrl_z(event):
             """Handle Ctrl+Z - suspend process to background (Unix only)."""
@@ -8924,9 +8944,9 @@ class HermesCLI:
             if cli_ref._voice_processing:
                 return "transcribing..."
             if cli_ref._sudo_state:
-                return "type password (hidden), Enter to skip"
+                return "type password (hidden), Enter to submit · ESC to skip"
             if cli_ref._secret_state:
-                return "type secret (hidden), Enter to skip"
+                return "type secret (hidden), Enter to submit · ESC to skip"
             if cli_ref._approval_state:
                 return ""
             if cli_ref._clarify_freetext:
@@ -9169,7 +9189,7 @@ class HermesCLI:
             prompt = state.get("prompt") or f"Enter value for {state.get('var_name', 'secret')}"
             metadata = state.get("metadata") or {}
             help_text = metadata.get("help")
-            body = 'Enter secret below (hidden), or press Enter to skip'
+            body = 'Enter secret below (hidden), ESC or Ctrl+C to skip'
             content_lines = [prompt, body]
             if help_text:
                 content_lines.insert(1, str(help_text))

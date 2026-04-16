@@ -120,7 +120,7 @@ hermes-agent/
 │   └── platforms/            # 18 adapters: telegram, discord, slack, whatsapp,
 │                             #   signal, matrix, mattermost, email, sms,
 │                             #   dingtalk, feishu, wecom, wecom_callback, weixin,
-│                             #   bluebubbles, homeassistant, webhook, api_server
+│                             #   bluebubbles, qqbot, homeassistant, webhook, api_server
 │
 ├── acp_adapter/              # ACP server (VS Code / Zed / JetBrains)
 ├── cron/                     # Scheduler (jobs.py, scheduler.py)
@@ -275,4 +275,4 @@ model_tools.py  (imports tools/registry + triggers tool discovery)
 run_agent.py, cli.py, batch_runner.py, environments/
 ```
 
-This chain means tool registration happens at import time, before any agent instance is created. Adding a new tool requires an import in `model_tools.py`'s `_discover_tools()` list.
+This chain means tool registration happens at import time, before any agent instance is created. Any `tools/*.py` file with a top-level `registry.register()` call is auto-discovered — no manual import list needed.

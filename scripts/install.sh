@@ -28,7 +28,7 @@ BOLD='\033[1m'
 # Configuration
 REPO_URL_SSH="git@github.com:NousResearch/hermes-agent.git"
 REPO_URL_HTTPS="https://github.com/NousResearch/hermes-agent.git"
-HERMES_HOME="$HOME/.hermes"
+HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
 INSTALL_DIR="${HERMES_INSTALL_DIR:-$HERMES_HOME/hermes-agent}"
 PYTHON_VERSION="3.11"
 NODE_VERSION="22"
@@ -66,6 +66,10 @@ while [[ $# -gt 0 ]]; do
             INSTALL_DIR="$2"
             shift 2
             ;;
+        --hermes-home)
+            HERMES_HOME="$2"
+            shift 2
+            ;;
         -h|--help)
             echo "Hermes Agent Installer"
             echo ""
@@ -76,6 +80,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --skip-setup   Skip interactive setup wizard"
             echo "  --branch NAME  Git branch to install (default: main)"
             echo "  --dir PATH     Installation directory (default: ~/.hermes/hermes-agent)"
+            echo "  --hermes-home PATH  Data directory (default: ~/.hermes, or \$HERMES_HOME)"
             echo "  -h, --help     Show this help"
             exit 0
             ;;
@@ -945,6 +950,7 @@ setup_path() {
     # which is always bash when piped from curl).
     if ! echo "$PATH" | tr ':' '\n' | grep -q "^$command_link_dir$"; then
         SHELL_CONFIGS=()
+        IS_FISH=false
         LOGIN_SHELL="$(basename "${SHELL:-/bin/bash}")"
         case "$LOGIN_SHELL" in
             zsh)
@@ -960,6 +966,13 @@ setup_path() {
                 [ -f "$HOME/.bashrc" ] && SHELL_CONFIGS+=("$HOME/.bashrc")
                 [ -f "$HOME/.bash_profile" ] && SHELL_CONFIGS+=("$HOME/.bash_profile")
                 ;;
+            fish)
+                # fish uses ~/.config/fish/config.fish and fish_add_path — not export PATH=
+                IS_FISH=true
+                FISH_CONFIG="$HOME/.config/fish/config.fish"
+                mkdir -p "$(dirname "$FISH_CONFIG")"
+                touch "$FISH_CONFIG"
+                ;;
             *)
                 [ -f "$HOME/.bashrc" ] && SHELL_CONFIGS+=("$HOME/.bashrc")
                 [ -f "$HOME/.zshrc" ] && SHELL_CONFIGS+=("$HOME/.zshrc")
@@ -967,7 +980,7 @@ setup_path() {
         esac
         # Also ensure ~/.profile has it (sourced by login shells on
         # Ubuntu/Debian/WSL even when ~/.bashrc is skipped)
-        [ -f "$HOME/.profile" ] && SHELL_CONFIGS+=("$HOME/.profile")
+        [ "$IS_FISH" = "false" ] && [ -f "$HOME/.profile" ] && SHELL_CONFIGS+=("$HOME/.profile")
 
         PATH_LINE='export PATH="$HOME/.local/bin:$PATH"'
 
@@ -980,7 +993,17 @@ setup_path() {
             fi
         done
 
-        if [ ${#SHELL_CONFIGS[@]} -eq 0 ]; then
+        # fish uses fish_add_path instead of export PATH=...
+        if [ "$IS_FISH" = "true" ]; then
+            if ! grep -q 'fish_add_path.*\.local/bin' "$FISH_CONFIG" 2>/dev/null; then
+                echo "" >> "$FISH_CONFIG"
+                echo "# Hermes Agent — ensure ~/.local/bin is on PATH" >> "$FISH_CONFIG"
+                echo 'fish_add_path "$HOME/.local/bin"' >> "$FISH_CONFIG"
+                log_success "Added ~/.local/bin to PATH in $FISH_CONFIG"
+            fi
+        fi
+
+        if [ "$IS_FISH" = "false" ] && [ ${#SHELL_CONFIGS[@]} -eq 0 ]; then
             log_warn "Could not detect shell config file to add ~/.local/bin to PATH"
             log_info "Add manually: $PATH_LINE"
         fi
@@ -1315,6 +1338,8 @@ print_success() {
             echo "   source ~/.zshrc"
         elif [ "$LOGIN_SHELL" = "bash" ]; then
             echo "   source ~/.bashrc"
+        elif [ "$LOGIN_SHELL" = "fish" ]; then
+            echo "   source ~/.config/fish/config.fish"
         else
             echo "   source ~/.bashrc   # or ~/.zshrc"
         fi

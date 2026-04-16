@@ -550,11 +550,12 @@ class TestGatewayProtection:
         dangerous, key, desc = detect_dangerous_command(cmd)
         assert dangerous is False
 
-    def test_systemctl_restart_not_flagged(self):
-        """Using systemctl to manage the gateway is the correct approach."""
+    def test_systemctl_restart_flagged(self):
+        """systemctl restart kills running agents and should require approval."""
         cmd = "systemctl --user restart hermes-gateway"
         dangerous, key, desc = detect_dangerous_command(cmd)
-        assert dangerous is False
+        assert dangerous is True
+        assert "stop/restart" in desc
 
     def test_pkill_hermes_detected(self):
         """pkill targeting hermes/gateway processes must be caught."""

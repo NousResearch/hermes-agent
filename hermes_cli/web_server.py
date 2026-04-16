@@ -10,8 +10,10 @@ Usage:
 """
 
 import asyncio
+import hmac
 import json
 import logging
+import os
 import secrets
 import sys
 import threading
@@ -47,7 +49,7 @@ from gateway.status import get_running_pid, read_runtime_status
 try:
     from fastapi import FastAPI, HTTPException, Request
     from fastapi.middleware.cors import CORSMiddleware
-    from fastapi.responses import FileResponse, JSONResponse
+    from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
     from fastapi.staticfiles import StaticFiles
     from pydantic import BaseModel
 except ImportError:
@@ -84,6 +86,44 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ---------------------------------------------------------------------------
+# Endpoints that do NOT require the session token.  Everything else under
+# /api/ is gated by the auth middleware below.  Keep this list minimal —
+# only truly non-sensitive, read-only endpoints belong here.
+# ---------------------------------------------------------------------------
+_PUBLIC_API_PATHS: frozenset = frozenset({
+    "/api/status",
+    "/api/config/defaults",
+    "/api/config/schema",
+    "/api/model/info",
+})
+
+
+def _require_token(request: Request) -> None:
+    """Validate the ephemeral session token.  Raises 401 on mismatch.
+
+    Uses ``hmac.compare_digest`` to prevent timing side-channels.
+    """
+    auth = request.headers.get("authorization", "")
+    expected = f"Bearer {_SESSION_TOKEN}"
+    if not hmac.compare_digest(auth.encode(), expected.encode()):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    """Require the session token on all /api/ routes except the public list."""
+    path = request.url.path
+    if path.startswith("/api/") and path not in _PUBLIC_API_PATHS:
+        auth = request.headers.get("authorization", "")
+        expected = f"Bearer {_SESSION_TOKEN}"
+        if not hmac.compare_digest(auth.encode(), expected.encode()):
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Unauthorized"},
+            )
+    return await call_next(request)
+
 
 # ---------------------------------------------------------------------------
 # Config schema — auto-generated from DEFAULT_CONFIG
@@ -94,6 +134,11 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     "model": {
         "type": "string",
         "description": "Default model (e.g. anthropic/claude-sonnet-4.6)",
+        "category": "general",
+    },
+    "model_context_length": {
+        "type": "number",
+        "description": "Context window override (0 = auto-detect from model metadata)",
         "category": "general",
     },
     "terminal.backend": {
@@ -246,6 +291,17 @@ def _build_schema_from_config(
 
 CONFIG_SCHEMA = _build_schema_from_config(DEFAULT_CONFIG)
 
+# Inject virtual fields that don't live in DEFAULT_CONFIG but are surfaced
+# by the normalize/denormalize cycle.  Insert model_context_length right after
+# the "model" key so it renders adjacent in the frontend.
+_mcl_entry = _SCHEMA_OVERRIDES["model_context_length"]
+_ordered_schema: Dict[str, Dict[str, Any]] = {}
+for _k, _v in CONFIG_SCHEMA.items():
+    _ordered_schema[_k] = _v
+    if _k == "model":
+        _ordered_schema["model_context_length"] = _mcl_entry
+CONFIG_SCHEMA = _ordered_schema
+
 
 class ConfigUpdate(BaseModel):
     config: dict
@@ -264,12 +320,68 @@ class EnvVarReveal(BaseModel):
     key: str
 
 
+_GATEWAY_HEALTH_URL = os.getenv("GATEWAY_HEALTH_URL")
+_GATEWAY_HEALTH_TIMEOUT = float(os.getenv("GATEWAY_HEALTH_TIMEOUT", "3"))
+
+
+def _probe_gateway_health() -> tuple[bool, dict | None]:
+    """Probe the gateway via its HTTP health endpoint (cross-container).
+
+    Uses ``/health/detailed`` first (returns full state), falling back to
+    the simpler ``/health`` endpoint.  Returns ``(is_alive, body_dict)``.
+
+    Accepts any of these as ``GATEWAY_HEALTH_URL``:
+    - ``http://gateway:8642``                (base URL — recommended)
+    - ``http://gateway:8642/health``         (explicit health path)
+    - ``http://gateway:8642/health/detailed`` (explicit detailed path)
+
+    This is a **blocking** call — run via ``run_in_executor`` from async code.
+    """
+    if not _GATEWAY_HEALTH_URL:
+        return False, None
+
+    # Normalise to base URL so we always probe the right paths regardless of
+    # whether the user included /health or /health/detailed in the env var.
+    base = _GATEWAY_HEALTH_URL.rstrip("/")
+    if base.endswith("/health/detailed"):
+        base = base[: -len("/health/detailed")]
+    elif base.endswith("/health"):
+        base = base[: -len("/health")]
+
+    for path in (f"{base}/health/detailed", f"{base}/health"):
+        try:
+            req = urllib.request.Request(path, method="GET")
+            with urllib.request.urlopen(req, timeout=_GATEWAY_HEALTH_TIMEOUT) as resp:
+                if resp.status == 200:
+                    body = json.loads(resp.read())
+                    return True, body
+        except Exception:
+            continue
+    return False, None
+
+
 @app.get("/api/status")
 async def get_status():
     current_ver, latest_ver = check_config_version()
 
+    # --- Gateway liveness detection ---
+    # Try local PID check first (same-host).  If that fails and a remote
+    # GATEWAY_HEALTH_URL is configured, probe the gateway over HTTP so the
+    # dashboard works when the gateway runs in a separate container.
     gateway_pid = get_running_pid()
     gateway_running = gateway_pid is not None
+    remote_health_body: dict | None = None
+
+    if not gateway_running and _GATEWAY_HEALTH_URL:
+        loop = asyncio.get_event_loop()
+        alive, remote_health_body = await loop.run_in_executor(
+            None, _probe_gateway_health
+        )
+        if alive:
+            gateway_running = True
+            # PID from the remote container (display only — not locally valid)
+            if remote_health_body:
+                gateway_pid = remote_health_body.get("pid")
 
     gateway_state = None
     gateway_platforms: dict = {}
@@ -286,7 +398,12 @@ async def get_status():
     except Exception:
         configured_gateway_platforms = None
 
+    # Prefer the detailed health endpoint response (has full state) when the
+    # local runtime status file is absent or stale (cross-container).
     runtime = read_runtime_status()
+    if runtime is None and remote_health_body and remote_health_body.get("gateway_state"):
+        runtime = remote_health_body
+
     if runtime:
         gateway_state = runtime.get("gateway_state")
         gateway_platforms = runtime.get("platforms") or {}
@@ -301,6 +418,17 @@ async def get_status():
         if not gateway_running:
             gateway_state = gateway_state if gateway_state in ("stopped", "startup_failed") else "stopped"
             gateway_platforms = {}
+        elif gateway_running and remote_health_body is not None:
+            # The health probe confirmed the gateway is alive, but the local
+            # runtime status file may be stale (cross-container).  Override
+            # stopped/None state so the dashboard shows the correct badge.
+            if gateway_state in (None, "stopped"):
+                gateway_state = "running"
+
+    # If there was no runtime info at all but the health probe confirmed alive,
+    # ensure we still report the gateway as running (no shared volume scenario).
+    if gateway_running and gateway_state is None and remote_health_body is not None:
+        gateway_state = "running"
 
     active_sessions = 0
     try:
@@ -408,11 +536,19 @@ def _normalize_config_for_web(config: Dict[str, Any]) -> Dict[str, Any]:
     or a dict (``{default: ..., provider: ..., base_url: ...}``).  The schema is built
     from DEFAULT_CONFIG where ``model`` is a string, but user configs often have the
     dict form.  Normalize to the string form so the frontend schema matches.
+
+    Also surfaces ``model_context_length`` as a top-level field so the web UI can
+    display and edit it.  A value of 0 means "auto-detect".
     """
     config = dict(config)  # shallow copy
     model_val = config.get("model")
     if isinstance(model_val, dict):
+        # Extract context_length before flattening the dict
+        ctx_len = model_val.get("context_length", 0)
         config["model"] = model_val.get("default", model_val.get("name", ""))
+        config["model_context_length"] = ctx_len if isinstance(ctx_len, int) else 0
+    else:
+        config["model_context_length"] = 0
     return config
 
 
@@ -433,6 +569,93 @@ async def get_schema():
     return {"fields": CONFIG_SCHEMA, "category_order": _CATEGORY_ORDER}
 
 
+_EMPTY_MODEL_INFO: dict = {
+    "model": "",
+    "provider": "",
+    "auto_context_length": 0,
+    "config_context_length": 0,
+    "effective_context_length": 0,
+    "capabilities": {},
+}
+
+
+@app.get("/api/model/info")
+def get_model_info():
+    """Return resolved model metadata for the currently configured model.
+
+    Calls the same context-length resolution chain the agent uses, so the
+    frontend can display "Auto-detected: 200K" alongside the override field.
+    Also returns model capabilities (vision, reasoning, tools) when available.
+    """
+    try:
+        cfg = load_config()
+        model_cfg = cfg.get("model", "")
+
+        # Extract model name and provider from the config
+        if isinstance(model_cfg, dict):
+            model_name = model_cfg.get("default", model_cfg.get("name", ""))
+            provider = model_cfg.get("provider", "")
+            base_url = model_cfg.get("base_url", "")
+            config_ctx = model_cfg.get("context_length")
+        else:
+            model_name = str(model_cfg) if model_cfg else ""
+            provider = ""
+            base_url = ""
+            config_ctx = None
+
+        if not model_name:
+            return dict(_EMPTY_MODEL_INFO, provider=provider)
+
+        # Resolve auto-detected context length (pass config_ctx=None to get
+        # purely auto-detected value, then separately report the override)
+        try:
+            from agent.model_metadata import get_model_context_length
+            auto_ctx = get_model_context_length(
+                model=model_name,
+                base_url=base_url,
+                provider=provider,
+                config_context_length=None,  # ignore override — we want auto value
+            )
+        except Exception:
+            auto_ctx = 0
+
+        config_ctx_int = 0
+        if isinstance(config_ctx, int) and config_ctx > 0:
+            config_ctx_int = config_ctx
+
+        # Effective is what the agent actually uses
+        effective_ctx = config_ctx_int if config_ctx_int > 0 else auto_ctx
+
+        # Try to get model capabilities from models.dev
+        caps = {}
+        try:
+            from agent.models_dev import get_model_capabilities
+            mc = get_model_capabilities(provider=provider, model=model_name)
+            if mc is not None:
+                caps = {
+                    "supports_tools": mc.supports_tools,
+                    "supports_vision": mc.supports_vision,
+                    "supports_reasoning": mc.supports_reasoning,
+                    "context_window": mc.context_window,
+                    "max_output_tokens": mc.max_output_tokens,
+                    "model_family": mc.model_family,
+                }
+        except Exception:
+            pass
+
+        return {
+            "model": model_name,
+            "provider": provider,
+            "auto_context_length": auto_ctx,
+            "config_context_length": config_ctx_int,
+            "effective_context_length": effective_ctx,
+            "capabilities": caps,
+        }
+    except Exception:
+        _log.exception("GET /api/model/info failed")
+        return dict(_EMPTY_MODEL_INFO)
+
+
 def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:
     """Reverse _normalize_config_for_web before saving.
 
@@ -440,11 +663,23 @@ def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:
     to recover model subkeys (provider, base_url, api_mode, etc.) that were
     stripped from the GET response.  The frontend only sees model as a flat
     string; the rest is preserved transparently.
+
+    Also handles ``model_context_length`` — writes it back into the model dict
+    as ``context_length``.  A value of 0 or absent means "auto-detect" (omitted
+    from the dict so get_model_context_length() uses its normal resolution).
     """
     config = dict(config)
     # Remove any _model_meta that might have leaked in (shouldn't happen
     # with the stripped GET response, but be defensive)
     config.pop("_model_meta", None)
+
+    # Extract and remove model_context_length before processing model
+    ctx_override = config.pop("model_context_length", 0)
+    if not isinstance(ctx_override, int):
+        try:
+            ctx_override = int(ctx_override)
+        except (TypeError, ValueError):
+            ctx_override = 0
 
     model_val = config.get("model")
     if isinstance(model_val, str) and model_val:
@@ -455,7 +690,20 @@ def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:
             if isinstance(disk_model, dict):
                 # Preserve all subkeys, update default with the new value
                 disk_model["default"] = model_val
+                # Write context_length into the model dict (0 = remove/auto)
+                if ctx_override > 0:
+                    disk_model["context_length"] = ctx_override
+                else:
+                    disk_model.pop("context_length", None)
                 config["model"] = disk_model
+            else:
+                # Model was previously a bare string — upgrade to dict if
+                # user is setting a context_length override
+                if ctx_override > 0:
+                    config["model"] = {
+                        "default": model_val,
+                        "context_length": ctx_override,
+                    }
         except Exception:
             pass  # can't read disk config — just use the string form
     return config
@@ -469,17 +717,6 @@ async def update_config(body: ConfigUpdate):
     except Exception as e:
         _log.exception("PUT /api/config failed")
         raise HTTPException(status_code=500, detail="Internal server error")
-
-
-@app.get("/api/auth/session-token")
-async def get_session_token():
-    """Return the ephemeral session token for this server instance.
-
-    The token protects sensitive endpoints (reveal).  It's served to the SPA
-    which stores it in memory — it's never persisted and dies when the server
-    process exits.  CORS already restricts this to localhost origins.
-    """
-    return {"token": _SESSION_TOKEN}
 
 
 @app.get("/api/env")
@@ -535,9 +772,7 @@ async def reveal_env_var(body: EnvVarReveal, request: Request):
     - Audit logging
     """
     # --- Token check ---
-    auth = request.headers.get("authorization", "")
-    if auth != f"Bearer {_SESSION_TOKEN}":
-        raise HTTPException(status_code=401, detail="Unauthorized")
+    _require_token(request)
 
     # --- Rate limit ---
     now = time.time()
@@ -808,9 +1043,7 @@ async def list_oauth_providers():
 @app.delete("/api/providers/oauth/{provider_id}")
 async def disconnect_oauth_provider(provider_id: str, request: Request):
     """Disconnect an OAuth provider. Token-protected (matches /env/reveal)."""
-    auth = request.headers.get("authorization", "")
-    if auth != f"Bearer {_SESSION_TOKEN}":
-        raise HTTPException(status_code=401, detail="Unauthorized")
+    _require_token(request)
 
     valid_ids = {p["id"] for p in _OAUTH_PROVIDER_CATALOG}
     if provider_id not in valid_ids:
@@ -1382,9 +1615,7 @@ def _codex_full_login_worker(session_id: str) -> None:
 @app.post("/api/providers/oauth/{provider_id}/start")
 async def start_oauth_login(provider_id: str, request: Request):
     """Initiate an OAuth login flow. Token-protected."""
-    auth = request.headers.get("authorization", "")
-    if auth != f"Bearer {_SESSION_TOKEN}":
-        raise HTTPException(status_code=401, detail="Unauthorized")
+    _require_token(request)
     _gc_oauth_sessions()
     valid = {p["id"] for p in _OAUTH_PROVIDER_CATALOG}
     if provider_id not in valid:
@@ -1416,9 +1647,7 @@ class OAuthSubmitBody(BaseModel):
 @app.post("/api/providers/oauth/{provider_id}/submit")
 async def submit_oauth_code(provider_id: str, body: OAuthSubmitBody, request: Request):
     """Submit the auth code for PKCE flows. Token-protected."""
-    auth = request.headers.get("authorization", "")
-    if auth != f"Bearer {_SESSION_TOKEN}":
-        raise HTTPException(status_code=401, detail="Unauthorized")
+    _require_token(request)
     if provider_id == "anthropic":
         return await asyncio.get_event_loop().run_in_executor(
             None, _submit_anthropic_pkce, body.session_id, body.code,
@@ -1446,9 +1675,7 @@ async def poll_oauth_session(provider_id: str, session_id: str):
 @app.delete("/api/providers/oauth/sessions/{session_id}")
 async def cancel_oauth_session(session_id: str, request: Request):
     """Cancel a pending OAuth session. Token-protected."""
-    auth = request.headers.get("authorization", "")
-    if auth != f"Bearer {_SESSION_TOKEN}":
-        raise HTTPException(status_code=401, detail="Unauthorized")
+    _require_token(request)
     with _oauth_sessions_lock:
         sess = _oauth_sessions.pop(session_id, None)
     if sess is None:
@@ -1796,7 +2023,12 @@ async def get_usage_analytics(days: int = 30):
 
 
 def mount_spa(application: FastAPI):
-    """Mount the built SPA. Falls back to index.html for client-side routing."""
+    """Mount the built SPA. Falls back to index.html for client-side routing.
+
+    The session token is injected into index.html via a ``<script>`` tag so
+    the SPA can authenticate against protected API endpoints without a
+    separate (unauthenticated) token-dispensing endpoint.
+    """
     if not WEB_DIST.exists():
         @application.get("/{full_path:path}")
         async def no_frontend(full_path: str):
@@ -1805,6 +2037,20 @@ def mount_spa(application: FastAPI):
                 status_code=404,
             )
         return
+
+    _index_path = WEB_DIST / "index.html"
+
+    def _serve_index():
+        """Return index.html with the session token injected."""
+        html = _index_path.read_text()
+        token_script = (
+            f'<script>window.__HERMES_SESSION_TOKEN__="{_SESSION_TOKEN}";</script>'
+        )
+        html = html.replace("</head>", f"{token_script}</head>", 1)
+        return HTMLResponse(
+            html,
+            headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
+        )
 
     application.mount("/assets", StaticFiles(directory=WEB_DIST / "assets"), name="assets")
 
@@ -1819,24 +2065,32 @@ def mount_spa(application: FastAPI):
             and file_path.is_file()
         ):
             return FileResponse(file_path)
-        return FileResponse(
-            WEB_DIST / "index.html",
-            headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
-        )
+        return _serve_index()
 
 
 mount_spa(app)
 
 
-def start_server(host: str = "127.0.0.1", port: int = 9119, open_browser: bool = True):
+def start_server(
+    host: str = "127.0.0.1",
+    port: int = 9119,
+    open_browser: bool = True,
+    allow_public: bool = False,
+):
     """Start the web UI server."""
     import uvicorn
 
-    if host not in ("127.0.0.1", "localhost", "::1"):
-        import logging
-        logging.warning(
-            "Binding to %s — the web UI exposes config and API keys. "
-            "Only bind to non-localhost if you trust all users on the network.", host,
+    _LOCALHOST = ("127.0.0.1", "localhost", "::1")
+    if host not in _LOCALHOST and not allow_public:
+        raise SystemExit(
+            f"Refusing to bind to {host} — the dashboard exposes API keys "
+            f"and config without robust authentication.\n"
+            f"Use --insecure to override (NOT recommended on untrusted networks)."
+        )
+    if host not in _LOCALHOST:
+        _log.warning(
+            "Binding to %s with --insecure — the dashboard has no robust "
+            "authentication. Only use on trusted networks.", host,
         )
 
     if open_browser:

@@ -1342,6 +1342,7 @@ def _(rid, params: dict) -> dict:
                 stream_callback=_stream,
             )
 
+            last_reasoning = None
             if isinstance(result, dict):
                 if isinstance(result.get("messages"), list):
                     with session["history_lock"]:
@@ -1350,11 +1351,16 @@ def _(rid, params: dict) -> dict:
                             session["history_version"] = history_version + 1
                 raw = result.get("final_response", "")
                 status = "interrupted" if result.get("interrupted") else "error" if result.get("error") else "complete"
+                lr = result.get("last_reasoning")
+                if isinstance(lr, str) and lr.strip():
+                    last_reasoning = lr.strip()
             else:
                 raw = str(result)
                 status = "complete"
 
             payload = {"text": raw, "usage": _get_usage(agent), "status": status}
+            if last_reasoning:
+                payload["reasoning"] = last_reasoning
             rendered = render_message(raw, cols)
             if rendered:
                 payload["rendered"] = rendered

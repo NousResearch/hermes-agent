@@ -631,7 +631,9 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         const p = ev.payload
         const finalText = (p?.rendered ?? p?.text ?? bufRef.current).trimStart()
         const persisted = persistedToolLabelsRef.current
-        const savedReasoning = reasoningRef.current.trim()
+        const streamedReasoning = reasoningRef.current.trim()
+        const payloadReasoning = String(p?.reasoning ?? '').trim()
+        const savedReasoning = streamedReasoning || payloadReasoning
         const savedReasoningTokens = savedReasoning ? estimateTokensRough(savedReasoning) : 0
         const savedToolTokens = toolTokenAccRef.current
 
@@ -666,7 +668,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         setStatus('ready')
 
         if (p?.usage) {
-          patchUiState({ usage: p.usage })
+          patchUiState(state => ({ ...state, usage: { ...state.usage, ...p.usage } }))
         }
 
         if (queueEditRef.current !== null) {

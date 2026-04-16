@@ -7,7 +7,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-import yaml
 
 from hermes_cli.auth import (
     AuthError,
@@ -17,16 +16,26 @@ from hermes_cli.auth import (
     _save_codex_tokens,
     _import_codex_cli_tokens,
     _login_openai_codex,
-    get_codex_auth_status,
-    get_provider_auth_state,
     refresh_codex_oauth_pure,
     resolve_codex_runtime_credentials,
     resolve_provider,
 )
 
 
-def _setup_hermes_auth(hermes_home: Path, *, access_token: str = "access", refresh_token: str = "refresh"):
+def _mock_jwt(exp_offset_seconds: int = 3600, **extra_claims) -> str:
+    payload = {
+        "exp": int(time.time()) + exp_offset_seconds,
+        "https://api.openai.com/auth": {"chatgpt_user_id": "test-user"},
+        **extra_claims,
+    }
+    encoded = base64.urlsafe_b64encode(json.dumps(payload).encode("utf-8")).rstrip(b"=").decode("utf-8")
+    return f"h.{encoded}.s"
+
+
+def _setup_hermes_auth(hermes_home: Path, *, access_token: str | None = None, refresh_token: str = "refresh"):
     """Write Codex tokens into the Hermes auth store."""
+    if access_token is None:
+        access_token = _mock_jwt()
     hermes_home.mkdir(parents=True, exist_ok=True)
     auth_store = {
         "version": 1,
@@ -55,7 +64,7 @@ def _jwt_with_exp(exp_epoch: int) -> str:
 
 def test_read_codex_tokens_success(tmp_path, monkeypatch):
     hermes_home = tmp_path / "hermes"
-    _setup_hermes_auth(hermes_home)
+    _setup_hermes_auth(hermes_home, access_token="access", refresh_token="refresh")
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
     data = _read_codex_tokens()
@@ -148,14 +157,37 @@ def test_import_codex_cli_tokens(tmp_path, monkeypatch):
     codex_home = tmp_path / "codex-cli"
     codex_home.mkdir(parents=True, exist_ok=True)
     (codex_home / "auth.json").write_text(json.dumps({
-        "tokens": {"access_token": "cli-at", "refresh_token": "cli-rt"},
+        "tokens": {
+            "access_token": _mock_jwt(),
+            "refresh_token": "rt-valid",
+            "id_token": "id-token-present",
+            "account_id": "acct-123",
+        },
     }))
     monkeypatch.setenv("CODEX_HOME", str(codex_home))
 
     tokens = _import_codex_cli_tokens()
     assert tokens is not None
-    assert tokens["access_token"] == "cli-at"
-    assert tokens["refresh_token"] == "cli-rt"
+    assert tokens["refresh_token"] == "rt-valid"
+    assert tokens["id_token"] == "id-token-present"
+    assert tokens["account_id"] == "acct-123"
+
+
+@pytest.mark.parametrize("access_token", ["***", "not-a-jwt", 12345])
+def test_import_codex_cli_tokens_rejects_non_jwt_placeholders(tmp_path, monkeypatch, access_token):
+    codex_home = tmp_path / "codex-cli"
+    codex_home.mkdir(parents=True, exist_ok=True)
+    (codex_home / "auth.json").write_text(json.dumps({
+        "tokens": {
+            "access_token": access_token,
+            "refresh_token": "***",
+            "id_token": "id-token-present",
+            "account_id": "acct-123",
+        },
+    }))
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+
+    assert _import_codex_cli_tokens() is None
 
 
 def test_import_codex_cli_tokens_missing(tmp_path, monkeypatch):

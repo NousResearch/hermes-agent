@@ -1537,6 +1537,13 @@ def _codex_access_token_is_expiring(access_token: Any, skew_seconds: int) -> boo
     return float(exp) <= (time.time() + max(0, int(skew_seconds)))
 
 
+def _codex_access_token_looks_usable(access_token: Any) -> bool:
+    """Return True when a Codex access token has JWT structure and an exp claim."""
+    claims = _decode_jwt_claims(access_token)
+    exp = claims.get("exp")
+    return isinstance(exp, (int, float))
+
+
 def _qwen_cli_auth_path() -> Path:
     return Path.home() / ".qwen" / "oauth_creds.json"
 
@@ -2621,6 +2628,12 @@ def _import_codex_cli_tokens() -> Optional[Dict[str, str]]:
         access_token = tokens.get("access_token")
         refresh_token = tokens.get("refresh_token")
         if not access_token or not refresh_token:
+            return None
+        if not _codex_access_token_looks_usable(access_token):
+            logger.debug(
+                "Codex CLI tokens at %s are not importable — access_token is not a JWT with exp.",
+                auth_path,
+            )
             return None
         # Reject expired tokens — importing stale tokens from ~/.codex/
         # that can't be refreshed leaves the user stuck with "Login successful!"

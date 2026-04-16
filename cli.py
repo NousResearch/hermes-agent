@@ -9696,6 +9696,10 @@ class HermesCLI:
                 return  # silently suppress
             if isinstance(exc, KeyError) and "is not registered" in str(exc):
                 return  # suppress selector registration failures (#6393)
+            # Suppress EIO/EPIPE from prompt_toolkit Vt100 flush on WSL2 PTY
+            # disconnects — these are non-fatal terminal teardown errors (#10755).
+            if isinstance(exc, OSError) and exc.errno in (5, 32):  # EIO, EPIPE
+                return
             # Fall back to default handler for everything else
             loop.default_exception_handler(context)
 
@@ -9731,12 +9735,15 @@ class HermesCLI:
         except (KeyError, OSError) as _stdin_err:
             # Catch selector registration failures from broken stdin (#6393).
             # This is the fallback for cases that slip past the fstat() guard.
-            if "is not registered" in str(_stdin_err) or "Bad file descriptor" in str(_stdin_err):
-                print(
-                    f"\nError: stdin is not usable ({_stdin_err}).\n"
-                    "This can happen with certain Python installations (e.g. uv-managed cPython on macOS).\n"
-                    "Try reinstalling Python via pyenv or Homebrew, then re-run: hermes setup"
-                )
+            # Also catches EIO (errno 5) from WSL2 PTY disconnects (#10755).
+            _err_str = str(_stdin_err)
+            _is_known_stdin_issue = (
+                "is not registered" in _err_str
+                or "Bad file descriptor" in _err_str
+                or "Input/output error" in _err_str
+            )
+            if _is_known_stdin_issue:
+                logger.info("TTY disconnected: %s", _stdin_err)
             else:
                 raise
         finally:

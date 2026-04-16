@@ -873,12 +873,37 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, str]:
         if provider is None:
             session_info = _create_local_session(task_id)
         else:
-            session_info = provider.create_session(task_id)
-            if session_info.get("cdp_url"):
-                # Some cloud providers (including Browser-Use v3) return an HTTP
-                # CDP discovery URL instead of a raw websocket endpoint.
-                session_info = dict(session_info)
-                session_info["cdp_url"] = _resolve_cdp_override(str(session_info["cdp_url"]))
+            try:
+                session_info = provider.create_session(task_id)
+                # Validate cloud provider returned a usable session
+                if not session_info or not isinstance(session_info, dict):
+                    raise ValueError(f"Cloud provider returned invalid session: {session_info!r}")
+                if session_info.get("cdp_url"):
+                    # Some cloud providers (including Browser-Use v3) return an HTTP
+                    # CDP discovery URL instead of a raw websocket endpoint.
+                    session_info = dict(session_info)
+                    session_info["cdp_url"] = _resolve_cdp_override(str(session_info["cdp_url"]))
+            except Exception as e:
+                provider_name = type(provider).__name__
+                logger.warning(
+                    "Cloud provider %s failed (%s); attempting fallback to local "
+                    "Chromium for task %s",
+                    provider_name, e, task_id,
+                    exc_info=True,
+                )
+                try:
+                    session_info = _create_local_session(task_id)
+                except Exception as local_error:
+                    raise RuntimeError(
+                        f"Cloud provider {provider_name} failed ({e}) and local "
+                        f"fallback also failed ({local_error})"
+                    ) from e
+                # Mark session as degraded for observability
+                if isinstance(session_info, dict):
+                    session_info = dict(session_info)
+                    session_info["fallback_from_cloud"] = True
+                    session_info["fallback_reason"] = str(e)
+                    session_info["fallback_provider"] = provider_name
     
     with _cleanup_lock:
         # Double-check: another thread may have created a session while we

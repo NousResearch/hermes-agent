@@ -16,6 +16,7 @@ The tested Termux bundle installs:
 - the Hermes CLI
 - cron support
 - PTY/background terminal support
+- Telegram gateway support (manual / best-effort background runs)
 - MCP support
 - Honcho memory support
 - ACP support
@@ -34,6 +35,7 @@ A few features still need desktop/server-style dependencies that are not publish
 - the `voice` extra is blocked by `faster-whisper -> ctranslate2`, and `ctranslate2` does not publish Android wheels
 - automatic browser / Playwright bootstrap is skipped in the Termux installer
 - Docker-based terminal isolation is not available inside Termux
+- Android may still suspend Termux background jobs, so gateway persistence is best-effort rather than a normal managed service
 
 That does not stop Hermes from working well as a phone-native CLI agent — it just means the recommended mobile install is intentionally narrower than the desktop/server install.
 

@@ -72,7 +72,14 @@ def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tu
     skill_name = str(loaded_skill.get("name") or normalized)
     skill_path = str(loaded_skill.get("path") or "")
     skill_dir = None
-    if skill_path:
+    # Prefer the absolute skill_dir returned by skill_view() — this is
+    # correct for both local and external skills.  Fall back to the old
+    # SKILLS_DIR-relative reconstruction only when skill_dir is absent
+    # (e.g. legacy skill_view responses).
+    abs_skill_dir = loaded_skill.get("skill_dir")
+    if abs_skill_dir:
+        skill_dir = Path(abs_skill_dir)
+    elif skill_path:
         try:
             skill_dir = SKILLS_DIR / Path(skill_path).parent
         except Exception:

@@ -27,7 +27,7 @@ except ImportError:
     except ImportError:
         msvcrt = None
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 # Add parent directory to path for imports BEFORE repo-level imports.
 # Without this, standalone invocations (e.g. after `hermes update` reloads
@@ -76,15 +76,14 @@ def _resolve_origin(job: dict) -> Optional[dict]:
     return None
 
 
-def _resolve_delivery_target(job: dict) -> Optional[dict]:
-    """Resolve the concrete auto-delivery target for a cron job, if any."""
-    deliver = job.get("deliver", "local")
+def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[dict]:
+    """Resolve one concrete auto-delivery target for a cron job."""
     origin = _resolve_origin(job)
 
-    if deliver == "local":
+    if deliver_value == "local":
         return None
 
-    if deliver == "origin":
+    if deliver_value == "origin":
         if origin:
             return {
                 "platform": origin["platform"],
@@ -108,8 +107,8 @@ def _resolve_delivery_target(job: dict) -> Optional[dict]:
                 }
         return None
 
-    if ":" in deliver:
-        platform_name, rest = deliver.split(":", 1)
+    if ":" in deliver_value:
+        platform_name, rest = deliver_value.split(":", 1)
         platform_key = platform_name.lower()
 
         from tools.send_message_tool import _parse_target_ref
@@ -139,7 +138,7 @@ def _resolve_delivery_target(job: dict) -> Optional[dict]:
             "thread_id": thread_id,
         }
 
-    platform_name = deliver
+    platform_name = deliver_value
     if origin and origin.get("platform") == platform_name:
         return {
             "platform": platform_name,
@@ -158,6 +157,30 @@ def _resolve_delivery_target(job: dict) -> Optional[dict]:
         "chat_id": chat_id,
         "thread_id": None,
     }
+
+
+def _resolve_delivery_targets(job: dict) -> List[dict]:
+    """Resolve all concrete auto-delivery targets for a cron job (supports comma-separated deliver)."""
+    deliver = job.get("deliver", "local")
+    if deliver == "local":
+        return []
+    parts = [p.strip() for p in str(deliver).split(",") if p.strip()]
+    seen = set()
+    targets = []
+    for part in parts:
+        target = _resolve_single_delivery_target(job, part)
+        if target:
+            key = (target["platform"].lower(), str(target["chat_id"]), target.get("thread_id"))
+            if key not in seen:
+                seen.add(key)
+                targets.append(target)
+    return targets
+
+
+def _resolve_delivery_target(job: dict) -> Optional[dict]:
+    """Resolve the concrete auto-delivery target for a cron job, if any."""
+    targets = _resolve_delivery_targets(job)
+    return targets[0] if targets else None
 
 
 # Media extension sets — keep in sync with gateway/platforms/base.py:_process_message_background
@@ -200,7 +223,7 @@ def _send_media_via_adapter(adapter, chat_id: str, media_files: list, metadata: 
 
 def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Optional[str]:
     """
-    Deliver job output to the configured target (origin chat, specific platform, etc.).
+    Deliver job output to the configured target(s) (origin chat, specific platform, etc.).
 
     When ``adapters`` and ``loop`` are provided (gateway is running), tries to
     use the live adapter first — this supports E2EE rooms (e.g. Matrix) where
@@ -209,32 +232,13 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
 
     Returns None on success, or an error string on failure.
     """
-    target = _resolve_delivery_target(job)
-    if not target:
+    targets = _resolve_delivery_targets(job)
+    if not targets:
         if job.get("deliver", "local") != "local":
             msg = f"no delivery target resolved for deliver={job.get('deliver', 'local')}"
             logger.warning("Job '%s': %s", job["id"], msg)
             return msg
         return None  # local-only jobs don't deliver — not a failure
-
-    platform_name = target["platform"]
-    chat_id = target["chat_id"]
-    thread_id = target.get("thread_id")
-
-    # Diagnostic: log thread_id for topic-aware delivery debugging
-    origin = job.get("origin") or {}
-    origin_thread = origin.get("thread_id")
-    if origin_thread and not thread_id:
-        logger.warning(
-            "Job '%s': origin has thread_id=%s but delivery target lost it "
-            "(deliver=%s, target=%s)",
-            job["id"], origin_thread, job.get("deliver", "local"), target,
-        )
-    elif thread_id:
-        logger.debug(
-            "Job '%s': delivering to %s:%s thread_id=%s",
-            job["id"], platform_name, chat_id, thread_id,
-        )
 
     from tools.send_message_tool import _send_to_platform
     from gateway.config import load_gateway_config, Platform
@@ -258,24 +262,6 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         "bluebubbles": Platform.BLUEBUBBLES,
         "qqbot": Platform.QQBOT,
     }
-    platform = platform_map.get(platform_name.lower())
-    if not platform:
-        msg = f"unknown platform '{platform_name}'"
-        logger.warning("Job '%s': %s", job["id"], msg)
-        return msg
-
-    try:
-        config = load_gateway_config()
-    except Exception as e:
-        msg = f"failed to load gateway config: {e}"
-        logger.error("Job '%s': %s", job["id"], msg)
-        return msg
-
-    pconfig = config.platforms.get(platform)
-    if not pconfig or not pconfig.enabled:
-        msg = f"platform '{platform_name}' not configured/enabled"
-        logger.warning("Job '%s': %s", job["id"], msg)
-        return msg
 
     # Optionally wrap the content with a header/footer so the user knows this
     # is a cron delivery.  Wrapping is on by default; set cron.wrap_response: false
@@ -304,67 +290,117 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     from gateway.platforms.base import BasePlatformAdapter
     media_files, cleaned_delivery_content = BasePlatformAdapter.extract_media(delivery_content)
 
-    # Prefer the live adapter when the gateway is running — this supports E2EE
-    # rooms (e.g. Matrix) where the standalone HTTP path cannot encrypt.
-    runtime_adapter = (adapters or {}).get(platform)
-    if runtime_adapter is not None and loop is not None and getattr(loop, "is_running", lambda: False)():
-        send_metadata = {"thread_id": thread_id} if thread_id else None
-        try:
-            # Send cleaned text (MEDIA tags stripped) — not the raw content
-            text_to_send = cleaned_delivery_content.strip()
-            adapter_ok = True
-            if text_to_send:
-                future = asyncio.run_coroutine_threadsafe(
-                    runtime_adapter.send(chat_id, text_to_send, metadata=send_metadata),
-                    loop,
-                )
-                send_result = future.result(timeout=60)
-                if send_result and not getattr(send_result, "success", True):
-                    err = getattr(send_result, "error", "unknown")
-                    logger.warning(
-                        "Job '%s': live adapter send to %s:%s failed (%s), falling back to standalone",
-                        job["id"], platform_name, chat_id, err,
-                    )
-                    adapter_ok = False  # fall through to standalone path
+    try:
+        config = load_gateway_config()
+    except Exception as e:
+        msg = f"failed to load gateway config: {e}"
+        logger.error("Job '%s': %s", job["id"], msg)
+        return msg
 
-            # Send extracted media files as native attachments via the live adapter
-            if adapter_ok and media_files:
-                _send_media_via_adapter(runtime_adapter, chat_id, media_files, send_metadata, loop, job)
+    delivery_errors = []
 
-            if adapter_ok:
-                logger.info("Job '%s': delivered to %s:%s via live adapter", job["id"], platform_name, chat_id)
-                return None
-        except Exception as e:
+    for target in targets:
+        platform_name = target["platform"]
+        chat_id = target["chat_id"]
+        thread_id = target.get("thread_id")
+
+        # Diagnostic: log thread_id for topic-aware delivery debugging
+        origin = job.get("origin") or {}
+        origin_thread = origin.get("thread_id")
+        if origin_thread and not thread_id:
             logger.warning(
-                "Job '%s': live adapter delivery to %s:%s failed (%s), falling back to standalone",
-                job["id"], platform_name, chat_id, e,
+                "Job '%s': origin has thread_id=%s but delivery target lost it "
+                "(deliver=%s, target=%s)",
+                job["id"], origin_thread, job.get("deliver", "local"), target,
+            )
+        elif thread_id:
+            logger.debug(
+                "Job '%s': delivering to %s:%s thread_id=%s",
+                job["id"], platform_name, chat_id, thread_id,
             )
 
-    # Standalone path: run the async send in a fresh event loop (safe from any thread)
-    coro = _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files)
-    try:
-        result = asyncio.run(coro)
-    except RuntimeError:
-        # asyncio.run() checks for a running loop before awaiting the coroutine;
-        # when it raises, the original coro was never started — close it to
-        # prevent "coroutine was never awaited" RuntimeWarning, then retry in a
-        # fresh thread that has no running loop.
-        coro.close()
-        import concurrent.futures
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            future = pool.submit(asyncio.run, _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files))
-            result = future.result(timeout=30)
-    except Exception as e:
-        msg = f"delivery to {platform_name}:{chat_id} failed: {e}"
-        logger.error("Job '%s': %s", job["id"], msg)
-        return msg
+        platform = platform_map.get(platform_name.lower())
+        if not platform:
+            msg = f"unknown platform '{platform_name}'"
+            logger.warning("Job '%s': %s", job["id"], msg)
+            delivery_errors.append(msg)
+            continue
 
-    if result and result.get("error"):
-        msg = f"delivery error: {result['error']}"
-        logger.error("Job '%s': %s", job["id"], msg)
-        return msg
+        # Prefer the live adapter when the gateway is running — this supports E2EE
+        # rooms (e.g. Matrix) where the standalone HTTP path cannot encrypt.
+        runtime_adapter = (adapters or {}).get(platform)
+        delivered = False
+        if runtime_adapter is not None and loop is not None and getattr(loop, "is_running", lambda: False)():
+            send_metadata = {"thread_id": thread_id} if thread_id else None
+            try:
+                # Send cleaned text (MEDIA tags stripped) — not the raw content
+                text_to_send = cleaned_delivery_content.strip()
+                adapter_ok = True
+                if text_to_send:
+                    future = asyncio.run_coroutine_threadsafe(
+                        runtime_adapter.send(chat_id, text_to_send, metadata=send_metadata),
+                        loop,
+                    )
+                    send_result = future.result(timeout=60)
+                    if send_result and not getattr(send_result, "success", True):
+                        err = getattr(send_result, "error", "unknown")
+                        logger.warning(
+                            "Job '%s': live adapter send to %s:%s failed (%s), falling back to standalone",
+                            job["id"], platform_name, chat_id, err,
+                        )
+                        adapter_ok = False  # fall through to standalone path
 
-    logger.info("Job '%s': delivered to %s:%s", job["id"], platform_name, chat_id)
+                # Send extracted media files as native attachments via the live adapter
+                if adapter_ok and media_files:
+                    _send_media_via_adapter(runtime_adapter, chat_id, media_files, send_metadata, loop, job)
+
+                if adapter_ok:
+                    logger.info("Job '%s': delivered to %s:%s via live adapter", job["id"], platform_name, chat_id)
+                    delivered = True
+            except Exception as e:
+                logger.warning(
+                    "Job '%s': live adapter delivery to %s:%s failed (%s), falling back to standalone",
+                    job["id"], platform_name, chat_id, e,
+                )
+
+        if not delivered:
+            pconfig = config.platforms.get(platform)
+            if not pconfig or not pconfig.enabled:
+                msg = f"platform '{platform_name}' not configured/enabled"
+                logger.warning("Job '%s': %s", job["id"], msg)
+                delivery_errors.append(msg)
+                continue
+
+            # Standalone path: run the async send in a fresh event loop (safe from any thread)
+            coro = _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files)
+            try:
+                result = asyncio.run(coro)
+            except RuntimeError:
+                # asyncio.run() checks for a running loop before awaiting the coroutine;
+                # when it raises, the original coro was never started — close it to
+                # prevent "coroutine was never awaited" RuntimeWarning, then retry in a
+                # fresh thread that has no running loop.
+                coro.close()
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                    future = pool.submit(asyncio.run, _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files))
+                    result = future.result(timeout=30)
+            except Exception as e:
+                msg = f"delivery to {platform_name}:{chat_id} failed: {e}"
+                logger.error("Job '%s': %s", job["id"], msg)
+                delivery_errors.append(msg)
+                continue
+
+            if result and result.get("error"):
+                msg = f"delivery error: {result['error']}"
+                logger.error("Job '%s': %s", job["id"], msg)
+                delivery_errors.append(msg)
+                continue
+
+            logger.info("Job '%s': delivered to %s:%s", job["id"], platform_name, chat_id)
+
+    if delivery_errors:
+        return "; ".join(delivery_errors)
     return None
 
 

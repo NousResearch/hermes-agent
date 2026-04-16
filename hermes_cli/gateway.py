@@ -88,16 +88,27 @@ def _get_service_pids() -> set:
                 capture_output=True, text=True, timeout=5,
             )
             if result.returncode == 0:
-                # Output: "PID\tStatus\tLabel" header, then one data line
-                for line in result.stdout.strip().splitlines():
-                    parts = line.split()
-                    if len(parts) >= 3 and parts[2] == label:
-                        try:
-                            pid = int(parts[0])
-                            if pid > 0:
-                                pids.add(pid)
-                        except ValueError:
-                            pass
+                # Modern macOS (12+) returns a property-list dict:
+                #   "PID" = 12345;
+                # Older versions returned a tabular format:
+                #   PID\tStatus\tLabel
+                import re
+                pid_match = re.search(r'"PID"\s*=\s*(\d+)', result.stdout)
+                if pid_match:
+                    pid = int(pid_match.group(1))
+                    if pid > 0:
+                        pids.add(pid)
+                else:
+                    # Fallback: tabular format (legacy macOS)
+                    for line in result.stdout.strip().splitlines():
+                        parts = line.split()
+                        if len(parts) >= 3 and parts[2] == label:
+                            try:
+                                pid = int(parts[0])
+                                if pid > 0:
+                                    pids.add(pid)
+                            except ValueError:
+                                pass
         except (FileNotFoundError, subprocess.TimeoutExpired):
             pass
 
@@ -222,7 +233,7 @@ def find_gateway_pids(exclude_pids: set | None = None, all_profiles: bool = Fals
                     current_cmd = ""
         else:
             result = subprocess.run(
-                ["ps", "-A", "eww", "-o", "pid=,command="],
+                ["ps", "-Aeww", "-o", "pid=,command="],
                 capture_output=True,
                 text=True,
                 timeout=10,

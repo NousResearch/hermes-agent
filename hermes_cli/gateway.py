@@ -171,6 +171,15 @@ def find_gateway_pids(exclude_pids: set | None = None, all_profiles: bool = Fals
     """
     _exclude = exclude_pids or set()
     pids = [pid for pid in _get_service_pids() if pid not in _exclude]
+    if not all_profiles:
+        try:
+            from gateway.status import get_running_pid
+
+            current_pid = get_running_pid()
+        except Exception:
+            current_pid = None
+        if current_pid is not None and current_pid not in pids and current_pid not in _exclude and current_pid != os.getpid():
+            pids.append(current_pid)
     patterns = [
         "hermes_cli.main gateway",
         "hermes_cli.main --profile",
@@ -221,12 +230,21 @@ def find_gateway_pids(exclude_pids: set | None = None, all_profiles: bool = Fals
                             pass
                     current_cmd = ""
         else:
-            result = subprocess.run(
+            result = None
+            for cmd in (
                 ["ps", "-A", "eww", "-o", "pid=,command="],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
+                ["ps", "ax", "-o", "pid=,command="],
+            ):
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                if result.returncode == 0:
+                    break
+            if result is None or result.returncode != 0:
+                return pids
             for line in result.stdout.split('\n'):
                 stripped = line.strip()
                 if not stripped or 'grep' in stripped:
@@ -3119,6 +3137,15 @@ def gateway_command(args):
         else:
             # Check for manually running processes
             pids = find_gateway_pids()
+            if not pids:
+                try:
+                    from gateway.status import get_running_pid
+
+                    running_pid = get_running_pid()
+                except Exception:
+                    running_pid = None
+                if running_pid is not None:
+                    pids = [running_pid]
             if pids:
                 print(f"✓ Gateway is running (PID: {', '.join(map(str, pids))})")
                 print("  (Running manually, not as a system service)")

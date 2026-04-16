@@ -1060,12 +1060,12 @@ def _generate_pkce() -> tuple:
 
 def run_hermes_oauth_login_pure() -> Optional[Dict[str, Any]]:
     """Run Hermes-native OAuth PKCE flow and return credential state."""
+    import secrets
     import time
     import webbrowser
 
     verifier, challenge = _generate_pkce()
-    import secrets as _secrets
-    oauth_state = _secrets.token_urlsafe(32)
+    oauth_state = secrets.token_urlsafe(32)
 
     params = {
         "code": "true",

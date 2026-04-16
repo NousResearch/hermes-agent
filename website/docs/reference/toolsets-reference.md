@@ -58,7 +58,7 @@ Or in-session:
 | `cronjob` | `cronjob` | Schedule and manage recurring tasks. |
 | `delegation` | `delegate_task` | Spawn isolated subagent instances for parallel work. |
 | `file` | `patch`, `read_file`, `search_files`, `write_file` | File reading, writing, searching, and editing. |
-| `homeassistant` | `ha_call_service`, `ha_get_state`, `ha_list_entities`, `ha_list_services` | Smart home control via Home Assistant. Only available when `HASS_TOKEN` is set. |
+| `homeassistant` | `ha_call_service`, `ha_get_camera_image`, `ha_get_history`, `ha_get_state`, `ha_list_entities`, `ha_list_services` | Smart home control via Home Assistant. Only available when `HASS_TOKEN` is set. |
 | `image_gen` | `image_generate` | Text-to-image generation via FAL.ai. |
 | `memory` | `memory` | Persistent cross-session memory management. |
 | `messaging` | `send_message` | Send messages to other platforms (Telegram, Discord, etc.) from within a session. |

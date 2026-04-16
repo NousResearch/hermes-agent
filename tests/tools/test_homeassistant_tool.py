@@ -14,10 +14,15 @@ from tools.homeassistant_tool import (
     _filter_and_summarize,
     _build_service_payload,
     _parse_service_response,
+    _summarize_history,
     _get_headers,
     _handle_get_state,
     _handle_call_service,
+    _handle_get_history,
+    _handle_get_camera_image,
+    _validate_timestamp,
     _BLOCKED_DOMAINS,
+    _CAMERA_ENTITY_RE,
     _ENTITY_ID_RE,
     _SERVICE_NAME_RE,
 )
@@ -491,12 +496,15 @@ class TestRegistration:
         assert "ha_list_entities" in names
         assert "ha_get_state" in names
         assert "ha_call_service" in names
+        assert "ha_get_history" in names
+        assert "ha_get_camera_image" in names
 
     def test_tools_in_homeassistant_toolset(self):
         from tools.registry import registry
 
         toolset_map = registry.get_tool_to_toolset_map()
-        for tool in ("ha_list_entities", "ha_get_state", "ha_call_service"):
+        for tool in ("ha_list_entities", "ha_get_state", "ha_call_service",
+                      "ha_get_history", "ha_get_camera_image"):
             assert toolset_map[tool] == "homeassistant"
 
     def test_check_fn_gates_availability(self, monkeypatch):
@@ -504,7 +512,9 @@ class TestRegistration:
         from tools.registry import registry
 
         monkeypatch.delenv("HASS_TOKEN", raising=False)
-        defs = registry.get_definitions({"ha_list_entities", "ha_get_state", "ha_call_service"})
+        all_ha = {"ha_list_entities", "ha_get_state", "ha_call_service",
+                   "ha_get_history", "ha_get_camera_image"}
+        defs = registry.get_definitions(all_ha)
         assert len(defs) == 0
 
     def test_check_fn_includes_when_token_set(self, monkeypatch):
@@ -512,5 +522,262 @@ class TestRegistration:
         from tools.registry import registry
 
         monkeypatch.setenv("HASS_TOKEN", "test-token")
-        defs = registry.get_definitions({"ha_list_entities", "ha_get_state", "ha_call_service"})
-        assert len(defs) == 3
+        all_ha = {"ha_list_entities", "ha_get_state", "ha_call_service",
+                   "ha_get_history", "ha_get_camera_image"}
+        defs = registry.get_definitions(all_ha)
+        assert len(defs) == 5
+
+
+# ---------------------------------------------------------------------------
+# Timestamp validation
+# ---------------------------------------------------------------------------
+
+
+class TestTimestampValidation:
+    def test_valid_utc_z(self):
+        assert _validate_timestamp("2024-01-15T10:30:00Z") is True
+
+    def test_valid_with_offset(self):
+        assert _validate_timestamp("2024-01-15T10:30:00+00:00") is True
+        assert _validate_timestamp("2024-06-01T08:00:00-05:00") is True
+
+    def test_valid_with_fractional_seconds(self):
+        assert _validate_timestamp("2024-01-15T10:30:00.123456Z") is True
+
+    def test_valid_no_timezone(self):
+        assert _validate_timestamp("2024-01-15T10:30:00") is True
+
+    def test_rejects_path_traversal(self):
+        assert _validate_timestamp("../../etc/passwd") is False
+        assert _validate_timestamp("../api/config") is False
+
+    def test_rejects_arbitrary_strings(self):
+        assert _validate_timestamp("yesterday") is False
+        assert _validate_timestamp("") is False
+        assert _validate_timestamp("not-a-date") is False
+
+    def test_rejects_date_only(self):
+        assert _validate_timestamp("2024-01-15") is False
+
+    def test_rejects_spaces(self):
+        assert _validate_timestamp("2024-01-15 10:30:00") is False
+
+
+# ---------------------------------------------------------------------------
+# History handler validation
+# ---------------------------------------------------------------------------
+
+
+class TestSummarizeHistory:
+    """Tests for the _summarize_history helper that distils raw HA data."""
+
+    NUMERIC_HISTORY = [
+        {"state": "20.5", "last_changed": "2024-01-15T10:00:00Z"},
+        {"state": "21.0", "last_changed": "2024-01-15T11:00:00Z"},
+        {"state": "22.5", "last_changed": "2024-01-15T12:00:00Z"},
+        {"state": "21.0", "last_changed": "2024-01-15T13:00:00Z"},
+    ]
+
+    BINARY_HISTORY = [
+        {"state": "off", "last_changed": "2024-01-15T08:00:00Z"},
+        {"state": "on", "last_changed": "2024-01-15T09:30:00Z"},
+        {"state": "off", "last_changed": "2024-01-15T09:31:00Z"},
+        {"state": "on", "last_changed": "2024-01-15T14:00:00Z"},
+        {"state": "off", "last_changed": "2024-01-15T14:01:00Z"},
+    ]
+
+    def test_empty_history(self):
+        result = _summarize_history("sensor.x", [])
+        assert result["total_changes"] == 0
+        assert "first" not in result
+
+    def test_numeric_summary_no_distinct_states(self):
+        result = _summarize_history("sensor.temperature", self.NUMERIC_HISTORY)
+        assert result["total_changes"] == 4
+        assert result["first"]["state"] == "20.5"
+        assert result["last"]["state"] == "21.0"
+        assert result["numeric"]["min"] == 20.5
+        assert result["numeric"]["max"] == 22.5
+        assert result["numeric"]["average"] == 21.25
+        # Numeric entities should NOT include distinct_states (high cardinality)
+        assert "distinct_states" not in result
+
+    def test_binary_summary_has_distinct_states(self):
+        result = _summarize_history("binary_sensor.door", self.BINARY_HISTORY)
+        assert result["total_changes"] == 5
+        assert result["distinct_states"] == {"off": 3, "on": 2}
+        assert "numeric" not in result
+
+    def test_first_last_timestamps(self):
+        result = _summarize_history("sensor.temperature", self.NUMERIC_HISTORY)
+        assert result["first"]["last_changed"] == "2024-01-15T10:00:00Z"
+        assert result["last"]["last_changed"] == "2024-01-15T13:00:00Z"
+
+    def test_mixed_numeric_non_numeric(self):
+        """Entries like 'unavailable' are skipped for numeric stats."""
+        history = [
+            {"state": "10.0", "last_changed": "2024-01-15T10:00:00Z"},
+            {"state": "unavailable", "last_changed": "2024-01-15T11:00:00Z"},
+            {"state": "12.0", "last_changed": "2024-01-15T12:00:00Z"},
+        ]
+        result = _summarize_history("sensor.x", history)
+        assert result["numeric"]["min"] == 10.0
+        assert result["numeric"]["max"] == 12.0
+        assert result["numeric"]["average"] == 11.0
+        # Has numeric values, so no distinct_states
+        assert "distinct_states" not in result
+
+    def test_single_entry_non_numeric(self):
+        history = [{"state": "on", "last_changed": "2024-01-15T10:00:00Z"}]
+        result = _summarize_history("light.x", history)
+        assert result["total_changes"] == 1
+        assert result["first"]["state"] == "on"
+        assert result["last"]["state"] == "on"
+        assert result["distinct_states"] == {"on": 1}
+
+    def test_single_entry_numeric(self):
+        history = [{"state": "21.5", "last_changed": "2024-01-15T10:00:00Z"}]
+        result = _summarize_history("sensor.x", history)
+        assert result["numeric"]["min"] == 21.5
+        assert "distinct_states" not in result
+
+
+class TestHandleGetHistory:
+    def test_missing_entity_id(self):
+        result = json.loads(_handle_get_history({}))
+        assert "error" in result
+        assert "entity_id" in result["error"]
+
+    def test_empty_entity_id(self):
+        result = json.loads(_handle_get_history({"entity_id": ""}))
+        assert "error" in result
+
+    def test_invalid_entity_id_format(self):
+        result = json.loads(_handle_get_history({"entity_id": "../../config"}))
+        assert "error" in result
+        assert "Invalid entity_id" in result["error"]
+
+    def test_invalid_start_time(self):
+        result = json.loads(_handle_get_history({
+            "entity_id": "sensor.temperature",
+            "start_time": "not-a-date",
+        }))
+        assert "error" in result
+        assert "start_time" in result["error"]
+
+    def test_invalid_end_time(self):
+        result = json.loads(_handle_get_history({
+            "entity_id": "sensor.temperature",
+            "end_time": "../../etc/passwd",
+        }))
+        assert "error" in result
+        assert "end_time" in result["error"]
+
+    @patch("tools.homeassistant_tool._run_async")
+    def test_summary_returned_by_default(self, mock_run):
+        mock_run.return_value = {
+            "entity_id": "sensor.temperature",
+            "total_changes": 3,
+            "first": {"state": "20.0", "last_changed": "2024-01-15T10:00:00Z"},
+            "last": {"state": "22.0", "last_changed": "2024-01-15T12:00:00Z"},
+            "numeric": {"min": 20.0, "max": 22.0, "average": 21.0},
+        }
+        result = json.loads(_handle_get_history({
+            "entity_id": "sensor.temperature",
+        }))
+        assert "result" in result
+        assert result["result"]["total_changes"] == 3
+        assert "states" not in result["result"]
+        mock_run.assert_called_once()
+
+    @patch("tools.homeassistant_tool._run_async")
+    def test_include_details_returns_states(self, mock_run):
+        mock_run.return_value = {
+            "entity_id": "sensor.temperature",
+            "total_changes": 2,
+            "first": {"state": "20.0", "last_changed": "2024-01-15T10:00:00Z"},
+            "last": {"state": "21.0", "last_changed": "2024-01-15T11:00:00Z"},
+            "numeric": {"min": 20.0, "max": 21.0, "average": 20.5},
+            "states": [
+                {"state": "20.0", "last_changed": "2024-01-15T10:00:00Z"},
+                {"state": "21.0", "last_changed": "2024-01-15T11:00:00Z"},
+            ],
+        }
+        result = json.loads(_handle_get_history({
+            "entity_id": "sensor.temperature",
+            "include_details": True,
+        }))
+        assert "result" in result
+        assert "states" in result["result"]
+        assert len(result["result"]["states"]) == 2
+        mock_run.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Camera entity_id validation
+# ---------------------------------------------------------------------------
+
+
+class TestCameraEntityValidation:
+    def test_valid_camera_entity(self):
+        assert _CAMERA_ENTITY_RE.match("camera.front_door")
+        assert _CAMERA_ENTITY_RE.match("camera.backyard")
+        assert _CAMERA_ENTITY_RE.match("camera.baby_room")
+        assert _CAMERA_ENTITY_RE.match("camera.cam1")
+
+    def test_rejects_non_camera_domain(self):
+        assert _CAMERA_ENTITY_RE.match("light.bedroom") is None
+        assert _CAMERA_ENTITY_RE.match("sensor.temperature") is None
+        assert _CAMERA_ENTITY_RE.match("switch.fan") is None
+
+    def test_rejects_path_traversal(self):
+        assert _CAMERA_ENTITY_RE.match("camera.../../etc/passwd") is None
+        assert _CAMERA_ENTITY_RE.match("../../api/config") is None
+
+    def test_rejects_uppercase(self):
+        assert _CAMERA_ENTITY_RE.match("camera.FrontDoor") is None
+        assert _CAMERA_ENTITY_RE.match("CAMERA.front_door") is None
+
+    def test_rejects_special_chars(self):
+        assert _CAMERA_ENTITY_RE.match("camera.front door") is None
+        assert _CAMERA_ENTITY_RE.match("camera.front;rm") is None
+
+
+# ---------------------------------------------------------------------------
+# Camera image handler validation
+# ---------------------------------------------------------------------------
+
+
+class TestHandleGetCameraImage:
+    def test_missing_entity_id(self):
+        result = json.loads(_handle_get_camera_image({}))
+        assert "error" in result
+        assert "entity_id" in result["error"]
+
+    def test_empty_entity_id(self):
+        result = json.loads(_handle_get_camera_image({"entity_id": ""}))
+        assert "error" in result
+
+    def test_non_camera_entity_rejected(self):
+        result = json.loads(_handle_get_camera_image({"entity_id": "light.bedroom"}))
+        assert "error" in result
+        assert "camera entity" in result["error"].lower()
+
+    def test_path_traversal_rejected(self):
+        result = json.loads(_handle_get_camera_image({"entity_id": "../../config"}))
+        assert "error" in result
+
+    @patch("tools.homeassistant_tool._run_async")
+    def test_valid_camera_dispatches(self, mock_run):
+        mock_run.return_value = {
+            "entity_id": "camera.front_door",
+            "mime_type": "image/jpeg",
+            "size_bytes": 1024,
+            "image_path": "/tmp/camera/front_door.jpg",
+        }
+        result = json.loads(_handle_get_camera_image({"entity_id": "camera.front_door"}))
+        assert "result" in result
+        assert result["result"]["entity_id"] == "camera.front_door"
+        assert result["result"]["mime_type"] == "image/jpeg"
+        assert result["result"]["image_path"].endswith(".jpg")
+        mock_run.assert_called_once()

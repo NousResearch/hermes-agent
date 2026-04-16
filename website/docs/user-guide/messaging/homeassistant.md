@@ -48,7 +48,7 @@ Home Assistant will appear as a connected platform alongside any other messaging
 
 ## Available Tools
 
-Hermes Agent registers four tools for smart home control:
+Hermes Agent registers six tools for smart home control:
 
 ### `ha_list_entities`
 
@@ -118,6 +118,53 @@ Set the thermostat to 22 degrees in heat mode
 Set living room lights to blue at 50% brightness
 → ha_call_service(domain="light", service="turn_on",
     entity_id="light.living_room", data={"brightness": 128, "color_name": "blue"})
+```
+
+### `ha_get_history`
+
+Get state history for an entity. By default returns a compact summary optimised for AI agents: total change count, first/last state with timestamps, distinct state values with counts, and numeric min/max/average for sensors. Set `include_details=true` to also get the full state change list.
+
+**Parameters:**
+- `entity_id` *(required)* — The entity to get history for, e.g., `sensor.temperature`, `binary_sensor.front_door`
+- `start_time` *(optional)* — Start of the period in ISO-8601 format, e.g., `2024-01-15T10:00:00+00:00`. Defaults to 1 day ago.
+- `end_time` *(optional)* — End of the period in ISO-8601 format. Defaults to now.
+- `include_details` *(optional, default: false)* — Include the full list of state changes alongside the summary.
+
+**Examples:**
+
+```
+When was the front door last opened?
+→ ha_get_history(entity_id="binary_sensor.front_door")
+  Returns: {total_changes: 5, first: {state: "off", ...}, last: {state: "off", ...},
+            distinct_states: {"off": 3, "on": 2}}
+```
+
+```
+Show me the living room temperature over the past 6 hours
+→ ha_get_history(entity_id="sensor.living_room_temperature",
+    start_time="2024-01-15T12:00:00Z", end_time="2024-01-15T18:00:00Z")
+  Returns: {total_changes: 12, first: ..., last: ...,
+            numeric: {min: 20.5, max: 23.1, average: 21.8}}
+```
+
+```
+I need the exact timestamps for every state change
+→ ha_get_history(entity_id="binary_sensor.front_door", include_details=true)
+  Returns: summary + states: [{state: "off", last_changed: "..."}, ...]
+```
+
+### `ha_get_camera_image`
+
+Get a snapshot image from a Home Assistant camera entity. Saves the image to disk and returns the file path.
+
+**Parameters:**
+- `entity_id` *(required)* — The camera entity ID, e.g., `camera.front_door`, `camera.backyard`. Must start with `camera.`.
+
+**Example:**
+
+```
+Show me what the front door camera sees
+→ ha_get_camera_image(entity_id="camera.front_door")
 ```
 
 ## Gateway Platform: Real-Time Events

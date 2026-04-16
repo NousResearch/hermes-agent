@@ -88,7 +88,7 @@ See the [Messaging Gateway overview](/docs/user-guide/messaging) for the platfor
 
 ## Home Automation
 
-- **[Home Assistant](/docs/user-guide/messaging/homeassistant)** — Control smart home devices via four dedicated tools (`ha_list_entities`, `ha_get_state`, `ha_list_services`, `ha_call_service`). The Home Assistant toolset activates automatically when `HASS_TOKEN` is configured.
+- **[Home Assistant](/docs/user-guide/messaging/homeassistant)** — Control smart home devices via six dedicated tools (`ha_list_entities`, `ha_get_state`, `ha_list_services`, `ha_call_service`, `ha_get_history`, `ha_get_camera_image`). The Home Assistant toolset activates automatically when `HASS_TOKEN` is configured.
 
 ## Plugins
 

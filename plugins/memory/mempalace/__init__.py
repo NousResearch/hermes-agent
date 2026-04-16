@@ -2312,6 +2312,9 @@ class MemPalaceMemoryProvider(MemoryProvider):
             drawer_id, wing, room, content
         )
 
+        # Trigger incremental backup of the ChromaDB palace (covers new drawers)
+        _backup.enqueue_incremental([_HERMES_PALACE])
+
         return json.dumps({
             "result": "Drawer stored",
             "drawer_id": drawer_id,

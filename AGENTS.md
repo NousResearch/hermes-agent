@@ -426,6 +426,17 @@ Use `get_hermes_home()` from `hermes_constants` for code paths. Use `display_her
 for user-facing print/log messages. Hardcoding `~/.hermes` breaks profiles — each profile
 has its own `HERMES_HOME` directory. This was the source of 5 bugs fixed in PR #3575.
 
+### DO NOT treat repo-root persona files as live runtime state
+The active persona and memory files live under `HERMES_HOME`, not the git checkout:
+- `get_hermes_home() / "SOUL.md"`
+- `get_hermes_home() / "memories" / "MEMORY.md"`
+- `get_hermes_home() / "memories" / "USER.md"`
+
+If `SOUL.md`, `USER.md`, `IDENTITY.md`, `TOOLS.md`, `HEARTBEAT.md`, or `BOOTSTRAP.md`
+appear at the repo root, treat them as templates, migration artifacts, or local mistakes —
+not canonical runtime inputs. Do not read from, write to, or rely on repo-root copies when
+changing agent behavior.
+
 ### DO NOT use `simple_term_menu` for interactive menus
 Rendering bugs in tmux/iTerm2 — ghosting on scroll. Use `curses` (stdlib) instead. See `hermes_cli/tools_config.py` for the pattern.
 

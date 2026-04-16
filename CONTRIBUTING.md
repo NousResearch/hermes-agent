@@ -188,12 +188,15 @@ hermes-agent/
 | `~/.hermes/config.yaml` | Settings (model, terminal, toolsets, compression, etc.) |
 | `~/.hermes/.env` | API keys and secrets |
 | `~/.hermes/auth.json` | OAuth credentials (Nous Portal) |
+| `~/.hermes/SOUL.md` | Active agent identity / persona file |
 | `~/.hermes/skills/` | All active skills (bundled + hub-installed + agent-created) |
 | `~/.hermes/memories/` | Persistent memory (MEMORY.md, USER.md) |
 | `~/.hermes/state.db` | SQLite session database |
 | `~/.hermes/sessions/` | JSON session logs |
 | `~/.hermes/cron/` | Scheduled job data |
 | `~/.hermes/whatsapp/session/` | WhatsApp bridge credentials |
+
+> Runtime identity and memory live under `HERMES_HOME`, not the git checkout. Do not create or rely on repo-root `SOUL.md`, `USER.md`, `IDENTITY.md`, `TOOLS.md`, or `HEARTBEAT.md` files for active behavior.
 
 ---
 

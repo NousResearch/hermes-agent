@@ -124,14 +124,16 @@ hermes claw migrate --overwrite  # Overwrite existing conflicts
 ```
 
 What gets imported:
-- **SOUL.md** — persona file
-- **Memories** — MEMORY.md and USER.md entries
+- **SOUL.md** — persona file → `~/.hermes/SOUL.md`
+- **Memories** — MEMORY.md and USER.md entries → `~/.hermes/memories/`
 - **Skills** — user-created skills → `~/.hermes/skills/openclaw-imports/`
 - **Command allowlist** — approval patterns
 - **Messaging settings** — platform configs, allowed users, working directory
 - **API keys** — allowlisted secrets (Telegram, OpenRouter, OpenAI, Anthropic, ElevenLabs)
 - **TTS assets** — workspace audio files
 - **Workspace instructions** — AGENTS.md (with `--workspace-target`)
+
+Canonical local identity/memory paths live under `HERMES_HOME` (usually `~/.hermes`), not in the git checkout. If you see `SOUL.md`, `USER.md`, `IDENTITY.md`, `TOOLS.md`, or `HEARTBEAT.md` appear at the repo root, treat them as stray local files or templates — not the active runtime docs.
 
 See `hermes claw migrate --help` for all options, or use the `openclaw-migration` skill for an interactive agent-guided migration with dry-run previews.
 

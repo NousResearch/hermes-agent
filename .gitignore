@@ -62,3 +62,14 @@ mini-swe-agent/
 .direnv/
 result
 website/static/api/skills-index.json
+
+# Local runtime/persona files belong in HERMES_HOME, not the repo root.
+/.DS_Store
+/.openclaw/
+/memory/
+/SOUL.md
+/USER.md
+/IDENTITY.md
+/TOOLS.md
+/HEARTBEAT.md
+/BOOTSTRAP.md

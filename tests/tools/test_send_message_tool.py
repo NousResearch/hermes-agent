@@ -949,13 +949,20 @@ class TestParseTargetRefSlack:
         assert is_explicit is True
 
     def test_slack_usergroup_id_is_explicit(self):
-        """Slack usergroup/app IDs (U, F, V, W prefixes) are recognized."""
+        """Slack user (U), file (F), app (V), and workspace (W) IDs are recognized."""
         for prefix in ["U", "F", "V", "W"]:
             uid = f"{prefix}0ABC123DEF"
             chat_id, thread_id, is_explicit = _parse_target_ref("slack", uid)
             assert chat_id == uid, f"Failed for prefix {prefix}"
             assert thread_id is None
             assert is_explicit is True
+
+    def test_slack_id_with_whitespace_is_trimmed(self):
+        """Whitespace-padded Slack IDs are trimmed and recognized."""
+        chat_id, thread_id, is_explicit = _parse_target_ref("slack", "  C0ANYSL2GBE  ")
+        assert chat_id == "C0ANYSL2GBE"
+        assert thread_id is None
+        assert is_explicit is True
 
     def test_slack_id_only_matches_slack_platform(self):
         """Slack-style IDs on non-slack platforms are not treated as explicit."""

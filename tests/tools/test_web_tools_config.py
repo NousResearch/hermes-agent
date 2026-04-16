@@ -26,7 +26,6 @@ class TestFirecrawlClientConfig:
         tools.web_tools._firecrawl_client = None
         tools.web_tools._firecrawl_client_config = None
         for key in (
-            "HERMES_ENABLE_NOUS_MANAGED_TOOLS",
             "FIRECRAWL_API_KEY",
             "FIRECRAWL_API_URL",
             "FIRECRAWL_GATEWAY_URL",
@@ -35,7 +34,15 @@ class TestFirecrawlClientConfig:
             "TOOL_GATEWAY_USER_TOKEN",
         ):
             os.environ.pop(key, None)
-        os.environ["HERMES_ENABLE_NOUS_MANAGED_TOOLS"] = "1"
+        # Enable managed tools by default for these tests — patch both the
+        # local web_tools import and the managed_tool_gateway import so the
+        # full firecrawl client init path sees True.
+        self._managed_patchers = [
+            patch("tools.web_tools.managed_nous_tools_enabled", return_value=True),
+            patch("tools.managed_tool_gateway.managed_nous_tools_enabled", return_value=True),
+        ]
+        for p in self._managed_patchers:
+            p.start()
 
     def teardown_method(self):
         """Reset client after each test."""
@@ -43,7 +50,6 @@ class TestFirecrawlClientConfig:
         tools.web_tools._firecrawl_client = None
         tools.web_tools._firecrawl_client_config = None
         for key in (
-            "HERMES_ENABLE_NOUS_MANAGED_TOOLS",
             "FIRECRAWL_API_KEY",
             "FIRECRAWL_API_URL",
             "FIRECRAWL_GATEWAY_URL",
@@ -52,6 +58,8 @@ class TestFirecrawlClientConfig:
             "TOOL_GATEWAY_USER_TOKEN",
         ):
             os.environ.pop(key, None)
+        for p in self._managed_patchers:
+            p.stop()
 
     # ── Configuration matrix ─────────────────────────────────────────
 
@@ -298,7 +306,6 @@ class TestBackendSelection:
     """
 
     _ENV_KEYS = (
-        "HERMES_ENABLE_NOUS_MANAGED_TOOLS",
         "EXA_API_KEY",
         "PARALLEL_API_KEY",
         "FIRECRAWL_API_KEY",
@@ -311,14 +318,20 @@ class TestBackendSelection:
     )
 
     def setup_method(self):
-        os.environ["HERMES_ENABLE_NOUS_MANAGED_TOOLS"] = "1"
         for key in self._ENV_KEYS:
-            if key != "HERMES_ENABLE_NOUS_MANAGED_TOOLS":
-                os.environ.pop(key, None)
+            os.environ.pop(key, None)
+        self._managed_patchers = [
+            patch("tools.web_tools.managed_nous_tools_enabled", return_value=True),
+            patch("tools.managed_tool_gateway.managed_nous_tools_enabled", return_value=True),
+        ]
+        for p in self._managed_patchers:
+            p.start()
 
     def teardown_method(self):
         for key in self._ENV_KEYS:
             os.environ.pop(key, None)
+        for p in self._managed_patchers:
+            p.stop()
 
     # ── Config-based selection (web.backend in config.yaml) ───────────
 
@@ -523,7 +536,6 @@ class TestCheckWebApiKey:
     """Test suite for check_web_api_key() unified availability check."""
 
     _ENV_KEYS = (
-        "HERMES_ENABLE_NOUS_MANAGED_TOOLS",
         "EXA_API_KEY",
         "PARALLEL_API_KEY",
         "FIRECRAWL_API_KEY",
@@ -536,14 +548,20 @@ class TestCheckWebApiKey:
     )
 
     def setup_method(self):
-        os.environ["HERMES_ENABLE_NOUS_MANAGED_TOOLS"] = "1"
         for key in self._ENV_KEYS:
-            if key != "HERMES_ENABLE_NOUS_MANAGED_TOOLS":
-                os.environ.pop(key, None)
+            os.environ.pop(key, None)
+        self._managed_patchers = [
+            patch("tools.web_tools.managed_nous_tools_enabled", return_value=True),
+            patch("tools.managed_tool_gateway.managed_nous_tools_enabled", return_value=True),
+        ]
+        for p in self._managed_patchers:
+            p.start()
 
     def teardown_method(self):
         for key in self._ENV_KEYS:
             os.environ.pop(key, None)
+        for p in self._managed_patchers:
+            p.stop()
 
     def test_parallel_key_only(self):
         with patch.dict(os.environ, {"PARALLEL_API_KEY": "test-key"}):

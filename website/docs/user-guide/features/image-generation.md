@@ -11,6 +11,10 @@ Hermes Agent can generate images from text prompts using FAL.ai's **FLUX 2 Pro**
 
 ## Setup
 
+:::tip Nous Subscribers
+If you have a paid [Nous Portal](https://portal.nousresearch.com) subscription, you can use image generation through the **[Tool Gateway](tool-gateway.md)** without a FAL API key. Run `hermes model` or `hermes tools` to enable it.
+:::
+
 ### Get a FAL API Key
 
 1. Sign up at [fal.ai](https://fal.ai/)

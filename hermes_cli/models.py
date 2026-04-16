@@ -26,7 +26,8 @@ COPILOT_REASONING_EFFORTS_O_SERIES = ["low", "medium", "high"]
 # Fallback OpenRouter snapshot used when the live catalog is unavailable.
 # (model_id, display description shown in menus)
 OPENROUTER_MODELS: list[tuple[str, str]] = [
-    ("anthropic/claude-opus-4.6",       "recommended"),
+    ("anthropic/claude-opus-4.7",       "recommended"),
+    ("anthropic/claude-opus-4.6",       ""),
     ("anthropic/claude-sonnet-4.6",     ""),
     ("qwen/qwen3.6-plus",               ""),
     ("anthropic/claude-sonnet-4.5",     ""),
@@ -181,6 +182,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "MiniMax-M2",
     ],
     "anthropic": [
+        "claude-opus-4-7",
         "claude-opus-4-6",
         "claude-sonnet-4-6",
         "claude-opus-4-5-20251101",

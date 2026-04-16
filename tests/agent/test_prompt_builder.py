@@ -26,6 +26,7 @@ from agent.prompt_builder import (
     OPENAI_MODEL_EXECUTION_GUIDANCE,
     MEMORY_GUIDANCE,
     SESSION_SEARCH_GUIDANCE,
+    PLANNING_AND_SELF_REVIEW_GUIDANCE,
     PLATFORM_HINTS,
     WSL_ENVIRONMENT_HINT,
 )
@@ -42,12 +43,20 @@ class TestGuidanceConstants:
         assert "durable facts" in MEMORY_GUIDANCE
         assert "Do NOT save task progress" in MEMORY_GUIDANCE
         assert "session_search" in MEMORY_GUIDANCE
+        assert "Save memory proactively" in MEMORY_GUIDANCE
         assert "like a diary" not in MEMORY_GUIDANCE
         assert ">80%" not in MEMORY_GUIDANCE
 
     def test_session_search_guidance_is_simple_cross_session_recall(self):
         assert "relevant cross-session context exists" in SESSION_SEARCH_GUIDANCE
+        assert "last time" in SESSION_SEARCH_GUIDANCE
+        assert "Prefer searching over guessing" in SESSION_SEARCH_GUIDANCE
         assert "recent turns of the current session" not in SESSION_SEARCH_GUIDANCE
+
+    def test_planning_and_self_review_guidance_mentions_plan_and_verify(self):
+        assert "concise plan" in PLANNING_AND_SELF_REVIEW_GUIDANCE
+        assert "self-review" in PLANNING_AND_SELF_REVIEW_GUIDANCE
+        assert "verify important outputs" in PLANNING_AND_SELF_REVIEW_GUIDANCE
 
 
 # =========================================================================

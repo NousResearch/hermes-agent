@@ -268,6 +268,37 @@ class TestLaunchdServiceRecovery:
             ["launchctl", "kickstart", target],
         ]
 
+    def test_launchd_start_tolerates_bootstrap_io_error_when_job_is_loaded(self, tmp_path, monkeypatch):
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
+        label = gateway_cli.get_launchd_label()
+        domain = gateway_cli._launchd_domain()
+        target = f"{domain}/{label}"
+
+        calls = []
+
+        def fake_run(cmd, check=False, capture_output=False, text=False, **kwargs):
+            calls.append(cmd)
+            if cmd == ["launchctl", "kickstart", target] and calls.count(cmd) == 1:
+                raise gateway_cli.subprocess.CalledProcessError(5, cmd, stderr="Bootstrap failed: 5: Input/output error")
+            if cmd == ["launchctl", "bootstrap", domain, str(plist_path)]:
+                return SimpleNamespace(returncode=5, stdout="", stderr="Bootstrap failed: 5: Input/output error", args=cmd)
+            if cmd == ["launchctl", "print", target]:
+                return SimpleNamespace(returncode=0, stdout="loaded", stderr="", args=cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="", args=cmd)
+
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        gateway_cli.launchd_start()
+
+        assert calls == [
+            ["launchctl", "kickstart", target],
+            ["launchctl", "bootstrap", domain, str(plist_path)],
+            ["launchctl", "print", target],
+            ["launchctl", "kickstart", target],
+        ]
+
     def test_launchd_restart_drains_running_gateway_before_kickstart(self, monkeypatch):
         calls = []
         target = f"{gateway_cli._launchd_domain()}/{gateway_cli.get_launchd_label()}"

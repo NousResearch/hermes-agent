@@ -24,6 +24,7 @@ from hermes_cli.config import (
     get_env_value,
     get_hermes_home,
     is_managed,
+    load_env,
     managed_error,
     read_raw_config,
     save_env_value,
@@ -934,6 +935,103 @@ def _normalize_launchd_plist_for_comparison(text: str) -> str:
     )
 
 
+def _launchd_extra_env_vars() -> dict[str, str]:
+    """Return gateway-relevant env vars that should be embedded in launchd."""
+    env_vars = load_env()
+    keys: set[str] = set()
+    prefixes = (
+        "TELEGRAM_",
+        "DISCORD_",
+        "SLACK_",
+        "MATRIX_",
+        "MATTERMOST_",
+        "WHATSAPP_",
+        "SIGNAL_",
+        "EMAIL_",
+        "SMS_",
+        "TWILIO_",
+        "DINGTALK_",
+        "FEISHU_",
+        "WECOM_",
+        "WEIXIN_",
+        "BLUEBUBBLES_",
+        "QQ_",
+        "HERMES_GATEWAY_",
+    )
+    explicit_keys = {
+        "GATEWAY_ALLOW_ALL_USERS",
+        "HERMES_AGENT_TIMEOUT",
+        "HERMES_AGENT_TIMEOUT_WARNING",
+        "HERMES_AGENT_NOTIFY_INTERVAL",
+        "HERMES_RESTART_DRAIN_TIMEOUT",
+        "HERMES_TIMEZONE",
+    }
+
+    for key in set(env_vars) | set(os.environ):
+        if key in explicit_keys or key.startswith(prefixes):
+            keys.add(key)
+
+    return {
+        key: value
+        for key in sorted(keys)
+        if (value := get_env_value(key))
+    }
+
+
+def _launchd_env_vars_xml(env_vars: dict[str, str]) -> str:
+    from xml.sax.saxutils import escape
+
+    lines = []
+    for key, value in env_vars.items():
+        lines.append(f"        <key>{escape(key)}</key>")
+        lines.append(f"        <string>{escape(str(value))}</string>")
+    return "\n".join(lines)
+
+
+def _launchd_target(label: str | None = None) -> str:
+    return f"{_launchd_domain()}/{label or get_launchd_label()}"
+
+
+def _launchd_job_is_loaded(label: str | None = None) -> bool:
+    result = subprocess.run(
+        ["launchctl", "print", _launchd_target(label)],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    return result.returncode == 0
+
+
+def _launchd_bootstrap(
+    plist_path: Path,
+    *,
+    label: str | None = None,
+    check: bool = True,
+    timeout: int = 30,
+) -> subprocess.CompletedProcess:
+    """Bootstrap a launchd job, tolerating rc=5 when the job is already loaded."""
+    result = subprocess.run(
+        ["launchctl", "bootstrap", _launchd_domain(), str(plist_path)],
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        check=False,
+    )
+    if result.returncode == 0:
+        return result
+    if result.returncode == 5 and _launchd_job_is_loaded(label):
+        return result
+    if check:
+        raise subprocess.CalledProcessError(
+            result.returncode,
+            result.args,
+            output=result.stdout,
+            stderr=result.stderr,
+        )
+    return result
+
+
 def systemd_unit_is_current(system: bool = False) -> bool:
     unit_path = get_systemd_unit_path(system=system)
     if not unit_path.exists():
@@ -1250,6 +1348,14 @@ def generate_launchd_plist() -> str:
         dict.fromkeys(priority_dirs + [p for p in os.environ.get("PATH", "").split(":") if p])
     )
 
+    env_vars = {
+        "PATH": sane_path,
+        "VIRTUAL_ENV": venv_dir,
+        "HERMES_HOME": hermes_home,
+        **_launchd_extra_env_vars(),
+    }
+    env_vars_xml = _launchd_env_vars_xml(env_vars)
+
     # Build ProgramArguments array, including --profile when using a named profile
     prog_args = [
         f"<string>{python_path}</string>",
@@ -1283,12 +1389,7 @@ def generate_launchd_plist() -> str:
     
     <key>EnvironmentVariables</key>
     <dict>
-        <key>PATH</key>
-        <string>{sane_path}</string>
-        <key>VIRTUAL_ENV</key>
-        <string>{venv_dir}</string>
-        <key>HERMES_HOME</key>
-        <string>{hermes_home}</string>
+{env_vars_xml}
     </dict>
     
     <key>RunAtLoad</key>
@@ -1334,8 +1435,8 @@ def refresh_launchd_plist_if_needed() -> bool:
     plist_path.write_text(generate_launchd_plist(), encoding="utf-8")
     label = get_launchd_label()
     # Bootout/bootstrap so launchd picks up the new definition
-    subprocess.run(["launchctl", "bootout", f"{_launchd_domain()}/{label}"], check=False, timeout=90)
-    subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=False, timeout=30)
+    subprocess.run(["launchctl", "bootout", _launchd_target(label)], check=False, timeout=90)
+    _launchd_bootstrap(plist_path, label=label, check=False, timeout=30)
     print("↻ Updated gateway launchd service definition to match the current Hermes install")
     return True
 
@@ -1355,9 +1456,9 @@ def launchd_install(force: bool = False):
     
     plist_path.parent.mkdir(parents=True, exist_ok=True)
     print(f"Installing launchd service to: {plist_path}")
-    plist_path.write_text(generate_launchd_plist())
+    plist_path.write_text(generate_launchd_plist(), encoding="utf-8")
     
-    subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=True, timeout=30)
+    _launchd_bootstrap(plist_path, label=get_launchd_label(), check=True, timeout=30)
     
     print()
     print("✓ Service installed and loaded!")
@@ -1387,20 +1488,20 @@ def launchd_start():
         print("↻ launchd plist missing; regenerating service definition")
         plist_path.parent.mkdir(parents=True, exist_ok=True)
         plist_path.write_text(generate_launchd_plist(), encoding="utf-8")
-        subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=True, timeout=30)
-        subprocess.run(["launchctl", "kickstart", f"{_launchd_domain()}/{label}"], check=True, timeout=30)
+        _launchd_bootstrap(plist_path, label=label, check=True, timeout=30)
+        subprocess.run(["launchctl", "kickstart", _launchd_target(label)], check=True, timeout=30)
         print("✓ Service started")
         return
 
     refresh_launchd_plist_if_needed()
     try:
-        subprocess.run(["launchctl", "kickstart", f"{_launchd_domain()}/{label}"], check=True, timeout=30)
+        subprocess.run(["launchctl", "kickstart", _launchd_target(label)], check=True, timeout=30)
     except subprocess.CalledProcessError as e:
-        if e.returncode not in (3, 113):
+        if e.returncode not in (3, 5, 113):
             raise
         print("↻ launchd job was unloaded; reloading service definition")
-        subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=True, timeout=30)
-        subprocess.run(["launchctl", "kickstart", f"{_launchd_domain()}/{label}"], check=True, timeout=30)
+        _launchd_bootstrap(plist_path, label=label, check=True, timeout=30)
+        subprocess.run(["launchctl", "kickstart", _launchd_target(label)], check=True, timeout=30)
     print("✓ Service started")
 
 def launchd_stop():
@@ -1464,7 +1565,7 @@ def _wait_for_gateway_exit(timeout: float = 10.0, force_after: float | None = 5.
 
 def launchd_restart():
     label = get_launchd_label()
-    target = f"{_launchd_domain()}/{label}"
+    target = _launchd_target(label)
     drain_timeout = _get_restart_drain_timeout()
     from gateway.status import get_running_pid
 
@@ -1485,12 +1586,12 @@ def launchd_restart():
         subprocess.run(["launchctl", "kickstart", "-k", target], check=True, timeout=90)
         print("✓ Service restarted")
     except subprocess.CalledProcessError as e:
-        if e.returncode not in (3, 113):
+        if e.returncode not in (3, 5, 113):
             raise
         # Job not loaded — bootstrap and start fresh
         print("↻ launchd job was unloaded; reloading")
         plist_path = get_launchd_plist_path()
-        subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=True, timeout=30)
+        _launchd_bootstrap(plist_path, label=label, check=True, timeout=30)
         subprocess.run(["launchctl", "kickstart", target], check=True, timeout=30)
         print("✓ Service restarted")
 

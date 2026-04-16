@@ -136,6 +136,17 @@ class TestLaunchdPlistPath:
         assert "<key>VIRTUAL_ENV</key>" in plist
         assert "<key>HERMES_HOME</key>" in plist
 
+    def test_plist_embeds_gateway_env_vars_from_runtime_or_dotenv(self, monkeypatch):
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123:abc")
+        monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "42")
+
+        plist = gateway_cli.generate_launchd_plist()
+
+        assert "<key>TELEGRAM_BOT_TOKEN</key>" in plist
+        assert "<string>123:abc</string>" in plist
+        assert "<key>TELEGRAM_ALLOWED_USERS</key>" in plist
+        assert "<string>42</string>" in plist
+
     def test_plist_path_includes_venv_bin(self):
         plist = gateway_cli.generate_launchd_plist()
         detected = gateway_cli._detect_venv_dir()

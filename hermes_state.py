@@ -141,6 +141,7 @@ class SessionDB:
 
         self._lock = threading.Lock()
         self._write_count = 0
+        self._fts_enabled = False
         self._conn = sqlite3.connect(
             str(self.db_path),
             check_same_thread=False,
@@ -343,8 +344,22 @@ class SessionDB:
         # FTS5 setup (separate because CREATE VIRTUAL TABLE can't be in executescript with IF NOT EXISTS reliably)
         try:
             cursor.execute("SELECT * FROM messages_fts LIMIT 0")
-        except sqlite3.OperationalError:
-            cursor.executescript(FTS_SQL)
+            self._fts_enabled = True
+        except sqlite3.OperationalError as exc:
+            if "no such table" not in str(exc).lower():
+                raise
+            try:
+                cursor.executescript(FTS_SQL)
+                self._fts_enabled = True
+            except sqlite3.OperationalError as fts_exc:
+                err = str(fts_exc).lower()
+                if "fts5" not in err and "no such module" not in err:
+                    raise
+                logger.warning(
+                    "SQLite FTS5 unavailable for %s; full-text search disabled: %s",
+                    self.db_path,
+                    fts_exc,
+                )
 
         self._conn.commit()
 
@@ -1008,6 +1023,9 @@ class SessionDB:
         Returns matching messages with session metadata, content snippet,
         and surrounding context (1 message before and after the match).
         """
+        if not self._fts_enabled:
+            return []
+
         if not query or not query.strip():
             return []
 

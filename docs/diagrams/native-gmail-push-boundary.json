@@ -1,0 +1,224 @@
+{
+  "id": "root",
+  "title": "Native Gmail Push Boundary Map",
+  "legend": true,
+  "layoutOptions": {
+    "elk.algorithm": "layered",
+    "elk.direction": "DOWN",
+    "elk.spacing.nodeNode": "42",
+    "elk.layered.spacing.nodeNodeBetweenLayers": "70",
+    "elk.padding": "[top=48,left=24,bottom=24,right=24]"
+  },
+  "children": [
+    {
+      "id": "outside_hermes",
+      "label": "OUTSIDE HERMES",
+      "labels": [{ "text": "OUTSIDE HERMES" }],
+      "containerColor": "step",
+      "layoutOptions": {
+        "elk.algorithm": "layered",
+        "elk.direction": "RIGHT",
+        "elk.spacing.nodeNode": "32",
+        "elk.layered.spacing.nodeNodeBetweenLayers": "40",
+        "elk.padding": "[top=36,left=20,bottom=20,right=20]"
+      },
+      "children": [
+        {
+          "id": "gmail_mailbox",
+          "width": 210,
+          "height": 56,
+          "labels": [{ "text": "Gmail mailbox" }],
+          "label": "Gmail mailbox",
+          "subtitle": "real user mail lives here",
+          "color": "external"
+        },
+        {
+          "id": "gmail_api",
+          "width": 250,
+          "height": 64,
+          "labels": [{ "text": "Gmail API" }],
+          "label": "Gmail API",
+          "subtitle": "users.watch, users.history.list, users.messages.get",
+          "color": "external"
+        },
+        {
+          "id": "pubsub_topic",
+          "width": 220,
+          "height": 56,
+          "labels": [{ "text": "Cloud Pub/Sub topic" }],
+          "label": "Cloud Pub/Sub topic",
+          "subtitle": "mailbox change notifications",
+          "color": "external"
+        },
+        {
+          "id": "pubsub_push",
+          "width": 240,
+          "height": 64,
+          "labels": [{ "text": "Push subscription" }],
+          "label": "Push subscription",
+          "subtitle": "OIDC bearer token on each POST",
+          "color": "external"
+        }
+      ]
+    },
+    {
+      "id": "inside_hermes",
+      "label": "INSIDE HERMES",
+      "labels": [{ "text": "INSIDE HERMES" }],
+      "containerColor": "step",
+      "layoutOptions": {
+        "elk.algorithm": "layered",
+        "elk.direction": "RIGHT",
+        "elk.spacing.nodeNode": "34",
+        "elk.layered.spacing.nodeNodeBetweenLayers": "48",
+        "elk.padding": "[top=36,left=20,bottom=20,right=20]"
+      },
+      "children": [
+        {
+          "id": "cli_setup",
+          "width": 240,
+          "height": 72,
+          "labels": [{ "text": "hermes gmail-push CLI" }],
+          "label": "hermes gmail-push CLI",
+          "subtitle": "new in this PR: setup, status, renew, resync, test",
+          "color": "action"
+        },
+        {
+          "id": "config_state",
+          "width": 250,
+          "height": 78,
+          "labels": [{ "text": "Profile-scoped config and state" }],
+          "label": "Profile-scoped config + state",
+          "subtitle": "config.yaml, token.json, state.json, recent_delivery_ids.json",
+          "color": "data"
+        },
+        {
+          "id": "gmail_push_adapter",
+          "width": 250,
+          "height": 78,
+          "labels": [{ "text": "gmail_push adapter" }],
+          "label": "gmail_push adapter",
+          "subtitle": "new module: gateway/platforms/gmail_push.py",
+          "color": "action"
+        },
+        {
+          "id": "ingress_guards",
+          "width": 265,
+          "height": 86,
+          "labels": [{ "text": "Ingress guards" }],
+          "label": "Ingress guards",
+          "subtitle": "verify OIDC audience + service account, require email_verified, validate envelope + messageId + target mailbox",
+          "color": "decision"
+        },
+        {
+          "id": "reconcile",
+          "width": 270,
+          "height": 86,
+          "labels": [{ "text": "History reconciliation" }],
+          "label": "History reconciliation",
+          "subtitle": "new logic: dedupe Pub/Sub deliveries, fetch history pages, fetch concrete messages, rebaseline on stale cursor",
+          "color": "action"
+        },
+        {
+          "id": "gateway_pipeline",
+          "width": 240,
+          "height": 72,
+          "labels": [{ "text": "Existing gateway pipeline" }],
+          "label": "Existing gateway pipeline",
+          "subtitle": "reused: MessageEvent dispatch, handle_message, agent execution",
+          "color": "success"
+        },
+        {
+          "id": "existing_outputs",
+          "width": 230,
+          "height": 72,
+          "labels": [{ "text": "Existing Hermes outputs" }],
+          "label": "Existing Hermes outputs",
+          "subtitle": "reused: session storage, response logging, cron follow-ons",
+          "color": "success"
+        }
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "id": "e_watch_config",
+      "sources": ["cli_setup"],
+      "targets": ["config_state"],
+      "edgeColor": "#3B82F6"
+    },
+    {
+      "id": "e_adapter_reads_state",
+      "sources": ["config_state"],
+      "targets": ["gmail_push_adapter"],
+      "edgeColor": "#F59E0B"
+    },
+    {
+      "id": "e_watch_registration",
+      "sources": ["gmail_push_adapter"],
+      "targets": ["gmail_api"],
+      "labels": [{ "text": "register watch", "width": 84, "height": 14 }],
+      "edgeColor": "#2563EB"
+    },
+    {
+      "id": "e_mailbox_changes",
+      "sources": ["gmail_mailbox"],
+      "targets": ["pubsub_topic"],
+      "labels": [{ "text": "change signal", "width": 74, "height": 14 }],
+      "edgeColor": "#0F766E"
+    },
+    {
+      "id": "e_pubsub_delivery",
+      "sources": ["pubsub_topic"],
+      "targets": ["pubsub_push"],
+      "edgeColor": "#0F766E"
+    },
+    {
+      "id": "e_push_to_guards",
+      "sources": ["pubsub_push"],
+      "targets": ["ingress_guards"],
+      "labels": [{ "text": "authenticated POST", "width": 92, "height": 14 }],
+      "edgeColor": "#0F766E"
+    },
+    {
+      "id": "e_guards_to_adapter",
+      "sources": ["ingress_guards"],
+      "targets": ["gmail_push_adapter"],
+      "labels": [{ "text": "accept", "width": 34, "height": 14 }],
+      "edgeColor": "#EC4899"
+    },
+    {
+      "id": "e_adapter_to_reconcile",
+      "sources": ["gmail_push_adapter"],
+      "targets": ["reconcile"],
+      "edgeColor": "#2563EB"
+    },
+    {
+      "id": "e_reconcile_to_api",
+      "sources": ["reconcile"],
+      "targets": ["gmail_api"],
+      "labels": [{ "text": "history + message fetch", "width": 110, "height": 14 }],
+      "edgeColor": "#2563EB"
+    },
+    {
+      "id": "e_reconcile_to_state",
+      "sources": ["reconcile"],
+      "targets": ["config_state"],
+      "labels": [{ "text": "cursor + dedupe cache", "width": 102, "height": 14 }],
+      "edgeColor": "#D97706"
+    },
+    {
+      "id": "e_event_dispatch",
+      "sources": ["reconcile"],
+      "targets": ["gateway_pipeline"],
+      "labels": [{ "text": "MessageEvent", "width": 64, "height": 14 }],
+      "edgeColor": "#047857"
+    },
+    {
+      "id": "e_existing_outputs",
+      "sources": ["gateway_pipeline"],
+      "targets": ["existing_outputs"],
+      "edgeColor": "#047857"
+    }
+  ]
+}

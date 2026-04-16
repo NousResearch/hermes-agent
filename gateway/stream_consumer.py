@@ -638,6 +638,9 @@ class GatewayStreamConsumer:
         _visible_stripped = visible_without_cursor.strip()
         if not _visible_stripped:
             return True  # cursor-only / whitespace-only update
+        # Strip leading newlines — the non-streaming path does this via
+        # format_message().strip(), but edit_message() skips formatting.
+        text = text.lstrip('\n')
         if not text.strip():
             return True  # nothing to send is "success"
         # Guard: do not create a brand-new standalone message when the only

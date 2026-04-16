@@ -74,6 +74,7 @@ try:
     from lark_oapi.core.const import FEISHU_DOMAIN, LARK_DOMAIN
     from lark_oapi.event.callback.model.p2_card_action_trigger import (
         CallBackCard,
+        CallBackToast,
         P2CardActionTriggerResponse,
     )
     from lark_oapi.event.dispatcher_handler import EventDispatcherHandler
@@ -83,8 +84,9 @@ try:
 except ImportError:
     FEISHU_AVAILABLE = False
     lark = None  # type: ignore[assignment]
-    CallBackCard = None  # type: ignore[assignment]
     P2CardActionTriggerResponse = None  # type: ignore[assignment]
+    CallBackCard = None  # type: ignore[assignment]
+    CallBackToast = None  # type: ignore[assignment]
     EventDispatcherHandler = None  # type: ignore[assignment]
     FeishuWSClient = None  # type: ignore[assignment]
     FEISHU_DOMAIN = None  # type: ignore[assignment]
@@ -173,19 +175,6 @@ _FEISHU_WEBHOOK_BODY_TIMEOUT_SECONDS = 30          # max seconds to read request
 _FEISHU_WEBHOOK_ANOMALY_THRESHOLD = 25             # consecutive error responses before WARNING log
 _FEISHU_WEBHOOK_ANOMALY_TTL_SECONDS = 6 * 60 * 60  # anomaly tracker TTL (6 hours) — matches openclaw
 _FEISHU_CARD_ACTION_DEDUP_TTL_SECONDS = 15 * 60    # card action token dedup window (15 min)
-
-_APPROVAL_CHOICE_MAP: Dict[str, str] = {
-    "approve_once": "once",
-    "approve_session": "session",
-    "approve_always": "always",
-    "deny": "deny",
-}
-_APPROVAL_LABEL_MAP: Dict[str, str] = {
-    "once": "Approved once",
-    "session": "Approved for session",
-    "always": "Approved permanently",
-    "deny": "Denied",
-}
 _FEISHU_BOT_MSG_TRACK_SIZE = 512                   # LRU size for tracking sent message IDs
 _FEISHU_REPLY_FALLBACK_CODES = frozenset({230011, 231003})  # reply target withdrawn/missing → create fallback
 _FEISHU_ACK_EMOJI = "OK"
@@ -1073,6 +1062,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._webhook_rate_counts: Dict[str, tuple[int, float]] = {}  # rate_key → (count, window_start)
         self._webhook_anomaly_counts: Dict[str, tuple[int, str, float]] = {}  # ip → (count, last_status, first_seen)
         self._card_action_tokens: Dict[str, float] = {}  # token → first_seen_time
+        self._card_action_responses: Dict[str, Any] = {}  # token → cached inline response
         self._chat_locks: Dict[str, asyncio.Lock] = {}  # chat_id → lock (per-chat serial processing)
         self._sent_message_ids_to_chat: Dict[str, str] = {}  # message_id → chat_id (for reaction routing)
         self._sent_message_id_order: List[str] = []  # LRU order for _sent_message_ids_to_chat
@@ -1089,6 +1079,8 @@ class FeishuAdapter(BasePlatformAdapter):
         # Exec approval button state (approval_id → {session_key, message_id, chat_id})
         self._approval_state: Dict[int, Dict[str, str]] = {}
         self._approval_counter = itertools.count(1)
+        # Clarify prompt state (prompt_id → {event, response, question, message_id})
+        self._clarify_state: Dict[str, Dict[str, Any]] = {}
         self._load_seen_message_ids()
 
     @staticmethod
@@ -1507,24 +1499,265 @@ class FeishuAdapter(BasePlatformAdapter):
             logger.warning("[Feishu] send_exec_approval failed: %s", exc)
             return SendResult(success=False, error=str(exc))
 
-    @staticmethod
-    def _build_resolved_approval_card(*, choice: str, user_name: str) -> Dict[str, Any]:
-        """Build raw card JSON for a resolved approval action."""
-        icon = "❌" if choice == "deny" else "✅"
-        label = _APPROVAL_LABEL_MAP.get(choice, "Resolved")
+    async def send_clarify_prompt(
+        self,
+        chat_id: str,
+        question: str,
+        choices: Optional[list[str]] = None,
+        prompt_id: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        questions: Optional[list[dict]] = None,
+    ) -> SendResult:
+        """Send a Feishu interactive card for clarify prompts.
+
+        When *questions* is provided, sends a Card V2 form. Otherwise
+        sends the classic V1 button card.
+        """
+        if not self._client:
+            return SendResult(success=False, error="Not connected")
+
+        prompt_id = str(prompt_id or uuid.uuid4())
+
+        if questions:
+            return await self._send_ask_form(chat_id, questions, prompt_id, metadata)
+
+        try:
+            card = self._build_clarify_card(question, choices or [], prompt_id)
+            payload = json.dumps(card, ensure_ascii=False)
+            response = await self._feishu_send_with_retry(
+                chat_id=chat_id,
+                msg_type="interactive",
+                payload=payload,
+                reply_to=None,
+                metadata=metadata,
+            )
+            return self._finalize_send_result(response, "send_clarify_prompt failed")
+        except Exception as exc:
+            logger.warning("[Feishu] send_clarify_prompt failed: %s", exc)
+            return SendResult(success=False, error=str(exc))
+
+    async def _send_ask_form(
+        self,
+        chat_id: str,
+        questions: list[dict],
+        prompt_id: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a Card V2 form for multi-question input."""
+        try:
+            card = self._build_ask_form_card(questions, prompt_id)
+            payload = json.dumps(card, ensure_ascii=False)
+            response = await self._feishu_send_with_retry(
+                chat_id=chat_id,
+                msg_type="interactive",
+                payload=payload,
+                reply_to=None,
+                metadata=metadata,
+            )
+            return self._finalize_send_result(response, "_send_ask_form failed")
+        except Exception as exc:
+            logger.warning("[Feishu] _send_ask_form failed: %s", exc)
+            return SendResult(success=False, error=str(exc))
+
+    def _build_clarify_card(self, question: str, choices: list[str], prompt_id: str) -> dict:
+        """Build a Feishu interactive card for clarify prompts."""
+        normalized_question = (question or "").strip()
+        normalized_choices = [str(c).strip() for c in (choices or []) if str(c).strip()][:4]
+        actions = []
+        for idx, choice in enumerate(normalized_choices, start=1):
+            actions.append(
+                {
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": choice[:40]},
+                    "type": "primary" if idx == 1 else "default",
+                    "value": {
+                        "hermes_clarify": True,
+                        "prompt_id": prompt_id,
+                        "choice_index": idx,
+                        "choice_text": choice,
+                    },
+                }
+            )
+        if normalized_choices:
+            actions.append(
+                {
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": "其他 / 手动输入"},
+                    "type": "default",
+                    "value": {
+                        "hermes_clarify": True,
+                        "prompt_id": prompt_id,
+                        "choice_index": 0,
+                        "choice_text": "Other",
+                    },
+                }
+            )
+        elements = []
+        if actions:
+            # Adaptive columns: ≤3 buttons → 1 row; otherwise 3 per row.
+            cols = len(actions) if len(actions) <= 3 else 3
+            for i in range(0, len(actions), cols):
+                elements.append({"tag": "action", "actions": actions[i:i + cols]})
+        else:
+            elements.append(
+                {
+                    "tag": "markdown",
+                    "content": "请直接回复这条消息，输入你的答案。",
+                }
+            )
         return {
             "config": {"wide_screen_mode": True},
             "header": {
-                "title": {"content": f"{icon} {label}", "tag": "plain_text"},
-                "template": "red" if choice == "deny" else "green",
+                "title": {"content": normalized_question or "❓ 请选择", "tag": "plain_text"},
+                "template": "blue",
             },
-            "elements": [
-                {
-                    "tag": "markdown",
-                    "content": f"{icon} **{label}** by {user_name}",
-                },
-            ],
+            "elements": elements,
         }
+
+    def _build_ask_form_card(self, questions: list[dict], prompt_id: str) -> dict:
+        """Build a Feishu Card V2 form for structured multi-question input."""
+        form_elements: list[dict] = []
+
+        for idx, q in enumerate(questions):
+            header = str(q.get("header", "")).strip()
+            question_text = str(q.get("question", "")).strip()
+            options = q.get("options") or []
+            multi_select = bool(q.get("multiSelect", False))
+            allow_freeform = bool(q.get("allowFreeformInput", False))
+
+            if idx > 0:
+                form_elements.append({"tag": "hr"})
+
+            if options:
+                rendered_options = []
+                initial_option = None
+                for opt in options:
+                    label = str(opt.get("label", "")).strip()
+                    desc = str(opt.get("description", "")).strip()
+                    recommended = bool(opt.get("recommended", False))
+                    display = f"⭐ {label}" if recommended else label
+                    if desc:
+                        display = f"{display} — {desc}"
+                    rendered_options.append({
+                        "text": {"tag": "plain_text", "content": display},
+                        "value": label,
+                    })
+                    if recommended and initial_option is None:
+                        initial_option = label
+
+                if multi_select:
+                    component: dict = {
+                        "tag": "multi_select_static",
+                        "name": header,
+                        "required": False,
+                        "width": "fill",
+                        "placeholder": {"tag": "plain_text", "content": "请选择（可多选）"},
+                        "options": rendered_options,
+                    }
+                    if initial_option:
+                        component["selected_values"] = [initial_option]
+                    form_elements.append({
+                        "tag": "markdown",
+                        "content": f"**{question_text}**",
+                    })
+                    form_elements.append(component)
+                else:
+                    component = {
+                        "tag": "select_static",
+                        "name": header,
+                        "required": False,
+                        "width": "fill",
+                        "placeholder": {"tag": "plain_text", "content": "请选择"},
+                        "options": rendered_options,
+                    }
+                    if initial_option:
+                        component["initial_option"] = initial_option
+                    form_elements.append({
+                        "tag": "markdown",
+                        "content": f"**{question_text}**",
+                    })
+                    form_elements.append(component)
+
+                if allow_freeform:
+                    form_elements.append({
+                        "tag": "input",
+                        "name": f"{header}_freeform",
+                        "required": False,
+                        "input_type": "text",
+                        "max_length": 500,
+                        "width": "fill",
+                        "placeholder": {"tag": "plain_text", "content": "或输入自定义内容"},
+                        "label": {"tag": "plain_text", "content": "自定义输入"},
+                        "label_position": "top",
+                    })
+            else:
+                form_elements.append({
+                    "tag": "input",
+                    "name": header,
+                    "required": False,
+                    "input_type": "multiline_text",
+                    "rows": 3,
+                    "max_length": 1000,
+                    "width": "fill",
+                    "placeholder": {"tag": "plain_text", "content": "请输入你的回答"},
+                    "label": {"tag": "plain_text", "content": question_text},
+                    "label_position": "top",
+                })
+
+        form_elements.append({
+            "tag": "button",
+            "name": "hermes_ask_submit",
+            "form_action_type": "submit",
+            "type": "primary",
+            "text": {"tag": "plain_text", "content": "提交"},
+            "behaviors": [
+                {"type": "callback", "value": {"hermes_ask_form": True, "prompt_id": prompt_id}}
+            ],
+        })
+
+        first_question = str(questions[0].get("question", "")).strip() if questions else ""
+        card_title = first_question[:50] if len(questions) == 1 else "📋 请回答以下问题"
+
+        return {
+            "schema": "2.0",
+            "header": {
+                "title": {"tag": "plain_text", "content": card_title},
+                "template": "blue",
+            },
+            "body": {
+                "elements": [
+                    {
+                        "tag": "form",
+                        "name": "hermes_ask_form",
+                        "elements": form_elements,
+                    }
+                ]
+            },
+        }
+
+    def _parse_form_value(self, form_value: dict, questions: list[dict]) -> dict:
+        """Parse a Feishu Card V2 form_value into structured responses."""
+        result = {}
+        for q in questions:
+            header = str(q.get("header", "")).strip()
+            allow_freeform = bool(q.get("allowFreeformInput", False))
+
+            raw = form_value.get(header)
+            freeform_key = f"{header}_freeform"
+            freeform_val = str(form_value.get(freeform_key, "") or "").strip() or None
+
+            if isinstance(raw, list):
+                selected = [str(v) for v in raw]
+            elif raw is not None:
+                selected = [str(raw)]
+            else:
+                selected = []
+
+            result[header] = {
+                "selected": selected,
+                "freeform": freeform_val if allow_freeform else None,
+            }
+        return result
 
     async def send_voice(
         self,
@@ -1853,81 +2086,34 @@ class FeishuAdapter(BasePlatformAdapter):
         future.add_done_callback(self._log_background_failure)
 
     def _on_card_action_trigger(self, data: Any) -> Any:
-        """Handle card-action callback from the Feishu SDK (synchronous).
+        """Handle Feishu card action and return inline card update.
 
-        For approval actions: parses the event once, returns the resolved card
-        inline (the only reliable way to sync all clients), and schedules a
-        lightweight async method to actually unblock the agent.
-
-        For other card actions: delegates to ``_handle_card_action_event``.
+        Waits for the async handler to complete so the updated card can be
+        returned directly in the callback response — this is the reliable
+        way to update a card on button/form interaction.
         """
         loop = self._loop
-        if not self._loop_accepts_callbacks(loop):
+        if loop is None or bool(getattr(loop, "is_closed", lambda: False)()):
             logger.warning("[Feishu] Dropping card action before adapter loop is ready")
             return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
 
         event = getattr(data, "event", None)
-        action = getattr(event, "action", None)
-        action_value = getattr(action, "value", {}) or {}
-        hermes_action = action_value.get("hermes_action") if isinstance(action_value, dict) else None
+        token = str(getattr(event, "token", "") or "")
 
-        if hermes_action:
-            return self._handle_approval_card_action(event=event, action_value=action_value, loop=loop)
-
-        self._submit_on_loop(loop, self._handle_card_action_event(data))
-        if P2CardActionTriggerResponse is None:
-            return None
-        return P2CardActionTriggerResponse()
-
-    @staticmethod
-    def _loop_accepts_callbacks(loop: Any) -> bool:
-        """Return True when the adapter loop can accept thread-safe submissions."""
-        return loop is not None and not bool(getattr(loop, "is_closed", lambda: False)())
-
-    def _submit_on_loop(self, loop: Any, coro: Any) -> None:
-        """Schedule background work on the adapter loop with shared failure logging."""
-        future = asyncio.run_coroutine_threadsafe(coro, loop)
-        future.add_done_callback(self._log_background_failure)
-
-    def _handle_approval_card_action(self, *, event: Any, action_value: Dict[str, Any], loop: Any) -> Any:
-        """Schedule approval resolution and build the synchronous callback response."""
-        approval_id = action_value.get("approval_id")
-        if approval_id is None:
-            logger.debug("[Feishu] Card action missing approval_id, ignoring")
-            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
-        choice = _APPROVAL_CHOICE_MAP.get(action_value.get("hermes_action"), "deny")
-
-        operator = getattr(event, "operator", None)
-        open_id = str(getattr(operator, "open_id", "") or "")
-        user_name = self._get_cached_sender_name(open_id) or open_id
-
-        self._submit_on_loop(loop, self._resolve_approval(approval_id, choice, user_name))
-
-        if P2CardActionTriggerResponse is None:
-            return None
-        response = P2CardActionTriggerResponse()
-        if CallBackCard is not None:
-            card = CallBackCard()
-            card.type = "raw"
-            card.data = self._build_resolved_approval_card(choice=choice, user_name=user_name)
-            response.card = card
-        return response
-
-    async def _resolve_approval(self, approval_id: Any, choice: str, user_name: str) -> None:
-        """Pop approval state and unblock the waiting agent thread."""
-        state = self._approval_state.pop(approval_id, None)
-        if not state:
-            logger.debug("[Feishu] Approval %s already resolved or unknown", approval_id)
-            return
+        future = asyncio.run_coroutine_threadsafe(
+            self._handle_card_action_event(data),
+            loop,
+        )
         try:
-            from tools.approval import resolve_gateway_approval
-            count = resolve_gateway_approval(state["session_key"], choice)
-            logger.info(
-                "Feishu button resolved %d approval(s) for session %s (choice=%s, user=%s)",
-                count, state["session_key"], choice, user_name,
-            )
+            result = future.result(timeout=10)
+            if isinstance(result, P2CardActionTriggerResponse):
+                if token:
+                    self._card_action_responses[token] = result
+                return result
         except Exception as exc:
-            logger.error("Failed to resolve gateway approval from Feishu button: %s", exc)
+            logger.warning("[Feishu] Card action handler failed or timed out: %s", exc)
+
+        return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
 
     async def _handle_reaction_event(self, event_type: str, data: Any) -> None:
         """Fetch the reacted-to message; if it was sent by this bot, emit a synthetic text event."""
@@ -1966,7 +2152,7 @@ class FeishuAdapter(BasePlatformAdapter):
         action = "added" if "created" in event_type else "removed"
         synthetic_text = f"reaction:{action}:{emoji_type}"
 
-        sender_profile = await self._resolve_sender_profile(user_id_obj)
+        sender_profile = await self._resolve_sender_profile(user_id_obj, chat_id=chat_id)
         chat_info = await self.get_chat_info(chat_id)
         source = self.build_source(
             chat_id=chat_id,
@@ -1991,22 +2177,49 @@ class FeishuAdapter(BasePlatformAdapter):
     def _is_card_action_duplicate(self, token: str) -> bool:
         """Return True if this card action token was already processed within the dedup window."""
         now = time.time()
-        # Prune expired tokens lazily each call.
+        # Prune expired tokens and their cached responses lazily each call.
         expired = [t for t, ts in self._card_action_tokens.items() if now - ts > _FEISHU_CARD_ACTION_DEDUP_TTL_SECONDS]
         for t in expired:
             del self._card_action_tokens[t]
+            self._card_action_responses.pop(t, None)
         if token in self._card_action_tokens:
             return True
         self._card_action_tokens[token] = now
         return False
 
-    async def _handle_card_action_event(self, data: Any) -> None:
-        """Route Feishu interactive card button clicks as synthetic COMMAND events."""
+    def _build_inline_card_response(self, card: dict, toast_content: Optional[str] = None) -> Any:
+        """Build a P2CardActionTriggerResponse with an inline card update."""
+        if P2CardActionTriggerResponse is None:
+            return None
+        resp = P2CardActionTriggerResponse()
+        if CallBackCard is not None:
+            cb_card = CallBackCard()
+            cb_card.type = "raw"
+            cb_card.data = card
+            resp.card = cb_card
+        if toast_content and CallBackToast is not None:
+            toast = CallBackToast()
+            toast.type = "info"
+            toast.content = toast_content
+            resp.toast = toast
+        return resp
+
+    async def _handle_card_action_event(self, data: Any) -> Any:
+        """Route Feishu interactive card button clicks as synthetic COMMAND events.
+
+        Returns a ``P2CardActionTriggerResponse`` when the card should be
+        updated inline (approval / clarify / form actions), or ``None``
+        for generic card actions routed as synthetic commands.
+        """
         event = getattr(data, "event", None)
         token = str(getattr(event, "token", "") or "")
         if token and self._is_card_action_duplicate(token):
-            logger.debug("[Feishu] Dropping duplicate card action token: %s", token)
-            return
+            cached = self._card_action_responses.get(token)
+            if cached is not None:
+                logger.debug("[Feishu] Returning cached response for duplicate card action token: %s", token)
+                return cached
+            logger.debug("[Feishu] Dropping duplicate card action token (no cached response): %s", token)
+            return None
 
         context = getattr(event, "context", None)
         chat_id = str(getattr(context, "open_chat_id", "") or "")
@@ -2014,11 +2227,145 @@ class FeishuAdapter(BasePlatformAdapter):
         open_id = str(getattr(operator, "open_id", "") or "")
         if not chat_id or not open_id:
             logger.debug("[Feishu] Card action missing chat_id or operator open_id, dropping")
-            return
+            return None
 
         action = getattr(event, "action", None)
         action_tag = str(getattr(action, "tag", "") or "button")
         action_value = getattr(action, "value", {}) or {}
+
+        # --- Exec approval button intercept ---
+        hermes_action = action_value.get("hermes_action") if isinstance(action_value, dict) else None
+        if hermes_action:
+            approval_id = action_value.get("approval_id")
+            state = self._approval_state.pop(approval_id, None)
+            if not state:
+                logger.debug("[Feishu] Approval %s already resolved or unknown", approval_id)
+                return None
+
+            choice_map = {
+                "approve_once": "once",
+                "approve_session": "session",
+                "approve_always": "always",
+                "deny": "deny",
+            }
+            choice = choice_map.get(hermes_action, "deny")
+
+            label_map = {
+                "once": "Approved once",
+                "session": "Approved for session",
+                "always": "Approved permanently",
+                "deny": "Denied",
+            }
+            label = label_map.get(choice, "Resolved")
+
+            # Resolve sender name for the status card
+            sender_id = SimpleNamespace(open_id=open_id, user_id=None, union_id=None)
+            sender_profile = await self._resolve_sender_profile(sender_id, chat_id=chat_id)
+            user_name = sender_profile.get("user_name") or "用户"
+
+            # Resolve the approval — unblocks the agent thread
+            try:
+                from tools.approval import resolve_gateway_approval
+                count = resolve_gateway_approval(state["session_key"], choice)
+                logger.info(
+                    "Feishu button resolved %d approval(s) for session %s (choice=%s, user=%s)",
+                    count, state["session_key"], choice, user_name,
+                )
+            except Exception as exc:
+                logger.error("Failed to resolve gateway approval from Feishu button: %s", exc)
+
+            # Return inline card update
+            icon = "❌" if choice == "deny" else "✅"
+            card = {
+                "config": {"wide_screen_mode": True},
+                "header": {
+                    "title": {"content": f"{icon} {label}", "tag": "plain_text"},
+                    "template": "red" if choice == "deny" else "green",
+                },
+                "elements": [
+                    {"tag": "markdown", "content": f"{icon} **{label}** by {user_name}"},
+                ],
+            }
+            return self._build_inline_card_response(card, toast_content=label)
+
+        # --- Clarify button intercept ---
+        if isinstance(action_value, dict) and action_value.get("hermes_clarify"):
+            prompt_id = str(action_value.get("prompt_id", "") or "")
+            state = self._clarify_state.get(prompt_id)
+            if not state:
+                logger.debug("[Feishu] Clarify prompt %s already resolved or unknown", prompt_id)
+                return None
+            response_text = str(action_value.get("choice_text") or "").strip() or "Other"
+            sender_id = SimpleNamespace(open_id=open_id, user_id=None, union_id=None)
+            sender_profile = await self._resolve_sender_profile(sender_id, chat_id=chat_id)
+            user_name = sender_profile.get("user_name") or "用户"
+            state["response"] = response_text
+            state["resolved_by"] = user_name
+            state["event"].set()
+
+            question = state.get("question", "")
+            card = {
+                "config": {"wide_screen_mode": True},
+                "header": {
+                    "title": {"content": "✅ 已选择", "tag": "plain_text"},
+                    "template": "green",
+                },
+                "elements": [
+                    {"tag": "markdown", "content": f"**问题：** {question}"},
+                    {"tag": "markdown", "content": f"**回答：** {response_text}"},
+                    {"tag": "markdown", "content": f"由 {user_name} 选择"},
+                ],
+            }
+            return self._build_inline_card_response(card, toast_content="已选择")
+
+        form_value = getattr(action, "form_value", None)
+        if isinstance(form_value, dict) and isinstance(action_value, dict) and action_value.get("hermes_ask_form"):
+            prompt_id = str(action_value.get("prompt_id", "") or "")
+            state = self._clarify_state.get(prompt_id)
+            if not state:
+                logger.debug("[Feishu] Ask form prompt %s already resolved or unknown", prompt_id)
+                return None
+
+            questions = state.get("questions") or []
+            parsed = self._parse_form_value(form_value, questions)
+
+            sender_id = SimpleNamespace(open_id=open_id, user_id=None, union_id=None)
+            sender_profile = await self._resolve_sender_profile(sender_id, chat_id=chat_id)
+            user_name = sender_profile.get("user_name") or "用户"
+
+            state["response"] = parsed
+            state["resolved_by"] = user_name
+            state["event"].set()
+
+            # Build summary for inline card update
+            summary_lines = []
+            for q in questions:
+                header = str(q.get("header", "")).strip()
+                resp = parsed.get(header, {})
+                selected = resp.get("selected", [])
+                freeform = resp.get("freeform")
+                parts = []
+                if selected:
+                    parts.append("\u3001".join(selected))
+                if freeform:
+                    parts.append(freeform)
+                answer = " | ".join(parts) if parts else "（未填写）"
+                summary_lines.append(f"**{header}:** {answer}")
+
+            card = {
+                "schema": "2.0",
+                "header": {
+                    "title": {"tag": "plain_text", "content": "✅ 已提交"},
+                    "template": "green",
+                },
+                "body": {
+                    "elements": [
+                        {"tag": "markdown", "content": "\n".join(summary_lines)},
+                        {"tag": "markdown", "content": f"由 {user_name} 提交"},
+                    ],
+                },
+            }
+            return self._build_inline_card_response(card, toast_content="已提交")
 
         synthetic_text = f"/card {action_tag}"
         if action_value:
@@ -2028,7 +2375,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 pass
 
         sender_id = SimpleNamespace(open_id=open_id, user_id=None, union_id=None)
-        sender_profile = await self._resolve_sender_profile(sender_id)
+        sender_profile = await self._resolve_sender_profile(sender_id, chat_id=chat_id)
         chat_info = await self.get_chat_info(chat_id)
         source = self.build_source(
             chat_id=chat_id,
@@ -2187,7 +2534,7 @@ class FeishuAdapter(BasePlatformAdapter):
 
         chat_id = getattr(message, "chat_id", "") or ""
         chat_info = await self.get_chat_info(chat_id)
-        sender_profile = await self._resolve_sender_profile(sender_id)
+        sender_profile = await self._resolve_sender_profile(sender_id, chat_id=chat_id)
         source = self.build_source(
             chat_id=chat_id,
             chat_name=chat_info.get("name") or chat_id or "Feishu Chat",
@@ -2910,35 +3257,23 @@ class FeishuAdapter(BasePlatformAdapter):
             return "dm"
         return "group"
 
-    async def _resolve_sender_profile(self, sender_id: Any) -> Dict[str, Optional[str]]:
+    async def _resolve_sender_profile(self, sender_id: Any, chat_id: str = "") -> Dict[str, Optional[str]]:
         open_id = getattr(sender_id, "open_id", None) or None
         user_id = getattr(sender_id, "user_id", None) or None
         union_id = getattr(sender_id, "union_id", None) or None
         primary_id = open_id or user_id
-        display_name = await self._resolve_sender_name_from_api(primary_id or union_id)
+        display_name = await self._resolve_sender_name_from_api(primary_id or union_id, chat_id=chat_id)
         return {
             "user_id": primary_id,
             "user_name": display_name,
             "user_id_alt": union_id,
         }
 
-    def _get_cached_sender_name(self, sender_id: Optional[str]) -> Optional[str]:
-        """Return a cached sender name only while its TTL is still valid."""
-        if not sender_id:
-            return None
-        cached = self._sender_name_cache.get(sender_id)
-        if cached is None:
-            return None
-        name, expire_at = cached
-        if time.time() < expire_at:
-            return name
-        self._sender_name_cache.pop(sender_id, None)
-        return None
-
-    async def _resolve_sender_name_from_api(self, sender_id: Optional[str]) -> Optional[str]:
+    async def _resolve_sender_name_from_api(self, sender_id: Optional[str], *, chat_id: str = "") -> Optional[str]:
         """Fetch the sender's display name from the Feishu contact API with a 10-minute cache.
 
         ID-type detection mirrors openclaw: ou_ → open_id, on_ → union_id, else user_id.
+        Falls back to the IM chat-members API when contact scope is insufficient.
         Failures are silently suppressed; the message pipeline must not block on name resolution.
         """
         if not sender_id or not self._client:
@@ -2947,9 +3282,11 @@ class FeishuAdapter(BasePlatformAdapter):
         if not trimmed:
             return None
         now = time.time()
-        cached_name = self._get_cached_sender_name(trimmed)
-        if cached_name is not None:
-            return cached_name
+        cached = self._sender_name_cache.get(trimmed)
+        if cached is not None:
+            name, expire_at = cached
+            if now < expire_at:
+                return name
         try:
             from lark_oapi.api.contact.v3 import GetUserRequest  # lazy import
             if trimmed.startswith("ou_"):
@@ -2961,7 +3298,12 @@ class FeishuAdapter(BasePlatformAdapter):
             request = GetUserRequest.builder().user_id(trimmed).user_id_type(id_type).build()
             response = await asyncio.to_thread(self._client.contact.v3.user.get, request)
             if not response or not response.success():
-                return None
+                logger.debug(
+                    "[Feishu] Contact API failed for %s (code=%s), trying chat-members fallback.",
+                    sender_id,
+                    getattr(response, "code", "?"),
+                )
+                return await self._resolve_name_from_chat_members(trimmed, chat_id)
             user = getattr(getattr(response, "data", None), "user", None)
             name = (
                 getattr(user, "name", None)
@@ -2976,6 +3318,38 @@ class FeishuAdapter(BasePlatformAdapter):
                     return name
         except Exception:
             logger.debug("[Feishu] Failed to resolve sender name for %s", sender_id, exc_info=True)
+        return await self._resolve_name_from_chat_members(trimmed, chat_id)
+
+    async def _resolve_name_from_chat_members(self, open_id: str, chat_id: str) -> Optional[str]:
+        """Fallback: look up a user's name via the IM chat-members API.
+
+        This avoids the 'contact:user.base:readonly' scope / visibility-range
+        requirement by using im:chat permissions the bot already has.
+        """
+        if not chat_id or not self._client:
+            return None
+        try:
+            from lark_oapi.api.im.v1 import GetChatMembersRequest  # lazy import
+            request = (
+                GetChatMembersRequest.builder()
+                .chat_id(chat_id)
+                .member_id_type("open_id")
+                .build()
+            )
+            response = await asyncio.to_thread(self._client.im.v1.chat_members.get, request)
+            if not response or not getattr(response, "success", lambda: False)():
+                return None
+            items = getattr(getattr(response, "data", None), "items", None) or []
+            for member in items:
+                if getattr(member, "member_id", None) == open_id:
+                    name = getattr(member, "name", None)
+                    if name and isinstance(name, str) and name.strip():
+                        name = name.strip()
+                        now = time.time()
+                        self._sender_name_cache[open_id] = (name, now + _FEISHU_SENDER_NAME_TTL_SECONDS)
+                        return name
+        except Exception:
+            logger.debug("[Feishu] chat-members fallback failed for %s in %s", open_id, chat_id, exc_info=True)
         return None
 
     async def _fetch_message_text(self, message_id: str) -> Optional[str]:

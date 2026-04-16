@@ -360,19 +360,28 @@ def show_status(args):
             print("  Manager:      docker (foreground)")
         else:
             try:
-                from hermes_cli.gateway import get_service_name
+                from hermes_cli.gateway import _run_systemctl, get_service_name
                 _gw_svc = get_service_name()
             except Exception:
+                _run_systemctl = None
                 _gw_svc = "hermes-gateway"
             try:
-                result = subprocess.run(
-                    ["systemctl", "--user", "is-active", _gw_svc],
-                    capture_output=True,
-                    text=True,
-                    timeout=5
-                )
+                if _run_systemctl is not None:
+                    result = _run_systemctl(
+                        ["is-active", _gw_svc],
+                        capture_output=True,
+                        text=True,
+                        timeout=5,
+                    )
+                else:
+                    result = subprocess.run(
+                        ["systemctl", "--user", "is-active", _gw_svc],
+                        capture_output=True,
+                        text=True,
+                        timeout=5,
+                    )
                 is_active = result.stdout.strip() == "active"
-            except (FileNotFoundError, subprocess.TimeoutExpired):
+            except (FileNotFoundError, subprocess.TimeoutExpired, RuntimeError):
                 is_active = False
             print(f"  Status:       {check_mark(is_active)} {'running' if is_active else 'stopped'}")
             print("  Manager:      systemd (user)")

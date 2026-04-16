@@ -13,10 +13,12 @@
 # =============================================================================
 # Model — Nebius Token Factory (OpenAI-compatible)
 # =============================================================================
-# Qwen3-Coder is tuned for agentic / tool-calling workflows (terminal, file,
-# cron, web). If you need more raw reasoning power at the cost of latency,
-# switch HERMES_PRIMARY_MODEL to Qwen/Qwen3-235B-A22B-Thinking-2507 or
-# deepseek-ai/DeepSeek-V3.
+# MiniMax-M2.5 is post-trained for interleaved-thinking tool calls and
+# long multi-step coding/office workflows — strongest agent-use fit on
+# Nebius Token Factory. Override HERMES_PRIMARY_MODEL in Coolify to try
+# other Nebius models (e.g. nvidia/Nemotron-3-Super-120b-a12b for 1M
+# context + higher throughput, or deepseek-ai/DeepSeek-V3.2 for cheaper
+# reasoning).
 model:
   default: "${HERMES_PRIMARY_MODEL}"
   provider: "custom"
@@ -26,6 +28,8 @@ model:
 # =============================================================================
 # Fallback — activates on rate-limit / auth / 5xx from primary (once per session)
 # =============================================================================
+# Only rendered when HERMES_FALLBACK_MODEL is non-empty. Set it in Coolify
+# to a verified Nebius model slug to enable auto-retry on transient errors.
 fallback_model:
   provider: "custom"
   model: "${HERMES_FALLBACK_MODEL}"

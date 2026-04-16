@@ -22,9 +22,22 @@ log() { printf '[coolify] %s\n' "$*" >&2; }
 render_config() {
     # Use python3 (already in the image) for safe ${VAR} substitution —
     # no reliance on envsubst, no shell quoting traps on API keys.
+    # If HERMES_FALLBACK_MODEL is empty, strip the fallback_model: block so
+    # hermes doesn't load a broken/empty fallback config.
     TEMPLATE="$TEMPLATE" python3 - <<'PY'
-import os, string, pathlib, sys
-tmpl = string.Template(pathlib.Path(os.environ["TEMPLATE"]).read_text())
+import os, re, string, pathlib, sys
+raw = pathlib.Path(os.environ["TEMPLATE"]).read_text()
+if not os.environ.get("HERMES_FALLBACK_MODEL", "").strip():
+    # Strip the fallback_model: block when no fallback is configured.
+    # No DOTALL — `.` stays line-local so `  [^\n]*\n` consumes exactly
+    # one indented line at a time.
+    raw = re.sub(
+        r"# =+\n# Fallback[^\n]*\n(?:# [^\n]*\n)+fallback_model:\n(?:  [^\n]+\n)+\n?",
+        "",
+        raw,
+        count=1,
+    )
+tmpl = string.Template(raw)
 sys.stdout.write(tmpl.safe_substitute(os.environ))
 PY
 }
@@ -39,8 +52,8 @@ if [ "$(id -u)" = "0" ]; then
 
     # Defaults — safe to re-evaluate at every boot.
     export NEBIUS_BASE_URL="${NEBIUS_BASE_URL:-https://api.tokenfactory.us-central1.nebius.com/v1/}"
-    export HERMES_PRIMARY_MODEL="${HERMES_PRIMARY_MODEL:-Qwen/Qwen3-Coder-480B-A35B-Instruct}"
-    export HERMES_FALLBACK_MODEL="${HERMES_FALLBACK_MODEL:-deepseek-ai/DeepSeek-V3}"
+    export HERMES_PRIMARY_MODEL="${HERMES_PRIMARY_MODEL:-MiniMaxAI/MiniMax-M2.5}"
+    export HERMES_FALLBACK_MODEL="${HERMES_FALLBACK_MODEL:-}"
 
     uid="${HERMES_UID:-$(id -u hermes 2>/dev/null || echo 10000)}"
     gid="${HERMES_GID:-$(id -g hermes 2>/dev/null || echo 10000)}"

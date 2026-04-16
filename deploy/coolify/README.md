@@ -27,17 +27,30 @@ modified**. That means:
 | File ops, web scraping, browser | `file` + `web` + `browser` toolsets |
 | Skills (self-authored tools) | `skills` toolset, persisted in volume |
 | Long-term memory + session history | `/opt/data` persistent volume |
-| Auto-failover on Nebius errors | `fallback_model:` (Qwen3-Coder → DeepSeek-V3) |
+| Auto-failover on Nebius errors | `fallback_model:` (opt-in via `HERMES_FALLBACK_MODEL`) |
 
 ## Model choices
 
-Default primary: **`Qwen/Qwen3-Coder-480B-A35B-Instruct`** — trained for
-agentic / tool-calling workflows. Default fallback: **`deepseek-ai/DeepSeek-V3`**.
+Default primary: **`MiniMaxAI/MiniMax-M2.5`** — post-trained for
+interleaved-thinking tool calls and long multi-step coding/office
+workflows. Strongest agent-use fit in the Nebius Token Factory catalog.
+
+Fallback: **off by default**. Set `HERMES_FALLBACK_MODEL` in Coolify to a
+verified Nebius slug to enable one-shot auto-retry on rate-limit / 5xx.
 
 Override either in Coolify's env vars UI:
-- `HERMES_PRIMARY_MODEL` — try `Qwen/Qwen3-235B-A22B-Thinking-2507` for
-  heavier reasoning, or `deepseek-ai/DeepSeek-V3` for a cheaper primary.
-- `HERMES_FALLBACK_MODEL` — anything Nebius Token Factory serves.
+
+| `HERMES_PRIMARY_MODEL` | When to pick |
+|---|---|
+| `MiniMaxAI/MiniMax-M2.5` *(default)* | Best agentic tool-calling reliability |
+| `nvidia/Nemotron-3-Super-120b-a12b` | 1M context + 127 Tok/s; good balance of speed & reasoning |
+| `deepseek-ai/DeepSeek-V3.2` | Cheapest strong reasoning ($0.30/$0.45) |
+| `moonshotai/Kimi-K2.5` | Native multimodal agent training |
+| `NousResearch/Hermes-4-405B` | Canonical pairing (same team), but 20 Tok/s + $1/$3 |
+
+Confirm the exact slug on the model's page in the Nebius console before
+setting it — the strings above are best-guesses based on Nebius's naming
+convention and may need tweaking.
 
 ## Deploy
 

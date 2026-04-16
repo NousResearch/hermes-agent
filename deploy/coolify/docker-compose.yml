@@ -36,8 +36,12 @@ services:
       NEBIUS_BASE_URL: ${NEBIUS_BASE_URL:-https://api.tokenfactory.us-central1.nebius.com/v1/}
 
       # ── Model selection (override in Coolify to try other Nebius models) ──
-      HERMES_PRIMARY_MODEL: ${HERMES_PRIMARY_MODEL:-Qwen/Qwen3-Coder-480B-A35B-Instruct}
-      HERMES_FALLBACK_MODEL: ${HERMES_FALLBACK_MODEL:-deepseek-ai/DeepSeek-V3}
+      # Default: MiniMax-M2.5 — post-trained for interleaved-thinking tool
+      # calls, strongest agent-use fit in the Nebius catalog.
+      HERMES_PRIMARY_MODEL: ${HERMES_PRIMARY_MODEL:-MiniMaxAI/MiniMax-M2.5}
+      # Leave empty to disable fallback. Set to a verified Nebius slug to
+      # enable auto-retry on rate-limit / 5xx (fires once per session).
+      HERMES_FALLBACK_MODEL: ${HERMES_FALLBACK_MODEL:-}
 
       # ── Agent authorization ───────────────────────────────────────────────
       # Container is the security boundary — turn off approval prompts so

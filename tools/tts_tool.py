@@ -683,6 +683,73 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
 
 
 # ===========================================================================
+# TADA (local HTTP TTS server — mlx-tada or compatible)
+# ===========================================================================
+
+DEFAULT_TADA_ENDPOINT = "http://localhost:8050/tts"
+
+
+def _generate_tada(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+    """Generate speech by calling a TADA HTTP TTS endpoint.
+
+    TADA (https://github.com/HumeAI/tada) is a local speech synthesis server
+    that accepts ``{"text": "..."}`` POST requests and returns WAV audio.
+    The server can be run on any host reachable from the agent (e.g. a Mac Mini
+    on the LAN running ``mlx-tada``).  Configure the endpoint in config.yaml:
+
+    .. code-block:: yaml
+
+        tts:
+          provider: tada
+          tada:
+            endpoint: http://192.168.1.x:8050/tts
+
+    Outputs WAV; the caller handles Opus conversion for Telegram if needed.
+    """
+    import requests  # noqa: PLC0415 — lazy import kept consistent with other providers
+
+    tada_config = tts_config.get("tada", {})
+    endpoint = tada_config.get("endpoint", "") or DEFAULT_TADA_ENDPOINT
+
+    try:
+        resp = requests.post(
+            endpoint,
+            json={"text": text},
+            timeout=60,
+        )
+        resp.raise_for_status()
+    except requests.exceptions.ConnectionError as e:
+        raise RuntimeError(
+            f"TADA server unreachable at {endpoint}. "
+            "Is the server running? Check tts.tada.endpoint in config.yaml."
+        ) from e
+    except requests.exceptions.HTTPError as e:
+        raise RuntimeError(f"TADA server returned an error: {e}") from e
+    except requests.exceptions.Timeout as e:
+        raise RuntimeError(f"TADA request timed out after 60s: {e}") from e
+
+    # TADA returns raw WAV bytes — write to .wav regardless of the requested extension.
+    wav_path = output_path
+    if not output_path.endswith(".wav"):
+        wav_path = output_path.rsplit(".", 1)[0] + ".wav"
+
+    with open(wav_path, "wb") as f:
+        f.write(resp.content)
+
+    # If the caller wants a different format, convert from WAV.
+    if wav_path != output_path:
+        ffmpeg = shutil.which("ffmpeg")
+        if ffmpeg:
+            conv_cmd = [ffmpeg, "-i", wav_path, "-y", "-loglevel", "error", output_path]
+            subprocess.run(conv_cmd, check=True, timeout=30)
+            os.remove(wav_path)
+        else:
+            os.rename(wav_path, output_path)
+
+    return wav_path if wav_path == output_path else output_path
+
+
+# ===========================================================================
 # NeuTTS (local, on-device TTS via neutts_cli)
 # ===========================================================================
 
@@ -877,6 +944,10 @@ def text_to_speech_tool(
             logger.info("Generating speech with NeuTTS (local)...")
             _generate_neutts(text, file_str, tts_config)
 
+        elif provider == "tada":
+            logger.info("Generating speech with TADA TTS...")
+            _generate_tada(text, file_str, tts_config)
+
         else:
             # Default: Edge TTS (free), with NeuTTS as local fallback
             edge_available = True
@@ -916,7 +987,7 @@ def text_to_speech_tool(
         # Try Opus conversion for Telegram compatibility
         # Edge TTS outputs MP3, NeuTTS outputs WAV — both need ffmpeg conversion
         voice_compatible = False
-        if provider in ("edge", "neutts", "minimax", "xai") and not file_str.endswith(".ogg"):
+        if provider in ("edge", "neutts", "minimax", "xai", "tada") and not file_str.endswith(".ogg"):
             opus_path = _convert_to_opus(file_str)
             if opus_path:
                 file_str = opus_path
@@ -1001,6 +1072,13 @@ def check_tts_requirements() -> bool:
         pass
     if _check_neutts_available():
         return True
+    # TADA: reachable if an endpoint is configured (no package required)
+    try:
+        tts_cfg = _load_tts_config()
+        if tts_cfg.get("provider") == "tada":
+            return True
+    except Exception:
+        pass
     return False
 
 

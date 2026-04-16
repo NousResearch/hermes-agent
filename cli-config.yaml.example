@@ -593,7 +593,7 @@ platform_toolsets:
 #   skills_hub   - skill_hub (search/install/manage from online registries — user-driven only)
 #   moa          - mixture_of_agents  (requires OPENROUTER_API_KEY)
 #   todo         - todo (in-memory task planning, no deps)
-#   tts          - text_to_speech  (Edge TTS free, or ELEVENLABS/OPENAI/MINIMAX/MISTRAL key)
+#   tts          - text_to_speech  (Edge TTS free, or ELEVENLABS/OPENAI/MINIMAX/MISTRAL/TADA server)
 #   cronjob      - cronjob (create/list/update/pause/resume/run/remove scheduled tasks)
 #   rl           - rl_list_environments, rl_start_training, etc. (requires TINKER_API_KEY)
 #
@@ -622,7 +622,7 @@ platform_toolsets:
 #   todo         - Task planning and tracking for multi-step work
 #   memory       - Persistent memory across sessions (personal notes + user profile)
 #   session_search - Search and recall past conversations (FTS5 + Gemini Flash summarization)
-#   tts          - Text-to-speech (Edge TTS free, ElevenLabs, OpenAI, MiniMax, Mistral)
+#   tts          - Text-to-speech (Edge TTS free, ElevenLabs, OpenAI, MiniMax, Mistral, TADA server)
 #   cronjob      - Schedule and manage automated tasks (CLI-only)
 #   rl           - RL training tools (Tinker-Atropos)
 #
@@ -685,6 +685,35 @@ platform_toolsets:
 #       allowed_models: []      # model whitelist (empty = all)
 #       max_tool_rounds: 5      # tool loop limit (0 = disable)
 #       log_level: "info"       # audit verbosity
+
+# =============================================================================
+# Text-to-Speech (TTS)
+# =============================================================================
+# Providers: edge (free) | elevenlabs | openai | minimax | mistral | neutts (local) | tada (local HTTP server)
+# Set the corresponding key in .env: ELEVENLABS_API_KEY, OPENAI_API_KEY, MINIMAX_API_KEY, or MISTRAL_API_KEY.
+# tts:
+#   provider: "edge"           # edge | elevenlabs | openai | minimax | mistral | neutts | tada
+#   edge:
+#     voice: "en-US-AriaNeural"
+#   elevenlabs:
+#     voice_id: "pNInz6obpgDQGcFmaJgB"
+#     model_id: "eleven_multilingual_v2"
+#   openai:
+#     model: "gpt-4o-mini-tts"
+#     voice: "alloy"           # alloy | ash | coral | echo | fable | onyx | nova | sage | shimmer
+#   minimax:
+#     voice_id: "male-qn-qingse"
+#   mistral:
+#     model: "voxtral-mini-latest"
+#     voice_id: ""             # optional UUID from Mistral voice library
+#   neutts:
+#     model: "neuphonic/neutts-air-q4-gguf"
+#     device: "cpu"
+#     ref_audio: ""            # path to reference WAV (empty = bundled default)
+#     ref_text: ""             # transcript of ref_audio (empty = bundled default)
+#   tada:
+#     endpoint: "http://localhost:8050/tts"  # URL of a running TADA TTS server
+#                                            # (e.g. mlx-tada on an Apple Silicon Mac)
 
 # =============================================================================
 # Voice Transcription (Speech-to-Text)

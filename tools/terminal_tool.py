@@ -523,6 +523,8 @@ Foreground (default): Commands return INSTANTLY when done, even if the timeout i
 Background: Set background=true to get a session_id. Two patterns:
   (1) Long-lived processes that never exit (servers, watchers).
   (2) Long-running tasks with notify_on_complete=true — you can keep working on other things and the system auto-notifies you when the task finishes. Great for test suites, builds, deployments, or anything that takes more than a minute.
+For servers/watchers, do NOT use shell-level background wrappers (nohup/disown/setsid/trailing '&') in foreground mode. Use background=true so Hermes can track lifecycle and output.
+After starting a server, verify readiness with a health check or log signal, then run tests in a separate terminal() call. Avoid blind sleep loops.
 Use process(action="poll") for progress checks, process(action="wait") to block until done.
 Working directory: Use 'workdir' for per-command cwd.
 PTY mode: Set pty=true for interactive CLI tools (Codex, Claude Code, Python REPL).
@@ -1103,6 +1105,65 @@ def _command_requires_pipe_stdin(command: str) -> bool:
     )
 
 
+_SHELL_LEVEL_BACKGROUND_RE = re.compile(r"\b(?:nohup|disown|setsid)\b", re.IGNORECASE)
+_INLINE_BACKGROUND_AMP_RE = re.compile(r"\s&\s")
+_TRAILING_BACKGROUND_AMP_RE = re.compile(r"\s&\s*(?:#.*)?$")
+_LONG_LIVED_FOREGROUND_PATTERNS = (
+    re.compile(r"\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:dev|start|serve|watch)\b", re.IGNORECASE),
+    re.compile(r"\bdocker\s+compose\s+up\b", re.IGNORECASE),
+    re.compile(r"\bnext\s+dev\b", re.IGNORECASE),
+    re.compile(r"\bvite(?:\s|$)", re.IGNORECASE),
+    re.compile(r"\bnodemon\b", re.IGNORECASE),
+    re.compile(r"\buvicorn\b", re.IGNORECASE),
+    re.compile(r"\bgunicorn\b", re.IGNORECASE),
+    re.compile(r"\bpython(?:3)?\s+-m\s+http\.server\b", re.IGNORECASE),
+)
+
+
+def _looks_like_help_or_version_command(command: str) -> bool:
+    """Return True for informational invocations that should never be blocked."""
+    normalized = " ".join(command.lower().split())
+    return (
+        " --help" in normalized
+        or normalized.endswith(" -h")
+        or " --version" in normalized
+        or normalized.endswith(" -v")
+    )
+
+
+def _foreground_background_guidance(command: str) -> str | None:
+    """Suggest background mode when a foreground command looks long-lived.
+
+    Prevents workflows that start a server/watch process and then stall before
+    follow-up checks or test commands run.
+    """
+    if _looks_like_help_or_version_command(command):
+        return None
+
+    if _SHELL_LEVEL_BACKGROUND_RE.search(command):
+        return (
+            "Foreground command uses shell-level background wrappers (nohup/disown/setsid). "
+            "Use terminal(background=true) so Hermes can track the process, then run "
+            "readiness checks and tests in separate commands."
+        )
+
+    if _INLINE_BACKGROUND_AMP_RE.search(command) or _TRAILING_BACKGROUND_AMP_RE.search(command):
+        return (
+            "Foreground command uses '&' backgrounding. Use terminal(background=true) for long-lived "
+            "processes, then run health checks and tests in follow-up terminal calls."
+        )
+
+    for pattern in _LONG_LIVED_FOREGROUND_PATTERNS:
+        if pattern.search(command):
+            return (
+                "This foreground command appears to start a long-lived server/watch process. "
+                "Run it with background=true, verify readiness (health endpoint/log signal), "
+                "then execute tests in a separate command."
+            )
+
+    return None
+
+
 def terminal_tool(
     command: str,
     background: bool = False,
@@ -1194,6 +1255,18 @@ def terminal_tool(
                     f"notify_on_complete=true for long-running commands."
                 ),
             }, ensure_ascii=False)
+
+        # Guardrail: long-lived server/watch commands should run as managed
+        # background sessions, not foreground shell hacks.
+        if not background:
+            guidance = _foreground_background_guidance(command)
+            if guidance:
+                return json.dumps({
+                    "output": "",
+                    "exit_code": -1,
+                    "error": guidance,
+                    "status": "error",
+                }, ensure_ascii=False)
 
         # Start cleanup thread
         _start_cleanup_thread()

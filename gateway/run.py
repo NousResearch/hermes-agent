@@ -9570,6 +9570,12 @@ class GatewayRunner:
                     _previewed,
                 )
                 response["already_sent"] = True
+            # Propagate final_response_sent separately so the gateway can
+            # distinguish "stream sent tool progress" from "stream sent the
+            # final answer".  Fixes silent response drops when already_sent
+            # was set by earlier edits but the final text was never delivered.
+            if getattr(_sc, "final_response_sent", False):
+                response["final_response_sent"] = True
         
         return response
 

@@ -41,6 +41,8 @@ def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
     tool calls with reasoning (chat/completions returns 400).
     """
     normalized = (base_url or "").strip().lower().rstrip("/")
+    if "api.x.ai" in normalized:
+        return "codex_responses"
     if "api.openai.com" in normalized and "openrouter" not in normalized:
         return "codex_responses"
     return None
@@ -163,6 +165,8 @@ def _resolve_runtime_from_pool_entry(
         base_url = cfg_base_url or base_url or "https://api.anthropic.com"
     elif provider == "openrouter":
         base_url = base_url or OPENROUTER_BASE_URL
+    elif provider == "xai":
+        api_mode = "codex_responses"
     elif provider == "nous":
         api_mode = "chat_completions"
     elif provider == "copilot":
@@ -628,6 +632,8 @@ def _resolve_explicit_runtime(
         api_mode = "chat_completions"
         if provider == "copilot":
             api_mode = _copilot_runtime_api_mode(model_cfg, api_key)
+        elif provider == "xai":
+            api_mode = "codex_responses"
         else:
             configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
             if configured_mode:
@@ -924,6 +930,8 @@ def resolve_runtime_provider(
         api_mode = "chat_completions"
         if provider == "copilot":
             api_mode = _copilot_runtime_api_mode(model_cfg, creds.get("api_key", ""))
+        elif provider == "xai":
+            api_mode = "codex_responses"
         else:
             configured_provider = str(model_cfg.get("provider") or "").strip().lower()
             # Only honor persisted api_mode when it belongs to the same provider family.

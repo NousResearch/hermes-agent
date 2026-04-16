@@ -143,6 +143,7 @@ def _tts_label(current_provider: str) -> str:
         "openai": "OpenAI TTS",
         "elevenlabs": "ElevenLabs",
         "edge": "Edge TTS",
+        "xai": "xAI TTS",
         "mistral": "Mistral Voxtral TTS",
         "neutts": "NeuTTS",
     }

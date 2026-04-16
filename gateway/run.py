@@ -131,6 +131,12 @@ if _config_path.exists():
             for _cfg_key, _env_var in _terminal_env_map.items():
                 if _cfg_key in _terminal_cfg:
                     _val = _terminal_cfg[_cfg_key]
+                    # Skip cwd placeholder values (".", "auto", "cwd") — the
+                    # gateway resolves these to Path.home() later (line ~255).
+                    # Writing the raw placeholder here would just be noise.
+                    # Only bridge explicit absolute paths from config.yaml.
+                    if _cfg_key == "cwd" and str(_val) in (".", "auto", "cwd"):
+                        continue
                     if isinstance(_val, list):
                         os.environ[_env_var] = json.dumps(_val)
                     else:
@@ -225,6 +231,13 @@ try:
 except Exception:
     pass
 
+# Warn if user has deprecated MESSAGING_CWD / TERMINAL_CWD in .env
+try:
+    from hermes_cli.config import warn_deprecated_cwd_env_vars
+    warn_deprecated_cwd_env_vars()
+except Exception:
+    pass
+
 # Gateway runs in quiet mode - suppress debug output and use cwd directly (no temp dirs)
 os.environ["HERMES_QUIET"] = "1"
 
@@ -232,12 +245,14 @@ os.environ["HERMES_QUIET"] = "1"
 os.environ["HERMES_EXEC_ASK"] = "1"
 
 # Set terminal working directory for messaging platforms.
-# If the user set an explicit path in config.yaml (not "." or "auto"),
-# respect it. Otherwise use MESSAGING_CWD or default to home directory.
+# config.yaml terminal.cwd is the canonical source (bridged to TERMINAL_CWD
+# by the config bridge above).  When it's unset or a placeholder, default
+# to home directory.  MESSAGING_CWD is accepted as a backward-compat
+# fallback (deprecated — the warning above tells users to migrate).
 _configured_cwd = os.environ.get("TERMINAL_CWD", "")
 if not _configured_cwd or _configured_cwd in (".", "auto", "cwd"):
-    messaging_cwd = os.getenv("MESSAGING_CWD") or str(Path.home())
-    os.environ["TERMINAL_CWD"] = messaging_cwd
+    _fallback = os.getenv("MESSAGING_CWD") or str(Path.home())
+    os.environ["TERMINAL_CWD"] = _fallback
 
 from gateway.config import (
     Platform,
@@ -3403,7 +3418,7 @@ class GatewayRunner:
                 from agent.context_references import preprocess_context_references_async
                 from agent.model_metadata import get_model_context_length
 
-                _msg_cwd = os.environ.get("MESSAGING_CWD", os.path.expanduser("~"))
+                _msg_cwd = os.environ.get("TERMINAL_CWD", os.path.expanduser("~"))
                 _msg_ctx_len = get_model_context_length(
                     self._model,
                     base_url=self._base_url or "",
@@ -5614,7 +5629,7 @@ class GatewayRunner:
             max_snapshots=cp_cfg.get("max_snapshots", 50),
         )
 
-        cwd = os.getenv("MESSAGING_CWD", str(Path.home()))
+        cwd = os.getenv("TERMINAL_CWD", str(Path.home()))
         arg = event.get_command_args().strip()
 
         if not arg:

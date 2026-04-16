@@ -36,6 +36,7 @@ const sidebars: SidebarsConfig = {
       collapsed: true,
       items: [
         'user-guide/features/overview',
+        'user-guide/features/tool-gateway',
         {
           type: 'category',
           label: 'Core',

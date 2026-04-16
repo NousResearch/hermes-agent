@@ -1252,6 +1252,12 @@ OPTIONAL_ENV_VARS = {
         "password": False,
         "category": "messaging",
     },
+    "TELEGRAM_PROXY": {
+        "description": "Proxy URL for Telegram connections (overrides HTTPS_PROXY). Supports http://, https://, socks5://",
+        "prompt": "Telegram proxy URL (optional)",
+        "password": False,
+        "category": "messaging",
+    },
     "DISCORD_BOT_TOKEN": {
         "description": "Discord bot token from Developer Portal",
         "prompt": "Discord bot token",

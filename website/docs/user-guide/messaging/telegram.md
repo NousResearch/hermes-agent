@@ -172,6 +172,27 @@ fly deploy
 
 The gateway log should show: `[telegram] Connected to Telegram (webhook mode)`.
 
+## Proxy Support
+
+If Telegram's API is blocked or you need to route traffic through a proxy, set a Telegram-specific proxy URL. This takes priority over the generic `HTTPS_PROXY` / `HTTP_PROXY` env vars.
+
+**Option 1: config.yaml (recommended)**
+
+```yaml
+telegram:
+  proxy_url: "socks5://127.0.0.1:1080"
+```
+
+**Option 2: environment variable**
+
+```bash
+TELEGRAM_PROXY=socks5://127.0.0.1:1080
+```
+
+Supported schemes: `http://`, `https://`, `socks5://`.
+
+The proxy applies to both the main Telegram connection and the fallback IP transport. If no Telegram-specific proxy is set, the gateway falls back to `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY` (or macOS system proxy auto-detection).
+
 ## Home Channel
 
 Use the `/sethome` command in any Telegram chat (DM or group) to designate it as the **home channel**. Scheduled tasks (cron jobs) deliver their results to this channel.

@@ -21,7 +21,9 @@ import queue
 import re
 import time
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any, Callable, Optional
+
+from gateway.platforms.base import _custom_unit_to_cp
 
 logger = logging.getLogger("gateway.stream_consumer")
 
@@ -256,9 +258,17 @@ class GatewayStreamConsumer:
 
     async def run(self) -> None:
         """Async task that drains the queue and edits the platform message."""
-        # Platform message length limit — leave room for cursor + formatting
+        # Platform message length limit — leave room for cursor + formatting.
+        # Use the adapter's length function (e.g. utf16_len for Telegram) so
+        # overflow detection matches what the platform actually enforces.
+        # Fall back to len for adapters that don't override it.
+        try:
+            from gateway.platforms.base import BasePlatformAdapter as _BPA
+            _len_fn = self.adapter.message_len_fn if isinstance(self.adapter, _BPA) else len
+        except Exception:
+            _len_fn = len
         _raw_limit = getattr(self.adapter, "MAX_MESSAGE_LENGTH", 4096)
-        _safe_limit = max(500, _raw_limit - len(self.cfg.cursor) - 100)
+        _safe_limit = max(500, _raw_limit - _len_fn(self.cfg.cursor) - 100)
 
         try:
             while True:
@@ -305,7 +315,7 @@ class GatewayStreamConsumer:
                     # Split overflow: if accumulated text exceeds the platform
                     # limit, split into properly sized chunks.
                     if (
-                        len(self._accumulated) > _safe_limit
+                        _len_fn(self._accumulated) > _safe_limit
                         and self._message_id is None
                     ):
                         # No existing message to edit (first message or after a
@@ -314,7 +324,7 @@ class GatewayStreamConsumer:
                         # proper word/code-fence boundaries and chunk
                         # indicators like "(1/2)".
                         chunks = self.adapter.truncate_message(
-                            self._accumulated, _safe_limit
+                            self._accumulated, _safe_limit, len_fn=_len_fn,
                         )
                         for chunk in chunks:
                             await self._send_new_chunk(chunk, self._message_id)
@@ -333,11 +343,14 @@ class GatewayStreamConsumer:
                     # Existing message: edit it with the first chunk, then
                     # start a new message for the overflow remainder.
                     while (
-                        len(self._accumulated) > _safe_limit
+                        _len_fn(self._accumulated) > _safe_limit
                         and self._message_id is not None
                         and self._edit_supported
                     ):
-                        split_at = self._accumulated.rfind("\n", 0, _safe_limit)
+                        _cp_budget = _custom_unit_to_cp(
+                            self._accumulated, _safe_limit, _len_fn,
+                        ) if _len_fn is not len else _safe_limit
+                        split_at = self._accumulated.rfind("\n", 0, _cp_budget)
                         if split_at < _safe_limit // 2:
                             split_at = _safe_limit
                         chunk = self._accumulated[:split_at]
@@ -489,14 +502,21 @@ class GatewayStreamConsumer:
         return final_text
 
     @staticmethod
-    def _split_text_chunks(text: str, limit: int) -> list[str]:
+    def _split_text_chunks(
+        text: str, limit: int,
+        len_fn: "Callable[[str], int]" = len,
+    ) -> list[str]:
         """Split text into reasonably sized chunks for fallback sends."""
-        if len(text) <= limit:
+        if len_fn(text) <= limit:
             return [text]
         chunks: list[str] = []
         remaining = text
-        while len(remaining) > limit:
-            split_at = remaining.rfind("\n", 0, limit)
+        while len_fn(remaining) > limit:
+            _cp_budget = (
+                _custom_unit_to_cp(remaining, limit, len_fn)
+                if len_fn is not len else limit
+            )
+            split_at = remaining.rfind("\n", 0, _cp_budget)
             if split_at < limit // 2:
                 split_at = limit
             chunks.append(remaining[:split_at])
@@ -528,8 +548,13 @@ class GatewayStreamConsumer:
                 return
 
         raw_limit = getattr(self.adapter, "MAX_MESSAGE_LENGTH", 4096)
+        try:
+            from gateway.platforms.base import BasePlatformAdapter as _BPA
+            _len_fn = self.adapter.message_len_fn if isinstance(self.adapter, _BPA) else len
+        except Exception:
+            _len_fn = len
         safe_limit = max(500, raw_limit - 100)
-        chunks = self._split_text_chunks(continuation, safe_limit)
+        chunks = self._split_text_chunks(continuation, safe_limit, len_fn=_len_fn)
 
         last_message_id: Optional[str] = None
         last_successful_chunk = ""

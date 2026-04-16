@@ -75,6 +75,12 @@ _DEFAULT_PROVIDER_MODELS = {
     "copilot-acp": [
         "copilot-acp",
     ],
+    "claude-code-acp": [
+        "claude-sonnet-4.6",
+        "claude-opus-4.6",
+        "claude-sonnet-4.5",
+        "claude-haiku-4.5",
+    ],
     "copilot": [
         "gpt-5.4",
         "gpt-5.4-mini",
@@ -770,6 +776,7 @@ def setup_model_provider(config: dict, *, quick: bool = False):
             "nous-api": "Nous Portal API key",
             "copilot": "GitHub Copilot",
             "copilot-acp": "GitHub Copilot ACP",
+            "claude-code-acp": "Claude Code ACP",
             "zai": "Z.AI / GLM",
             "kimi-coding": "Kimi / Moonshot",
             "kimi-coding-cn": "Kimi / Moonshot (China)",

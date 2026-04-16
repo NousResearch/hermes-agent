@@ -155,6 +155,7 @@ class TestNormalizeProvider:
         assert normalize_provider("kimi") == "kimi-coding"
         assert normalize_provider("moonshot") == "kimi-coding"
         assert normalize_provider("github-copilot") == "copilot"
+        assert normalize_provider("claude-acp") == "claude-code-acp"
 
     def test_case_insensitive(self):
         assert normalize_provider("OpenRouter") == "openrouter"
@@ -166,6 +167,7 @@ class TestProviderLabel:
         assert provider_label("kimi") == "Kimi / Kimi Coding Plan"
         assert provider_label("copilot") == "GitHub Copilot"
         assert provider_label("copilot-acp") == "GitHub Copilot ACP"
+        assert provider_label("claude-code-acp") == "Claude Code ACP"
         assert provider_label("auto") == "Auto"
 
     def test_unknown_provider_preserves_original_name(self):
@@ -210,6 +212,13 @@ class TestProviderModelIds:
 
         assert "gpt-5.4" in ids
         assert "copilot-acp" not in ids
+
+    def test_claude_code_acp_returns_curated_claude_models(self):
+        ids = provider_model_ids("claude-code-acp")
+
+        assert "claude-sonnet-4.6" in ids
+        assert "claude-opus-4.6" in ids
+        assert "claude-code-acp" not in ids
 
 
 # -- fetch_api_models --------------------------------------------------------

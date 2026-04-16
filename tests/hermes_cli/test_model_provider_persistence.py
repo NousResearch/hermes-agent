@@ -211,6 +211,46 @@ class TestProviderPersistsAfterModelSave:
         assert model.get("default") == "gpt-5.4"
         assert model.get("api_mode") == "chat_completions"
 
+    def test_claude_code_acp_provider_saved_when_selected(self, config_home):
+        """_model_flow_claude_code_acp should persist provider/base_url/model together."""
+        from hermes_cli.main import _model_flow_claude_code_acp
+        from hermes_cli.config import load_config
+
+        with patch(
+            "hermes_cli.auth.get_external_process_provider_status",
+            return_value={
+                "resolved_command": "/usr/local/bin/claude",
+                "command": "claude",
+                "base_url": "acp://claude-code",
+            },
+        ), patch(
+            "hermes_cli.auth.resolve_external_process_provider_credentials",
+            return_value={
+                "provider": "claude-code-acp",
+                "api_key": "claude-code-acp",
+                "base_url": "acp://claude-code",
+                "command": "/usr/local/bin/claude",
+                "args": ["--acp", "--stdio"],
+                "source": "process",
+            },
+        ), patch(
+            "hermes_cli.auth._prompt_model_selection",
+            return_value="claude-sonnet-4.6",
+        ), patch(
+            "hermes_cli.auth.deactivate_provider",
+        ):
+            _model_flow_claude_code_acp(load_config(), "old-model")
+
+        import yaml
+
+        config = yaml.safe_load((config_home / "config.yaml").read_text()) or {}
+        model = config.get("model")
+        assert isinstance(model, dict), f"model should be dict, got {type(model)}"
+        assert model.get("provider") == "claude-code-acp"
+        assert model.get("base_url") == "acp://claude-code"
+        assert model.get("default") == "claude-sonnet-4.6"
+        assert model.get("api_mode") == "chat_completions"
+
     def test_opencode_go_models_are_selectable_and_persist_normalized(self, config_home, monkeypatch):
         from hermes_cli.main import _model_flow_api_key_provider
         from hermes_cli.config import load_config

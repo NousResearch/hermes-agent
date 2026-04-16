@@ -993,6 +993,46 @@ def test_resolve_provider_client_copilot_acp_requires_explicit_or_configured_mod
     mock_acp.assert_not_called()
 
 
+def test_resolve_provider_client_supports_claude_code_acp_external_process():
+    fake_client = MagicMock()
+
+    with patch("agent.auxiliary_client._read_main_model", return_value="claude-sonnet-4.6"), \
+         patch("agent.auxiliary_client.CodexAuxiliaryClient", MagicMock()), \
+         patch("agent.acp_chat_client.ACPChatClient", return_value=fake_client) as mock_acp, \
+         patch("hermes_cli.auth.resolve_external_process_provider_credentials", return_value={
+             "provider": "claude-code-acp",
+             "api_key": "claude-code-acp",
+             "base_url": "acp://claude-code",
+             "command": "/usr/bin/claude",
+             "args": ["--acp", "--stdio"],
+         }):
+        client, model = resolve_provider_client("claude-code-acp")
+
+    assert client is fake_client
+    assert model == "claude-sonnet-4.6"
+    assert mock_acp.call_args.kwargs["api_key"] == "claude-code-acp"
+    assert mock_acp.call_args.kwargs["base_url"] == "acp://claude-code"
+    assert mock_acp.call_args.kwargs["command"] == "/usr/bin/claude"
+    assert mock_acp.call_args.kwargs["args"] == ["--acp", "--stdio"]
+
+
+def test_resolve_provider_client_claude_code_acp_requires_explicit_or_configured_model():
+    with patch("agent.auxiliary_client._read_main_model", return_value=""), \
+         patch("agent.acp_chat_client.ACPChatClient") as mock_acp, \
+         patch("hermes_cli.auth.resolve_external_process_provider_credentials", return_value={
+             "provider": "claude-code-acp",
+             "api_key": "claude-code-acp",
+             "base_url": "acp://claude-code",
+             "command": "/usr/bin/claude",
+             "args": ["--acp", "--stdio"],
+         }):
+        client, model = resolve_provider_client("claude-code-acp")
+
+    assert client is None
+    assert model is None
+    mock_acp.assert_not_called()
+
+
 class TestAuxiliaryMaxTokensParam:
     def test_codex_fallback_uses_max_tokens(self, monkeypatch):
         """Codex adapter translates max_tokens internally, so we return max_tokens."""

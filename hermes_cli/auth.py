@@ -136,6 +136,13 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         inference_base_url=DEFAULT_COPILOT_ACP_BASE_URL,
         base_url_env_var="COPILOT_ACP_BASE_URL",
     ),
+    "claude-code-acp": ProviderConfig(
+        id="claude-code-acp",
+        name="Claude Code ACP",
+        auth_type="external_process",
+        inference_base_url="acp://claude-code",
+        base_url_env_var="CLAUDE_CODE_ACP_BASE_URL",
+    ),
     "gemini": ProviderConfig(
         id="gemini",
         name="Google AI Studio",
@@ -923,7 +930,7 @@ def resolve_provider(
         "kimi-cn": "kimi-coding-cn", "moonshot-cn": "kimi-coding-cn",
         "arcee-ai": "arcee", "arceeai": "arcee",
         "minimax-china": "minimax-cn", "minimax_cn": "minimax-cn",
-        "claude": "anthropic", "claude-code": "anthropic",
+        "claude": "anthropic", "claude-code": "claude-code-acp", "claude-acp": "claude-code-acp",
         "github": "copilot", "github-copilot": "copilot",
         "github-models": "copilot", "github-model": "copilot",
         "github-copilot-acp": "copilot-acp", "copilot-acp-agent": "copilot-acp",
@@ -962,11 +969,13 @@ def resolve_provider(
     if explicit_api_key or explicit_base_url:
         return "openrouter"
 
-    # Check auth store for an active OAuth provider
+    # Check auth store for an active provider. Do not auto-select GitHub
+    # Copilot from ambient GITHUB_TOKEN/GH_TOKEN env vars — those are commonly
+    # present for git tooling and should not hijack inference routing.
     try:
         auth_store = _load_auth_store()
         active = auth_store.get("active_provider")
-        if active and active in PROVIDER_REGISTRY:
+        if active and active in PROVIDER_REGISTRY and active != "copilot":
             status = get_auth_status(active)
             if status.get("logged_in"):
                 return active
@@ -990,13 +999,20 @@ def resolve_provider(
                 return pid
 
     # AWS Bedrock — detect via boto3 credential chain (IAM roles, SSO, env vars).
-    # This runs after API-key providers so explicit keys always win.
-    try:
-        from agent.bedrock_adapter import has_aws_credentials
-        if has_aws_credentials():
-            return "bedrock"
-    except ImportError:
-        pass  # boto3 not installed — skip Bedrock auto-detection
+    # Ambient GitHub tokens are common in dev shells; when they are the only
+    # credentials present, prefer surfacing "no provider configured" rather than
+    # silently switching inference to Bedrock.
+    _ambient_github_token = any(
+        has_usable_secret(os.getenv(name, ""))
+        for name in ("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN")
+    )
+    if not _ambient_github_token:
+        try:
+            from agent.bedrock_adapter import has_aws_credentials
+            if has_aws_credentials():
+                return "bedrock"
+        except ImportError:
+            pass  # boto3 not installed — skip Bedrock auto-detection
 
     raise AuthError(
         "No inference provider configured. Run 'hermes model' to choose a "
@@ -2419,18 +2435,39 @@ def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
     }
 
 
+def _external_process_provider_settings(provider_id: str) -> tuple[str, str, str, str, str, str]:
+    if provider_id == "claude-code-acp":
+        return (
+            "HERMES_CLAUDE_CODE_ACP_COMMAND",
+            "CLAUDE_CODE_CLI_PATH",
+            "HERMES_CLAUDE_CODE_ACP_ARGS",
+            "claude",
+            "missing_claude_code_cli",
+            "Could not find the Claude Code CLI command '{command}'. Install Claude Code or set HERMES_CLAUDE_CODE_ACP_COMMAND/CLAUDE_CODE_CLI_PATH.",
+        )
+    return (
+        "HERMES_COPILOT_ACP_COMMAND",
+        "COPILOT_CLI_PATH",
+        "HERMES_COPILOT_ACP_ARGS",
+        "copilot",
+        "missing_copilot_cli",
+        "Could not find the Copilot CLI command '{command}'. Install GitHub Copilot CLI or set HERMES_COPILOT_ACP_COMMAND/COPILOT_CLI_PATH.",
+    )
+
+
 def get_external_process_provider_status(provider_id: str) -> Dict[str, Any]:
     """Status snapshot for providers that run a local subprocess."""
     pconfig = PROVIDER_REGISTRY.get(provider_id)
     if not pconfig or pconfig.auth_type != "external_process":
         return {"configured": False}
 
+    command_env_var, legacy_command_env_var, args_env_var, default_command, _, _ = _external_process_provider_settings(provider_id)
     command = (
-        os.getenv("HERMES_COPILOT_ACP_COMMAND", "").strip()
-        or os.getenv("COPILOT_CLI_PATH", "").strip()
-        or "copilot"
+        os.getenv(command_env_var, "").strip()
+        or os.getenv(legacy_command_env_var, "").strip()
+        or default_command
     )
-    raw_args = os.getenv("HERMES_COPILOT_ACP_ARGS", "").strip()
+    raw_args = os.getenv(args_env_var, "").strip()
     args = shlex.split(raw_args) if raw_args else ["--acp", "--stdio"]
     base_url = os.getenv(pconfig.base_url_env_var, "").strip() if pconfig.base_url_env_var else ""
     if not base_url:
@@ -2452,16 +2489,16 @@ def get_external_process_provider_status(provider_id: str) -> Dict[str, Any]:
 def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
     """Generic auth status dispatcher."""
     target = provider_id or get_active_provider()
+    pconfig = PROVIDER_REGISTRY.get(target)
     if target == "nous":
         return get_nous_auth_status()
     if target == "openai-codex":
         return get_codex_auth_status()
     if target == "qwen-oauth":
         return get_qwen_auth_status()
-    if target == "copilot-acp":
+    if pconfig and pconfig.auth_type == "external_process":
         return get_external_process_provider_status(target)
     # API-key providers
-    pconfig = PROVIDER_REGISTRY.get(target)
     if pconfig and pconfig.auth_type == "api_key":
         return get_api_key_provider_status(target)
     # AWS SDK providers (Bedrock) — check via boto3 credential chain
@@ -2526,25 +2563,26 @@ def resolve_external_process_provider_credentials(provider_id: str) -> Dict[str,
     if not base_url:
         base_url = pconfig.inference_base_url
 
+    command_env_var, legacy_command_env_var, args_env_var, default_command, _, _ = _external_process_provider_settings(provider_id)
     command = (
-        os.getenv("HERMES_COPILOT_ACP_COMMAND", "").strip()
-        or os.getenv("COPILOT_CLI_PATH", "").strip()
-        or "copilot"
+        os.getenv(command_env_var, "").strip()
+        or os.getenv(legacy_command_env_var, "").strip()
+        or default_command
     )
-    raw_args = os.getenv("HERMES_COPILOT_ACP_ARGS", "").strip()
+    raw_args = os.getenv(args_env_var, "").strip()
     args = shlex.split(raw_args) if raw_args else ["--acp", "--stdio"]
     resolved_command = shutil.which(command) if command else None
     if not resolved_command and not base_url.startswith("acp+tcp://"):
+        _, _, _, _, missing_code, missing_message = _external_process_provider_settings(provider_id)
         raise AuthError(
-            f"Could not find the Copilot CLI command '{command}'. "
-            "Install GitHub Copilot CLI or set HERMES_COPILOT_ACP_COMMAND/COPILOT_CLI_PATH.",
+            missing_message.format(command=command),
             provider=provider_id,
-            code="missing_copilot_cli",
+            code=missing_code,
         )
 
     return {
         "provider": provider_id,
-        "api_key": "copilot-acp",
+        "api_key": provider_id,
         "base_url": base_url.rstrip("/"),
         "command": resolved_command or command,
         "args": args,

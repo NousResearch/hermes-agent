@@ -723,16 +723,14 @@ class AIAgent:
         # providers have exceptions (for example Copilot's gpt-5-mini still
         # uses chat completions). Also auto-upgrade for direct OpenAI URLs
         # (api.openai.com) since all newer tool-calling models prefer
-        # Responses there. ACP runtimes are excluded: CopilotACPClient
-        # handles its own routing and does not implement the Responses API
-        # surface.
+        # Responses there. ACP runtimes are excluded: Hermes routes them
+        # through ACP client adapters instead of the Responses API surface.
         # When api_mode was explicitly provided, respect it — the user
         # knows what their endpoint supports (#10473).
         if (
             api_mode is None
             and self.api_mode == "chat_completions"
-            and self.provider != "copilot-acp"
-            and not str(self.base_url or "").lower().startswith("acp://copilot")
+            and not str(self.base_url or "").lower().startswith("acp://")
             and not str(self.base_url or "").lower().startswith("acp+tcp://")
             and (
                 self._is_direct_openai_url()
@@ -962,14 +960,29 @@ class AIAgent:
                 _gr_label = " + Guardrails" if self._bedrock_guardrail_config else ""
                 print(f"🤖 AI Agent initialized with model: {self.model} (AWS Bedrock, {self._bedrock_region}{_gr_label})")
         else:
-            if api_key and base_url:
+            explicit_base_url = base_url
+            if api_key and (explicit_base_url or self.provider):
                 # Explicit credentials from CLI/gateway — construct directly.
-                # The runtime provider resolver already handled auth for us.
-                client_kwargs = {"api_key": api_key, "base_url": base_url}
-                if self.provider == "copilot-acp":
+                # When only a provider is given, infer its default base URL so
+                # lightweight tests and callers don't have to duplicate registry values.
+                effective_base = explicit_base_url
+                if not effective_base and self.provider:
+                    if self.provider == "openrouter":
+                        effective_base = "https://openrouter.ai/api/v1"
+                    else:
+                        try:
+                            from hermes_cli.auth import PROVIDER_REGISTRY
+                            _pcfg = PROVIDER_REGISTRY.get(self.provider)
+                            if _pcfg:
+                                effective_base = _pcfg.inference_base_url
+                        except Exception:
+                            effective_base = explicit_base_url
+                if not effective_base:
+                    raise RuntimeError("Explicit API key was provided but no base URL could be resolved.")
+                client_kwargs = {"api_key": api_key, "base_url": effective_base}
+                if str(effective_base or "").lower().startswith("acp://") or self.provider in {"copilot-acp", "claude-code-acp"}:
                     client_kwargs["command"] = self.acp_command
                     client_kwargs["args"] = self.acp_args
-                effective_base = base_url
                 if "openrouter" in effective_base.lower():
                     client_kwargs["default_headers"] = {
                         "HTTP-Referer": "https://hermes-agent.nousresearch.com",
@@ -4282,12 +4295,24 @@ class AIAgent:
         from agent.auxiliary_client import _validate_base_url, _validate_proxy_env_urls
         _validate_proxy_env_urls()
         _validate_base_url(client_kwargs.get("base_url"))
-        if self.provider == "copilot-acp" or str(client_kwargs.get("base_url", "")).startswith("acp://copilot"):
+        base_url = str(client_kwargs.get("base_url", ""))
+        if self.provider == "copilot-acp" or base_url.startswith("acp://copilot"):
             from agent.copilot_acp_client import CopilotACPClient
 
             client = CopilotACPClient(**client_kwargs)
             logger.info(
                 "Copilot ACP client created (%s, shared=%s) %s",
+                reason,
+                shared,
+                self._client_log_context(),
+            )
+            return client
+        if self.provider == "claude-code-acp" or base_url.startswith("acp://claude-code"):
+            from agent.acp_chat_client import ACPChatClient
+
+            client = ACPChatClient(**client_kwargs)
+            logger.info(
+                "Claude Code ACP client created (%s, shared=%s) %s",
                 reason,
                 shared,
                 self._client_log_context(),

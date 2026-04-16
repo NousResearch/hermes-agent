@@ -1616,37 +1616,36 @@ def resolve_provider_client(
     if pconfig.auth_type == "external_process":
         creds = resolve_external_process_provider_credentials(provider)
         final_model = _normalize_resolved_model(model or _read_main_model(), provider)
-        if provider == "copilot-acp":
-            api_key = str(creds.get("api_key", "")).strip()
-            base_url = str(creds.get("base_url", "")).strip()
-            command = str(creds.get("command", "")).strip() or None
-            args = list(creds.get("args") or [])
-            if not final_model:
-                logger.warning(
-                    "resolve_provider_client: copilot-acp requested but no model "
-                    "was provided or configured"
-                )
-                return None, None
-            if not api_key or not base_url:
-                logger.warning(
-                    "resolve_provider_client: copilot-acp requested but external "
-                    "process credentials are incomplete"
-                )
-                return None, None
-            from agent.copilot_acp_client import CopilotACPClient
-
-            client = CopilotACPClient(
-                api_key=api_key,
-                base_url=base_url,
-                command=command,
-                args=args,
+        api_key = str(creds.get("api_key", "")).strip()
+        base_url = str(creds.get("base_url", "")).strip()
+        command = str(creds.get("command", "")).strip() or None
+        args = list(creds.get("args") or [])
+        if not final_model:
+            logger.warning(
+                "resolve_provider_client: %s requested but no model was provided or configured",
+                provider,
             )
-            logger.debug("resolve_provider_client: %s (%s)", provider, final_model)
-            return (_to_async_client(client, final_model) if async_mode
-                    else (client, final_model))
-        logger.warning("resolve_provider_client: external-process provider %s not "
-                       "directly supported", provider)
-        return None, None
+            return None, None
+        if not api_key or not base_url:
+            logger.warning(
+                "resolve_provider_client: %s requested but external process credentials are incomplete",
+                provider,
+            )
+            return None, None
+        if provider == "copilot-acp":
+            from agent.copilot_acp_client import CopilotACPClient as _ACPClient
+        else:
+            from agent.acp_chat_client import ACPChatClient as _ACPClient
+
+        client = _ACPClient(
+            api_key=api_key,
+            base_url=base_url,
+            command=command,
+            args=args,
+        )
+        logger.debug("resolve_provider_client: %s (%s)", provider, final_model)
+        return (_to_async_client(client, final_model) if async_mode
+                else (client, final_model))
 
     elif pconfig.auth_type in ("oauth_device_code", "oauth_external"):
         # OAuth providers — route through their specific try functions

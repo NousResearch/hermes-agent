@@ -151,12 +151,23 @@ class _SafeWriter:
 
     def isatty(self):
         try:
-            return self._inner.isatty()
+            # Check if inner has isatty attribute (could be method or property)
+            isatty_attr = getattr(self._inner, "isatty", None)
+            if callable(isatty_attr):
+                return isatty_attr()
+            return bool(isatty_attr)
         except (OSError, ValueError):
             return False
 
     def __getattr__(self, name):
         return getattr(self._inner, name)
+
+    def __setattr__(self, name, value):
+        # Allow setting attributes on the inner stream
+        if name == "_inner":
+            object.__setattr__(self, name, value)
+        else:
+            setattr(self._inner, name, value)
 
 
 def _install_safe_stdio() -> None:

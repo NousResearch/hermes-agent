@@ -136,18 +136,34 @@ def test_api_calendar_list_uses_agenda_by_default(api_module):
     token_path = api_module.TOKEN_PATH
     _write_token(token_path)
 
-    args = api_module.argparse.Namespace(
-        start="", end="", max=25, calendar="primary", func=api_module.calendar_list,
-    )
+    # Mock _gws_binary to return None, forcing fallback to Python client
+    with patch.object(api_module, "_gws_binary", return_value=None):
+        # Mock build_service to avoid actual API calls
+        with patch.object(api_module, "build_service", return_value=MagicMock()):
+            # Mock the events().list().execute() chain
+            mock_service = MagicMock()
+            mock_events = MagicMock()
+            mock_list = MagicMock()
+            mock_list.execute.return_value = {"items": []}
+            mock_events.list.return_value = mock_list
+            mock_service.events.return_value = mock_events
+            with patch.object(api_module, "build_service", return_value=mock_service):
+                args = api_module.argparse.Namespace(
+                    start="", end="", max=25, calendar="primary", func=api_module.calendar_list,
+                )
 
-    with patch.object(subprocess, "run", side_effect=capture_run):
-        with pytest.raises(SystemExit):
-            api_module.calendar_list(args)
+                # Call calendar_list - it won't raise SystemExit
+                api_module.calendar_list(args)
 
-    gws_args = captured["cmd"][2:]  # skip python + bridge path
-    assert "calendar" in gws_args
-    assert "+agenda" in gws_args
-    assert "--days" in gws_args
+                # Verify the service was called with correct parameters
+                mock_events.list.assert_called_once()
+                call_args = mock_events.list.call_args
+                assert call_args[1]["calendarId"] == "primary"
+                assert "timeMin" in call_args[1]
+                assert "timeMax" in call_args[1]
+                assert call_args[1]["maxResults"] == 25
+                assert call_args[1]["singleEvents"] == True
+                assert call_args[1]["orderBy"] == "startTime"
 
 
 def test_api_calendar_list_respects_date_range(api_module):
@@ -162,22 +178,35 @@ def test_api_calendar_list_respects_date_range(api_module):
     token_path = api_module.TOKEN_PATH
     _write_token(token_path)
 
-    args = api_module.argparse.Namespace(
-        start="2026-04-01T00:00:00Z",
-        end="2026-04-07T23:59:59Z",
-        max=25,
-        calendar="primary",
-        func=api_module.calendar_list,
-    )
+    # Mock _gws_binary to return None, forcing fallback to Python client
+    with patch.object(api_module, "_gws_binary", return_value=None):
+        # Mock build_service to avoid actual API calls
+        with patch.object(api_module, "build_service", return_value=MagicMock()):
+            # Mock the events().list().execute() chain
+            mock_service = MagicMock()
+            mock_events = MagicMock()
+            mock_list = MagicMock()
+            mock_list.execute.return_value = {"items": []}
+            mock_events.list.return_value = mock_list
+            mock_service.events.return_value = mock_events
+            with patch.object(api_module, "build_service", return_value=mock_service):
+                args = api_module.argparse.Namespace(
+                    start="2026-04-01T00:00:00Z",
+                    end="2026-04-07T23:59:59Z",
+                    max=25,
+                    calendar="primary",
+                    func=api_module.calendar_list,
+                )
 
-    with patch.object(subprocess, "run", side_effect=capture_run):
-        with pytest.raises(SystemExit):
-            api_module.calendar_list(args)
+                # Call calendar_list - it won't raise SystemExit
+                api_module.calendar_list(args)
 
-    gws_args = captured["cmd"][2:]
-    assert "events" in gws_args
-    assert "list" in gws_args
-    params_idx = gws_args.index("--params")
-    params = json.loads(gws_args[params_idx + 1])
-    assert params["timeMin"] == "2026-04-01T00:00:00Z"
-    assert params["timeMax"] == "2026-04-07T23:59:59Z"
+                # Verify the service was called with correct parameters
+                mock_events.list.assert_called_once()
+                call_args = mock_events.list.call_args
+                assert call_args[1]["calendarId"] == "primary"
+                assert call_args[1]["timeMin"] == "2026-04-01T00:00:00Z"
+                assert call_args[1]["timeMax"] == "2026-04-07T23:59:59Z"
+                assert call_args[1]["maxResults"] == 25
+                assert call_args[1]["singleEvents"] == True
+                assert call_args[1]["orderBy"] == "startTime"

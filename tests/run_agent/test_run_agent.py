@@ -3193,20 +3193,35 @@ def test_aiagent_uses_copilot_acp_client():
 
 def test_quiet_spinner_allowed_with_explicit_print_fn(agent):
     agent._print_fn = lambda *_a, **_kw: None
-    with patch.object(run_agent.sys.stdout, "isatty", return_value=False):
-        assert agent._should_start_quiet_spinner() is True
+    # Patch the inner stream directly if it's a SafeWriter
+    if hasattr(run_agent.sys.stdout, "_inner"):
+        with patch.object(run_agent.sys.stdout._inner, "isatty", return_value=False):
+            assert agent._should_start_quiet_spinner() is True
+    else:
+        with patch.object(run_agent.sys.stdout, "isatty", return_value=False):
+            assert agent._should_start_quiet_spinner() is True
 
 
 def test_quiet_spinner_allowed_on_real_tty(agent):
     agent._print_fn = None
-    with patch.object(run_agent.sys.stdout, "isatty", return_value=True):
-        assert agent._should_start_quiet_spinner() is True
+    # Patch the inner stream directly if it's a SafeWriter
+    if hasattr(run_agent.sys.stdout, "_inner"):
+        with patch.object(run_agent.sys.stdout._inner, "isatty", return_value=True):
+            assert agent._should_start_quiet_spinner() is True
+    else:
+        with patch.object(run_agent.sys.stdout, "isatty", return_value=True):
+            assert agent._should_start_quiet_spinner() is True
 
 
 def test_quiet_spinner_suppressed_on_non_tty_without_print_fn(agent):
     agent._print_fn = None
-    with patch.object(run_agent.sys.stdout, "isatty", return_value=False):
-        assert agent._should_start_quiet_spinner() is False
+    # Patch the inner stream directly if it's a SafeWriter
+    if hasattr(run_agent.sys.stdout, "_inner"):
+        with patch.object(run_agent.sys.stdout._inner, "isatty", return_value=False):
+            assert agent._should_start_quiet_spinner() is False
+    else:
+        with patch.object(run_agent.sys.stdout, "isatty", return_value=False):
+            assert agent._should_start_quiet_spinner() is False
 
 
 def test_is_openai_client_closed_honors_custom_client_flag():

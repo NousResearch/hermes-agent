@@ -259,6 +259,37 @@ class PluginContext:
         }
         logger.debug("Plugin %s registered command: /%s", self.manifest.name, clean)
 
+    # -- tool dispatch -------------------------------------------------------
+
+    def dispatch_tool(self, tool_name: str, args: dict, **kwargs) -> str:
+        """Dispatch a tool call through the registry, with parent agent context.
+
+        This is the public interface for plugin slash commands that need to call
+        tools like ``delegate_task`` without reaching into framework internals.
+        The parent agent (if available) is resolved automatically — plugins never
+        need to access the agent directly.
+
+        Args:
+            tool_name: Registry name of the tool (e.g. ``"delegate_task"``).
+            args: Tool arguments dict (same as what the model would pass).
+            **kwargs: Extra keyword args forwarded to the registry dispatch.
+
+        Returns:
+            JSON string from the tool handler (same format as model tool calls).
+        """
+        from tools.registry import registry
+
+        # Wire up parent agent context when available (CLI mode).
+        # In gateway mode _cli_ref is None — tools degrade gracefully
+        # (workspace hints fall back to TERMINAL_CWD, no spinner).
+        if "parent_agent" not in kwargs:
+            cli = self._manager._cli_ref
+            agent = getattr(cli, "agent", None) if cli else None
+            if agent is not None:
+                kwargs["parent_agent"] = agent
+
+        return registry.dispatch(tool_name, args, **kwargs)
+
     # -- context engine registration -----------------------------------------
 
     def register_context_engine(self, engine) -> None:

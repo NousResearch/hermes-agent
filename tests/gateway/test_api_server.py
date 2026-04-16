@@ -1869,3 +1869,416 @@ class TestSessionIdHeader:
             call_kwargs = mock_run.call_args.kwargs
             assert call_kwargs["conversation_history"] == []
             assert call_kwargs["session_id"] == "some-session"
+
+
+# ---------------------------------------------------------------------------
+# Gateway slash-command preprocessor
+# ---------------------------------------------------------------------------
+
+
+def _create_app_with_runs(adapter: APIServerAdapter) -> web.Application:
+    """Variant of :func:`_create_app` that also wires the ``/v1/runs`` routes.
+
+    The standard fixture only exposes chat completions / models / health;
+    the slash-command preprocessor needs to be exercised through both
+    chat completions *and* runs, so we add the runs handlers locally.
+    """
+    mws = [mw for mw in (cors_middleware, security_headers_middleware) if mw is not None]
+    app = web.Application(middlewares=mws)
+    app["api_server_adapter"] = adapter
+    app.router.add_get("/health", adapter._handle_health)
+    app.router.add_get("/v1/models", adapter._handle_models)
+    app.router.add_post("/v1/chat/completions", adapter._handle_chat_completions)
+    app.router.add_post("/v1/runs", adapter._handle_runs)
+    app.router.add_get("/v1/runs/{run_id}/events", adapter._handle_run_events)
+    return app
+
+
+class TestGatewaySlashCommands:
+    """Verify the slash-command preprocessor on ``/v1/runs`` and
+    ``/v1/chat/completions``.
+
+    Stateless commands (``/help``, ``/commands``, ``/profile``,
+    ``/provider``) are executed locally; stateful commands (``/model``,
+    ``/new``, …) return a decline notice; unknown and CLI-only commands
+    fall through to the LLM path.
+    """
+
+    # -- /v1/chat/completions -------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_chat_completions_help_intercepted_non_streaming(self, adapter):
+        """`/help` on non-streaming chat completions returns the help text
+        from ``gateway_help_lines`` and never invokes the agent."""
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "test",
+                        "messages": [{"role": "user", "content": "/help"}],
+                    },
+                )
+                assert resp.status == 200
+                data = await resp.json()
+                content = data["choices"][0]["message"]["content"]
+                assert "Hermes Commands" in content
+                assert "/new" in content  # a canonical gateway entry
+                mock_run.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_chat_completions_help_intercepted_streaming(self, adapter):
+        """`/help` on streaming chat completions emits a synthetic SSE
+        stream and never invokes the agent."""
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "test",
+                        "messages": [{"role": "user", "content": "/help"}],
+                        "stream": True,
+                    },
+                )
+                assert resp.status == 200
+                assert "text/event-stream" in resp.headers.get("Content-Type", "")
+                body = await resp.text()
+                assert "Hermes Commands" in body
+                assert "[DONE]" in body
+                mock_run.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_chat_completions_stateful_command_declines(self, adapter):
+        """`/model` on chat completions returns a deterministic decline
+        notice that echoes the command name, and never invokes the agent."""
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "test",
+                        "messages": [
+                            {"role": "user", "content": "/model claude-sonnet-4-6"}
+                        ],
+                    },
+                )
+                assert resp.status == 200
+                data = await resp.json()
+                content = data["choices"][0]["message"]["content"]
+                assert "/model" in content
+                assert "stateless" in content
+                assert "/help" in content
+                mock_run.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_chat_completions_alias_echoes_typed_token(self, adapter):
+        """`/reset` (alias for `/new`) declines with the *typed* token so
+        the user sees the command they actually used."""
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "test",
+                        "messages": [{"role": "user", "content": "/reset"}],
+                    },
+                )
+                assert resp.status == 200
+                data = await resp.json()
+                content = data["choices"][0]["message"]["content"]
+                assert "/reset" in content
+                mock_run.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_chat_completions_normal_text_passes_through(self, adapter):
+        """Non-slash text goes straight to the agent — preprocessor
+        must not swallow it."""
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    {"final_response": "hi there", "messages": [], "api_calls": 1},
+                    {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                )
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "test",
+                        "messages": [{"role": "user", "content": "Hello there"}],
+                    },
+                )
+                assert resp.status == 200
+                mock_run.assert_called_once()
+                data = await resp.json()
+                assert data["choices"][0]["message"]["content"] == "hi there"
+
+    @pytest.mark.asyncio
+    async def test_chat_completions_cli_only_passes_through(self, adapter):
+        """`/clear` is strictly ``cli_only`` — it must fall through to
+        the LLM path so the model (or a skill) can decide what to do
+        with it, rather than being intercepted with a decline notice."""
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    {"final_response": "okay", "messages": [], "api_calls": 1},
+                    {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                )
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "test",
+                        "messages": [{"role": "user", "content": "/clear"}],
+                    },
+                )
+                assert resp.status == 200
+                mock_run.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_chat_completions_unknown_slash_passes_through(self, adapter):
+        """Unrecognized slash commands must fall through — the LLM (or
+        a skill) may recognize them."""
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    {"final_response": "idk that one", "messages": [], "api_calls": 1},
+                    {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                )
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "test",
+                        "messages": [{"role": "user", "content": "/notarealcommand"}],
+                    },
+                )
+                assert resp.status == 200
+                mock_run.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_preprocessor_exception_falls_through(self, adapter):
+        """A bug inside the preprocessor must log a warning and fall
+        through to the LLM path — never take down a chat request."""
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run, \
+                 patch(
+                     "gateway.platforms.api_server_slash.resolve_command",
+                     side_effect=RuntimeError("synthetic preprocessor fault"),
+                 ):
+                mock_run.return_value = (
+                    {"final_response": "survived", "messages": [], "api_calls": 1},
+                    {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                )
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "test",
+                        "messages": [{"role": "user", "content": "/help"}],
+                    },
+                )
+                assert resp.status == 200
+                mock_run.assert_called_once()
+                data = await resp.json()
+                assert data["choices"][0]["message"]["content"] == "survived"
+
+    # -- /v1/runs -------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_runs_help_intercepted(self, adapter):
+        """`/help` on /v1/runs emits a synthetic ``message.delta`` +
+        ``run.completed`` sequence; the agent is never started."""
+        app = _create_app_with_runs(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                resp = await cli.post("/v1/runs", json={"input": "/help"})
+                assert resp.status == 202
+                run_id = (await resp.json())["run_id"]
+
+                events_resp = await cli.get(f"/v1/runs/{run_id}/events")
+                assert events_resp.status == 200
+                body = await events_resp.text()
+                assert "message.delta" in body
+                assert "run.completed" in body
+                assert "Hermes Commands" in body
+                mock_run.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_runs_stateful_command_declines(self, adapter):
+        """`/model ...` on /v1/runs emits the decline notice through the
+        event stream and never starts the agent."""
+        app = _create_app_with_runs(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                resp = await cli.post(
+                    "/v1/runs", json={"input": "/model claude-sonnet-4-6"}
+                )
+                assert resp.status == 202
+                run_id = (await resp.json())["run_id"]
+
+                events_resp = await cli.get(f"/v1/runs/{run_id}/events")
+                body = await events_resp.text()
+                assert "/model" in body
+                assert "stateless" in body
+                assert "run.completed" in body
+                mock_run.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_runs_normal_input_passes_through(self, adapter):
+        """Non-slash input on /v1/runs triggers the normal agent path."""
+        app = _create_app_with_runs(adapter)
+
+        # Patch _create_agent (which _handle_runs calls directly) with a
+        # stub whose run_conversation returns a minimal result dict.
+        fake_agent = MagicMock()
+        fake_agent.run_conversation.return_value = {"final_response": "hi"}
+        fake_agent.session_prompt_tokens = 0
+        fake_agent.session_completion_tokens = 0
+        fake_agent.session_total_tokens = 0
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent", return_value=fake_agent):
+                resp = await cli.post("/v1/runs", json={"input": "Hello there"})
+                assert resp.status == 202
+                run_id = (await resp.json())["run_id"]
+
+                events_resp = await cli.get(f"/v1/runs/{run_id}/events")
+                body = await events_resp.text()
+                assert "run.completed" in body
+                fake_agent.run_conversation.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_runs_cli_only_passes_through(self, adapter):
+        """`/clear` on /v1/runs falls through to the normal agent path."""
+        app = _create_app_with_runs(adapter)
+
+        fake_agent = MagicMock()
+        fake_agent.run_conversation.return_value = {"final_response": "passed"}
+        fake_agent.session_prompt_tokens = 0
+        fake_agent.session_completion_tokens = 0
+        fake_agent.session_total_tokens = 0
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent", return_value=fake_agent):
+                resp = await cli.post("/v1/runs", json={"input": "/clear"})
+                assert resp.status == 202
+                fake_agent.run_conversation.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_runs_unknown_slash_passes_through(self, adapter):
+        """Unknown slash commands on /v1/runs fall through to the agent."""
+        app = _create_app_with_runs(adapter)
+
+        fake_agent = MagicMock()
+        fake_agent.run_conversation.return_value = {"final_response": "passed"}
+        fake_agent.session_prompt_tokens = 0
+        fake_agent.session_completion_tokens = 0
+        fake_agent.session_total_tokens = 0
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent", return_value=fake_agent):
+                resp = await cli.post("/v1/runs", json={"input": "/notarealcommand"})
+                assert resp.status == 202
+                fake_agent.run_conversation.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Gateway slash-command preprocessor — unit tests
+# ---------------------------------------------------------------------------
+
+
+class TestSlashPreprocessorUnit:
+    """Unit tests for :func:`maybe_handle_gateway_command` in isolation.
+
+    These exercise the pure-function surface without any aiohttp plumbing
+    so the policy (unknown → None, cli_only → None, alias → canonical
+    name, etc.) is pinned independently of the transport layer.
+    """
+
+    def test_empty_message_returns_none(self):
+        from gateway.platforms.api_server_slash import maybe_handle_gateway_command
+
+        assert maybe_handle_gateway_command("") is None
+        assert maybe_handle_gateway_command("   ") is None
+
+    def test_non_slash_text_returns_none(self):
+        from gateway.platforms.api_server_slash import maybe_handle_gateway_command
+
+        assert maybe_handle_gateway_command("Hello there") is None
+        assert maybe_handle_gateway_command("what is /model?") is None
+
+    def test_bare_slash_returns_none(self):
+        from gateway.platforms.api_server_slash import maybe_handle_gateway_command
+
+        assert maybe_handle_gateway_command("/") is None
+
+    def test_unknown_command_returns_none(self):
+        from gateway.platforms.api_server_slash import maybe_handle_gateway_command
+
+        assert maybe_handle_gateway_command("/notarealcommand") is None
+        assert maybe_handle_gateway_command("/notarealcommand foo bar") is None
+
+    def test_cli_only_command_returns_none(self):
+        from gateway.platforms.api_server_slash import maybe_handle_gateway_command
+
+        # /clear, /history, /save are all cli_only in the registry.
+        assert maybe_handle_gateway_command("/clear") is None
+        assert maybe_handle_gateway_command("/history") is None
+        assert maybe_handle_gateway_command("/save") is None
+
+    def test_stateless_help_executes(self):
+        from gateway.platforms.api_server_slash import maybe_handle_gateway_command
+
+        result = maybe_handle_gateway_command("/help")
+        assert result is not None
+        assert result.command == "help"
+        assert "Hermes Commands" in result.text
+
+    def test_stateless_commands_executes_with_pagination(self):
+        from gateway.platforms.api_server_slash import maybe_handle_gateway_command
+
+        result = maybe_handle_gateway_command("/commands 1")
+        assert result is not None
+        assert result.command == "commands"
+        assert "page 1/" in result.text
+
+    def test_stateful_command_declines(self):
+        from gateway.platforms.api_server_slash import maybe_handle_gateway_command
+
+        result = maybe_handle_gateway_command("/model claude-sonnet-4-6")
+        assert result is not None
+        assert result.command == "model"
+        assert "/model" in result.text
+        assert "stateless" in result.text
+
+    def test_alias_resolves_to_canonical_command(self):
+        """`/reset` is an alias for `/new`; the result should carry the
+        canonical command name but echo the typed token in the text."""
+        from gateway.platforms.api_server_slash import maybe_handle_gateway_command
+
+        result = maybe_handle_gateway_command("/reset")
+        assert result is not None
+        assert result.command == "new"  # canonical
+        assert "/reset" in result.text  # user's typed form echoed
+
+    def test_leading_whitespace_tolerated(self):
+        from gateway.platforms.api_server_slash import maybe_handle_gateway_command
+
+        result = maybe_handle_gateway_command("   /help")
+        assert result is not None
+        assert result.command == "help"
+
+    def test_internal_exception_returns_none(self):
+        """A bug inside the preprocessor must return None, not raise."""
+        from gateway.platforms import api_server_slash
+
+        with patch.object(
+            api_server_slash,
+            "resolve_command",
+            side_effect=RuntimeError("boom"),
+        ):
+            assert api_server_slash.maybe_handle_gateway_command("/help") is None

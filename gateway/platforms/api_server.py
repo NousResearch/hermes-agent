@@ -50,6 +50,7 @@ except ImportError:
     web = None  # type: ignore[assignment]
 
 from gateway.config import Platform, PlatformConfig
+from gateway.platforms.api_server_slash import maybe_handle_gateway_command
 from gateway.platforms.base import (
     BasePlatformAdapter,
     SendResult,
@@ -1424,6 +1425,56 @@ class APIServerAdapter(BasePlatformAdapter):
         model_name = body.get("model", self._model_name)
         created = int(time.time())
 
+        # Gateway slash-command intercept.  ``/help``, ``/commands``,
+        # ``/profile``, ``/provider`` are answered directly from the
+        # central command registry; stateful commands (``/model``,
+        # ``/new``, …) get a deterministic decline notice instead of
+        # being forwarded to the LLM, which would otherwise hallucinate
+        # a reply.  Unknown and strictly CLI-only commands fall through
+        # to the normal agent path.  See
+        # :mod:`gateway.platforms.api_server_slash` for the full policy.
+        slash_result = maybe_handle_gateway_command(user_message)
+        if slash_result is not None:
+            logger.info(
+                "[api_server] intercepted gateway command /%s on "
+                "/v1/chat/completions (stream=%s)",
+                slash_result.command,
+                bool(stream),
+            )
+            if stream:
+                return await self._write_sse_slash_command(
+                    request,
+                    completion_id=completion_id,
+                    model=model_name,
+                    created=created,
+                    session_id=session_id,
+                    text=slash_result.text,
+                )
+            return web.json_response(
+                {
+                    "id": completion_id,
+                    "object": "chat.completion",
+                    "created": created,
+                    "model": model_name,
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {
+                                "role": "assistant",
+                                "content": slash_result.text,
+                            },
+                            "finish_reason": "stop",
+                        }
+                    ],
+                    "usage": {
+                        "prompt_tokens": 0,
+                        "completion_tokens": 0,
+                        "total_tokens": 0,
+                    },
+                },
+                headers={"X-Hermes-Session-Id": session_id},
+            )
+
         if stream:
             import queue as _q
             _stream_q: _q.Queue = _q.Queue()
@@ -1675,6 +1726,76 @@ class APIServerAdapter(BasePlatformAdapter):
                 except (asyncio.CancelledError, Exception):
                     pass
             logger.info("SSE client disconnected; interrupted agent task %s", completion_id)
+
+        return response
+
+    async def _write_sse_slash_command(
+        self,
+        request: "web.Request",
+        *,
+        completion_id: str,
+        model: str,
+        created: int,
+        session_id: Optional[str],
+        text: str,
+    ) -> "web.StreamResponse":
+        """Write a synthetic SSE stream for an intercepted slash command.
+
+        Emits the same three-chunk shape as :meth:`_write_sse_chat_completion`
+        — role chunk, content chunk, finish chunk, ``[DONE]`` terminator —
+        so OpenAI-compatible frontends render it indistinguishably from a
+        real LLM response.  There is no agent task and no queue: the full
+        body is known synchronously from *text*.
+        """
+        sse_headers = {
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        }
+        origin = request.headers.get("Origin", "")
+        cors = self._cors_headers_for_origin(origin) if origin else None
+        if cors:
+            sse_headers.update(cors)
+        if session_id:
+            sse_headers["X-Hermes-Session-Id"] = session_id
+        response = web.StreamResponse(status=200, headers=sse_headers)
+        await response.prepare(request)
+
+        try:
+            role_chunk = {
+                "id": completion_id,
+                "object": "chat.completion.chunk",
+                "created": created,
+                "model": model,
+                "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
+            }
+            await response.write(f"data: {json.dumps(role_chunk)}\n\n".encode())
+
+            content_chunk = {
+                "id": completion_id,
+                "object": "chat.completion.chunk",
+                "created": created,
+                "model": model,
+                "choices": [{"index": 0, "delta": {"content": text}, "finish_reason": None}],
+            }
+            await response.write(f"data: {json.dumps(content_chunk)}\n\n".encode())
+
+            finish_chunk = {
+                "id": completion_id,
+                "object": "chat.completion.chunk",
+                "created": created,
+                "model": model,
+                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                "usage": {
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_tokens": 0,
+                },
+            }
+            await response.write(f"data: {json.dumps(finish_chunk)}\n\n".encode())
+            await response.write(b"data: [DONE]\n\n")
+        except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError):
+            logger.info("SSE client disconnected during slash-command reply %s", completion_id)
 
         return response
 
@@ -2327,6 +2448,41 @@ class APIServerAdapter(BasePlatformAdapter):
         q: "asyncio.Queue[Optional[Dict]]" = asyncio.Queue()
         self._run_streams[run_id] = q
         self._run_streams_created[run_id] = time.time()
+
+        # Gateway slash-command intercept.  When the first token of the
+        # user message resolves to a gateway-available command in
+        # :data:`hermes_cli.commands.COMMAND_REGISTRY`, synthesize a
+        # minimal ``message.delta`` + ``run.completed`` sequence into the
+        # run's event queue and skip the agent entirely.  Unknown and
+        # strictly CLI-only commands fall through to the normal path so
+        # the LLM can still handle skills and plugin commands.  See
+        # :mod:`gateway.platforms.api_server_slash` for the full policy.
+        slash_result = maybe_handle_gateway_command(user_message)
+        if slash_result is not None:
+            logger.info(
+                "[api_server] intercepted gateway command /%s on /v1/runs",
+                slash_result.command,
+            )
+            ts = time.time()
+            q.put_nowait({
+                "event": "message.delta",
+                "run_id": run_id,
+                "timestamp": ts,
+                "delta": slash_result.text,
+            })
+            q.put_nowait({
+                "event": "run.completed",
+                "run_id": run_id,
+                "timestamp": ts,
+                "output": slash_result.text,
+                "usage": {
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "total_tokens": 0,
+                },
+            })
+            q.put_nowait(None)
+            return web.json_response({"run_id": run_id, "status": "started"}, status=202)
 
         event_cb = self._make_run_event_callback(run_id, loop)
 

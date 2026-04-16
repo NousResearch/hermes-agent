@@ -167,6 +167,10 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           info: ev.payload,
           usage: ev.payload.usage ? { ...state.usage, ...ev.payload.usage } : state.usage
         }))
+        // Agent init is async in session.create, so the intro message may
+        // have been seeded with partial info (just model/cwd). Upgrade it
+        // in-place when the real session.info lands.
+        setHistoryItems(prev => prev.map(m => (m.kind === 'intro' ? { ...m, info: ev.payload } : m)))
 
         return
       case 'thinking.delta': {

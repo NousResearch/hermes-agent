@@ -2687,7 +2687,15 @@ def _setup_qqbot():
     access_idx = prompt_choice("  How should direct messages be authorized?", access_choices, 0)
     if access_idx == 0:
         save_env_value("QQ_ALLOW_ALL_USERS", "false")
-        save_env_value("QQ_ALLOWED_USERS", "")
+        if user_openid:
+            print()
+            if prompt_yes_no(f"  Add your QQ user ({user_openid}) to the allow list?", True):
+                save_env_value("QQ_ALLOWED_USERS", user_openid)
+                print_success(f"  Allow list set to {user_openid}")
+            else:
+                save_env_value("QQ_ALLOWED_USERS", "")
+        else:
+            save_env_value("QQ_ALLOWED_USERS", "")
         print_success("  DM pairing enabled.")
         print_info("  Unknown users can request access; approve with `hermes pairing approve`.")
     elif access_idx == 1:
@@ -2702,12 +2710,17 @@ def _setup_qqbot():
         print_success("  Allowlist saved.")
 
     # ── Home channel ──
-    print()
-    home_default = user_openid or ""
-    home_channel = prompt("  Home channel OpenID (for cron/notifications, or empty)", home_default, password=False)
-    if home_channel:
-        save_env_value("QQBOT_HOME_CHANNEL", home_channel.strip())
-        print_success(f"  Home channel set to {home_channel.strip()}")
+    if user_openid:
+        print()
+        if prompt_yes_no(f"  Use your QQ user OpenID ({user_openid}) as the home channel?", True):
+            save_env_value("QQBOT_HOME_CHANNEL", user_openid)
+            print_success(f"  Home channel set to {user_openid}")
+    else:
+        print()
+        home_channel = prompt("  Home channel OpenID (for cron/notifications, or empty)", password=False)
+        if home_channel:
+            save_env_value("QQBOT_HOME_CHANNEL", home_channel.strip())
+            print_success(f"  Home channel set to {home_channel.strip()}")
 
     print()
     print_success("🐧 QQ Bot configured!")

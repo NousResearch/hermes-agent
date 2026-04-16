@@ -5998,6 +5998,18 @@ Examples:
     memory_sub.add_parser("setup", help="Interactive provider selection and configuration")
     memory_sub.add_parser("status", help="Show current memory provider config")
     memory_sub.add_parser("off", help="Disable external provider (built-in only)")
+    _reset_parser = memory_sub.add_parser(
+        "reset",
+        help="Erase all built-in memory (MEMORY.md and USER.md)",
+    )
+    _reset_parser.add_argument(
+        "--yes", "-y", action="store_true",
+        help="Skip confirmation prompt",
+    )
+    _reset_parser.add_argument(
+        "--target", choices=["all", "memory", "user"], default="all",
+        help="Which store to reset: 'all' (default), 'memory', or 'user'",
+    )
 
     def cmd_memory(args):
         sub = getattr(args, "memory_command", None)
@@ -6010,6 +6022,44 @@ Examples:
             save_config(config)
             print("\n  ✓ Memory provider: built-in only")
             print("  Saved to config.yaml\n")
+        elif sub == "reset":
+            from hermes_constants import get_hermes_home, display_hermes_home
+            mem_dir = get_hermes_home() / "memories"
+            target = getattr(args, "target", "all")
+            files_to_reset = []
+            if target in ("all", "memory"):
+                files_to_reset.append(("MEMORY.md", "agent notes"))
+            if target in ("all", "user"):
+                files_to_reset.append(("USER.md", "user profile"))
+
+            # Check what exists
+            existing = [(f, desc) for f, desc in files_to_reset if (mem_dir / f).exists()]
+            if not existing:
+                print(f"\n  Nothing to reset — no memory files found in {display_hermes_home()}/memories/\n")
+                return
+
+            print(f"\n  This will permanently erase the following memory files:")
+            for f, desc in existing:
+                path = mem_dir / f
+                size = path.stat().st_size
+                print(f"    ◆ {f} ({desc}) — {size:,} bytes")
+
+            if not getattr(args, "yes", False):
+                try:
+                    answer = input("\n  Type 'yes' to confirm: ").strip().lower()
+                except (EOFError, KeyboardInterrupt):
+                    print("\n  Cancelled.\n")
+                    return
+                if answer != "yes":
+                    print("  Cancelled.\n")
+                    return
+
+            for f, desc in existing:
+                (mem_dir / f).unlink()
+                print(f"  ✓ Deleted {f} ({desc})")
+
+            print(f"\n  Memory reset complete. New sessions will start with a blank slate.")
+            print(f"  Files were in: {display_hermes_home()}/memories/\n")
         else:
             from hermes_cli.memory_setup import memory_command
             memory_command(args)

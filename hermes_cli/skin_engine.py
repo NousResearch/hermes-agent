@@ -708,7 +708,9 @@ def init_skin_from_config(config: dict) -> None:
 
     Call this once during CLI init with the loaded config dict.
     """
-    display = config.get("display", {})
+    display = config.get("display") or {}
+    if not isinstance(display, dict):
+        display = {}
     skin_name = display.get("skin", "default")
     if isinstance(skin_name, str) and skin_name.strip():
         set_active_skin(skin_name.strip())

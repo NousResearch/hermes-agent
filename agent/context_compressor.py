@@ -39,7 +39,10 @@ SUMMARY_PREFIX = (
     "into the summary below. This is a handoff from a previous context "
     "window — treat it as background reference, NOT as active instructions. "
     "Do NOT answer questions or fulfill requests mentioned in this summary; "
-    "they were already addressed. Respond ONLY to the latest user message "
+    "they were already addressed. "
+    "Your current task is identified in the '## Active Task' section of the "
+    "summary — resume exactly from there. "
+    "Respond ONLY to the latest user message "
     "that appears AFTER this summary. The current session state (files, "
     "config, etc.) may reflect work described here — avoid repeating it:"
 )
@@ -581,8 +584,16 @@ class ContextCompressor(ContextEngine):
         )
 
         # Shared structured template (used by both paths).
-        _template_sections = f"""## Goal
-[What the user is trying to accomplish]
+        _template_sections = f"""## Active Task
+[THE SINGLE MOST IMPORTANT FIELD. Copy the user's most recent request or
+task assignment verbatim — the exact words they used. If multiple tasks
+were requested and only some are done, list only the ones NOT yet completed.
+The next assistant must pick up exactly here. Example:
+"User asked: 'Now refactor the auth module to use JWT instead of sessions'"
+If no outstanding task exists, write "None."]
+
+## Goal
+[What the user is trying to accomplish overall]
 
 ## Constraints & Preferences
 [User preferences, coding style, constraints, important decisions]
@@ -644,7 +655,7 @@ PREVIOUS SUMMARY:
 NEW TURNS TO INCORPORATE:
 {content_to_summarize}
 
-Update the summary using this exact structure. PRESERVE all existing information that is still relevant. ADD new completed actions to the numbered list (continue numbering). Move items from "In Progress" to "Completed Actions" when done. Move answered questions to "Resolved Questions". Update "Active State" to reflect current state. Remove information only if it is clearly obsolete.
+Update the summary using this exact structure. PRESERVE all existing information that is still relevant. ADD new completed actions to the numbered list (continue numbering). Move items from "In Progress" to "Completed Actions" when done. Move answered questions to "Resolved Questions". Update "Active State" to reflect current state. Remove information only if it is clearly obsolete. CRITICAL: Update "## Active Task" to reflect the user's most recent unfulfilled request — this is the most important field for task continuity.
 
 {_template_sections}"""
         else:
@@ -862,6 +873,62 @@ The user has requested that this compaction PRIORITISE preserving all informatio
     # Tail protection by token budget
     # ------------------------------------------------------------------
 
+    def _find_last_user_message_idx(
+        self, messages: List[Dict[str, Any]], head_end: int
+    ) -> int:
+        """Return the index of the last user-role message at or after *head_end*, or -1."""
+        for i in range(len(messages) - 1, head_end - 1, -1):
+            if messages[i].get("role") == "user":
+                return i
+        return -1
+
+    def _ensure_last_user_message_in_tail(
+        self,
+        messages: List[Dict[str, Any]],
+        cut_idx: int,
+        head_end: int,
+    ) -> int:
+        """Guarantee the most recent user message is in the protected tail.
+
+        Context compressor bug (#10896): ``_align_boundary_backward`` can pull
+        ``cut_idx`` past a user message when it tries to keep tool_call/result
+        groups together.  If the last user message ends up in the *compressed*
+        middle region the LLM summariser writes it into "Pending User Asks",
+        but ``SUMMARY_PREFIX`` tells the next model to respond only to user
+        messages *after* the summary — so the task effectively disappears from
+        the active context, causing the agent to stall, repeat completed work,
+        or silently drop the user's latest request.
+
+        Fix: if the last user-role message is not already in the tail
+        (``messages[cut_idx:]``), walk ``cut_idx`` back to include it.  We
+        then re-align backward one more time to avoid splitting any
+        tool_call/result group that immediately precedes the user message.
+        """
+        last_user_idx = self._find_last_user_message_idx(messages, head_end)
+        if last_user_idx < 0:
+            # No user message found beyond head — nothing to anchor.
+            return cut_idx
+
+        if last_user_idx >= cut_idx:
+            # Already in the tail; nothing to do.
+            return cut_idx
+
+        # The last user message is in the middle (compressed) region.
+        # Pull cut_idx back to it directly — a user message is already a
+        # clean boundary (no tool_call/result splitting risk), so there is no
+        # need to call _align_boundary_backward here; doing so would
+        # unnecessarily pull the cut further back into the preceding
+        # assistant + tool_calls group.
+        if not self.quiet_mode:
+            logger.debug(
+                "Anchoring tail cut to last user message at index %d "
+                "(was %d) to prevent active-task loss after compression",
+                last_user_idx,
+                cut_idx,
+            )
+        # Safety: never go back into the head region.
+        return max(last_user_idx, head_end + 1)
+
     def _find_tail_cut_by_tokens(
         self, messages: List[Dict[str, Any]], head_end: int,
         token_budget: int | None = None,
@@ -879,7 +946,8 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         read, etc.).  If even the minimum 3 messages exceed 1.5x the budget
         the cut is placed right after the head so compression still runs.
 
-        Never cuts inside a tool_call/result group.
+        Never cuts inside a tool_call/result group.  Always ensures the most
+        recent user message is in the tail (see ``_ensure_last_user_message_in_tail``).
         """
         if token_budget is None:
             token_budget = self.tail_token_budget
@@ -917,6 +985,10 @@ The user has requested that this compaction PRIORITISE preserving all informatio
 
         # Align to avoid splitting tool groups
         cut_idx = self._align_boundary_backward(messages, cut_idx)
+
+        # Ensure the most recent user message is always in the tail so the
+        # active task is never lost to compression (fixes #10896).
+        cut_idx = self._ensure_last_user_message_in_tail(messages, cut_idx, head_end)
 
         return max(cut_idx, head_end + 1)
 

@@ -1702,7 +1702,18 @@ def launch_research_lane(
         deliver = ensured["deliver"]
 
     state = _load_json(state_file)
-    if not state or not resume_existing:
+    # Start fresh if: no state, resume disabled, OR the old run is fully completed
+    # (a completed run means Dax wants a NEW research topic, not a replay)
+    old_run_completed = (
+        state
+        and all(
+            (state.get("stages") or {}).get(s, {}).get("status") == "completed"
+            for s in STAGE_SEQUENCE
+        )
+    )
+    # Also start fresh if the topic changed from the previous run
+    topic_changed = state and state.get("topic") != topic_slug
+    if not state or not resume_existing or old_run_completed or topic_changed:
         state = _default_state(
             lane_title=lane_title,
             lane_slug=lane_slug,

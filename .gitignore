@@ -57,6 +57,9 @@ hermes_cli/web_dist/
 # Release script temp files
 .release_notes.md
 mini-swe-agent/
+.tmp/
+.venv-hermes-verify/
+requirements-test-min.txt
 
 # Nix
 .direnv/

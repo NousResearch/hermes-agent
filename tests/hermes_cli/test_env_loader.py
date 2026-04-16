@@ -170,7 +170,6 @@ def test_env_d_user_tier_still_overrides_project(tmp_path, monkeypatch):
 
 
 def test_env_d_broken_symlink_skipped(tmp_path):
-    """Broken symlinks in env.d/ (stale nix-N.env) are silently skipped."""
     home = tmp_path / "hermes"
     home.mkdir()
     env_d = home / "env.d"
@@ -189,7 +188,6 @@ def test_env_d_broken_symlink_skipped(tmp_path):
 
 
 def test_env_d_valid_symlink_loaded(tmp_path):
-    """Valid symlinks in env.d/ (sops-nix/agenix secrets) are loaded."""
     home = tmp_path / "hermes"
     home.mkdir()
     env_d = home / "env.d"

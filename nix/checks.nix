@@ -589,8 +589,9 @@ ENVEOF
             || fail "A: MODEL not in nix-environment.env"
           grep -q "OPENAI_BASE_URL=https://example.com/v1" "$A_HERMES/env.d/nix-environment.env" \
             || fail "A: OPENAI_BASE_URL not in nix-environment.env"
-          ls "$A_HERMES/env.d/" | grep -q "nix-[0-9]" \
-            && fail "A: unexpected nix-N symlinks when no environmentFiles" || true
+          if ls "$A_HERMES/env.d/" | grep -q "nix-[0-9]"; then
+            fail "A: unexpected nix-N symlinks when no environmentFiles"
+          fi
           echo "PASS: Scenario A"
 
           # ═══════════════════════════════════════════════════════════════
@@ -634,12 +635,12 @@ ENVEOF
           echo "PASS: Scenario C"
 
           # ═══════════════════════════════════════════════════════════════
-          # Scenario D: stale symlink detection
-          # Simulates reducing environmentFiles from 3 to 1. The PR's
-          # activation script does ln -sfn for index 0 only but never
-          # removes nix-1.env and nix-2.env from the previous deployment.
+          # Scenario D: stale symlink cleanup
+          # Simulates reducing environmentFiles from 3 to 1. The
+          # find -delete cleanup (added to nixosModules.nix) should
+          # remove old nix-N.env entries before creating new ones.
           # ═══════════════════════════════════════════════════════════════
-          echo "=== Scenario D: stale symlink detection ==="
+          echo "=== Scenario D: stale symlink cleanup ==="
           D_HERMES=$(mktemp -d)/.hermes
           mkdir -p "$D_HERMES/env.d"
 
@@ -648,27 +649,19 @@ ENVEOF
           ln -sfn "$SECRET_DIR/hermes-discord" "$D_HERMES/env.d/nix-1.env"
           ln -sfn "$SECRET_DIR/hermes-telegram" "$D_HERMES/env.d/nix-2.env"
 
-          # Second deployment: only index 0 (simulates what the PR does)
+          # Second deployment: cleanup then recreate only index 0
+          find "$D_HERMES/env.d" -maxdepth 1 -name 'nix-[0-9]*.env' -delete
           ln -sfn "$SECRET_DIR/hermes-api" "$D_HERMES/env.d/nix-0.env"
 
-          # NOTE: This scenario documents a known bug in PR #10139.
-          # The activation script does not clean up stale nix-N.env symlinks
-          # when environmentFiles is reduced. We print a warning rather than
-          # failing the check, since this is a known upstream issue.
-          STALE=0
           if [ -e "$D_HERMES/env.d/nix-1.env" ] || [ -L "$D_HERMES/env.d/nix-1.env" ]; then
-            echo "WARNING: D: stale nix-1.env left behind after reducing environmentFiles"
-            STALE=1
+            fail "D: stale nix-1.env left behind after cleanup"
           fi
           if [ -e "$D_HERMES/env.d/nix-2.env" ] || [ -L "$D_HERMES/env.d/nix-2.env" ]; then
-            echo "WARNING: D: stale nix-2.env left behind after reducing environmentFiles"
-            STALE=1
+            fail "D: stale nix-2.env left behind after cleanup"
           fi
-          if [ "$STALE" -eq 1 ]; then
-            echo "KNOWN BUG: Scenario D (stale symlinks not cleaned up)"
-          else
-            echo "PASS: Scenario D"
-          fi
+          test -L "$D_HERMES/env.d/nix-0.env" \
+            || fail "D: nix-0.env missing after cleanup + recreate"
+          echo "PASS: Scenario D"
 
           # ═══════════════════════════════════════════════════════════════
           # Report

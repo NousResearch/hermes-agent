@@ -214,8 +214,10 @@ class MatrixAdapter(BasePlatformAdapter):
         self._user_id: str = config.extra.get("user_id", "") or os.getenv(
             "MATRIX_USER_ID", ""
         )
-        self._password: str = config.extra.get("password", "") or os.getenv(
-            "MATRIX_PASSWORD", ""
+        self._user_id_normalized: str = self._user_id.lower()
+        self._password: str = (
+            config.extra.get("password", "")
+            or os.getenv("MATRIX_PASSWORD", "")
         )
         self._encryption: bool = config.extra.get(
             "encryption",
@@ -449,6 +451,7 @@ class MatrixAdapter(BasePlatformAdapter):
                 resolved_device_id = getattr(resp, "device_id", "")
                 if resolved_user_id:
                     self._user_id = str(resolved_user_id)
+                    self._user_id_normalized = self._user_id.lower()
                     client.mxid = UserID(self._user_id)
 
                 # Prefer user-configured device_id for stable E2EE identity.
@@ -1170,7 +1173,7 @@ class MatrixAdapter(BasePlatformAdapter):
         sender = str(getattr(event, "sender", ""))
 
         # Ignore own messages.
-        if sender == self._user_id:
+        if sender.lower() == self._user_id_normalized:
             return
 
         # Deduplicate by event ID.
@@ -1640,7 +1643,7 @@ class MatrixAdapter(BasePlatformAdapter):
     async def _on_reaction(self, event: Any) -> None:
         """Handle incoming reaction events."""
         sender = str(getattr(event, "sender", ""))
-        if sender == self._user_id:
+        if sender.lower() == self._user_id_normalized:
             return
         event_id = str(getattr(event, "event_id", ""))
         if self._is_duplicate_event(event_id):

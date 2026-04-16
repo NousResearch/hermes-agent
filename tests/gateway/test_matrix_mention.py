@@ -193,6 +193,22 @@ async def test_require_mention_default_ignores_unmentioned(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_ignores_own_messages_case_insensitively(monkeypatch):
+    """Own messages should be dropped even if Matrix normalizes sender case."""
+    monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
+    monkeypatch.delenv("MATRIX_AUTO_THREAD", raising=False)
+
+    adapter = _make_adapter()
+    adapter._user_id = "@Hermes:example.org"
+    adapter._user_id_normalized = adapter._user_id.lower()
+    event = _make_event("Acknowledged. I’m idle and ready when you are.", sender="@hermes:example.org")
+
+    await adapter._on_room_message(event)
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_require_mention_default_processes_mentioned(monkeypatch):
     """Default: messages with mention are processed, mention stripped."""
     monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)

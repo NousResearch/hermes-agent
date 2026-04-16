@@ -28,11 +28,21 @@ import subprocess
 import sys
 from pathlib import Path
 
+
+def _find_hermes_agent_root(script_path: Path) -> Path | None:
+    """Return the repo root (directory containing hermes_constants.py) for *script_path*."""
+    here = script_path.resolve()
+    for directory in (here.parent, *here.parents):
+        if (directory / "hermes_constants.py").is_file():
+            return directory
+    return None
+
+
 try:
     from hermes_constants import display_hermes_home, get_hermes_home
 except ModuleNotFoundError:
-    HERMES_AGENT_ROOT = Path(__file__).resolve().parents[4]
-    if HERMES_AGENT_ROOT.exists():
+    HERMES_AGENT_ROOT = _find_hermes_agent_root(Path(__file__))
+    if HERMES_AGENT_ROOT is not None:
         sys.path.insert(0, str(HERMES_AGENT_ROOT))
     from hermes_constants import display_hermes_home, get_hermes_home
 

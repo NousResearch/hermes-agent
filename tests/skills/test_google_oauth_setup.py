@@ -19,6 +19,42 @@ SCRIPT_PATH = (
 )
 
 
+def _load_google_workspace_setup():
+    spec = importlib.util.spec_from_file_location("google_workspace_setup_root_test", SCRIPT_PATH)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+class TestFindHermesAgentRoot:
+    def test_finds_repo_across_vendor_prefix(self, tmp_path):
+        """Fixed-depth parents[N] breaks when an extra directory is inserted under the repo root."""
+        module = _load_google_workspace_setup()
+        repo = tmp_path / "hermes_repo"
+        repo.mkdir()
+        (repo / "hermes_constants.py").write_text("#")
+        nested = (
+            repo
+            / "vendor"
+            / "skills"
+            / "productivity"
+            / "google-workspace"
+            / "scripts"
+            / "setup.py"
+        )
+        nested.parent.mkdir(parents=True, exist_ok=True)
+        nested.touch()
+        assert module._find_hermes_agent_root(nested) == repo.resolve()
+
+    def test_returns_none_when_constants_missing(self, tmp_path):
+        module = _load_google_workspace_setup()
+        script = tmp_path / "orphan" / "setup.py"
+        script.parent.mkdir(parents=True)
+        script.write_text("#")
+        assert module._find_hermes_agent_root(script) is None
+
+
 class FakeCredentials:
     def __init__(self, payload=None):
         self._payload = payload or {

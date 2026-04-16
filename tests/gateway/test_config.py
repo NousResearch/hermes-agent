@@ -300,6 +300,42 @@ class TestLoadGatewayConfig:
 
         assert config.platforms[Platform.TELEGRAM].extra["disable_link_previews"] is True
 
+    def test_bridges_telegram_proxy_url_from_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "telegram:\n"
+            "  proxy_url: socks5://127.0.0.1:1080\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("TELEGRAM_PROXY", raising=False)
+
+        load_gateway_config()
+
+        import os
+        assert os.environ.get("TELEGRAM_PROXY") == "socks5://127.0.0.1:1080"
+
+    def test_telegram_proxy_env_takes_precedence_over_config(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "telegram:\n"
+            "  proxy_url: http://from-config:8080\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("TELEGRAM_PROXY", "socks5://from-env:1080")
+
+        load_gateway_config()
+
+        import os
+        assert os.environ.get("TELEGRAM_PROXY") == "socks5://from-env:1080"
+
 
 class TestHomeChannelEnvOverrides:
     """Home channel env vars should apply even when the platform was already

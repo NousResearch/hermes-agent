@@ -394,6 +394,36 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
     }
 
 
+
+def _backup_for_patch(target: Path) -> None:
+    """
+    Advisory backup for _patch_skill.
+
+    Saves a timestamped copy of *target* to ``<target.parent>/.backup/``.
+    Does not block on errors — backup failures are logged and ignored.
+
+    Keeps at most 5 backups per file (oldest removed first).
+    """
+    import glob as _glob
+    backup_dir = target.parent / ".backup"
+    try:
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        stem = target.stem
+        ext  = target.suffix
+        ts   = datetime.datetime.now().strftime("%Y%m%dT%H%M%S")
+        bak  = backup_dir / f"{stem}_{ts}{ext}"
+        import shutil as _sh
+        _sh.copy2(target, bak)
+        # Prune to 5 most recent
+        pattern = str(backup_dir / f"{stem}_*{ext}")
+        existing = sorted(pathlib.Path(p) for p in _glob.glob(pattern))
+        while len(existing) > 5:
+            oldest = existing.pop(0)
+            oldest.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
 def _patch_skill(
     name: str,
     old_string: str,
@@ -471,6 +501,7 @@ def _patch_skill(
             }
 
     original_content = content  # for rollback
+    _backup_for_patch(target)   # advisory pre-patch backup
     _atomic_write_text(target, new_content)
 
     # Security scan — roll back on block

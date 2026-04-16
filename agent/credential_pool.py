@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import logging
 import random
+import re
+import secrets
 import threading
 import time
 import uuid
@@ -171,12 +173,18 @@ class PooledCredential:
         return self.base_url
 
 
+_CONTROL_CHAR_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+
+
 def label_from_token(token: str, fallback: str) -> str:
     claims = _decode_jwt_claims(token)
     for key in ("email", "preferred_username", "upn"):
         value = claims.get(key)
         if isinstance(value, str) and value.strip():
-            return value.strip()
+            # Strip control characters (ANSI escapes, null bytes, bidi
+            # overrides) and cap length to prevent terminal injection
+            # via crafted JWT claims.
+            return _CONTROL_CHAR_RE.sub("", value.strip())[:120]
     return fallback
 
 
@@ -835,7 +843,7 @@ class CredentialPool:
             return None
 
         if self._strategy == STRATEGY_RANDOM:
-            entry = random.choice(available)
+            entry = secrets.choice(available)
             self._current_id = entry.id
             return entry
 

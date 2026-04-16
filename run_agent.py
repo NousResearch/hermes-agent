@@ -607,6 +607,7 @@ class AIAgent:
         checkpoint_max_snapshots: int = 50,
         pass_session_id: bool = False,
         persist_session: bool = True,
+        gateway_session_key: str = None,
     ):
         """
         Initialize the AI Agent.
@@ -674,6 +675,7 @@ class AIAgent:
         self.skip_context_files = skip_context_files
         self.pass_session_id = pass_session_id
         self.persist_session = persist_session
+        self.gateway_session_key = gateway_session_key
         self._credential_pool = credential_pool
         self.log_prefix_chars = log_prefix_chars
         self.log_prefix = f"{log_prefix} " if log_prefix else ""
@@ -810,7 +812,7 @@ class AIAgent:
         is_openrouter = self._is_openrouter_url()
         is_claude = "claude" in self.model.lower()
         is_native_anthropic = self.api_mode == "anthropic_messages" and self.provider == "anthropic"
-        self._use_prompt_caching = (is_openrouter and is_claude) or is_native_anthropic
+        self._use_prompt_caching = is_openrouter or is_native_anthropic
         self._cache_ttl = "5m"  # Default 5-minute TTL (1.25x write cost)
         
         # Iteration budget: the LLM is only notified when it actually exhausts
@@ -1728,7 +1730,7 @@ class AIAgent:
         # ── Re-evaluate prompt caching ──
         is_native_anthropic = api_mode == "anthropic_messages" and new_provider == "anthropic"
         self._use_prompt_caching = (
-            ("openrouter" in (self.base_url or "").lower() and "claude" in new_model.lower())
+            ("openrouter" in (self.base_url or "").lower())
             or is_native_anthropic
         )
 
@@ -6022,7 +6024,7 @@ class AIAgent:
             # Re-evaluate prompt caching for the new provider/model
             is_native_anthropic = fb_api_mode == "anthropic_messages" and fb_provider == "anthropic"
             self._use_prompt_caching = (
-                ("openrouter" in fb_base_url.lower() and "claude" in fb_model.lower())
+                ("openrouter" in fb_base_url.lower())
                 or is_native_anthropic
             )
 
@@ -7336,6 +7338,26 @@ class AIAgent:
                 max_iterations=function_args.get("max_iterations"),
                 parent_agent=self,
             )
+        elif function_name == "launch_research_lane":
+            from tools.research_lane_launch_tool import launch_research_lane as _launch_lane
+            return _launch_lane(
+                lane=function_args.get("lane", ""),
+                topic=function_args.get("topic", ""),
+                request=function_args.get("request"),
+                playbook_slug=function_args.get("playbook_slug"),
+                deliver=function_args.get("deliver"),
+                create_playbook_if_missing=function_args.get("create_playbook_if_missing", True),
+                resume_existing=function_args.get("resume_existing", True),
+                background=function_args.get("background", True),
+                parent_agent=self,
+            )
+        elif function_name == "delegate_kill":
+            from tools.delegate_tool import delegate_kill as _delegate_kill
+            return _delegate_kill(
+                spawn_id=function_args.get("spawn_id", ""),
+                reason=function_args.get("reason", "Killed by user request"),
+                parent_agent=self,
+            )
         else:
             return handle_function_call(
                 function_name, function_args, effective_task_id,
@@ -7845,6 +7867,26 @@ class AIAgent:
                         spinner.stop(cute_msg)
                     elif self._should_emit_quiet_tool_messages():
                         self._vprint(f"  {cute_msg}")
+            elif function_name == "launch_research_lane":
+                from tools.research_lane_launch_tool import launch_research_lane as _launch_lane
+                function_result = _launch_lane(
+                    lane=function_args.get("lane", ""),
+                    topic=function_args.get("topic", ""),
+                    request=function_args.get("request"),
+                    playbook_slug=function_args.get("playbook_slug"),
+                    deliver=function_args.get("deliver"),
+                    create_playbook_if_missing=function_args.get("create_playbook_if_missing", True),
+                    resume_existing=function_args.get("resume_existing", True),
+                    background=function_args.get("background", True),
+                    parent_agent=self,
+                )
+            elif function_name == "delegate_kill":
+                from tools.delegate_tool import delegate_kill as _delegate_kill
+                function_result = _delegate_kill(
+                    spawn_id=function_args.get("spawn_id", ""),
+                    reason=function_args.get("reason", "Killed by user request"),
+                    parent_agent=self,
+                )
             elif self._context_engine_tool_names and function_name in self._context_engine_tool_names:
                 # Context engine tools (lcm_grep, lcm_describe, lcm_expand, etc.)
                 spinner = None

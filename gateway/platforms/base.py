@@ -631,6 +631,23 @@ def cleanup_document_cache(max_age_hours: int = 24) -> int:
     return removed
 
 
+def _normalize_media_path(p: str) -> str:
+    """Translate git-bash style paths to native Windows paths on Windows."""
+    import os, sys, re as _re
+    if sys.platform != "win32":
+        return p
+    m = _re.match(r"^/([a-zA-Z])/(.*)$", p)
+    if m:
+        return f"{m.group(1).upper()}:/{m.group(2)}"
+    if p.startswith("/tmp/"):
+        tmpdir = os.environ.get("TEMP", os.environ.get("TMP", ""))
+        if tmpdir:
+            return os.path.join(tmpdir, p[5:])
+    if p.startswith("~/"):
+        return os.path.expanduser(p)
+    return p
+
+
 class MessageType(Enum):
     """Types of incoming messages."""
     TEXT = "text"
@@ -687,6 +704,9 @@ class MessageEvent:
     # Applied at API call time and never persisted to transcript history.
     channel_prompt: Optional[str] = None
     
+    # Per-channel system prompt (resolved from config channel_prompts mapping)
+    channel_prompt: Optional[str] = None
+
     # Internal flag — set for synthetic events (e.g. background process
     # completion notifications) that must bypass user authorization checks.
     internal: bool = False
@@ -1291,7 +1311,7 @@ class BasePlatformAdapter(ABC):
                 path = path[1:-1].strip()
             path = path.lstrip("`\"'").rstrip("`\"',.;:)}]")
             if path:
-                media.append((path, has_voice_tag))
+                media.append((_normalize_media_path(path), has_voice_tag))
 
         # Remove MEDIA tags from content (including surrounding quote/backtick wrappers)
         if media:

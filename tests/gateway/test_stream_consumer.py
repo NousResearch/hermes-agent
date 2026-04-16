@@ -606,6 +606,56 @@ class TestSegmentBreakOnToolBoundary:
         assert sent_texts[0].startswith(prefix)
         assert sum(len(t) for t in sent_texts[1:]) == len(tail)
 
+    @pytest.mark.asyncio
+    async def test_fallback_final_sends_full_text_at_tool_boundary(self):
+        """After a tool call, the streamed prefix is stale (from the pre-tool
+        segment).  _send_fallback_final must still send the post-tool response
+        even when continuation_text calculates as empty (#10807)."""
+        adapter = MagicMock()
+        adapter.send = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="msg_1"),
+        )
+        adapter.edit_message = AsyncMock(
+            return_value=SimpleNamespace(success=True),
+        )
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        config = StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5)
+        consumer = GatewayStreamConsumer(adapter, "chat_123", config)
+
+        # Simulate a pre-tool streamed segment that becomes the visible prefix
+        pre_tool_text = "I'll run that code now."
+        consumer.on_delta(pre_tool_text)
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.05)
+
+        # After the tool call, the model returns a SHORT final response that
+        # does NOT start with the pre-tool prefix.  The continuation calculator
+        # would return empty (no prefix match → full text returned, but if the
+        # streaming edit already showed pre_tool_text, the prefix-based logic
+        # wrongly matches).  Simulate this by setting _last_sent_text to the
+        # pre-tool content, then finishing with different post-tool content.
+        consumer._last_sent_text = pre_tool_text
+        post_tool_response = "⏰ Script timed out after 30s and was killed."
+        consumer.finish()
+        await task
+
+        # The fallback should send the post-tool response via
+        # _send_fallback_final.
+        await consumer._send_fallback_final(post_tool_response)
+
+        # Verify the final text was sent (not silently dropped)
+        sent = False
+        for call in adapter.send.call_args_list:
+            content = call[1].get("content", call[0][0] if call[0] else "")
+            if "timed out" in str(content):
+                sent = True
+                break
+        assert sent, (
+            "Post-tool timeout response was silently dropped by "
+            "_send_fallback_final — the #10807 fix should prevent this"
+        )
+
 
 class TestInterimCommentaryMessages:
     @pytest.mark.asyncio

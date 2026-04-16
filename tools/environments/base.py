@@ -37,6 +37,32 @@ def _get_activity_callback() -> Callable[[str], None] | None:
     return getattr(_activity_callback_local, "callback", None)
 
 
+def touch_activity_if_due(
+    state: dict,
+    label: str,
+) -> None:
+    """Fire the activity callback at most once every ``state['interval']`` seconds.
+
+    *state* must contain ``last_touch`` (monotonic timestamp) and ``start``
+    (monotonic timestamp of the operation start).  An optional ``interval``
+    key overrides the default 10 s cadence.
+
+    Swallows all exceptions so callers don't need their own try/except.
+    """
+    now = time.monotonic()
+    interval = state.get("interval", 10.0)
+    if now - state["last_touch"] < interval:
+        return
+    state["last_touch"] = now
+    try:
+        cb = _get_activity_callback()
+        if cb:
+            elapsed = int(now - state["start"])
+            cb(f"{label} ({elapsed}s elapsed)")
+    except Exception:
+        pass
+
+
 def get_sandbox_dir() -> Path:
     """Return the host-side root for all sandbox storage (Docker workspaces,
     Singularity overlays/SIF cache, etc.).
@@ -405,8 +431,11 @@ class BaseEnvironment(ABC):
         drain_thread = threading.Thread(target=_drain, daemon=True)
         drain_thread.start()
         deadline = time.monotonic() + timeout
-        _last_activity_touch = time.monotonic()
-        _ACTIVITY_INTERVAL = 10.0  # seconds between activity touches
+        _now = time.monotonic()
+        _activity_state = {
+            "last_touch": _now,
+            "start": _now,
+        }
 
         while proc.poll() is None:
             if is_interrupted():
@@ -428,16 +457,7 @@ class BaseEnvironment(ABC):
                     "returncode": 124,
                 }
             # Periodic activity touch so the gateway knows we're alive
-            _now = time.monotonic()
-            if _now - _last_activity_touch >= _ACTIVITY_INTERVAL:
-                _last_activity_touch = _now
-                _cb = _get_activity_callback()
-                if _cb:
-                    try:
-                        _elapsed = int(_now - (deadline - timeout))
-                        _cb(f"terminal command running ({_elapsed}s elapsed)")
-                    except Exception:
-                        pass
+            touch_activity_if_due(_activity_state, "terminal command running")
             time.sleep(0.2)
 
         drain_thread.join(timeout=5)

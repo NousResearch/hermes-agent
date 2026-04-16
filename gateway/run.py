@@ -8816,7 +8816,7 @@ class GatewayRunner:
                 # false positives from MagicMock auto-attribute creation in tests.
                 if getattr(type(_status_adapter), "send_exec_approval", None) is not None:
                     try:
-                        asyncio.run_coroutine_threadsafe(
+                        _approval_result = asyncio.run_coroutine_threadsafe(
                             _status_adapter.send_exec_approval(
                                 chat_id=_status_chat_id,
                                 command=cmd,
@@ -8826,7 +8826,12 @@ class GatewayRunner:
                             ),
                             _loop_for_step,
                         ).result(timeout=15)
-                        return
+                        if _approval_result.success:
+                            return
+                        logger.warning(
+                            "Button-based approval failed (send returned error), falling back to text: %s",
+                            _approval_result.error,
+                        )
                     except Exception as _e:
                         logger.warning(
                             "Button-based approval failed, falling back to text: %s", _e

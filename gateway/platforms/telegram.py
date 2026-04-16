@@ -11,6 +11,7 @@ import asyncio
 import json
 import logging
 import os
+import html as _html
 import re
 from typing import Dict, List, Optional, Any
 
@@ -1129,13 +1130,10 @@ class TelegramAdapter(BasePlatformAdapter):
 
         try:
             cmd_preview = command[:3800] + "..." if len(command) > 3800 else command
-            # Escape backticks that would break Markdown v1 inline code parsing
-            safe_cmd = cmd_preview.replace("`", "'")
-            safe_desc = description.replace("`", "'").replace("*", "∗")
             text = (
-                f"⚠️ *Command Approval Required*\n\n"
-                f"`{safe_cmd}`\n\n"
-                f"Reason: {safe_desc}"
+                f"⚠️ <b>Command Approval Required</b>\n\n"
+                f"<pre>{_html.escape(cmd_preview)}</pre>\n\n"
+                f"Reason: {_html.escape(description)}"
             )
 
             # Resolve thread context for thread replies
@@ -1163,7 +1161,7 @@ class TelegramAdapter(BasePlatformAdapter):
             kwargs: Dict[str, Any] = {
                 "chat_id": int(chat_id),
                 "text": text,
-                "parse_mode": ParseMode.MARKDOWN,
+                "parse_mode": ParseMode.HTML,
                 "reply_markup": keyboard,
                 **self._link_preview_kwargs(),
             }

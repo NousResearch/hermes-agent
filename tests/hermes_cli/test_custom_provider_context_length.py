@@ -27,6 +27,42 @@ class TestGetCustomProviderContextLength:
             == 1_050_000
         )
 
+    def test_returns_override_for_matching_provider_key_without_base_url(self):
+        custom = [
+            {
+                "name": "My Endpoint",
+                "provider_key": "my-endpoint",
+                "base_url": "https://example.invalid/v1",
+                "models": {"gpt-5.5": {"context_length": 1_050_000}},
+            }
+        ]
+        assert (
+            get_custom_provider_context_length(
+                "gpt-5.5",
+                provider="my-endpoint",
+                custom_providers=custom,
+            )
+            == 1_050_000
+        )
+
+    def test_provider_level_context_length_fallback(self):
+        custom = [
+            {
+                "name": "my-endpoint",
+                "base_url": "https://example.invalid/v1",
+                "context_length": "262144",
+                "models": {"other-model": {"context_length": 1_050_000}},
+            }
+        ]
+        assert (
+            get_custom_provider_context_length(
+                "gpt-5.5",
+                "https://example.invalid/v1",
+                custom,
+            )
+            == 262_144
+        )
+
     def test_trailing_slash_insensitive(self):
         custom = [
             {

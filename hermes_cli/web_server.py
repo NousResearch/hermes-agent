@@ -864,18 +864,31 @@ def get_model_info():
         # purely auto-detected value, then separately report the override)
         try:
             from agent.model_metadata import get_model_context_length
+            from hermes_cli.config import (
+                get_compatible_custom_providers,
+                get_custom_provider_context_length,
+            )
             auto_ctx = get_model_context_length(
                 model=model_name,
                 base_url=base_url,
                 provider=provider,
                 config_context_length=None,  # ignore override — we want auto value
             )
+            implicit_config_ctx = get_custom_provider_context_length(
+                model=model_name,
+                base_url=base_url,
+                provider=provider,
+                custom_providers=get_compatible_custom_providers(cfg),
+            ) or 0
         except Exception:
             auto_ctx = 0
+            implicit_config_ctx = 0
 
         config_ctx_int = 0
         if isinstance(config_ctx, int) and config_ctx > 0:
             config_ctx_int = config_ctx
+        elif implicit_config_ctx > 0:
+            config_ctx_int = implicit_config_ctx
 
         # Effective is what the agent actually uses
         effective_ctx = config_ctx_int if config_ctx_int > 0 else auto_ctx

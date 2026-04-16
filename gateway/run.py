@@ -4953,9 +4953,12 @@ class GatewayRunner:
 
         Surfaces model, provider, context length, and endpoint so gateway
         users can immediately see if context detection went wrong (e.g.
-        local models falling to the 128K default).
+        local models falling to the default context window).
         """
-        from agent.model_metadata import get_model_context_length, DEFAULT_FALLBACK_CONTEXT
+        from agent.model_metadata import (
+            get_model_context_length,
+            DEFAULT_FALLBACK_CONTEXT,
+        )
 
         model = _resolve_gateway_model()
         config_context_length = None
@@ -4963,6 +4966,7 @@ class GatewayRunner:
         base_url = None
         api_key = None
         custom_provs = None
+        data = {}
 
         try:
             cfg_path = _hermes_home / "config.yaml"
@@ -4996,6 +5000,19 @@ class GatewayRunner:
             api_key = runtime.get("api_key")
         except Exception:
             pass
+
+        if config_context_length is None:
+            try:
+                from hermes_cli.config import get_custom_provider_context_length
+                config_context_length = get_custom_provider_context_length(
+                    model=model,
+                    base_url=base_url or "",
+                    provider=provider or "",
+                    custom_providers=custom_provs,
+                    config=data,
+                )
+            except Exception:
+                pass
 
         context_length = get_model_context_length(
             model,

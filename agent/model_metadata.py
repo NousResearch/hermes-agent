@@ -1207,6 +1207,7 @@ def get_model_context_length(
     config_context_length: int | None = None,
     provider: str = "",
     custom_providers: list | None = None,
+    config: Optional[Dict[str, Any]] = None,
 ) -> int:
     """Get the context length for a model.
 
@@ -1221,7 +1222,7 @@ def get_model_context_length(
     6. Nous suffix-match via OpenRouter cache
     7. models.dev registry lookup (provider-aware)
     8. Thin hardcoded defaults (broad family patterns)
-    9. Default fallback (128K)
+    9. Default fallback
     """
     # 0. Explicit config override — user knows best
     if config_context_length is not None and isinstance(config_context_length, int) and config_context_length > 0:
@@ -1229,15 +1230,17 @@ def get_model_context_length(
 
     # 0b. custom_providers per-model override — check before any probe.
     # This closes the gap where /model switch and display paths used to fall
-    # back to 128K despite the user having a per-model context_length set.
+    # back to the default despite the user having a per-model context_length set.
     # See #15779.
-    if custom_providers and base_url and model:
+    if model and (custom_providers is not None or config is not None):
         try:
             from hermes_cli.config import get_custom_provider_context_length
             cp_ctx = get_custom_provider_context_length(
-                model=model,
+                model=_strip_provider_prefix(model),
                 base_url=base_url,
                 custom_providers=custom_providers,
+                config=config,
+                provider=provider,
             )
             if cp_ctx:
                 return cp_ctx

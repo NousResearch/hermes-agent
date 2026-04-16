@@ -1055,6 +1055,33 @@ class TestModelInfoEndpoint:
         assert data["config_context_length"] == 0
         assert data["effective_context_length"] == 200000
 
+    def test_model_info_named_custom_provider_reports_implicit_config_override(self, monkeypatch):
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws, "load_config", lambda: {
+            "model": {
+                "default": "gpt-5.4",
+                "provider": "test",
+                "base_url": "http://example.test/v1",
+            },
+            "providers": {
+                "test": {
+                    "url": "http://example.test/v1",
+                    "default_model": "gpt-5.4",
+                    "models": {
+                        "gpt-5.4": {"context_length": 1_050_000}
+                    },
+                }
+            },
+        })
+
+        with patch("agent.model_metadata.get_model_context_length", return_value=128000):
+            data = ws.get_model_info()
+
+        assert data["auto_context_length"] == 128000
+        assert data["config_context_length"] == 1_050_000
+        assert data["effective_context_length"] == 1_050_000
+
     def test_model_info_capabilities(self, monkeypatch):
         import hermes_cli.web_server as ws
 

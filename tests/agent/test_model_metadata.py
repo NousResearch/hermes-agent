@@ -627,6 +627,58 @@ class TestGetModelContextLength:
 
         assert result == 200000
 
+    @patch("agent.model_metadata.fetch_model_metadata")
+    def test_auto_loads_named_custom_provider_per_model_context_length(
+        self,
+        mock_fetch,
+    ):
+        """Callers without explicit config_context_length should honor threaded custom provider overrides."""
+        mock_fetch.return_value = {}
+        custom_providers = [{
+            "name": "test",
+            "provider_key": "test",
+            "base_url": "http://example.test/v1",
+            "models": {
+                "gpt-5.4": {"context_length": 1_050_000},
+            },
+        }]
+
+        result = get_model_context_length(
+            "gpt-5.4",
+            base_url="http://example.test/v1",
+            provider="test",
+            custom_providers=custom_providers,
+        )
+
+        assert result == 1_050_000
+
+    @patch("agent.model_metadata.fetch_model_metadata")
+    def test_auto_loads_provider_dict_custom_provider_context_length_by_provider_name(
+        self,
+        mock_fetch,
+    ):
+        """v12 providers-dict entries should resolve by provider name without a base_url."""
+        mock_fetch.return_value = {}
+        config = {
+            "providers": {
+                "test": {
+                    "url": "http://example.test/v1",
+                    "default_model": "gpt-5.4",
+                    "models": {
+                        "gpt-5.4": {"context_length": 1_050_000},
+                    },
+                }
+            }
+        }
+
+        result = get_model_context_length(
+            "gpt-5.4",
+            provider="test",
+            config=config,
+        )
+
+        assert result == 1_050_000
+
 
 # =========================================================================
 # Bedrock context resolution — must run BEFORE custom-endpoint probe

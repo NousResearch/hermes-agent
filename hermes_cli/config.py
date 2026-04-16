@@ -2251,15 +2251,19 @@ def get_compatible_custom_providers(
 
 def get_custom_provider_context_length(
     model: str,
-    base_url: str,
+    base_url: str = "",
     custom_providers: Optional[List[Dict[str, Any]]] = None,
     config: Optional[Dict[str, Any]] = None,
+    provider: str = "",
 ) -> Optional[int]:
     """Look up a per-model ``context_length`` override from ``custom_providers``.
 
-    Matches any entry whose ``base_url`` equals ``base_url`` (trailing-slash
-    insensitive) and returns ``custom_providers[i].models.<model>.context_length``
-    if present and valid.  Returns ``None`` when no override applies.
+    Matches entries by ``base_url`` (trailing-slash insensitive) or provider
+    identity (``name`` / ``provider_key``), then returns
+    ``custom_providers[i].models.<model>.context_length`` when present and
+    valid.  If the provider entry has a top-level ``context_length`` and no
+    per-model override applies, that value is used as a provider-wide fallback.
+    Returns ``None`` when no override applies.
 
     This is the single source of truth for custom-provider context overrides,
     used by:
@@ -2271,9 +2275,9 @@ def get_custom_provider_context_length(
 
     Before this helper existed, the lookup was duplicated in ``run_agent.py``'s
     startup path only; every other path (notably ``/model`` switch) fell back
-    to the 128K default.  See #15779.
+    to the default context window.  See #15779.
     """
-    if not model or not base_url:
+    if not model:
         return None
     if custom_providers is None:
         try:
@@ -2287,30 +2291,43 @@ def get_custom_provider_context_length(
         return None
 
     target_url = (base_url or "").rstrip("/")
-    if not target_url:
+    target_provider = (provider or "").strip().lower()
+    if not target_url and not target_provider:
         return None
 
     for entry in custom_providers:
         if not isinstance(entry, dict):
             continue
         entry_url = (entry.get("base_url") or "").rstrip("/")
-        if not entry_url or entry_url != target_url:
+        entry_name = str(entry.get("name") or "").strip().lower()
+        entry_provider_key = str(entry.get("provider_key") or "").strip().lower()
+        url_matches = bool(target_url and entry_url and entry_url == target_url)
+        provider_matches = bool(
+            target_provider and target_provider in {entry_name, entry_provider_key}
+        )
+        if not (url_matches or provider_matches):
             continue
         models = entry.get("models")
-        if not isinstance(models, dict):
-            continue
-        model_cfg = models.get(model)
-        if not isinstance(model_cfg, dict):
-            continue
-        raw_ctx = model_cfg.get("context_length")
-        if raw_ctx is None:
-            continue
-        try:
-            ctx = int(raw_ctx)
-        except (TypeError, ValueError):
-            continue
-        if ctx > 0:
-            return ctx
+        if isinstance(models, dict):
+            model_cfg = models.get(model)
+            if isinstance(model_cfg, dict):
+                raw_ctx = model_cfg.get("context_length")
+                if raw_ctx is not None:
+                    try:
+                        ctx = int(raw_ctx)
+                    except (TypeError, ValueError):
+                        ctx = 0
+                    if ctx > 0:
+                        return ctx
+
+        raw_ctx = entry.get("context_length")
+        if raw_ctx is not None:
+            try:
+                ctx = int(raw_ctx)
+            except (TypeError, ValueError):
+                ctx = 0
+            if ctx > 0:
+                return ctx
     return None
 
 

@@ -1,0 +1,82 @@
+"""Pure request-parsing helpers for oral group control shortcuts."""
+
+from __future__ import annotations
+
+from gateway.group_control_intents import (
+    looks_like_group_chat_enable_request,
+    looks_like_group_listen_disable_request,
+    looks_like_group_listen_enable_request,
+    looks_like_group_report_disable_request,
+    looks_like_group_report_enable_request,
+    looks_like_group_report_now_request,
+)
+
+
+def match_group_control_request(
+    *,
+    source,
+    body: str,
+    target: str | None,
+    admin_ids_configured: bool,
+    is_admin_user: bool,
+    missing_target_message: str,
+    admin_only_message: str,
+    collect_only_action: str,
+    report_target_resolver,
+) -> tuple[dict[str, object] | None, str | None]:
+    normalized_body = str(body or "").strip()
+    if not admin_ids_configured:
+        return None, None
+
+    allow_chat = looks_like_group_chat_enable_request(normalized_body)
+    disable_listen = looks_like_group_listen_disable_request(normalized_body)
+    enable_listen = not disable_listen and looks_like_group_listen_enable_request(normalized_body)
+    disable_report = looks_like_group_report_disable_request(normalized_body)
+    report_now = looks_like_group_report_now_request(normalized_body)
+    enable_report = looks_like_group_report_enable_request(normalized_body) or (
+        "日报" in normalized_body and not disable_report and not report_now
+    )
+
+    if not any((enable_listen, disable_listen, enable_report, disable_report, report_now)):
+        return None, None
+
+    if not is_admin_user:
+        return None, admin_only_message
+    if not target:
+        return None, missing_target_message
+
+    if report_now:
+        return (
+            {
+                "action": "deliver_report",
+                "target": target,
+                "delivery_target": report_target_resolver(
+                    source,
+                    normalized_body,
+                    prefer_dm=False,
+                ),
+            },
+            None,
+        )
+
+    tool_args: dict[str, object] = {"target": target}
+    if disable_listen:
+        tool_args["action"] = "resume_chat" if allow_chat else "disable_group"
+    elif enable_listen:
+        tool_args["action"] = collect_only_action
+
+    if enable_report:
+        report_target = report_target_resolver(
+            source,
+            normalized_body,
+            prefer_dm=True,
+        )
+        tool_args["daily_report_enabled"] = True
+        tool_args["daily_report_target"] = report_target
+        tool_args["manual_report_target"] = report_target
+    elif disable_report:
+        tool_args["daily_report_enabled"] = False
+
+    if "action" not in tool_args:
+        return None, None
+    return tool_args, None

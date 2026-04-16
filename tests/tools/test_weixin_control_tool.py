@@ -1,0 +1,81 @@
+"""Tests for tools/weixin_control_tool.py."""
+
+import json
+from unittest.mock import patch
+
+from tools.weixin_control_tool import weixin_control_tool
+
+
+def test_routes_send_action_to_send_message_tool():
+    with patch(
+        "tools.weixin_control_tool.send_message_tool",
+        return_value=json.dumps({"success": True, "tool": "send"}),
+    ) as send_mock:
+        result = json.loads(
+            weixin_control_tool(
+                {
+                    "action": "send_message",
+                    "target": "weixin:project@chatroom",
+                    "message": "开工",
+                }
+            )
+        )
+
+    assert result["tool"] == "send"
+    send_mock.assert_called_once_with(
+        {
+            "action": "send",
+            "target": "weixin:project@chatroom",
+            "message": "开工",
+        }
+    )
+
+
+def test_routes_group_policy_alias_to_specialized_tool():
+    with patch(
+        "tools.weixin_control_tool.weixin_group_policy_tool",
+        return_value=json.dumps({"success": True, "tool": "policy"}),
+    ) as policy_mock:
+        result = json.loads(
+            weixin_control_tool(
+                {
+                    "action": "no_reply",
+                    "target": "project@chatroom",
+                }
+            )
+        )
+
+    assert result["tool"] == "policy"
+    policy_mock.assert_called_once_with(
+        {
+            "action": "set_policy",
+            "target": "project@chatroom",
+            "mode": "collect_only",
+            "archive_enabled": True,
+        }
+    )
+
+
+def test_routes_report_now_alias_to_archive_tool():
+    with patch(
+        "tools.weixin_control_tool.weixin_group_archive_tool",
+        return_value=json.dumps({"success": True, "tool": "archive"}),
+    ) as archive_mock:
+        result = json.loads(
+            weixin_control_tool(
+                {
+                    "action": "report_now",
+                    "target": "project@chatroom",
+                    "delivery_target": "current_chat",
+                }
+            )
+        )
+
+    assert result["tool"] == "archive"
+    archive_mock.assert_called_once_with(
+        {
+            "action": "deliver_report",
+            "target": "project@chatroom",
+            "delivery_target": "current_chat",
+        }
+    )

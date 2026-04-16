@@ -4083,13 +4083,18 @@ class GatewayRunner:
                             {"role": "assistant", "content": response, "timestamp": ts}
                         )
                 else:
-                    # The agent already persisted these messages to SQLite via
-                    # _flush_messages_to_session_db(), so skip the DB write here
-                    # to prevent the duplicate-write bug (#860). SessionStore
-                    # now treats SQLite as canonical, so skip_db=True means
-                    # "do not persist this message again here."
-                    agent_persisted = self._session_db is not None
-                    for msg in new_messages:
+                    # The agent reports how many post-history messages actually
+                    # reached SQLite. Skip only that persisted prefix so a
+                    # partial DB flush can still be completed here without
+                    # duplicate writes or silent transcript loss.
+                    try:
+                        persisted_count = max(
+                            0,
+                            int(agent_result.get("session_db_persisted_count", 0) or 0),
+                        )
+                    except (TypeError, ValueError):
+                        persisted_count = 0
+                    for idx, msg in enumerate(new_messages):
                         # Skip system messages (they're rebuilt each run)
                         if msg.get("role") == "system":
                             continue
@@ -4097,7 +4102,7 @@ class GatewayRunner:
                         entry = {**msg, "timestamp": ts}
                         self.session_store.append_to_transcript(
                             session_entry.session_id, entry,
-                            skip_db=agent_persisted,
+                            skip_db=idx < persisted_count,
                         )
             
             # Token counts and model are now persisted by the agent directly.
@@ -8818,6 +8823,7 @@ class GatewayRunner:
                 _last_prompt_toks = getattr(_agent.context_compressor, "last_prompt_tokens", 0)
                 _input_toks = getattr(_agent, "session_prompt_tokens", 0)
                 _output_toks = getattr(_agent, "session_completion_tokens", 0)
+            _persisted_idx = getattr(_agent, "_last_flushed_db_idx", 0) if _agent else 0
             _resolved_model = getattr(_agent, "model", None) if _agent else None
 
             if not final_response:
@@ -8834,6 +8840,7 @@ class GatewayRunner:
                     "input_tokens": _input_toks,
                     "output_tokens": _output_toks,
                     "model": _resolved_model,
+                    "session_db_persisted_count": max(0, _persisted_idx - len(agent_history)),
                 }
             
             # Scan tool results for MEDIA:<path> tags that need to be delivered
@@ -8925,6 +8932,7 @@ class GatewayRunner:
                 "model": _resolved_model,
                 "session_id": effective_session_id,
                 "response_previewed": result.get("response_previewed", False),
+                "session_db_persisted_count": max(0, _persisted_idx - _effective_history_offset),
             }
         
         # Start progress message sender if enabled

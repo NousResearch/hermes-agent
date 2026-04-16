@@ -2377,8 +2377,9 @@ class AIAgent:
         truly new messages — preventing the duplicate-write bug (#860).
         """
         if not self._session_db:
-            return
+            return 0
         self._apply_persist_user_message_override(messages)
+        start_idx = len(conversation_history) if conversation_history else 0
         try:
             # If create_session() failed at startup (e.g. transient lock), the
             # session row may not exist yet.  ensure_session() uses INSERT OR
@@ -2388,9 +2389,8 @@ class AIAgent:
                 source=self.platform or "cli",
                 model=self.model,
             )
-            start_idx = len(conversation_history) if conversation_history else 0
             flush_from = max(start_idx, self._last_flushed_db_idx)
-            for msg in messages[flush_from:]:
+            for msg_idx, msg in enumerate(messages[flush_from:], start=flush_from):
                 role = msg.get("role", "unknown")
                 content = msg.get("content")
                 tool_calls_data = None
@@ -2413,9 +2413,13 @@ class AIAgent:
                     reasoning_details=msg.get("reasoning_details") if role == "assistant" else None,
                     codex_reasoning_items=msg.get("codex_reasoning_items") if role == "assistant" else None,
                 )
-            self._last_flushed_db_idx = len(messages)
+                self._last_flushed_db_idx = msg_idx + 1
         except Exception as e:
             logger.warning("Session DB append_message failed: %s", e)
+        return max(
+            0,
+            min(len(messages), self._last_flushed_db_idx) - start_idx,
+        )
 
     def _get_messages_up_to_last_assistant(self, messages: List[Dict]) -> List[Dict]:
         """
@@ -8027,7 +8031,6 @@ class AIAgent:
         # They are initialized in __init__ and must persist across run_conversation
         # calls so that nudge logic accumulates correctly in CLI mode.
         self.iteration_budget = IterationBudget(self.max_iterations)
-
         # Log conversation turn start for debugging/observability
         _msg_preview = (user_message[:80] + "...") if len(user_message) > 80 else user_message
         _msg_preview = _msg_preview.replace("\n", " ")

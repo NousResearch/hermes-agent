@@ -8,7 +8,7 @@ from hermes_cli.provider_native_tools import (
     active_provider_api_root,
     apply_provider_native_tool_defaults,
     describe_changes,
-    endpoint_and_key,
+    native_api_url,
     get_native_tools,
     provider_has_native_tool,
 )
@@ -171,25 +171,17 @@ class TestDescribeChanges:
         assert "Video generation" in out
 
 
-class TestEndpointAndKey:
-    def test_derives_url(self, monkeypatch):
-        monkeypatch.setenv("MINIMAX_API_KEY", "sk-test")
-        url, key = endpoint_and_key("/v1/t2a_v2", _cfg(_INTL))
-        assert url == "https://api.minimax.io/v1/t2a_v2"
-        assert key == "sk-test"
+class TestNativeApiUrl:
+    def test_derives_url(self):
+        assert native_api_url("/v1/t2a_v2", _cfg(_INTL)) == "https://api.minimax.io/v1/t2a_v2"
 
-    def test_cn_host(self, monkeypatch):
-        monkeypatch.setenv("MINIMAX_CN_API_KEY", "sk-cn")
-        url, key = endpoint_and_key("/v1/t2a_v2", _cfg(_CN, provider="minimax-cn"))
-        assert url == "https://api.minimaxi.com/v1/t2a_v2"
-        assert key == "sk-cn"
+    def test_cn_host(self):
+        assert native_api_url("/v1/t2a_v2", _cfg(_CN, provider="minimax-cn")) == "https://api.minimaxi.com/v1/t2a_v2"
 
     def test_non_native_empty(self):
-        assert endpoint_and_key("/v1/t2a_v2", _cfg("https://api.openai.com/v1")) == ("", "")
+        assert native_api_url("/v1/t2a_v2", _cfg("https://api.openai.com/v1")) == ""
 
-    def test_no_key_empty(self, monkeypatch):
-        monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
-        monkeypatch.delenv("MINIMAX_CN_API_KEY", raising=False)
-        assert endpoint_and_key("/v1/t2a_v2", _cfg(_INTL)) == ("", "")
+    def test_unset_empty(self):
+        assert native_api_url("/v1/t2a_v2", {}) == ""
 
 

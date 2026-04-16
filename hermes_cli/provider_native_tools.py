@@ -3,27 +3,17 @@
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any, Dict, Iterable, Set, Tuple
 from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
-# category → (config_section, config_key, overridable_values)
-_TOOL_DEFAULTS = {
-    "tts":       ("tts",       "provider", {"", "edge"}),
-    "image_gen": ("image_gen", "provider", {"", "auto", "fal"}),
-    "video_gen": ("video_gen", "provider", {"", "auto"}),
-    "music_gen": ("music_gen", "provider", {"", "auto"}),
-}
+# Tool categories that get config defaults written at setup time.
+# Vision is runtime-only (no config persistence) so it is not listed here.
+_CONFIG_CATEGORIES = ("tts", "image_gen", "video_gen", "music_gen")
 
-_TOOL_LABELS = {
-    "tts": "Text-to-speech",
-    "image_gen": "Image generation",
-    "vision": "Vision analysis",
-    "video_gen": "Video generation",
-    "music_gen": "Music generation",
-}
+# Existing config values considered "not explicitly set by the user".
+_OVERRIDABLE = {"", "edge", "auto", "fal"}
 
 
 def _api_host(config):
@@ -54,6 +44,12 @@ def _safe_load_config():
         return {}
 
 
+def _category_display(cat):
+    if cat == "tts":
+        return "Text-to-speech"
+    return cat.replace("_gen", " generation").replace("_", " ").capitalize()
+
+
 def active_provider_api_root(config):
     """API root derived from ``model.base_url``, stripping ``/anthropic``."""
     model = config.get("model")
@@ -65,24 +61,20 @@ def active_provider_api_root(config):
     return base[: -len("/anthropic")] if base.endswith("/anthropic") else base
 
 
-def endpoint_and_key(subpath, config=None):
-    """``(url, api_key)`` for a native subpath, or ``("", "")``."""
+def native_api_url(subpath, config=None):
+    """Full URL for a native API subpath, or ``""`` if not a native provider."""
     cfg = config if config is not None else _safe_load_config()
     if not _is_native_provider(cfg):
-        return "", ""
+        return ""
     root = active_provider_api_root(cfg).rstrip("/")
-    key = (os.environ.get("MINIMAX_API_KEY", "").strip()
-           or os.environ.get("MINIMAX_CN_API_KEY", "").strip())
-    if not root or not key:
-        return "", ""
-    return f"{root}{subpath}", key
+    return f"{root}{subpath}" if root else ""
 
 
 def get_native_tools(config):
     """Tool categories served natively by the active provider, or ``()``."""
     if not _is_native_provider(config):
         return ()
-    return tuple(_TOOL_DEFAULTS) + ("vision",)
+    return _CONFIG_CATEGORIES + ("vision",)
 
 
 def provider_has_native_tool(tool, config):
@@ -97,15 +89,15 @@ def apply_provider_native_tool_defaults(config):
     if not label:
         return set()
     changed = set()
-    for cat, (section, key, overridable) in _TOOL_DEFAULTS.items():
-        cfg = config.setdefault(section, {})
-        if isinstance(cfg, dict) and str(cfg.get(key) or "").strip().lower() in overridable:
-            cfg[key] = label
+    for cat in _CONFIG_CATEGORIES:
+        cfg = config.setdefault(cat, {})
+        if isinstance(cfg, dict) and str(cfg.get("provider") or "").strip().lower() in _OVERRIDABLE:
+            cfg["provider"] = label
             changed.add(cat)
     if changed:
         aux = config.get("auxiliary") if isinstance(config.get("auxiliary"), dict) else {}
         vis = aux.get("vision") if isinstance(aux.get("vision"), dict) else {}
-        if str(vis.get("provider") or "").strip().lower() in {"", "auto", "main"}:
+        if str(vis.get("provider") or "").strip().lower() in _OVERRIDABLE:
             changed.add("vision")
     return changed
 
@@ -115,4 +107,4 @@ def describe_changes(changed, config):
     items = sorted(changed)
     if not items:
         return "No changes \u2014 existing tool choices were preserved."
-    return "\n".join(f"  \u2022 {_TOOL_LABELS.get(k, k)}" for k in items)
+    return "\n".join(f"  \u2022 {_category_display(k)}" for k in items)

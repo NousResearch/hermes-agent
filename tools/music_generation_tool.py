@@ -60,13 +60,15 @@ def music_generate_tool(
     bitrate: int = 256000,
 ) -> str:
     try:
-        from hermes_cli.provider_native_tools import endpoint_and_key
+        from hermes_cli.provider_native_tools import native_api_url
     except Exception:
         return json.dumps({"success": False,
                            "error": "no music backend available"})
 
-    url, key = endpoint_and_key("/v1/music_generation")
-    if not url:
+    url = native_api_url("/v1/music_generation")
+    key = (os.getenv("MINIMAX_API_KEY", "").strip()
+           or os.getenv("MINIMAX_CN_API_KEY", "").strip())
+    if not url or not key:
         return json.dumps({"success": False,
                            "error": "no music backend configured"})
 

@@ -693,10 +693,12 @@ def _native_image_generate(prompt, aspect_ratio, num_images, output_format):
     import ssl
     import urllib.error
     import urllib.request
-    from hermes_cli.provider_native_tools import endpoint_and_key
+    from hermes_cli.provider_native_tools import native_api_url
 
-    url, key = endpoint_and_key("/v1/image_generation")
-    if not url:
+    url = native_api_url("/v1/image_generation")
+    key = (os.getenv("MINIMAX_API_KEY", "").strip()
+           or os.getenv("MINIMAX_CN_API_KEY", "").strip())
+    if not url or not key:
         return None
 
     ratio = _RATIO_ALIAS.get((aspect_ratio or "").lower(), aspect_ratio)

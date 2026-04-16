@@ -393,17 +393,13 @@ def _generate_minimax_tts(text: str, output_path: str, tts_config: Dict[str, Any
     # Derive URL + key from the active provider when available (handles CN
     # region automatically); fall back to env var + default URL.
     derived_base = ""
-    api_key = ""
     try:
-        from hermes_cli.provider_native_tools import endpoint_and_key
-        _url, _key = endpoint_and_key("/v1/t2a_v2")
-        if _url and _key:
-            derived_base = _url
-            api_key = _key
+        from hermes_cli.provider_native_tools import native_api_url
+        derived_base = native_api_url("/v1/t2a_v2")
     except Exception:
         pass
-    if not api_key:
-        api_key = os.getenv("MINIMAX_API_KEY", "")
+
+    api_key = os.getenv("MINIMAX_API_KEY", "")
     if not api_key:
         raise ValueError("MINIMAX_API_KEY not set. Get one at https://platform.minimax.io/")
 

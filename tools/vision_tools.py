@@ -805,7 +805,7 @@ def _native_vision_analyze(image_source: str, user_prompt: str):
     import urllib.error
     import urllib.request
 
-    from hermes_cli.provider_native_tools import endpoint_and_key
+    from hermes_cli.provider_native_tools import native_api_url
 
     try:
         from hermes_cli.config import load_config
@@ -816,8 +816,10 @@ def _native_vision_analyze(image_source: str, user_prompt: str):
     except Exception:
         pass
 
-    url, key = endpoint_and_key("/v1/coding_plan/vlm")
-    if not url:
+    url = native_api_url("/v1/coding_plan/vlm")
+    key = (os.getenv("MINIMAX_API_KEY", "").strip()
+           or os.getenv("MINIMAX_CN_API_KEY", "").strip())
+    if not url or not key:
         return None
 
     src = (image_source or "").strip()

@@ -14,6 +14,7 @@ pyyaml
 requests
 jinja2
 pydantic>=2.0
+oauth-cli-kit>=0.1.3,<1.0.0
 PyJWT[crypto]
 debugpy
 

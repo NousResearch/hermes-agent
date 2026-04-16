@@ -110,6 +110,38 @@ def test_model_command_uses_runtime_access_token_for_codex_list(monkeypatch):
 # ── Tests for _normalize_model_for_provider ──────────────────────────
 
 
+def test_model_command_offers_browser_login_for_codex(monkeypatch):
+    from hermes_cli.main import _model_flow_openai_codex
+
+    captured = {}
+
+    monkeypatch.setattr(
+        "hermes_cli.auth.get_codex_auth_status",
+        lambda: {"logged_in": False},
+    )
+    monkeypatch.setattr("builtins.input", lambda prompt="": "2")
+    monkeypatch.setattr(
+        "hermes_cli.auth._login_openai_codex",
+        lambda args, provider: captured.setdefault("method", getattr(args, "method", None)),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.auth.resolve_codex_runtime_credentials",
+        lambda *args, **kwargs: {"api_key": "codex-access-token"},
+    )
+    monkeypatch.setattr(
+        "hermes_cli.codex_models.get_codex_model_ids",
+        lambda access_token=None: ["gpt-5.2-codex"],
+    )
+    monkeypatch.setattr(
+        "hermes_cli.auth._prompt_model_selection",
+        lambda *args, **kwargs: None,
+    )
+
+    _model_flow_openai_codex({}, current_model="")
+
+    assert captured["method"] == "browser"
+
+
 def _make_cli(model="anthropic/claude-opus-4.6", **kwargs):
     """Create a HermesCLI with minimal mocking."""
     import cli as _cli_mod

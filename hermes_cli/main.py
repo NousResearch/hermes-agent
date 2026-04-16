@@ -1139,8 +1139,6 @@ def select_provider_and_model(args=None):
         _model_flow_anthropic(config, current_model)
     elif selected_provider == "kimi-coding":
         _model_flow_kimi(config, current_model)
-    elif selected_provider == "bedrock":
-        _model_flow_bedrock(config, current_model)
     elif selected_provider in ("gemini", "deepseek", "xai", "zai", "kimi-coding-cn", "minimax", "minimax-cn", "kilocode", "opencode-zen", "opencode-go", "ai-gateway", "alibaba", "huggingface", "xiaomi", "arcee"):
         _model_flow_api_key_provider(config, selected_provider, current_model)
 
@@ -1438,10 +1436,20 @@ def _model_flow_openai_codex(config, current_model=""):
 
     status = get_codex_auth_status()
     if not status.get("logged_in"):
-        print("Not logged into OpenAI Codex. Starting login...")
+        print("Not logged into OpenAI Codex.")
         print()
         try:
-            mock_args = argparse.Namespace()
+            print("Choose a login method:")
+            print("  1. Device code (recommended)")
+            print("  2. Browser login (NanoBOT-compatible)")
+            try:
+                choice = input("  Choice [1/2]: ").strip()
+            except (KeyboardInterrupt, EOFError):
+                print()
+                print("Login cancelled.")
+                return
+            method = "browser" if choice == "2" else "device-code"
+            mock_args = argparse.Namespace(method=method)
             _login_openai_codex(mock_args, PROVIDER_REGISTRY["openai-codex"])
         except SystemExit:
             print("Login cancelled or failed.")
@@ -2425,252 +2433,6 @@ def _model_flow_kimi(config, current_model=""):
         print(f"Default model set to: {selected} (via {endpoint_label})")
     else:
         print("No change.")
-
-
-def _model_flow_bedrock_api_key(config, region, current_model=""):
-    """Bedrock API Key mode — uses the OpenAI-compatible bedrock-mantle endpoint.
-
-    For developers who don't have an AWS account but received a Bedrock API Key
-    from their AWS admin. Works like any OpenAI-compatible endpoint.
-    """
-    from hermes_cli.auth import _prompt_model_selection, _save_model_choice, deactivate_provider
-    from hermes_cli.config import load_config, save_config, get_env_value, save_env_value
-    from hermes_cli.models import _PROVIDER_MODELS
-
-    mantle_base_url = f"https://bedrock-mantle.{region}.api.aws/v1"
-
-    # Prompt for API key
-    existing_key = get_env_value("AWS_BEARER_TOKEN_BEDROCK") or ""
-    if existing_key:
-        print(f"  Bedrock API Key: {existing_key[:12]}... ✓")
-    else:
-        print(f"  Endpoint: {mantle_base_url}")
-        print()
-        try:
-            import getpass
-            api_key = getpass.getpass("  Bedrock API Key: ").strip()
-        except (KeyboardInterrupt, EOFError):
-            print()
-            return
-        if not api_key:
-            print("  Cancelled.")
-            return
-        save_env_value("AWS_BEARER_TOKEN_BEDROCK", api_key)
-        existing_key = api_key
-        print("  ✓ API key saved.")
-    print()
-
-    # Model selection — use static list (mantle doesn't need boto3 for discovery)
-    model_list = _PROVIDER_MODELS.get("bedrock", [])
-    print(f"  Showing {len(model_list)} curated models")
-
-    if model_list:
-        selected = _prompt_model_selection(model_list, current_model=current_model)
-    else:
-        try:
-            selected = input("  Model ID: ").strip()
-        except (KeyboardInterrupt, EOFError):
-            selected = None
-
-    if selected:
-        _save_model_choice(selected)
-
-        # Save as custom provider pointing to bedrock-mantle
-        cfg = load_config()
-        model = cfg.get("model")
-        if not isinstance(model, dict):
-            model = {"default": model} if model else {}
-            cfg["model"] = model
-        model["provider"] = "custom"
-        model["base_url"] = mantle_base_url
-        model.pop("api_mode", None)  # chat_completions is the default
-
-        # Also save region in bedrock config for reference
-        bedrock_cfg = cfg.get("bedrock", {})
-        if not isinstance(bedrock_cfg, dict):
-            bedrock_cfg = {}
-        bedrock_cfg["region"] = region
-        cfg["bedrock"] = bedrock_cfg
-
-        # Save the API key env var name so hermes knows where to find it
-        save_env_value("OPENAI_API_KEY", existing_key)
-        save_env_value("OPENAI_BASE_URL", mantle_base_url)
-
-        save_config(cfg)
-        deactivate_provider()
-
-        print(f"  Default model set to: {selected} (via Bedrock API Key, {region})")
-        print(f"  Endpoint: {mantle_base_url}")
-    else:
-        print("  No change.")
-
-
-def _model_flow_bedrock(config, current_model=""):
-    """AWS Bedrock provider: verify credentials, pick region, discover models.
-
-    Uses the native Converse API via boto3 — not the OpenAI-compatible endpoint.
-    Auth is handled by the AWS SDK default credential chain (env vars, profile,
-    instance role), so no API key prompt is needed.
-    """
-    from hermes_cli.auth import _prompt_model_selection, _save_model_choice, deactivate_provider
-    from hermes_cli.config import load_config, save_config
-    from hermes_cli.models import _PROVIDER_MODELS
-
-    # 1. Check for AWS credentials
-    try:
-        from agent.bedrock_adapter import (
-            has_aws_credentials,
-            resolve_aws_auth_env_var,
-            resolve_bedrock_region,
-            discover_bedrock_models,
-        )
-    except ImportError:
-        print("  ✗ boto3 is not installed. Install it with:")
-        print("    pip install boto3")
-        print()
-        return
-
-    if not has_aws_credentials():
-        print("  ⚠ No AWS credentials detected via environment variables.")
-        print("  Bedrock will use boto3's default credential chain (IMDS, SSO, etc.)")
-        print()
-
-    auth_var = resolve_aws_auth_env_var()
-    if auth_var:
-        print(f"  AWS credentials: {auth_var} ✓")
-    else:
-        print("  AWS credentials: boto3 default chain (instance role / SSO)")
-    print()
-
-    # 2. Region selection
-    current_region = resolve_bedrock_region()
-    try:
-        region_input = input(f"  AWS Region [{current_region}]: ").strip()
-    except (KeyboardInterrupt, EOFError):
-        print()
-        return
-    region = region_input or current_region
-
-    # 2b. Authentication mode
-    print("  Choose authentication method:")
-    print()
-    print("    1. IAM credential chain (recommended)")
-    print("       Works with EC2 instance roles, SSO, env vars, aws configure")
-    print("    2. Bedrock API Key")
-    print("       Enter your Bedrock API Key directly — also supports")
-    print("       team scenarios where an admin distributes keys")
-    print()
-    try:
-        auth_choice = input("  Choice [1]: ").strip()
-    except (KeyboardInterrupt, EOFError):
-        print()
-        return
-
-    if auth_choice == "2":
-        _model_flow_bedrock_api_key(config, region, current_model)
-        return
-
-    # 3. Model discovery — try live API first, fall back to static list
-    print(f"  Discovering models in {region}...")
-    live_models = discover_bedrock_models(region)
-
-    if live_models:
-        _EXCLUDE_PREFIXES = (
-            "stability.", "cohere.embed", "twelvelabs.", "us.stability.",
-            "us.cohere.embed", "us.twelvelabs.", "global.cohere.embed",
-            "global.twelvelabs.",
-        )
-        _EXCLUDE_SUBSTRINGS = ("safeguard", "voxtral", "palmyra-vision")
-        filtered = []
-        for m in live_models:
-            mid = m["id"]
-            if any(mid.startswith(p) for p in _EXCLUDE_PREFIXES):
-                continue
-            if any(s in mid.lower() for s in _EXCLUDE_SUBSTRINGS):
-                continue
-            filtered.append(m)
-
-        # Deduplicate: prefer inference profiles (us.*, global.*) over bare
-        # foundation model IDs.
-        profile_base_ids = set()
-        for m in filtered:
-            mid = m["id"]
-            if mid.startswith(("us.", "global.")):
-                base = mid.split(".", 1)[1] if "." in mid[3:] else mid
-                profile_base_ids.add(base)
-
-        deduped = []
-        for m in filtered:
-            mid = m["id"]
-            if not mid.startswith(("us.", "global.")) and mid in profile_base_ids:
-                continue
-            deduped.append(m)
-
-        _RECOMMENDED = [
-            "us.anthropic.claude-sonnet-4-6",
-            "us.anthropic.claude-opus-4-6",
-            "us.anthropic.claude-haiku-4-5",
-            "us.amazon.nova-pro",
-            "us.amazon.nova-lite",
-            "us.amazon.nova-micro",
-            "deepseek.v3",
-            "us.meta.llama4-maverick",
-            "us.meta.llama4-scout",
-        ]
-
-        def _sort_key(m):
-            mid = m["id"]
-            for i, rec in enumerate(_RECOMMENDED):
-                if mid.startswith(rec):
-                    return (0, i, mid)
-            if mid.startswith("global."):
-                return (1, 0, mid)
-            return (2, 0, mid)
-
-        deduped.sort(key=_sort_key)
-        model_list = [m["id"] for m in deduped]
-        print(f"  Found {len(model_list)} text model(s) (filtered from {len(live_models)} total)")
-    else:
-        model_list = _PROVIDER_MODELS.get("bedrock", [])
-        if model_list:
-            print(f"  Using {len(model_list)} curated models (live discovery unavailable)")
-        else:
-            print("  No models found. Check IAM permissions for bedrock:ListFoundationModels.")
-            return
-
-    # 4. Model selection
-    if model_list:
-        selected = _prompt_model_selection(model_list, current_model=current_model)
-    else:
-        try:
-            selected = input("  Model ID: ").strip()
-        except (KeyboardInterrupt, EOFError):
-            selected = None
-
-    if selected:
-        _save_model_choice(selected)
-
-        cfg = load_config()
-        model = cfg.get("model")
-        if not isinstance(model, dict):
-            model = {"default": model} if model else {}
-            cfg["model"] = model
-        model["provider"] = "bedrock"
-        model["base_url"] = f"https://bedrock-runtime.{region}.amazonaws.com"
-        model.pop("api_mode", None)  # bedrock_converse is auto-detected
-
-        bedrock_cfg = cfg.get("bedrock", {})
-        if not isinstance(bedrock_cfg, dict):
-            bedrock_cfg = {}
-        bedrock_cfg["region"] = region
-        cfg["bedrock"] = bedrock_cfg
-
-        save_config(cfg)
-        deactivate_provider()
-
-        print(f"  Default model set to: {selected} (via AWS Bedrock, {region})")
-    else:
-        print("  No change.")
 
 
 def _model_flow_api_key_provider(config, provider_id, current_model=""):
@@ -4284,40 +4046,7 @@ def cmd_update(args):
                                     capture_output=True, text=True, timeout=15,
                                 )
                                 if restart.returncode == 0:
-                                    # Verify the service actually survived the
-                                    # restart.  systemctl restart returns 0 even
-                                    # if the new process crashes immediately.
-                                    import time as _time
-                                    _time.sleep(3)
-                                    verify = subprocess.run(
-                                        scope_cmd + ["is-active", svc_name],
-                                        capture_output=True, text=True, timeout=5,
-                                    )
-                                    if verify.stdout.strip() == "active":
-                                        restarted_services.append(svc_name)
-                                    else:
-                                        # Retry once — transient startup failures
-                                        # (stale module cache, import race) often
-                                        # resolve on the second attempt.
-                                        print(f"  ⚠ {svc_name} died after restart, retrying...")
-                                        retry = subprocess.run(
-                                            scope_cmd + ["restart", svc_name],
-                                            capture_output=True, text=True, timeout=15,
-                                        )
-                                        _time.sleep(3)
-                                        verify2 = subprocess.run(
-                                            scope_cmd + ["is-active", svc_name],
-                                            capture_output=True, text=True, timeout=5,
-                                        )
-                                        if verify2.stdout.strip() == "active":
-                                            restarted_services.append(svc_name)
-                                            print(f"  ✓ {svc_name} recovered on retry")
-                                        else:
-                                            print(
-                                                f"  ✗ {svc_name} failed to stay running after restart.\n"
-                                                f"    Check logs: journalctl --user -u {svc_name} --since '2 min ago'\n"
-                                                f"    Restart manually: systemctl {'--user ' if scope == 'user' else ''}restart {svc_name}"
-                                            )
+                                    restarted_services.append(svc_name)
                                 else:
                                     print(f"  ⚠ Failed to restart {svc_name}: {restart.stderr.strip()}")
                     except (FileNotFoundError, subprocess.TimeoutExpired):
@@ -4405,8 +4134,6 @@ def _coalesce_session_name_args(argv: list) -> list:
         "status", "cron", "doctor", "config", "pairing", "skills", "tools",
         "mcp", "sessions", "insights", "version", "update", "uninstall",
         "profile", "dashboard",
-        "honcho", "claw", "plugins", "acp",
-        "webhook", "memory", "dump", "debug", "backup", "import", "completion", "logs",
     }
     _SESSION_FLAGS = {"-c", "--continue", "-r", "--resume"}
 
@@ -4702,20 +4429,17 @@ def cmd_dashboard(args):
         host=args.host,
         port=args.port,
         open_browser=not args.no_open,
-        allow_public=getattr(args, "insecure", False),
     )
 
 
-def cmd_completion(args, parser=None):
+def cmd_completion(args):
     """Print shell completion script."""
-    from hermes_cli.completion import generate_bash, generate_zsh, generate_fish
+    from hermes_cli.profiles import generate_bash_completion, generate_zsh_completion
     shell = getattr(args, "shell", "bash")
     if shell == "zsh":
-        print(generate_zsh(parser))
-    elif shell == "fish":
-        print(generate_fish(parser))
+        print(generate_zsh_completion())
     else:
-        print(generate_bash(parser))
+        print(generate_bash_completion())
 
 
 def cmd_logs(args):
@@ -4997,7 +4721,6 @@ For more help on a command:
     # gateway start
     gateway_start = gateway_subparsers.add_parser("start", help="Start the installed systemd/launchd background service")
     gateway_start.add_argument("--system", action="store_true", help="Target the Linux system-level gateway service")
-    gateway_start.add_argument("--all", action="store_true", help="Kill ALL stale gateway processes across all profiles before starting")
     
     # gateway stop
     gateway_stop = gateway_subparsers.add_parser("stop", help="Stop gateway service")
@@ -5007,7 +4730,6 @@ For more help on a command:
     # gateway restart
     gateway_restart = gateway_subparsers.add_parser("restart", help="Restart gateway service")
     gateway_restart.add_argument("--system", action="store_true", help="Target the Linux system-level gateway service")
-    gateway_restart.add_argument("--all", action="store_true", help="Kill ALL gateway processes across all profiles before restarting")
     
     # gateway status
     gateway_status = gateway_subparsers.add_parser("status", help="Show gateway status")
@@ -5151,6 +4873,7 @@ For more help on a command:
     auth_add.add_argument("--inference-url", help="Nous inference base URL")
     auth_add.add_argument("--client-id", help="OAuth client id")
     auth_add.add_argument("--scope", help="OAuth scope override")
+    auth_add.add_argument("--method", choices=["device-code", "browser"], help="OAuth login method for compatible providers")
     auth_add.add_argument("--no-browser", action="store_true", help="Do not auto-open a browser for OAuth login")
     auth_add.add_argument("--timeout", type=float, help="OAuth/network timeout in seconds")
     auth_add.add_argument("--insecure", action="store_true", help="Disable TLS verification for OAuth login")
@@ -5160,6 +4883,7 @@ For more help on a command:
     auth_remove = auth_subparsers.add_parser("remove", help="Remove a pooled credential by index, id, or label")
     auth_remove.add_argument("provider", help="Provider id")
     auth_remove.add_argument("target", help="Credential index, entry id, or exact label")
+    auth_remove.add_argument("--purge-shared", action="store_true", help="Also delete shared Codex credentials when removing openai-codex")
     auth_reset = auth_subparsers.add_parser("reset", help="Clear exhaustion status for all credentials for a provider")
     auth_reset.add_argument("provider", help="Provider id")
     auth_parser.set_defaults(func=cmd_auth)
@@ -5321,7 +5045,6 @@ Examples:
     hermes debug share --lines 500  Include more log lines
     hermes debug share --expire 30  Keep paste for 30 days
     hermes debug share --local      Print report locally (no upload)
-    hermes debug delete <url>       Delete a previously uploaded paste
 """,
     )
     debug_sub = debug_parser.add_subparsers(dest="debug_command")
@@ -5340,14 +5063,6 @@ Examples:
     share_parser.add_argument(
         "--local", action="store_true",
         help="Print the report locally instead of uploading",
-    )
-    delete_parser = debug_sub.add_parser(
-        "delete",
-        help="Delete a paste uploaded by 'hermes debug share'",
-    )
-    delete_parser.add_argument(
-        "urls", nargs="*", default=[],
-        help="One or more paste URLs to delete (e.g. https://paste.rs/abc123)",
     )
     debug_parser.set_defaults(func=cmd_debug)
 
@@ -6206,13 +5921,13 @@ Examples:
     # =========================================================================
     completion_parser = subparsers.add_parser(
         "completion",
-        help="Print shell completion script (bash, zsh, or fish)",
+        help="Print shell completion script (bash or zsh)",
     )
     completion_parser.add_argument(
-        "shell", nargs="?", default="bash", choices=["bash", "zsh", "fish"],
+        "shell", nargs="?", default="bash", choices=["bash", "zsh"],
         help="Shell type (default: bash)",
     )
-    completion_parser.set_defaults(func=lambda args: cmd_completion(args, parser))
+    completion_parser.set_defaults(func=cmd_completion)
 
     # =========================================================================
     # dashboard command
@@ -6225,10 +5940,6 @@ Examples:
     dashboard_parser.add_argument("--port", type=int, default=9119, help="Port (default 9119)")
     dashboard_parser.add_argument("--host", default="127.0.0.1", help="Host (default 127.0.0.1)")
     dashboard_parser.add_argument("--no-open", action="store_true", help="Don't open browser automatically")
-    dashboard_parser.add_argument(
-        "--insecure", action="store_true",
-        help="Allow binding to non-localhost (DANGEROUS: exposes API keys on the network)",
-    )
     dashboard_parser.set_defaults(func=cmd_dashboard)
 
     # =========================================================================
@@ -6303,42 +6014,7 @@ Examples:
         sys.exit(1)
 
     _processed_argv = _coalesce_session_name_args(sys.argv[1:])
-
-    # ── Defensive subparser routing (bpo-9338 workaround) ───────────
-    # On some Python versions (notably <3.11), argparse fails to route
-    # subcommand tokens when the parent parser has nargs='?' optional
-    # arguments (--continue).  The symptom: "unrecognized arguments: model"
-    # even though 'model' is a registered subcommand.
-    #
-    # Fix: when argv contains a token matching a known subcommand, set
-    # subparsers.required=True to force deterministic routing.  If that
-    # fails (e.g. 'hermes -c model' where 'model' is consumed as the
-    # session name for --continue), fall back to the default behaviour.
-    import io as _io
-    _known_cmds = set(subparsers.choices.keys()) if hasattr(subparsers, "choices") else set()
-    _has_cmd_token = any(t in _known_cmds for t in _processed_argv if not t.startswith("-"))
-
-    if _has_cmd_token:
-        subparsers.required = True
-        _saved_stderr = sys.stderr
-        try:
-            sys.stderr = _io.StringIO()
-            args = parser.parse_args(_processed_argv)
-            sys.stderr = _saved_stderr
-        except SystemExit as exc:
-            sys.stderr = _saved_stderr
-            # Help/version flags (exit code 0) already printed output —
-            # re-raise immediately to avoid a second parse_args printing
-            # the same help text again (#10230).
-            if exc.code == 0:
-                raise
-            # Subcommand name was consumed as a flag value (e.g. -c model).
-            # Fall back to optional subparsers so argparse handles it normally.
-            subparsers.required = False
-            args = parser.parse_args(_processed_argv)
-    else:
-        subparsers.required = False
-        args = parser.parse_args(_processed_argv)
+    args = parser.parse_args(_processed_argv)
 
     # Handle --version flag
     if args.version:

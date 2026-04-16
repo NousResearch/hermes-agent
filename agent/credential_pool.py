@@ -458,27 +458,23 @@ class CredentialPool:
         return entry
 
     def _sync_codex_entry_from_cli(self, entry: PooledCredential) -> PooledCredential:
-        """Sync an openai-codex pool entry from ~/.codex/auth.json if tokens differ.
-
-        OpenAI OAuth refresh tokens are single-use and rotate on every refresh.
-        When the Codex CLI (or another Hermes profile) refreshes its token,
-        the pool entry's refresh_token becomes stale.  This method detects that
-        by comparing against ~/.codex/auth.json and syncing the fresh pair.
-        """
+        """Sync an openai-codex pool entry from the preferred shared credential source."""
         if self.provider != "openai-codex":
             return entry
         try:
-            cli_tokens = _import_codex_cli_tokens()
-            if not cli_tokens:
+            bundle = auth_mod._load_codex_from_shared_store_first()
+            tokens = bundle.get("tokens") if isinstance(bundle, dict) else None
+            if not isinstance(tokens, dict):
                 return entry
-            cli_refresh = cli_tokens.get("refresh_token", "")
-            cli_access = cli_tokens.get("access_token", "")
-            if cli_refresh and cli_refresh != entry.refresh_token:
-                logger.debug("Pool entry %s: syncing tokens from ~/.codex/auth.json (refresh token changed)", entry.id)
+            shared_refresh = tokens.get("refresh_token", "")
+            shared_access = tokens.get("access_token", "")
+            if shared_refresh and shared_refresh != entry.refresh_token:
+                logger.debug("Pool entry %s: syncing tokens from shared Codex credential", entry.id)
                 updated = replace(
                     entry,
-                    access_token=cli_access,
-                    refresh_token=cli_refresh,
+                    access_token=shared_access,
+                    refresh_token=shared_refresh,
+                    last_refresh=bundle.get("last_refresh"),
                     last_status=None,
                     last_status_at=None,
                     last_error_code=None,
@@ -487,7 +483,7 @@ class CredentialPool:
                 self._persist()
                 return updated
         except Exception as exc:
-            logger.debug("Failed to sync from ~/.codex/auth.json: %s", exc)
+            logger.debug("Failed to sync from shared Codex credential: %s", exc)
         return entry
 
     def _sync_device_code_entry_to_auth_store(self, entry: PooledCredential) -> None:
@@ -502,6 +498,23 @@ class CredentialPool:
         Applies to any OAuth provider whose singleton lives in auth.json
         (currently Nous and OpenAI Codex).
         """
+        if self.provider == "openai-codex":
+            try:
+                auth_mod._persist_codex_token_bundle(
+                    {
+                        "tokens": {
+                            "access_token": entry.access_token,
+                            "refresh_token": entry.refresh_token,
+                        },
+                        "last_refresh": entry.last_refresh,
+                        "source": "oauth-cli-kit-shared",
+                    },
+                    sync_shared=True,
+                    sync_cli=True,
+                )
+            except Exception as exc:
+                logger.debug("Failed to sync openai-codex pool entry back to shared stores: %s", exc)
+            return
         if entry.source != "device_code":
             return
         try:
@@ -1152,95 +1165,35 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
                 },
             )
 
-    elif provider == "copilot":
-        # Copilot tokens are resolved dynamically via `gh auth token` or
-        # env vars (COPILOT_GITHUB_TOKEN / GH_TOKEN).  They don't live in
-        # the auth store or credential pool, so we resolve them here.
-        try:
-            from hermes_cli.copilot_auth import resolve_copilot_token
-            token, source = resolve_copilot_token()
-            if token:
-                source_name = "gh_cli" if "gh" in source.lower() else f"env:{source}"
-                active_sources.add(source_name)
-                pconfig = PROVIDER_REGISTRY.get(provider)
-                changed |= _upsert_entry(
-                    entries,
-                    provider,
-                    source_name,
-                    {
-                        "source": source_name,
-                        "auth_type": AUTH_TYPE_API_KEY,
-                        "access_token": token,
-                        "base_url": pconfig.inference_base_url if pconfig else "",
-                        "label": source,
-                    },
-                )
-        except Exception as exc:
-            logger.debug("Copilot token seed failed: %s", exc)
-
-    elif provider == "qwen-oauth":
-        # Qwen OAuth tokens live in ~/.qwen/oauth_creds.json, written by
-        # the Qwen CLI (`qwen auth qwen-oauth`).  They aren't in the
-        # Hermes auth store or env vars, so resolve them here.
-        # Use refresh_if_expiring=False to avoid network calls during
-        # pool loading / provider discovery.
-        try:
-            from hermes_cli.auth import resolve_qwen_runtime_credentials
-            creds = resolve_qwen_runtime_credentials(refresh_if_expiring=False)
-            token = creds.get("api_key", "")
-            if token:
-                source_name = creds.get("source", "qwen-cli")
-                active_sources.add(source_name)
-                changed |= _upsert_entry(
-                    entries,
-                    provider,
-                    source_name,
-                    {
-                        "source": source_name,
-                        "auth_type": AUTH_TYPE_OAUTH,
-                        "access_token": token,
-                        "expires_at_ms": creds.get("expires_at_ms"),
-                        "base_url": creds.get("base_url", ""),
-                        "label": creds.get("auth_file", source_name),
-                    },
-                )
-        except Exception as exc:
-            logger.debug("Qwen OAuth token seed failed: %s", exc)
-
     elif provider == "openai-codex":
         state = _load_provider_state(auth_store, "openai-codex")
         tokens = state.get("tokens") if isinstance(state, dict) else None
-        # Fallback: import from Codex CLI (~/.codex/auth.json) if Hermes auth
-        # store has no tokens.  This mirrors resolve_codex_runtime_credentials()
-        # so that load_pool() and list_authenticated_providers() detect tokens
-        # that only exist in the Codex CLI shared file.
+        source_name = "device_code"
         if not (isinstance(tokens, dict) and tokens.get("access_token")):
             try:
-                from hermes_cli.auth import _import_codex_cli_tokens, _save_codex_tokens
-                cli_tokens = _import_codex_cli_tokens()
-                if cli_tokens:
-                    logger.info("Importing Codex CLI tokens into Hermes auth store.")
-                    _save_codex_tokens(cli_tokens)
-                    # Re-read state after import
-                    auth_store = _load_auth_store()
-                    state = _load_provider_state(auth_store, "openai-codex")
-                    tokens = state.get("tokens") if isinstance(state, dict) else None
+                bundle = auth_mod._load_codex_from_shared_store_first()
+                tokens = bundle.get("tokens") if isinstance(bundle, dict) else None
+                state = {"last_refresh": bundle.get("last_refresh")} if isinstance(bundle, dict) else {}
+                source_name = "shared:oauth_cli_kit" if bundle.get("source") == "oauth-cli-kit-shared" else "device_code"
             except Exception as exc:
-                logger.debug("Codex CLI token import failed: %s", exc)
+                logger.debug("Codex shared token discovery failed: %s", exc)
+                state = {}
+                tokens = None
+                source_name = "device_code"
         if isinstance(tokens, dict) and tokens.get("access_token"):
-            active_sources.add("device_code")
+            active_sources.add(source_name)
             changed |= _upsert_entry(
                 entries,
                 provider,
-                "device_code",
+                source_name,
                 {
-                    "source": "device_code",
+                    "source": source_name,
                     "auth_type": AUTH_TYPE_OAUTH,
                     "access_token": tokens.get("access_token", ""),
                     "refresh_token": tokens.get("refresh_token"),
                     "base_url": "https://chatgpt.com/backend-api/codex",
                     "last_refresh": state.get("last_refresh"),
-                    "label": label_from_token(tokens.get("access_token", ""), "device_code"),
+                    "label": label_from_token(tokens.get("access_token", ""), source_name),
                 },
             )
 

@@ -35,6 +35,12 @@ def _clear_provider_env(monkeypatch):
         monkeypatch.delenv(key, raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _isolate_codex_paths(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex-cli"))
+
+
 def test_auth_add_api_key_persists_manual_entry(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
@@ -151,6 +157,7 @@ def test_auth_add_nous_oauth_persists_pool_entry(tmp_path, monkeypatch):
 
 def test_auth_add_codex_oauth_persists_pool_entry(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
     _write_auth_store(tmp_path, {"version": 1, "providers": {}})
     token = _jwt_with_email("codex@example.com")
     monkeypatch.setattr(
@@ -182,6 +189,71 @@ def test_auth_add_codex_oauth_persists_pool_entry(tmp_path, monkeypatch):
     assert entry["source"] == "manual:device_code"
     assert entry["refresh_token"] == "refresh-token"
     assert entry["base_url"] == "https://chatgpt.com/backend-api/codex"
+
+
+def test_auth_add_codex_browser_persists_browser_source(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+    token = _jwt_with_email("browser@example.com")
+    monkeypatch.setattr(
+        "hermes_cli.auth._login_codex_browser_oauth",
+        lambda: {
+            "tokens": {
+                "access_token": token,
+                "refresh_token": "browser-refresh",
+            },
+            "last_refresh": "2026-03-23T10:00:00Z",
+            "source": "oauth-cli-kit-shared",
+        },
+    )
+
+    from hermes_cli.auth_commands import auth_add_command
+
+    class _Args:
+        provider = "openai-codex"
+        auth_type = "oauth"
+        api_key = None
+        label = None
+        method = "browser"
+
+    auth_add_command(_Args())
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    entries = payload["credential_pool"]["openai-codex"]
+    entry = next(item for item in entries if item["source"] == "manual:oauth_cli_browser")
+    assert entry["label"] == "browser@example.com"
+    assert entry["refresh_token"] == "browser-refresh"
+
+
+def test_auth_add_codex_prefers_shared_credential(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+
+    from hermes_cli.auth import _save_oauth_cli_codex_token
+
+    _save_oauth_cli_codex_token(_jwt_with_email("shared@example.com"), "shared-refresh")
+    monkeypatch.setattr(
+        "hermes_cli.auth._codex_device_code_login",
+        lambda: (_ for _ in ()).throw(AssertionError("device code login should not run")),
+    )
+
+    from hermes_cli.auth_commands import auth_add_command
+
+    class _Args:
+        provider = "openai-codex"
+        auth_type = "oauth"
+        api_key = None
+        label = None
+        method = "device-code"
+
+    auth_add_command(_Args())
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    entry = next(item for item in payload["credential_pool"]["openai-codex"] if item["source"] == "shared:oauth_cli_kit")
+    assert entry["label"] == "shared@example.com"
+    assert entry["refresh_token"] == "shared-refresh"
 
 
 def test_auth_remove_reindexes_priorities(tmp_path, monkeypatch):
@@ -335,6 +407,57 @@ def test_auth_remove_prefers_exact_numeric_label_over_index(tmp_path, monkeypatc
     payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
     labels = [entry["label"] for entry in payload["credential_pool"]["openai-codex"]]
     assert labels == ["first", "third"]
+
+
+def test_auth_remove_codex_keeps_shared_credential_by_default(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "providers": {
+                "openai-codex": {
+                    "tokens": {"access_token": "local-at", "refresh_token": "local-rt"},
+                }
+            },
+            "credential_pool": {
+                "openai-codex": [
+                    {
+                        "id": "cred-1",
+                        "label": "shared-account",
+                        "auth_type": "oauth",
+                        "priority": 0,
+                        "source": "shared:oauth_cli_kit",
+                        "access_token": "shared-at",
+                        "refresh_token": "shared-rt",
+                    }
+                ]
+            },
+        },
+    )
+
+    from hermes_cli.auth import _get_oauth_cli_codex_token, _save_oauth_cli_codex_token
+    from hermes_cli.auth_commands import auth_remove_command
+
+    _save_oauth_cli_codex_token("shared-at", "shared-rt")
+
+    class _Args:
+        provider = "openai-codex"
+        target = "1"
+        purge_shared = False
+
+    auth_remove_command(_Args())
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    entries = payload.get("credential_pool", {}).get("openai-codex") or []
+    assert len(entries) == 0
+    assert "openai-codex" not in payload.get("providers", {})
+    shared = _get_oauth_cli_codex_token()
+    assert shared is not None
+    assert shared["tokens"]["access_token"] == "shared-at"
+    out = capsys.readouterr().out
+    assert "--purge-shared" in out
 
 
 def test_auth_reset_clears_provider_statuses(tmp_path, monkeypatch, capsys):

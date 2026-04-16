@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from getpass import getpass
 import math
-import sys
 import time
 from types import SimpleNamespace
 import uuid
@@ -28,7 +27,7 @@ from agent.credential_pool import (
     load_pool,
 )
 import hermes_cli.auth as auth_mod
-from hermes_cli.auth import PROVIDER_REGISTRY
+from hermes_cli.auth import DEFAULT_CODEX_BASE_URL, PROVIDER_REGISTRY
 from hermes_constants import OPENROUTER_BASE_URL
 
 
@@ -161,10 +160,7 @@ def auth_add_command(args) -> None:
         default_label = _api_key_default_label(len(pool.entries()) + 1)
         label = (getattr(args, "label", None) or "").strip()
         if not label:
-            if sys.stdin.isatty():
-                label = input(f"Label (optional, default: {default_label}): ").strip() or default_label
-            else:
-                label = default_label
+            label = input(f"Label (optional, default: {default_label}): ").strip() or default_label
         entry = PooledCredential(
             provider=provider,
             id=uuid.uuid4().hex[:6],
@@ -233,7 +229,50 @@ def auth_add_command(args) -> None:
         return
 
     if provider == "openai-codex":
-        creds = auth_mod._codex_device_code_login()
+        method = str(getattr(args, "method", "") or "device-code").strip().lower()
+        shared = None
+        if method == "device-code":
+            try:
+                shared = auth_mod._load_codex_from_shared_store_first()
+            except auth_mod.AuthError:
+                shared = None
+        if shared:
+            tokens = {
+                "access_token": shared["tokens"]["access_token"],
+                "refresh_token": shared["tokens"].get("refresh_token"),
+            }
+            creds = {
+                "tokens": tokens,
+                "base_url": shared.get("base_url") or DEFAULT_CODEX_BASE_URL,
+                "last_refresh": shared.get("last_refresh"),
+                "source": "shared:oauth_cli_kit",
+            }
+            entry_source = "shared:oauth_cli_kit"
+        elif method == "browser":
+            bundle = auth_mod._login_codex_browser_oauth()
+            creds = {
+                "tokens": dict(bundle.get("tokens", {})),
+                "base_url": DEFAULT_CODEX_BASE_URL,
+                "last_refresh": bundle.get("last_refresh"),
+                "source": "manual:oauth_cli_browser",
+            }
+            entry_source = "manual:oauth_cli_browser"
+        else:
+            creds = auth_mod._codex_device_code_login()
+            bundle = auth_mod._persist_codex_token_bundle(
+                {
+                    "tokens": creds["tokens"],
+                    "last_refresh": creds.get("last_refresh"),
+                    "source": "oauth-cli-kit-shared",
+                },
+                sync_shared=True,
+                sync_cli=True,
+            )
+            creds = {
+                **creds,
+                "last_refresh": bundle.get("last_refresh"),
+            }
+            entry_source = "manual:device_code"
         label = (getattr(args, "label", None) or "").strip() or label_from_token(
             creds["tokens"]["access_token"],
             _oauth_default_label(provider, len(pool.entries()) + 1),
@@ -244,7 +283,7 @@ def auth_add_command(args) -> None:
             label=label,
             auth_type=AUTH_TYPE_OAUTH,
             priority=0,
-            source=f"{SOURCE_MANUAL}:device_code",
+            source=entry_source,
             access_token=creds["tokens"]["access_token"],
             refresh_token=creds["tokens"].get("refresh_token"),
             base_url=creds.get("base_url"),
@@ -331,7 +370,17 @@ def auth_remove_command(args) -> None:
     # If this was a singleton-seeded credential (OAuth device_code, hermes_pkce),
     # clear the underlying auth store / credential file so it doesn't get
     # re-seeded on the next load_pool() call.
-    elif removed.source == "device_code" and provider in ("openai-codex", "nous"):
+    elif (
+        (
+            provider == "openai-codex"
+            and (
+                removed.source == "device_code"
+                or removed.source.startswith(f"{SOURCE_MANUAL}:")
+                or removed.source == "shared:oauth_cli_kit"
+            )
+        )
+        or (removed.source == "device_code" and provider == "nous")
+    ):
         from hermes_cli.auth import (
             _load_auth_store, _save_auth_store, _auth_store_lock,
         )
@@ -340,8 +389,31 @@ def auth_remove_command(args) -> None:
             providers_dict = auth_store.get("providers")
             if isinstance(providers_dict, dict) and provider in providers_dict:
                 del providers_dict[provider]
-                _save_auth_store(auth_store)
                 print(f"Cleared {provider} OAuth tokens from auth store")
+            if provider == "openai-codex":
+                pool_entries = auth_store.get("credential_pool")
+                if isinstance(pool_entries, dict):
+                    current_entries = pool_entries.get(provider)
+                    if isinstance(current_entries, list):
+                        filtered = [
+                            entry for entry in current_entries
+                            if str(entry.get("source", "")) not in {"device_code", "shared:oauth_cli_kit"}
+                        ]
+                        if filtered:
+                            pool_entries[provider] = filtered
+                        else:
+                            pool_entries.pop(provider, None)
+            _save_auth_store(auth_store)
+        if provider == "openai-codex":
+            if getattr(args, "purge_shared", False):
+                auth_mod._delete_oauth_cli_codex_token()
+                try:
+                    auth_mod._delete_codex_cli_tokens()
+                except AttributeError:
+                    pass
+                print("Purged shared Codex credential.")
+            else:
+                print("Shared Codex credential was left in place and will be reused unless you pass --purge-shared.")
 
     elif removed.source == "hermes_pkce" and provider == "anthropic":
         from hermes_constants import get_hermes_home
@@ -372,27 +444,6 @@ def _interactive_auth() -> None:
     print("=" * 50)
 
     auth_list_command(SimpleNamespace(provider=None))
-
-    # Show AWS Bedrock credential status (not in the pool — uses boto3 chain)
-    try:
-        from agent.bedrock_adapter import has_aws_credentials, resolve_aws_auth_env_var, resolve_bedrock_region
-        if has_aws_credentials():
-            auth_source = resolve_aws_auth_env_var() or "unknown"
-            region = resolve_bedrock_region()
-            print(f"bedrock (AWS SDK credential chain):")
-            print(f"  Auth: {auth_source}")
-            print(f"  Region: {region}")
-            try:
-                import boto3
-                sts = boto3.client("sts", region_name=region)
-                identity = sts.get_caller_identity()
-                arn = identity.get("Arn", "unknown")
-                print(f"  Identity: {arn}")
-            except Exception:
-                print(f"  Identity: (could not resolve — boto3 STS call failed)")
-            print()
-    except ImportError:
-        pass  # boto3 or bedrock_adapter not available
     print()
 
     # Main menu

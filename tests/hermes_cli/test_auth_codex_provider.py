@@ -3,6 +3,9 @@
 import json
 import time
 import base64
+import os
+import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -12,6 +15,8 @@ from hermes_cli.auth import (
     AuthError,
     DEFAULT_CODEX_BASE_URL,
     PROVIDER_REGISTRY,
+    _get_oauth_cli_codex_token,
+    _login_codex_browser_oauth,
     _read_codex_tokens,
     _save_codex_tokens,
     _write_codex_cli_tokens,
@@ -51,10 +56,17 @@ def _jwt_with_exp(exp_epoch: int) -> str:
     return f"h.{encoded}.s"
 
 
+@pytest.fixture(autouse=True)
+def _isolate_codex_paths(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex-cli"))
+
+
 def test_read_codex_tokens_success(tmp_path, monkeypatch):
     hermes_home = tmp_path / "hermes"
     _setup_hermes_auth(hermes_home)
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
 
     data = _read_codex_tokens()
     assert data["tokens"]["access_token"] == "access"
@@ -67,6 +79,7 @@ def test_read_codex_tokens_missing(tmp_path, monkeypatch):
     # Empty auth store
     (hermes_home / "auth.json").write_text(json.dumps({"version": 1, "providers": {}}))
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
 
     with pytest.raises(AuthError) as exc:
         _read_codex_tokens()
@@ -77,6 +90,7 @@ def test_resolve_codex_runtime_credentials_missing_access_token(tmp_path, monkey
     hermes_home = tmp_path / "hermes"
     _setup_hermes_auth(hermes_home, access_token="")
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
 
     with pytest.raises(AuthError) as exc:
         resolve_codex_runtime_credentials()
@@ -89,6 +103,7 @@ def test_resolve_codex_runtime_credentials_refreshes_expiring_token(tmp_path, mo
     expiring_token = _jwt_with_exp(int(time.time()) - 10)
     _setup_hermes_auth(hermes_home, access_token=expiring_token, refresh_token="refresh-old")
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
 
     called = {"count": 0}
 
@@ -108,6 +123,7 @@ def test_resolve_codex_runtime_credentials_force_refresh(tmp_path, monkeypatch):
     hermes_home = tmp_path / "hermes"
     _setup_hermes_auth(hermes_home, access_token="access-current", refresh_token="refresh-old")
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
 
     called = {"count": 0}
 
@@ -134,6 +150,7 @@ def test_save_codex_tokens_roundtrip(tmp_path, monkeypatch):
     hermes_home.mkdir(parents=True, exist_ok=True)
     (hermes_home / "auth.json").write_text(json.dumps({"version": 1, "providers": {}}))
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
 
     _save_codex_tokens({"access_token": "at123", "refresh_token": "rt456"})
     data = _read_codex_tokens()
@@ -195,8 +212,9 @@ def test_write_codex_cli_tokens_creates_file(tmp_path, monkeypatch):
     assert data["tokens"]["access_token"] == "new-access"
     assert data["tokens"]["refresh_token"] == "new-refresh"
     assert data["last_refresh"] == "2026-04-12T00:00:00Z"
-    # Verify file permissions are restricted
-    assert (auth_path.stat().st_mode & 0o777) == 0o600
+    # Verify file permissions are restricted on POSIX. Windows does not map chmod to 0o600.
+    if os.name != "nt":
+        assert (auth_path.stat().st_mode & 0o777) == 0o600
 
 
 def test_write_codex_cli_tokens_preserves_existing(tmp_path, monkeypatch):
@@ -245,11 +263,13 @@ def test_refresh_codex_auth_tokens_writes_back_to_cli(tmp_path, monkeypatch):
 
     hermes_home = tmp_path / "hermes"
     codex_home = tmp_path / "codex-cli"
+    shared_home = tmp_path / "xdg"
     hermes_home.mkdir(parents=True, exist_ok=True)
     codex_home.mkdir(parents=True, exist_ok=True)
     (hermes_home / "auth.json").write_text(json.dumps({"version": 1, "providers": {}}))
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
     monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.setenv("XDG_DATA_HOME", str(shared_home))
 
     # Write initial CLI tokens
     (codex_home / "auth.json").write_text(json.dumps({
@@ -272,12 +292,82 @@ def test_refresh_codex_auth_tokens_writes_back_to_cli(tmp_path, monkeypatch):
     cli_data = json.loads((codex_home / "auth.json").read_text())
     assert cli_data["tokens"]["access_token"] == "refreshed-at"
     assert cli_data["tokens"]["refresh_token"] == "refreshed-rt"
+    shared = _get_oauth_cli_codex_token()
+    assert shared is not None
+    assert shared["tokens"]["access_token"] == "refreshed-at"
+    assert shared["tokens"]["refresh_token"] == "refreshed-rt"
+
+
+def test_shared_oauth_cli_token_is_preferred_over_hermes_store(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes"
+    _setup_hermes_auth(hermes_home, access_token="hermes-at", refresh_token="hermes-rt")
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+
+    from hermes_cli.auth import _save_oauth_cli_codex_token
+
+    _save_oauth_cli_codex_token("shared-at", "shared-rt", account_id="acct_123")
+
+    creds = resolve_codex_runtime_credentials(refresh_if_expiring=False)
+    assert creds["api_key"] == "shared-at"
+    assert creds["source"] == "oauth-cli-kit-shared"
+
+    synced = _read_codex_tokens()
+    assert synced["tokens"]["access_token"] == "shared-at"
+    assert synced["tokens"]["refresh_token"] == "shared-rt"
+
+
+def test_shared_oauth_cli_token_is_preferred_over_codex_cli(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    (hermes_home / "auth.json").write_text(json.dumps({"version": 1, "providers": {}}))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex-cli"))
+
+    from hermes_cli.auth import _save_oauth_cli_codex_token
+
+    _save_oauth_cli_codex_token("shared-at", "shared-rt")
+    _write_codex_cli_tokens("cli-at", "cli-rt")
+
+    creds = resolve_codex_runtime_credentials(refresh_if_expiring=False)
+    assert creds["api_key"] == "shared-at"
+    assert creds["source"] == "oauth-cli-kit-shared"
+
+
+def test_login_codex_browser_oauth_writes_shared_credentials(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    (hermes_home / "auth.json").write_text(json.dumps({"version": 1, "providers": {}}))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex-cli"))
+    monkeypatch.setattr("hermes_cli.auth._oauth_cli_codex_storage", lambda: None)
+
+    fake_oauth = types.ModuleType("oauth_cli_kit")
+    fake_oauth.login_oauth_interactive = lambda **kwargs: types.SimpleNamespace(
+        access="browser-at",
+        refresh="browser-rt",
+        expires=int(time.time() * 1000) + 3600_000,
+        account_id="acct_browser",
+    )
+    monkeypatch.setitem(sys.modules, "oauth_cli_kit", fake_oauth)
+
+    bundle = _login_codex_browser_oauth()
+
+    assert bundle["tokens"]["access_token"] == "browser-at"
+    assert bundle["tokens"]["refresh_token"] == "browser-rt"
+    shared = _get_oauth_cli_codex_token()
+    assert shared is not None
+    assert shared["tokens"]["access_token"] == "browser-at"
+    assert shared["account_id"] == "acct_browser"
 
 
 def test_resolve_returns_hermes_auth_store_source(tmp_path, monkeypatch):
     hermes_home = tmp_path / "hermes"
     _setup_hermes_auth(hermes_home)
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
 
     creds = resolve_codex_runtime_credentials()
     assert creds["source"] == "hermes-auth-store"

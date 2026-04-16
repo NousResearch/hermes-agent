@@ -1280,6 +1280,15 @@ class AIAgent:
                             "hermes_home": str(_ghh()),
                             "agent_context": "primary",
                         }
+                        # Thread session title for memory provider scoping
+                        # (e.g. honcho uses this to derive chat-scoped session keys)
+                        if self._session_db:
+                            try:
+                                _st = self._session_db.get_session_title(self.session_id)
+                                if _st:
+                                    _init_kwargs["session_title"] = _st
+                            except Exception:
+                                pass
                         # Thread gateway user identity for per-user memory scoping
                         if self._user_id:
                             _init_kwargs["user_id"] = self._user_id

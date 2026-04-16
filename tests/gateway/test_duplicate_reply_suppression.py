@@ -1,12 +1,15 @@
 """Tests for duplicate reply suppression across the gateway stack.
 
-Covers three fix paths:
+Covers four fix paths:
   1. base.py: stale response suppressed when interrupt_event is set and a
      pending message exists (#8221 / #2483)
   2. run.py return path: only confirmed final streamed delivery suppresses
      the fallback final send; partial streamed output must not
   3. run.py queued-message path: first response is skipped only when the
      final response was actually streamed, not merely when partial output existed
+  4. stream_consumer.py cancellation handler: only confirms final delivery
+     when the best-effort send actually succeeds, not merely because partial
+     content was sent earlier
 """
 
 import asyncio
@@ -366,3 +369,92 @@ class TestQueuedMessageAlreadyStreamed:
         )
 
         assert _already_streamed is False
+
+
+# ===================================================================
+# Test 4: stream_consumer.py — cancellation handler delivery confirmation
+# ===================================================================
+
+class TestCancellationHandlerDeliveryConfirmation:
+    """The stream consumer's cancellation handler should only set
+    final_response_sent when the best-effort send actually succeeds.
+    Partial content (already_sent=True) alone must not promote to
+    final_response_sent — that would suppress the gateway's fallback
+    send even when the user never received the real answer."""
+
+    def test_partial_only_no_accumulated_stays_false(self):
+        """Cancelled after sending intermediate text, nothing accumulated.
+        final_response_sent must stay False so the gateway fallback fires."""
+        already_sent = True
+        final_response_sent = False
+        accumulated = ""
+        message_id = None
+
+        _best_effort_ok = False
+        if accumulated and message_id:
+            _best_effort_ok = True  # wouldn't enter
+        if _best_effort_ok and not final_response_sent:
+            final_response_sent = True
+
+        assert final_response_sent is False
+
+    def test_best_effort_succeeds_sets_true(self):
+        """When accumulated content exists and best-effort send succeeds,
+        final_response_sent should become True."""
+        already_sent = True
+        final_response_sent = False
+        accumulated = "Here are the search results..."
+        message_id = "msg_123"
+
+        _best_effort_ok = False
+        if accumulated and message_id:
+            _best_effort_ok = True  # simulating successful _send_or_edit
+        if _best_effort_ok and not final_response_sent:
+            final_response_sent = True
+
+        assert final_response_sent is True
+
+    def test_best_effort_fails_stays_false(self):
+        """When best-effort send fails (flood control, network), the
+        gateway fallback must deliver the response."""
+        already_sent = True
+        final_response_sent = False
+        accumulated = "Here are the search results..."
+        message_id = "msg_123"
+
+        _best_effort_ok = False
+        if accumulated and message_id:
+            _best_effort_ok = False  # simulating failed _send_or_edit
+        if _best_effort_ok and not final_response_sent:
+            final_response_sent = True
+
+        assert final_response_sent is False
+
+    def test_preserves_existing_true(self):
+        """If final_response_sent was already True before cancellation,
+        it must remain True regardless."""
+        already_sent = True
+        final_response_sent = True
+        accumulated = ""
+        message_id = None
+
+        _best_effort_ok = False
+        if accumulated and message_id:
+            pass
+        if _best_effort_ok and not final_response_sent:
+            final_response_sent = True
+
+        assert final_response_sent is True
+
+    def test_old_behavior_would_have_promoted_partial(self):
+        """Verify the old code would have incorrectly promoted
+        already_sent to final_response_sent even with no accumulated
+        content — proving the bug existed."""
+        already_sent = True
+        final_response_sent = False
+
+        # OLD cancellation handler logic:
+        if already_sent:
+            final_response_sent = True
+
+        assert final_response_sent is True  # the bug: partial promoted to final

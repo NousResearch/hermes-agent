@@ -284,9 +284,20 @@ class TestEnvVarOverride:
 # Tests for reply_to_text extraction in _handle_message
 # ------------------------------------------------------------------
 
-class FakeDMChannel:
+# Build FakeDMChannel as a subclass of the real discord.DMChannel when the
+# library is installed — this guarantees isinstance() checks pass in
+# production code regardless of test ordering or monkeypatch state.
+try:
+    import discord as _discord_lib
+    _DMChannelBase = _discord_lib.DMChannel
+except (ImportError, AttributeError):
+    _DMChannelBase = object
+
+
+class FakeDMChannel(_DMChannelBase):
     """Minimal DM channel stub (skips mention / channel-allow checks)."""
     def __init__(self, channel_id: int = 100, name: str = "dm"):
+        # Do NOT call super().__init__() — real DMChannel requires State
         self.id = channel_id
         self.name = name
 
@@ -309,10 +320,6 @@ def _make_message(*, content: str = "hi", reference=None):
 @pytest.fixture
 def reply_text_adapter(monkeypatch):
     """DiscordAdapter wired for _handle_message → handle_message capture."""
-    import gateway.platforms.discord as discord_platform
-
-    monkeypatch.setattr(discord_platform.discord, "DMChannel", FakeDMChannel, raising=False)
-
     config = PlatformConfig(enabled=True, token="fake-token")
     adapter = DiscordAdapter(config)
     adapter._client = SimpleNamespace(user=SimpleNamespace(id=999))

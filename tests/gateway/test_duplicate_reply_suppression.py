@@ -324,9 +324,24 @@ class TestQueuedMessageAlreadyStreamed:
     def test_queued_path_detects_confirmed_final_stream_delivery(self):
         """Confirmed final streamed delivery should skip the resend."""
         _sc = self._make_mock_sc(already_sent=True, final_response_sent=True)
+        response = {"response_previewed": False}
 
         _already_streamed = bool(
-            _sc and getattr(_sc, "final_response_sent", False)
+            (_sc and getattr(_sc, "final_response_sent", False))
+            or bool(response.get("response_previewed"))
+        )
+
+        assert _already_streamed is True
+
+    def test_queued_path_detects_previewed_response_delivery(self):
+        """A response already previewed via the adapter should not be resent
+        before processing the queued follow-up."""
+        _sc = self._make_mock_sc(already_sent=False, final_response_sent=False)
+        response = {"response_previewed": True}
+
+        _already_streamed = bool(
+            (_sc and getattr(_sc, "final_response_sent", False))
+            or bool(response.get("response_previewed"))
         )
 
         assert _already_streamed is True

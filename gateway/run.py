@@ -9396,8 +9396,10 @@ class GatewayRunner:
                                 pass
                         except Exception as e:
                             logger.debug("Stream consumer wait before queued message failed: %s", e)
+                    _previewed = bool(result.get("response_previewed"))
                     _already_streamed = bool(
-                        _sc and getattr(_sc, "final_response_sent", False)
+                        (_sc and getattr(_sc, "final_response_sent", False))
+                        or _previewed
                     )
                     first_response = result.get("final_response", "")
                     if first_response and not _already_streamed:

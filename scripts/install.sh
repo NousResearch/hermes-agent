@@ -285,6 +285,14 @@ check_python() {
         return 0
     fi
 
+    local compatible_request=">=$PYTHON_VERSION"
+    if $UV_CMD python find "$compatible_request" &> /dev/null; then
+        PYTHON_PATH=$($UV_CMD python find "$compatible_request")
+        PYTHON_FOUND_VERSION=$($PYTHON_PATH --version 2>/dev/null)
+        log_success "Compatible Python found: $PYTHON_FOUND_VERSION"
+        return 0
+    fi
+
     # Python not found — use uv to install it (no sudo needed!)
     log_info "Python $PYTHON_VERSION not found, installing via uv..."
     if $UV_CMD python install "$PYTHON_VERSION"; then
@@ -783,17 +791,19 @@ setup_venv() {
         return 0
     fi
 
-    log_info "Creating virtual environment with Python $PYTHON_VERSION..."
+    local venv_python="${PYTHON_PATH:-$PYTHON_VERSION}"
+    local venv_label="${PYTHON_FOUND_VERSION:-Python $PYTHON_VERSION}"
+    log_info "Creating virtual environment with $venv_label..."
 
     if [ -d "venv" ]; then
         log_info "Virtual environment already exists, recreating..."
         rm -rf venv
     fi
 
-    # uv creates the venv and pins the Python version in one step
-    $UV_CMD venv venv --python "$PYTHON_VERSION"
+    # uv creates the venv with the resolved interpreter in one step
+    $UV_CMD venv venv --python "$venv_python"
 
-    log_success "Virtual environment ready (Python $PYTHON_VERSION)"
+    log_success "Virtual environment ready ($(./venv/bin/python --version 2>/dev/null || printf '%s' "$venv_label"))"
 }
 
 install_deps() {
@@ -1399,4 +1409,6 @@ main() {
     print_success
 }
 
-main
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    main "$@"
+fi

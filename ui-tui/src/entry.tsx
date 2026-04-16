@@ -1,14 +1,18 @@
 #!/usr/bin/env node
-// Import order matters for cold start: `GatewayClient` has only node-builtin
-// deps (<20ms), so spawning the python gateway before loading @hermes/ink
-// + App (~200ms combined) gives python ~200ms of free parallel time to run
-// its own module imports instead of starting those after node is done.
+// Import order matters for cold start: `GatewayClient` + `bootBanner` have
+// only node-builtin deps (<20ms), so we can paint the banner and spawn the
+// python gateway before loading @hermes/ink + App (~170ms combined).
+// `<AlternateScreen>` wipes the normal-screen buffer on Ink mount, so the
+// boot banner is replaced seamlessly by the real React render.
+import { bootBanner } from './bootBanner.js'
 import { GatewayClient } from './gatewayClient.js'
 
 if (!process.stdin.isTTY) {
   console.log('hermes-tui: no TTY')
   process.exit(0)
 }
+
+process.stdout.write(bootBanner())
 
 const gw = new GatewayClient()
 gw.start()

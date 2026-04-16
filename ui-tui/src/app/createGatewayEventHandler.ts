@@ -165,6 +165,9 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         patchUiState(state => ({
           ...state,
           info: ev.payload,
+          // Flip from 'starting agent…' → 'ready' when the agent is live.
+          // Leave running/interrupted/error statuses alone.
+          status: state.status === 'starting agent…' ? 'ready' : state.status,
           usage: ev.payload.usage ? { ...state.usage, ...ev.payload.usage } : state.usage
         }))
         // Agent init is async in session.create, so the intro message may

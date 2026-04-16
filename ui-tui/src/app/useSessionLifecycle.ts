@@ -104,7 +104,16 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
 
       resetSession()
       setSessionStartedAt(Date.now())
-      patchUiState({ info: r.info ?? null, sid: r.session_id, status: 'ready', usage: usageFrom(r.info ?? null) })
+      // Python's `session.create` returns instantly with partial info (no `version`
+      // field); the `session.info` event will flip status to 'ready' once the
+      // agent is fully built (~1s later). Until then prompt.submit will block
+      // server-side on `_wait_agent`.
+      patchUiState({
+        info: r.info ?? null,
+        sid: r.session_id,
+        status: r.info?.version ? 'ready' : 'starting agent…',
+        usage: usageFrom(r.info ?? null)
+      })
 
       if (r.info) {
         setHistoryItems([introMsg(r.info)])

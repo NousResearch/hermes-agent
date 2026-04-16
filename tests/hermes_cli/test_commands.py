@@ -1030,6 +1030,8 @@ class TestDiscordSkillCommands:
             )
 
 
+
+
 # ---------------------------------------------------------------------------
 # Discord skill commands grouped by category
 # ---------------------------------------------------------------------------
@@ -1179,3 +1181,121 @@ class TestDiscordSkillCommandsByCategory:
         assert "axolotl" in names
         assert "vllm" in names
         assert len(uncategorized) == 0
+
+
+class TestDisabledCommands:
+    """Tests for the gateway.disabled_commands config."""
+
+    def test_no_config_returns_empty_set(self, tmp_path, monkeypatch):
+        """When no gateway config exists, no commands are disabled."""
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        from hermes_cli.commands import get_disabled_commands
+        assert get_disabled_commands() == set()
+
+    def test_global_disabled_commands(self, tmp_path, monkeypatch):
+        """Global disabled_commands are returned as canonical names."""
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            "gateway:\n  disabled_commands:\n    - yolo\n    - fast\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        from hermes_cli.commands import get_disabled_commands
+        disabled = get_disabled_commands()
+        assert "yolo" in disabled
+        assert "fast" in disabled
+        assert "new" not in disabled
+
+    def test_platform_disabled_commands(self, tmp_path, monkeypatch):
+        """Platform-specific disabled commands are merged with global."""
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            "gateway:\n"
+            "  disabled_commands:\n"
+            "    - yolo\n"
+            "  platform_disabled_commands:\n"
+            "    telegram:\n"
+            "      - model\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        from hermes_cli.commands import get_disabled_commands
+        # Telegram: global + telegram-specific
+        tg_disabled = get_disabled_commands(platform="telegram")
+        assert "yolo" in tg_disabled
+        assert "model" in tg_disabled
+
+        # Discord: only global
+        dc_disabled = get_disabled_commands(platform="discord")
+        assert "yolo" in dc_disabled
+        assert "model" not in dc_disabled
+
+    def test_alias_resolved_to_canonical(self, tmp_path, monkeypatch):
+        """Aliases like 'snap' are resolved to canonical name 'snapshot'."""
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            "gateway:\n  disabled_commands:\n    - snap\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        from hermes_cli.commands import get_disabled_commands
+        disabled = get_disabled_commands()
+        assert "snapshot" in disabled
+
+    def test_help_excludes_disabled(self, tmp_path, monkeypatch):
+        """gateway_help_lines() excludes disabled commands."""
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            "gateway:\n  disabled_commands:\n    - yolo\n    - fast\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        lines = gateway_help_lines()
+        joined = "\n".join(lines)
+        assert "`/yolo" not in joined
+        assert "`/fast" not in joined
+        # Other commands should still be present
+        assert "`/new" in joined
+        assert "`/help" in joined
+
+    def test_help_with_explicit_disabled_set(self):
+        """gateway_help_lines() accepts an explicit disabled set."""
+        disabled = {"yolo", "model"}
+        lines = gateway_help_lines(disabled_commands=disabled)
+        joined = "\n".join(lines)
+        assert "`/yolo" not in joined
+        assert "`/model" not in joined
+        assert "`/new" in joined
+
+    def test_telegram_menu_excludes_disabled(self, tmp_path, monkeypatch):
+        """telegram_bot_commands() excludes disabled commands."""
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            "gateway:\n"
+            "  disabled_commands:\n"
+            "    - yolo\n"
+            "  platform_disabled_commands:\n"
+            "    telegram:\n"
+            "      - model\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        names = {name for name, _ in telegram_bot_commands()}
+        assert "yolo" not in names
+        assert "model" not in names
+        assert "new" in names
+
+    def test_slash_prefix_stripped(self, tmp_path, monkeypatch):
+        """Leading slash in config values is stripped gracefully."""
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            "gateway:\n  disabled_commands:\n    - /yolo\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        from hermes_cli.commands import get_disabled_commands
+        disabled = get_disabled_commands()
+        assert "yolo" in disabled

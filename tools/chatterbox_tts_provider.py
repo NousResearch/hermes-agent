@@ -26,6 +26,7 @@ Configuration (in ~/.hermes/config.yaml)::
         language_id: en               # Language (multilingual model only, e.g. en, fr, de)
         # Server mode only:
         url: http://localhost:7860   # Chatterbox API server URL
+        predefined_voice_id: Abigail.wav  # Predefined voice filename (server mode)
 
 Chatterbox has a practical generation limit of ~250 characters per call.
 Longer text is automatically split at sentence boundaries, generated in
@@ -424,52 +425,63 @@ def _generate_server(
             continue
         logger.debug("Chatterbox server chunk %d/%d", i + 1, len(chunks))
 
-        # --- Try OpenAI-compatible endpoint first ---
+        # --- Try /tts endpoint ---
+        voice_mode = "clone" if ref_audio else "predefined"
         payload: Dict[str, Any] = {
-            "model": model_variant,
-            "input": chunk,
-            "voice": ref_audio or "default",
-            "response_format": "wav",
+            "text": chunk,
+            "voice_mode": voice_mode,
+            "output_format": "wav",
+            "split_text": False,
         }
+        if voice_mode == "predefined":
+            payload["predefined_voice_id"] = cb_config.get("predefined_voice_id", "default")
+        else:
+            payload["reference_audio_filename"] = os.path.basename(ref_audio)
         if exaggeration != DEFAULT_CHATTERBOX_EXAGGERATION:
             payload["exaggeration"] = exaggeration
         if cfg_weight != DEFAULT_CHATTERBOX_CFG_WEIGHT:
             payload["cfg_weight"] = cfg_weight
         if temperature != DEFAULT_CHATTERBOX_TEMPERATURE:
             payload["temperature"] = temperature
+        if model_variant == "multilingual":
+            payload["language"] = cb_config.get("language_id", DEFAULT_CHATTERBOX_LANGUAGE_ID)
 
+
+        logger.info("Chatterbox server request: POST %s/tts payload=%s", url, payload)
         try:
             resp = requests.post(
-                f"{url}/v1/audio/speech",
+                f"{url}/tts",
                 json=payload,
+                headers={"Connection": "close"},
                 timeout=120,
             )
             resp.raise_for_status()
             wav_segments.append(resp.content)
             continue
         except requests.exceptions.RequestException as exc:
-            logger.debug(
-                "OpenAI-compatible endpoint failed: %s — trying Gradio", exc
+            response_text = getattr(getattr(exc, "response", None), "text", None)
+            logger.info(
+                "/tts endpoint failed: %s — trying Gradio. Server response: %s", exc, response_text
             )
 
         # --- Fallback: Gradio predict endpoint ---
-        gradio_payload = {
-            "data": [
-                chunk,
-                ref_audio or None,
-                exaggeration,
-                cfg_weight,
-                temperature,
-            ],
-        }
-        try:
-            resp = requests.post(
-                f"{url}/api/predict",
-                json=gradio_payload,
-                timeout=120,
-            )
-            resp.raise_for_status()
-        except requests.exceptions.RequestException as exc:
+        # gradio_payload = {
+        #     "data": [
+        #         chunk,
+        #         ref_audio or None,
+        #         exaggeration,
+        #         cfg_weight,
+        #         temperature,
+        #     ],
+        # }
+        # try:
+        #     resp = requests.post(
+        #         f"{url}/api/predict",
+        #         json=gradio_payload,
+        #         timeout=120,
+        #     )
+        #     resp.raise_for_status()
+        # except requests.exceptions.RequestException as exc:
             raise RuntimeError(
                 f"Chatterbox server unreachable at {url}: {exc}"
             ) from exc

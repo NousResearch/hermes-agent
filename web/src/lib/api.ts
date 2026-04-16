@@ -339,6 +339,23 @@ export const api = {
       window.location.assign("/login");
       return r;
     }),
+  getMemory: () => fetchJSON<MemoryResponse>("/api/memory"),
+  addMemoryEntry: (target: "memory" | "user", content: string) =>
+    fetchJSON<MemoryResponse>(`/api/memory/${target}/entries`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content }),
+    }),
+  updateMemoryEntry: (target: "memory" | "user", id: string, content: string) =>
+    fetchJSON<MemoryResponse>(`/api/memory/${target}/entries/${encodeURIComponent(id)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content }),
+    }),
+  removeMemoryEntry: (target: "memory" | "user", id: string) =>
+    fetchJSON<MemoryResponse>(`/api/memory/${target}/entries/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    }),
   getSessions: (
     limit = 20,
     offset = 0,
@@ -1791,6 +1808,33 @@ export interface PlatformStatus {
   error_message?: string;
   state: string;
   updated_at: string;
+}
+
+export interface MemoryEntry {
+  id: string;
+  index: number;
+  content: string;
+}
+
+export interface MemoryStoreResponse {
+  path: string;
+  entry_count: number;
+  char_count: number;
+  char_limit: number;
+  updated_at: number | null;
+  entries: MemoryEntry[];
+}
+
+export interface MemoryResponse {
+  builtin_active: boolean;
+  provider: string;
+  provider_label: string;
+  directory: string;
+  note: string;
+  stores: {
+    user: MemoryStoreResponse;
+    memory: MemoryStoreResponse;
+  };
 }
 
 export interface StatusResponse {

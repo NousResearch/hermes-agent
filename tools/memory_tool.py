@@ -23,6 +23,7 @@ Design:
 - Frozen snapshot pattern: system prompt is stable, tool responses show live state
 """
 
+import hashlib
 import json
 import logging
 import os
@@ -31,7 +32,7 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 from hermes_constants import get_hermes_home
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 
 from utils import atomic_replace
 
@@ -67,6 +68,58 @@ MEMORY_BLOCK_HEADERS = {
 }
 
 ENTRY_DELIMITER = "\n§\n"
+MEMORY_CHAR_LIMIT = 2200
+USER_CHAR_LIMIT = 1375
+
+
+def memory_char_limit(target: str) -> int:
+    if target == "user":
+        return USER_CHAR_LIMIT
+    if target == "memory":
+        return MEMORY_CHAR_LIMIT
+    raise ValueError(f"Invalid memory target: {target}")
+
+
+def parse_memory_entry_id(entry_id: str) -> Tuple[str, int]:
+    try:
+        target, index_str = entry_id.split(":", 1)
+        index = int(index_str)
+    except (ValueError, AttributeError):
+        raise ValueError(f"Invalid memory entry id: {entry_id}")
+
+    if target not in ("memory", "user") or index < 0:
+        raise ValueError(f"Invalid memory entry id: {entry_id}")
+    return target, index
+
+
+def memory_entry_id(target: str, content: str) -> str:
+    digest = hashlib.sha256(content.encode("utf-8")).hexdigest()[:16]
+    return f"{target}:h{digest}"
+
+
+def resolve_memory_entry_index(target: str, entry_id: str, entries: List[str]) -> int:
+    try:
+        parsed_target, index = parse_memory_entry_id(entry_id)
+        if parsed_target != target:
+            raise ValueError("Entry id target does not match route target.")
+        if index >= len(entries):
+            raise LookupError(f"No entry found for id '{entry_id}'.")
+        return index
+    except ValueError:
+        pass
+
+    if not isinstance(entry_id, str) or ":" not in entry_id:
+        raise ValueError(f"Invalid memory entry id: {entry_id}")
+
+    parsed_target, digest = entry_id.split(":", 1)
+    if parsed_target != target or not digest:
+        raise ValueError(f"Invalid memory entry id: {entry_id}")
+
+    for index, content in enumerate(entries):
+        if memory_entry_id(target, content) == entry_id:
+            return index
+
+    raise LookupError(f"No entry found for id '{entry_id}'.")
 
 
 # ---------------------------------------------------------------------------
@@ -120,6 +173,22 @@ def _drift_error(path: "Path", bak_path: str) -> Dict[str, Any]:
     }
 
 
+def load_memory_entries(target: str) -> List[str]:
+    entries = MemoryStore._read_file(MemoryStore._path_for(target))
+    return list(dict.fromkeys(entries))
+
+
+def save_memory_entries(target: str, entries: List[str]) -> None:
+    MemoryStore._path_for(target).parent.mkdir(parents=True, exist_ok=True)
+    MemoryStore._write_file(MemoryStore._path_for(target), entries)
+
+
+def memory_char_count(entries: List[str]) -> int:
+    if not entries:
+        return 0
+    return len(ENTRY_DELIMITER.join(entries))
+
+
 class MemoryStore:
     """
     Bounded curated memory with file persistence. One instance per AIAgent.
@@ -137,7 +206,7 @@ class MemoryStore:
     # turn to budget exhaustion and suppress the user's reply (issue #42405).
     _MAX_CONSOLIDATION_FAILURES_PER_TURN = 3
 
-    def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375):
+    def __init__(self, memory_char_limit: int = MEMORY_CHAR_LIMIT, user_char_limit: int = USER_CHAR_LIMIT):
         self.memory_entries: List[str] = []
         self.user_entries: List[str] = []
         self.memory_char_limit = memory_char_limit
@@ -395,6 +464,101 @@ class MemoryStore:
 
         return self._success_response(target, "Entry added.")
 
+    def replace_at(self, target: str, index: int, new_content: str) -> Dict[str, Any]:
+        """Replace the entry at an exact index under lock."""
+        new_content = new_content.strip()
+        if not new_content:
+            return {"success": False, "error": "new_content cannot be empty. Use 'remove' to delete entries."}
+
+        scan_error = _scan_memory_content(new_content)
+        if scan_error:
+            return {"success": False, "error": scan_error}
+
+        with self._file_lock(self._path_for(target)):
+            self._reload_target(target)
+            return self._replace_loaded_entry(target, index, new_content)
+
+    def replace_entry_id(self, target: str, entry_id: str, new_content: str) -> Dict[str, Any]:
+        """Replace an entry resolved from a stable entry id under the same file lock."""
+        new_content = new_content.strip()
+        if not new_content:
+            return {"success": False, "error": "new_content cannot be empty. Use 'remove' to delete entries."}
+
+        scan_error = _scan_memory_content(new_content)
+        if scan_error:
+            return {"success": False, "error": scan_error}
+
+        with self._file_lock(self._path_for(target)):
+            self._reload_target(target)
+            entries = self._entries_for(target)
+            try:
+                index = resolve_memory_entry_index(target, entry_id, entries)
+            except ValueError as exc:
+                return {"success": False, "error": str(exc), "error_type": "invalid_id"}
+            except LookupError as exc:
+                return {"success": False, "error": str(exc), "error_type": "not_found"}
+            return self._replace_loaded_entry(target, index, new_content)
+
+    def _replace_loaded_entry(self, target: str, index: int, new_content: str) -> Dict[str, Any]:
+        entries = self._entries_for(target)
+        if index < 0 or index >= len(entries):
+            return {"success": False, "error": f"No entry at index {index}."}
+
+        duplicate_indexes = [i for i, e in enumerate(entries) if e == new_content and i != index]
+        if duplicate_indexes:
+            return {
+                "success": False,
+                "error": "Replacement would create a duplicate entry.",
+            }
+
+        limit = self._char_limit(target)
+        test_entries = entries.copy()
+        test_entries[index] = new_content
+        new_total = len(ENTRY_DELIMITER.join(test_entries))
+
+        if new_total > limit:
+            return {
+                "success": False,
+                "error": (
+                    f"Replacement would put memory at {new_total:,}/{limit:,} chars. "
+                    f"Shorten the new content or remove other entries first."
+                ),
+            }
+
+        entries[index] = new_content
+        self._set_entries(target, entries)
+        self.save_to_disk(target)
+        return self._success_response(target, "Entry replaced.")
+
+    def remove_at(self, target: str, index: int) -> Dict[str, Any]:
+        """Remove the entry at an exact index under lock."""
+        with self._file_lock(self._path_for(target)):
+            self._reload_target(target)
+            return self._remove_loaded_entry(target, index)
+
+    def remove_entry_id(self, target: str, entry_id: str) -> Dict[str, Any]:
+        """Remove an entry resolved from a stable entry id under the same file lock."""
+        with self._file_lock(self._path_for(target)):
+            self._reload_target(target)
+            entries = self._entries_for(target)
+            try:
+                index = resolve_memory_entry_index(target, entry_id, entries)
+            except ValueError as exc:
+                return {"success": False, "error": str(exc), "error_type": "invalid_id"}
+            except LookupError as exc:
+                return {"success": False, "error": str(exc), "error_type": "not_found"}
+            return self._remove_loaded_entry(target, index)
+
+    def _remove_loaded_entry(self, target: str, index: int) -> Dict[str, Any]:
+        entries = self._entries_for(target)
+        if index < 0 or index >= len(entries):
+            return {"success": False, "error": f"No entry at index {index}."}
+
+        entries.pop(index)
+        self._set_entries(target, entries)
+        self.save_to_disk(target)
+        return self._success_response(target, "Entry removed.")
+
     def replace(self, target: str, old_text: str, new_content: str) -> Dict[str, Any]:
         """Find entry containing old_text substring, replace it with new_content."""
         old_text = old_text.strip()
@@ -438,6 +602,13 @@ class MemoryStore:
 
             idx = matches[0][0]
             limit = self._char_limit(target)
+
+            duplicate_indexes = [i for i, e in enumerate(entries) if e == new_content and i != idx]
+            if duplicate_indexes:
+                return {
+                    "success": False,
+                    "error": "Replacement would create a duplicate entry.",
+                }
 
             # Check that replacement doesn't blow the budget
             test_entries = entries.copy()

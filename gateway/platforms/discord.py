@@ -235,6 +235,7 @@ class VoiceReceiver:
         # Calculate dynamic RTP header size (RFC 9335 / rtpsize mode)
         cc = first_byte & 0x0F  # CSRC count
         has_extension = bool(first_byte & 0x10)  # extension bit
+        has_padding = bool(first_byte & 0x20)  # padding bit (RFC 3550 §5.1)
         header_size = 12 + (4 * cc) + (4 if has_extension else 0)
 
         if len(data) < header_size + 4:  # need at least header + nonce
@@ -277,6 +278,31 @@ class VoiceReceiver:
         # Skip encrypted extension data to get the actual opus payload
         if ext_data_len and len(decrypted) > ext_data_len:
             decrypted = decrypted[ext_data_len:]
+
+        # --- Strip RTP padding (RFC 3550 §5.1) ---
+        # When the P bit is set, the last payload byte holds the count of
+        # trailing padding bytes (including itself) that must be removed
+        # before further processing. Skipping this passes padding-contaminated
+        # bytes into DAVE/Opus and corrupts inbound audio.
+        if has_padding:
+            if not decrypted:
+                if self._packet_debug_count <= 10:
+                    logger.warning(
+                        "RTP padding bit set but no payload (ssrc=%d)", ssrc,
+                    )
+                return
+            pad_len = decrypted[-1]
+            if pad_len == 0 or pad_len > len(decrypted):
+                if self._packet_debug_count <= 10:
+                    logger.warning(
+                        "Invalid RTP padding length %d for payload size %d (ssrc=%d)",
+                        pad_len, len(decrypted), ssrc,
+                    )
+                return
+            decrypted = decrypted[:-pad_len]
+            if not decrypted:
+                # Padding consumed entire payload — nothing to decode
+                return
 
         # --- DAVE E2EE decrypt ---
         if self._dave_session:

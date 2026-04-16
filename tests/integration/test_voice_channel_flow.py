@@ -73,6 +73,50 @@ def _build_encrypted_rtp_packet(secret_key, opus_payload, ssrc=100, seq=1, times
     return header + ciphertext + nonce_counter
 
 
+def _build_padded_rtp_packet(
+    secret_key, opus_payload, pad_len, ssrc=100, seq=1, timestamp=960,
+    declared_pad_len=None, ext_words=0,
+):
+    """Build a NaCl-encrypted RTP packet with the P bit set and padding appended.
+
+    Per RFC 3550 §5.1, the last padding byte declares how many trailing bytes
+    (including itself) to discard. ``pad_len`` is the actual padding appended;
+    ``declared_pad_len`` lets a test forge a mismatched declared length to
+    exercise the validation path. ``ext_words`` > 0 also sets the X bit and
+    prepends a synthetic extension block (4-byte preamble in cleartext header,
+    ext_words*4 bytes of encrypted extension data prepended to the payload).
+    """
+    if pad_len < 1:
+        raise ValueError("pad_len must be >= 1 (last byte includes itself)")
+    declared = pad_len if declared_pad_len is None else declared_pad_len
+    if declared < 0 or declared > 255:
+        raise ValueError("declared_pad_len must fit in one byte")
+
+    has_extension = ext_words > 0
+    first_byte = 0xA0 | (0x10 if has_extension else 0)  # V=2, P=1, [X=?], CC=0
+    fixed_header = struct.pack(">BBHII", first_byte, 0x78, seq, timestamp, ssrc)
+    if has_extension:
+        # 4-byte extension preamble: 2 bytes "defined by profile" + 2 bytes length-in-words
+        ext_preamble = struct.pack(">HH", 0xBEDE, ext_words)
+        header = fixed_header + ext_preamble
+        ext_data = b"\xab" * (ext_words * 4)
+    else:
+        header = fixed_header
+        ext_data = b""
+
+    padding = b"\x00" * (pad_len - 1) + bytes([declared])
+    plaintext = ext_data + opus_payload + padding
+
+    box = nacl.secret.Aead(secret_key)
+    nonce_counter = struct.pack(">I", seq)
+    full_nonce = nonce_counter + b"\x00" * 20
+
+    enc_msg = box.encrypt(plaintext, header, full_nonce)
+    ciphertext = enc_msg.ciphertext
+
+    return header + ciphertext + nonce_counter
+
+
 def _make_voice_receiver(secret_key, dave_session=None, bot_ssrc=9999,
                          allowed_user_ids=None, members=None):
     """Create a VoiceReceiver with real secret key."""
@@ -210,6 +254,113 @@ class TestRealNaClWithDAVE:
         receiver._on_packet(packet)
 
         assert len(receiver._buffers.get(100, b"")) == 0
+
+
+class TestRTPPaddingStrip:
+    """RFC 3550 §5.1 — strip RTP padding before DAVE/Opus decode."""
+
+    def test_padded_packet_stripped_and_buffered(self):
+        """P bit set → trailing padding stripped → opus payload decoded."""
+        key = _make_secret_key()
+        opus_silence = b"\xf8\xff\xfe"
+        receiver = _make_voice_receiver(key)
+
+        # 5 bytes of padding (4 zeros + count byte = 5)
+        packet = _build_padded_rtp_packet(key, opus_silence, pad_len=5, ssrc=100)
+        receiver._on_packet(packet)
+
+        assert 100 in receiver._buffers
+        assert len(receiver._buffers[100]) > 0
+
+    def test_padded_packet_matches_unpadded_output(self):
+        """Same opus payload with/without padding → same decoded PCM."""
+        key = _make_secret_key()
+        opus_silence = b"\xf8\xff\xfe"
+
+        recv_plain = _make_voice_receiver(key)
+        recv_plain._on_packet(
+            _build_encrypted_rtp_packet(key, opus_silence, ssrc=100)
+        )
+
+        recv_padded = _make_voice_receiver(key)
+        recv_padded._on_packet(
+            _build_padded_rtp_packet(key, opus_silence, pad_len=7, ssrc=100)
+        )
+
+        assert bytes(recv_plain._buffers[100]) == bytes(recv_padded._buffers[100])
+
+    def test_padding_with_dave_passthrough(self):
+        """Padding stripped before DAVE → passthrough buffers cleanly."""
+        key = _make_secret_key()
+        opus_silence = b"\xf8\xff\xfe"
+        dave = MagicMock()  # SSRC unmapped → DAVE skipped, passthrough used
+        receiver = _make_voice_receiver(key, dave_session=dave)
+
+        packet = _build_padded_rtp_packet(key, opus_silence, pad_len=4, ssrc=100)
+        receiver._on_packet(packet)
+
+        dave.decrypt.assert_not_called()
+        assert 100 in receiver._buffers
+        assert len(receiver._buffers[100]) > 0
+
+    def test_invalid_padding_length_zero_dropped(self):
+        """Declared pad_len=0 is invalid (RFC requires count includes itself)."""
+        key = _make_secret_key()
+        opus_silence = b"\xf8\xff\xfe"
+        receiver = _make_voice_receiver(key)
+
+        packet = _build_padded_rtp_packet(
+            key, opus_silence, pad_len=4, declared_pad_len=0, ssrc=100
+        )
+        receiver._on_packet(packet)
+
+        assert len(receiver._buffers.get(100, b"")) == 0
+
+    def test_invalid_padding_length_overflow_dropped(self):
+        """Declared pad_len > payload size → packet dropped."""
+        key = _make_secret_key()
+        opus_silence = b"\xf8\xff\xfe"
+        receiver = _make_voice_receiver(key)
+
+        packet = _build_padded_rtp_packet(
+            key, opus_silence, pad_len=4, declared_pad_len=255, ssrc=100
+        )
+        receiver._on_packet(packet)
+
+        assert len(receiver._buffers.get(100, b"")) == 0
+
+    def test_padding_consuming_entire_payload_dropped(self):
+        """Padding consumes entire payload → no opus data → dropped."""
+        key = _make_secret_key()
+        receiver = _make_voice_receiver(key)
+
+        # Empty opus payload, 6 bytes of padding (count byte declares 6)
+        packet = _build_padded_rtp_packet(key, b"", pad_len=6, ssrc=100)
+        receiver._on_packet(packet)
+
+        assert len(receiver._buffers.get(100, b"")) == 0
+
+    def test_padding_with_extension_stripped_correctly(self):
+        """X+P bits both set → strip extension from start, padding from end."""
+        key = _make_secret_key()
+        opus_silence = b"\xf8\xff\xfe"
+
+        # Same opus payload sent two ways: plain, and with both ext+padding
+        recv_plain = _make_voice_receiver(key)
+        recv_plain._on_packet(
+            _build_encrypted_rtp_packet(key, opus_silence, ssrc=100)
+        )
+
+        recv_ext_pad = _make_voice_receiver(key)
+        recv_ext_pad._on_packet(
+            _build_padded_rtp_packet(
+                key, opus_silence, pad_len=5, ext_words=2, ssrc=100
+            )
+        )
+
+        # Both must yield identical decoded PCM — ext data and padding both
+        # stripped before opus decode.
+        assert bytes(recv_plain._buffers[100]) == bytes(recv_ext_pad._buffers[100])
 
 
 class TestFullVoiceFlow:

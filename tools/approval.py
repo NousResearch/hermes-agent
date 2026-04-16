@@ -99,6 +99,24 @@ _SAFER_ALTERNATIVES: dict[str, str] = {
         "Use hermes_tools (patch function) for targeted edits instead of overwriting entire files. Always read the file first.",
     "in-place edit of system config":
         "Use hermes_tools (patch function) for targeted edits instead of sed -i. Safer and more precise.",
+    "script execution via heredoc":
+        "Write the script to a temp file with write_file, then execute via terminal.",
+    "git reset --hard (destroys uncommitted changes)":
+        "Use 'git stash' to save work before resetting.",
+    "git force push (rewrites remote history)":
+        "Use 'git push --force-with-lease' instead (safer force push).",
+    "git force push short flag (rewrites remote history)":
+        "Use 'git push --force-with-lease' instead.",
+    "git clean with force (deletes untracked files)":
+        "Use 'git clean -n' (dry-run) first to preview what will be deleted.",
+    "git branch force delete":
+        "Merge or cherry-pick to another branch first if the work is needed elsewhere.",
+    "kill process via pgrep expansion (self-termination)":
+        "Use 'systemctl restart <service>' instead of manually killing processes.",
+    "kill process via backtick pgrep expansion (self-termination)":
+        "Use 'systemctl restart <service>' instead of manually killing processes.",
+    "chmod +x followed by immediate execution":
+        "Run the script explicitly with 'bash script.sh' instead of chmod +x.",
 }
 
 

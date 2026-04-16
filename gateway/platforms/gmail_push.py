@@ -112,7 +112,12 @@ def _expand_path(value: str | None, default: Path) -> Path:
     path = Path(str(value)).expanduser()
     if path.is_absolute():
         return path
-    return (get_hermes_home() / path).resolve()
+    resolved = (get_hermes_home() / path).resolve()
+    try:
+        resolved.relative_to(get_hermes_home().resolve())
+    except ValueError as exc:
+        raise ValueError(f"Relative path escapes Hermes home: {value}") from exc
+    return resolved
 
 
 def _atomic_write_json(path: Path, data: Dict[str, Any]) -> None:
@@ -426,10 +431,11 @@ class GmailPushAdapter(BasePlatformAdapter):
             bearer = self._extract_bearer_token(request.headers.get("Authorization", ""))
             await asyncio.to_thread(self._verify_pubsub_bearer_token, bearer)
         except PermissionError as exc:
-            return web.json_response({"error": str(exc)}, status=401)
+            logger.warning("[gmail_push] JWT verification failed: %s", exc)
+            return web.json_response({"error": "Authentication failed"}, status=401)
         except Exception as exc:
             logger.warning("[gmail_push] JWT verification failed: %s", exc)
-            return web.json_response({"error": str(exc)}, status=401)
+            return web.json_response({"error": "Authentication failed"}, status=401)
 
         try:
             envelope = await request.json()

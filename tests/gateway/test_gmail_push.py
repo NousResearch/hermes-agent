@@ -174,6 +174,16 @@ def test_parse_pubsub_envelope_handles_base64url(tmp_path):
     assert parsed["pubsub_message_id"] == "pubsub-42"
 
 
+def test_relative_path_cannot_escape_hermes_home(tmp_path):
+    config = _make_config(
+        tmp_path,
+        oauth={"token_path": "../../../etc/passwd"},
+    )
+
+    with pytest.raises(ValueError, match="escapes Hermes home"):
+        GmailPushAdapter(config)
+
+
 def test_duplicate_pubsub_message_id_is_ignored(tmp_path, monkeypatch):
     async def _run():
         adapter = GmailPushAdapter(_make_config(tmp_path))
@@ -192,6 +202,30 @@ def test_duplicate_pubsub_message_id_is_ignored(tmp_path, monkeypatch):
 
         assert resp.status == 204
         reconcile.assert_not_awaited()
+
+    asyncio.run(_run())
+
+
+def test_auth_failures_return_generic_error(tmp_path, monkeypatch):
+    async def _run():
+        adapter = GmailPushAdapter(_make_config(tmp_path))
+        monkeypatch.setattr(
+            adapter,
+            "_verify_pubsub_bearer_token",
+            MagicMock(side_effect=PermissionError("Unexpected Pub/Sub service account")),
+        )
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                adapter._path,
+                json=_pubsub_envelope(),
+                headers={"Authorization": "Bearer token"},
+            )
+            payload = await resp.json()
+
+        assert resp.status == 401
+        assert payload == {"error": "Authentication failed"}
 
     asyncio.run(_run())
 

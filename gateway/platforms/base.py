@@ -1312,6 +1312,15 @@ class BasePlatformAdapter(ABC):
         self._typing_paused: set = set()
 
     @property
+    def message_len_fn(self) -> Callable[[str], int]:
+        """Return the length function for measuring message size on this platform.
+
+        Override in adapters whose platform counts characters differently from
+        Python ``len`` (e.g. Telegram counts UTF-16 code units).
+        """
+        return len
+
+    @property
     def has_fatal_error(self) -> bool:
         return self._fatal_error_message is not None
 

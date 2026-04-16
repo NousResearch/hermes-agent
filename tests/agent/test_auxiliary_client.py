@@ -263,6 +263,25 @@ class TestTryCodex:
         assert mock_openai.call_args.kwargs["base_url"] == "https://chatgpt.com/backend-api/codex"
 
 
+class TestTryOpenRouter:
+    def test_pool_without_selected_entry_falls_back_to_env(self, monkeypatch):
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-fallback")
+
+        with (
+            patch("agent.auxiliary_client._select_pool_entry", return_value=(True, None)),
+            patch("agent.auxiliary_client.OpenAI") as mock_openai,
+        ):
+            mock_openai.return_value = MagicMock()
+            from agent.auxiliary_client import _try_openrouter
+
+            client, model = _try_openrouter()
+
+        assert client is not None
+        assert model == "google/gemini-3-flash-preview"
+        assert mock_openai.call_args.kwargs["api_key"] == "or-fallback"
+        assert mock_openai.call_args.kwargs["base_url"] == "https://openrouter.ai/api/v1"
+
+
 class TestExpiredCodexFallback:
     """Test that expired Codex tokens don't block the auto chain."""
 

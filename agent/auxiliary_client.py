@@ -759,12 +759,15 @@ def _try_openrouter() -> Tuple[Optional[OpenAI], Optional[str]]:
     pool_present, entry = _select_pool_entry("openrouter")
     if pool_present:
         or_key = _pool_runtime_api_key(entry)
-        if not or_key:
-            return None, None
-        base_url = _pool_runtime_base_url(entry, OPENROUTER_BASE_URL) or OPENROUTER_BASE_URL
-        logger.debug("Auxiliary client: OpenRouter via pool")
-        return OpenAI(api_key=or_key, base_url=base_url,
-                       default_headers=_OR_HEADERS), _OPENROUTER_MODEL
+        if or_key:
+            base_url = _pool_runtime_base_url(entry, OPENROUTER_BASE_URL) or OPENROUTER_BASE_URL
+            logger.debug("Auxiliary client: OpenRouter via pool")
+            return OpenAI(api_key=or_key, base_url=base_url,
+                           default_headers=_OR_HEADERS), _OPENROUTER_MODEL
+        logger.debug(
+            "Auxiliary client: OpenRouter pool present but no usable selected "
+            "entry; falling back to OPENROUTER_API_KEY"
+        )
 
     or_key = os.getenv("OPENROUTER_API_KEY")
     if not or_key:

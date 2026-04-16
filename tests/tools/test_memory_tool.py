@@ -503,6 +503,28 @@ class TestMemoryStorePersistence:
         assert len(store.memory_entries) == 2
 
 
+class TestMemoryStoreEncoding:
+    def test_bom_stripped_on_load(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        mem_file = tmp_path / "MEMORY.md"
+        mem_file.write_text("\ufeffUser prefers dark mode", encoding="utf-8")
+
+        store = MemoryStore()
+        store.load_from_disk()
+        assert len(store.memory_entries) == 1
+        assert store.memory_entries[0].startswith("User")  # no BOM
+
+    def test_non_utf8_loads_with_replacement(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        mem_file = tmp_path / "MEMORY.md"
+        mem_file.write_bytes(b"User prefers caf\xe9 mode")
+
+        store = MemoryStore()
+        store.load_from_disk()
+        assert len(store.memory_entries) == 1
+        assert "User prefers caf" in store.memory_entries[0]  # loaded, not empty
+
+
 class TestMemoryStoreSnapshot:
     def test_snapshot_frozen_at_load(self, store):
         store.add("memory", "loaded at start")

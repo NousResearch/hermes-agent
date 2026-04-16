@@ -32,10 +32,7 @@ from pathlib import Path
 try:
     from hermes_constants import display_hermes_home, get_hermes_home
 except ModuleNotFoundError:
-    # Two layouts to handle:
-    #   repo:      hermes-agent/skills/.../setup.py  → hermes_constants.py is in an ancestor
-    #   installed: ~/.hermes/skills/.../setup.py     → hermes_constants.py is NOT an ancestor;
-    #              it lives at HERMES_HOME/hermes-agent/hermes_constants.py
+    # Walk up to HERMES_HOME; fall back to HERMES_HOME/hermes-agent/ for installed layout.
     _hermes_home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
     _found = False
     for _parent in Path(__file__).resolve().parents:
@@ -43,7 +40,7 @@ except ModuleNotFoundError:
             sys.path.insert(0, str(_parent))
             _found = True
             break
-        if _parent == _hermes_home:
+        if _parent == _hermes_home or _parent == _parent.parent:
             break
     if not _found:
         # Installed layout: hermes-agent/ sits directly under HERMES_HOME
@@ -113,7 +110,6 @@ def install_deps():
     print("Installing Google API dependencies...")
 
     # Prefer uv — bypasses PEP 668 externally-managed-environment restriction.
-    # Consistent with hermes_cli/memory_setup.py install pattern.
     uv_path = shutil.which("uv")
     if uv_path:
         try:
@@ -127,8 +123,8 @@ def install_deps():
         except subprocess.CalledProcessError:
             pass  # uv failed — fall through to pip
 
-    # pip fallback: plain → --user (PEP 668 safe) → --break-system-packages (last resort).
-    for extra_flags in [[], ["--user"], ["--break-system-packages"]]:
+    # pip fallback: plain → --user (PEP 668 safe).
+    for extra_flags in [[], ["--user"]]:
         try:
             subprocess.check_call(
                 [sys.executable, "-m", "pip", "install", "--quiet"] + extra_flags + REQUIRED_PACKAGES,

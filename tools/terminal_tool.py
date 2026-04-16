@@ -526,6 +526,7 @@ Background: Set background=true to get a session_id. Two patterns:
 Use process(action="poll") for progress checks, process(action="wait") to block until done.
 Working directory: Use 'workdir' for per-command cwd.
 PTY mode: Set pty=true for interactive CLI tools (Codex, Claude Code, Python REPL).
+Foreground timeout: For foreground commands, timeout acts as an inactivity limit. New output resets the timer, but Hermes still enforces an internal wall-clock cap. For very long or mostly silent jobs, prefer background=true with notify_on_complete=true.
 
 Do NOT use vim/nano/interactive tools without pty=true — they hang without a pseudo-terminal. Pipe git output to cat if it might page.
 """
@@ -1704,7 +1705,7 @@ TERMINAL_SCHEMA = {
             },
             "timeout": {
                 "type": "integer",
-                "description": f"Max seconds to wait (default: 180, foreground max: {FOREGROUND_MAX_TIMEOUT}). Returns INSTANTLY when command finishes — set high for long tasks, you won't wait unnecessarily. Foreground timeout above {FOREGROUND_MAX_TIMEOUT}s is rejected; use background=true for longer commands.",
+                "description": f"Max foreground inactivity window in seconds (default: 180, explicit foreground max: {FOREGROUND_MAX_TIMEOUT}). New output resets the timer, but Hermes still applies an internal wall-clock cap. Returns INSTANTLY when the command finishes. Explicit foreground timeout above {FOREGROUND_MAX_TIMEOUT}s is rejected; use background=true for longer or mostly silent commands.",
                 "minimum": 1
             },
             "workdir": {

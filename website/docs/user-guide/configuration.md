@@ -81,12 +81,14 @@ Hermes supports six terminal backends. Each determines where the agent's shell c
 terminal:
   backend: local    # local | docker | ssh | modal | daytona | singularity
   cwd: "."          # Working directory ("." = current dir for local, "/root" for containers)
-  timeout: 180      # Per-command timeout in seconds
+  timeout: 180      # Foreground command inactivity timeout in seconds (new output resets it)
   env_passthrough: []  # Env var names to forward to sandboxed execution (terminal + execute_code)
   singularity_image: "docker://nikolaik/python-nodejs:python3.11-nodejs20"  # Container image for Singularity backend
   modal_image: "nikolaik/python-nodejs:python3.11-nodejs20"                 # Container image for Modal backend
   daytona_image: "nikolaik/python-nodejs:python3.11-nodejs20"               # Container image for Daytona backend
 ```
+
+For foreground terminal commands, `terminal.timeout` is an inactivity budget rather than a strict wall-clock cutoff. If the command keeps producing output, Hermes extends the wait. A separate internal hard cap still applies so a noisy hung command cannot run forever. For very long or mostly silent jobs, prefer `background: true` with `notify_on_complete: true`.
 
 For cloud sandboxes such as Modal and Daytona, `container_persistent: true` means Hermes will try to preserve filesystem state across sandbox recreation. It does not promise that the same live sandbox, PID space, or background processes will still be running later.
 

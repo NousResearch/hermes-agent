@@ -267,7 +267,7 @@ def _normalize_error_context(error_context: Optional[Dict[str, Any]]) -> Dict[st
 def _exhausted_until(entry: PooledCredential) -> Optional[float]:
     if entry.last_status != STATUS_EXHAUSTED:
         return None
-    reset_at = _parse_absolute_timestamp(getattr(entry, "last_error_reset_at", None))
+    reset_at = _parse_absolute_timestamp(entry.last_error_reset_at)
     if reset_at is not None:
         return reset_at
     if entry.last_status_at:

@@ -9488,14 +9488,19 @@ class GatewayRunner:
         # final answer.  Suppressing delivery here leaves the user staring
         # at silence.  (#10xxx — "agent stops after web search")
         _sc = stream_consumer_holder[0]
-        if _sc and isinstance(response, dict) and not response.get("failed"):
+        if isinstance(response, dict) and not response.get("failed"):
             _final = response.get("final_response") or ""
             _is_empty_sentinel = not _final or _final == "(empty)"
-            if not _is_empty_sentinel and (
-                getattr(_sc, "final_response_sent", False)
-                or getattr(_sc, "already_sent", False)
-            ):
-                response["already_sent"] = True
+            if not _is_empty_sentinel:
+                # Check if response was already sent via streaming
+                if _sc and (
+                    getattr(_sc, "final_response_sent", False)
+                    or getattr(_sc, "already_sent", False)
+                ):
+                    response["already_sent"] = True
+                # Also set already_sent if response was previewed
+                elif response.get("response_previewed"):
+                    response["already_sent"] = True
         
         return response
 

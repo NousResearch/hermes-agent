@@ -263,7 +263,7 @@ def test_explicit_reset_timestamp_overrides_default_429_ttl(tmp_path, monkeypatc
                         "label": "weekly-reset",
                         "auth_type": "oauth",
                         "priority": 0,
-                        "source": "manual:device_code",
+                        "source": "device_code",
                         "access_token": "tok-1",
                         "last_status": "exhausted",
                         "last_status_at": time.time() - 7200,

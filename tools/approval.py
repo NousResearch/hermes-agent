@@ -798,9 +798,11 @@ def check_all_command_guards(command: str, env_type: str,
     # input() flow.  The agent never sees "approval_required"; it either
     # gets the command output (approved) or a definitive "BLOCKED" message.
     if is_gateway or is_ask:
+        logger.debug(f"Gateway approval requested: is_gateway={is_gateway}, is_ask={is_ask}, session_key={session_key}")
         notify_cb = None
         with _lock:
             notify_cb = _gateway_notify_cbs.get(session_key)
+            logger.debug(f"Registered notify callback: {notify_cb}")
 
         if notify_cb is not None:
             # --- Blocking gateway approval (queue-based) ---

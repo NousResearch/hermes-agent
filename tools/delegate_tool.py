@@ -626,6 +626,7 @@ def delegate_task(
     toolsets: Optional[List[str]] = None,
     tasks: Optional[List[Dict[str, Any]]] = None,
     max_iterations: Optional[int] = None,
+    model: Optional[str] = None,
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
     parent_agent=None,
@@ -711,9 +712,11 @@ def delegate_task(
     children = []
     try:
         for i, t in enumerate(task_list):
+            # Model priority: per-task model > top-level model arg > delegation config > parent
+            task_model = t.get("model") or model or creds["model"]
             child = _build_child_agent(
                 task_index=i, goal=t["goal"], context=t.get("context"),
-                toolsets=t.get("toolsets") or toolsets, model=creds["model"],
+                toolsets=t.get("toolsets") or toolsets, model=task_model,
                 max_iterations=effective_max_iter, parent_agent=parent_agent,
                 override_provider=creds["provider"], override_base_url=creds["base_url"],
                 override_api_key=creds["api_key"],
@@ -1059,6 +1062,16 @@ DELEGATE_TASK_SCHEMA = {
                     "['terminal', 'file', 'web'] for full-stack tasks."
                 ),
             },
+            "model": {
+                "type": "string",
+                "description": (
+                    "Optional model override for all subagents in this call "
+                    "(e.g. 'claude-sonnet-4-20250514'). Use lighter models for "
+                    "mechanical tasks (file generation, formatting) and heavier "
+                    "models for complex reasoning. Priority: per-task model > "
+                    "this top-level model > delegation config model > parent model."
+                ),
+            },
             "tasks": {
                 "type": "array",
                 "items": {
@@ -1066,6 +1079,7 @@ DELEGATE_TASK_SCHEMA = {
                     "properties": {
                         "goal": {"type": "string", "description": "Task goal"},
                         "context": {"type": "string", "description": "Task-specific context"},
+                        "model": {"type": "string", "description": "Per-task model override. Takes highest priority."},
                         "toolsets": {
                             "type": "array",
                             "items": {"type": "string"},
@@ -1135,6 +1149,7 @@ registry.register(
         toolsets=args.get("toolsets"),
         tasks=args.get("tasks"),
         max_iterations=args.get("max_iterations"),
+        model=args.get("model"),
         acp_command=args.get("acp_command"),
         acp_args=args.get("acp_args"),
         parent_agent=kw.get("parent_agent")),

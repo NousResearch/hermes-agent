@@ -322,7 +322,12 @@ class GatewayStreamConsumer:
                         self._last_sent_text = ""
                         self._last_edit_time = time.monotonic()
                         if got_done:
-                            self._final_response_sent = self._already_sent
+                            # When message was split into chunks, we need to verify
+                            # that the final accumulated text was actually sent.
+                            # Don't rely on _already_sent which may be True from
+                            # earlier tool-progress messages. Since _accumulated
+                            # was just cleared, the chunks were sent via _send_new_chunk.
+                            self._final_response_sent = True
                             return
                         if got_segment_break:
                             self._message_id = None

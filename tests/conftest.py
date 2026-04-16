@@ -18,7 +18,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 @pytest.fixture(autouse=True)
 def _isolate_hermes_home(tmp_path, monkeypatch):
-    """Redirect HERMES_HOME to a temp dir so tests never write to ~/.hermes/."""
+    """Redirect Hermes state to temp dirs so tests never inherit real local auth/state."""
     fake_home = tmp_path / "hermes_test"
     fake_home.mkdir()
     (fake_home / "sessions").mkdir()
@@ -26,20 +26,43 @@ def _isolate_hermes_home(tmp_path, monkeypatch):
     (fake_home / "memories").mkdir()
     (fake_home / "skills").mkdir()
     monkeypatch.setenv("HERMES_HOME", str(fake_home))
+
+    # Keep Codex CLI discovery away from the developer's real ~/.codex unless a
+    # test explicitly opts in with its own CODEX_HOME.
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / ".codex"))
+
     # Reset plugin singleton so tests don't leak plugins from ~/.hermes/plugins/
     try:
         import hermes_cli.plugins as _plugins_mod
         monkeypatch.setattr(_plugins_mod, "_plugin_manager", None)
     except Exception:
         pass
+
     # Tests should not inherit the agent's current gateway/messaging surface.
     # Individual tests that need gateway behavior set these explicitly.
-    monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
-    monkeypatch.delenv("HERMES_SESSION_CHAT_ID", raising=False)
-    monkeypatch.delenv("HERMES_SESSION_CHAT_NAME", raising=False)
-    monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
-    # Avoid making real calls during tests if this key is set in the env files
-    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    for key in (
+        "HERMES_SESSION_PLATFORM",
+        "HERMES_SESSION_CHAT_ID",
+        "HERMES_SESSION_CHAT_NAME",
+        "HERMES_GATEWAY_SESSION",
+        "API_SERVER_KEY",
+        "API_SERVER_HOST",
+        "API_SERVER_PORT",
+        "API_SERVER_CORS_ORIGINS",
+        "API_SERVER_MODEL_NAME",
+        "TELEGRAM_ALLOWED_USERS",
+        "OPENROUTER_API_KEY",
+        "OPENAI_API_KEY",
+        "OPENAI_BASE_URL",
+        "OPENAI_MODEL",
+        "LLM_MODEL",
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_TOKEN",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "MISTRAL_API_KEY",
+        "MINIMAX_API_KEY",
+    ):
+        monkeypatch.delenv(key, raising=False)
 
 
 @pytest.fixture()

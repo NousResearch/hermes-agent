@@ -129,5 +129,19 @@ include = ["agent", "tools", "tools.*", "hermes_cli", "gateway", "gateway.*", "c
 testpaths = ["tests"]
 markers = [
     "integration: marks tests requiring external services (API keys, Modal, etc.)",
+    "ssh: marks tests that exercise SSH-backed paths or helpers",
 ]
 addopts = "-m 'not integration' -n auto"
+filterwarnings = [
+    "ignore:websockets\\.InvalidStatusCode is deprecated:DeprecationWarning:lark_oapi\\.ws\\.client",
+    "ignore:websockets\\.legacy is deprecated.*:DeprecationWarning:websockets\\.legacy",
+    "ignore:`verify=<str>` is deprecated.*:DeprecationWarning:httpx\\._config",
+    "ignore:Bare functions are deprecated, use async ones:DeprecationWarning:aiohttp\\.web_urldispatcher",
+    "ignore:coroutine 'AsyncMockMixin\\._execute_mock_call' was never awaited:RuntimeWarning",
+    "ignore:coroutine 'Process\\.communicate' was never awaited:RuntimeWarning",
+    "ignore:coroutine 'QQAdapter\\._send_identify' was never awaited:RuntimeWarning",
+    "ignore:coroutine 'probe_mcp_server_tools\\.<locals>\\._probe_all' was never awaited:RuntimeWarning",
+    "ignore:coroutine '_async_call_service' was never awaited:RuntimeWarning",
+    "ignore:coroutine '_make_tool_handler\\.<locals>\\._handler\\.<locals>\\._call' was never awaited:RuntimeWarning",
+    "ignore::pytest.PytestUnraisableExceptionWarning",
+]

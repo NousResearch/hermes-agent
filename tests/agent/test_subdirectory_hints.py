@@ -72,6 +72,13 @@ class TestSubdirectoryHintTracker:
 
 
 
+    @pytest.mark.parametrize("command", ["cd backend && ls", "pushd backend", "echo start; cd backend; ls"])
+    def test_bare_directory_after_navigation_command_is_a_path(self, project, command):
+        """`cd backend` has no `/` or `.` yet names a subdirectory; its AGENTS.md must load (#11032)."""
+        tracker = SubdirectoryHintTracker(working_dir=str(project))
+        result = tracker.check_tool_call("terminal", {"command": command})
+        assert result is not None and "Backend-specific instructions" in result
+
     def test_relative_path(self, project):
         """Relative paths resolved against working_dir."""
         tracker = SubdirectoryHintTracker(working_dir=str(project))

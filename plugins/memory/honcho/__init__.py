@@ -1008,8 +1008,8 @@ class HonchoMemoryProvider(MemoryProvider):
                 return json.dumps({"result": "\n\n".join(parts) or "No context available."})
 
             elif tool_name == "honcho_conclude":
-                delete_id = args.get("delete_id")
-                conclusion = args.get("conclusion", "")
+                delete_id = (args.get("delete_id") or "").strip()
+                conclusion = args.get("conclusion", "").strip()
                 peer = args.get("peer", "user")
 
                 has_delete_id = bool(delete_id)

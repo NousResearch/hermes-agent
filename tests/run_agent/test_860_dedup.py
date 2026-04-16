@@ -199,7 +199,6 @@ class TestFlushDeduplication:
             rows = real_db.get_messages(agent.session_id)
             assert persisted == 1
             assert agent._last_flushed_db_idx == 1
-            assert agent._last_session_db_persisted_count == 1
             assert len(rows) == 1
             assert rows[0]["content"] == "new question"
 

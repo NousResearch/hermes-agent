@@ -7880,6 +7880,7 @@ class AIAgent:
                     background=function_args.get("background", True),
                     parent_agent=self,
                 )
+                tool_duration = time.time() - tool_start_time
             elif function_name == "delegate_kill":
                 from tools.delegate_tool import delegate_kill as _delegate_kill
                 function_result = _delegate_kill(
@@ -7887,6 +7888,7 @@ class AIAgent:
                     reason=function_args.get("reason", "Killed by user request"),
                     parent_agent=self,
                 )
+                tool_duration = time.time() - tool_start_time
             elif self._context_engine_tool_names and function_name in self._context_engine_tool_names:
                 # Context engine tools (lcm_grep, lcm_describe, lcm_expand, etc.)
                 spinner = None

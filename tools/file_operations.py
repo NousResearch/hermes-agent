@@ -411,13 +411,30 @@ class ShellFileOperations(FileOperations):
     def _expand_path(self, path: str) -> str:
         """
         Expand shell-style paths like ~ and ~user to absolute paths.
-        
+
+        Also redirects bare filenames (no path separator, no leading dot or ~)
+        to HERMES_HOME when a matching file already exists there.  This
+        prevents write_file("SOUL.md") from silently landing in $HOME/SOUL.md
+        when the process cwd happens to be $HOME and ~/.hermes/SOUL.md is the
+        intended target.
+
         This must be done BEFORE shell escaping, since ~ doesn't expand
         inside single quotes.
         """
         if not path:
             return path
-        
+
+        # Redirect bare filenames to HERMES_HOME when a matching file exists
+        # there.  A "bare filename" has no path separator and no special prefix
+        # (~ or .), so it would otherwise silently resolve against self.cwd.
+        if '/' not in path and not path.startswith(('.', '~')):
+            try:
+                candidate = get_hermes_home() / path
+                if candidate.exists():
+                    return str(candidate)
+            except Exception:
+                pass
+
         # Handle ~ and ~user
         if path.startswith('~'):
             # Get home directory via the terminal environment

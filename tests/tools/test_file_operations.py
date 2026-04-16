@@ -1,6 +1,7 @@
 """Tests for tools/file_operations.py — deny list, result dataclasses, helpers."""
 
 import os
+import unittest.mock
 import pytest
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -211,6 +212,51 @@ class TestShellFileOpsHelpers:
         # High ratio of non-printable chars -> binary
         binary_content = "\x00\x01\x02\x03" * 250
         assert file_ops._is_likely_binary("unknown", binary_content) is True
+
+
+class TestExpandPathBareFilename:
+    """_expand_path redirects bare filenames to HERMES_HOME when the file exists there."""
+
+    def test_bare_filename_existing_in_hermes_home_is_redirected(self, file_ops, tmp_path):
+        soul = tmp_path / "SOUL.md"
+        soul.write_text("persona")
+        with unittest.mock.patch("tools.file_operations.get_hermes_home", return_value=tmp_path):
+            result = file_ops._expand_path("SOUL.md")
+        assert result == str(soul)
+
+    def test_bare_filename_absent_from_hermes_home_is_unchanged(self, file_ops, tmp_path):
+        # File does NOT exist in HERMES_HOME → path returned as-is for cwd resolution
+        with unittest.mock.patch("tools.file_operations.get_hermes_home", return_value=tmp_path):
+            result = file_ops._expand_path("output.txt")
+        assert result == "output.txt"
+
+    def test_path_with_separator_is_not_redirected(self, file_ops, tmp_path):
+        # Relative paths with directory components are left alone
+        soul = tmp_path / "SOUL.md"
+        soul.write_text("persona")
+        with unittest.mock.patch("tools.file_operations.get_hermes_home", return_value=tmp_path):
+            result = file_ops._expand_path("./SOUL.md")
+        assert result == "./SOUL.md"
+
+    def test_dotfile_is_not_redirected(self, file_ops, tmp_path):
+        # Leading-dot names (e.g. .env) are excluded from bare-filename redirect
+        dotenv = tmp_path / ".env"
+        dotenv.write_text("KEY=val")
+        with unittest.mock.patch("tools.file_operations.get_hermes_home", return_value=tmp_path):
+            result = file_ops._expand_path(".env")
+        assert result == ".env"
+
+    def test_tilde_path_is_not_redirected(self, file_ops, tmp_path, monkeypatch):
+        # ~ paths are handled by existing ~ expansion, not bare-filename redirect
+        soul = tmp_path / "SOUL.md"
+        soul.write_text("persona")
+        monkeypatch.setenv("HOME", str(tmp_path))
+        mock_env = MagicMock()
+        mock_env.execute.return_value = {"output": str(tmp_path), "returncode": 0}
+        ops = ShellFileOperations(mock_env)
+        with unittest.mock.patch("tools.file_operations.get_hermes_home", return_value=tmp_path):
+            result = ops._expand_path("~/SOUL.md")
+        assert result == str(tmp_path / "SOUL.md")
 
         # Normal text -> not binary
         assert file_ops._is_likely_binary("unknown", "Hello world\nLine 2\n") is False

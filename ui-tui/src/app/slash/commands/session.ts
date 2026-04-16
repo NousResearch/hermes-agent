@@ -2,13 +2,16 @@ import { imageTokenMeta, introMsg, toTranscriptMessages } from '../../../domain/
 import type {
   BackgroundStartResponse,
   BtwStartResponse,
+  ConfigGetValueResponse,
   ConfigSetResponse,
   ImageAttachResponse,
   SessionBranchResponse,
   SessionCompressResponse,
+  SessionUsageResponse,
   VoiceToggleResponse
 } from '../../../gatewayTypes.js'
 import { fmtK } from '../../../lib/text.js'
+import type { PanelSection } from '../../../types.js'
 import { patchOverlayState } from '../../overlayStore.js'
 import { patchUiState } from '../../uiStore.js'
 import type { SlashCommand } from '../types.js'
@@ -194,6 +197,118 @@ export const sessionCommands: SlashCommand[] = [
           ctx.transcript.sys(`voice: ${r.enabled ? 'on' : 'off'}`)
         })
       )
+    }
+  },
+
+  // The four shims below call `config.set` directly because Python's `slash.exec`
+  // worker is a separate subprocess — it writes config but does NOT fire the
+  // live side-effects (`skin.changed` event, agent.reasoning_config,
+  // agent.verbose_logging, per-session yolo flip). Direct RPC does.
+
+  {
+    help: 'switch theme skin (fires skin.changed)',
+    name: 'skin',
+    run: (arg, ctx) => {
+      if (!arg) {
+        return ctx.gateway
+          .rpc<ConfigGetValueResponse>('config.get', { key: 'skin' })
+          .then(ctx.guarded<ConfigGetValueResponse>(r => ctx.transcript.sys(`skin: ${r.value || 'default'}`)))
+      }
+
+      ctx.gateway
+        .rpc<ConfigSetResponse>('config.set', { key: 'skin', value: arg })
+        .then(ctx.guarded<ConfigSetResponse>(r => r.value && ctx.transcript.sys(`skin → ${r.value}`)))
+    }
+  },
+
+  {
+    help: 'toggle yolo mode (per-session approvals)',
+    name: 'yolo',
+    run: (_arg, ctx) => {
+      ctx.gateway
+        .rpc<ConfigSetResponse>('config.set', { key: 'yolo', session_id: ctx.sid })
+        .then(ctx.guarded<ConfigSetResponse>(r => ctx.transcript.sys(`yolo ${r.value === '1' ? 'on' : 'off'}`)))
+    }
+  },
+
+  {
+    help: 'inspect or set reasoning effort (updates live agent)',
+    name: 'reasoning',
+    run: (arg, ctx) => {
+      if (!arg) {
+        return ctx.gateway
+          .rpc<ConfigGetValueResponse>('config.get', { key: 'reasoning' })
+          .then(
+            ctx.guarded<ConfigGetValueResponse>(
+              r => r.value && ctx.transcript.sys(`reasoning: ${r.value} · display ${r.display || 'hide'}`)
+            )
+          )
+      }
+
+      ctx.gateway
+        .rpc<ConfigSetResponse>('config.set', { key: 'reasoning', session_id: ctx.sid, value: arg })
+        .then(ctx.guarded<ConfigSetResponse>(r => r.value && ctx.transcript.sys(`reasoning: ${r.value}`)))
+    }
+  },
+
+  {
+    help: 'cycle verbose tool-output mode (updates live agent)',
+    name: 'verbose',
+    run: (arg, ctx) => {
+      ctx.gateway
+        .rpc<ConfigSetResponse>('config.set', { key: 'verbose', session_id: ctx.sid, value: arg || 'cycle' })
+        .then(ctx.guarded<ConfigSetResponse>(r => r.value && ctx.transcript.sys(`verbose: ${r.value}`)))
+    }
+  },
+
+  {
+    help: 'session usage (live counts — worker sees zeros)',
+    name: 'usage',
+    run: (_arg, ctx) => {
+      ctx.gateway.rpc<SessionUsageResponse>('session.usage', { session_id: ctx.sid }).then(r => {
+        if (ctx.stale()) {
+          return
+        }
+
+        if (r) {
+          patchUiState({
+            usage: { calls: r.calls ?? 0, input: r.input ?? 0, output: r.output ?? 0, total: r.total ?? 0 }
+          })
+        }
+
+        if (!r?.calls) {
+          return ctx.transcript.sys('no API calls yet')
+        }
+
+        const f = (v: number | undefined) => (v ?? 0).toLocaleString()
+        const cost = r.cost_usd != null ? `${r.cost_status === 'estimated' ? '~' : ''}$${r.cost_usd.toFixed(4)}` : null
+
+        const rows: [string, string][] = [
+          ['Model', r.model ?? ''],
+          ['Input tokens', f(r.input)],
+          ['Cache read tokens', f(r.cache_read)],
+          ['Cache write tokens', f(r.cache_write)],
+          ['Output tokens', f(r.output)],
+          ['Total tokens', f(r.total)],
+          ['API calls', f(r.calls)]
+        ]
+
+        if (cost) {
+          rows.push(['Cost', cost])
+        }
+
+        const sections: PanelSection[] = [{ rows }]
+
+        if (r.context_max) {
+          sections.push({ text: `Context: ${f(r.context_used)} / ${f(r.context_max)} (${r.context_percent}%)` })
+        }
+
+        if (r.compressions) {
+          sections.push({ text: `Compressions: ${r.compressions}` })
+        }
+
+        ctx.transcript.panel('Usage', sections)
+      })
     }
   }
 ]

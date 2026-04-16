@@ -146,7 +146,7 @@ export function AppOverlays({
                   key={`${start + i}:${item.text}:${item.display}:${item.meta ?? ''}`}
                   width="100%"
                 >
-                  <Text bold={active} color={ui.theme.color.bronze}>
+                  <Text bold color={ui.theme.color.label}>
                     {' '}
                     {item.display}
                   </Text>

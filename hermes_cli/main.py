@@ -2807,7 +2807,7 @@ def _run_anthropic_oauth_flow(save_env_value):
     from agent.anthropic_adapter import (
         run_oauth_setup_token,
         read_claude_code_credentials,
-        is_claude_code_token_valid,
+        _resolve_claude_code_token_from_credentials,
     )
     from hermes_cli.config import (
         save_anthropic_oauth_token,
@@ -2819,10 +2819,11 @@ def _run_anthropic_oauth_flow(save_env_value):
             creds = read_claude_code_credentials()
         except Exception:
             creds = None
-        if creds and (
-            is_claude_code_token_valid(creds)
-            or bool(creds.get("refreshToken"))
-        ):
+        try:
+            resolved = _resolve_claude_code_token_from_credentials(creds)
+        except Exception:
+            resolved = None
+        if resolved:
             use_anthropic_claude_code_credentials(save_fn=save_env_value)
             print("  ✓ Claude Code credentials linked.")
             from hermes_constants import display_hermes_home as _dhh_fn

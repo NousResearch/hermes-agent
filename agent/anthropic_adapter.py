@@ -553,17 +553,25 @@ def resolve_anthropic_token() -> Optional[str]:
     """Resolve an Anthropic token from all available sources.
 
     Priority:
-      1. ANTHROPIC_TOKEN env var (OAuth/setup token saved by Hermes)
-      2. CLAUDE_CODE_OAUTH_TOKEN env var
-      3. Claude Code credentials (~/.claude.json or ~/.claude/.credentials.json)
+      1. Hermes PKCE credentials (~/.hermes/.anthropic_oauth.json)
          — with automatic refresh if expired and a refresh token is available
-      4. ANTHROPIC_API_KEY env var (regular API key, or legacy fallback)
+      2. ANTHROPIC_TOKEN env var (OAuth/setup token saved by Hermes)
+      3. CLAUDE_CODE_OAUTH_TOKEN env var
+      4. Claude Code credentials (~/.claude.json or ~/.claude/.credentials.json)
+         — with automatic refresh if expired and a refresh token is available
+      5. ANTHROPIC_API_KEY env var (regular API key, or legacy fallback)
 
     Returns the token string or None.
     """
     creds = read_claude_code_credentials()
 
-    # 1. Hermes-managed OAuth/setup token env var
+    # 1. Hermes-managed PKCE file
+    hermes_creds = read_hermes_oauth_credentials()
+    resolved_hermes_token = _resolve_hermes_oauth_token_from_credentials(hermes_creds)
+    if resolved_hermes_token:
+        return resolved_hermes_token
+
+    # 2. Hermes-managed OAuth/setup token env var
     token = os.getenv("ANTHROPIC_TOKEN", "").strip()
     if token:
         preferred = _prefer_refreshable_claude_code_token(token, creds)
@@ -571,7 +579,7 @@ def resolve_anthropic_token() -> Optional[str]:
             return preferred
         return token
 
-    # 2. CLAUDE_CODE_OAUTH_TOKEN (used by Claude Code for setup-tokens)
+    # 3. CLAUDE_CODE_OAUTH_TOKEN (used by Claude Code for setup-tokens)
     cc_token = os.getenv("CLAUDE_CODE_OAUTH_TOKEN", "").strip()
     if cc_token:
         preferred = _prefer_refreshable_claude_code_token(cc_token, creds)
@@ -579,12 +587,12 @@ def resolve_anthropic_token() -> Optional[str]:
             return preferred
         return cc_token
 
-    # 3. Claude Code credential file
+    # 4. Claude Code credential file
     resolved_claude_token = _resolve_claude_code_token_from_credentials(creds)
     if resolved_claude_token:
         return resolved_claude_token
 
-    # 4. Regular API key, or a legacy OAuth token saved in ANTHROPIC_API_KEY.
+    # 5. Regular API key, or a legacy OAuth token saved in ANTHROPIC_API_KEY.
     # This remains as a compatibility fallback for pre-migration Hermes configs.
     api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
     if api_key:
@@ -596,9 +604,13 @@ def resolve_anthropic_token() -> Optional[str]:
 def run_oauth_setup_token() -> Optional[str]:
     """Run 'claude setup-token' interactively and return the resulting token.
 
-    Checks multiple sources after the subprocess completes:
-      1. Claude Code credential files (may be written by the subprocess)
-      2. CLAUDE_CODE_OAUTH_TOKEN / ANTHROPIC_TOKEN env vars
+    Checks Claude Code credential files after the subprocess completes.
+
+    Important: a child process cannot mutate the parent Hermes process
+    environment, so CLAUDE_CODE_OAUTH_TOKEN / ANTHROPIC_TOKEN env vars are NOT
+    treated as post-setup evidence here. If Claude Code only prints a token and
+    does not update its credential file, callers must explicitly ask the user to
+    paste that token.
 
     Returns the token string, or None if no credentials were obtained.
     Raises FileNotFoundError if the 'claude' CLI is not installed.
@@ -621,14 +633,9 @@ def run_oauth_setup_token() -> Optional[str]:
 
     # Check if credentials were saved to Claude Code's config files
     creds = read_claude_code_credentials()
-    if creds and is_claude_code_token_valid(creds):
-        return creds["accessToken"]
-
-    # Check env vars that may have been set
-    for env_var in ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_TOKEN"):
-        val = os.getenv(env_var, "").strip()
-        if val:
-            return val
+    resolved = _resolve_claude_code_token_from_credentials(creds)
+    if resolved:
+        return resolved
 
     return None
 
@@ -765,6 +772,56 @@ def read_hermes_oauth_credentials() -> Optional[Dict[str, Any]]:
         except (json.JSONDecodeError, OSError, IOError) as e:
             logger.debug("Failed to read Hermes OAuth credentials: %s", e)
     return None
+
+
+def write_hermes_oauth_credentials(access_token: str, refresh_token: str, expires_at_ms: int) -> None:
+    """Persist Hermes-managed Anthropic OAuth credentials to ~/.hermes/.anthropic_oauth.json."""
+    payload = {
+        "accessToken": access_token,
+        "refreshToken": refresh_token,
+        "expiresAt": expires_at_ms,
+    }
+    _HERMES_OAUTH_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _HERMES_OAUTH_FILE.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    _HERMES_OAUTH_FILE.chmod(0o600)
+
+
+def _resolve_hermes_oauth_token_from_credentials(creds: Optional[Dict[str, Any]] = None) -> Optional[str]:
+    """Resolve a token from Hermes-managed OAuth credentials, refreshing if needed."""
+    creds = creds or read_hermes_oauth_credentials()
+    if not creds:
+        return None
+
+    access_token = str(creds.get("accessToken") or "").strip()
+    if not access_token:
+        return None
+
+    expires_at = creds.get("expiresAt", 0)
+    if not expires_at:
+        return access_token
+
+    import time
+
+    now_ms = int(time.time() * 1000)
+    if now_ms < (int(expires_at) - 60_000):
+        return access_token
+
+    refresh_token = str(creds.get("refreshToken") or "").strip()
+    if not refresh_token:
+        logger.debug("Hermes PKCE credentials expired and have no refresh token")
+        return None
+
+    try:
+        refreshed = refresh_anthropic_oauth_pure(refresh_token, use_json=True)
+        write_hermes_oauth_credentials(
+            refreshed["access_token"],
+            refreshed["refresh_token"],
+            refreshed["expires_at_ms"],
+        )
+        return refreshed["access_token"]
+    except Exception as exc:
+        logger.debug("Failed to refresh Hermes OAuth token: %s", exc)
+        return None
 
 
 # ---------------------------------------------------------------------------

@@ -185,6 +185,11 @@ def auth_add_command(args) -> None:
         creds = anthropic_mod.run_hermes_oauth_login_pure()
         if not creds:
             raise SystemExit("Anthropic OAuth login did not return credentials.")
+        anthropic_mod.write_hermes_oauth_credentials(
+            creds["access_token"],
+            creds.get("refresh_token", ""),
+            creds["expires_at_ms"],
+        )
         label = (getattr(args, "label", None) or "").strip() or label_from_token(
             creds["access_token"],
             _oauth_default_label(provider, len(pool.entries()) + 1),

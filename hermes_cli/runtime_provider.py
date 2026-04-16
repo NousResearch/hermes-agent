@@ -540,8 +540,11 @@ def _resolve_explicit_runtime(
             api_key = resolve_anthropic_token()
             if not api_key:
                 raise AuthError(
-                    "No Anthropic credentials found. Set ANTHROPIC_TOKEN or ANTHROPIC_API_KEY, "
-                    "run 'claude setup-token', or authenticate with 'claude /login'."
+                    "No usable Anthropic runtime credentials found. Hermes could not resolve a valid "
+                    "ANTHROPIC token for the Anthropic API. This does not necessarily mean Claude Code "
+                    "itself is logged out — `claude auth status` may still show logged in. Set "
+                    "ANTHROPIC_TOKEN or ANTHROPIC_API_KEY, run `claude setup-token`, or reauthenticate "
+                    "the Claude Code OAuth credentials Hermes reads from ~/.claude/.credentials.json."
                 )
         return {
             "provider": "anthropic",
@@ -816,8 +819,11 @@ def resolve_runtime_provider(
         token = resolve_anthropic_token()
         if not token:
             raise AuthError(
-                "No Anthropic credentials found. Set ANTHROPIC_TOKEN or ANTHROPIC_API_KEY, "
-                "run 'claude setup-token', or authenticate with 'claude /login'."
+                "No usable Anthropic runtime credentials found. Hermes could not resolve a valid "
+                "ANTHROPIC token for the Anthropic API. This does not necessarily mean Claude Code "
+                "itself is logged out — `claude auth status` may still show logged in. Set "
+                "ANTHROPIC_TOKEN or ANTHROPIC_API_KEY, run `claude setup-token`, or reauthenticate "
+                "the Claude Code OAuth credentials Hermes reads from ~/.claude/.credentials.json."
             )
         # Allow base URL override from config.yaml model.base_url, but only
         # when the configured provider is anthropic — otherwise a non-Anthropic

@@ -11,6 +11,7 @@ from agent.prompt_caching import apply_anthropic_cache_control
 from agent.anthropic_adapter import (
     _is_oauth_token,
     _refresh_oauth_token,
+    _resolve_hermes_oauth_token_from_credentials,
     _to_plain_data,
     _write_claude_code_credentials,
     build_anthropic_client,
@@ -21,8 +22,10 @@ from agent.anthropic_adapter import (
     normalize_anthropic_response,
     normalize_model_name,
     read_claude_code_credentials,
+    read_hermes_oauth_credentials,
     resolve_anthropic_token,
     run_oauth_setup_token,
+    write_hermes_oauth_credentials,
 )
 
 
@@ -338,6 +341,180 @@ class TestWriteClaudeCodeCredentials:
         assert data["claudeAiOauth"]["accessToken"] == "new-tok"
 
 
+class TestWriteHermesOauthCredentials:
+    def test_writes_new_file(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("agent.anthropic_adapter._HERMES_OAUTH_FILE",
+                            tmp_path / ".anthropic_oauth.json")
+        write_hermes_oauth_credentials("access-tok", "refresh-tok", 9999999)
+        data = json.loads((tmp_path / ".anthropic_oauth.json").read_text())
+        assert data["accessToken"] == "access-tok"
+        assert data["refreshToken"] == "refresh-tok"
+        assert data["expiresAt"] == 9999999
+
+    def test_overwrites_existing(self, tmp_path, monkeypatch):
+        oauth_file = tmp_path / ".anthropic_oauth.json"
+        oauth_file.write_text(json.dumps({"accessToken": "old"}))
+        monkeypatch.setattr("agent.anthropic_adapter._HERMES_OAUTH_FILE", oauth_file)
+        write_hermes_oauth_credentials("new-tok", "new-ref", 12345)
+        data = json.loads(oauth_file.read_text())
+        assert data["accessToken"] == "new-tok"
+
+    def test_sets_restrictive_permissions(self, tmp_path, monkeypatch):
+        import stat
+        oauth_file = tmp_path / ".anthropic_oauth.json"
+        monkeypatch.setattr("agent.anthropic_adapter._HERMES_OAUTH_FILE", oauth_file)
+        write_hermes_oauth_credentials("tok", "ref", 12345)
+        mode = oauth_file.stat().st_mode & 0o777
+        assert mode == 0o600
+
+
+class TestReadHermesOauthCredentials:
+    def test_returns_none_when_file_missing(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("agent.anthropic_adapter._HERMES_OAUTH_FILE",
+                            tmp_path / "nonexistent.json")
+        assert read_hermes_oauth_credentials() is None
+
+    def test_reads_valid_file(self, tmp_path, monkeypatch):
+        oauth_file = tmp_path / ".anthropic_oauth.json"
+        oauth_file.write_text(json.dumps({
+            "accessToken": "tok-123",
+            "refreshToken": "ref-456",
+            "expiresAt": 99999,
+        }))
+        monkeypatch.setattr("agent.anthropic_adapter._HERMES_OAUTH_FILE", oauth_file)
+        creds = read_hermes_oauth_credentials()
+        assert creds["accessToken"] == "tok-123"
+
+    def test_returns_none_when_no_access_token(self, tmp_path, monkeypatch):
+        oauth_file = tmp_path / ".anthropic_oauth.json"
+        oauth_file.write_text(json.dumps({"refreshToken": "ref"}))
+        monkeypatch.setattr("agent.anthropic_adapter._HERMES_OAUTH_FILE", oauth_file)
+        assert read_hermes_oauth_credentials() is None
+
+
+class TestResolveHermesOauthToken:
+    def test_returns_valid_non_expired_token(self):
+        creds = {
+            "accessToken": "valid-tok",
+            "refreshToken": "ref",
+            "expiresAt": int(time.time() * 1000) + 3600_000,
+        }
+        assert _resolve_hermes_oauth_token_from_credentials(creds) == "valid-tok"
+
+    def test_returns_none_when_no_creds(self):
+        assert _resolve_hermes_oauth_token_from_credentials(None) is None
+
+    def test_returns_none_when_empty_access_token(self):
+        creds = {"accessToken": "", "refreshToken": "ref", "expiresAt": 99999}
+        assert _resolve_hermes_oauth_token_from_credentials(creds) is None
+
+    def test_returns_token_when_no_expiry(self):
+        creds = {"accessToken": "no-expiry-tok", "refreshToken": "ref", "expiresAt": 0}
+        assert _resolve_hermes_oauth_token_from_credentials(creds) == "no-expiry-tok"
+
+    def test_returns_none_when_expired_and_no_refresh(self):
+        creds = {
+            "accessToken": "expired",
+            "refreshToken": "",
+            "expiresAt": int(time.time() * 1000) - 3600_000,
+        }
+        assert _resolve_hermes_oauth_token_from_credentials(creds) is None
+
+    def test_refreshes_expired_token(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("agent.anthropic_adapter._HERMES_OAUTH_FILE",
+                            tmp_path / ".anthropic_oauth.json")
+        creds = {
+            "accessToken": "expired-tok",
+            "refreshToken": "valid-refresh",
+            "expiresAt": int(time.time() * 1000) - 3600_000,
+        }
+        mock_response = json.dumps({
+            "access_token": "refreshed-tok",
+            "refresh_token": "new-refresh",
+            "expires_in": 7200,
+        }).encode()
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            mock_ctx = MagicMock()
+            mock_ctx.__enter__ = MagicMock(return_value=MagicMock(
+                read=MagicMock(return_value=mock_response)
+            ))
+            mock_ctx.__exit__ = MagicMock(return_value=False)
+            mock_urlopen.return_value = mock_ctx
+            result = _resolve_hermes_oauth_token_from_credentials(creds)
+        assert result == "refreshed-tok"
+        # Verify persisted
+        written = json.loads((tmp_path / ".anthropic_oauth.json").read_text())
+        assert written["accessToken"] == "refreshed-tok"
+
+    def test_returns_none_when_refresh_fails(self):
+        creds = {
+            "accessToken": "expired",
+            "refreshToken": "bad-refresh",
+            "expiresAt": int(time.time() * 1000) - 3600_000,
+        }
+        with patch("urllib.request.urlopen", side_effect=Exception("network")):
+            assert _resolve_hermes_oauth_token_from_credentials(creds) is None
+
+
+class TestResolveAnthropicTokenHermesPKCEPriority:
+    """Verify Hermes PKCE credentials take priority over all other sources."""
+
+    def test_hermes_pkce_beats_env_vars(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("ANTHROPIC_TOKEN", "env-token")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "env-api-key")
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+
+        oauth_file = tmp_path / ".anthropic_oauth.json"
+        monkeypatch.setattr("agent.anthropic_adapter._HERMES_OAUTH_FILE", oauth_file)
+        write_hermes_oauth_credentials.__wrapped__ if hasattr(write_hermes_oauth_credentials, '__wrapped__') else None
+        oauth_file.write_text(json.dumps({
+            "accessToken": "hermes-pkce-tok",
+            "refreshToken": "ref",
+            "expiresAt": int(time.time() * 1000) + 3600_000,
+        }))
+
+        assert resolve_anthropic_token() == "hermes-pkce-tok"
+
+    def test_hermes_pkce_beats_claude_code_creds(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+
+        # Claude Code creds
+        cred_file = tmp_path / ".claude" / ".credentials.json"
+        cred_file.parent.mkdir(parents=True)
+        cred_file.write_text(json.dumps({
+            "claudeAiOauth": {
+                "accessToken": "claude-code-tok",
+                "refreshToken": "ref",
+                "expiresAt": int(time.time() * 1000) + 3600_000,
+            }
+        }))
+
+        # Hermes PKCE creds
+        oauth_file = tmp_path / ".anthropic_oauth.json"
+        monkeypatch.setattr("agent.anthropic_adapter._HERMES_OAUTH_FILE", oauth_file)
+        oauth_file.write_text(json.dumps({
+            "accessToken": "hermes-pkce-tok",
+            "refreshToken": "ref",
+            "expiresAt": int(time.time() * 1000) + 3600_000,
+        }))
+
+        assert resolve_anthropic_token() == "hermes-pkce-tok"
+
+    def test_falls_through_when_hermes_pkce_missing(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("ANTHROPIC_TOKEN", "env-token")
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+        monkeypatch.setattr("agent.anthropic_adapter._HERMES_OAUTH_FILE",
+                            tmp_path / "nonexistent.json")
+
+        assert resolve_anthropic_token() == "env-token"
+
+
 class TestResolveWithRefresh:
     def test_auto_refresh_on_expired_creds(self, monkeypatch, tmp_path):
         """When cred file has expired token + refresh token, auto-refresh is attempted."""
@@ -416,18 +593,28 @@ class TestRunOauthSetupToken:
         assert token == "from-cred-file"
         mock_run.assert_called_once()
 
-    def test_returns_token_from_env_var(self, monkeypatch, tmp_path):
-        """Falls back to CLAUDE_CODE_OAUTH_TOKEN env var when no cred files."""
+    def test_returns_none_when_creds_expired_and_no_refresh(self, monkeypatch, tmp_path):
+        """Returns None when subprocess completes but stored creds are expired with no refresh."""
         monkeypatch.setattr("shutil.which", lambda _: "/usr/bin/claude")
-        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "from-env-var")
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
         monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
+
+        cred_file = tmp_path / ".claude" / ".credentials.json"
+        cred_file.parent.mkdir(parents=True)
+        cred_file.write_text(json.dumps({
+            "claudeAiOauth": {
+                "accessToken": "expired-token",
+                "refreshToken": "",
+                "expiresAt": int(time.time() * 1000) - 3600_000,
+            }
+        }))
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
 
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0)
             token = run_oauth_setup_token()
 
-        assert token == "from-env-var"
+        assert token is None
 
     def test_returns_none_when_no_creds_found(self, monkeypatch, tmp_path):
         """Returns None when subprocess completes but no credentials are found."""

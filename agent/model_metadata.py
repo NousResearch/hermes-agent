@@ -722,22 +722,36 @@ def query_ollama_num_ctx(model: str, base_url: str) -> Optional[int]:
     requests to override the default 2048.
     """
     import httpx
+    import os
 
     bare_model = _strip_provider_prefix(model)
     server_url = base_url.rstrip("/")
     if server_url.endswith("/v1"):
         server_url = server_url[:-3]
 
-    try:
-        server_type = detect_local_server_type(base_url)
-    except Exception:
-        return None
-    if server_type != "ollama":
-        return None
+    is_cloud = "ollama.com" in (base_url or "").lower()
+
+    if not is_cloud:
+        try:
+            server_type = detect_local_server_type(base_url)
+        except Exception:
+            return None
+        if server_type != "ollama":
+            return None
+
+    headers: dict = {}
+    if is_cloud:
+        api_key = os.getenv("OLLAMA_API_KEY", "")
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+
+    timeout = 5.0 if is_cloud else 3.0
 
     try:
-        with httpx.Client(timeout=3.0) as client:
-            resp = client.post(f"{server_url}/api/show", json={"name": bare_model})
+        with httpx.Client(timeout=timeout) as client:
+            resp = client.post(
+                f"{server_url}/api/show", json={"name": bare_model}, headers=headers
+            )
             if resp.status_code != 200:
                 return None
             data = resp.json()
@@ -776,6 +790,10 @@ def _query_local_context_length(model: str, base_url: str) -> Optional[int]:
     server_url = base_url.rstrip("/")
     if server_url.endswith("/v1"):
         server_url = server_url[:-3]
+
+    # Ollama Cloud: we know it's Ollama, query directly without server detection
+    if "ollama.com" in (base_url or "").lower():
+        return query_ollama_num_ctx(model, base_url)
 
     try:
         server_type = detect_local_server_type(base_url)
@@ -992,8 +1010,8 @@ def get_model_context_length(
             if isinstance(context_length, int):
                 return context_length
         if not _is_known_provider_base_url(base_url):
-            # 3. Try querying local server directly
-            if is_local_endpoint(base_url):
+            # 3. Try querying local server directly (also supports Ollama Cloud)
+            if is_local_endpoint(base_url) or "ollama.com" in (base_url or "").lower():
                 local_ctx = _query_local_context_length(model, base_url)
                 if local_ctx and local_ctx > 0:
                     save_context_length(model, base_url, local_ctx)
@@ -1062,8 +1080,8 @@ def get_model_context_length(
         if default_model in model_lower:
             return length
 
-    # 9. Query local server as last resort
-    if base_url and is_local_endpoint(base_url):
+    # 9. Query local server as last resort (also supports Ollama Cloud)
+    if base_url and (is_local_endpoint(base_url) or "ollama.com" in base_url.lower()):
         local_ctx = _query_local_context_length(model, base_url)
         if local_ctx and local_ctx > 0:
             save_context_length(model, base_url, local_ctx)

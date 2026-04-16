@@ -10,6 +10,7 @@ from agent.error_classifier import (
     _extract_error_code,
     _classify_402,
 )
+from agent.ollama_adapter import OllamaAPIError, OllamaAuthenticationError, OllamaConnectionError
 
 
 # ── Helper: mock API errors ────────────────────────────────────────────
@@ -849,3 +850,32 @@ class TestAdversarialEdgeCases:
         )
         result = classify_api_error(e, provider="openrouter")
         assert result.reason == FailoverReason.model_not_found
+
+
+# ── Test: Ollama-specific error classification ─────────────────────────
+
+class TestOllamaErrorClassification:
+    """Ollama exceptions flow through the generic classification pipeline."""
+
+    def test_ollama_api_error_404_classified_as_model_not_found(self):
+        e = OllamaAPIError("model not found", status_code=404)
+        result = classify_api_error(e, provider="ollama")
+        assert result.reason == FailoverReason.model_not_found
+        assert result.retryable is False
+
+    def test_ollama_api_error_429_classified_as_rate_limit(self):
+        e = OllamaAPIError("Too many requests", status_code=429)
+        result = classify_api_error(e, provider="ollama")
+        assert result.reason == FailoverReason.rate_limit
+        assert result.retryable is True
+
+    def test_ollama_api_error_500_classified_as_server_error(self):
+        e = OllamaAPIError("Internal server error", status_code=500)
+        result = classify_api_error(e, provider="ollama")
+        assert result.reason == FailoverReason.server_error
+        assert result.retryable is True
+
+    def test_ollama_connection_error_classified_as_retryable(self):
+        e = OllamaConnectionError("Cannot connect to Ollama")
+        result = classify_api_error(e, provider="ollama")
+        assert result.retryable is True

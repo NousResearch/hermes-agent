@@ -835,8 +835,11 @@ def list_authenticated_providers(
         if not has_creds:
             continue
 
-        # Use curated list, falling back to models.dev if no curated list
+        # Use curated list, falling back to live API for providers that support it
         model_ids = curated.get(hermes_id, [])
+        if not model_ids and hermes_id == "ollama-cloud":
+            from hermes_cli.models import provider_model_ids
+            model_ids = provider_model_ids(hermes_id)
         total = len(model_ids)
         top = model_ids[:max_models]
 

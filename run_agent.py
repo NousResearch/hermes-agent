@@ -687,8 +687,11 @@ class AIAgent:
         self.provider = provider_name or ""
         self.acp_command = acp_command or command
         self.acp_args = list(acp_args or args or [])
-        if api_mode in {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse"}:
-            self.api_mode = api_mode
+        # Provider-specific api_mode overrides take priority over the runtime
+        # resolver's api_mode, because runtime_provider.py defaults everything
+        # to "chat_completions" and does not call determine_api_mode().
+        if self.provider == "ollama-cloud":
+            self.api_mode = "ollama_native"
         elif self.provider == "openai-codex":
             self.api_mode = "codex_responses"
         elif self.provider == "xai":
@@ -710,6 +713,8 @@ class AIAgent:
         elif self.provider == "bedrock" or "bedrock-runtime" in self._base_url_lower:
             # AWS Bedrock — auto-detect from provider name or base URL.
             self.api_mode = "bedrock_converse"
+        elif api_mode in {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse", "ollama_native"}:
+            self.api_mode = api_mode
         else:
             self.api_mode = "chat_completions"
 
@@ -939,6 +944,14 @@ class AIAgent:
                     print(f"🤖 AI Agent initialized with model: {self.model} (Anthropic native)")
                     if effective_key and len(effective_key) > 12:
                         print(f"🔑 Using token: {effective_key[:8]}...{effective_key[-4:]}")
+        elif self.api_mode == "ollama_native":
+            # Ollama native /api/chat — uses httpx directly, no OpenAI client needed.
+            self._ollama_base_url = (base_url or os.getenv("OLLAMA_HOST", "http://localhost:11434")).rstrip("/")
+            self._ollama_api_key = api_key or os.getenv("OLLAMA_API_KEY", "")
+            self.client = None
+            self._client_kwargs = {}
+            if not self.quiet_mode:
+                print(f"🤖 AI Agent initialized with model: {self.model} (Ollama Native, {self._ollama_base_url})")
         elif self.api_mode == "bedrock_converse":
             # AWS Bedrock — uses boto3 directly, no OpenAI client needed.
             # Region is extracted from the base_url or defaults to us-east-1.
@@ -1575,9 +1588,17 @@ class AIAgent:
                 self._ollama_num_ctx = int(_ollama_num_ctx_override)
             except (TypeError, ValueError):
                 logger.debug("Invalid ollama_num_ctx config value: %r", _ollama_num_ctx_override)
-        if self._ollama_num_ctx is None and self.base_url and is_local_endpoint(self.base_url):
+        if self._ollama_num_ctx is None and (
+            (self.base_url and is_local_endpoint(self.base_url))
+            or self.api_mode == "ollama_native"
+        ):
             try:
-                _detected = query_ollama_num_ctx(self.model, self.base_url)
+                _num_ctx_base_url = (
+                    self._ollama_base_url
+                    if self.api_mode == "ollama_native"
+                    else self.base_url
+                )
+                _detected = query_ollama_num_ctx(self.model, _num_ctx_base_url)
                 if _detected and _detected > 0:
                     self._ollama_num_ctx = _detected
             except Exception as exc:
@@ -1628,6 +1649,11 @@ class AIAgent:
                 "anthropic_api_key": self._anthropic_api_key,
                 "anthropic_base_url": self._anthropic_base_url,
                 "is_anthropic_oauth": self._is_anthropic_oauth,
+            })
+        elif self.api_mode == "ollama_native":
+            self._primary_runtime.update({
+                "ollama_base_url": self._ollama_base_url,
+                "ollama_api_key": self._ollama_api_key,
             })
 
     def reset_session_state(self):
@@ -1722,6 +1748,11 @@ class AIAgent:
             self._is_anthropic_oauth = _is_oauth_token(effective_key)
             self.client = None
             self._client_kwargs = {}
+        elif api_mode == "ollama_native":
+            self._ollama_base_url = (base_url or os.getenv("OLLAMA_HOST", "http://localhost:11434")).rstrip("/")
+            self._ollama_api_key = api_key or os.getenv("OLLAMA_API_KEY", "")
+            self.client = None  # No OpenAI SDK client needed
+            self._client_kwargs = {}
         else:
             effective_key = api_key or self.api_key
             effective_base = base_url or self.base_url
@@ -1786,6 +1817,11 @@ class AIAgent:
                 "anthropic_api_key": self._anthropic_api_key,
                 "anthropic_base_url": self._anthropic_base_url,
                 "is_anthropic_oauth": self._is_anthropic_oauth,
+            })
+        elif api_mode == "ollama_native":
+            self._primary_runtime.update({
+                "ollama_base_url": self._ollama_base_url,
+                "ollama_api_key": self._ollama_api_key,
             })
 
         # ── Reset fallback state ──
@@ -2969,7 +3005,7 @@ class AIAgent:
                 "reason": reason,
                 "request": {
                     "method": "POST",
-                    "url": f"{self.base_url.rstrip('/')}{'/responses' if self.api_mode == 'codex_responses' else '/chat/completions'}",
+                    "url": f"{self.base_url.rstrip('/')}{'/api/chat' if self.api_mode == 'ollama_native' else '/responses' if self.api_mode == 'codex_responses' else '/chat/completions'}",
                     "headers": {
                         "Authorization": f"Bearer {self._mask_api_key_for_logs(api_key)}",
                         "Content-Type": "application/json",
@@ -5050,6 +5086,13 @@ class AIAgent:
                     client = _get_bedrock_runtime_client(region)
                     raw_response = client.converse(**api_kwargs)
                     result["response"] = normalize_converse_response(raw_response)
+                elif self.api_mode == "ollama_native":
+                    from agent.ollama_adapter import call_ollama, normalize_ollama_response
+                    _base = api_kwargs.pop("__ollama_base_url__")
+                    _key = api_kwargs.pop("__ollama_api_key__", "")
+                    api_kwargs.pop("__ollama_native__", None)
+                    raw = call_ollama(_base, _key, api_kwargs, timeout=300)
+                    result["response"] = normalize_ollama_response(raw)
                 else:
                     request_client_holder["client"] = self._create_request_openai_client(reason="chat_completion_request")
                     result["response"] = request_client_holder["client"].chat.completions.create(**api_kwargs)
@@ -5068,7 +5111,10 @@ class AIAgent:
         # apply richer recovery (credential rotation, provider fallback).
         _stale_base = float(os.getenv("HERMES_API_CALL_STALE_TIMEOUT", 300.0))
         _base_url = getattr(self, "_base_url", None) or ""
-        if _stale_base == 300.0 and _base_url and is_local_endpoint(_base_url):
+        if _stale_base == 300.0 and (
+            (is_local_endpoint(_base_url) if _base_url else False)
+            or self.api_mode == "ollama_native"
+        ):
             _stale_timeout = float("inf")
         else:
             _est_tokens = sum(len(str(v)) for v in api_kwargs.get("messages", [])) // 4
@@ -5344,6 +5390,68 @@ class AIAgent:
                 t.join(timeout=0.3)
                 if self._interrupt_requested:
                     raise InterruptedError("Agent interrupted during Bedrock API call")
+            if result["error"] is not None:
+                raise result["error"]
+            return result["response"]
+
+        # Ollama native streaming — uses httpx NDJSON stream with callbacks.
+        if self.api_mode == "ollama_native":
+            result = {"response": None, "error": None}
+            first_delta_fired = {"done": False}
+            deltas_were_sent = {"yes": False}
+
+            def _ollama_on_text_delta(text):
+                if not first_delta_fired["done"]:
+                    first_delta_fired["done"] = True
+                    if on_first_delta:
+                        try:
+                            on_first_delta()
+                        except Exception:
+                            pass
+                deltas_were_sent["yes"] = True
+                self._fire_stream_delta(text)
+
+            def _ollama_on_tool_start(name, arguments):
+                pass  # Tool calls are assembled in the final response
+
+            def _ollama_on_reasoning_delta(text):
+                if not first_delta_fired["done"]:
+                    first_delta_fired["done"] = True
+                    if on_first_delta:
+                        try:
+                            on_first_delta()
+                        except Exception:
+                            pass
+                deltas_were_sent["yes"] = True
+                self._fire_reasoning_delta(text)
+
+            def _ollama_on_interrupt_check():
+                if self._interrupt_requested:
+                    raise KeyboardInterrupt("User interrupted")
+
+            def _ollama_call():
+                try:
+                    from agent.ollama_adapter import call_ollama_stream, stream_ollama_with_callbacks
+                    _base = api_kwargs.pop("__ollama_base_url__")
+                    _key = api_kwargs.pop("__ollama_api_key__", "")
+                    api_kwargs.pop("__ollama_native__", None)
+                    raw_stream = call_ollama_stream(_base, _key, api_kwargs, timeout=300)
+                    result["response"] = stream_ollama_with_callbacks(
+                        raw_stream.iter_lines(),
+                        on_text_delta=_ollama_on_text_delta if self._has_stream_consumers() else None,
+                        on_tool_start=_ollama_on_tool_start,
+                        on_reasoning_delta=_ollama_on_reasoning_delta if self.reasoning_callback or self.stream_delta_callback else None,
+                        on_interrupt_check=_ollama_on_interrupt_check,
+                    )
+                except Exception as e:
+                    result["error"] = e
+
+            t = threading.Thread(target=_ollama_call, daemon=True)
+            t.start()
+            while t.is_alive():
+                t.join(timeout=0.3)
+                if self._interrupt_requested:
+                    raise InterruptedError("Agent interrupted during Ollama API call")
             if result["error"] is not None:
                 raise result["error"]
             return result["response"]
@@ -5777,7 +5885,10 @@ class AIAgent:
         # Local providers (Ollama, oMLX, llama-cpp) can take 300+ seconds
         # for prefill on large contexts.  Disable the stale detector unless
         # the user explicitly set HERMES_STREAM_STALE_TIMEOUT.
-        if _stream_stale_timeout_base == 180.0 and self.base_url and is_local_endpoint(self.base_url):
+        if _stream_stale_timeout_base == 180.0 and (
+            (self.base_url and is_local_endpoint(self.base_url))
+            or self.api_mode == "ollama_native"
+        ):
             _stream_stale_timeout = float("inf")
             logger.debug("Local provider detected (%s) — stale stream timeout disabled", self.base_url)
         else:
@@ -5864,6 +5975,8 @@ class AIAgent:
                             self._anthropic_api_key,
                             getattr(self, "_anthropic_base_url", None),
                         )
+                    elif self.api_mode == "ollama_native":
+                        pass  # httpx responses are cleaned up by context manager
                     else:
                         request_client = request_client_holder.get("client")
                         if request_client is not None:
@@ -5935,6 +6048,40 @@ class AIAgent:
         # raw_codex=True because the main agent needs direct responses.stream()
         # access for Codex providers.
         try:
+            # Ollama fallback — bypass OpenAI client construction entirely.
+            if fb_provider == "ollama-cloud":
+                fb_base_url_hint = (fb.get("base_url") or "").strip() or None
+                fb_api_key_hint = (fb.get("api_key") or "").strip() or None
+                if not fb_api_key_hint:
+                    fb_api_key_hint = os.getenv("OLLAMA_API_KEY", "")
+                fb_api_mode = "ollama_native"
+                fb_base_url = (fb_base_url_hint or os.getenv("OLLAMA_HOST", "http://localhost:11434")).rstrip("/")
+                try:
+                    from hermes_cli.model_normalize import normalize_model_for_provider
+                    fb_model = normalize_model_for_provider(fb_model, fb_provider)
+                except Exception:
+                    pass
+                old_model = self.model
+                self.model = fb_model
+                self.provider = fb_provider
+                self.base_url = fb_base_url
+                self.api_mode = fb_api_mode
+                self._fallback_activated = True
+                self._ollama_base_url = fb_base_url
+                self._ollama_api_key = fb_api_key_hint
+                self.client = None
+                self._client_kwargs = {}
+                self._use_prompt_caching = False
+                self._emit_status(
+                    f"🔄 Primary model failed — switching to fallback: "
+                    f"{fb_model} via {fb_provider}"
+                )
+                logging.info(
+                    "Fallback activated: %s → %s (%s)",
+                    old_model, fb_model, fb_provider,
+                )
+                return True
+
             from agent.auxiliary_client import resolve_provider_client
             # Pass base_url and api_key from fallback config so custom
             # endpoints (e.g. Ollama Cloud) resolve correctly instead of
@@ -6094,6 +6241,10 @@ class AIAgent:
                     rt["anthropic_api_key"], rt["anthropic_base_url"],
                 )
                 self._is_anthropic_oauth = rt["is_anthropic_oauth"]
+                self.client = None
+            elif self.api_mode == "ollama_native":
+                self._ollama_base_url = rt["ollama_base_url"]
+                self._ollama_api_key = rt["ollama_api_key"]
                 self.client = None
             else:
                 self.client = self._create_openai_client(
@@ -6432,6 +6583,24 @@ class AIAgent:
 
     def _build_api_kwargs(self, api_messages: list) -> dict:
         """Build the keyword arguments dict for the active API mode."""
+        if self.api_mode == "ollama_native":
+            from agent.ollama_adapter import build_ollama_kwargs
+            kwargs = build_ollama_kwargs(
+                model=self.model,
+                messages=api_messages,
+                tools=self.tools if self.tools else None,
+                max_tokens=self.max_tokens,
+                temperature=None,  # Let Ollama use default
+            )
+            if hasattr(self, "_ollama_num_ctx") and self._ollama_num_ctx:
+                kwargs.setdefault("options", {})["num_ctx"] = self._ollama_num_ctx
+            return {
+                "__ollama_native__": True,
+                "__ollama_base_url__": self._ollama_base_url,
+                "__ollama_api_key__": self._ollama_api_key,
+                **kwargs,
+            }
+
         if self.api_mode == "anthropic_messages":
             from agent.anthropic_adapter import build_anthropic_kwargs
             anthropic_messages = self._prepare_anthropic_messages_for_api(api_messages)
@@ -9189,7 +9358,7 @@ class AIAgent:
                         # targeted error instead of wasting 3 API calls.
                         _trunc_content = None
                         _trunc_has_tool_calls = False
-                        if self.api_mode in ("chat_completions", "bedrock_converse"):
+                        if self.api_mode in ("chat_completions", "bedrock_converse", "ollama_native"):
                             _trunc_msg = response.choices[0].message if (hasattr(response, "choices") and response.choices) else None
                             _trunc_content = getattr(_trunc_msg, "content", None) if _trunc_msg else None
                             _trunc_has_tool_calls = bool(getattr(_trunc_msg, "tool_calls", None)) if _trunc_msg else False
@@ -9258,7 +9427,7 @@ class AIAgent:
                                 "error": _exhaust_error,
                             }
 
-                        if self.api_mode in ("chat_completions", "bedrock_converse"):
+                        if self.api_mode in ("chat_completions", "bedrock_converse", "ollama_native"):
                             assistant_message = response.choices[0].message
                             if not assistant_message.tool_calls:
                                 length_continue_retries += 1
@@ -9298,7 +9467,7 @@ class AIAgent:
                                     "error": "Response remained truncated after 3 continuation attempts",
                                 }
 
-                        if self.api_mode in ("chat_completions", "bedrock_converse"):
+                        if self.api_mode in ("chat_completions", "bedrock_converse", "ollama_native"):
                             assistant_message = response.choices[0].message
                             if assistant_message.tool_calls:
                                 if truncated_tool_call_retries < 1:

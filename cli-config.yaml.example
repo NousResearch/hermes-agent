@@ -38,6 +38,17 @@ model:
   #     base_url: "http://localhost:1234/v1"
   #   No API key needed — local servers typically ignore auth.
   #
+  # Ollama Cloud (Native API — recommended):
+  #     provider: "ollama-cloud"
+  #     Set OLLAMA_API_KEY in .env (get a key at ollama.com/settings/keys)
+  #
+  # Legacy OpenAI-compatible Ollama (still works):
+  #   For Ollama Cloud (https://ollama.com/pricing):
+  #     provider: "custom"
+  #     base_url: "https://ollama.com/v1"
+  #   Set OLLAMA_API_KEY in .env — automatically picked up when base_url
+  #   points to ollama.com.
+  #
   # Can also be overridden with --provider flag or HERMES_INFERENCE_PROVIDER env var.
   provider: "auto"
   

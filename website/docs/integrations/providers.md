@@ -35,6 +35,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **DeepSeek** | `DEEPSEEK_API_KEY` in `~/.hermes/.env` (provider: `deepseek`) |
 | **Hugging Face** | `HF_TOKEN` in `~/.hermes/.env` (provider: `huggingface`, aliases: `hf`) |
 | **Google / Gemini** | `GOOGLE_API_KEY` (or `GEMINI_API_KEY`) in `~/.hermes/.env` (provider: `gemini`) |
+| **Ollama Cloud** | `OLLAMA_API_KEY` in `~/.hermes/.env` (provider: `ollama-cloud`) |
 | **Custom Endpoint** | `hermes model` → choose "Custom endpoint" (saved in `config.yaml`) |
 
 :::tip Model key alias
@@ -296,9 +297,38 @@ Everything below follows this same pattern — just change the URL, key, and mod
 
 ---
 
-### Ollama — Local Models, Zero Config
+### Ollama Cloud
 
-[Ollama](https://ollama.com/) runs open-weight models locally with one command. Best for: quick local experimentation, privacy-sensitive work, offline use. Supports tool calling via the OpenAI-compatible API.
+[Ollama Cloud](https://ollama.com/) hosts open-weight models in the cloud. Best for: running large open models without local hardware. Supports tool calling natively.
+
+#### Native Provider (Recommended)
+
+Hermes has first-class support for Ollama Cloud via a dedicated provider that uses the native Ollama API:
+
+**`ollama-cloud` — Ollama Cloud**
+
+```bash
+hermes chat --provider ollama-cloud --model qwen2.5-coder:32b
+# Requires: OLLAMA_API_KEY in ~/.hermes/.env
+# Get a key at: https://ollama.com/settings/keys
+```
+
+Permanent config:
+```yaml
+model:
+  provider: "ollama-cloud"
+  default: "qwen2.5-coder:32b"
+```
+
+| Environment variable | Description |
+|---------------------|-------------|
+| `OLLAMA_API_KEY` | API key for Ollama Cloud (required for `ollama-cloud`) |
+
+:::note Native vs. OpenAI-compatible API
+The `ollama-cloud` provider uses the **native Ollama API** (`/api/chat`), not the OpenAI-compatible `/v1/` endpoint. This gives better compatibility with Ollama-specific features. The legacy `custom` / `base_url: https://ollama.com/v1` approach still works but is no longer recommended.
+:::
+
+#### Legacy Setup (OpenAI-Compatible, Still Works)
 
 ```bash
 # Install and run a model

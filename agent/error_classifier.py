@@ -407,6 +407,10 @@ def classify_api_error(
 
     # ── 6. Transport / timeout heuristics ───────────────────────────
 
+    # Ollama connection refused (service not running)
+    if error_type == "OllamaConnectionError":
+        return _result(FailoverReason.timeout, retryable=True)
+
     if error_type in _TRANSPORT_ERROR_TYPES or isinstance(error, (TimeoutError, ConnectionError, OSError)):
         return _result(FailoverReason.timeout, retryable=True)
 

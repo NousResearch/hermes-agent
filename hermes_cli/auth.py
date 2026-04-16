@@ -291,6 +291,13 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=(),
         base_url_env_var="BEDROCK_BASE_URL",
     ),
+    "ollama-cloud": ProviderConfig(
+        id="ollama-cloud",
+        name="Ollama Cloud",
+        auth_type="api_key",
+        inference_base_url="https://ollama.com",
+        api_key_env_vars=("OLLAMA_API_KEY",),
+    ),
 }
 
 

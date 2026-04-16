@@ -2752,46 +2752,52 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
             effective_base = override
 
     # Model selection — resolution order:
-    #   1. models.dev registry (cached, filtered for agentic/tool-capable models)
-    #   2. Curated static fallback list (offline insurance)
-    #   3. Live /models endpoint probe (small providers without models.dev data)
-    #
-    # Ollama Cloud: dedicated merged discovery (live API + models.dev + disk cache)
-    if provider_id == "ollama-cloud":
-        from hermes_cli.models import fetch_ollama_cloud_models
-        api_key_for_probe = existing_key or (get_env_value(key_env) if key_env else "")
-        model_list = fetch_ollama_cloud_models(api_key=api_key_for_probe, base_url=effective_base)
-        if model_list:
-            print(f"  Found {len(model_list)} model(s) from Ollama Cloud")
-    else:
-        curated = _PROVIDER_MODELS.get(provider_id, [])
+    #   1. Ollama native /api/tags probe (for ollama-cloud)
+    #   2. models.dev registry (cached, filtered for agentic/tool-capable models)
+    #   3. Curated static fallback list (offline insurance)
+    #   4. Live /models endpoint probe (small providers without models.dev data)
+    curated = _PROVIDER_MODELS.get(provider_id, [])
 
-        # Try models.dev first — returns tool-capable models, filtered for noise
-        mdev_models: list = []
+    # Ollama native providers — query /api/tags for actual available models
+    ollama_models: list = []
+    if provider_id == "ollama-cloud":
         try:
-            from agent.models_dev import list_agentic_models
-            mdev_models = list_agentic_models(provider_id)
+            from agent.ollama_adapter import list_ollama_models
+            api_key_for_ollama = existing_key or os.getenv("OLLAMA_API_KEY", "")
+            raw_models = list_ollama_models(effective_base, api_key=api_key_for_ollama)
+            ollama_models = [m["name"] for m in raw_models if m.get("name")]
         except Exception:
             pass
 
-        if mdev_models:
-            model_list = mdev_models
-            print(f"  Found {len(model_list)} model(s) from models.dev registry")
-        elif curated and len(curated) >= 8:
-            # Curated list is substantial — use it directly, skip live probe
-            model_list = curated
-            print(f"  Showing {len(model_list)} curated models — use \"Enter custom model name\" for others.")
+    # Try models.dev first — returns tool-capable models, filtered for noise
+    mdev_models: list = []
+    try:
+        from agent.models_dev import list_agentic_models
+        mdev_models = list_agentic_models(provider_id)
+    except Exception:
+        pass
+
+    if ollama_models:
+        model_list = ollama_models
+        print(f"  Found {len(model_list)} model(s) from Ollama ({effective_base})")
+    elif mdev_models:
+        model_list = mdev_models
+        print(f"  Found {len(model_list)} model(s) from models.dev registry")
+    elif curated and len(curated) >= 8:
+        # Curated list is substantial — use it directly, skip live probe
+        model_list = curated
+        print(f"  Showing {len(model_list)} curated models — use \"Enter custom model name\" for others.")
+    else:
+        api_key_for_probe = existing_key or (get_env_value(key_env) if key_env else "")
+        live_models = fetch_api_models(api_key_for_probe, effective_base)
+        if live_models and len(live_models) >= len(curated):
+            model_list = live_models
+            print(f"  Found {len(model_list)} model(s) from {pconfig.name} API")
         else:
-            api_key_for_probe = existing_key or (get_env_value(key_env) if key_env else "")
-            live_models = fetch_api_models(api_key_for_probe, effective_base)
-            if live_models and len(live_models) >= len(curated):
-                model_list = live_models
-                print(f"  Found {len(model_list)} model(s) from {pconfig.name} API")
-            else:
-                model_list = curated
-                if model_list:
-                    print(f"  Showing {len(model_list)} curated models — use \"Enter custom model name\" for others.")
-            # else: no defaults either, will fall through to raw input
+            model_list = curated
+            if model_list:
+                print(f"  Showing {len(model_list)} curated models — use \"Enter custom model name\" for others.")
+        # else: no defaults either, will fall through to raw input
 
     if provider_id in {"opencode-zen", "opencode-go"}:
         model_list = [normalize_opencode_model_id(provider_id, mid) for mid in model_list]

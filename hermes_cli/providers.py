@@ -142,8 +142,10 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         base_url_env_var="ARCEE_BASE_URL",
     ),
     "ollama-cloud": HermesOverlay(
-        transport="openai_chat",
-        base_url_env_var="OLLAMA_BASE_URL",
+        transport="ollama_native",
+        auth_type="api_key",
+        extra_env_vars=("OLLAMA_API_KEY",),
+        base_url_override="https://ollama.com",
     ),
 }
 
@@ -285,6 +287,7 @@ TRANSPORT_TO_API_MODE: Dict[str, str] = {
     "anthropic_messages": "anthropic_messages",
     "codex_responses": "codex_responses",
     "bedrock_converse": "bedrock_converse",
+    "ollama_native": "ollama_native",
 }
 
 

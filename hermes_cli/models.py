@@ -547,6 +547,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("opencode-go",    "OpenCode Go",              "OpenCode Go (open models, $10/month subscription)"),
     ProviderEntry("ai-gateway",     "Vercel AI Gateway",        "Vercel AI Gateway (200+ models, pay-per-use)"),
     ProviderEntry("bedrock",        "AWS Bedrock",              "AWS Bedrock (Claude, Nova, Llama, DeepSeek — IAM or API key)"),
+    ProviderEntry("ollama-cloud",   "Ollama Cloud",             "Ollama Cloud (hosted models, OLLAMA_API_KEY)"),
 ]
 
 # Derived dicts — used throughout the codebase
@@ -606,7 +607,6 @@ _PROVIDER_ALIASES = {
     "grok": "xai",
     "x-ai": "xai",
     "x.ai": "xai",
-    "ollama": "custom",  # bare "ollama" = local; use "ollama-cloud" for cloud
     "ollama_cloud": "ollama-cloud",
 }
 
@@ -1286,6 +1286,13 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         live = _fetch_ai_gateway_models()
         if live:
             return live
+    if normalized == "ollama-cloud":
+        try:
+            live = fetch_ollama_cloud_models(force_refresh=force_refresh)
+            if live:
+                return live
+        except Exception:
+            pass
     if normalized == "custom":
         base_url = _get_custom_base_url()
         if base_url:
@@ -1861,7 +1868,7 @@ def fetch_ollama_cloud_models(
 
     Resolution order:
       1. Disk cache (if fresh, < 1 hour, and not force_refresh)
-      2. Live ``/v1/models`` endpoint (primary — freshest source)
+      2. Live ``/api/tags`` endpoint (primary — freshest source)
       3. models.dev registry (secondary — fills gaps for unlisted models)
       4. Merge: live models first, then models.dev additions (deduped)
 
@@ -1873,17 +1880,23 @@ def fetch_ollama_cloud_models(
         if cached is not None:
             return cached["models"]
 
-    # 2. Live API probe
+    # 2. Live API probe — use native /api/tags for Ollama Cloud
     if not api_key:
         api_key = os.getenv("OLLAMA_API_KEY", "")
     if not base_url:
-        base_url = os.getenv("OLLAMA_BASE_URL", "") or "https://ollama.com/v1"
+        base_url = os.getenv("OLLAMA_BASE_URL", "") or "https://ollama.com"
 
     live_models: list[str] = []
     if api_key:
-        result = fetch_api_models(api_key, base_url, timeout=8.0)
-        if result:
-            live_models = result
+        try:
+            from agent.ollama_adapter import list_ollama_models
+            raw = list_ollama_models(base_url.rstrip("/").removesuffix("/v1"), api_key=api_key)
+            live_models = [m["name"] for m in raw if m.get("name")]
+        except Exception:
+            # Fallback to OpenAI-compat probe if native fails
+            result = fetch_api_models(api_key, base_url, timeout=8.0)
+            if result:
+                live_models = result
 
     # 3. models.dev registry
     mdev_models: list[str] = []
@@ -1906,6 +1919,7 @@ def fetch_ollama_cloud_models(
                 seen.add(m)
                 merged.append(m)
         if merged:
+            merged.sort()
             _save_ollama_cloud_cache(merged)
             return merged
 

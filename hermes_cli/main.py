@@ -1118,6 +1118,8 @@ def select_provider_and_model(args=None):
         _model_flow_openai_codex(config, current_model)
     elif selected_provider == "qwen-oauth":
         _model_flow_qwen_oauth(config, current_model)
+    elif selected_provider == "google-gemini-cli":
+        _model_flow_google_gemini_cli(config, current_model)
     elif selected_provider == "copilot-acp":
         _model_flow_copilot_acp(config, current_model)
     elif selected_provider == "copilot":
@@ -1518,6 +1520,76 @@ def _model_flow_qwen_oauth(_config, current_model=""):
         print(f"Default model set to: {selected} (via Qwen OAuth)")
     else:
         print("No change.")
+
+
+def _model_flow_google_gemini_cli(_config, current_model=""):
+    """Google Gemini OAuth (PKCE) via Cloud Code Assist — supports free AND paid tiers.
+
+    Flow:
+      1. Show upfront warning about Google's ToS stance (per opencode-gemini-auth).
+      2. If creds missing, run PKCE browser OAuth via agent.google_oauth.
+      3. Resolve project context (env -> config -> auto-discover -> free tier).
+      4. Prompt user to pick a model.
+      5. Save to ~/.hermes/config.yaml.
+    """
+    from hermes_cli.auth import (
+        DEFAULT_GEMINI_CLOUDCODE_BASE_URL,
+        get_gemini_oauth_auth_status,
+        resolve_gemini_oauth_runtime_credentials,
+        _prompt_model_selection,
+        _save_model_choice,
+        _update_config_for_provider,
+    )
+    from hermes_cli.models import _PROVIDER_MODELS
+
+    print()
+    print("⚠  Google considers using the Gemini CLI OAuth client with third-party")
+    print("   software a policy violation. Some users have reported account")
+    print("   restrictions. You can use your own API key via 'gemini' provider")
+    print("   for the lowest-risk experience.")
+    print()
+    try:
+        proceed = input("Continue with OAuth login? [y/N]: ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print("Cancelled.")
+        return
+    if proceed not in {"y", "yes"}:
+        print("Cancelled.")
+        return
+
+    status = get_gemini_oauth_auth_status()
+    if not status.get("logged_in"):
+        try:
+            from agent.google_oauth import resolve_project_id_from_env, start_oauth_flow
+
+            env_project = resolve_project_id_from_env()
+            start_oauth_flow(force_relogin=True, project_id=env_project)
+        except Exception as exc:
+            print(f"OAuth login failed: {exc}")
+            return
+
+    # Verify creds resolve + trigger project discovery
+    try:
+        creds = resolve_gemini_oauth_runtime_credentials(force_refresh=False)
+        project_id = creds.get("project_id", "")
+        if project_id:
+            print(f"  Using GCP project: {project_id}")
+        else:
+            print("  No GCP project configured — free tier will be auto-provisioned on first request.")
+    except Exception as exc:
+        print(f"Failed to resolve Gemini credentials: {exc}")
+        return
+
+    models = list(_PROVIDER_MODELS.get("google-gemini-cli") or [])
+    default = current_model or (models[0] if models else "gemini-2.5-flash")
+    selected = _prompt_model_selection(models, current_model=default)
+    if selected:
+        _save_model_choice(selected)
+        _update_config_for_provider("google-gemini-cli", DEFAULT_GEMINI_CLOUDCODE_BASE_URL)
+        print(f"Default model set to: {selected} (via Google Gemini OAuth / Code Assist)")
+    else:
+        print("No change.")
+
 
 
 

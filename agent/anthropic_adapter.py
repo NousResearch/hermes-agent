@@ -86,8 +86,8 @@ def _get_anthropic_max_output(model: str) -> int:
 
 
 def _supports_adaptive_thinking(model: str) -> bool:
-    """Return True for Claude 4.6 models that support adaptive thinking."""
-    return any(v in model for v in ("4-6", "4.6"))
+    """Return True for Claude 4.6+ models that support adaptive thinking."""
+    return any(v in model for v in ("4-6", "4.6", "4-7", "4.7"))
 
 
 # Beta headers for enhanced features (sent with ALL auth types)

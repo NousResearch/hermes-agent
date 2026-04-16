@@ -184,6 +184,64 @@ async def test_unauthorized_whatsapp_dm_can_be_ignored(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_signal_allowlist_suppresses_pairing_reply_by_default(monkeypatch):
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("SIGNAL_ALLOWED_USERS", "+15550000001")
+    config = GatewayConfig(
+        platforms={Platform.SIGNAL: PlatformConfig(enabled=True, extra={"http_url": "http://localhost:8080"})},
+    )
+    runner, adapter = _make_runner(Platform.SIGNAL, config)
+
+    result = await runner._handle_message(
+        _make_event(
+            Platform.SIGNAL,
+            "+15559999999",
+            "+15559999999",
+        )
+    )
+
+    assert result is None
+    runner.pairing_store.generate_code.assert_not_called()
+    adapter.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_signal_allowlist_can_explicitly_keep_pairing(monkeypatch):
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("SIGNAL_ALLOWED_USERS", "+15550000001")
+    config = GatewayConfig(
+        platforms={
+            Platform.SIGNAL: PlatformConfig(
+                enabled=True,
+                extra={
+                    "http_url": "http://localhost:8080",
+                    "unauthorized_dm_behavior": "pair",
+                },
+            ),
+        },
+    )
+    runner, adapter = _make_runner(Platform.SIGNAL, config)
+    runner.pairing_store.generate_code.return_value = "SIGCODE1"
+
+    result = await runner._handle_message(
+        _make_event(
+            Platform.SIGNAL,
+            "+15559999999",
+            "+15559999999",
+        )
+    )
+
+    assert result is None
+    runner.pairing_store.generate_code.assert_called_once_with(
+        "signal",
+        "+15559999999",
+        "tester",
+    )
+    adapter.send.assert_awaited_once()
+    assert "SIGCODE1" in adapter.send.await_args.args[1]
+
+
+@pytest.mark.asyncio
 async def test_rate_limited_user_gets_no_response(monkeypatch):
     """When a user is already rate-limited, pairing messages are silently ignored."""
     _clear_auth_env(monkeypatch)

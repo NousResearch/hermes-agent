@@ -18,7 +18,6 @@ export interface ThemeColors {
   statusWarn: string
   statusBad: string
   statusCritical: string
-
   selectionBg: string
 
   diffAdded: string
@@ -95,10 +94,8 @@ export const DEFAULT_THEME: Theme = {
     statusWarn: '#FFD700',
     statusBad: '#FF8C00',
     statusCritical: '#FF6B6B',
-
-    // Uniform selection bg — matches the muted navy of the status bar so
-    // gold/amber fg stays readable and the highlight doesn't fragment per
-    // fg color the way SGR-inverse does.
+    // muted navy — sits under gold/amber fg without fighting it, swaps
+    // cleanly with SGR-inverse that fragmented per fg color
     selectionBg: '#3a3a55',
 
     diffAdded: 'rgb(220,255,220)',
@@ -155,7 +152,6 @@ export function fromSkin(
       statusWarn: c('ui_warn') ?? d.color.statusWarn,
       statusBad: d.color.statusBad,
       statusCritical: d.color.statusCritical,
-
       selectionBg: c('selection_bg') ?? d.color.selectionBg,
 
       diffAdded: d.color.diffAdded,

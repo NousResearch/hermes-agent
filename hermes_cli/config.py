@@ -420,8 +420,7 @@ DEFAULT_CONFIG = {
         "allow_private_urls": False,  # Allow navigating to private/internal IPs (localhost, 192.168.x.x, etc.)
         "camofox": {
             # When true, Hermes sends a stable profile-scoped userId to Camofox
-            # so the server can map it to a persistent browser profile directory.
-            # Requires Camofox server to be configured with CAMOFOX_PROFILE_DIR.
+            # so the server maps it to a persistent Firefox profile automatically.
             # When false (default), each session gets a random userId (ephemeral).
             "managed_persistence": False,
         },

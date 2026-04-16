@@ -200,19 +200,38 @@ def handle_request(req: dict) -> dict | None:
     return fn(req.get("id"), req.get("params", {}))
 
 
+def _wait_agent(session: dict, rid: str, timeout: float = 30.0) -> dict | None:
+    """Block until the session's agent has been built.
+
+    Returns a JSON-RPC error dict on failure/timeout, ``None`` when the
+    agent is live. Cheap no-op when ``agent_ready`` is absent (sessions
+    from `session.resume`, which builds inline) or already set.
+    """
+    ready = session.get("agent_ready")
+    if ready is not None and not ready.wait(timeout=timeout):
+        return _err(rid, 5032, "agent initialization timed out")
+    err = session.get("agent_error")
+    return _err(rid, 5032, err) if err else None
+
+
+def _sess_nowait(params, rid):
+    """Resolve session without gating on agent readiness — for handlers
+    that only touch placeholder fields (cols, attached_images) and
+    shouldn't eat the agent-build window on cold start."""
+    s = _sessions.get(params.get("session_id") or "")
+    return (s, None) if s else (None, _err(rid, 4001, "session not found"))
+
+
 def _sess(params, rid):
-    """Resolve session from params + block until its agent is ready.
+    """Resolve session from params + block on ``_wait_agent``.
 
     `session.create` builds the agent on a background thread (~500–1500ms
-    cold) so the placeholder session may exist before `session["agent"]`
-    is populated. Any handler that dereferences `session["agent"]` should
-    go through `_sess` — the wait is a free no-op when the event is
-    already set or absent (e.g. `session.resume` builds the agent inline).
+    cold) so the placeholder session exists before ``session["agent"]``
+    is populated. Routing every agent-touching RPC through `_sess` hides
+    that window — reads become free once the agent is live.
     """
-    s = _sessions.get(params.get("session_id") or "")
-    if not s:
-        return None, _err(rid, 4001, "session not found")
-    return s, _wait_agent(s, rid)
+    s, err = _sess_nowait(params, rid)
+    return (None, err) if err else (s, _wait_agent(s, rid))
 
 
 def _normalize_completion_path(path_part: str) -> str:
@@ -1041,41 +1060,28 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
 
 # ── Methods: session ─────────────────────────────────────────────────
 
-def _wait_agent(session: dict, rid: str, timeout: float = 30.0) -> dict | None:
-    """Block until the session's agent has been built, returning a JSON-RPC
-    error dict if initialization failed or timed out — or ``None`` when the
-    agent is live and ready for use. Cheap no-op when there is no
-    `agent_ready` event (already-ready sessions from `session.resume`, etc.).
-    """
-    ready = session.get("agent_ready")
-    if ready is not None and not ready.is_set():
-        if not ready.wait(timeout=timeout):
-            return _err(rid, 5032, "agent initialization timed out")
-    if session.get("agent_error"):
-        return _err(rid, 5032, session["agent_error"])
-    return None
-
-
 @method("session.create")
 def _(rid, params: dict) -> dict:
-    """Non-blocking session creation. Returns the sid + minimal info right
-    away; the heavy agent init runs on a background thread and broadcasts a
-    `session.info` event when tools/skills are ready. Handlers that touch
-    `session["agent"]` must call `_wait_agent(session, rid)` first."""
+    """Non-blocking session creation.
+
+    Returns the sid + minimal info right away; the heavy agent init runs
+    on a background thread and broadcasts `session.info` when tools and
+    skills are wired. Handlers that touch ``session["agent"]`` go through
+    `_sess`, which gates on the `agent_ready` event.
+    """
     sid = uuid.uuid4().hex[:8]
     key = _new_session_key()
     cols = int(params.get("cols", 80))
     os.environ["HERMES_INTERACTIVE"] = "1"
 
-    ready_event = threading.Event()
+    ready = threading.Event()
 
     # Placeholder session so subsequent RPCs find the sid and can wait on
-    # `agent_ready`. Fields mirror `_init_session`; anything derived from
-    # the agent is filled once the build thread completes.
+    # `agent_ready`; anything derived from the agent is filled in by `_build`.
     _sessions[sid] = {
         "agent": None,
         "agent_error": None,
-        "agent_ready": ready_event,
+        "agent_ready": ready,
         "attached_images": [],
         "cols": cols,
         "edit_snapshots": {},
@@ -1092,6 +1098,7 @@ def _(rid, params: dict) -> dict:
     }
 
     def _build() -> None:
+        session = _sessions[sid]
         try:
             tokens = _set_session_context(key)
             try:
@@ -1100,10 +1107,10 @@ def _(rid, params: dict) -> dict:
                 _clear_session_context(tokens)
 
             _get_db().create_session(key, source="tui", model=_resolve_model())
-            _sessions[sid]["agent"] = agent
+            session["agent"] = agent
 
             try:
-                _sessions[sid]["slash_worker"] = _SlashWorker(key, getattr(agent, "model", _resolve_model()))
+                session["slash_worker"] = _SlashWorker(key, getattr(agent, "model", _resolve_model()))
             except Exception:
                 pass  # slash.exec will surface the real failure
 
@@ -1122,10 +1129,10 @@ def _(rid, params: dict) -> dict:
                 info["credential_warning"] = warn
             _emit("session.info", sid, info)
         except Exception as e:
-            _sessions[sid]["agent_error"] = str(e)
+            session["agent_error"] = str(e)
             _emit("error", sid, {"message": f"agent init failed: {e}"})
         finally:
-            ready_event.set()
+            ready.set()
 
     threading.Thread(target=_build, daemon=True).start()
 
@@ -1359,11 +1366,9 @@ def _(rid, params: dict) -> dict:
 
 @method("terminal.resize")
 def _(rid, params: dict) -> dict:
-    # Direct dict lookup — no agent needed; skip `_sess`'s wait-for-agent
-    # gate so TUI's initial resize doesn't block on cold session.create.
-    session = _sessions.get(params.get("session_id") or "")
-    if not session:
-        return _err(rid, 4001, "session not found")
+    session, err = _sess_nowait(params, rid)
+    if err:
+        return err
     session["cols"] = int(params.get("cols", 80))
     return _ok(rid, {"cols": session["cols"]})
 
@@ -1539,12 +1544,11 @@ def _(rid, params: dict) -> dict:
 
 @method("input.detect_drop")
 def _(rid, params: dict) -> dict:
-    # Pattern-matching on text — no agent needed. Skip `_sess`'s wait so
-    # the first post-startup message doesn't add the agent-build window
-    # on top of `prompt.submit`'s own wait.
-    session = _sessions.get(params.get("session_id") or "")
-    if not session:
-        return _err(rid, 4001, "session not found")
+    # Pure text pattern-matching — bypass the agent-ready gate so the first
+    # post-startup send doesn't stack the wait on top of `prompt.submit`'s.
+    session, err = _sess_nowait(params, rid)
+    if err:
+        return err
     try:
         from cli import _detect_file_drop
 

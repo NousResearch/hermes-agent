@@ -111,6 +111,10 @@ class Fake404Error(Exception):
     status_code = 404
 
 
+class Fake401Error(Exception):
+    status_code = 401
+
+
 def test_connect_stores_watch_baseline(tmp_path, monkeypatch):
     async def _run():
         monkeypatch.setattr(gmail_mod, "AIOHTTP_AVAILABLE", True)
@@ -183,6 +187,27 @@ def test_duplicate_pubsub_message_id_is_ignored(tmp_path, monkeypatch):
             resp = await cli.post(
                 adapter._path,
                 json=_pubsub_envelope(),
+                headers={"Authorization": "Bearer token"},
+            )
+
+        assert resp.status == 204
+        reconcile.assert_not_awaited()
+
+    asyncio.run(_run())
+
+
+def test_push_for_unexpected_account_is_acknowledged(tmp_path, monkeypatch):
+    async def _run():
+        adapter = GmailPushAdapter(_make_config(tmp_path))
+        monkeypatch.setattr(adapter, "_verify_pubsub_bearer_token", lambda token: {"ok": True})
+        reconcile = AsyncMock(return_value=[])
+        monkeypatch.setattr(adapter, "_reconcile_notification", reconcile)
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                adapter._path,
+                json=_pubsub_envelope(account="other@example.com"),
                 headers={"Authorization": "Bearer token"},
             )
 
@@ -275,6 +300,58 @@ def test_send_logs_response_instead_of_email(tmp_path):
         assert adapter._response_log[0]["content"] == "Digest stored"
 
     asyncio.run(_run())
+
+
+def test_gmail_request_rebuilds_service_after_401(tmp_path, monkeypatch):
+    class _Execute:
+        def __init__(self, result=None, error=None):
+            self._result = result
+            self._error = error
+
+        def execute(self):
+            if self._error is not None:
+                raise self._error
+            return self._result
+
+    class _Messages:
+        def __init__(self, request):
+            self._request = request
+
+        def get(self, **kwargs):
+            return self._request
+
+    class _Users:
+        def __init__(self, request):
+            self._messages = _Messages(request)
+
+        def messages(self):
+            return self._messages
+
+    class _Service:
+        def __init__(self, request):
+            self._users = _Users(request)
+
+        def users(self):
+            return self._users
+
+    adapter = GmailPushAdapter(_make_config(tmp_path))
+    monkeypatch.setattr(gmail_mod, "HttpError", Fake401Error)
+    monkeypatch.setattr(adapter, "_load_credentials", MagicMock(return_value=object()))
+    monkeypatch.setattr(
+        gmail_mod,
+        "google_build",
+        MagicMock(
+            side_effect=[
+                _Service(_Execute(error=Fake401Error("expired"))),
+                _Service(_Execute(result={"id": "msg-1"})),
+            ]
+        ),
+    )
+
+    result = adapter._get_message("msg-1")
+
+    assert result["id"] == "msg-1"
+    assert gmail_mod.google_build.call_count == 2
 
 
 def test_gateway_runner_creates_gmail_push_adapter(tmp_path, monkeypatch):

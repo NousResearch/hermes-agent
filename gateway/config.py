@@ -45,6 +45,26 @@ def _normalize_unauthorized_dm_behavior(value: Any, default: str = "pair") -> st
     return default
 
 
+def get_gmail_push_missing_fields(extra: Dict[str, Any] | None) -> List[str]:
+    """Return missing required Gmail push config fields."""
+    cfg = extra or {}
+    push_auth = cfg.get("push_auth") or {}
+    endpoint = cfg.get("endpoint") or {}
+
+    missing = []
+    if not cfg.get("account"):
+        missing.append("account")
+    if not cfg.get("topic"):
+        missing.append("topic")
+    if not cfg.get("subscription"):
+        missing.append("subscription")
+    if not push_auth.get("service_account_email"):
+        missing.append("push_auth.service_account_email")
+    if not (push_auth.get("audience") or endpoint.get("public_url")):
+        missing.append("push_auth.audience or endpoint.public_url")
+    return missing
+
+
 class Platform(Enum):
     """Supported messaging platforms."""
     LOCAL = "local"
@@ -292,11 +312,7 @@ class GatewayConfig:
             elif platform == Platform.WEBHOOK:
                 connected.append(platform)
             # Gmail push is configured entirely through extra dict fields
-            elif platform == Platform.GMAIL_PUSH and (
-                config.extra.get("account")
-                and config.extra.get("topic")
-                and config.extra.get("subscription")
-            ):
+            elif platform == Platform.GMAIL_PUSH and not get_gmail_push_missing_fields(config.extra):
                 connected.append(platform)
             # Feishu uses extra dict for app credentials
             elif platform == Platform.FEISHU and config.extra.get("app_id"):

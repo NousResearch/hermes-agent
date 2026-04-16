@@ -19,7 +19,7 @@ import uuid
 from datetime import datetime, timezone
 from email.utils import parseaddr
 from pathlib import Path
-from typing import Any, Dict, Iterable, Optional
+from typing import Any, Callable, Dict, Iterable, Optional
 
 from hermes_constants import get_hermes_home
 
@@ -50,7 +50,7 @@ try:
 except ImportError:
     HttpError = Exception  # type: ignore[misc,assignment]
 
-from gateway.config import Platform, PlatformConfig
+from gateway.config import Platform, PlatformConfig, get_gmail_push_missing_fields
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
 
 logger = logging.getLogger(__name__)
@@ -157,6 +157,17 @@ def _history_404(exc: Exception) -> bool:
     if getattr(resp, "status", None) == 404:
         return True
     return "404" in str(exc)
+
+
+def _http_error_status(exc: Exception) -> int | None:
+    status = getattr(exc, "status_code", None) or getattr(exc, "status", None)
+    if isinstance(status, int):
+        return status
+    resp = getattr(exc, "resp", None)
+    resp_status = getattr(resp, "status", None)
+    if isinstance(resp_status, int):
+        return resp_status
+    return None
 
 
 class GmailPushAdapter(BasePlatformAdapter):
@@ -431,10 +442,11 @@ class GmailPushAdapter(BasePlatformAdapter):
             return web.json_response({"error": str(exc)}, status=400)
 
         if notification["email_address"].lower() != self._account.lower():
-            return web.json_response(
-                {"error": f"Unexpected Gmail account: {notification['email_address']}"},
-                status=400,
+            logger.warning(
+                "[gmail_push] Ignoring push for unexpected account: %s",
+                notification["email_address"],
             )
+            return web.Response(status=204)
 
         message_id = notification["pubsub_message_id"]
         if self._recent_delivery_ids.get(message_id):
@@ -530,19 +542,15 @@ class GmailPushAdapter(BasePlatformAdapter):
         return pages
 
     def _watch_mailbox(self) -> Dict[str, Any]:
-        service = self._get_gmail_service()
         body: Dict[str, Any] = {"topicName": self._topic}
         if self._label_ids:
             body["labelIds"] = list(self._label_ids)
             body["labelFilterBehavior"] = self._label_filter_behavior
-        return (
-            service.users()
-            .watch(userId="me", body=body)
-            .execute()
+        return self._execute_gmail_request(
+            lambda service: service.users().watch(userId="me", body=body)
         )
 
     def _list_history(self, start_history_id: str, page_token: str | None = None) -> Dict[str, Any]:
-        service = self._get_gmail_service()
         params: Dict[str, Any] = {
             "userId": "me",
             "startHistoryId": str(start_history_id),
@@ -550,10 +558,11 @@ class GmailPushAdapter(BasePlatformAdapter):
         }
         if page_token:
             params["pageToken"] = page_token
-        return service.users().history().list(**params).execute()
+        return self._execute_gmail_request(
+            lambda service: service.users().history().list(**params)
+        )
 
     def _get_message(self, message_id: str) -> Dict[str, Any]:
-        service = self._get_gmail_service()
         params: Dict[str, Any] = {
             "userId": "me",
             "id": message_id,
@@ -561,13 +570,27 @@ class GmailPushAdapter(BasePlatformAdapter):
         }
         if self._fetch_format == "metadata":
             params["metadataHeaders"] = list(self._include_headers)
-        return service.users().messages().get(**params).execute()
+        return self._execute_gmail_request(
+            lambda service: service.users().messages().get(**params)
+        )
 
     def _get_gmail_service(self):
         if self._gmail_service is None:
             creds = self._load_credentials()
             self._gmail_service = google_build("gmail", "v1", credentials=creds, cache_discovery=False)
         return self._gmail_service
+
+    def _execute_gmail_request(self, build_request: Callable[[Any], Any]) -> Dict[str, Any]:
+        for attempt in range(2):
+            request = build_request(self._get_gmail_service())
+            try:
+                return request.execute()
+            except HttpError as exc:
+                if _http_error_status(exc) == 401 and attempt == 0:
+                    logger.warning("[gmail_push] Gmail API returned 401; reloading credentials from disk")
+                    self._gmail_service = None
+                    continue
+                raise
 
     def _load_credentials(self):
         if not GOOGLE_CLIENT_AVAILABLE:
@@ -603,17 +626,7 @@ class GmailPushAdapter(BasePlatformAdapter):
         self._save_state()
 
     def _validate_required_config(self) -> str | None:
-        missing = []
-        if not self._account:
-            missing.append("account")
-        if not self._topic:
-            missing.append("topic")
-        if not self._subscription:
-            missing.append("subscription")
-        if not self._push_service_account_email:
-            missing.append("push_auth.service_account_email")
-        if not self._push_audience:
-            missing.append("push_auth.audience or endpoint.public_url")
+        missing = get_gmail_push_missing_fields(self.config.extra)
         if missing:
             return f"Missing Gmail push config: {', '.join(missing)}"
         return None

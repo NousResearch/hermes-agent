@@ -71,6 +71,27 @@ class TestGetConnectedPlatforms:
         config = GatewayConfig()
         assert config.get_connected_platforms() == []
 
+    def test_gmail_push_requires_same_fields_as_runtime_validation(self):
+        config = GatewayConfig(
+            platforms={
+                Platform.GMAIL_PUSH: PlatformConfig(
+                    enabled=True,
+                    extra={
+                        "account": "reader@example.com",
+                        "topic": "projects/demo/topics/hermes-gmail-push",
+                        "subscription": "gmail-push-sub",
+                    },
+                ),
+            },
+        )
+        assert config.get_connected_platforms() == []
+
+        config.platforms[Platform.GMAIL_PUSH].extra["push_auth"] = {
+            "service_account_email": "push@example.iam.gserviceaccount.com",
+            "audience": "https://example.com/gmail-push",
+        }
+        assert config.get_connected_platforms() == [Platform.GMAIL_PUSH]
+
 
 class TestSessionResetPolicy:
     def test_roundtrip(self):

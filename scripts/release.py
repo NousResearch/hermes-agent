@@ -180,6 +180,7 @@ AUTHOR_MAP = {
     "lisicheng168@gmail.com": "lesterli",
     "mingjwan@microsoft.com": "MagicRay1217",
     "orangeko@gmail.com": "GenKoKo",
+    "82095453+iacker@users.noreply.github.com": "iacker",
     "niyant@spicefi.xyz": "spniyant",
     "olafthiele@gmail.com": "olafthiele",
     "oncuevtv@gmail.com": "sprmn24",

@@ -12,6 +12,27 @@ from agent.models_dev import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _reset_models_dev_cache():
+    """Clear the module-level ``_models_dev_cache`` after every test.
+
+    Several tests in this file mutate ``agent.models_dev._models_dev_cache``
+    directly to exercise the in-memory cache code path.  Without cleanup
+    the polluted cache leaks across tests in the same xdist worker -
+    later code that calls ``fetch_models_dev()`` (e.g.
+    ``list_authenticated_providers``) sees ``SAMPLE_REGISTRY`` rather
+    than the real models.dev registry, and any provider not in
+    SAMPLE_REGISTRY (opencode-go, kimi-for-coding, …) silently drops
+    out of the "built-in" section.
+    """
+    import agent.models_dev as md
+    try:
+        yield
+    finally:
+        md._models_dev_cache = {}
+        md._models_dev_cache_time = 0
+
+
 SAMPLE_REGISTRY = {
     "anthropic": {
         "id": "anthropic",

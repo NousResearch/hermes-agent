@@ -404,8 +404,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             last_result = result
         return last_result
 
-    # --- Matrix: use the native adapter helper for text + media ---
-    if platform == Platform.MATRIX:
+    # --- Matrix: use the native adapter helper when media is present ---
+    if platform == Platform.MATRIX and media_files:
         last_result = None
         for i, chunk in enumerate(chunks):
             is_last = (i == len(chunks) - 1)

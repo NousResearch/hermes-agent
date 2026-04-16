@@ -6773,13 +6773,34 @@ class AIAgent:
         self.flush_memories(messages, min_turns=0)
 
         # Notify external memory provider before compression discards context
+        provider_context = ""
         if self._memory_manager:
             try:
-                self._memory_manager.on_pre_compress(messages)
+                provider_context = self._memory_manager.on_pre_compress(messages) or ""
             except Exception:
                 pass
 
-        compressed = self.context_compressor.compress(messages, current_tokens=approx_tokens, focus_topic=focus_topic)
+        compressed = self.context_compressor.compress(
+            messages, current_tokens=approx_tokens, focus_topic=focus_topic,
+            provider_context=provider_context,
+        )
+
+        # Persist compaction summary to disk for cross-session continuity
+        _persisted_summary = self.context_compressor._previous_summary
+        if _persisted_summary:
+            try:
+                summary_file = self.logs_dir / f"compaction_summary_{self.session_id}.md"
+                summary_file.write_text(
+                    f"# Context Compaction Summary\n"
+                    f"# Session: {self.session_id}\n"
+                    f"# Time: {datetime.now().isoformat()}\n"
+                    f"# Compression #{self.context_compressor.compression_count}\n\n"
+                    f"{_persisted_summary}\n",
+                    encoding="utf-8",
+                )
+                logger.info("Persisted compaction summary to %s", summary_file)
+            except Exception as e:
+                logger.debug("Failed to persist compaction summary: %s", e)
 
         todo_snapshot = self._todo_store.format_for_injection()
         if todo_snapshot:

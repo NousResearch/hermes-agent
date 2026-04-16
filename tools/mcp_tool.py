@@ -1174,6 +1174,40 @@ _servers: Dict[str, MCPServerTask] = {}
 _server_error_counts: Dict[str, int] = {}
 _CIRCUIT_BREAKER_THRESHOLD = 3
 
+
+def _is_infrastructure_error(exc: Exception) -> bool:
+    """Return True if the exception indicates an infrastructure-level failure.
+
+    Infrastructure errors indicate the MCP server process itself is broken
+    (crashed, hung, connection lost). Tool-level errors (DNS failures,
+    HTTP 4xx/5xx, page load errors) should NOT count toward circuit breaker
+    since the server is still healthy.
+
+    See: https://github.com/NousResearch/hermes-agent/issues/11113
+    """
+    exc_str = str(exc).lower()
+    exc_type = type(exc).__name__.lower()
+
+    # Connection/transport errors indicate infrastructure problems
+    infrastructure_patterns = [
+        "connection",
+        "timeout",
+        "refused",
+        "broken pipe",
+        "reset by peer",
+        "eof",
+        "stream closed",
+        "subprocess",
+        "process exited",
+        "no such process",
+    ]
+
+    for pattern in infrastructure_patterns:
+        if pattern in exc_str or pattern in exc_type:
+            return True
+
+    return False
+
 # Dedicated event loop running in a background daemon thread.
 _mcp_loop: Optional[asyncio.AbstractEventLoop] = None
 _mcp_thread: Optional[threading.Thread] = None
@@ -1423,10 +1457,14 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
         try:
             result = _run_on_mcp_loop(_call(), timeout=tool_timeout)
             # Check if the MCP tool itself returned an error
+            # Note: Tool-level errors (DNS failures, HTTP errors) do NOT count
+            # toward circuit breaker since the server is still healthy.
+            # Only infrastructure errors (connection lost, timeout, etc.) count.
             try:
                 parsed = json.loads(result)
                 if "error" in parsed:
-                    _server_error_counts[server_name] = _server_error_counts.get(server_name, 0) + 1
+                    # Tool-level error — server is responsive, don't count
+                    pass
                 else:
                     _server_error_counts[server_name] = 0  # success — reset
             except (json.JSONDecodeError, TypeError):
@@ -1435,7 +1473,10 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
         except InterruptedError:
             return _interrupted_call_result()
         except Exception as exc:
-            _server_error_counts[server_name] = _server_error_counts.get(server_name, 0) + 1
+            # Only count infrastructure errors toward circuit breaker
+            if _is_infrastructure_error(exc):
+                _server_error_counts[server_name] = _server_error_counts.get(server_name, 0) + 1
+            # Tool-level errors don't count — server is still healthy
             logger.error(
                 "MCP tool %s/%s call failed: %s",
                 server_name, tool_name, exc,

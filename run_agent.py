@@ -9114,6 +9114,26 @@ class AIAgent:
                     else:
                         finish_reason = response.choices[0].finish_reason
                         assistant_message = response.choices[0].message
+
+                        # ── Google-specific tool call filters ──────────
+                        # Google's OpenAI-compatible endpoint returns this finish_reason
+                        # when it blocks a tool call (e.g. malformed or safety filter).
+                        # Treat it as an error to prevent the loop from retrying blindly
+                        # and returning "(empty)".
+                        if isinstance(finish_reason, str) and finish_reason.startswith("function_call_filter:"):
+                            _filter_error = f"Model generated a tool call that was blocked by the API: {finish_reason}"
+                            self._vprint(f"{self.log_prefix}⚠️  {_filter_error}", force=True)
+                            self._cleanup_task_resources(effective_task_id)
+                            self._persist_session(messages, conversation_history)
+                            return {
+                                "final_response": None,
+                                "messages": messages,
+                                "api_calls": api_call_count,
+                                "completed": False,
+                                "partial": True,
+                                "error": _filter_error
+                            }
+
                         if self._should_treat_stop_as_truncated(
                             finish_reason,
                             assistant_message,

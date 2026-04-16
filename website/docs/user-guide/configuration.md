@@ -359,8 +359,8 @@ Skills can declare their own configuration settings via their SKILL.md frontmatt
 ```yaml
 skills:
   config:
-    wiki:
-      path: ~/wiki          # Used by the llm-wiki skill
+    myplugin:
+      path: ~/myplugin-data   # Example — each skill defines its own keys
 ```
 
 **How skill settings work:**
@@ -372,7 +372,7 @@ skills:
 **Setting values manually:**
 
 ```bash
-hermes config set skills.config.wiki.path ~/my-research-wiki
+hermes config set skills.config.myplugin.path ~/myplugin-data
 ```
 
 For details on declaring config settings in your own skills, see [Creating Skills — Config Settings](/docs/developer-guide/creating-skills#config-settings-configyaml).

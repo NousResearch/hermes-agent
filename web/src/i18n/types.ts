@@ -287,4 +287,10 @@ export interface Translations {
   language: {
     switchTo: string;
   };
+
+  // ── Theme switcher ──
+  theme: {
+    title: string;
+    switchTheme: string;
+  };
 }

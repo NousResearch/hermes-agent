@@ -275,4 +275,9 @@ export const en: Translations = {
   language: {
     switchTo: "Switch to Chinese",
   },
+
+  theme: {
+    title: "Theme",
+    switchTheme: "Switch theme",
+  },
 };

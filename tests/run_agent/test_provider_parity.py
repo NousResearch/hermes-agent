@@ -805,7 +805,7 @@ class TestCodexReasoningPreflight:
         reasoning_items = [i for i in normalized if i.get("type") == "reasoning"]
         assert len(reasoning_items) == 1
         assert reasoning_items[0]["encrypted_content"] == "abc123encrypted"
-        assert reasoning_items[0]["id"] == "r_001"
+        assert "id" not in reasoning_items[0]
         assert reasoning_items[0]["summary"] == [{"type": "summary_text", "text": "Thinking about it"}]
 
     def test_reasoning_item_without_id(self, monkeypatch):

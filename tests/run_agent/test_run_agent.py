@@ -3998,3 +3998,63 @@ class TestDeadRetryCode:
             f"Expected 2 occurrences of 'if retry_count >= max_retries:' "
             f"but found {occurrences}"
         )
+
+
+class TestMemoryContextSanitization:
+    """run_conversation() must strip leaked <memory-context> blocks from user input."""
+
+    def test_memory_context_stripped_from_user_message(self):
+        """Verify that <memory-context> blocks are removed before the message
+        enters the conversation loop — prevents stale Honcho injection from
+        leaking into user text."""
+        import inspect
+        src = inspect.getsource(AIAgent.run_conversation)
+        # The sanitize_context call must appear in run_conversation's preamble
+        assert "sanitize_context(user_message)" in src
+        assert "sanitize_context(persist_user_message)" in src
+
+    def test_sanitize_context_strips_full_block(self):
+        """End-to-end: a user message with an embedded memory-context block
+        is cleaned to just the actual user text."""
+        from agent.memory_manager import sanitize_context
+        user_text = "how is the honcho working"
+        injected = (
+            user_text + "\n\n"
+            "<memory-context>\n"
+            "[System note: The following is recalled memory context, "
+            "NOT new user input. Treat as informational background data.]\n\n"
+            "## User Representation\n"
+            "[2026-01-13 02:13:00] stale observation about AstroMap\n"
+            "</memory-context>"
+        )
+        result = sanitize_context(injected)
+        assert "memory-context" not in result.lower()
+        assert "stale observation" not in result
+        assert "how is the honcho working" in result
+
+
+class TestMemoryProviderTurnStart:
+    """run_conversation() must call memory_manager.on_turn_start() before prefetch_all().
+
+    Without this call, providers like Honcho never update _turn_count, so cadence
+    checks (contextCadence, dialecticCadence) are always satisfied — every turn
+    fires both context refresh and dialectic, ignoring the configured cadence.
+    """
+
+    def test_on_turn_start_called_before_prefetch(self):
+        """Source-level check: on_turn_start appears before prefetch_all in run_conversation."""
+        import inspect
+        src = inspect.getsource(AIAgent.run_conversation)
+        # Find the actual method calls, not comments
+        idx_turn_start = src.index(".on_turn_start(")
+        idx_prefetch = src.index(".prefetch_all(")
+        assert idx_turn_start < idx_prefetch, (
+            "on_turn_start() must be called before prefetch_all() in run_conversation "
+            "so that memory providers have the correct turn count for cadence checks"
+        )
+
+    def test_on_turn_start_uses_user_turn_count(self):
+        """Source-level check: on_turn_start receives self._user_turn_count."""
+        import inspect
+        src = inspect.getsource(AIAgent.run_conversation)
+        assert "on_turn_start(self._user_turn_count" in src

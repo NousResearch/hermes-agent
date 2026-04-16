@@ -611,12 +611,135 @@ def _read_jsonl_transcript(sessions_dir: Path, session_id: str) -> List[Dict[str
     return jsonl_messages
 
 
+def _normalize_transcript_value(value: Any) -> Any:
+    """Normalize structured message fields for equality checks."""
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, sort_keys=True, ensure_ascii=False)
+    return value
+
+
+def _message_signature(message: Dict[str, Any]) -> tuple:
+    """Return the transcript fields that both SQLite and JSONL can compare."""
+    return (
+        message.get("role"),
+        message.get("content"),
+        message.get("tool_name"),
+        message.get("tool_call_id"),
+        _normalize_transcript_value(message.get("tool_calls")),
+        _normalize_transcript_value(message.get("reasoning")),
+        _normalize_transcript_value(message.get("reasoning_details")),
+        _normalize_transcript_value(message.get("codex_reasoning_items")),
+    )
+
+
+def _messages_start_with(messages: List[Dict[str, Any]], prefix: List[Dict[str, Any]]) -> bool:
+    """Return True when *messages* begins with *prefix* under transcript equality."""
+    if len(prefix) > len(messages):
+        return False
+    for idx, prefix_msg in enumerate(prefix):
+        if _message_signature(messages[idx]) != _message_signature(prefix_msg):
+            return False
+    return True
+
+
+def _longest_overlap(left: List[Dict[str, Any]], right: List[Dict[str, Any]]) -> int:
+    """Return the max suffix/prefix overlap between two transcript sequences."""
+    max_overlap = min(len(left), len(right))
+    for size in range(max_overlap, 0, -1):
+        if all(
+            _message_signature(left[-size + idx]) == _message_signature(right[idx])
+            for idx in range(size)
+        ):
+            return size
+    return 0
+
+
+def _parse_message_timestamp(value: Any) -> Optional[float]:
+    """Best-effort parse of a stored transcript timestamp."""
+    if value in (None, ""):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value).timestamp()
+        except ValueError:
+            return None
+    return None
+
+
+def _jsonl_time_bounds(messages: List[Dict[str, Any]]) -> Optional[tuple[float, float]]:
+    """Return (min_ts, max_ts) when every JSONL message has a parseable timestamp."""
+    stamps = [_parse_message_timestamp(msg.get("timestamp")) for msg in messages]
+    if any(ts is None for ts in stamps):
+        return None
+    return (min(stamps), max(stamps))
+
+
+def _db_time_bounds(rows: List[Dict[str, Any]]) -> Optional[tuple[float, float]]:
+    """Return (min_ts, max_ts) for raw SQLite message rows."""
+    if not rows:
+        return None
+    stamps = [row.get("timestamp") for row in rows if row.get("timestamp") is not None]
+    if len(stamps) != len(rows):
+        return None
+    return (min(stamps), max(stamps))
+
+
+def _merge_transcript_histories(
+    jsonl_messages: List[Dict[str, Any]],
+    db_messages: List[Dict[str, Any]],
+    *,
+    db_rows: Optional[List[Dict[str, Any]]] = None,
+) -> tuple[List[Dict[str, Any]], bool]:
+    """Merge legacy JSONL and SQLite transcript histories without losing turns.
+
+    Returns ``(merged_messages, safe_to_persist)``.  When ``safe_to_persist`` is
+    False, the caller must treat the result as read-only and keep the legacy
+    JSONL file in place.
+    """
+    if not db_messages:
+        return jsonl_messages, True
+    if not jsonl_messages:
+        return db_messages, True
+
+    if _messages_start_with(db_messages, jsonl_messages):
+        return db_messages, True
+    if _messages_start_with(jsonl_messages, db_messages):
+        return jsonl_messages, True
+
+    overlap = _longest_overlap(jsonl_messages, db_messages)
+    if overlap:
+        return jsonl_messages + db_messages[overlap:], True
+
+    overlap = _longest_overlap(db_messages, jsonl_messages)
+    if overlap:
+        return db_messages + jsonl_messages[overlap:], True
+
+    jsonl_bounds = _jsonl_time_bounds(jsonl_messages)
+    db_bounds = _db_time_bounds(db_rows or [])
+    if jsonl_bounds and db_bounds:
+        jsonl_min, jsonl_max = jsonl_bounds
+        db_min, db_max = db_bounds
+        if jsonl_max <= db_min:
+            return jsonl_messages + db_messages, True
+        if db_max <= jsonl_min:
+            return db_messages + jsonl_messages, True
+
+    # Ambiguous divergence: keep storage untouched and fall back to the more
+    # complete-looking source for this load only.
+    if len(jsonl_messages) > len(db_messages):
+        return jsonl_messages, False
+    return db_messages, False
+
+
 def _migrate_legacy_jsonl_to_db(
     sessions_dir: Path,
     session_db: Any,
     session_id: str,
     *,
     db_messages: Optional[List[Dict[str, Any]]] = None,
+    db_rows: Optional[List[Dict[str, Any]]] = None,
 ) -> List[Dict[str, Any]]:
     """Import a legacy JSONL transcript into SQLite and retire the file.
 
@@ -628,14 +751,26 @@ def _migrate_legacy_jsonl_to_db(
     if not jsonl_messages:
         return db_messages or []
 
-    if db_messages and len(db_messages) >= len(jsonl_messages):
+    merged_messages, safe_to_persist = _merge_transcript_histories(
+        jsonl_messages,
+        db_messages or [],
+        db_rows=db_rows,
+    )
+    if not safe_to_persist:
+        logger.debug(
+            "Legacy transcript %s diverged ambiguously; leaving JSONL read-only in place",
+            session_id,
+        )
+        return merged_messages
+
+    if merged_messages == (db_messages or []):
         _remove_legacy_transcript(sessions_dir, session_id)
-        return db_messages
+        return merged_messages
 
     try:
         session_db.ensure_session(session_id, source="gateway")
         session_db.clear_messages(session_id)
-        for msg in jsonl_messages:
+        for msg in merged_messages:
             _append_message_to_session_db(
                 session_db,
                 session_id,
@@ -644,10 +779,10 @@ def _migrate_legacy_jsonl_to_db(
             )
         _remove_legacy_transcript(sessions_dir, session_id)
         migrated = session_db.get_messages_as_conversation(session_id)
-        return migrated or jsonl_messages
+        return migrated or merged_messages
     except Exception as e:
         logger.debug("Failed to migrate legacy transcript %s: %s", session_id, e)
-        return db_messages or jsonl_messages
+        return merged_messages
 
 
 def append_transcript_message(
@@ -712,6 +847,7 @@ def load_transcript_messages(
     """Load transcript messages from SQLite, migrating legacy JSONL once."""
     if session_db:
         try:
+            db_rows = session_db.get_messages(session_id)
             db_messages = session_db.get_messages_as_conversation(session_id)
         except Exception as e:
             logger.debug("Could not load messages from DB, falling back to JSONL: %s", e)
@@ -724,6 +860,7 @@ def load_transcript_messages(
                 session_db,
                 session_id,
                 db_messages=db_messages,
+                db_rows=db_rows,
             )
         return db_messages
 

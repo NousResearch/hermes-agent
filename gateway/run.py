@@ -8823,7 +8823,7 @@ class GatewayRunner:
                 _last_prompt_toks = getattr(_agent.context_compressor, "last_prompt_tokens", 0)
                 _input_toks = getattr(_agent, "session_prompt_tokens", 0)
                 _output_toks = getattr(_agent, "session_completion_tokens", 0)
-            _persisted_idx = getattr(_agent, "_last_flushed_db_idx", 0) if _agent else 0
+            _persisted_count = getattr(_agent, "_last_session_db_persisted_count", 0) if _agent else 0
             _resolved_model = getattr(_agent, "model", None) if _agent else None
 
             if not final_response:
@@ -8840,7 +8840,7 @@ class GatewayRunner:
                     "input_tokens": _input_toks,
                     "output_tokens": _output_toks,
                     "model": _resolved_model,
-                    "session_db_persisted_count": max(0, _persisted_idx - len(agent_history)),
+                    "session_db_persisted_count": _persisted_count,
                 }
             
             # Scan tool results for MEDIA:<path> tags that need to be delivered
@@ -8932,7 +8932,7 @@ class GatewayRunner:
                 "model": _resolved_model,
                 "session_id": effective_session_id,
                 "response_previewed": result.get("response_previewed", False),
-                "session_db_persisted_count": max(0, _persisted_idx - _effective_history_offset),
+                "session_db_persisted_count": _persisted_count,
             }
         
         # Start progress message sender if enabled

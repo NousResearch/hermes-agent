@@ -1,0 +1,3 @@
+[submodule "tinker-atropos"]
+	path = tinker-atropos
+	url = https://github.com/nousresearch/tinker-atropos

@@ -97,6 +97,7 @@ Good defaults:
 | **MiniMax China** | China-region MiniMax endpoint | Set `MINIMAX_CN_API_KEY` |
 | **Alibaba Cloud** | Qwen models via DashScope | Set `DASHSCOPE_API_KEY` |
 | **Hugging Face** | 20+ open models via unified router (Qwen, DeepSeek, Kimi, etc.) | Set `HF_TOKEN` |
+| **AWS Bedrock** | Claude, Nova, Llama, DeepSeek via native Converse API | IAM role or `aws configure` ([guide](../guides/aws-bedrock.md)) |
 | **Kilo Code** | KiloCode-hosted models | Set `KILOCODE_API_KEY` |
 | **OpenCode Zen** | Pay-as-you-go access to curated models | Set `OPENCODE_ZEN_API_KEY` |
 | **OpenCode Go** | $10/month subscription for open models | Set `OPENCODE_GO_API_KEY` |

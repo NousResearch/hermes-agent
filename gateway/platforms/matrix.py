@@ -2137,13 +2137,33 @@ class MatrixAdapter(BasePlatformAdapter):
         return False
 
     def _strip_mention(self, body: str) -> str:
-        """Strip the bot's full MXID (``@user:server``) from *body*.
+        """Remove explicit bot mentions from message body.
 
-        The bare localpart is intentionally *not* stripped — it would
-        mangle file paths like ``/home/hermes/media/file.png``.
+        Important: only strip explicit mention tokens (``@user:server`` or
+        ``@localpart``). Do NOT strip bare words matching the bot localpart,
+        otherwise normal phrases like "Hermes Agent" become "Agent".
         """
+        if not body:
+            return ""
+
+        # Strip explicit full MXID mentions.
         if self._user_id:
             body = body.replace(self._user_id, "")
+
+        # Strip explicit @localpart mentions only (not bare localpart words).
+        if self._user_id and ":" in self._user_id:
+            localpart = self._user_id.split(":")[0].lstrip("@")
+            if localpart:
+                body = re.sub(
+                    r'(?<![\w])@' + re.escape(localpart) + r'\b',
+                    '',
+                    body,
+                    flags=re.IGNORECASE,
+                )
+
+        # Normalize spacing after mention removal.
+        body = re.sub(r'[ \t]{2,}', ' ', body)
+        body = re.sub(r'\s+([,.;:!?])', r'\1', body)
         return body.strip()
 
     async def _get_display_name(self, room_id: str, user_id: str) -> str:

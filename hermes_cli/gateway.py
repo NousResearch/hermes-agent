@@ -10,6 +10,7 @@ import shutil
 import signal
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
@@ -40,6 +41,23 @@ from hermes_cli.colors import Colors, color
 # =============================================================================
 # Process Management (for manual gateway runs)
 # =============================================================================
+
+
+@dataclass(frozen=True)
+class GatewayRuntimeSnapshot:
+    manager: str
+    service_installed: bool = False
+    service_running: bool = False
+    gateway_pids: tuple[int, ...] = ()
+    service_scope: str | None = None
+
+    @property
+    def running(self) -> bool:
+        return self.service_running or bool(self.gateway_pids)
+
+    @property
+    def has_process_service_mismatch(self) -> bool:
+        return self.service_installed and self.running and not self.service_running
 
 def _get_service_pids() -> set:
     """Return PIDs currently managed by systemd or launchd gateway services.
@@ -157,20 +175,22 @@ def _request_gateway_self_restart(pid: int) -> bool:
     return True
 
 
-def find_gateway_pids(exclude_pids: set | None = None, all_profiles: bool = False) -> list:
-    """Find PIDs of running gateway processes.
+def _append_unique_pid(pids: list[int], pid: int | None, exclude_pids: set[int]) -> None:
+    if pid is None or pid <= 0:
+        return
+    if pid == os.getpid() or pid in exclude_pids or pid in pids:
+        return
+    pids.append(pid)
 
-    Args:
-        exclude_pids: PIDs to exclude from the result (e.g. service-managed
-            PIDs that should not be killed during a stale-process sweep).
-        all_profiles: When ``True``, return gateway PIDs across **all**
-            profiles (the pre-7923 global behaviour).  ``hermes update``
-            needs this because a code update affects every profile.
-            When ``False`` (default), only PIDs belonging to the current
-            Hermes profile are returned.
+
+def _scan_gateway_pids(exclude_pids: set[int], all_profiles: bool = False) -> list[int]:
+    """Best-effort process-table scan for gateway PIDs.
+
+    This supplements the profile-scoped PID file so status views can still spot
+    a live gateway when the PID file is stale/missing, and ``--all`` sweeps can
+    discover gateways outside the current profile.
     """
-    _exclude = exclude_pids or set()
-    pids = [pid for pid in _get_service_pids() if pid not in _exclude]
+    pids: list[int] = []
     patterns = [
         "hermes_cli.main gateway",
         "hermes_cli.main --profile",
@@ -203,20 +223,24 @@ def find_gateway_pids(exclude_pids: set | None = None, all_profiles: bool = Fals
         if is_windows():
             result = subprocess.run(
                 ["wmic", "process", "get", "ProcessId,CommandLine", "/FORMAT:LIST"],
-                capture_output=True, text=True, timeout=10
+                capture_output=True,
+                text=True,
+                timeout=10,
             )
+            if result.returncode != 0:
+                return []
             current_cmd = ""
-            for line in result.stdout.split('\n'):
+            for line in result.stdout.split("\n"):
                 line = line.strip()
                 if line.startswith("CommandLine="):
                     current_cmd = line[len("CommandLine="):]
                 elif line.startswith("ProcessId="):
                     pid_str = line[len("ProcessId="):]
-                    if any(p in current_cmd for p in patterns) and (all_profiles or _matches_current_profile(current_cmd)):
+                    if any(p in current_cmd for p in patterns) and (
+                        all_profiles or _matches_current_profile(current_cmd)
+                    ):
                         try:
-                            pid = int(pid_str)
-                            if pid != os.getpid() and pid not in pids and pid not in _exclude:
-                                pids.append(pid)
+                            _append_unique_pid(pids, int(pid_str), exclude_pids)
                         except ValueError:
                             pass
                     current_cmd = ""
@@ -227,9 +251,11 @@ def find_gateway_pids(exclude_pids: set | None = None, all_profiles: bool = Fals
                 text=True,
                 timeout=10,
             )
-            for line in result.stdout.split('\n'):
+            if result.returncode != 0:
+                return []
+            for line in result.stdout.split("\n"):
                 stripped = line.strip()
-                if not stripped or 'grep' in stripped:
+                if not stripped or "grep" in stripped:
                     continue
 
                 pid = None
@@ -251,14 +277,135 @@ def find_gateway_pids(exclude_pids: set | None = None, all_profiles: bool = Fals
 
                 if pid is None:
                     continue
-                if pid == os.getpid() or pid in pids or pid in _exclude:
-                    continue
-                if any(pattern in command for pattern in patterns) and (all_profiles or _matches_current_profile(command)):
-                    pids.append(pid)
+                if any(pattern in command for pattern in patterns) and (
+                    all_profiles or _matches_current_profile(command)
+                ):
+                    _append_unique_pid(pids, pid, exclude_pids)
     except (OSError, subprocess.TimeoutExpired):
-        pass
+        return []
 
     return pids
+
+
+def find_gateway_pids(exclude_pids: set | None = None, all_profiles: bool = False) -> list:
+    """Find PIDs of running gateway processes.
+
+    Args:
+        exclude_pids: PIDs to exclude from the result (e.g. service-managed
+            PIDs that should not be killed during a stale-process sweep).
+        all_profiles: When ``True``, return gateway PIDs across **all**
+            profiles (the pre-7923 global behaviour).  ``hermes update``
+            needs this because a code update affects every profile.
+            When ``False`` (default), only PIDs belonging to the current
+            Hermes profile are returned.
+    """
+    _exclude = set(exclude_pids or set())
+    pids: list[int] = []
+    if not all_profiles:
+        try:
+            from gateway.status import get_running_pid
+
+            _append_unique_pid(pids, get_running_pid(), _exclude)
+        except Exception:
+            pass
+    for pid in _get_service_pids():
+        _append_unique_pid(pids, pid, _exclude)
+    for pid in _scan_gateway_pids(_exclude, all_profiles=all_profiles):
+        _append_unique_pid(pids, pid, _exclude)
+    return pids
+
+
+def _probe_systemd_service_running(system: bool = False) -> tuple[bool, bool]:
+    selected_system = _select_systemd_scope(system)
+    unit_exists = get_systemd_unit_path(system=selected_system).exists()
+    if not unit_exists:
+        return selected_system, False
+    try:
+        result = _run_systemctl(
+            ["is-active", get_service_name()],
+            system=selected_system,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (RuntimeError, subprocess.TimeoutExpired):
+        return selected_system, False
+    return selected_system, result.stdout.strip() == "active"
+
+
+def _probe_launchd_service_running() -> bool:
+    if not get_launchd_plist_path().exists():
+        return False
+    try:
+        result = subprocess.run(
+            ["launchctl", "list", get_launchd_label()],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except subprocess.TimeoutExpired:
+        return False
+    return result.returncode == 0
+
+
+def get_gateway_runtime_snapshot(system: bool = False) -> GatewayRuntimeSnapshot:
+    """Return a unified view of gateway liveness for the current profile."""
+    gateway_pids = tuple(find_gateway_pids())
+    if is_termux():
+        return GatewayRuntimeSnapshot(
+            manager="Termux / manual process",
+            gateway_pids=gateway_pids,
+        )
+
+    from hermes_constants import is_container
+
+    if is_linux() and is_container():
+        return GatewayRuntimeSnapshot(
+            manager="docker (foreground)",
+            gateway_pids=gateway_pids,
+        )
+
+    if supports_systemd_services():
+        selected_system, service_running = _probe_systemd_service_running(system=system)
+        scope_label = _service_scope_label(selected_system)
+        return GatewayRuntimeSnapshot(
+            manager=f"systemd ({scope_label})",
+            service_installed=get_systemd_unit_path(system=selected_system).exists(),
+            service_running=service_running,
+            gateway_pids=gateway_pids,
+            service_scope=scope_label,
+        )
+
+    if is_macos():
+        return GatewayRuntimeSnapshot(
+            manager="launchd",
+            service_installed=get_launchd_plist_path().exists(),
+            service_running=_probe_launchd_service_running(),
+            gateway_pids=gateway_pids,
+            service_scope="launchd",
+        )
+
+    return GatewayRuntimeSnapshot(
+        manager="manual process",
+        gateway_pids=gateway_pids,
+    )
+
+
+def _format_gateway_pids(pids: tuple[int, ...] | list[int], *, limit: int | None = 3) -> str:
+    rendered = [str(pid) for pid in pids[:limit] if pid > 0] if limit is not None else [str(pid) for pid in pids if pid > 0]
+    if limit is not None and len(pids) > limit:
+        rendered.append("...")
+    return ", ".join(rendered)
+
+
+def _print_gateway_process_mismatch(snapshot: GatewayRuntimeSnapshot) -> None:
+    if not snapshot.has_process_service_mismatch:
+        return
+    print()
+    print("⚠ Gateway process is running for this profile, but the service is not active")
+    print(f"  PID(s): {_format_gateway_pids(snapshot.gateway_pids, limit=None)}")
+    print("  This is usually a manual foreground/tmux/nohup run, so `hermes gateway`")
+    print("  can refuse to start another copy until this process stops.")
 
 
 def kill_gateway_processes(force: bool = False, exclude_pids: set | None = None,
@@ -3376,15 +3523,18 @@ def gateway_command(args):
     elif subcmd == "status":
         deep = getattr(args, 'deep', False)
         system = getattr(args, 'system', False)
+        snapshot = get_gateway_runtime_snapshot(system=system)
         
         # Check for service first
         if supports_systemd_services() and (get_systemd_unit_path(system=False).exists() or get_systemd_unit_path(system=True).exists()):
             systemd_status(deep, system=system)
+            _print_gateway_process_mismatch(snapshot)
         elif is_macos() and get_launchd_plist_path().exists():
             launchd_status(deep)
+            _print_gateway_process_mismatch(snapshot)
         else:
             # Check for manually running processes
-            pids = find_gateway_pids()
+            pids = list(snapshot.gateway_pids)
             if pids:
                 print(f"✓ Gateway is running (PID: {', '.join(map(str, pids))})")
                 print("  (Running manually, not as a system service)")

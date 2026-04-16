@@ -9,6 +9,7 @@ import AnalyticsPage from "@/pages/AnalyticsPage";
 import CronPage from "@/pages/CronPage";
 import SkillsPage from "@/pages/SkillsPage";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
+import { ThemeSwitcher } from "@/components/ThemeSwitcher";
 import { useI18n } from "@/i18n";
 
 const NAV_ITEMS = [
@@ -67,6 +68,7 @@ export default function App() {
           </nav>
 
           <div className="ml-auto flex items-center gap-2 px-2 sm:px-4">
+            <ThemeSwitcher />
             <LanguageSwitcher />
             <span className="hidden sm:inline font-display text-[0.7rem] tracking-[0.15em] uppercase opacity-50">
               {t.app.webUi}

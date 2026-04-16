@@ -96,6 +96,7 @@ _PUBLIC_API_PATHS: frozenset = frozenset({
     "/api/config/defaults",
     "/api/config/schema",
     "/api/model/info",
+    "/api/dashboard/themes",
 })
 
 
@@ -166,6 +167,11 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "description": "CLI visual theme",
         "options": ["default", "ares", "mono", "slate"],
     },
+    "dashboard.theme": {
+        "type": "select",
+        "description": "Web dashboard visual theme",
+        "options": ["default", "midnight", "ember", "mono", "cyberpunk", "rose"],
+    },
     "display.resume_display": {
         "type": "select",
         "description": "How resumed sessions display history",
@@ -224,6 +230,7 @@ _CATEGORY_MERGE: Dict[str, str] = {
     "approvals": "security",
     "human_delay": "display",
     "smart_model_routing": "agent",
+    "dashboard": "display",
 }
 
 # Display order for tabs — unlisted categories sort alphabetically after these.
@@ -2066,6 +2073,76 @@ def mount_spa(application: FastAPI):
         ):
             return FileResponse(file_path)
         return _serve_index()
+
+
+# ---------------------------------------------------------------------------
+# Dashboard theme endpoints
+# ---------------------------------------------------------------------------
+
+# Built-in dashboard themes — label + description only.  The actual color
+# definitions live in the frontend (web/src/themes/presets.ts).
+_BUILTIN_DASHBOARD_THEMES = [
+    {"name": "default",   "label": "Hermes Teal",  "description": "Classic dark teal — the canonical Hermes look"},
+    {"name": "midnight",  "label": "Midnight",      "description": "Deep blue-violet with cool accents"},
+    {"name": "ember",     "label": "Ember",          "description": "Warm crimson and bronze — forge vibes"},
+    {"name": "mono",      "label": "Mono",           "description": "Clean grayscale — minimal and focused"},
+    {"name": "cyberpunk", "label": "Cyberpunk",      "description": "Neon green on black — matrix terminal"},
+    {"name": "rose",      "label": "Rosé",           "description": "Soft pink and warm ivory — easy on the eyes"},
+]
+
+
+def _discover_user_themes() -> list:
+    """Scan ~/.hermes/dashboard-themes/*.yaml for user-created themes."""
+    themes_dir = get_hermes_home() / "dashboard-themes"
+    if not themes_dir.is_dir():
+        return []
+    result = []
+    for f in sorted(themes_dir.glob("*.yaml")):
+        try:
+            data = yaml.safe_load(f.read_text(encoding="utf-8"))
+            if isinstance(data, dict) and data.get("name"):
+                result.append({
+                    "name": data["name"],
+                    "label": data.get("label", data["name"]),
+                    "description": data.get("description", ""),
+                })
+        except Exception:
+            continue
+    return result
+
+
+@app.get("/api/dashboard/themes")
+async def get_dashboard_themes():
+    """Return available themes and the currently active one."""
+    config = load_config()
+    active = config.get("dashboard", {}).get("theme", "default")
+    user_themes = _discover_user_themes()
+    # Merge built-in + user, user themes override built-in by name.
+    seen = set()
+    themes = []
+    for t in _BUILTIN_DASHBOARD_THEMES:
+        seen.add(t["name"])
+        themes.append(t)
+    for t in user_themes:
+        if t["name"] not in seen:
+            themes.append(t)
+            seen.add(t["name"])
+    return {"themes": themes, "active": active}
+
+
+class ThemeSetBody(BaseModel):
+    name: str
+
+
+@app.put("/api/dashboard/theme")
+async def set_dashboard_theme(body: ThemeSetBody):
+    """Set the active dashboard theme (persists to config.yaml)."""
+    config = load_config()
+    if "dashboard" not in config:
+        config["dashboard"] = {}
+    config["dashboard"]["theme"] = body.name
+    save_config(config)
+    return {"ok": True, "theme": body.name}
 
 
 mount_spa(app)

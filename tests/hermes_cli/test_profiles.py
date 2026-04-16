@@ -9,7 +9,7 @@ import json
 import io
 import os
 import tarfile
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -30,6 +30,7 @@ from hermes_cli.profiles import (
     import_profile,
     generate_bash_completion,
     generate_zsh_completion,
+    _count_skills,
     _get_profiles_root,
     _get_default_hermes_home,
 )
@@ -238,6 +239,48 @@ class TestListProfiles:
         profiles = list_profiles()
         assert profiles[0].name == "default"
         assert profiles[0].is_default is True
+
+    def test_count_skills_excludes_hidden_dirs(self, profile_env):
+        tmp_path = profile_env
+        skills_dir = tmp_path / ".hermes" / "skills"
+        (skills_dir / "visible" / "SKILL.md").parent.mkdir(parents=True)
+        (skills_dir / "visible" / "SKILL.md").write_text("visible")
+        (skills_dir / ".hub" / "quarantine" / "hidden" / "SKILL.md").parent.mkdir(parents=True)
+        (skills_dir / ".hub" / "quarantine" / "hidden" / "SKILL.md").write_text("hidden")
+        (skills_dir / ".git" / "hooks" / "SKILL.md").parent.mkdir(parents=True)
+        (skills_dir / ".git" / "hooks" / "SKILL.md").write_text("hidden")
+
+        assert _count_skills(tmp_path / ".hermes") == 1
+
+    def test_count_skills_ignores_hidden_dirs_for_windows_style_paths(self, profile_env, monkeypatch):
+        tmp_path = profile_env
+        visible_skill = tmp_path / ".hermes" / "skills" / "visible" / "SKILL.md"
+        hidden_skill = tmp_path / ".hermes" / "skills" / ".hub" / "quarantine" / "hidden" / "SKILL.md"
+        visible_skill.parent.mkdir(parents=True)
+        visible_skill.write_text("visible")
+        hidden_skill.parent.mkdir(parents=True)
+        hidden_skill.write_text("hidden")
+
+        def fake_rglob(_self, _pattern):
+            return [
+                PureWindowsPath(r"C:\Users\tester\.hermes\skills\visible\SKILL.md"),
+                PureWindowsPath(r"C:\Users\tester\.hermes\skills\.hub\quarantine\hidden\SKILL.md"),
+            ]
+
+        monkeypatch.setattr(Path, "rglob", fake_rglob)
+
+        assert _count_skills(tmp_path / ".hermes") == 1
+
+    def test_list_profiles_reports_skill_count_without_hidden_dirs(self, profile_env):
+        tmp_path = profile_env
+        skills_dir = tmp_path / ".hermes" / "skills"
+        (skills_dir / "visible" / "SKILL.md").parent.mkdir(parents=True)
+        (skills_dir / "visible" / "SKILL.md").write_text("visible")
+        (skills_dir / ".hub" / "quarantine" / "hidden" / "SKILL.md").parent.mkdir(parents=True)
+        (skills_dir / ".hub" / "quarantine" / "hidden" / "SKILL.md").write_text("hidden")
+
+        default = next(profile for profile in list_profiles() if profile.name == "default")
+        assert default.skill_count == 1
 
 
 # ===================================================================

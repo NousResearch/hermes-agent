@@ -526,6 +526,25 @@ install_system_packages() {
             [ "$need_ripgrep" = true ] && HAS_RIPGREP=true && log_success "ripgrep installed"
             [ "$need_ffmpeg" = true ]  && HAS_FFMPEG=true  && log_success "ffmpeg installed"
             log_success "Termux build dependencies installed"
+
+            # Verify rust-std-aarch64-linux-android matches rust version
+            # The two packages can become out of sync, causing Rust compilation failures
+            RUST_VERSION=$(rustc --version 2>/dev/null | awk '{print $2}')
+            RUST_STD_VERSION=$(pkg list-installed rust-std-aarch64-linux-android 2>/dev/null | grep -oP 'rust-std-aarch64-linux-android \K[0-9.]+')
+
+            if [ -n "$RUST_VERSION" ] && [ -n "$RUST_STD_VERSION" ]; then
+                if [ "$RUST_VERSION" != "$RUST_STD_VERSION" ]; then
+                    log_info "Updating rust-std-aarch64-linux-android to match rust $RUST_VERSION..."
+                    if pkg install -y rust-std-aarch64-linux-android >/dev/null; then
+                        log_success "rust-std-aarch64-linux-android updated to $RUST_VERSION"
+                    else
+                        log_warn "Failed to update rust-std-aarch64-linux-android"
+                    fi
+                else
+                    log_success "rust-std-aarch64-linux-android matches rust $RUST_VERSION"
+                fi
+            fi
+
             return 0
         fi
 
@@ -821,8 +840,24 @@ install_deps() {
             log_warn "Termux feature install (.[termux]) failed, trying base install..."
             if ! "$PIP_PYTHON" -m pip install -e '.' -c constraints-termux.txt; then
                 log_error "Package installation failed on Termux."
-                log_info "Ensure these packages are installed: pkg install clang rust make pkg-config libffi openssl"
-                log_info "Then re-run: cd $INSTALL_DIR && python -m pip install -e '.[termux]' -c constraints-termux.txt"
+                log_info "This is likely due to one of the following issues:"
+                log_info ""
+                log_info "1. Rust std mismatch: rust-std-aarch64-linux-android version doesn't match rust"
+                log_info "   Solution: pkg install -y rust-std-aarch64-linux-android"
+                log_info ""
+                log_info "2. Missing build dependencies"
+                log_info "   Solution: pkg install clang rust make pkg-config libffi openssl rust-std-aarch64-linux-android"
+                log_info ""
+                log_info "3. Cryptography build failure (expected on Termux)"
+                log_info "   The [termux] extra uses PyJWT without crypto support since"
+                log_info "   cryptography cannot build on Android due to cffi library issues."
+                log_info ""
+                log_info "Manual workaround:"
+                log_info "  $PIP_PYTHON -m pip install 'PyJWT>=2.12.0,<3'"
+                log_info "  $PIP_PYTHON -m pip install -e . --no-deps"
+                log_info "  $PIP_PYTHON -m pip install openai anthropic python-dotenv fire httpx rich tenacity pyyaml requests jinja2 pydantic prompt_toolkit"
+                log_info ""
+                log_info "Then re-run: cd $INSTALL_DIR && $PIP_PYTHON -m pip install -e '.[termux]' -c constraints-termux.txt"
                 exit 1
             fi
         fi

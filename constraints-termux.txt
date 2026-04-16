@@ -6,6 +6,26 @@
 # These pins keep the tested Android install path stable when upstream packages
 # move faster than Termux-compatible wheels / sdists.
 
+# ============================================================================
+# Cryptography Limitation on Termux
+# ============================================================================
+# The cryptography package (required by PyJWT[crypto]) cannot build on Termux
+# due to cffi library loading issues in Android's isolated build environment:
+#
+#   ImportError: dlopen failed: library .../_cffi_backend.cpython-312.so
+#   needed or dlopened by .../libpython3.12.so.1.0 is not accessible
+#
+# The [termux] extra therefore uses PyJWT without the [crypto] extra. Skills Hub
+# JWT authentication (GitHub App bot identity) requires cryptography and is
+# unavailable on Termux as a result. This is a known limitation documented in
+# the Termux installation guide.
+#
+# Workarounds if crypto is needed:
+# 1. Use a platform that supports cryptography (Linux, macOS, Windows)
+# 2. Build and host custom cryptography wheels for Termux
+# 3. Implement alternative authentication methods for Skills Hub
+# ============================================================================
+
 ipython<10
 jedi>=0.18.1,<0.20
 parso>=0.8.4,<0.9

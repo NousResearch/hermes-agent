@@ -33,7 +33,8 @@ dependencies = [
   # Text-to-speech (Edge TTS is free, no API key needed)
   "edge-tts>=7.2.7,<8",
   # Skills Hub (GitHub App JWT auth — optional, only needed for bot identity)
-  "PyJWT[crypto]>=2.12.0,<3",  # CVE-2026-32597
+  # NOTE: PyJWT[crypto] moved to [all] extra with platform marker because
+  # cryptography doesn't build on Termux/Android. See [termux] extra below.
 ]
 
 [project.optional-dependencies]
@@ -68,6 +69,9 @@ termux = [
   # Tested Android / Termux path: keeps the core CLI feature-rich while
   # avoiding extras that currently depend on non-Android wheels (notably
   # faster-whisper -> ctranslate2 via the voice extra).
+  # PyJWT without crypto: cryptography doesn't build on Termux due to
+  # cffi library loading issues in Android's isolated build environment.
+  "PyJWT>=2.12.0,<3",  # CVE-2026-32597
   "python-telegram-bot[webhooks]>=22.6,<23",
   "hermes-agent[cron]",
   "hermes-agent[cli]",
@@ -112,6 +116,9 @@ all = [
   "hermes-agent[mistral]",
   "hermes-agent[bedrock]",
   "hermes-agent[web]",
+  # PyJWT[crypto] for Skills Hub JWT auth — only on platforms that can build
+  # cryptography (excludes Termux/Android due to cffi library loading issues)
+  "PyJWT[crypto]>=2.12.0,<3; sys_platform != 'android'",  # CVE-2026-32597
 ]
 
 [project.scripts]

@@ -6430,6 +6430,25 @@ class HermesCLI:
             print(format_rate_limit_display(rl_state))
             print()
 
+        # ── Codex account usage (live provider quota windows) ──────
+        try:
+            from hermes_cli.codex_usage import (
+                format_codex_usage_report_lines,
+                get_current_codex_usage_snapshot,
+                is_codex_provider,
+            )
+
+            if is_codex_provider(getattr(agent, "provider", None), getattr(agent, "base_url", None)):
+                codex_usage = get_current_codex_usage_snapshot(timeout=5.0)
+                codex_usage_lines = format_codex_usage_report_lines(codex_usage)
+                if codex_usage_lines:
+                    print()
+                    for line in codex_usage_lines:
+                        print(f"  {line}" if not line.startswith("  ") else line)
+                    print()
+        except Exception:
+            pass
+
         # ── Session token usage ─────────────────────────────────────
         input_tokens = getattr(agent, "session_input_tokens", 0) or 0
         output_tokens = getattr(agent, "session_output_tokens", 0) or 0

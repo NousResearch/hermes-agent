@@ -163,14 +163,68 @@ class TestUsageCachedAgent:
         assert "Cache write" not in result
 
     @pytest.mark.asyncio
+    async def test_codex_account_usage_block_added_for_codex_provider(self):
+        from hermes_cli.codex_usage import CodexUsageSnapshot, CodexUsageWindow
+
+        agent = _make_mock_agent(provider="openai-codex", model="gpt-5.4")
+        runner = _make_runner(SK, cached_agent=agent)
+        event = MagicMock()
+        snapshot = CodexUsageSnapshot(
+            available=True,
+            plan="Plus ($12.50)",
+            windows=[
+                CodexUsageWindow(label="3h", used_percent=35.5, reset_at_ms=10_000_000),
+                CodexUsageWindow(label="Week", used_percent=75.0, reset_at_ms=100_000_000),
+            ],
+        )
+
+        with patch("agent.rate_limit_tracker.format_rate_limit_compact", return_value="RPM: 50/60"), \
+             patch("agent.usage_pricing.estimate_usage_cost") as mock_cost, \
+             patch("hermes_cli.codex_usage.get_current_codex_usage_snapshot", return_value=snapshot):
+            mock_cost.return_value = MagicMock(amount_usd=None, status="included")
+            result = await runner._handle_usage_command(event)
+
+        assert "Codex Account Usage" in result
+        assert "Plan: Plus ($12.50)" in result
+        assert "3h: 64% left" in result
+        assert "Week: 25% left" in result
+        assert "Session Token Usage" in result
+
+    @pytest.mark.asyncio
+    async def test_codex_account_usage_probe_failure_is_silent(self):
+        from hermes_cli.codex_usage import CodexUsageSnapshot
+
+        agent = _make_mock_agent(provider="openai-codex", model="gpt-5.4")
+        runner = _make_runner(SK, cached_agent=agent)
+        event = MagicMock()
+
+        with patch("agent.rate_limit_tracker.format_rate_limit_compact", return_value="RPM: 50/60"), \
+             patch("agent.usage_pricing.estimate_usage_cost") as mock_cost, \
+             patch(
+                 "hermes_cli.codex_usage.get_current_codex_usage_snapshot",
+                 return_value=CodexUsageSnapshot(available=False, error="HTTP 401"),
+             ):
+            mock_cost.return_value = MagicMock(amount_usd=None, status="included")
+            result = await runner._handle_usage_command(event)
+
+        assert "Codex Account Usage" not in result
+        assert "Session Token Usage" in result
+
+    @pytest.mark.asyncio
     async def test_cost_included_status(self):
         """Subscription-included providers show 'included' instead of dollar amount."""
+        from hermes_cli.codex_usage import CodexUsageSnapshot
+
         agent = _make_mock_agent(provider="openai-codex")
         runner = _make_runner(SK, cached_agent=agent)
         event = MagicMock()
 
         with patch("agent.rate_limit_tracker.format_rate_limit_compact", return_value="RPM: 50/60"), \
-             patch("agent.usage_pricing.estimate_usage_cost") as mock_cost:
+             patch("agent.usage_pricing.estimate_usage_cost") as mock_cost, \
+             patch(
+                 "hermes_cli.codex_usage.get_current_codex_usage_snapshot",
+                 return_value=CodexUsageSnapshot(available=False, error="HTTP 401"),
+             ):
             mock_cost.return_value = MagicMock(amount_usd=None, status="included")
             result = await runner._handle_usage_command(event)
 

@@ -28,11 +28,13 @@ def _attach_agent(
     context_tokens: int,
     context_length: int,
     compressions: int = 0,
+    provider: str | None = None,
+    base_url: str = "",
 ):
     cli_obj.agent = SimpleNamespace(
         model=cli_obj.model,
-        provider="anthropic" if cli_obj.model.startswith("anthropic/") else None,
-        base_url="",
+        provider=provider if provider is not None else ("anthropic" if cli_obj.model.startswith("anthropic/") else None),
+        base_url=base_url,
         session_input_tokens=input_tokens if input_tokens is not None else prompt_tokens,
         session_output_tokens=output_tokens if output_tokens is not None else completion_tokens,
         session_cache_read_tokens=cache_read_tokens,
@@ -323,6 +325,68 @@ class TestCLIUsageReport:
         assert "Total cost:" in output
         assert "n/a" in output
         assert "Pricing unknown for glm-5" in output
+
+
+    def test_show_usage_includes_codex_account_usage_block(self, capsys):
+        from hermes_cli.codex_usage import CodexUsageSnapshot, CodexUsageWindow
+
+        cli_obj = _attach_agent(
+            _make_cli(model="gpt-5.4"),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+            provider="openai-codex",
+            base_url="https://chatgpt.com/backend-api/codex",
+        )
+        cli_obj.verbose = False
+
+        snapshot = CodexUsageSnapshot(
+            available=True,
+            plan="Plus ($12.50)",
+            windows=[
+                CodexUsageWindow(label="3h", used_percent=35.5, reset_at_ms=10_000_000),
+                CodexUsageWindow(label="Week", used_percent=75.0, reset_at_ms=100_000_000),
+            ],
+        )
+
+        with patch("hermes_cli.codex_usage.get_current_codex_usage_snapshot", return_value=snapshot):
+            cli_obj._show_usage()
+        output = capsys.readouterr().out
+
+        assert "Codex Account Usage" in output
+        assert "Plan:" in output
+        assert "3h: 64% left" in output
+        assert "Week: 25% left" in output
+        assert "Session Token Usage" in output
+
+    def test_show_usage_skips_codex_account_usage_when_probe_unavailable(self, capsys):
+        from hermes_cli.codex_usage import CodexUsageSnapshot
+
+        cli_obj = _attach_agent(
+            _make_cli(model="gpt-5.4"),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+            provider="openai-codex",
+            base_url="https://chatgpt.com/backend-api/codex",
+        )
+        cli_obj.verbose = False
+
+        with patch(
+            "hermes_cli.codex_usage.get_current_codex_usage_snapshot",
+            return_value=CodexUsageSnapshot(available=False, error="HTTP 401"),
+        ):
+            cli_obj._show_usage()
+        output = capsys.readouterr().out
+
+        assert "Codex Account Usage" not in output
+        assert "Session Token Usage" in output
 
 
 class TestStatusBarWidthSource:

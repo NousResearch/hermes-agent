@@ -6566,6 +6566,29 @@ class GatewayRunner:
                 lines.append(f"⏱️ **Rate Limits:** {format_rate_limit_compact(rl_state)}")
                 lines.append("")
 
+            # Codex account usage (live provider quota windows)
+            try:
+                from hermes_cli.codex_usage import (
+                    format_codex_usage_report_lines,
+                    get_current_codex_usage_snapshot,
+                    is_codex_provider,
+                )
+
+                if is_codex_provider(getattr(agent, "provider", None), getattr(agent, "base_url", None)):
+                    codex_usage = get_current_codex_usage_snapshot(timeout=5.0)
+                    codex_lines = format_codex_usage_report_lines(codex_usage)
+                    if codex_lines:
+                        lines.append("🧾 **Codex Account Usage**")
+                        for line in (
+                            codex_lines[1:]
+                            if codex_lines and codex_lines[0] == "Codex Account Usage:"
+                            else codex_lines
+                        ):
+                            lines.append(line.strip())
+                        lines.append("")
+            except Exception:
+                pass
+
             # Session token usage — detailed breakdown matching CLI
             input_tokens = getattr(agent, "session_input_tokens", 0) or 0
             output_tokens = getattr(agent, "session_output_tokens", 0) or 0

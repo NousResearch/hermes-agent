@@ -378,6 +378,7 @@ def create_job(
     provider: Optional[str] = None,
     base_url: Optional[str] = None,
     script: Optional[str] = None,
+    precheck: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -427,6 +428,8 @@ def create_job(
     normalized_base_url = normalized_base_url or None
     normalized_script = str(script).strip() if isinstance(script, str) else None
     normalized_script = normalized_script or None
+    normalized_precheck = str(precheck).strip() if isinstance(precheck, str) else None
+    normalized_precheck = normalized_precheck or None
 
     label_source = (prompt or (normalized_skills[0] if normalized_skills else None)) or "cron job"
     job = {
@@ -439,6 +442,7 @@ def create_job(
         "provider": normalized_provider,
         "base_url": normalized_base_url,
         "script": normalized_script,
+        "precheck": normalized_precheck,
         "schedule": parsed_schedule,
         "schedule_display": parsed_schedule.get("display", schedule),
         "repeat": {

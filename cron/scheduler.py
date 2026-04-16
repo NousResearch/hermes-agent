@@ -487,9 +487,36 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
         return False, f"Script execution failed: {exc}"
 
 
-def _build_job_prompt(job: dict) -> str:
+def _run_precheck(precheck_path: str) -> tuple[bool, str]:
+    """Run a precheck script to decide whether to invoke the LLM.
+
+    Returns (proceed, output_or_error):
+      - (True, output)   → precheck passed, output is context for the LLM
+      - (False, "")      → precheck failed with empty output (silent skip)
+      - (False, errmsg)  → precheck failed with error message
+    """
+    ok, output = _run_job_script(precheck_path)
+    if not ok:
+        return False, output
+    if not output.strip():
+        # Empty output means "nothing to report" — skip LLM silently
+        return False, ""
+    return True, output
+
+
+def _build_job_prompt(job: dict, precheck_output: str = "") -> str:
     """Build the effective prompt for a cron job, optionally loading one or more skills first."""
     prompt = job.get("prompt", "")
+
+    # Inject precheck output into prompt if precheck was run
+    if precheck_output:
+        prompt = (
+            "## Precheck Output\n"
+            "The precheck script ran and produced the following output. "
+            "Use it as context for your analysis.\n\n"
+            f"```\n{precheck_output}\n```\n\n"
+            f"{prompt}"
+        )
     skills = job.get("skills")
 
     # Run data-collection script if configured, inject output as context.
@@ -580,12 +607,12 @@ def _build_job_prompt(job: dict) -> str:
 def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     """
     Execute a single cron job.
-    
+
     Returns:
         Tuple of (success, full_output_doc, final_response, error_message)
     """
     from run_agent import AIAgent
-    
+
     # Initialize SQLite session store so cron job messages are persisted
     # and discoverable via session_search (same pattern as gateway/run.py).
     _session_db = None
@@ -594,13 +621,53 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         _session_db = SessionDB()
     except Exception as e:
         logger.debug("Job '%s': SQLite session store not available: %s", job.get("id", "?"), e)
-    
+
     job_id = job["id"]
     job_name = job["name"]
-    prompt = _build_job_prompt(job)
     origin = _resolve_origin(job)
     _cron_session_id = f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}"
 
+    # Precheck: run before the LLM to decide whether to proceed.
+    # If precheck fails (non-zero exit) or returns empty output, skip the LLM.
+    precheck_path = job.get("precheck")
+    precheck_output = ""
+    if precheck_path:
+        logger.info("Running precheck script: %s", precheck_path)
+        proceed, pc_result = _run_precheck(precheck_path)
+        if not proceed:
+            # Silent skip (empty pc_result) or explicit failure message
+            if pc_result:
+                output = f"""# Cron Job: {job_name}
+
+**Job ID:** {job_id}
+**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}
+**Schedule:** {job.get('schedule_display', 'N/A')}
+
+## Precheck Failed
+
+```
+{pc_result}
+```
+
+The job was skipped — no LLM was invoked.
+"""
+                logger.info("Job '%s': precheck failed — skipping LLM", job_name)
+                return False, output, "", pc_result
+            else:
+                output = f"""# Cron Job: {job_name}
+
+**Job ID:** {job_id}
+**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}
+**Schedule:** {job.get('schedule_display', 'N/A')}
+
+Precheck returned no output — skipping LLM (silent).
+"""
+                logger.info("Job '%s': precheck returned empty — skipping LLM silently", job_name)
+                return True, output, "", None
+        precheck_output = pc_result
+        logger.info("Precheck passed, output: %s", precheck_output[:100])
+
+    prompt = _build_job_prompt(job, precheck_output=precheck_output)
     logger.info("Running job '%s' (ID: %s)", job_name, job_id)
     logger.info("Prompt: %s", prompt[:100])
 

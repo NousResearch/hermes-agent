@@ -583,6 +583,43 @@ class TestLoadTranscriptLegacyMigration:
         assert transcript_path.exists()
 
 
+class TestSessionMetaRoundTrip:
+    """Ensure transcript-only metadata survives the SQLite-backed path."""
+
+    def test_session_meta_preserves_top_level_payload_in_sqlite(self, tmp_path):
+        from hermes_state import SessionDB
+
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path, config=config)
+        store._db = SessionDB(db_path=tmp_path / "state.db")
+        store._loaded = True
+
+        sid = "session_meta_sqlite"
+        store._db.create_session(session_id=sid, source="gateway", model="m")
+
+        store.append_to_transcript(
+            sid,
+            {
+                "role": "session_meta",
+                "tools": [{"function": {"name": "terminal"}}],
+                "model": "test/model",
+                "platform": "telegram",
+                "timestamp": "2026-04-16T00:00:00",
+            },
+        )
+
+        result = store.load_transcript(sid)
+        assert result == [
+            {
+                "role": "session_meta",
+                "tools": [{"function": {"name": "terminal"}}],
+                "model": "test/model",
+                "platform": "telegram",
+            }
+        ]
+
+
 class TestSessionStoreSwitchSession:
     """Regression coverage for gateway /resume session switching semantics."""
 

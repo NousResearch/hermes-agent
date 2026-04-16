@@ -551,10 +551,33 @@ def _append_message_to_session_db(
         return
 
     role = message.get("role", "unknown")
+    content = message.get("content")
+    if role == "session_meta" and content is None:
+        payload = {
+            k: v
+            for k, v in message.items()
+            if k not in {
+                "role",
+                "content",
+                "timestamp",
+                "tool_name",
+                "tool_calls",
+                "tool_call_id",
+                "reasoning",
+                "reasoning_details",
+                "codex_reasoning_items",
+            }
+        }
+        if payload:
+            content = payload
     kwargs: Dict[str, Any] = {
         "session_id": session_id,
         "role": role,
-        "content": message.get("content"),
+        "content": (
+            json.dumps(content, sort_keys=True, ensure_ascii=False)
+            if role == "session_meta" and isinstance(content, (dict, list))
+            else content
+        ),
         "tool_name": message.get("tool_name"),
         "tool_calls": message.get("tool_calls"),
         "tool_call_id": message.get("tool_call_id"),
@@ -620,9 +643,16 @@ def _normalize_transcript_value(value: Any) -> Any:
 
 def _message_signature(message: Dict[str, Any]) -> tuple:
     """Return the transcript fields that both SQLite and JSONL can compare."""
+    content = message.get("content")
+    if message.get("role") == "session_meta" and content is None:
+        content = {
+            k: v
+            for k, v in message.items()
+            if k not in {"role", "timestamp"}
+        }
     return (
         message.get("role"),
-        message.get("content"),
+        _normalize_transcript_value(content),
         message.get("tool_name"),
         message.get("tool_call_id"),
         _normalize_transcript_value(message.get("tool_calls")),

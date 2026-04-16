@@ -24,6 +24,7 @@ import signal
 import tempfile
 import threading
 import time
+import uuid
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, Optional, Any, List
@@ -83,6 +84,59 @@ from gateway.feishu_usage_footer import (
 )
 from utils import atomic_yaml_write, is_truthy_value
 _hermes_home = get_hermes_home()
+
+# Lazy-load trace module (only when tracing is enabled)
+_trace_module = None
+
+
+def _get_trace_module():
+    """Lazy-load trace module from ~/.hermes/trace/"""
+    global _trace_module
+    if _trace_module is None:
+        try:
+            import importlib.util
+            _trace_path = _hermes_home / "trace"
+            _spec = importlib.util.spec_from_file_location("hermes_trace", _trace_path / "__init__.py")
+            if _spec and _spec.loader:
+                _trace_module = importlib.util.module_from_spec(_spec)
+                _spec.loader.exec_module(_trace_module)
+            else:
+                _trace_module = None
+        except Exception:
+            _trace_module = None
+    return _trace_module
+
+
+# Lazy-load Lyapunov health monitor (for adaptive compression triggering)
+_lyapunov_module = None
+
+
+def _get_lyapunov_module():
+    """Lazy-load Lyapunov health monitor from ~/.hermes/scripts/lyapunov_health_monitor/"""
+    global _lyapunov_module
+    if _lyapunov_module is None:
+        try:
+            import importlib.util
+            import sys
+            
+            _lyapunov_path = Path.home() / ".hermes" / "scripts" / "lyapunov_health_monitor"
+            _parent_path = _lyapunov_path.parent
+            
+            # Ensure the parent directory is in sys.path so submodules can be imported
+            if str(_parent_path) not in sys.path:
+                sys.path.insert(0, str(_parent_path))
+            
+            _spec = importlib.util.spec_from_file_location("lyapunov_health_monitor", _lyapunov_path / "__init__.py")
+            if _spec and _spec.loader:
+                _lyapunov_module = importlib.util.module_from_spec(_spec)
+                _spec.loader.exec_module(_lyapunov_module)
+            else:
+                _lyapunov_module = None
+        except Exception as _e:
+            logger.debug("Lyapunov module lazy-load failed: %s", _e)
+            _lyapunov_module = None
+    return _lyapunov_module
+
 
 # Load environment variables from ~/.hermes/.env first.
 # User-managed env files should override stale shell exports on restart.
@@ -3411,6 +3465,27 @@ class GatewayRunner:
         _msg_start_time = time.time()
         _platform_name = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
         _msg_preview = (event.text or "")[:80].replace("\n", " ")
+
+        # Generate trace_id for this request (used to link gateway + agent events)
+        _trace_id = uuid.uuid4().hex[:12]
+        _trace = _get_trace_module()
+
+        # Record gateway:message_received event
+        if _trace:
+            try:
+                _trace.record_event(
+                    trace_id=_trace_id,
+                    event_type="gateway:message_received",
+                    extra={
+                        "platform": _platform_name,
+                        "user_id": source.user_id,
+                        "chat_id": source.chat_id,
+                        "message_preview": _msg_preview,
+                    },
+                )
+            except Exception:
+                pass
+
         logger.info(
             "inbound message: platform=%s user=%s chat=%s msg=%r",
             _platform_name, source.user_name or source.user_id or "unknown",
@@ -3865,6 +3940,9 @@ class GatewayRunner:
             }
             await self.hooks.emit("agent:start", hook_ctx)
 
+            # Set trace_id for agent to use (links agent events to gateway events)
+            os.environ["HERMES_TRACE_ID"] = _trace_id
+
             # Run the agent
             agent_result = await self._run_agent(
                 message=message_text,
@@ -4157,7 +4235,38 @@ class GatewayRunner:
                         await self._deliver_media_from_response(
                             response, event, _media_adapter,
                         )
+                # Record gateway:response_sent event (response was streamed, not returned)
+                if _trace:
+                    try:
+                        _trace.record_event(
+                            trace_id=_trace_id,
+                            event_type="gateway:response_sent",
+                            duration_ms=(time.time() - _msg_start_time) * 1000,
+                            extra={
+                                "platform": _platform_name,
+                                "response_len": len(response) if response else 0,
+                                "delivery": "streamed",
+                            },
+                        )
+                    except Exception:
+                        pass
                 return None
+
+            # Record gateway:response_sent event (normal return)
+            if _trace:
+                try:
+                    _trace.record_event(
+                        trace_id=_trace_id,
+                        event_type="gateway:response_sent",
+                        duration_ms=(time.time() - _msg_start_time) * 1000,
+                        extra={
+                            "platform": _platform_name,
+                            "response_len": len(response) if response else 0,
+                            "delivery": "returned",
+                        },
+                    )
+                except Exception:
+                    pass
 
             return response
             
@@ -4205,6 +4314,22 @@ class GatewayRunner:
                 # 500 with a large session often means the payload is too large
                 # for the API to process — treat it the same way.
                 if _hist_len > 50:
+                    # Record gateway:error event for context overflow
+                    if _trace:
+                        try:
+                            _trace.record_event(
+                                trace_id=_trace_id,
+                                event_type="gateway:error",
+                                duration_ms=(time.time() - _msg_start_time) * 1000,
+                                extra={
+                                    "platform": _platform_name,
+                                    "error_type": "ContextOverflow",
+                                    "error_detail": "Session too large for model's context window",
+                                    "status_code": status_code,
+                                },
+                            )
+                        except Exception:
+                            pass
                     return (
                         "⚠️ Session too large for the model's context window.\n"
                         "Use /compact to compress the conversation, or "
@@ -4212,6 +4337,22 @@ class GatewayRunner:
                     )
                 elif status_code == 400:
                     status_hint = " The request was rejected by the API."
+            # Record gateway:error event
+            if _trace:
+                try:
+                    _trace.record_event(
+                        trace_id=_trace_id,
+                        event_type="gateway:error",
+                        duration_ms=(time.time() - _msg_start_time) * 1000,
+                        extra={
+                            "platform": _platform_name,
+                            "error_type": error_type,
+                            "error_detail": error_detail[:200] if error_detail else "",
+                            "status_code": status_code,
+                        },
+                    )
+                except Exception:
+                    pass
             return (
                 f"Sorry, I encountered an error ({error_type}).\n"
                 f"{error_detail}\n"
@@ -8414,6 +8555,43 @@ class GatewayRunner:
                     with _cache_lock:
                         _cache[session_key] = (agent, _sig)
                 logger.debug("Created new agent for session %s (sig=%s)", session_key, _sig)
+
+            # Lyapunov-based preventive compression triggering for ALL agents
+            # Runs on every message to check if system health indicates degradation
+            try:
+                _lyapunov = _get_lyapunov_module()
+                if _lyapunov and hasattr(_lyapunov, "get_integrator"):
+                    _integrator = _lyapunov.get_integrator()
+                    if _integrator:
+                        _should_trigger, _reason = _integrator.should_trigger_preemptive_compression(session_id)
+                        if _should_trigger:
+                            logger.info("Lyapunov-triggered preventive compression for session %s: %s", session_id, _reason)
+                            _integrator.trigger_preventive_compression(session_id, agent=agent)
+                        
+                        # Log recovery plan for degraded/critical states
+                        _recovery_plan = _integrator.get_recovery_plan(session_id)
+                        if _recovery_plan and _recovery_plan.get("feasible"):
+                            _health = _recovery_plan.get("health_summary", {})
+                            _status = _health.get("health_status", "unknown")
+                            if _status in ("degrading", "warning", "critical"):
+                                logger.info(
+                                    "Lyapunov recovery plan for session %s: V=%.1f (%s), %d steps, cost=%.3f",
+                                    session_id,
+                                    _health.get("lyapunov_v", 0),
+                                    _status,
+                                    len(_recovery_plan.get("plan", [])),
+                                    _recovery_plan.get("total_cost", 0),
+                                )
+                        elif _recovery_plan:
+                            logger.debug(
+                                "Lyapunov state for session %s: V=%.1f (%s), recovery plan not feasible: %s",
+                                session_id,
+                                _recovery_plan.get("health_summary", {}).get("lyapunov_v", 0),
+                                _recovery_plan.get("health_summary", {}).get("health_status", "unknown"),
+                                _recovery_plan.get("reason", "unknown"),
+                            )
+            except Exception as _e:
+                logger.debug("Lyapunov compression check failed (non-fatal): %s", _e)
 
             # Per-message state — callbacks and reasoning config change every
             # turn and must not be baked into the cached agent constructor.

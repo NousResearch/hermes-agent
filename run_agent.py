@@ -1070,6 +1070,11 @@ class AIAgent:
             short_uuid = uuid.uuid4().hex[:6]
             self.session_id = f"{timestamp_str}_{short_uuid}"
         
+        # Trace ID for call chain tracking (harness-4)
+        # Allow external override via HERMES_TRACE_ID env var (set by gateway)
+        _env_trace_id = os.environ.get("HERMES_TRACE_ID", "").strip()
+        self.trace_id: str = _env_trace_id if _env_trace_id else uuid.uuid4().hex[:12]
+        
         # Session logs go into ~/.hermes/sessions/ alongside gateway sessions
         hermes_home = get_hermes_home()
         self.logs_dir = hermes_home / "sessions"
@@ -6807,6 +6812,25 @@ class AIAgent:
 
         compressed = self.context_compressor.compress(messages, current_tokens=approx_tokens, focus_topic=focus_topic)
 
+        # Regenerate all tool_call_ids after compression/split to prevent API
+        # rejecting re-used IDs (400 "invalid function arguments json string").
+        # Also update corresponding tool_result tool_call_id references.
+        _old_to_new_id: Dict[str, str] = {}
+        for msg in compressed:
+            if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                for tc in msg["tool_calls"]:
+                    old_id = tc.get("id") or tc.get("call_id", "")
+                    if old_id:
+                        new_id = f"call_{uuid.uuid4().hex[:16]}"
+                        _old_to_new_id[old_id] = new_id
+                        tc["id"] = new_id
+                        if "call_id" in tc:
+                            tc["call_id"] = new_id
+            elif msg.get("role") == "tool":
+                old_id = msg.get("tool_call_id", "")
+                if old_id in _old_to_new_id:
+                    msg["tool_call_id"] = _old_to_new_id[old_id]
+
         todo_snapshot = self._todo_store.format_for_injection()
         if todo_snapshot:
             compressed.append({"role": "user", "content": todo_snapshot})
@@ -7112,7 +7136,8 @@ class AIAgent:
         for tc, name, args in parsed_calls:
             if self.tool_start_callback:
                 try:
-                    self.tool_start_callback(tc.id, name, args)
+                    # Pass trace_id as first argument (harness-4)
+                    self.tool_start_callback(self.trace_id, tc.id, name, args)
                 except Exception as cb_err:
                     logging.debug(f"Tool start callback error: {cb_err}")
 
@@ -7204,7 +7229,8 @@ class AIAgent:
 
             if self.tool_complete_callback:
                 try:
-                    self.tool_complete_callback(tc.id, name, args, function_result)
+                    # Pass trace_id as first argument (harness-4)
+                    self.tool_complete_callback(self.trace_id, tc.id, name, args, function_result)
                 except Exception as cb_err:
                     logging.debug(f"Tool complete callback error: {cb_err}")
 
@@ -7315,7 +7341,8 @@ class AIAgent:
 
             if _block_msg is None and self.tool_start_callback:
                 try:
-                    self.tool_start_callback(tool_call.id, function_name, function_args)
+                    # Pass trace_id as first argument (harness-4)
+                    self.tool_start_callback(self.trace_id, tool_call.id, function_name, function_args)
                 except Exception as cb_err:
                     logging.debug(f"Tool start callback error: {cb_err}")
 
@@ -7549,7 +7576,8 @@ class AIAgent:
 
             if self.tool_complete_callback:
                 try:
-                    self.tool_complete_callback(tool_call.id, function_name, function_args, function_result)
+                    # Pass trace_id as first argument (harness-4)
+                    self.tool_complete_callback(self.trace_id, tool_call.id, function_name, function_args, function_result)
                 except Exception as cb_err:
                     logging.debug(f"Tool complete callback error: {cb_err}")
 

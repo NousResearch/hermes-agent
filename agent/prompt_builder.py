@@ -940,7 +940,18 @@ def _load_hermes_md(cwd_path: Path) -> str:
 
 
 def _load_agents_md(cwd_path: Path) -> str:
-    """AGENTS.md — top-level only (no recursive walk)."""
+    """AGENTS.md — top-level only (no recursive walk).
+
+    Progressive disclosure implementation (Harness Engineering):
+    - Level 1: Always loaded (~2000 chars) — core rules, pitfalls
+    - Level 2: Loaded by default (~8000 chars) — module details
+    - Level 3: Loaded on-demand (~12000 chars) — task-specific templates
+
+    File format uses HTML comment markers:
+        <!-- LEVEL 1: ALWAYS LOADED -->
+        <!-- LEVEL 2: ON-DEMAND MODULES -->
+        <!-- LEVEL 3: TASK-SPECIFIC DETAILS -->
+    """
     for name in ["AGENTS.md", "agents.md"]:
         candidate = cwd_path / name
         if candidate.exists():
@@ -948,11 +959,95 @@ def _load_agents_md(cwd_path: Path) -> str:
                 content = candidate.read_text(encoding="utf-8").strip()
                 if content:
                     content = _scan_context_content(content, name)
-                    result = f"## {name}\n\n{content}"
-                    return _truncate_content(result, "AGENTS.md")
+                    return _load_agents_md_progressive(content, name)
             except Exception as e:
                 logger.debug("Could not read %s: %s", candidate, e)
     return ""
+
+
+def _load_agents_md_progressive(content: str, filename: str) -> str:
+    """Parse AGENTS.md for progressive disclosure levels.
+
+    Level 1 (ALWAYS LOADED): Core rules, critical pitfalls, essential conventions.
+    Level 2 (ON-DEMAND): Module details, architecture, configuration.
+    Level 3 (TASK-SPECIFIC): Code templates, test commands, troubleshooting.
+
+    Level 1 is always included. Level 2 and 3 are included based on available space
+    and config, mimicking Harness Engineering's progressive disclosure pattern.
+    """
+    import re
+
+    # Level markers in the file
+    LEVEL_1_START = re.compile(r'<!--\s*LEVEL\s*1.*?-->', re.IGNORECASE)
+    LEVEL_2_START = re.compile(r'<!--\s*LEVEL\s*2.*?-->', re.IGNORECASE)
+    LEVEL_3_START = re.compile(r'<!--\s*LEVEL\s*3.*?-->', re.IGNORECASE)
+    LEVEL_END = re.compile(r'<!--\s*END\s+OF.*?-->', re.IGNORECASE)
+
+    # Find level boundaries
+    level1_match = LEVEL_1_START.search(content)
+    level2_match = LEVEL_2_START.search(content)
+    level3_match = LEVEL_3_START.search(content)
+    level_end_match = LEVEL_END.search(content)
+
+    sections = []
+    header = f"## {filename}\n\n"
+
+    # Extract Level 1 (always include)
+    if level1_match and level2_match:
+        level1_content = content[level1_match.end():level2_match.start()].strip()
+    elif level1_match and level3_match:
+        level1_content = content[level1_match.end():level3_match.start()].strip()
+    elif level1_match and level_end_match:
+        level1_content = content[level1_match.end():level_end_match.start()].strip()
+    elif level1_match:
+        level1_content = content[level1_match.end():].strip()
+    else:
+        # Fallback: no markers found, use first ~2000 chars as Level 1
+        level1_content = content[:2000].strip()
+
+    if level1_content:
+        sections.append(level1_content)
+
+    # Extract Level 2 (include if space allows)
+    if level2_match and level3_match:
+        level2_content = content[level2_match.end():level3_match.start()].strip()
+    elif level2_match and level_end_match:
+        level2_content = content[level2_match.end():level_end_match.start()].strip()
+    elif level2_match:
+        level2_content = content[level2_match.end():].strip()
+    else:
+        level2_content = ""
+
+    # Only include Level 2 if total won't exceed limit
+    # Level 1 is ~2000, Level 2 is ~8000, Level 3 is ~12000
+    # Total progressive limit: ~15000 chars
+    PROGRESSIVE_LIMIT = 15000
+    if level2_content:
+        projected_total = len(header) + sum(len(s) for s in sections) + len(level2_content)
+        if projected_total < PROGRESSIVE_LIMIT:
+            sections.append(level2_content)
+
+    # Extract Level 3 (include only if space allows and makes sense)
+    if level3_match and level_end_match:
+        level3_content = content[level3_match.end():level_end_match.start()].strip()
+    elif level3_match:
+        level3_content = content[level3_match.end():].strip()
+    else:
+        level3_content = ""
+
+    if level3_content:
+        # Only include Level 3 if we have plenty of space
+        projected_total = len(header) + sum(len(s) for s in sections) + len(level3_content)
+        if projected_total < PROGRESSIVE_LIMIT:
+            sections.append(level3_content)
+        elif sections and len(sections) == 1:
+            # At minimum, include a hint that more info is available
+            sections.append(
+                "\n<!-- More AGENTS.md content available. Use file tools to read full content if needed. -->"
+            )
+
+    result = header + "\n\n".join(sections)
+    return _truncate_content(result, "AGENTS.md")
 
 
 def _load_claude_md(cwd_path: Path) -> str:

@@ -1452,8 +1452,9 @@ class TestConcurrentToolExecution:
         messages = []
         starts = []
         completes = []
-        agent.tool_start_callback = lambda tool_call_id, function_name, function_args: starts.append((tool_call_id, function_name, function_args))
-        agent.tool_complete_callback = lambda tool_call_id, function_name, function_args, function_result: completes.append((tool_call_id, function_name, function_args, function_result))
+        # Callback signature changed: now includes trace_id as first arg (harness-4)
+        agent.tool_start_callback = lambda trace_id, tool_call_id, function_name, function_args: starts.append((tool_call_id, function_name, function_args))
+        agent.tool_complete_callback = lambda trace_id, tool_call_id, function_name, function_args, function_result: completes.append((tool_call_id, function_name, function_args, function_result))
 
         with patch("run_agent.handle_function_call", return_value='{"success": true}'):
             agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
@@ -1468,8 +1469,9 @@ class TestConcurrentToolExecution:
         messages = []
         starts = []
         completes = []
-        agent.tool_start_callback = lambda tool_call_id, function_name, function_args: starts.append((tool_call_id, function_name, function_args))
-        agent.tool_complete_callback = lambda tool_call_id, function_name, function_args, function_result: completes.append((tool_call_id, function_name, function_args, function_result))
+        # Callback signature changed: now includes trace_id as first arg (harness-4)
+        agent.tool_start_callback = lambda trace_id, tool_call_id, function_name, function_args: starts.append((tool_call_id, function_name, function_args))
+        agent.tool_complete_callback = lambda trace_id, tool_call_id, function_name, function_args, function_result: completes.append((tool_call_id, function_name, function_args, function_result))
 
         with patch("run_agent.handle_function_call", side_effect=['{"id":1}', '{"id":2}']):
             agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")

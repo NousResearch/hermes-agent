@@ -1,0 +1,7 @@
+# This file is used internally by FFMPEG.
+file 'file:/home/butterfly443/.hermes/hermes-agent/media/videos/manim_demo/720p30/partial_movie_files/FormulaScene/1987512680_1954696618_223132457.mp4'
+file 'file:/home/butterfly443/.hermes/hermes-agent/media/videos/manim_demo/720p30/partial_movie_files/FormulaScene/2538612922_3394500337_3338667344.mp4'
+file 'file:/home/butterfly443/.hermes/hermes-agent/media/videos/manim_demo/720p30/partial_movie_files/FormulaScene/2538612922_4077004114_2512140275.mp4'
+file 'file:/home/butterfly443/.hermes/hermes-agent/media/videos/manim_demo/720p30/partial_movie_files/FormulaScene/2538612922_3366045169_1363084272.mp4'
+file 'file:/home/butterfly443/.hermes/hermes-agent/media/videos/manim_demo/720p30/partial_movie_files/FormulaScene/2538612922_1368104465_1191806766.mp4'
+file 'file:/home/butterfly443/.hermes/hermes-agent/media/videos/manim_demo/720p30/partial_movie_files/FormulaScene/2538612922_2844360058_3170771206.mp4'

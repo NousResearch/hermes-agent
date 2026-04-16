@@ -5510,6 +5510,37 @@ Examples:
             tools_command(args)
 
     tools_parser.set_defaults(func=cmd_tools)
+
+    # =========================================================================
+    # trace command — view and analyze call chain traces
+    # =========================================================================
+    trace_parser = subparsers.add_parser(
+        "trace",
+        help="View and analyze call chain traces",
+        description="List, show, analyze, and export trace data recorded by Hermes Agent.",
+    )
+    trace_sub = trace_parser.add_subparsers(dest="trace_action")
+
+    trace_list_p = trace_sub.add_parser("list", help="List recent traces")
+    trace_list_p.add_argument("--limit", type=int, default=20, help="Max traces to show (default: 20)")
+
+    trace_show_p = trace_sub.add_parser("show", help="Show details of a specific trace")
+    trace_show_p.add_argument("trace_id", help="Trace ID (full or short 8-char prefix)")
+
+    trace_analyze_p = trace_sub.add_parser("analyze", help="Analyze trace performance")
+    trace_analyze_p.add_argument("trace_id", help="Trace ID (full or short 8-char prefix)")
+
+    trace_export_p = trace_sub.add_parser("export", help="Export trace data")
+    trace_export_p.add_argument("trace_id", help="Trace ID (full or short 8-char prefix)")
+    trace_export_p.add_argument("--format", default="json", choices=["json", "mermaid"],
+                                help="Output format (default: json)")
+
+    def cmd_trace(args):
+        from hermes_cli.trace_cli import trace_command
+        trace_command(args)
+
+    trace_parser.set_defaults(func=cmd_trace)
+
     # =========================================================================
     # mcp command — manage MCP server connections
     # =========================================================================

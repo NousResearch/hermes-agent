@@ -33,6 +33,154 @@ logger = logging.getLogger(__name__)
 
 
 # =============================================================================
+# Harness-5: Self-Evolving Harness Integration
+# =============================================================================
+
+def _get_hermes_evolve_module():
+    """Lazily import the self-evolve module to avoid circular imports."""
+    try:
+        import sys
+        from pathlib import Path
+        hermes_home = Path.home() / ".hermes"
+        evolve_path = hermes_home / "scripts" / "self_evolve.py"
+        if str(hermes_home / "scripts") not in sys.path:
+            sys.path.insert(0, str(hermes_home / "scripts"))
+        from self_evolve import record_failure, get_adaptation_suggestion, check_patterns
+        return record_failure, get_adaptation_suggestion, check_patterns
+    except Exception:
+        return None, None, None
+
+
+def _record_tool_failure(
+    function_name: str,
+    error_message: str,
+    tool_call_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+    task_id: Optional[str] = None,
+    function_args: Optional[Dict[str, Any]] = None,
+) -> Dict:
+    """
+    Record a tool failure for harness-5 self-evolving system.
+    Enhanced with Lyapunov health monitoring.
+
+    Returns dict with keys: triggered (bool), count (int), suggestion (str or None),
+    lyapunov_alarm (dict or None), lyapunov_status (str)
+    """
+    record_failure_fn, get_suggestion_fn, _ = _get_hermes_evolve_module()
+    if record_failure_fn is None:
+        return {"triggered": False, "count": 0, "suggestion": None}
+
+    # Determine failure type based on function name and error message
+    failure_type = "tool_failure"
+    msg_lower = error_message.lower()
+
+    if "sudo" in msg_lower or function_name in ("terminal", "bash"):
+        if "permission" in msg_lower or "denied" in msg_lower:
+            failure_type = "terminal_sudo"
+    elif "timeout" in msg_lower or "timed out" in msg_lower:
+        failure_type = "tool_timeout"
+    elif "context" in msg_lower and ("length" in msg_lower or "overflow" in msg_lower or "maximum" in msg_lower):
+        failure_type = "context_overflow"
+
+    context = {
+        "function_name": function_name,
+        "tool_call_id": tool_call_id,
+        "session_id": session_id,
+        "task_id": task_id,
+    }
+    if function_args:
+        # Truncate large args to avoid storing too much
+        args_str = json.dumps(function_args, ensure_ascii=False)
+        context["args_preview"] = args_str[:500] if len(args_str) > 500 else args_str
+
+    try:
+        # 1. 记录到 harness-5
+        result = record_failure_fn(
+            failure_type=failure_type,
+            message=error_message,
+            context=context,
+            trace_id=None  # trace_id not available in this context
+        )
+
+        # 2. 集成 Lyapunov 监控
+        lyapunov_result = None
+        lyapunov_alarm = None
+        lyapunov_status = "unknown"
+        
+        try:
+            # 延迟导入 Lyapunov 集成器
+            import sys
+            from pathlib import Path
+            hermes_home = Path.home() / ".hermes"
+            scripts_path = str(hermes_home / "scripts")
+            if scripts_path not in sys.path:
+                sys.path.insert(0, scripts_path)
+            
+            from lyapunov_health_monitor.integration import get_integrator
+            
+            integrator = get_integrator()
+            lyapunov_result = integrator.record_failure_and_monitor(
+                session_id=session_id or "default",
+                failure_type=failure_type,
+                message=error_message,
+                context=context,
+                trace_id=None,
+            )
+            
+            if lyapunov_result:
+                harness_result, lyapunov_alarm = lyapunov_result
+                # 获取 Lyapunov 状态
+                if lyapunov_alarm:
+                    lyapunov_status = lyapunov_alarm.level.name.lower()
+                else:
+                    # 获取当前监控状态
+                    monitor_result, _ = integrator.monitor_only(session_id or "default")
+                    if monitor_result:
+                        lyapunov_status = monitor_result.status
+                    
+        except ImportError as e:
+            logger.debug(f"[Lyapunov] Module not available: {e}")
+        except Exception as e:
+            logger.debug(f"[Lyapunov] Failed to monitor: {e}")
+
+        # 3. 如果 harness-5 触发适应
+        if result.get("triggered"):
+            suggestion = get_suggestion_fn(failure_type, error_message)
+            if suggestion:
+                logger.warning(
+                    f"[harness-5] Adaptation triggered: {failure_type} occurred {result['count']} times. "
+                    f"Suggestion: {suggestion.get('suggestion', 'See adaptation history')}"
+                )
+            else:
+                logger.warning(
+                    f"[harness-5] Adaptation triggered: {failure_type} occurred {result['count']} times. "
+                    f"No automatic adaptation rule found."
+                )
+            
+            # 4. 如果 Lyapunov 也检测到问题，增强日志
+            if lyapunov_alarm:
+                logger.warning(
+                    f"[Lyapunov] Health monitoring confirms issue: {lyapunov_alarm.level.name} - {lyapunov_alarm.title}"
+                )
+
+        # 5. 返回增强的结果
+        enhanced_result = {
+            "triggered": result.get("triggered", False),
+            "count": result.get("count", 0),
+            "suggestion": result.get("suggestion"),
+            "lyapunov_alarm": lyapunov_alarm.to_dict() if lyapunov_alarm else None,
+            "lyapunov_status": lyapunov_status,
+            "failure_type": failure_type,
+        }
+        
+        return enhanced_result
+        
+    except Exception as e:
+        logger.debug(f"[harness-5] Failed to record failure: {e}")
+        return {"triggered": False, "count": 0, "suggestion": None}
+
+
+# =============================================================================
 # Async Bridging  (single source of truth -- used by registry.dispatch too)
 # =============================================================================
 
@@ -569,6 +717,15 @@ def handle_function_call(
     except Exception as e:
         error_msg = f"Error executing {function_name}: {str(e)}"
         logger.error(error_msg)
+        # Harness-5: Record failure for self-evolving system
+        _record_tool_failure(
+            function_name=function_name,
+            error_message=error_msg,
+            tool_call_id=tool_call_id,
+            session_id=session_id,
+            task_id=task_id,
+            function_args=function_args,
+        )
         return json.dumps({"error": error_msg}, ensure_ascii=False)
 
 

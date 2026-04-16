@@ -555,5 +555,5 @@ async def test_send_escapes_chunk_indicator_for_markdownv2(adapter):
 
     assert result.success is True
     assert len(sent_texts) > 1
-    assert re.search(r" \\\([0-9]+/[0-9]+\\\)$", sent_texts[0])
-    assert re.search(r" \\\([0-9]+/[0-9]+\\\)$", sent_texts[-1])
+    assert re.search(r" \([0-9]+/[0-9]+\)$", sent_texts[0])
+    assert re.search(r" \([0-9]+/[0-9]+\)$", sent_texts[-1])

@@ -284,9 +284,12 @@
         default = [ ];
         description = ''
           Paths to environment files containing secrets (API keys, tokens).
-          Files are symlinked into $HERMES_HOME/env.d/ at activation time
-          and loaded by load_hermes_dotenv() with override=True.
-          Use this for sops-nix / agenix managed secrets — no copying.
+          Placed into $HERMES_HOME/env.d/ at activation time and loaded
+          by load_hermes_dotenv() with override=True.
+          Native mode: symlinked (preserves secret manager lifecycle).
+          Container mode: copied (NOTE: this means secrets are written to disk
+          in this mode. You are responsible for cleaning them up when they are
+          no longer needed).
 
           Ensure the secret files are readable by the service user/group,
           e.g. for sops-nix: `owner = config.services.hermes-agent.user;`
@@ -838,9 +841,18 @@
 
           # Nix-managed env files → env.d/ (loaded by load_hermes_dotenv()).
           # Non-secret vars are written as a generated file; secret files are
-          # symlinked to avoid copying sops-nix/agenix managed content.
+          # symlinked (native mode) or copied (container mode) into env.d/.
+          # Container mode copies because symlink targets (e.g. /run/secrets/)
+          # are not accessible inside the container.
           ${lib.optionalString (cfg.environment != {} || cfg.environmentFiles != []) ''
             mkdir -p "${cfg.stateDir}/.hermes/env.d"
+
+            # Clean up stale nix-managed env files from previous activations.
+            # Without this, reducing environmentFiles count leaves old entries behind.
+            find "${cfg.stateDir}/.hermes/env.d" -maxdepth 1 \
+              \( -name 'nix-[0-9]*.env' -o -name 'nix-environment.env' \) \
+              -delete 2>/dev/null || true
+
             ${lib.optionalString (cfg.environment != {}) ''
               cat > "${cfg.stateDir}/.hermes/env.d/nix-environment.env" <<'HERMES_NIX_ENV_EOF'
 ${envFileContent}
@@ -849,7 +861,16 @@ HERMES_NIX_ENV_EOF
               chmod 0640 "${cfg.stateDir}/.hermes/env.d/nix-environment.env"
             ''}
             ${lib.concatStringsSep "\n" (lib.imap0 (i: f: ''
-              ln -sfn "${f}" "${cfg.stateDir}/.hermes/env.d/nix-${toString i}.env"
+              ${if cfg.container.enable then ''
+                # Container mode: copy content so it's readable inside the container
+                # (symlink targets like /run/secrets/ aren't mounted in the container)
+                if [ -f "${f}" ]; then
+                  install -o ${cfg.user} -g ${cfg.group} -m 0640 "${f}" "${cfg.stateDir}/.hermes/env.d/nix-${toString i}.env"
+                fi
+              '' else ''
+                # Native mode: symlink to preserve sops-nix/agenix secret lifecycle
+                ln -sfn "${f}" "${cfg.stateDir}/.hermes/env.d/nix-${toString i}.env"
+              ''}
             '') cfg.environmentFiles)}
           ''}
 

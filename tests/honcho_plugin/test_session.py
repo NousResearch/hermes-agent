@@ -525,6 +525,34 @@ class TestConcludeToolDispatch:
         assert parsed == {"error": "Exactly one of conclusion or delete_id must be provided."}
         provider._manager.delete_conclusion.assert_not_called()
 
+    def test_honcho_search_rejects_whitespace_only_query(self):
+        """Whitespace-only query should be treated as missing in honcho_search."""
+        import json
+        provider = HonchoMemoryProvider()
+        provider._session_initialized = True
+        provider._session_key = "telegram:123"
+        provider._manager = MagicMock()
+
+        result = provider.handle_tool_call("honcho_search", {"query": "   "})
+
+        parsed = json.loads(result)
+        assert parsed == {"error": "Missing required parameter: query"}
+        provider._manager.search_context.assert_not_called()
+
+    def test_honcho_reasoning_rejects_whitespace_only_query(self):
+        """Whitespace-only query should be treated as missing in honcho_reasoning."""
+        import json
+        provider = HonchoMemoryProvider()
+        provider._session_initialized = True
+        provider._session_key = "telegram:123"
+        provider._manager = MagicMock()
+
+        result = provider.handle_tool_call("honcho_reasoning", {"query": "   "})
+
+        parsed = json.loads(result)
+        assert parsed == {"error": "Missing required parameter: query"}
+        provider._manager.dialectic_query.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # Message chunking

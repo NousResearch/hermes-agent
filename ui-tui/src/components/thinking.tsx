@@ -125,13 +125,7 @@ function TreeNode({
   )
 }
 
-export function Spinner({
-  color,
-  variant = 'think'
-}: {
-  color: string
-  variant?: 'think' | 'tool'
-}) {
+export function Spinner({ color, variant = 'think' }: { color: string; variant?: 'think' | 'tool' }) {
   const spin = useMemo(() => {
     const raw = spinners[pick(variant === 'tool' ? TOOL : THINK)]
 

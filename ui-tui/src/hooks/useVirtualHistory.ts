@@ -73,6 +73,7 @@ export function useVirtualHistory(
   }, [items])
 
   const offsets = useMemo(() => {
+    void ver
     const out = new Array<number>(items.length + 1).fill(0)
 
     for (let i = 0; i < items.length; i++) {

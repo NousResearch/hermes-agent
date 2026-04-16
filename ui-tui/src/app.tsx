@@ -235,16 +235,13 @@ export function App({ gw }: { gw: GatewayClient }) {
     [sys]
   )
 
-  const maybeGoodVibes = useCallback(
-    (text: string) => {
-      if (!GOOD_VIBES_RE.test(text)) {
-        return
-      }
+  const maybeGoodVibes = useCallback((text: string) => {
+    if (!GOOD_VIBES_RE.test(text)) {
+      return
+    }
 
-      setGoodVibesTick(v => v + 1)
-    },
-    []
-  )
+    setGoodVibesTick(v => v + 1)
+  }, [])
 
   const applyDisplayConfig = useCallback((cfg: ConfigFullResponse | null) => {
     const display = cfg?.config?.display ?? {}

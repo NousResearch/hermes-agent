@@ -417,6 +417,9 @@ class MemoryStore:
             return []
         try:
             raw = path.read_text(encoding="utf-8")
+            # Strip UTF-8 BOM if present (common when files are edited on Windows)
+            if raw.startswith("\ufeff"):
+                raw = raw[1:]
         except (OSError, IOError):
             return []
 

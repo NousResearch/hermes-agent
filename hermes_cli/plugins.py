@@ -112,6 +112,7 @@ class LoadedPlugin:
     module: Optional[types.ModuleType] = None
     tools_registered: List[str] = field(default_factory=list)
     hooks_registered: List[str] = field(default_factory=list)
+    commands_registered: List[str] = field(default_factory=list)
     enabled: bool = False
     error: Optional[str] = None
 
@@ -210,6 +211,53 @@ class PluginContext:
             "plugin": self.manifest.name,
         }
         logger.debug("Plugin %s registered CLI command: %s", self.manifest.name, name)
+
+    # -- slash command registration -------------------------------------------
+
+    def register_command(
+        self,
+        name: str,
+        handler: Callable,
+        description: str = "",
+    ) -> None:
+        """Register a slash command (e.g. ``/lcm``) available in CLI and gateway sessions.
+
+        The handler signature is ``fn(raw_args: str) -> str | None``.
+        It may also be an async callable — the gateway dispatch handles both.
+
+        Unlike ``register_cli_command()`` (which creates ``hermes <subcommand>``
+        terminal commands), this registers in-session slash commands that users
+        invoke during a conversation.
+
+        Names conflicting with built-in commands are rejected with a warning.
+        """
+        clean = name.lower().strip().lstrip("/").replace(" ", "-")
+        if not clean:
+            logger.warning(
+                "Plugin '%s' tried to register a command with an empty name.",
+                self.manifest.name,
+            )
+            return
+
+        # Reject if it conflicts with a built-in command
+        try:
+            from hermes_cli.commands import resolve_command
+            if resolve_command(clean) is not None:
+                logger.warning(
+                    "Plugin '%s' tried to register command '/%s' which conflicts "
+                    "with a built-in command. Skipping.",
+                    self.manifest.name, clean,
+                )
+                return
+        except Exception:
+            pass  # If commands module isn't available, skip the check
+
+        self._manager._plugin_commands[clean] = {
+            "handler": handler,
+            "description": description or "Plugin command",
+            "plugin": self.manifest.name,
+        }
+        logger.debug("Plugin %s registered command: /%s", self.manifest.name, clean)
 
     # -- context engine registration -----------------------------------------
 
@@ -323,6 +371,7 @@ class PluginManager:
         self._plugin_tool_names: Set[str] = set()
         self._cli_commands: Dict[str, dict] = {}
         self._context_engine = None  # Set by a plugin via register_context_engine()
+        self._plugin_commands: Dict[str, dict] = {}  # Slash commands registered by plugins
         self._discovered: bool = False
         self._cli_ref = None  # Set by CLI after plugin discovery
         # Plugin skill registry: qualified name → metadata dict.
@@ -485,6 +534,10 @@ class PluginManager:
                         for h in p.hooks_registered
                     }
                 )
+                loaded.commands_registered = [
+                    c for c in self._plugin_commands
+                    if self._plugin_commands[c].get("plugin") == manifest.name
+                ]
                 loaded.enabled = True
 
         except Exception as exc:
@@ -598,6 +651,7 @@ class PluginManager:
                     "enabled": loaded.enabled,
                     "tools": len(loaded.tools_registered),
                     "hooks": len(loaded.hooks_registered),
+                    "commands": len(loaded.commands_registered),
                     "error": loaded.error,
                 }
             )
@@ -697,6 +751,20 @@ def get_pre_tool_call_block_message(
 def get_plugin_context_engine():
     """Return the plugin-registered context engine, or None."""
     return get_plugin_manager()._context_engine
+
+
+def get_plugin_command_handler(name: str) -> Optional[Callable]:
+    """Return the handler for a plugin-registered slash command, or ``None``."""
+    entry = get_plugin_manager()._plugin_commands.get(name)
+    return entry["handler"] if entry else None
+
+
+def get_plugin_commands() -> Dict[str, dict]:
+    """Return the full plugin commands dict (name → {handler, description, plugin}).
+
+    Safe to call before discovery — returns an empty dict if no plugins loaded.
+    """
+    return get_plugin_manager()._plugin_commands
 
 
 def get_plugin_toolsets() -> List[tuple]:

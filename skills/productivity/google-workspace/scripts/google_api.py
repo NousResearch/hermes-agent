@@ -47,6 +47,13 @@ SCOPES = [
 ]
 
 
+def _normalize_authorized_user_payload(payload: dict) -> dict:
+    normalized = dict(payload)
+    if not normalized.get("type"):
+        normalized["type"] = "authorized_user"
+    return normalized
+
+
 def _ensure_authenticated():
     if not TOKEN_PATH.exists():
         print("Not authenticated. Run the setup script first:", file=sys.stderr)
@@ -170,7 +177,12 @@ def get_credentials():
     creds = Credentials.from_authorized_user_file(str(TOKEN_PATH), _stored_token_scopes())
     if creds.expired and creds.refresh_token:
         creds.refresh(Request())
-        TOKEN_PATH.write_text(creds.to_json())
+        TOKEN_PATH.write_text(
+            json.dumps(
+                _normalize_authorized_user_payload(json.loads(creds.to_json())),
+                indent=2,
+            )
+        )
     if not creds.valid:
         print("Token is invalid. Re-run setup.", file=sys.stderr)
         sys.exit(1)

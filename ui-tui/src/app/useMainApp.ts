@@ -93,7 +93,10 @@ export function useMainApp(gw: GatewayClient) {
     }
   }, [stdout])
 
-  const [historyItems, setHistoryItems] = useState<Msg[]>([])
+  // Seed with an info-less intro so the banner paints on the first frame,
+  // before gateway.ready / session.create resolve. Replaced by
+  // `introMsg(info)` as soon as session.info arrives.
+  const [historyItems, setHistoryItems] = useState<Msg[]>(() => [{ kind: 'intro', role: 'system', text: '' }])
   const [lastUserMsg, setLastUserMsg] = useState('')
   const [stickyPrompt, setStickyPrompt] = useState('')
   const [catalog, setCatalog] = useState<null | SlashCatalog>(null)

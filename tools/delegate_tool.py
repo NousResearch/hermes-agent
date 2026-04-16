@@ -703,6 +703,15 @@ def delegate_task(
     # Track goal labels for progress display (truncated for readability)
     task_labels = [t["goal"][:40] for t in task_list]
 
+    prepared_tasks = []
+    for i, t in enumerate(task_list):
+        selected_route = t.get("routing_profile") or routing_profile
+        try:
+            route_name, route_cfg, _ = _resolve_delegation_route(normalized_cfg, selected_route)
+        except ValueError as exc:
+            return tool_error(str(exc))
+        prepared_tasks.append((i, t, route_name, route_cfg))
+
     # Save parent tool names BEFORE any child construction mutates the global.
     # _build_child_agent() calls AIAgent() which calls get_tool_definitions(),
     # which overwrites model_tools._last_resolved_tool_names with child's toolset.
@@ -714,10 +723,8 @@ def delegate_task(
     # child build raises (otherwise _last_resolved_tool_names stays corrupted).
     children = []
     try:
-        for i, t in enumerate(task_list):
-            selected_route = t.get("routing_profile") or routing_profile
+        for i, t, route_name, route_cfg in prepared_tasks:
             try:
-                route_name, route_cfg, _ = _resolve_delegation_route(normalized_cfg, selected_route)
                 creds = _resolve_delegation_credentials(route_cfg, parent_agent, route_name=route_name)
             except ValueError as exc:
                 return tool_error(str(exc))
@@ -861,7 +868,12 @@ def _empty_delegation_route() -> dict:
 
 
 def _normalize_delegation_config(cfg: Optional[dict]) -> dict:
-    """Return delegation config in canonical routing form."""
+    """Return delegation config in canonical routing form.
+
+    Keep this normalization aligned with hermes_cli.config.migrate_config(), which
+    performs the persistent on-disk migration of legacy flat delegation keys into
+    delegation.routes.default.
+    """
     cfg = cfg if isinstance(cfg, dict) else {}
     normalized_routes: Dict[str, Dict[str, str]] = {}
 
@@ -925,7 +937,14 @@ def _resolve_delegation_route(cfg: Optional[dict], requested_route: Optional[str
 
 
 def _validate_inherited_route_model(configured_model: Optional[str], parent_agent, route_name: str) -> None:
-    """Fail fast on provider/model mismatches when inheriting the parent provider."""
+    """Fail fast on provider/model mismatches when inheriting the parent provider.
+
+    This guard is intentionally narrow: it only protects the known bad case where
+    a route inherits the parent openai-codex provider but specifies a provider-
+    qualified model name (contains '/'). In that situation the delegated child
+    would otherwise inherit Codex transport settings and fail later with a less
+    obvious provider/model mismatch.
+    """
     if not configured_model:
         return
 

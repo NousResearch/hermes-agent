@@ -2313,6 +2313,9 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                         print("  ✓ Removed unused compression.summary_* keys")
 
     # ── Legacy delegation cleanup: flat keys → named routes ──
+    # Keep this persistent migration aligned with
+    # tools.delegate_tool._normalize_delegation_config(), which performs the
+    # runtime-only normalization for already-loaded config objects.
     config = load_config()
     delegation = config.get("delegation")
     legacy_delegation_keys = ("model", "provider", "base_url", "api_key")

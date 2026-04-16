@@ -210,6 +210,22 @@ def test_managed_fal_submit_reuses_cached_sync_client(monkeypatch):
     assert captured["http_client"] is first_client
 
 
+def test_image_generation_registry_requires_fal_key(monkeypatch):
+    _install_fake_tools_package()
+    _install_fake_fal_client({})
+    monkeypatch.delenv("FAL_KEY", raising=False)
+    monkeypatch.setenv("HERMES_ENABLE_NOUS_MANAGED_TOOLS", "1")
+
+    image_generation_tool = _load_tool_module(
+        "tools.image_generation_tool",
+        "image_generation_tool.py",
+    )
+
+    entry = image_generation_tool.registry.get_entry("image_generate")
+    assert entry is not None
+    assert entry.requires_env == ["FAL_KEY"]
+
+
 def test_openai_tts_uses_managed_audio_gateway_when_direct_key_absent(monkeypatch, tmp_path):
     captured = {}
     _install_fake_tools_package()

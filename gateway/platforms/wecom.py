@@ -1303,7 +1303,29 @@ class WeComAdapter(BasePlatformAdapter):
         try:
             reply_req_id = self._reply_req_id_for_message(reply_to)
             if reply_req_id:
-                response = await self._send_reply_stream(reply_req_id, content)
+                try:
+                    response = await self._send_reply_stream(reply_req_id, content)
+                except Exception as exc:
+                    err_str = str(exc).lower()
+                    if "600039" in err_str or "device type not support" in err_str:
+                        logger.warning(
+                            "[%s] Reply stream failed (%s), falling back to proactive send",
+                            self.name,
+                            exc,
+                        )
+                        # Remove stale reply_req_id so subsequent fallbacks
+                        # don't re-enter the broken reply path.
+                        self._reply_req_ids.pop(str(reply_to or "").strip(), None)
+                        response = await self._send_request(
+                            APP_CMD_SEND,
+                            {
+                                "chatid": chat_id,
+                                "msgtype": "markdown",
+                                "markdown": {"content": content[:self.MAX_MESSAGE_LENGTH]},
+                            },
+                        )
+                    else:
+                        raise
             else:
                 response = await self._send_request(
                     APP_CMD_SEND,

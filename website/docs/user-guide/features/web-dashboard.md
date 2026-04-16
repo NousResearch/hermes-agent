@@ -298,3 +298,71 @@ The frontend is built with React 19, TypeScript, Tailwind CSS v4, and shadcn/ui-
 ## Automatic Build on Update
 
 When you run `hermes update`, the web frontend is automatically rebuilt if `npm` is available. This keeps the dashboard in sync with code updates. If `npm` isn't installed, the update skips the frontend build and `hermes dashboard` will build it on first launch.
+
+## Themes
+
+The dashboard supports visual themes that change colors, overlay effects, and overall feel. Switch themes live from the header bar — click the palette icon next to the language switcher.
+
+### Built-in Themes
+
+| Theme | Description |
+|-------|-------------|
+| **Hermes Teal** | Classic dark teal (default) |
+| **Midnight** | Deep blue-violet with cool accents |
+| **Ember** | Warm crimson and bronze |
+| **Mono** | Clean grayscale, minimal |
+| **Cyberpunk** | Neon green on black |
+| **Rosé** | Soft pink and warm ivory |
+
+Theme selection is persisted to `config.yaml` under `dashboard.theme` and restored on page load.
+
+### Custom Themes
+
+Create a YAML file in `~/.hermes/dashboard-themes/`:
+
+```yaml
+# ~/.hermes/dashboard-themes/ocean.yaml
+name: ocean
+label: Ocean
+description: Deep sea blues with coral accents
+
+colors:
+  background: "#0a1628"
+  foreground: "#e0f0ff"
+  card: "#0f1f35"
+  card-foreground: "#e0f0ff"
+  primary: "#ff6b6b"
+  primary-foreground: "#0a1628"
+  secondary: "#152540"
+  secondary-foreground: "#e0f0ff"
+  muted: "#1a2d4a"
+  muted-foreground: "#7899bb"
+  accent: "#1f3555"
+  accent-foreground: "#e0f0ff"
+  destructive: "#fb2c36"
+  destructive-foreground: "#fff"
+  success: "#4ade80"
+  warning: "#fbbf24"
+  border: "color-mix(in srgb, #ff6b6b 15%, transparent)"
+  input: "color-mix(in srgb, #ff6b6b 15%, transparent)"
+  ring: "#ff6b6b"
+  popover: "#0f1f35"
+  popover-foreground: "#e0f0ff"
+
+overlay:
+  noiseOpacity: 0.08
+  noiseBlendMode: color-dodge
+  warmGlowOpacity: 0.15
+  warmGlowColor: "rgba(255,107,107,0.2)"
+```
+
+The 21 color tokens map directly to the CSS custom properties used throughout the dashboard. All fields are required for custom themes. The `overlay` section is optional — it controls the grain texture and ambient glow effects.
+
+Refresh the dashboard after creating the file. Custom themes appear in the theme picker alongside built-ins.
+
+### Theme API
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/dashboard/themes` | GET | List available themes + active name |
+| `/api/dashboard/theme` | PUT | Set active theme. Body: `{"name": "midnight"}` |

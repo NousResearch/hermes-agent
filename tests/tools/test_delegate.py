@@ -179,16 +179,16 @@ class TestACPWorkerProfileDetection(unittest.TestCase):
     def test_extracts_profile_for_hermes_acp_command(self):
         profile = _extract_worker_profile_from_acp(
             "/usr/local/bin/hermes",
-            ["--profile", "superbif-stateless", "acp"],
+            ["--profile", "worker-profile", "acp"],
         )
-        self.assertEqual(profile, "superbif-stateless")
+        self.assertEqual(profile, "worker-profile")
 
     def test_extracts_profile_for_hermes_wrapper_name(self):
         profile = _extract_worker_profile_from_acp(
             "hermes-custom-wrapper",
-            ["-p", "superbif-stateless", "acp"],
+            ["-p", "worker-profile", "acp"],
         )
-        self.assertEqual(profile, "superbif-stateless")
+        self.assertEqual(profile, "worker-profile")
 
     def test_ignores_non_hermes_command_even_with_profile_flag(self):
         profile = _extract_worker_profile_from_acp(

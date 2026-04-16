@@ -781,13 +781,16 @@ class AIAgent:
         self.prefill_messages = prefill_messages or []  # Prefilled conversation turns
         self._force_ascii_payload = False
         
-        # Anthropic prompt caching: auto-enabled for Claude models via OpenRouter.
+        # Anthropic prompt caching: auto-enabled for Claude models via OpenRouter,
+        # native Anthropic API, or any proxy using anthropic_messages API mode.
         # Reduces input costs by ~75% on multi-turn conversations by caching the
         # conversation prefix. Uses system_and_3 strategy (4 breakpoints).
         is_openrouter = self._is_openrouter_url()
         is_claude = "claude" in self.model.lower()
         is_native_anthropic = self.api_mode == "anthropic_messages" and self.provider == "anthropic"
-        self._use_prompt_caching = (is_openrouter and is_claude) or is_native_anthropic
+        # Also enable caching for custom proxies using anthropic_messages mode with Claude models
+        is_anthropic_proxy = self.api_mode == "anthropic_messages" and is_claude
+        self._use_prompt_caching = (is_openrouter and is_claude) or is_native_anthropic or is_anthropic_proxy
         self._cache_ttl = "5m"  # Default 5-minute TTL (1.25x write cost)
         
         # Iteration budget: the LLM is only notified when it actually exhausts
@@ -1632,9 +1635,12 @@ class AIAgent:
 
         # ── Re-evaluate prompt caching ──
         is_native_anthropic = api_mode == "anthropic_messages" and new_provider == "anthropic"
+        is_claude = "claude" in new_model.lower()
+        is_anthropic_proxy = api_mode == "anthropic_messages" and is_claude
         self._use_prompt_caching = (
-            ("openrouter" in (self.base_url or "").lower() and "claude" in new_model.lower())
+            ("openrouter" in (self.base_url or "").lower() and is_claude)
             or is_native_anthropic
+            or is_anthropic_proxy
         )
 
         # ── Update context compressor ──
@@ -5705,9 +5711,12 @@ class AIAgent:
 
             # Re-evaluate prompt caching for the new provider/model
             is_native_anthropic = fb_api_mode == "anthropic_messages" and fb_provider == "anthropic"
+            is_fb_claude = "claude" in fb_model.lower()
+            is_anthropic_proxy = fb_api_mode == "anthropic_messages" and is_fb_claude
             self._use_prompt_caching = (
-                ("openrouter" in fb_base_url.lower() and "claude" in fb_model.lower())
+                ("openrouter" in fb_base_url.lower() and is_fb_claude)
                 or is_native_anthropic
+                or is_anthropic_proxy
             )
 
             # Update context compressor limits for the fallback model.

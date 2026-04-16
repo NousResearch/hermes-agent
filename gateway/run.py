@@ -2714,6 +2714,15 @@ class GatewayRunner:
                 return None
             return QQAdapter(config)
 
+        elif platform == Platform.A2A:
+            from gateway.platforms.a2a import A2AAdapter, check_a2a_requirements
+            if not check_a2a_requirements():
+                logger.warning("A2A: aiohttp not installed")
+                return None
+            adapter = A2AAdapter(config)
+            adapter.gateway_runner = self
+            return adapter
+
         return None
 
     def _is_user_authorized(self, source: SessionSource) -> bool:
@@ -2732,7 +2741,7 @@ class GatewayRunner:
         # connection, so HA events are always authorized.
         # Webhook events are authenticated via HMAC signature validation in
         # the adapter itself — no user allowlist applies.
-        if source.platform in (Platform.HOMEASSISTANT, Platform.WEBHOOK):
+        if source.platform in (Platform.HOMEASSISTANT, Platform.WEBHOOK, Platform.A2A):
             return True
 
         user_id = source.user_id
@@ -4128,7 +4137,7 @@ class GatewayRunner:
         
         # One-time prompt if no home channel is set for this platform
         # Skip for webhooks - they deliver directly to configured targets (github_comment, etc.)
-        if not history and source.platform and source.platform != Platform.LOCAL and source.platform != Platform.WEBHOOK:
+        if not history and source.platform and source.platform not in (Platform.LOCAL, Platform.WEBHOOK, Platform.A2A):
             platform_name = source.platform.value
             env_key = f"{platform_name.upper()}_HOME_CHANNEL"
             if not os.getenv(env_key):

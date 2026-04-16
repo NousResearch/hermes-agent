@@ -60,6 +60,8 @@ _HERMES_CORE_TOOLS = [
     "send_message",
     # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
     "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
+    # A2A agent-to-agent communication (gated on config via check_fn)
+    "a2a_discover", "a2a_call", "a2a_list",
 ]
 
 
@@ -213,6 +215,12 @@ TOOLSETS = {
             "feishu_drive_list_comments", "feishu_drive_list_comment_replies",
             "feishu_drive_reply_comment", "feishu_drive_add_comment",
         ],
+        "includes": []
+    },
+
+    "a2a": {
+        "description": "Agent-to-Agent communication — discover, call, and manage remote A2A agents",
+        "tools": ["a2a_discover", "a2a_call", "a2a_list"],
         "includes": []
     },
 

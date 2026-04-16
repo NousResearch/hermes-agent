@@ -67,6 +67,7 @@ class Platform(Enum):
     WEIXIN = "weixin"
     BLUEBUBBLES = "bluebubbles"
     QQBOT = "qqbot"
+    A2A = "a2a"
 
 
 @dataclass
@@ -1080,6 +1081,22 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 chat_id=dingtalk_home,
                 name=os.getenv("DINGTALK_HOME_CHANNEL_NAME", "Home"),
             )
+
+    # A2A (Agent-to-Agent)
+    a2a_enabled = os.getenv("A2A_ENABLED", "").lower() in ("true", "1", "yes")
+    a2a_port = os.getenv("A2A_PORT")
+    a2a_auth_token = os.getenv("A2A_AUTH_TOKEN", "")
+    if a2a_enabled:
+        if Platform.A2A not in config.platforms:
+            config.platforms[Platform.A2A] = PlatformConfig()
+        config.platforms[Platform.A2A].enabled = True
+        if a2a_port:
+            try:
+                config.platforms[Platform.A2A].extra["port"] = int(a2a_port)
+            except ValueError:
+                pass
+        if a2a_auth_token:
+            config.platforms[Platform.A2A].extra["auth_token"] = a2a_auth_token
 
     # Feishu / Lark
     feishu_app_id = os.getenv("FEISHU_APP_ID")

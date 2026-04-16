@@ -2210,8 +2210,7 @@ class FeishuAdapter(BasePlatformAdapter):
             self._pending_media_batches[key] = event
             self._schedule_media_batch_flush(key)
             return
-        existing.media_urls.extend(event.media_urls)
-        existing.media_types.extend(event.media_types)
+        existing.extend_attachments(event.ensure_attachments())
         if event.text:
             existing.text = self._merge_caption(existing.text, event.text)
         existing.timestamp = event.timestamp

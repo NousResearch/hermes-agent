@@ -352,6 +352,8 @@ Each platform has its own toolset:
 | DingTalk | `hermes-dingtalk` | Full tools including terminal |
 | Feishu/Lark | `hermes-feishu` | Full tools including terminal |
 | WeCom | `hermes-wecom` | Full tools including terminal |
+| WeCom Callback | `hermes-wecom-callback` | Full tools including terminal |
+| Weixin / WeChat | `hermes-weixin` | Full tools including terminal |
 | API Server | `hermes` (default) | Full tools including terminal |
 | Webhooks | `hermes-webhook` | Full tools including terminal |
 
@@ -370,5 +372,7 @@ Each platform has its own toolset:
 - [DingTalk Setup](dingtalk.md)
 - [Feishu/Lark Setup](feishu.md)
 - [WeCom Setup](wecom.md)
+- [WeCom Callback Setup](wecom-callback.md)
+- [Weixin Setup (WeChat)](weixin.md)
 - [Open WebUI + API Server](open-webui.md)
 - [Webhooks](webhooks.md)

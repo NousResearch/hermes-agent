@@ -19,6 +19,7 @@ import pytest
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
+    MessageAttachment,
     MessageEvent,
     MessageType,
     SendResult,
@@ -187,6 +188,9 @@ class TestDocumentDownloadBlock:
         assert len(event.media_urls) == 1
         assert os.path.exists(event.media_urls[0])
         assert event.media_types == ["application/pdf"]
+        assert len(event.attachments) == 1
+        assert event.attachments[0].kind == "document"
+        assert event.attachments[0].local_path == event.media_urls[0]
 
     @pytest.mark.asyncio
     async def test_supported_txt_injects_content(self, adapter):
@@ -203,6 +207,8 @@ class TestDocumentDownloadBlock:
         event = adapter.handle_message.call_args[0][0]
         assert "Hello from a text file" in event.text
         assert "[Content of notes.txt]" in event.text
+        assert len(event.attachments) == 1
+        assert event.attachments[0].kind == "document"
 
     @pytest.mark.asyncio
     async def test_supported_md_injects_content(self, adapter):
@@ -372,6 +378,7 @@ class TestMediaGroups:
         assert event.text == "two images"
         assert event.media_urls == ["/tmp/burst-one.jpg", "/tmp/burst-two.jpg"]
         assert len(event.media_types) == 2
+        assert [attachment.kind for attachment in event.attachments] == ["image", "image"]
 
     @pytest.mark.asyncio
     async def test_photo_album_is_buffered_and_combined(self, adapter):
@@ -392,6 +399,7 @@ class TestMediaGroups:
         assert event.text == "two images"
         assert event.media_urls == ["/tmp/one.jpg", "/tmp/two.jpg"]
         assert len(event.media_types) == 2
+        assert [attachment.kind for attachment in event.attachments] == ["image", "image"]
 
     @pytest.mark.asyncio
     async def test_disconnect_cancels_pending_media_group_flush(self, adapter):

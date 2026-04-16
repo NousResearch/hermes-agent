@@ -35,6 +35,7 @@ HERMES_DIR = get_hermes_home()
 CRON_DIR = HERMES_DIR / "cron"
 JOBS_FILE = CRON_DIR / "jobs.json"
 OUTPUT_DIR = CRON_DIR / "output"
+RUNTIME_CANARY_STATE_FILE = CRON_DIR / "runtime_canary_state.json"
 ONESHOT_GRACE_SECONDS = 120
 
 
@@ -183,6 +184,42 @@ def ensure_dirs():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     _secure_dir(CRON_DIR)
     _secure_dir(OUTPUT_DIR)
+
+
+def load_runtime_canary_state() -> Dict[str, Any]:
+    """Load persisted runtime canary throttle state."""
+    ensure_dirs()
+    if not RUNTIME_CANARY_STATE_FILE.exists():
+        return {"last_alerts": {}}
+    try:
+        with open(RUNTIME_CANARY_STATE_FILE, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (IOError, json.JSONDecodeError):
+        return {"last_alerts": {}}
+    return payload if isinstance(payload, dict) else {"last_alerts": {}}
+
+
+def save_runtime_canary_state(state: Dict[str, Any]) -> None:
+    """Persist runtime canary throttle state atomically."""
+    ensure_dirs()
+    fd, tmp_path = tempfile.mkstemp(
+        dir=str(RUNTIME_CANARY_STATE_FILE.parent),
+        suffix=".tmp",
+        prefix=".runtime_canary_",
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(state if isinstance(state, dict) else {"last_alerts": {}}, handle, indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_path, RUNTIME_CANARY_STATE_FILE)
+        _secure_file(RUNTIME_CANARY_STATE_FILE)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 # =============================================================================

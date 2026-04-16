@@ -84,19 +84,29 @@ def _mock_aiohttp(status=200, json_data=None, json_side_effect=None):
 
 def _connect_patches(mock_proc, mock_fh, mock_client_cls=None):
     """Return a dict of common patches needed to reach the health-check loop."""
+
+    def _consume_task_coroutine(coro, *args, **kwargs):
+        if hasattr(coro, "close"):
+            coro.close()
+        task = MagicMock()
+        task.done.return_value = False
+        return task
+
     patches = {
         "gateway.platforms.whatsapp.check_whatsapp_requirements": True,
-        "gateway.platforms.whatsapp.asyncio.create_task": MagicMock(),
+        "gateway.platforms.whatsapp.asyncio.create_task": MagicMock(side_effect=_consume_task_coroutine),
     }
     base = [
         patch("gateway.platforms.whatsapp.check_whatsapp_requirements", return_value=True),
+        patch("gateway.status.acquire_scoped_lock", return_value=(True, None)),
+        patch("gateway.status.release_scoped_lock", return_value=None),
         patch.object(Path, "exists", return_value=True),
         patch.object(Path, "mkdir", return_value=None),
         patch("subprocess.run", return_value=MagicMock(returncode=0)),
         patch("subprocess.Popen", return_value=mock_proc),
         patch("builtins.open", return_value=mock_fh),
         patch("gateway.platforms.whatsapp.asyncio.sleep", new_callable=AsyncMock),
-        patch("gateway.platforms.whatsapp.asyncio.create_task"),
+        patch("gateway.platforms.whatsapp.asyncio.create_task", side_effect=_consume_task_coroutine),
     ]
     if mock_client_cls is not None:
         base.append(patch("aiohttp.ClientSession", mock_client_cls))
@@ -173,7 +183,7 @@ class TestDataInitialized:
         patches = _connect_patches(mock_proc, mock_fh, mock_client_cls)
 
         with patches[0], patches[1], patches[2], patches[3], patches[4], \
-             patches[5], patches[6], patches[7], patches[8], \
+             patches[5], patches[6], patches[7], patches[8], patches[9], patches[10], \
              patch.object(type(adapter), "_poll_messages", return_value=MagicMock()):
             # Must NOT raise NameError
             result = await adapter.connect()
@@ -203,7 +213,7 @@ class TestFileHandleClosedOnError:
         patches = _connect_patches(mock_proc, mock_fh)
 
         with patches[0], patches[1], patches[2], patches[3], patches[4], \
-             patches[5], patches[6], patches[7]:
+             patches[5], patches[6], patches[7], patches[8], patches[9]:
             result = await adapter.connect()
 
         assert result is False
@@ -273,7 +283,7 @@ class TestBridgeRuntimeFailure:
         patches = _connect_patches(mock_proc, mock_fh, mock_client_cls)
 
         with patches[0], patches[1], patches[2], patches[3], patches[4], \
-             patches[5], patches[6], patches[7], patches[8]:
+             patches[5], patches[6], patches[7], patches[8], patches[9], patches[10]:
             result = await adapter.connect()
 
         assert result is False
@@ -304,7 +314,7 @@ class TestBridgeRuntimeFailure:
         patches = _connect_patches(mock_proc, mock_fh, mock_client_cls)
 
         with patches[0], patches[1], patches[2], patches[3], patches[4], \
-             patches[5], patches[6], patches[7], patches[8]:
+             patches[5], patches[6], patches[7], patches[8], patches[9], patches[10]:
             result = await adapter.connect()
 
         assert result is False
@@ -319,6 +329,8 @@ class TestBridgeRuntimeFailure:
         mock_fh = MagicMock()
 
         with patch("gateway.platforms.whatsapp.check_whatsapp_requirements", return_value=True), \
+             patch("gateway.status.acquire_scoped_lock", return_value=(True, None)), \
+             patch("gateway.status.release_scoped_lock", return_value=None), \
              patch.object(Path, "exists", return_value=True), \
              patch.object(Path, "mkdir", return_value=None), \
              patch("subprocess.run", return_value=MagicMock(returncode=0)), \
@@ -429,11 +441,26 @@ class TestKillPortProcess:
 class TestHttpSessionLifecycle:
     """Verify persistent aiohttp.ClientSession is created and cleaned up."""
 
+    class _CancelledTask:
+        """Minimal awaitable task stub that raises CancelledError cleanly."""
+
+        def __init__(self):
+            self.cancel = MagicMock()
+
+        def done(self):
+            return False
+
+        def __await__(self):
+            if False:
+                yield None
+            raise asyncio.CancelledError()
+
     @pytest.mark.asyncio
     async def test_session_closed_on_disconnect(self):
         """disconnect() should close self._http_session."""
         adapter = _make_adapter()
-        mock_session = AsyncMock()
+        mock_session = MagicMock()
+        mock_session.close = AsyncMock()
         mock_session.closed = False
         adapter._http_session = mock_session
         adapter._poll_task = None
@@ -450,7 +477,8 @@ class TestHttpSessionLifecycle:
     async def test_session_not_closed_when_already_closed(self):
         """disconnect() should skip close() when session is already closed."""
         adapter = _make_adapter()
-        mock_session = AsyncMock()
+        mock_session = MagicMock()
+        mock_session.close = AsyncMock()
         mock_session.closed = True
         adapter._http_session = mock_session
         adapter._poll_task = None
@@ -467,12 +495,7 @@ class TestHttpSessionLifecycle:
     async def test_poll_task_cancelled_on_disconnect(self):
         """disconnect() should cancel the poll task."""
         adapter = _make_adapter()
-        mock_task = MagicMock()
-        mock_task.done.return_value = False
-        mock_task.cancel = MagicMock()
-        mock_future = asyncio.Future()
-        mock_future.set_exception(asyncio.CancelledError())
-        mock_task.__await__ = mock_future.__await__
+        mock_task = self._CancelledTask()
         adapter._poll_task = mock_task
         adapter._http_session = None
         adapter._bridge_process = None

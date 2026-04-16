@@ -190,6 +190,24 @@ class TestAgentCacheLifecycle:
             assert "session-A" not in runner._agent_cache
             assert "session-B" in runner._agent_cache
 
+    def test_pinned_fallback_does_not_force_cache_eviction(self):
+        from gateway.run import GatewayRunner
+
+        agent = MagicMock()
+        agent.model = "glm-5.1"
+        agent._has_pinned_fallback.return_value = True
+
+        assert GatewayRunner._should_evict_cached_agent_after_turn(agent, "gpt-5.4") is False
+
+    def test_unpinned_fallback_still_evicts_cached_agent(self):
+        from gateway.run import GatewayRunner
+
+        agent = MagicMock()
+        agent.model = "glm-5.1"
+        agent._has_pinned_fallback.return_value = False
+
+        assert GatewayRunner._should_evict_cached_agent_after_turn(agent, "gpt-5.4") is True
+
     def test_reasoning_config_updates_in_place(self):
         """Reasoning config can be set on a cached agent without eviction."""
         from run_agent import AIAgent

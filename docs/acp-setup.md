@@ -80,9 +80,9 @@ Open Zed settings (`Cmd+,` on macOS or `Ctrl+,` on Linux) and add to your
     "hermes-agent": {
       "type": "custom",
       "command": "hermes",
-      "args": ["acp"],
-    },
-  },
+      "args": ["acp"]
+    }
+  }
 }
 ```
 
@@ -119,24 +119,31 @@ Open the ACP panel (usually in the right sidebar) and select **Hermes Agent**.
 Once connected, your editor provides a native interface to Hermes Agent:
 
 ### Chat Panel
+
 A conversational interface where you can describe tasks, ask questions, and
 give instructions. Hermes responds with explanations and actions.
 
 ### File Diffs
+
 When Hermes edits files, you see standard diffs in the editor. You can:
+
 - **Accept** individual changes
 - **Reject** changes you don't want
 - **Review** the full diff before applying
 
 ### Terminal Commands
+
 When Hermes needs to run shell commands (builds, tests, installs), the editor
 shows them in an integrated terminal. Depending on your settings:
+
 - Commands may run automatically
 - Or you may be prompted to **approve** each command
 
 ### Approval Flow
+
 For potentially destructive operations, the editor will prompt you for
 approval before Hermes proceeds. This includes:
+
 - File deletions
 - Shell commands
 - Git operations
@@ -154,6 +161,9 @@ Hermes Agent under ACP uses the **same configuration** as the CLI:
 
 You can run `hermes setup` to configure providers, or edit `~/.hermes/.env`
 directly.
+
+If you're using QQ employee background routing, check out
+[Configure QQ employee routes](./qq-employee-routes.md).
 
 ### Changing the model
 
@@ -209,6 +219,7 @@ settings for auto-approval or manual-approval preferences.
 ### Logs
 
 Hermes logs are written to stderr when running in ACP mode. Check:
+
 - VS Code: **Output** panel → select **ACP Client** or **Hermes Agent**
 - Zed: **View** → **Toggle Terminal** and check the process output
 - JetBrains: **Event Log** or the ACP tool window

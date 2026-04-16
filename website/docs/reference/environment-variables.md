@@ -227,6 +227,23 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `WECOM_WEBSOCKET_URL` | Custom WebSocket URL (default: `wss://openws.work.weixin.qq.com`) |
 | `WECOM_ALLOWED_USERS` | Comma-separated WeCom user IDs allowed to message the bot |
 | `WECOM_HOME_CHANNEL` | WeCom chat ID for cron delivery and notifications |
+| `WECOM_CALLBACK_CORP_ID` | WeCom corp ID for callback-mode self-built apps |
+| `WECOM_CALLBACK_CORP_SECRET` | WeCom corp secret for callback-mode self-built apps |
+| `WECOM_CALLBACK_AGENT_ID` | WeCom self-built app agent ID |
+| `WECOM_CALLBACK_TOKEN` | WeCom callback token |
+| `WECOM_CALLBACK_ENCODING_AES_KEY` | WeCom callback EncodingAESKey |
+| `WECOM_CALLBACK_PORT` | Local callback server port (default: `8645`) |
+| `WECOM_CALLBACK_ALLOWED_USERS` | Comma-separated WeCom user IDs allowed to message the callback app |
+| `WEIXIN_ACCOUNT_ID` | Weixin account ID returned by Tencent iLink QR login |
+| `WEIXIN_TOKEN` | Weixin token returned by Tencent iLink QR login |
+| `WEIXIN_BASE_URL` | Custom Weixin iLink API base URL |
+| `WEIXIN_CDN_BASE_URL` | Custom Weixin CDN base URL for media transfer |
+| `WEIXIN_DM_POLICY` | Direct-message policy: `pairing`, `open`, `allowlist`, or `disabled` |
+| `WEIXIN_GROUP_POLICY` | Group policy: `open`, `allowlist`, or `disabled` |
+| `WEIXIN_ALLOWED_USERS` | Comma-separated Weixin user IDs allowed in DMs |
+| `WEIXIN_GROUP_ALLOWED_USERS` | Comma-separated Weixin group chat IDs allowed for group messaging |
+| `WEIXIN_SPLIT_MULTILINE_MESSAGES` | Split multiline Weixin replies into chat-sized chunks (`true`/`false`) |
+| `WEIXIN_HOME_CHANNEL` | Weixin user/chat ID for cron delivery and notifications |
 | `MATTERMOST_URL` | Mattermost server URL (e.g. `https://mm.example.com`) |
 | `MATTERMOST_TOKEN` | Bot token or personal access token for Mattermost |
 | `MATTERMOST_ALLOWED_USERS` | Comma-separated Mattermost user IDs allowed to message the bot |

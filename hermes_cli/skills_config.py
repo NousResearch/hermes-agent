@@ -31,6 +31,8 @@ PLATFORMS = {
     "dingtalk": "💬 DingTalk",
     "feishu": "🪽 Feishu",
     "wecom": "💬 WeCom",
+    "wecom_callback": "💬 WeCom Callback",
+    "weixin": "💬 Weixin",
     "webhook": "🔗 Webhook",
 }
 

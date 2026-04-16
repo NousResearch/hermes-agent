@@ -4,7 +4,7 @@ import base64
 import os
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -380,8 +380,9 @@ class TestMediaUpload:
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         adapter._http_client = FakeClient()
 
-        with pytest.raises(ValueError, match="exceeds WeCom limit"):
-            await adapter._download_remote_bytes("https://example.com/file.bin", max_bytes=4)
+        with patch("tools.url_safety.is_safe_url", return_value=True):
+            with pytest.raises(ValueError, match="exceeds WeCom limit"):
+                await adapter._download_remote_bytes("https://example.com/file.bin", max_bytes=4)
 
     @pytest.mark.asyncio
     async def test_cache_media_decrypts_url_payload_before_writing(self):

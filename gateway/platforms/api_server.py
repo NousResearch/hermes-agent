@@ -174,10 +174,18 @@ _CORS_HEADERS = {
 
 
 if AIOHTTP_AVAILABLE:
+    _API_SERVER_ADAPTER_KEY = web.AppKey("api_server_adapter", object)
+
+    def _get_api_server_adapter(app):
+        adapter = app.get(_API_SERVER_ADAPTER_KEY)
+        if adapter is not None:
+            return adapter
+        return app.get("api_server_adapter")
+
     @web.middleware
     async def cors_middleware(request, handler):
         """Add CORS headers for explicitly allowed origins; handle OPTIONS preflight."""
-        adapter = request.app.get("api_server_adapter")
+        adapter = _get_api_server_adapter(request.app)
         origin = request.headers.get("Origin", "")
         cors_headers = None
         if adapter is not None:
@@ -196,6 +204,7 @@ if AIOHTTP_AVAILABLE:
         return response
 else:
     cors_middleware = None  # type: ignore[assignment]
+    _API_SERVER_ADAPTER_KEY = None  # type: ignore[assignment]
 
 
 def _openai_error(message: str, err_type: str = "invalid_request_error", param: str = None, code: str = None) -> Dict[str, Any]:
@@ -1606,7 +1615,7 @@ class APIServerAdapter(BasePlatformAdapter):
         try:
             mws = [mw for mw in (cors_middleware, body_limit_middleware, security_headers_middleware) if mw is not None]
             self._app = web.Application(middlewares=mws)
-            self._app["api_server_adapter"] = self
+            self._app[_API_SERVER_ADAPTER_KEY] = self
             self._app.router.add_get("/health", self._handle_health)
             self._app.router.add_get("/v1/health", self._handle_health)
             self._app.router.add_get("/v1/models", self._handle_models)

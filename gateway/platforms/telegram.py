@@ -58,6 +58,7 @@ sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter,
+    MessageAttachment,
     MessageEvent,
     MessageType,
     SendResult,
@@ -2153,9 +2154,8 @@ class TelegramAdapter(BasePlatformAdapter):
             if event.text:
                 existing.text = f"{existing.text}\n{event.text}" if existing.text else event.text
             # Merge any media that might be attached
-            if event.media_urls:
-                existing.media_urls.extend(event.media_urls)
-                existing.media_types.extend(event.media_types)
+            if event.ensure_attachments():
+                existing.extend_attachments(event.attachments)
 
         # Cancel any pending flush and restart the timer
         prior_task = self._pending_text_batch_tasks.get(key)
@@ -2214,8 +2214,7 @@ class TelegramAdapter(BasePlatformAdapter):
         if existing is None:
             self._pending_photo_batches[batch_key] = event
         else:
-            existing.media_urls.extend(event.media_urls)
-            existing.media_types.extend(event.media_types)
+            existing.extend_attachments(event.ensure_attachments())
             if event.text:
                 existing.text = self._merge_caption(existing.text, event.text)
 
@@ -2280,8 +2279,17 @@ class TelegramAdapter(BasePlatformAdapter):
                             break
                 # Save to local cache (for vision tool access)
                 cached_path = cache_image_from_bytes(bytes(image_bytes), ext=ext)
-                event.media_urls = [cached_path]
-                event.media_types = [f"image/{ext.lstrip('.')}" ]
+                event.attachments = [
+                    MessageAttachment(
+                        kind="image",
+                        mime_type=f"image/{ext.lstrip('.')}",
+                        local_path=cached_path,
+                        analysis_ref=cached_path,
+                        filename=os.path.basename(cached_path),
+                        is_animated=ext.lower() == ".gif",
+                    )
+                ]
+                event._sync_legacy_media_fields()
                 logger.info("[Telegram] Cached user photo at %s", cached_path)
                 media_group_id = getattr(msg, "media_group_id", None)
                 if media_group_id:
@@ -2300,8 +2308,16 @@ class TelegramAdapter(BasePlatformAdapter):
                 file_obj = await msg.voice.get_file()
                 audio_bytes = await file_obj.download_as_bytearray()
                 cached_path = cache_audio_from_bytes(bytes(audio_bytes), ext=".ogg")
-                event.media_urls = [cached_path]
-                event.media_types = ["audio/ogg"]
+                event.attachments = [
+                    MessageAttachment(
+                        kind="audio",
+                        mime_type="audio/ogg",
+                        local_path=cached_path,
+                        analysis_ref=cached_path,
+                        filename=os.path.basename(cached_path),
+                    )
+                ]
+                event._sync_legacy_media_fields()
                 logger.info("[Telegram] Cached user voice at %s", cached_path)
             except Exception as e:
                 logger.warning("[Telegram] Failed to cache voice: %s", e, exc_info=True)
@@ -2310,8 +2326,16 @@ class TelegramAdapter(BasePlatformAdapter):
                 file_obj = await msg.audio.get_file()
                 audio_bytes = await file_obj.download_as_bytearray()
                 cached_path = cache_audio_from_bytes(bytes(audio_bytes), ext=".mp3")
-                event.media_urls = [cached_path]
-                event.media_types = ["audio/mp3"]
+                event.attachments = [
+                    MessageAttachment(
+                        kind="audio",
+                        mime_type="audio/mp3",
+                        local_path=cached_path,
+                        analysis_ref=cached_path,
+                        filename=os.path.basename(cached_path),
+                    )
+                ]
+                event._sync_legacy_media_fields()
                 logger.info("[Telegram] Cached user audio at %s", cached_path)
             except Exception as e:
                 logger.warning("[Telegram] Failed to cache audio: %s", e, exc_info=True)
@@ -2360,8 +2384,16 @@ class TelegramAdapter(BasePlatformAdapter):
                 raw_bytes = bytes(doc_bytes)
                 cached_path = cache_document_from_bytes(raw_bytes, original_filename or f"document{ext}")
                 mime_type = SUPPORTED_DOCUMENT_TYPES[ext]
-                event.media_urls = [cached_path]
-                event.media_types = [mime_type]
+                event.attachments = [
+                    MessageAttachment(
+                        kind="document",
+                        mime_type=mime_type,
+                        local_path=cached_path,
+                        analysis_ref=cached_path,
+                        filename=original_filename or os.path.basename(cached_path),
+                    )
+                ]
+                event._sync_legacy_media_fields()
                 logger.info("[Telegram] Cached user document at %s", cached_path)
 
                 # For text files, inject content into event.text (capped at 100 KB)
@@ -2404,8 +2436,7 @@ class TelegramAdapter(BasePlatformAdapter):
         if existing is None:
             self._media_group_events[media_group_id] = event
         else:
-            existing.media_urls.extend(event.media_urls)
-            existing.media_types.extend(event.media_types)
+            existing.extend_attachments(event.ensure_attachments())
             if event.text:
                 existing.text = self._merge_caption(existing.text, event.text)
 
@@ -2469,14 +2500,12 @@ class TelegramAdapter(BasePlatformAdapter):
             cached_path = cache_image_from_bytes(bytes(image_bytes), ext=".webp")
             logger.info("[Telegram] Analyzing sticker at %s", cached_path)
 
-            from tools.vision_tools import vision_analyze_tool
-            import json as _json
+            from agent.vision_backend import analyze_image
 
-            result_json = await vision_analyze_tool(
-                image_url=cached_path,
+            result = await analyze_image(
+                image_ref=cached_path,
                 user_prompt=STICKER_VISION_PROMPT,
             )
-            result = _json.loads(result_json)
 
             if result.get("success"):
                 description = result.get("analysis", "a sticker")

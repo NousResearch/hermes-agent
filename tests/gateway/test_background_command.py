@@ -10,9 +10,17 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import Platform
+from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent
 from gateway.session import SessionSource
+
+
+class _InlineExecutorLoop:
+    @staticmethod
+    def run_in_executor(_executor, func):
+        fut = asyncio.get_running_loop().create_future()
+        fut.set_result(func())
+        return fut
 
 
 def _make_event(text="/background", platform=Platform.TELEGRAM,
@@ -31,14 +39,30 @@ def _make_runner():
     """Create a bare GatewayRunner with minimal mocks."""
     from gateway.run import GatewayRunner
     runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(
+        platforms={
+            Platform.TELEGRAM: PlatformConfig(enabled=True, token="***", extra={}),
+        }
+    )
     runner.adapters = {}
     runner._voice_mode = {}
     runner._session_db = None
     runner._reasoning_config = None
     runner._provider_routing = {}
     runner._fallback_model = None
+    runner._effective_model = None
+    runner._effective_provider = None
+    runner._session_model_overrides = {}
     runner._running_agents = {}
     runner._background_tasks = set()
+    runner._managed_background_jobs = {}
+    runner._managed_background_jobs_by_chat = {}
+    runner._managed_background_job_tasks = {}
+    runner._managed_background_job_agents = {}
+    runner._load_reasoning_config = lambda: None
+    runner._launch_background_worker = MagicMock(
+        return_value={"launcher_type": "subprocess", "launcher_pid": 4321}
+    )
 
     mock_store = MagicMock()
     runner.session_store = mock_store
@@ -84,29 +108,25 @@ class TestHandleBackgroundCommand:
 
     @pytest.mark.asyncio
     async def test_valid_prompt_starts_task(self):
-        """Running /background with a prompt returns confirmation and starts task."""
+        """Running /background with a prompt persists a job and launches a worker."""
         runner = _make_runner()
+        runner._launch_background_worker = MagicMock(
+            return_value={"launcher_type": "subprocess", "launcher_pid": 4321}
+        )
 
-        # Patch asyncio.create_task to capture the coroutine
-        created_tasks = []
-        original_create_task = asyncio.create_task
-
-        def capture_task(coro, *args, **kwargs):
-            # Close the coroutine to avoid warnings
-            coro.close()
-            mock_task = MagicMock()
-            created_tasks.append(mock_task)
-            return mock_task
-
-        with patch("gateway.run.asyncio.create_task", side_effect=capture_task):
+        with patch("gateway.run.asyncio.create_task", side_effect=AssertionError("legacy in-process background path should not run")):
             event = _make_event(text="/background Summarize the top HN stories")
             result = await runner._handle_background_command(event)
 
         assert "🔄" in result
-        assert "Background task started" in result
+        assert "task" in result.lower() or "任务" in result
         assert "bg_" in result  # task ID starts with bg_
         assert "Summarize the top HN stories" in result
-        assert len(created_tasks) == 1  # background task was created
+        runner._launch_background_worker.assert_called_once()
+
+        jobs = runner._background_jobs_for_source(event.source)
+        assert len(jobs) == 1
+        assert jobs[0]["status"] == "queued"
 
     @pytest.mark.asyncio
     async def test_prompt_truncated_in_preview(self):
@@ -153,6 +173,22 @@ class TestHandleBackgroundCommand:
                 result = await runner._handle_background_command(event)
                 assert "Background task started" in result
 
+    @pytest.mark.asyncio
+    async def test_btw_uses_durable_background_launcher(self):
+        """Running /btw should use the durable background launcher, not in-process task execution."""
+        runner = _make_runner()
+
+        with patch("gateway.run.asyncio.create_task", side_effect=AssertionError("legacy /btw create_task path should not run")):
+            event = _make_event(text="/btw what module owns session title sanitization?")
+            result = await runner._handle_btw_command(event)
+
+        assert "/btw" in result
+        assert "Reply will appear here shortly" in result
+        runner._launch_background_worker.assert_called_once()
+        jobs = runner._background_jobs_for_source(event.source)
+        assert len(jobs) == 1
+        assert jobs[0]["kind"] == "btw"
+
 
 # ---------------------------------------------------------------------------
 # _run_background_task
@@ -174,6 +210,30 @@ class TestRunBackgroundTask:
         )
         # No adapters set — should not raise
         await runner._run_background_task("test prompt", source, "bg_test")
+
+    @pytest.mark.asyncio
+    async def test_no_adapter_marks_managed_job_failed(self):
+        """Managed background jobs should fail closed when the adapter is unavailable."""
+        runner = _make_runner()
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            user_id="12345",
+            chat_id="67890",
+            user_name="testuser",
+        )
+        runner._managed_background_jobs["bg_test"] = {
+            "task_id": "bg_test",
+            "status": "queued",
+            "created_at": 1.0,
+            "updated_at": 1.0,
+        }
+
+        await runner._run_background_task("test prompt", source, "bg_test")
+
+        job = runner._managed_background_jobs["bg_test"]
+        assert job["status"] == "failed"
+        assert job["error"] == "adapter unavailable"
+        assert "finished_at" in job
 
     @pytest.mark.asyncio
     async def test_no_credentials_sends_error(self):
@@ -218,6 +278,7 @@ class TestRunBackgroundTask:
         mock_result = {"final_response": "Hello from background!", "messages": []}
 
         with patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}), \
+             patch("gateway.run.asyncio.get_event_loop", return_value=_InlineExecutorLoop()), \
              patch("run_agent.AIAgent") as MockAgent:
             mock_agent_instance = MagicMock()
             mock_agent_instance.run_conversation.return_value = mock_result
@@ -231,6 +292,87 @@ class TestRunBackgroundTask:
         content = call_args[1].get("content", call_args[0][1] if len(call_args[0]) > 1 else "")
         assert "Background task complete" in content
         assert "Hello from background!" in content
+
+    @pytest.mark.asyncio
+    async def test_worker_task_preloads_skills_into_background_agent(self):
+        """Worker-routed background tasks should preload their mapped skills."""
+        runner = _make_runner()
+        mock_adapter = AsyncMock()
+        mock_adapter.send = AsyncMock()
+        mock_adapter.extract_media = MagicMock(return_value=([], "Polished."))
+        mock_adapter.extract_images = MagicMock(return_value=([], "Polished."))
+        runner.adapters[Platform.TELEGRAM] = mock_adapter
+
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            user_id="12345",
+            chat_id="67890",
+            user_name="testuser",
+        )
+
+        with patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}), \
+             patch("gateway.run._resolve_gateway_model", return_value="gpt-5.4"), \
+             patch("gateway.run.asyncio.get_event_loop", return_value=_InlineExecutorLoop()), \
+             patch("gateway.run.build_preloaded_skills_prompt", return_value=("[SKILL PROMPT]", ["frontend-design-pro"], [])) as mock_build_skills, \
+             patch("gateway.run._platform_config_key", return_value="telegram"), \
+             patch("hermes_cli.tools_config._get_platform_tools", return_value={"core"}), \
+             patch("run_agent.AIAgent") as MockAgent:
+            mock_agent_instance = MagicMock()
+            mock_agent_instance.run_conversation.return_value = {"final_response": "Polished.", "messages": []}
+            MockAgent.return_value = mock_agent_instance
+
+            await runner._run_background_task(
+                "把页面打磨一下",
+                source,
+                "bg_test",
+                context_prompt="[CTX]",
+                job_kind="auto",
+                worker_name="铁柱",
+                preloaded_skills=["frontend-design-pro"],
+            )
+
+        mock_build_skills.assert_called_once_with(["frontend-design-pro"], task_id="bg_test")
+        _, kwargs = MockAgent.call_args
+        assert kwargs["ephemeral_system_prompt"] == "[SKILL PROMPT]\n\n[CTX]"
+        sent_content = mock_adapter.send.call_args.kwargs["content"]
+        assert "铁柱" in sent_content
+        assert "后台任务完成" in sent_content
+
+    @pytest.mark.asyncio
+    async def test_auto_background_task_suppresses_no_reply_completion_message(self):
+        """Auto background jobs should stay silent when the model emits [[NO_REPLY]]."""
+        runner = _make_runner()
+        mock_adapter = AsyncMock()
+        mock_adapter.send = AsyncMock()
+        mock_adapter.extract_media = MagicMock(return_value=([], "[[NO_REPLY]]"))
+        mock_adapter.extract_images = MagicMock(return_value=([], "[[NO_REPLY]]"))
+        runner.adapters[Platform.TELEGRAM] = mock_adapter
+
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            user_id="12345",
+            chat_id="67890",
+            user_name="testuser",
+        )
+
+        with patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}), \
+             patch("gateway.run.asyncio.get_event_loop", return_value=_InlineExecutorLoop()), \
+             patch("run_agent.AIAgent") as MockAgent:
+            mock_agent_instance = MagicMock()
+            mock_agent_instance.run_conversation.return_value = {
+                "final_response": "[[NO_REPLY]]",
+                "messages": [],
+            }
+            MockAgent.return_value = mock_agent_instance
+
+            await runner._run_background_task(
+                "casual group discussion",
+                source,
+                "bg_test",
+                job_kind="auto",
+            )
+
+        mock_adapter.send.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_exception_sends_error_message(self):

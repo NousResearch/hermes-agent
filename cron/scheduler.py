@@ -15,6 +15,7 @@ import logging
 import os
 import subprocess
 import sys
+from datetime import timedelta
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 try:
@@ -26,7 +27,7 @@ except ImportError:
     except ImportError:
         msvcrt = None
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 # Add parent directory to path for imports BEFORE repo-level imports.
 # Without this, standalone invocations (e.g. after `hermes update` reloads
@@ -36,8 +37,34 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from hermes_constants import get_hermes_home
 from hermes_cli.config import load_config
 from hermes_time import now as _hermes_now
+from gateway.runtime_canary import (
+    DEFAULT_ALERT_THROTTLE_SECONDS,
+    DEFAULT_BACKGROUND_STUCK_SECONDS,
+    DEFAULT_GATEWAY_STALE_SECONDS,
+    DEFAULT_PROVIDER_FAILURE_THRESHOLD,
+    DEFAULT_QQ_STALE_SECONDS,
+    DEFAULT_SESSION_STUCK_SECONDS,
+    run_runtime_canary,
+)
+from gateway.status import read_runtime_status
+from gateway.qq_group_archive import (
+    QqGroupArchiveStore,
+    format_group_report_for_delivery,
+    run_due_qq_group_rollups,
+)
+from gateway.qq_group_policies import get_group_policy
+from gateway.weixin_group_archive import (
+    WeixinGroupArchiveStore,
+    format_group_report_for_delivery as format_weixin_group_report_for_delivery,
+    run_due_weixin_group_rollups,
+)
+from gateway.weixin_group_policies import get_group_policy as get_weixin_group_policy
+from gateway.qq_intel_assignments import list_active_daily_report_workers_for_group
+from gateway.qq_intel_assignments import get_intel_worker, reconcile_intel_workers, update_intel_worker
 
 logger = logging.getLogger(__name__)
+_QQ_GROUP_REPORT_RETRY_LOOKBACK_DAYS = 7
+_WEIXIN_GROUP_REPORT_RETRY_LOOKBACK_DAYS = 7
 
 # Valid delivery platforms — used to validate user-supplied platform names
 # in cron delivery targets, preventing env var enumeration via crafted names.
@@ -47,7 +74,14 @@ _KNOWN_DELIVERY_PLATFORMS = frozenset({
     "wecom", "sms", "email", "webhook",
 })
 
-from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run
+from cron.jobs import (
+    advance_next_run,
+    get_due_jobs,
+    load_runtime_canary_state,
+    mark_job_run,
+    save_job_output,
+    save_runtime_canary_state,
+)
 
 # Sentinel: when a cron agent has nothing new to report, it can start its
 # response with this marker to suppress delivery.  Output is still saved
@@ -410,7 +444,410 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     return None
 
 
+def _deliver_qq_group_daily_reports(reports: list[dict], adapters=None, loop=None) -> list[dict]:
+    """Deliver newly rolled up QQ group reports to configured report targets."""
+    store = QqGroupArchiveStore()
+    outcomes: list[dict] = []
+    for report in reports or []:
+        group_id = str(report.get("group_id") or "").strip()
+        report_date = str(report.get("report_date") or "").strip()
+        if not group_id or not report_date:
+            continue
+
+        policy = get_group_policy(group_id)
+        target = str(policy.get("daily_report_target") or "").strip()
+        if not target:
+            continue
+        delivery_key = f"policy:{target}"
+        if store.has_successful_report_delivery(
+            group_id=group_id,
+            report_date=report_date,
+            delivery_key=delivery_key,
+        ):
+            continue
+
+        content = format_group_report_for_delivery(
+            report,
+            group_name=policy.get("group_name"),
+        )
+        job = {
+            "id": f"qq-group-daily-report:{group_id}:{report_date}",
+            "name": f"qq-group-daily-report:{group_id}",
+            "deliver": target,
+        }
+        error = _deliver_result(job, content, adapters=adapters, loop=loop)
+        store.record_report_delivery(
+            group_id=group_id,
+            report_date=report_date,
+            delivery_key=delivery_key,
+            target=target,
+            error=error,
+        )
+        outcomes.append(
+            {
+                "group_id": group_id,
+                "report_date": report_date,
+                "target": target,
+                "error": error,
+            }
+        )
+    return outcomes
+
+
+def _deliver_qq_intel_worker_reports(reports: list[dict], adapters=None, loop=None) -> list[dict]:
+    """Deliver rolled-up QQ reports to active intel workers assigned to that group."""
+    store = QqGroupArchiveStore()
+    outcomes: list[dict] = []
+    for report in reports or []:
+        group_id = str(report.get("group_id") or "").strip()
+        report_date = str(report.get("report_date") or "").strip()
+        if not group_id or not report_date:
+            continue
+        for worker in list_active_daily_report_workers_for_group(group_id):
+            target = str(worker.get("daily_report_target") or "").strip()
+            if not target:
+                continue
+            worker_name = str(worker.get("worker_name") or "").strip() or "unknown"
+            delivery_key = f"worker:{worker_name}:{target}"
+            if store.has_successful_report_delivery(
+                group_id=group_id,
+                report_date=report_date,
+                delivery_key=delivery_key,
+            ):
+                continue
+            content = _format_intel_delivery_content(worker, report)
+            job = {
+                "id": f"qq-intel-report:{group_id}:{report_date}:{worker_name}",
+                "name": f"qq-intel-report:{worker_name}",
+                "deliver": target,
+            }
+            error = _deliver_result(job, content, adapters=adapters, loop=loop)
+            store.record_report_delivery(
+                group_id=group_id,
+                report_date=report_date,
+                delivery_key=delivery_key,
+                target=target,
+                error=error,
+            )
+            if error is None:
+                update_intel_worker(
+                    worker_name,
+                    last_report_at=_hermes_now().isoformat(),
+                    updated_by="scheduler",
+                )
+            outcomes.append(
+                {
+                    "worker_name": worker_name,
+                    "group_id": group_id,
+                    "report_date": report_date,
+                    "target": target,
+                    "error": error,
+                }
+            )
+    return outcomes
+
+
+def _deliver_weixin_group_daily_reports(reports: list[dict], adapters=None, loop=None) -> list[dict]:
+    """Deliver newly rolled up Weixin group reports to configured report targets."""
+    store = WeixinGroupArchiveStore()
+    outcomes: list[dict] = []
+    for report in reports or []:
+        chat_id = str(report.get("chat_id") or "").strip()
+        report_date = str(report.get("report_date") or "").strip()
+        if not chat_id or not report_date:
+            continue
+
+        policy = get_weixin_group_policy(chat_id)
+        target = str(policy.get("daily_report_target") or "").strip()
+        if not target:
+            continue
+        delivery_key = f"policy:{target}"
+        delivery_state = store.get_report_delivery(
+            chat_id=chat_id,
+            report_date=report_date,
+            delivery_key=delivery_key,
+        )
+        if delivery_state and str(delivery_state.get("delivered_at") or "").strip():
+            continue
+
+        content = format_weixin_group_report_for_delivery(
+            report,
+            group_name=policy.get("group_name"),
+        )
+        job = {
+            "id": f"weixin-group-daily-report:{chat_id}:{report_date}",
+            "name": f"weixin-group-daily-report:{chat_id}",
+            "deliver": target,
+        }
+        error = _deliver_result(job, content, adapters=adapters, loop=loop)
+        store.record_report_delivery(
+            chat_id=chat_id,
+            report_date=report_date,
+            delivery_key=delivery_key,
+            target=target,
+            error=error,
+        )
+        outcomes.append(
+            {
+                "chat_id": chat_id,
+                "report_date": report_date,
+                "target": target,
+                "error": error,
+            }
+        )
+    return outcomes
+
+
+def _collect_qq_reports_for_delivery_retry(
+    reports: list[dict],
+    *,
+    store: QqGroupArchiveStore | None = None,
+    now=None,
+) -> list[dict]:
+    archive_store = store or QqGroupArchiveStore()
+    merged: dict[tuple[str, str], dict] = {}
+    for report in reports or []:
+        group_id = str(report.get("group_id") or "").strip()
+        report_date = str(report.get("report_date") or "").strip()
+        if group_id and report_date:
+            merged[(group_id, report_date)] = report
+
+    current_time = now or _hermes_now()
+    cutoff_date = (current_time.date() - timedelta(days=_QQ_GROUP_REPORT_RETRY_LOOKBACK_DAYS)).isoformat()
+    for report in archive_store.list_reports(limit=512):
+        group_id = str(report.get("group_id") or "").strip()
+        report_date = str(report.get("report_date") or "").strip()
+        if not group_id or not report_date or report_date < cutoff_date:
+            continue
+        merged.setdefault((group_id, report_date), report)
+    return list(merged.values())
+
+
+def _collect_weixin_reports_for_delivery_retry(
+    reports: list[dict],
+    *,
+    store: WeixinGroupArchiveStore | None = None,
+    now=None,
+) -> list[dict]:
+    archive_store = store or WeixinGroupArchiveStore()
+    merged: dict[tuple[str, str], dict] = {}
+    for report in reports or []:
+        chat_id = str(report.get("chat_id") or "").strip()
+        report_date = str(report.get("report_date") or "").strip()
+        if chat_id and report_date:
+            merged[(chat_id, report_date)] = report
+
+    current_time = now or _hermes_now()
+    cutoff_date = (current_time.date() - timedelta(days=_WEIXIN_GROUP_REPORT_RETRY_LOOKBACK_DAYS)).isoformat()
+    for report in archive_store.list_reports(limit=512):
+        chat_id = str(report.get("chat_id") or "").strip()
+        report_date = str(report.get("report_date") or "").strip()
+        if not chat_id or not report_date or report_date < cutoff_date:
+            continue
+        merged.setdefault((chat_id, report_date), report)
+    return list(merged.values())
+
+
+def _format_intel_delivery_content(worker: dict, report: dict) -> str:
+    title = f"情报员 {worker.get('worker_name', '未知')} 日报"
+    base = format_group_report_for_delivery(
+        report,
+        group_name=worker.get("target_group_name"),
+    )
+    objective = str(worker.get("objective") or "").strip()
+    if objective:
+        return f"{title}\n任务：{objective}\n{base}"
+    return f"{title}\n{base}"
+
+
+def _run_async_safely(coro):
+    try:
+        return asyncio.run(coro)
+    except RuntimeError:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(asyncio.run, coro).result(timeout=30)
+
+
+def _qq_napcat_runtime_unavailable() -> bool:
+    try:
+        from gateway.status import read_runtime_status
+
+        status = read_runtime_status() or {}
+        platforms = status.get("platforms") or {}
+        qq_state = platforms.get("qq_napcat") if isinstance(platforms, dict) else None
+        if not isinstance(qq_state, dict):
+            return False
+        code = str(qq_state.get("error_code") or "").strip().lower()
+        return code in {
+            "qq_napcat_runtime_missing",
+            "qq_napcat_local_service_offline",
+        }
+    except Exception:
+        return False
+
+
+async def _fetch_qq_joined_groups_async() -> list[dict]:
+    from gateway.config import Platform, load_gateway_config
+    from tools.send_message_tool import _qq_napcat_call
+
+    config = load_gateway_config()
+    pconfig = config.platforms.get(Platform.QQ_NAPCAT)
+    if not pconfig or not pconfig.enabled:
+        return []
+    if _qq_napcat_runtime_unavailable():
+        return []
+    data, error = await _qq_napcat_call(pconfig.extra, "get_group_list", {})
+    if error:
+        raise ValueError(str(error.get("error") or "Failed to fetch QQ joined groups"))
+    groups = []
+    for item in data if isinstance(data, list) else []:
+        if not isinstance(item, dict):
+            continue
+        group_id = str(item.get("group_id") or item.get("groupCode") or "").strip()
+        if not group_id:
+            continue
+        groups.append(
+            {
+                "group_id": group_id,
+                "group_name": str(item.get("group_name") or item.get("groupName") or group_id).strip(),
+            }
+        )
+    return groups
+
+
+def _format_intel_status_change_message(worker: dict, change: dict) -> str:
+    worker_name = str(worker.get("worker_name") or change.get("worker_name") or "未知").strip()
+    target_name = str(worker.get("target_group_name") or change.get("group_name") or "目标群").strip()
+    old_status = str(change.get("from_status") or "unknown")
+    new_status = str(change.get("to_status") or "unknown")
+    lines = [
+        f"情报员 {worker_name} 状态更新",
+        f"目标群：{target_name}",
+        f"状态：{old_status} -> {new_status}",
+    ]
+    last_error = str(worker.get("last_error") or "").strip()
+    if last_error:
+        lines.append(f"备注：{last_error}")
+    return "\n".join(lines)
+
+
+def _reconcile_qq_intel_workers(adapters=None, loop=None) -> dict[str, Any]:
+    try:
+        joined_groups = _run_async_safely(_fetch_qq_joined_groups_async())
+    except Exception as exc:
+        return {
+            "success": False,
+            "changed": 0,
+            "changes": [],
+            "notifications": [],
+            "error": str(exc),
+        }
+
+    result = reconcile_intel_workers(joined_groups, updated_by="scheduler")
+    notifications: list[dict] = []
+    for change in result.get("changes") or []:
+        worker = get_intel_worker(str(change.get("worker_name") or ""))
+        if not worker:
+            continue
+        target = str(worker.get("notify_target") or "").strip()
+        if not target:
+            continue
+        error = _deliver_result(
+            {
+                "id": f"qq-intel-status:{worker['worker_name']}",
+                "name": f"qq-intel-status:{worker['worker_name']}",
+                "deliver": target,
+            },
+            _format_intel_status_change_message(worker, change),
+            adapters=adapters,
+            loop=loop,
+        )
+        notifications.append(
+            {
+                "worker_name": worker["worker_name"],
+                "target": target,
+                "error": error,
+            }
+        )
+
+    return {
+        "success": True,
+        "changed": int(result.get("changed") or 0),
+        "changes": result.get("changes") or [],
+        "notifications": notifications,
+    }
+
+
 _SCRIPT_TIMEOUT = 120  # seconds
+
+
+def _load_runtime_canary_settings() -> dict[str, Any]:
+    try:
+        config = load_config()
+    except Exception:
+        config = {}
+
+    scopes = []
+    if isinstance(config, dict):
+        scopes.append(config.get("runtime_canary") or {})
+        scopes.append((config.get("cron") or {}).get("runtime_canary") or {})
+        scopes.append((config.get("gateway") or {}).get("runtime_canary") or {})
+
+    merged: dict[str, Any] = {}
+    for scope in scopes:
+        if isinstance(scope, dict):
+            merged.update({k: v for k, v in scope.items() if v is not None})
+
+    env_target = os.getenv("HERMES_RUNTIME_CANARY_ALERT_TARGET") or os.getenv("HERMES_CANARY_ALERT_TARGET")
+    if env_target:
+        merged["alert_target"] = env_target.strip()
+
+    return {
+        "alert_target": str(merged.get("alert_target") or "").strip() or None,
+        "throttle_seconds": int(merged.get("throttle_seconds") or DEFAULT_ALERT_THROTTLE_SECONDS),
+        "gateway_stale_seconds": int(merged.get("gateway_stale_seconds") or DEFAULT_GATEWAY_STALE_SECONDS),
+        "qq_stale_seconds": int(merged.get("qq_stale_seconds") or DEFAULT_QQ_STALE_SECONDS),
+        "session_stuck_seconds": int(merged.get("session_stuck_seconds") or DEFAULT_SESSION_STUCK_SECONDS),
+        "background_stuck_seconds": int(merged.get("background_stuck_seconds") or DEFAULT_BACKGROUND_STUCK_SECONDS),
+        "provider_failure_threshold": int(
+            merged.get("provider_failure_threshold") or DEFAULT_PROVIDER_FAILURE_THRESHOLD
+        ),
+    }
+
+
+def _load_runtime_canary_target() -> str | None:
+    return _load_runtime_canary_settings().get("alert_target")
+
+
+def run_runtime_canary_tick(adapters=None, loop=None) -> dict[str, Any]:
+    """Run the persisted runtime canary and optionally alert an operator target."""
+    settings = _load_runtime_canary_settings()
+    result = run_runtime_canary(
+        runtime_status=read_runtime_status(),
+        alert_state=load_runtime_canary_state(),
+        alert_target=settings.get("alert_target"),
+        now=_hermes_now(),
+        throttle_seconds=int(settings["throttle_seconds"]),
+        gateway_stale_seconds=int(settings["gateway_stale_seconds"]),
+        qq_stale_seconds=int(settings["qq_stale_seconds"]),
+        session_stuck_seconds=int(settings["session_stuck_seconds"]),
+        background_stuck_seconds=int(settings["background_stuck_seconds"]),
+        provider_failure_threshold=int(settings["provider_failure_threshold"]),
+    )
+    save_runtime_canary_state(result.get("alert_state") or {"last_alerts": {}})
+
+    if result.get("should_alert") and result.get("alert_target") and result.get("alert_text"):
+        job = {
+            "id": "runtime-canary",
+            "name": "runtime-canary",
+            "deliver": result["alert_target"],
+        }
+        delivery_error = _deliver_result(job, result["alert_text"], adapters=adapters, loop=loop)
+        if delivery_error:
+            logger.warning("Runtime canary delivery failed: %s", delivery_error)
+            result["delivery_error"] = delivery_error
+
+    return result
 
 
 def _run_job_script(script_path: str) -> tuple[bool, str]:
@@ -916,6 +1353,90 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
         return 0
 
     try:
+        try:
+            canary_result = run_runtime_canary_tick(adapters=adapters, loop=loop)
+            if canary_result.get("should_alert"):
+                logger.warning("Runtime canary alert sent to %s", canary_result.get("alert_target"))
+            elif canary_result.get("throttled"):
+                logger.info("Runtime canary alert throttled")
+
+            reconcile_result = _reconcile_qq_intel_workers(adapters=adapters, loop=loop)
+            if reconcile_result.get("changed"):
+                logger.info(
+                    "QQ intel reconcile: changes=%d notifications=%d",
+                    int(reconcile_result.get("changed") or 0),
+                    len(reconcile_result.get("notifications") or []),
+                )
+            elif reconcile_result.get("error"):
+                logger.warning("QQ intel reconcile failed: %s", reconcile_result.get("error"))
+
+            rollup_result = run_due_qq_group_rollups()
+            rollup_failures = rollup_result.get("failures") or []
+            if rollup_result.get("rolled_up_count") or rollup_failures:
+                logger.info(
+                    "QQ group rollups: reports=%d purged=%d failures=%d",
+                    int(rollup_result.get("rolled_up_count") or 0),
+                    int(rollup_result.get("purged_raw_messages") or 0),
+                    len(rollup_failures),
+                )
+            delivery_reports = _collect_qq_reports_for_delivery_retry(
+                list(rollup_result.get("reports") or [])
+            )
+            for delivery in _deliver_qq_group_daily_reports(
+                delivery_reports,
+                adapters=adapters,
+                loop=loop,
+            ):
+                if delivery.get("error"):
+                    logger.warning(
+                        "QQ group daily report delivery failed for %s/%s -> %s: %s",
+                        delivery.get("group_id"),
+                        delivery.get("report_date"),
+                        delivery.get("target"),
+                        delivery.get("error"),
+                    )
+            for delivery in _deliver_qq_intel_worker_reports(
+                delivery_reports,
+                adapters=adapters,
+                loop=loop,
+            ):
+                if delivery.get("error"):
+                    logger.warning(
+                        "QQ intel report delivery failed for %s/%s -> %s: %s",
+                        delivery.get("worker_name"),
+                        delivery.get("report_date"),
+                        delivery.get("target"),
+                        delivery.get("error"),
+                    )
+
+            weixin_rollup_result = run_due_weixin_group_rollups()
+            weixin_rollup_failures = weixin_rollup_result.get("failures") or []
+            if weixin_rollup_result.get("rolled_up_count") or weixin_rollup_failures:
+                logger.info(
+                    "Weixin group rollups: reports=%d purged=%d failures=%d",
+                    int(weixin_rollup_result.get("rolled_up_count") or 0),
+                    int(weixin_rollup_result.get("purged_raw_messages") or 0),
+                    len(weixin_rollup_failures),
+                )
+            weixin_delivery_reports = _collect_weixin_reports_for_delivery_retry(
+                list(weixin_rollup_result.get("reports") or [])
+            )
+            for delivery in _deliver_weixin_group_daily_reports(
+                weixin_delivery_reports,
+                adapters=adapters,
+                loop=loop,
+            ):
+                if delivery.get("error"):
+                    logger.warning(
+                        "Weixin group daily report delivery failed for %s/%s -> %s: %s",
+                        delivery.get("chat_id"),
+                        delivery.get("report_date"),
+                        delivery.get("target"),
+                        delivery.get("error"),
+                    )
+        except Exception as exc:
+            logger.warning("QQ group rollup maintenance failed: %s", exc)
+
         due_jobs = get_due_jobs()
 
         if verbose and not due_jobs:

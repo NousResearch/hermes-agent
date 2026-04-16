@@ -49,6 +49,13 @@ def _extract(content: str, existing_files: set[str] | None = None):
 
 class TestBasicDetection:
 
+    def test_document_extensions_are_not_auto_detected_from_bare_paths(self):
+        paths, cleaned = _extract(
+            "整理好的表在 /root/projects/fafafa-page/vsop87d/VSOP87D_Moon_DingShuo.pas 发你"
+        )
+        assert paths == []
+        assert "/root/projects/fafafa-page/vsop87d/VSOP87D_Moon_DingShuo.pas" in cleaned
+
     def test_absolute_path_image(self):
         paths, cleaned = _extract("Here is the screenshot /root/screenshots/game.png enjoy")
         assert paths == ["/root/screenshots/game.png"]
@@ -268,9 +275,9 @@ class TestEdgeCases:
         assert paths == []
         assert cleaned == ""
 
-    def test_no_media_extensions(self):
-        """Non-media extensions should not be matched."""
-        paths, _ = _extract("See /tmp/data.csv and /tmp/script.py and /tmp/notes.txt")
+    def test_unrecognized_extensions_do_not_match(self):
+        """Unknown extensions should not be matched."""
+        paths, _ = _extract("See /tmp/data.foobar and /tmp/script.unknown")
         assert paths == []
 
     def test_path_with_spaces_not_matched(self):

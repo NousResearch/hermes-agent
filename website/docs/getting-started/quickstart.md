@@ -227,5 +227,5 @@ mcp_servers:
 
 - **[CLI Guide](../user-guide/cli.md)** — Master the terminal interface
 - **[Configuration](../user-guide/configuration.md)** — Customize your setup
-- **[Messaging Gateway](../user-guide/messaging/index.md)** — Connect Telegram, Discord, Slack, WhatsApp, Signal, Email, or Home Assistant
+- **[Messaging Gateway](../user-guide/messaging/index.md)** — Connect Telegram, Discord, Slack, WhatsApp, Signal, WeCom, Weixin, Email, or Home Assistant
 - **[Tools & Toolsets](../user-guide/features/tools.md)** — Explore available capabilities

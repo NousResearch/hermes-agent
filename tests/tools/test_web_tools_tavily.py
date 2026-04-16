@@ -224,6 +224,7 @@ class TestWebCrawlTavily:
         with patch("tools.web_tools._get_backend", return_value="tavily"), \
              patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test"}), \
              patch("tools.web_tools.httpx.post", return_value=mock_response), \
+             patch("tools.web_tools.is_safe_url", return_value=True), \
              patch("tools.web_tools.check_website_access", return_value=None), \
              patch("tools.interrupt.is_interrupted", return_value=False):
             from tools.web_tools import web_crawl_tool
@@ -243,6 +244,7 @@ class TestWebCrawlTavily:
         with patch("tools.web_tools._get_backend", return_value="tavily"), \
              patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test"}), \
              patch("tools.web_tools.httpx.post", return_value=mock_response) as mock_post, \
+             patch("tools.web_tools.is_safe_url", return_value=True), \
              patch("tools.web_tools.check_website_access", return_value=None), \
              patch("tools.interrupt.is_interrupted", return_value=False):
             from tools.web_tools import web_crawl_tool

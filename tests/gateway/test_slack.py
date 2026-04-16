@@ -72,7 +72,10 @@ def adapter():
     a = SlackAdapter(config)
     # Mock the Slack app client
     a._app = MagicMock()
-    a._app.client = AsyncMock()
+    a._app.client = MagicMock()
+    a._app.client.users_info = AsyncMock(
+        return_value={"user": {"profile": {"display_name": "testuser"}}}
+    )
     a._bot_user_id = "U_BOT"
     a._running = True
     # Capture events instead of processing them
@@ -120,7 +123,7 @@ class TestAppMentionHandler:
 
         mock_app.event = mock_event
         mock_app.command = mock_command
-        mock_app.client = AsyncMock()
+        mock_app.client = MagicMock()
         mock_app.client.auth_test = AsyncMock(return_value={
             "user_id": "U_BOT",
             "user": "testbot",
@@ -723,7 +726,10 @@ class TestThreadReplyHandling:
         config = PlatformConfig(enabled=True, token="***")
         a = SlackAdapter(config)
         a._app = MagicMock()
-        a._app.client = AsyncMock()
+        a._app.client = MagicMock()
+        a._app.client.users_info = AsyncMock(
+            return_value={"user": {"profile": {"display_name": "testuser"}}}
+        )
         a._bot_user_id = "U_BOT"
         a._team_bot_user_ids = {"T_TEAM": "U_BOT"}
         a._running = True

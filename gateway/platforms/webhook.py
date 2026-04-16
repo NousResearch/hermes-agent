@@ -193,6 +193,16 @@ class WebhookAdapter(BasePlatformAdapter):
             "slack",
             "signal",
             "sms",
+            "whatsapp",
+            "matrix",
+            "mattermost",
+            "homeassistant",
+            "email",
+            "dingtalk",
+            "feishu",
+            "wecom",
+            "wecom_callback",
+            "weixin",
         ):
             return await self._deliver_cross_platform(
                 deliver_type, content, delivery

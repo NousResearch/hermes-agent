@@ -372,7 +372,7 @@ def load_cli_config() -> Dict[str, Any]:
             logger.warning("Failed to load cli-config.yaml: %s", e)
 
     # Expand ${ENV_VAR} references in config values before bridging to env vars.
-    from hermes_cli.config import _expand_env_vars
+    from hermes_cli.config import _expand_env_vars, bridge_auxiliary_config_to_env
     defaults = _expand_env_vars(defaults)
 
     # Apply terminal config to environment variables (so terminal_tool picks them up)
@@ -459,44 +459,7 @@ def load_cli_config() -> Dict[str, Any]:
     # Only set env vars for non-empty / non-default values so auto-detection
     # still works.
     auxiliary_config = defaults.get("auxiliary", {})
-    auxiliary_task_env = {
-        # config key → env var mapping
-        "vision": {
-            "provider": "AUXILIARY_VISION_PROVIDER",
-            "model": "AUXILIARY_VISION_MODEL",
-            "base_url": "AUXILIARY_VISION_BASE_URL",
-            "api_key": "AUXILIARY_VISION_API_KEY",
-        },
-        "web_extract": {
-            "provider": "AUXILIARY_WEB_EXTRACT_PROVIDER",
-            "model": "AUXILIARY_WEB_EXTRACT_MODEL",
-            "base_url": "AUXILIARY_WEB_EXTRACT_BASE_URL",
-            "api_key": "AUXILIARY_WEB_EXTRACT_API_KEY",
-        },
-        "approval": {
-            "provider": "AUXILIARY_APPROVAL_PROVIDER",
-            "model": "AUXILIARY_APPROVAL_MODEL",
-            "base_url": "AUXILIARY_APPROVAL_BASE_URL",
-            "api_key": "AUXILIARY_APPROVAL_API_KEY",
-        },
-    }
-    
-    for task_key, env_map in auxiliary_task_env.items():
-        task_cfg = auxiliary_config.get(task_key, {})
-        if not isinstance(task_cfg, dict):
-            continue
-        prov = str(task_cfg.get("provider", "")).strip()
-        model = str(task_cfg.get("model", "")).strip()
-        base_url = str(task_cfg.get("base_url", "")).strip()
-        api_key = str(task_cfg.get("api_key", "")).strip()
-        if prov and prov != "auto":
-            os.environ[env_map["provider"]] = prov
-        if model:
-            os.environ[env_map["model"]] = model
-        if base_url:
-            os.environ[env_map["base_url"]] = base_url
-        if api_key:
-            os.environ[env_map["api_key"]] = api_key
+    bridge_auxiliary_config_to_env(auxiliary_config)
     
     # Security settings
     security_config = defaults.get("security", {})
@@ -6326,6 +6289,7 @@ class HermesCLI:
         state = self._approval_state
         if not state:
             return []
+        from tools.approval import localize_approval_description
 
         def _panel_box_width(title_text: str, content_lines: list[str], min_width: int = 46, max_width: int = 76) -> int:
             term_cols = shutil.get_terminal_size((100, 20)).columns
@@ -6353,19 +6317,19 @@ class HermesCLI:
             lines.append((border_style, "│" + (" " * box_width) + "│\n"))
 
         command = state["command"]
-        description = state["description"]
+        description = localize_approval_description(state["description"])
         choices = state["choices"]
         selected = state.get("selected", 0)
         show_full = state.get("show_full", False)
 
-        title = "⚠️  Dangerous Command"
+        title = "⚠️  危险命令"
         cmd_display = command if show_full or len(command) <= 70 else command[:70] + '...'
         choice_labels = {
-            "once": "Allow once",
-            "session": "Allow for this session",
-            "always": "Add to permanent allowlist",
-            "deny": "Deny",
-            "view": "Show full command",
+            "once": "仅本次允许",
+            "session": "本会话允许",
+            "always": "长期允许",
+            "deny": "拒绝",
+            "view": "查看完整命令",
         }
 
         preview_lines = _wrap_panel_text(description, 60)

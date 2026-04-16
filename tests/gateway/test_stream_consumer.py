@@ -83,6 +83,12 @@ class TestCleanForDisplay:
         assert "generated" in result
         assert "for you." in result
 
+    def test_instructional_media_phrase_not_stripped(self):
+        """Natural language mentioning MEDIA: without a real path must remain visible."""
+        text = "include MEDIA: followed by the real absolute path to an existing local file"
+        result = GatewayStreamConsumer._clean_for_display(text)
+        assert result == text
+
     def test_preserves_non_media_colons(self):
         """Normal colons and text with 'MEDIA' as a word aren't stripped."""
         text = "The media: files are stored in /tmp. Use social MEDIA carefully."

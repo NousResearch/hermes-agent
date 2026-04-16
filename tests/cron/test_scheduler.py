@@ -1,5 +1,7 @@
 """Tests for cron/scheduler.py — origin resolution, delivery routing, and error logging."""
 
+import asyncio
+from datetime import datetime
 import json
 import logging
 import os
@@ -8,6 +10,17 @@ from unittest.mock import AsyncMock, patch, MagicMock
 import pytest
 
 from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, run_job, SILENT_MARKER, _build_job_prompt
+from gateway.qq_group_archive import QqGroupArchiveStore
+from gateway.qq_group_policies import set_group_policy
+
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:  # pragma: no cover
+    from backports.zoneinfo import ZoneInfo  # type: ignore[no-redef]
+
+
+def _iso(dt: datetime) -> str:
+    return dt.isoformat()
 
 
 class TestResolveOrigin:
@@ -43,6 +56,32 @@ class TestResolveOrigin:
     def test_empty_origin(self):
         job = {"origin": {}}
         assert _resolve_origin(job) is None
+
+
+def test_fetch_qq_joined_groups_skips_when_runtime_marked_missing():
+    from cron.scheduler import _fetch_qq_joined_groups_async
+    from gateway.config import Platform
+
+    qq_cfg = MagicMock(enabled=True, extra={"ws_url": "ws://127.0.0.1:3001"})
+    config = MagicMock(platforms={Platform.QQ_NAPCAT: qq_cfg})
+
+    with patch("gateway.config.load_gateway_config", return_value=config), \
+         patch(
+             "gateway.status.read_runtime_status",
+             return_value={
+                 "platforms": {
+                     "qq_napcat": {
+                         "state": "unavailable",
+                         "error_code": "qq_napcat_runtime_missing",
+                     }
+                 }
+             },
+         ), \
+         patch("tools.send_message_tool._qq_napcat_call", new=AsyncMock()) as call_mock:
+        result = asyncio.run(_fetch_qq_joined_groups_async())
+
+    assert result == []
+    call_mock.assert_not_awaited()
 
 
 class TestResolveDeliveryTarget:
@@ -1302,6 +1341,299 @@ class TestTickAdvanceBeforeRun:
         assert call_order == [("advance", "test-advance"), ("run", "test-advance")]
 
 
+class TestTickBackgroundMaintenance:
+    @staticmethod
+    def _group_payload(*, message_id, user_id, text, when, group_id=987654321, nickname="Alice", card=None):
+        return {
+            "post_type": "message",
+            "message_type": "group",
+            "message_id": message_id,
+            "user_id": user_id,
+            "group_id": group_id,
+            "time": int(when.timestamp()),
+            "raw_message": text,
+            "message": [{"type": "text", "data": {"text": text}}],
+            "sender": {"nickname": nickname, "card": card or nickname},
+        }
+
+    def test_tick_runs_qq_group_rollups_even_without_due_jobs(self):
+        with patch("cron.scheduler.run_due_qq_group_rollups", return_value={"success": True}) as rollup_mock, \
+             patch("cron.scheduler.get_due_jobs", return_value=[]):
+            from cron.scheduler import tick
+
+            executed = tick(verbose=False)
+
+        assert executed == 0
+        rollup_mock.assert_called_once_with()
+
+    def test_tick_delivers_qq_group_daily_reports_to_policy_targets(self):
+        report = {
+            "group_id": "987654321",
+            "report_date": "2026-04-12",
+            "created_at": "2026-04-13T00:00:00+08:00",
+            "summary_text": "2026-04-12 QQ 群 987654321 日报",
+            "summary": {"total_messages": 3, "unique_speakers": 2},
+        }
+        with patch(
+            "cron.scheduler.run_due_qq_group_rollups",
+            return_value={
+                "success": True,
+                "reports": [report],
+                "rolled_up_count": 1,
+                "purged_raw_messages": 3,
+                "failures": [],
+            },
+        ), \
+            patch("cron.scheduler.get_group_policy", return_value={
+                "group_id": "987654321",
+                "group_name": "研发群",
+                "daily_report_target": "qq_napcat:dm:179033731",
+            }), \
+            patch("cron.scheduler._deliver_result", return_value=None) as deliver_mock, \
+            patch("cron.scheduler.get_due_jobs", return_value=[]):
+            from cron.scheduler import tick
+
+            executed = tick(verbose=False)
+
+        assert executed == 0
+        deliver_mock.assert_called_once()
+        job_arg, content_arg = deliver_mock.call_args.args[:2]
+        assert job_arg["deliver"] == "qq_napcat:dm:179033731"
+        assert "研发群" in content_arg
+
+    def test_tick_delivers_qq_intel_worker_daily_reports(self):
+        report = {
+            "group_id": "987654321",
+            "report_date": "2026-04-12",
+            "created_at": "2026-04-13T00:00:00+08:00",
+            "summary_text": "2026-04-12 QQ 群 987654321 日报",
+            "summary": {"total_messages": 3, "unique_speakers": 2},
+        }
+        with patch(
+            "cron.scheduler.run_due_qq_group_rollups",
+            return_value={
+                "success": True,
+                "reports": [report],
+                "rolled_up_count": 1,
+                "purged_raw_messages": 3,
+                "failures": [],
+            },
+        ), \
+            patch(
+                "cron.scheduler.list_active_daily_report_workers_for_group",
+                return_value=[
+                    {
+                        "worker_name": "钢镚",
+                        "daily_report_target": "qq_napcat:dm:179033731",
+                        "target_group_name": "目标群",
+                    }
+                ],
+            ), \
+            patch("cron.scheduler._deliver_result", return_value=None) as deliver_mock, \
+            patch("cron.scheduler.update_intel_worker") as update_worker_mock, \
+            patch("cron.scheduler.get_due_jobs", return_value=[]):
+            from cron.scheduler import tick
+
+            executed = tick(verbose=False)
+
+        assert executed == 0
+        assert deliver_mock.call_count == 1
+        job_arg, content_arg = deliver_mock.call_args.args[:2]
+        assert job_arg["deliver"] == "qq_napcat:dm:179033731"
+        assert "钢镚" in content_arg
+        update_worker_mock.assert_called_once()
+        assert update_worker_mock.call_args.args[0] == "钢镚"
+        assert update_worker_mock.call_args.kwargs["updated_by"] == "scheduler"
+        assert update_worker_mock.call_args.kwargs["last_report_at"]
+
+    def test_tick_delivers_policy_and_worker_targets_for_same_group_report(self):
+        report = {
+            "group_id": "987654321",
+            "report_date": "2026-04-12",
+            "created_at": "2026-04-13T00:00:00+08:00",
+            "summary_text": "2026-04-12 QQ 群 987654321 日报",
+            "summary": {"total_messages": 3, "unique_speakers": 2},
+        }
+        with patch(
+            "cron.scheduler.run_due_qq_group_rollups",
+            return_value={
+                "success": True,
+                "reports": [report],
+                "rolled_up_count": 1,
+                "purged_raw_messages": 3,
+                "failures": [],
+            },
+        ), \
+            patch("cron.scheduler.get_group_policy", return_value={
+                "group_id": "987654321",
+                "group_name": "研发群",
+                "daily_report_target": "qq_napcat:dm:179033731",
+            }), \
+            patch(
+                "cron.scheduler.list_active_daily_report_workers_for_group",
+                return_value=[
+                    {
+                        "worker_name": "钢镚",
+                        "daily_report_target": "qq_napcat:dm:200000001",
+                        "target_group_name": "研发群",
+                    }
+                ],
+            ), \
+            patch("cron.scheduler._deliver_result", return_value=None) as deliver_mock, \
+            patch("cron.scheduler.update_intel_worker") as update_worker_mock, \
+            patch("cron.scheduler.get_due_jobs", return_value=[]):
+            from cron.scheduler import tick
+
+            executed = tick(verbose=False)
+
+        assert executed == 0
+        assert deliver_mock.call_count == 2
+        delivered_targets = [call.args[0]["deliver"] for call in deliver_mock.call_args_list]
+        assert delivered_targets == [
+            "qq_napcat:dm:179033731",
+            "qq_napcat:dm:200000001",
+        ]
+        assert "研发群" in deliver_mock.call_args_list[0].args[1]
+        assert "钢镚" in deliver_mock.call_args_list[1].args[1]
+        update_worker_mock.assert_called_once()
+
+    def test_tick_retries_persisted_qq_group_daily_report_after_previous_delivery_failure(self, monkeypatch):
+        monkeypatch.setenv("HERMES_TIMEZONE", "Asia/Shanghai")
+        from hermes_time import reset_cache
+
+        reset_cache()
+        shanghai = ZoneInfo("Asia/Shanghai")
+        store = QqGroupArchiveStore()
+        set_group_policy(
+            "987654321",
+            mode="collect_only",
+            daily_report_enabled=True,
+            daily_report_target="qq_napcat:dm:179033731",
+            updated_by="test",
+        )
+        store.archive_payload(
+            self._group_payload(
+                message_id=991,
+                user_id=456789,
+                text="昨天的情报",
+                when=datetime(2026, 4, 12, 10, 0, tzinfo=shanghai),
+            )
+        )
+        store.rollup_daily(group_id="987654321", report_date="2026-04-12")
+        store.record_report_delivery(
+            group_id="987654321",
+            report_date="2026-04-12",
+            delivery_key="policy:qq_napcat:dm:179033731",
+            target="qq_napcat:dm:179033731",
+            error="network timeout",
+        )
+
+        with patch(
+            "cron.scheduler.run_due_qq_group_rollups",
+            return_value={
+                "success": True,
+                "reports": [],
+                "rolled_up_count": 0,
+                "purged_raw_messages": 0,
+                "failures": [],
+            },
+        ), \
+            patch("cron.scheduler.list_active_daily_report_workers_for_group", return_value=[]), \
+            patch("cron.scheduler._deliver_result", return_value=None) as deliver_mock, \
+            patch("cron.scheduler.get_due_jobs", return_value=[]):
+            from cron.scheduler import tick
+
+            executed = tick(verbose=False)
+
+        assert executed == 0
+        deliver_mock.assert_called_once()
+        job_arg, content_arg = deliver_mock.call_args.args[:2]
+        assert job_arg["deliver"] == "qq_napcat:dm:179033731"
+        assert "QQ 群日报" in content_arg
+        assert store.has_successful_report_delivery(
+            group_id="987654321",
+            report_date="2026-04-12",
+            delivery_key="policy:qq_napcat:dm:179033731",
+        ) is True
+        reset_cache()
+
+    def test_tick_does_not_redeliver_successfully_delivered_qq_group_daily_report(self, monkeypatch):
+        monkeypatch.setenv("HERMES_TIMEZONE", "Asia/Shanghai")
+        from hermes_time import reset_cache
+
+        reset_cache()
+        shanghai = ZoneInfo("Asia/Shanghai")
+        store = QqGroupArchiveStore()
+        set_group_policy(
+            "987654321",
+            mode="collect_only",
+            daily_report_enabled=True,
+            daily_report_target="qq_napcat:dm:179033731",
+            updated_by="test",
+        )
+        store.archive_payload(
+            self._group_payload(
+                message_id=992,
+                user_id=456789,
+                text="已经送达过的日报",
+                when=datetime(2026, 4, 12, 11, 0, tzinfo=shanghai),
+            )
+        )
+        store.rollup_daily(group_id="987654321", report_date="2026-04-12")
+        store.record_report_delivery(
+            group_id="987654321",
+            report_date="2026-04-12",
+            delivery_key="policy:qq_napcat:dm:179033731",
+            target="qq_napcat:dm:179033731",
+            error=None,
+        )
+
+        with patch(
+            "cron.scheduler.run_due_qq_group_rollups",
+            return_value={
+                "success": True,
+                "reports": [],
+                "rolled_up_count": 0,
+                "purged_raw_messages": 0,
+                "failures": [],
+            },
+        ), \
+            patch("cron.scheduler.list_active_daily_report_workers_for_group", return_value=[]), \
+            patch("cron.scheduler._deliver_result", return_value=None) as deliver_mock, \
+            patch("cron.scheduler.get_due_jobs", return_value=[]):
+            from cron.scheduler import tick
+
+            executed = tick(verbose=False)
+
+        assert executed == 0
+        deliver_mock.assert_not_called()
+        reset_cache()
+
+    def test_tick_reconciles_qq_intel_workers_and_notifies_status_changes(self):
+        with patch(
+            "cron.scheduler._reconcile_qq_intel_workers",
+            return_value={
+                "success": True,
+                "changed": 1,
+                "notifications": [
+                    {
+                        "worker_name": "钢镚",
+                        "target": "qq_napcat:dm:179033731",
+                        "error": None,
+                    }
+                ],
+            },
+        ) as reconcile_mock, \
+            patch("cron.scheduler.run_due_qq_group_rollups", return_value={"success": True}), \
+            patch("cron.scheduler.get_due_jobs", return_value=[]):
+            from cron.scheduler import tick
+
+            executed = tick(verbose=False)
+
+        assert executed == 0
+        reconcile_mock.assert_called_once()
+
+
 class TestSendMediaViaAdapter:
     """Unit tests for _send_media_via_adapter — routes files to typed adapter methods."""
 
@@ -1354,3 +1686,98 @@ class TestSendMediaViaAdapter:
         self._run_with_loop(adapter, "123", media_files, None, {"id": "j4"})
         adapter.send_voice.assert_called_once()
         adapter.send_image_file.assert_called_once()
+
+
+class TestRuntimeCanaryTick:
+    def test_tick_runs_runtime_canary_before_due_jobs(self, monkeypatch):
+        import cron.scheduler as scheduler
+
+        calls = []
+
+        monkeypatch.setattr(scheduler, "_reconcile_qq_intel_workers", lambda adapters=None, loop=None: {})
+        monkeypatch.setattr(scheduler, "run_due_qq_group_rollups", lambda: {})
+        monkeypatch.setattr(scheduler, "_collect_qq_reports_for_delivery_retry", lambda reports: [])
+        monkeypatch.setattr(scheduler, "_deliver_qq_group_daily_reports", lambda reports, adapters=None, loop=None: [])
+        monkeypatch.setattr(scheduler, "_deliver_qq_intel_worker_reports", lambda reports, adapters=None, loop=None: [])
+        monkeypatch.setattr(
+            scheduler,
+            "run_runtime_canary_tick",
+            lambda adapters=None, loop=None: calls.append("canary") or {"should_alert": False},
+        )
+        monkeypatch.setattr(scheduler, "get_due_jobs", lambda: [])
+
+        executed = scheduler.tick(verbose=False)
+
+        assert executed == 0
+        assert calls == ["canary"]
+
+    def test_run_runtime_canary_tick_delivers_alert_and_persists_state(self, monkeypatch):
+        import cron.scheduler as scheduler
+
+        saved_states = []
+        deliveries = []
+        now = datetime(2026, 4, 14, 12, 0, tzinfo=ZoneInfo("UTC"))
+
+        monkeypatch.setattr(scheduler, "load_runtime_canary_state", lambda: {"last_alerts": {}})
+        monkeypatch.setattr(scheduler, "save_runtime_canary_state", lambda state: saved_states.append(state))
+        monkeypatch.setattr(scheduler, "_load_runtime_canary_target", lambda: "qq_napcat:dm:179033731")
+        monkeypatch.setattr(scheduler, "_hermes_now", lambda: now)
+        monkeypatch.setattr(
+            scheduler,
+            "run_runtime_canary",
+            lambda **kwargs: {
+                "should_alert": True,
+                "throttled": False,
+                "alert_target": "qq_napcat:dm:179033731",
+                "alert_text": "runtime canary alert",
+                "evaluation": {"healthy": False, "issues": [{"code": "qq_connectivity_stale"}]},
+                "alert_state": {
+                    "last_alerts": {
+                        "qq_connectivity_stale": {"sent_at": _iso(now)}
+                    }
+                },
+            },
+        )
+        monkeypatch.setattr(
+            scheduler,
+            "_deliver_result",
+            lambda job, content, adapters=None, loop=None: deliveries.append((job, content)) or None,
+        )
+
+        result = scheduler.run_runtime_canary_tick()
+
+        assert result["should_alert"] is True
+        assert deliveries == [
+            (
+                {
+                    "id": "runtime-canary",
+                    "name": "runtime-canary",
+                    "deliver": "qq_napcat:dm:179033731",
+                },
+                "runtime canary alert",
+            )
+        ]
+        assert saved_states == [result["alert_state"]]
+
+    def test_run_runtime_canary_tick_skips_delivery_without_target(self, monkeypatch):
+        import cron.scheduler as scheduler
+
+        monkeypatch.setattr(scheduler, "load_runtime_canary_state", lambda: {})
+        monkeypatch.setattr(scheduler, "save_runtime_canary_state", lambda state: None)
+        monkeypatch.setattr(scheduler, "_load_runtime_canary_target", lambda: None)
+        monkeypatch.setattr(
+            scheduler,
+            "run_runtime_canary",
+            lambda **kwargs: {
+                "should_alert": False,
+                "throttled": False,
+                "alert_target": None,
+                "alert_text": None,
+                "evaluation": {"healthy": True, "issues": []},
+                "alert_state": {},
+            },
+        )
+
+        result = scheduler.run_runtime_canary_tick()
+
+        assert result["should_alert"] is False

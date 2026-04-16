@@ -59,6 +59,31 @@ class TestKnownPrefixes:
         assert "***" in result
 
 
+class TestAgentMailRedaction:
+    def test_plain_agentmail_like_identifier_unchanged(self):
+        text = "am_example_identifier_123"
+        assert redact_sensitive_text(text) == text
+
+    def test_dotted_agentmail_like_identifier_unchanged(self):
+        text = "schema.am_example_identifier_123"
+        assert redact_sensitive_text(text) == text
+
+    def test_path_with_agentmail_like_identifier_unchanged(self):
+        text = "path/to/am_example_identifier_123.sql"
+        assert redact_sensitive_text(text) == text
+
+    def test_agentmail_api_key_env_value_redacted(self):
+        text = "AGENTMAIL_API_KEY=am_abcdefghijklmnopqrstuvwxyz123456"
+        result = redact_sensitive_text(text)
+        assert "AGENTMAIL_API_KEY=" in result
+        assert "abcdefghijklmnopqrstuvwxyz" not in result
+
+    def test_agentmail_json_secret_value_redacted(self):
+        text = '{"apiKey": "am_abcdefghijklmnopqrstuvwxyz123456"}'
+        result = redact_sensitive_text(text)
+        assert "abcdefghijklmnopqrstuvwxyz" not in result
+
+
 class TestEnvAssignments:
     def test_export_api_key(self):
         text = "export OPENAI_API_KEY=sk-proj-abc123def456ghi789jkl012"

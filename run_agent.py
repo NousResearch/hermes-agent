@@ -2103,6 +2103,55 @@ class AIAgent:
         content = re.sub(r'</?(?:think|thinking|reasoning|thought|REASONING_SCRATCHPAD)>\s*', '', content, flags=re.IGNORECASE)
         return content
 
+    def _renumber_repeated_ordered_list_markers(self, content: str) -> str:
+        """Fix ordered lists where every visible item was emitted as 1./1)/1、."""
+        if not content or "1" not in content:
+            return content or ""
+
+        fence_pattern = re.compile(r'```[\s\S]*?```')
+        fence_stash = []
+
+        def _stash_fence(match):
+            fence_stash.append(match.group(0))
+            return f"\x00CODEBLOCK{len(fence_stash)-1}\x00"
+
+        working = fence_pattern.sub(_stash_fence, content)
+        lines = working.splitlines()
+        out = []
+        i = 0
+        pattern = re.compile(r'^(?P<indent>\s*)(?P<num>\d+)(?P<marker>[\.)、])(?P<rest>(?:\s+.*|\S.*))$')
+
+        while i < len(lines):
+            match = pattern.match(lines[i])
+            if not match:
+                out.append(lines[i])
+                i += 1
+                continue
+
+            start = i
+            base_indent = match.group('indent')
+            marker = match.group('marker')
+            block = []
+
+            while i < len(lines):
+                current = pattern.match(lines[i])
+                if not current:
+                    break
+                if current.group('indent') != base_indent or current.group('marker') != marker:
+                    break
+                block.append(current)
+                i += 1
+
+            nums = [m.group('num') for m in block]
+            if len(block) >= 2 and all(n == '1' for n in nums):
+                for idx, item in enumerate(block, start=1):
+                    out.append(f"{item.group('indent')}{idx}{item.group('marker')}{item.group('rest')}")
+            else:
+                out.extend(lines[start:i])
+
+        renumbered = "\n".join(out)
+        return re.sub(r'\x00CODEBLOCK(\d+)\x00', lambda m: fence_stash[int(m.group(1))], renumbered)
+
     def _looks_like_codex_intermediate_ack(
         self,
         user_message: str,
@@ -10985,6 +11034,7 @@ class AIAgent:
                     
                     # Strip <think> blocks from user-facing response (keep raw in messages for trajectory)
                     final_response = self._strip_think_blocks(final_response).strip()
+                    final_response = self._renumber_repeated_ordered_list_markers(final_response)
                     
                     final_msg = self._build_assistant_message(assistant_message, finish_reason)
 

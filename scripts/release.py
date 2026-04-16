@@ -83,6 +83,7 @@ AUTHOR_MAP = {
     "4317663+helix4u@users.noreply.github.com": "helix4u",
     "331214+counterposition@users.noreply.github.com": "counterposition",
     "blspear@gmail.com": "BrennerSpear",
+    "239876380+handsdiff@users.noreply.github.com": "handsdiff",
     "gpickett00@gmail.com": "gpickett00",
     "mcosma@gmail.com": "wakamex",
     "clawdia.nash@proton.me": "clawdia-nash",

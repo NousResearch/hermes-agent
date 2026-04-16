@@ -2977,6 +2977,9 @@ class GatewayRunner:
         if canonical == "help":
             return await self._handle_help_command(event)
 
+        if canonical == "start":
+            return await self._handle_start_command(event)
+
         if canonical == "commands":
             return await self._handle_commands_command(event)
         
@@ -4512,6 +4515,21 @@ class GatewayRunner:
         if active_agents:
             return f"⏳ Draining {active_agents} active agent(s) before restart..."
         return "♻ Restarting gateway. If you aren't notified within 60 seconds, restart from the console with `hermes gateway restart`."
+
+    async def _handle_start_command(self, event: MessageEvent) -> str:
+        """Handle /start command - friendly welcome message."""
+        return (
+            "👋 欢迎使用 Hermes！\n\n"
+            "我是鲲和数科的智能助理，可以帮你：\n"
+            "• 查询业务数据和系统状态\n"
+            "• 指导系统操作、排查问题\n"
+            "• 监控使用情况、发现异常\n\n"
+            "直接发送消息即可开始对话，也可以使用以下命令：\n"
+            "/help — 查看所有可用命令\n"
+            "/commands — 查看完整命令列表\n"
+            "/new — 开始新会话\n\n"
+            "有什么可以帮你的？"
+        )
 
     async def _handle_help_command(self, event: MessageEvent) -> str:
         """Handle /help command - list available commands."""

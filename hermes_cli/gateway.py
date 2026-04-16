@@ -2689,7 +2689,7 @@ def _setup_qqbot():
         save_env_value("QQ_ALLOW_ALL_USERS", "false")
         if user_openid:
             print()
-            if prompt_yes_no(f"  Add your QQ user ({user_openid}) to the allow list?", True):
+            if prompt_yes_no(f"  Add yourself ({user_openid}) to the allow list?", True):
                 save_env_value("QQ_ALLOWED_USERS", user_openid)
                 print_success(f"  Allow list set to {user_openid}")
             else:
@@ -2712,7 +2712,7 @@ def _setup_qqbot():
     # ── Home channel ──
     if user_openid:
         print()
-        if prompt_yes_no(f"  Use your QQ user OpenID ({user_openid}) as the home channel?", True):
+        if prompt_yes_no(f"  Use your QQ user ID ({user_openid}) as the home channel?", True):
             save_env_value("QQBOT_HOME_CHANNEL", user_openid)
             print_success(f"  Home channel set to {user_openid}")
     else:

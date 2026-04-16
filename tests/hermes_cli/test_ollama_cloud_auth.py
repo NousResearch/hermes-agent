@@ -21,6 +21,62 @@ from unittest.mock import patch, MagicMock
 class TestOllamaCloudCredentials:
     """runtime_provider should use OLLAMA_API_KEY for ollama.com endpoints."""
 
+
+class TestOllamaProviderAliasRegression:
+    """Regression tests for the built-in ollama provider alias."""
+
+    def test_resolve_provider_full_keeps_ollama_canonical(self):
+        """`ollama` should resolve to the built-in ollama provider, not ollama-cloud."""
+        from hermes_cli.providers import resolve_provider_full
+        from hermes_cli.auth import resolve_provider
+
+        resolved = resolve_provider_full("ollama", user_providers={}, custom_providers=[])
+
+        assert resolved is not None
+        assert resolved.id == "ollama"
+        assert resolved.name == "Ollama"
+        assert resolve_provider("ollama") == "ollama"
+
+    def test_switch_model_explicit_ollama_provider_does_not_map_to_ollama_cloud(self, monkeypatch):
+        """`/model ... --provider ollama` should stay on the built-in ollama provider."""
+        from hermes_cli.model_switch import switch_model
+
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            lambda requested: {
+                "provider": requested,
+                "api_key": "ollama-test-key",
+                "base_url": "http://127.0.0.1:11434/v1",
+                "api_mode": "chat_completions",
+            },
+        )
+        monkeypatch.setattr("hermes_cli.models.validate_requested_model", lambda *a, **k: {
+            "accepted": True,
+            "persist": True,
+            "recognized": True,
+            "message": None,
+        })
+        monkeypatch.setattr("hermes_cli.model_switch.get_model_info", lambda *a, **k: None)
+        monkeypatch.setattr("hermes_cli.model_switch.get_model_capabilities", lambda *a, **k: None)
+
+        result = switch_model(
+            raw_input="qwen3.5:cloud",
+            current_provider="openai-codex",
+            current_model="gpt-5.4",
+            current_base_url="https://chatgpt.com/backend-api/codex",
+            current_api_key="dummy",
+            explicit_provider="ollama",
+            user_providers={},
+            custom_providers=[],
+        )
+
+        assert result.success is True
+        assert result.target_provider == "ollama"
+        assert result.provider_label == "Ollama"
+        assert result.new_model == "qwen3.5:cloud"
+        assert result.base_url == "http://127.0.0.1:11434/v1"
+
+
     def test_ollama_api_key_used_for_ollama_endpoint(self, monkeypatch, tmp_path):
         """When base_url contains ollama.com, OLLAMA_API_KEY is in the candidate chain."""
         monkeypatch.setenv("OLLAMA_API_KEY", "test-ollama-key-12345")

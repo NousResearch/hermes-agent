@@ -371,7 +371,7 @@ def _render_text_element(element: Dict[str, Any]) -> str:
     if _is_style_enabled(style_dict, "code"):
         return _wrap_inline_code(text)
 
-    rendered = _escape_markdown_text(text)
+    rendered = text
     if not rendered:
         return ""
     if _is_style_enabled(style_dict, "bold"):
@@ -563,8 +563,7 @@ def _render_post_element(
         label = str(element.get("text", href) or "").strip()
         if not label:
             return ""
-        escaped_label = _escape_markdown_text(label)
-        return f"[{escaped_label}]({href})" if href else escaped_label
+        return f"[{label}]({href})" if href else label
     if tag == "at":
         mentioned_id = (
             str(element.get("open_id", "")).strip()
@@ -578,7 +577,7 @@ def _render_post_element(
             or str(element.get("text", "")).strip()
             or mentioned_id
         )
-        return f"@{_escape_markdown_text(display_name)}" if display_name else "@"
+        return f"@{display_name}" if display_name else "@"
     if tag in {"img", "image"}:
         image_key = str(element.get("image_key", "")).strip()
         if image_key and image_key not in image_keys:
@@ -630,7 +629,7 @@ def _render_nested_post(
     mentioned_ids: List[str],
 ) -> str:
     if isinstance(value, str):
-        return _escape_markdown_text(value)
+        return value
     if isinstance(value, list):
         return " ".join(
             part

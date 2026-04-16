@@ -6667,10 +6667,18 @@ class AIAgent:
 
         sanitized_messages = api_messages
         needs_sanitization = False
+        _strip_reasoning_content = self._provider_rejects_reasoning_content()
         for msg in api_messages:
             if not isinstance(msg, dict):
                 continue
             if "codex_reasoning_items" in msg:
+                needs_sanitization = True
+                break
+            if (
+                _strip_reasoning_content
+                and msg.get("role") == "assistant"
+                and "reasoning_content" in msg
+            ):
                 needs_sanitization = True
                 break
 
@@ -6693,6 +6701,14 @@ class AIAgent:
 
                 # Codex-only replay state must not leak into strict chat-completions APIs.
                 msg.pop("codex_reasoning_items", None)
+
+                # Groq rejects ``reasoning_content`` on role:assistant with
+                # HTTP 400 ``property 'reasoning_content' is unsupported``.
+                # Strip it on the outgoing copy — ``reasoning`` is preserved
+                # in the internal history so a later switch back to a
+                # reasoning-aware provider still has the context.
+                if _strip_reasoning_content and msg.get("role") == "assistant":
+                    msg.pop("reasoning_content", None)
 
                 tool_calls = msg.get("tool_calls")
                 if isinstance(tool_calls, list):
@@ -7083,6 +7099,26 @@ class AIAgent:
             bool: True if sanitization is needed (non-Codex API), False otherwise.
         """
         return self.api_mode != "codex_responses"
+
+    def _provider_rejects_reasoning_content(self) -> bool:
+        """Return True for OpenAI-compatible providers that strictly validate
+        assistant messages and reject the ``reasoning_content`` field.
+
+        Hermes copies a persisted ``reasoning`` field onto outbound assistant
+        messages as ``reasoning_content`` so reasoning-aware providers
+        (Moonshot AI, Novita, OpenRouter, etc.) can maintain multi-turn
+        reasoning context. Groq's OpenAI-compatible endpoint, in contrast,
+        rejects unknown assistant-message properties with HTTP 400
+        ``property 'reasoning_content' is unsupported`` — which trips users
+        who wire Groq through ``provider: custom`` + ``GROQ_API_KEY`` after
+        any prior turn populated ``reasoning`` (either from a thinking-capable
+        model earlier in the session or from a Groq response that surfaced a
+        provider-internal reasoning field).
+
+        Detecting by ``_base_url_lower`` avoids having to hand-roll a new
+        provider entry for every Groq deployment.  See issue #11089.
+        """
+        return "api.groq.com" in self._base_url_lower
 
     def flush_memories(self, messages: list = None, min_turns: int = None):
         """Give the model one turn to persist memories before context is lost.

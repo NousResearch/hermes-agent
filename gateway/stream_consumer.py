@@ -43,6 +43,7 @@ class StreamConsumerConfig:
     edit_interval: float = 1.0
     buffer_threshold: int = 40
     cursor: str = " ▉"
+    buffer_only: bool = False
 
 
 class GatewayStreamConsumer:
@@ -295,10 +296,13 @@ class GatewayStreamConsumer:
                     got_done
                     or got_segment_break
                     or commentary_text is not None
-                    or (elapsed >= self._current_edit_interval
-                        and self._accumulated)
-                    or len(self._accumulated) >= self.cfg.buffer_threshold
                 )
+                if not self.cfg.buffer_only:
+                    should_edit = should_edit or (
+                        (elapsed >= self._current_edit_interval
+                            and self._accumulated)
+                        or len(self._accumulated) >= self.cfg.buffer_threshold
+                    )
 
                 current_update_visible = False
                 if should_edit and self._accumulated:

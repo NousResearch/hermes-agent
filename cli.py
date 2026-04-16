@@ -439,14 +439,27 @@ def load_cli_config() -> Dict[str, Any]:
     # filesystem is directly accessible.  For ALL remote/container backends
     # (ssh, docker, modal, singularity), the host path doesn't exist on the
     # target -- remove the key so terminal_tool.py uses its per-backend default.
-    if terminal_config.get("cwd") in (".", "auto", "cwd"):
-        effective_backend = terminal_config.get("env_type", "local")
-        if effective_backend == "local":
-            terminal_config["cwd"] = os.getcwd()
-            defaults["terminal"]["cwd"] = terminal_config["cwd"]
+    #
+    # GUARD: If TERMINAL_CWD is already set to a real absolute path (by the
+    # gateway's config bridge earlier in the process), don't clobber it.
+    # This prevents a lazy import of cli.py during gateway runtime from
+    # rewriting TERMINAL_CWD to the service's working directory.
+    # See issue #10817.
+    _CWD_PLACEHOLDERS = (".", "auto", "cwd")
+    if terminal_config.get("cwd") in _CWD_PLACEHOLDERS:
+        _existing_cwd = os.environ.get("TERMINAL_CWD", "")
+        if _existing_cwd and _existing_cwd not in _CWD_PLACEHOLDERS and os.path.isabs(_existing_cwd):
+            # Gateway (or earlier startup) already resolved a real path — keep it
+            terminal_config["cwd"] = _existing_cwd
+            defaults["terminal"]["cwd"] = _existing_cwd
         else:
-            # Remove so TERMINAL_CWD stays unset → tool picks backend default
-            terminal_config.pop("cwd", None)
+            effective_backend = terminal_config.get("env_type", "local")
+            if effective_backend == "local":
+                terminal_config["cwd"] = os.getcwd()
+                defaults["terminal"]["cwd"] = terminal_config["cwd"]
+            else:
+                # Remove so TERMINAL_CWD stays unset → tool picks backend default
+                terminal_config.pop("cwd", None)
     
     env_mappings = {
         "env_type": "TERMINAL_ENV",

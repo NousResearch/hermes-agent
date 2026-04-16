@@ -871,7 +871,18 @@ def _execute_remote(
     }
 
     if status == "timeout":
-        result["error"] = f"Script timed out after {timeout}s and was killed."
+        timeout_msg = f"Script timed out after {timeout}s and was killed."
+        result["error"] = timeout_msg
+        # Include timeout message in output so the LLM always surfaces it
+        # to the user (see local path comment — same reasoning, #10807).
+        if stdout_text:
+            result["output"] = stdout_text + f"\n\n⏰ {timeout_msg}"
+        else:
+            result["output"] = f"⏰ {timeout_msg}"
+        logger.warning(
+            "execute_code (remote) timed out after %ss (limit %ss) with %d tool calls",
+            duration, timeout, tool_call_counter[0],
+        )
     elif status == "interrupted":
         result["output"] = (
             stdout_text + "\n[execution interrupted — user sent a new message]"
@@ -1117,6 +1128,10 @@ def execute_code(
         stderr_reader.start()
 
         status = "success"
+        _activity_state = {
+            "last_touch": time.monotonic(),
+            "start": exec_start,
+        }
         while proc.poll() is None:
             if _is_interrupted():
                 _kill_process_group(proc)
@@ -1126,6 +1141,13 @@ def execute_code(
                 _kill_process_group(proc, escalate=True)
                 status = "timeout"
                 break
+            # Periodic activity touch so the gateway's inactivity timeout
+            # doesn't kill the agent during long code execution (#10807).
+            try:
+                from tools.environments.base import touch_activity_if_due
+                touch_activity_if_due(_activity_state, "execute_code running")
+            except Exception:
+                pass
             time.sleep(0.2)
 
         # Wait for readers to finish draining
@@ -1179,7 +1201,20 @@ def execute_code(
         }
 
         if status == "timeout":
-            result["error"] = f"Script timed out after {timeout}s and was killed."
+            timeout_msg = f"Script timed out after {timeout}s and was killed."
+            result["error"] = timeout_msg
+            # Include timeout message in output so the LLM always surfaces it
+            # to the user.  When output is empty, models often treat the result
+            # as "nothing happened" and produce an empty response, which the
+            # gateway stream consumer silently drops (#10807).
+            if stdout_text:
+                result["output"] = stdout_text + f"\n\n⏰ {timeout_msg}"
+            else:
+                result["output"] = f"⏰ {timeout_msg}"
+            logger.warning(
+                "execute_code timed out after %ss (limit %ss) with %d tool calls",
+                duration, timeout, tool_call_counter[0],
+            )
         elif status == "interrupted":
             result["output"] = stdout_text + "\n[execution interrupted — user sent a new message]"
         elif exit_code != 0:

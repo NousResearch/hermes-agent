@@ -141,6 +141,11 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         base_url_override="https://api.arcee.ai/api/v1",
         base_url_env_var="ARCEE_BASE_URL",
     ),
+    "qiniu": HermesOverlay(
+        transport="openai_chat",
+        base_url_override="https://api.qnaigc.com/v1",
+        base_url_env_var="QINIU_BASE_URL",
+    ),
 }
 
 
@@ -267,6 +272,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "openai-codex": "OpenAI Codex",
     "copilot-acp": "GitHub Copilot ACP",
     "xiaomi": "Xiaomi MiMo",
+    "qiniu": "Qiniu",
     "local": "Local endpoint",
     "bedrock": "AWS Bedrock",
 }

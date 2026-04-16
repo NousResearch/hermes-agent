@@ -95,6 +95,7 @@ _MATCHING_PREFIX_STRIP_PROVIDERS: frozenset[str] = frozenset({
     "alibaba",
     "qwen-oauth",
     "xiaomi",
+    "qiniu",
     "arcee",
     "custom",
 })

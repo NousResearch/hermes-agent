@@ -1055,6 +1055,21 @@ OPTIONAL_ENV_VARS = {
         "category": "provider",
         "advanced": True,
     },
+    "QINIU_API_KEY": {
+        "description": "Qiniu API key for the Qiniu OpenAI-compatible gateway",
+        "prompt": "Qiniu API Key",
+        "url": "https://portal.qiniu.com/",
+        "password": True,
+        "category": "provider",
+    },
+    "QINIU_BASE_URL": {
+        "description": "Qiniu base URL override (default: https://api.qnaigc.com/v1)",
+        "prompt": "Qiniu base URL (leave empty for default)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
 
     # ── Tool API keys ──
     "EXA_API_KEY": {

@@ -205,6 +205,9 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "mimo-v2-omni",
         "mimo-v2-flash",
     ],
+    "qiniu": [
+        "deepseek-v3",
+    ],
     "arcee": [
         "trinity-large-thinking",
         "trinity-large-preview",
@@ -547,6 +550,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("minimax",        "MiniMax",                  "MiniMax (global direct API)"),
     ProviderEntry("minimax-cn",     "MiniMax (China)",          "MiniMax China (domestic direct API)"),
     ProviderEntry("alibaba",        "Alibaba Cloud (DashScope)","Alibaba Cloud / DashScope Coding (Qwen + multi-provider)"),
+    ProviderEntry("qiniu",          "Qiniu",                    "Qiniu (OpenAI-compatible gateway)"),
     ProviderEntry("arcee",          "Arcee AI",                 "Arcee AI (Trinity models — direct API)"),
     ProviderEntry("kilocode",       "Kilo Code",                "Kilo Code (Kilo Gateway API)"),
     ProviderEntry("opencode-zen",   "OpenCode Zen",             "OpenCode Zen (35+ curated models, pay-as-you-go)"),
@@ -1276,6 +1280,19 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         live = _fetch_ai_gateway_models()
         if live:
             return live
+    if normalized == "qiniu":
+        try:
+            from hermes_cli.auth import resolve_api_key_provider_credentials
+
+            creds = resolve_api_key_provider_credentials("qiniu")
+            live = fetch_api_models(
+                creds.get("api_key", ""),
+                creds.get("base_url", ""),
+            )
+            if live:
+                return live
+        except Exception:
+            pass
     if normalized == "custom":
         base_url = _get_custom_base_url()
         if base_url:

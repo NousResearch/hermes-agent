@@ -27,6 +27,7 @@ _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "opencode-zen", "opencode-go", "ai-gateway", "kilocode", "alibaba",
     "qwen-oauth",
     "xiaomi",
+    "qiniu",
     "arcee",
     "custom", "local",
     # Common aliases
@@ -239,6 +240,8 @@ _URL_TO_PROVIDER: Dict[str, str] = {
     "api.x.ai": "xai",
     "api.xiaomimimo.com": "xiaomi",
     "xiaomimimo.com": "xiaomi",
+    "api.qnaigc.com": "qiniu",
+    "qnaigc.com": "qiniu",
 }
 
 

@@ -27,6 +27,7 @@ model:
   #   "xiaomi"       - Xiaomi MiMo (requires: XIAOMI_API_KEY)
   #   "arcee"        - Arcee AI Trinity models (requires: ARCEEAI_API_KEY)
   #   "kilocode"     - KiloCode gateway (requires: KILOCODE_API_KEY)
+  #   "qiniu"        - Qiniu gateway (requires: QINIU_API_KEY)
   #   "ai-gateway"   - Vercel AI Gateway (requires: AI_GATEWAY_API_KEY)
   #
   # Local servers (LM Studio, Ollama, vLLM, llama.cpp):
@@ -751,7 +752,7 @@ delegation:
   # model: "google/gemini-3-flash-preview"    # Override model for subagents (empty = inherit parent)
   # provider: "openrouter"                    # Override provider for subagents (empty = inherit parent)
   #                                           # Resolves full credentials (base_url, api_key) automatically.
-  #                                           # Supported: openrouter, nous, zai, kimi-coding, minimax
+  #                                           # Supported: openrouter, nous, zai, kimi-coding, minimax, qiniu
 
 # =============================================================================
 # Honcho Integration (Cross-Session User Modeling)

@@ -282,6 +282,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=(),
         base_url_env_var="BEDROCK_BASE_URL",
     ),
+    "qiniu": ProviderConfig(
+        id="qiniu",
+        name="Qiniu",
+        auth_type="api_key",
+        inference_base_url="https://api.qnaigc.com/v1",
+        api_key_env_vars=("QINIU_API_KEY",),
+        base_url_env_var="QINIU_BASE_URL",
+    ),
 }
 
 

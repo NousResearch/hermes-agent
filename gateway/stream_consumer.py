@@ -403,18 +403,20 @@ class GatewayStreamConsumer:
 
         except asyncio.CancelledError:
             # Best-effort final edit on cancellation
+            _best_effort_ok = False
             if self._accumulated and self._message_id:
                 try:
-                    await self._send_or_edit(self._accumulated)
+                    _best_effort_ok = bool(await self._send_or_edit(self._accumulated))
                 except Exception:
                     pass
-            # If we delivered any content before being cancelled, mark the
-            # final response as sent so the gateway's already_sent check
-            # doesn't trigger a duplicate message.  The 5-second
-            # stream_task timeout (gateway/run.py) can cancel us while
-            # waiting on a slow Telegram API call — without this flag the
-            # gateway falls through to the normal send path.
-            if self._already_sent:
+            # Only confirm final delivery if the best-effort send above
+            # actually succeeded OR if the final response was already
+            # confirmed before we were cancelled.  Previously this
+            # promoted any partial send (already_sent=True) to
+            # final_response_sent — which suppressed the gateway's
+            # fallback send even when only intermediate text (e.g.
+            # "Let me search…") had been delivered, not the real answer.
+            if _best_effort_ok and not self._final_response_sent:
                 self._final_response_sent = True
         except Exception as e:
             logger.error("Stream consumer error: %s", e)

@@ -100,6 +100,9 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("config", "Show current configuration", "Configuration",
                cli_only=True),
     CommandDef("model", "Switch model for this session", "Configuration", args_hint="[model] [--global]"),
+    CommandDef("routing", "Manage smart model routing for this session", "Configuration",
+               args_hint="[on|off|status|default] [--global]",
+               subcommands=("on", "off", "status", "default", "reset")),
     CommandDef("provider", "Show available providers and current provider",
                "Configuration"),
 

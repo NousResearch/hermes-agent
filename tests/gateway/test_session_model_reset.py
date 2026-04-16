@@ -37,6 +37,7 @@ def _make_runner():
     runner._voice_mode = {}
     runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
     runner._session_model_overrides = {}
+    runner._session_smart_routing_overrides = {}
     runner._pending_model_notes = {}
     runner._background_tasks = set()
 
@@ -75,14 +76,16 @@ async def test_new_command_clears_session_model_override():
     runner._session_model_overrides[session_key] = {
         "model": "gpt-4o",
         "provider": "openai",
-        "api_key": "sk-test",
+        "api_key": "***",
         "base_url": "",
         "api_mode": "openai",
     }
+    runner._session_smart_routing_overrides[session_key] = False
 
     await runner._handle_reset_command(_make_event("/new"))
 
     assert session_key not in runner._session_model_overrides
+    assert session_key not in runner._session_smart_routing_overrides
 
 
 @pytest.mark.asyncio

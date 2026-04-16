@@ -556,6 +556,7 @@ class GatewayRunner:
     _restart_via_service: bool = False
     _stop_task: Optional[asyncio.Task] = None
     _session_model_overrides: Dict[str, Dict[str, str]] = {}
+    _session_smart_routing_overrides: Dict[str, bool] = {}
     
     def __init__(self, config: Optional[GatewayConfig] = None):
         self.config = config or load_gateway_config()
@@ -613,6 +614,9 @@ class GatewayRunner:
         # Per-session model overrides from /model command.
         # Key: session_key, Value: dict with model/provider/api_key/base_url/api_mode
         self._session_model_overrides: Dict[str, Dict[str, str]] = {}
+        # Per-session smart-routing overrides from /routing command.
+        # Key: session_key, Value: bool enabled/disabled for this session.
+        self._session_smart_routing_overrides: Dict[str, bool] = {}
         # Track pending exec approvals per session
         # Key: session_key, Value: {"command": str, "pattern_key": str, ...}
         self._pending_approvals: Dict[str, Dict[str, Any]] = {}
@@ -948,7 +952,16 @@ class GatewayRunner:
 
         return model, runtime_kwargs
 
-    def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict) -> dict:
+    def _effective_smart_model_routing(self, session_key: Optional[str] = None) -> dict:
+        """Return smart-routing config with any session override applied."""
+        cfg = dict(getattr(self, "_smart_model_routing", {}) or {})
+        if session_key is not None:
+            override = getattr(self, "_session_smart_routing_overrides", {}).get(session_key)
+            if override is not None:
+                cfg["enabled"] = bool(override)
+        return cfg
+
+    def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict, session_key: Optional[str] = None) -> dict:
         from agent.smart_model_routing import resolve_turn_route
         from hermes_cli.models import resolve_fast_mode_overrides
 
@@ -962,7 +975,11 @@ class GatewayRunner:
             "args": list(runtime_kwargs.get("args") or []),
             "credential_pool": runtime_kwargs.get("credential_pool"),
         }
-        route = resolve_turn_route(user_message, getattr(self, "_smart_model_routing", {}), primary)
+        route = resolve_turn_route(
+            user_message,
+            self._effective_smart_model_routing(session_key),
+            primary,
+        )
 
         service_tier = getattr(self, "_service_tier", None)
         if not service_tier:
@@ -3007,6 +3024,9 @@ class GatewayRunner:
         if canonical == "model":
             return await self._handle_model_command(event)
 
+        if canonical == "routing":
+            return await self._handle_routing_command(event)
+
         if canonical == "provider":
             return await self._handle_provider_command(event)
         
@@ -4334,6 +4354,7 @@ class GatewayRunner:
         # Clear any session-scoped model override so the next agent picks up
         # the configured default instead of the previously switched model.
         self._session_model_overrides.pop(session_key, None)
+        self._session_smart_routing_overrides.pop(session_key, None)
 
         # Fire plugin on_session_finalize hook (session boundary)
         try:
@@ -4914,6 +4935,97 @@ class GatewayRunner:
             lines.append("_(session only -- add `--global` to persist)_")
 
         return "\n".join(lines)
+
+    async def _handle_routing_command(self, event: MessageEvent) -> str:
+        """Handle /routing — manage smart routing for this session or globally."""
+        import shlex
+        import yaml
+
+        raw_args = event.get_command_args().strip()
+        try:
+            tokens = shlex.split(raw_args)
+        except ValueError as exc:
+            return f"⚠️ Could not parse `/routing` arguments: {exc}"
+
+        persist_global = False
+        normalized: list[str] = []
+        for token in tokens:
+            if token == "--global":
+                persist_global = True
+            else:
+                normalized.append(token.lower())
+
+        action = normalized[0] if normalized else "status"
+        if len(normalized) > 1:
+            return "⚠️ Usage: `/routing [on|off|status|default] [--global]`"
+
+        config_path = _hermes_home / "config.yaml"
+        self._smart_model_routing = self._load_smart_model_routing()
+        session_key = self._session_key_for_source(event.source)
+
+        if action == "status":
+            cfg = self._effective_smart_model_routing(session_key)
+            global_enabled = bool((self._smart_model_routing or {}).get("enabled", False))
+            override = self._session_smart_routing_overrides.get(session_key)
+            override_label = "inherit global" if override is None else ("on" if override else "off")
+            cheap_model = cfg.get("cheap_model") or {}
+            lines = ["🧭 **Smart Routing**", ""]
+            lines.append(f"**Global:** `{'on' if global_enabled else 'off'}`")
+            lines.append(f"**This session:** `{override_label}`")
+            lines.append(f"**Effective:** `{'on' if cfg.get('enabled') else 'off'}`")
+            lines.append(
+                f"**Cheap model:** `{cheap_model.get('model') or 'unconfigured'}` via `{cheap_model.get('provider') or 'unconfigured'}`"
+            )
+            lines.append(
+                f"**Thresholds:** `{cfg.get('max_simple_chars', 160)}` chars, `{cfg.get('max_simple_words', 28)}` words"
+            )
+            lines.append("")
+            lines.append("_Usage:_ `/routing <on|off|status|default> [--global]`")
+            return "\n".join(lines)
+
+        if action not in {"on", "off", "default", "reset"}:
+            return "⚠️ Usage: `/routing [on|off|status|default] [--global]`"
+
+        if action in {"default", "reset"}:
+            self._session_smart_routing_overrides.pop(session_key, None)
+            effective = bool((self._smart_model_routing or {}).get("enabled", False))
+            return (
+                "🧭 ✓ Smart routing override cleared for this session\n"
+                f"Effective state now follows global config: `{'on' if effective else 'off'}`"
+            )
+
+        enabled = action == "on"
+        if persist_global:
+            try:
+                user_config = {}
+                if config_path.exists():
+                    with open(config_path, encoding="utf-8") as f:
+                        user_config = yaml.safe_load(f) or {}
+                smart_cfg = user_config.get("smart_model_routing")
+                if not isinstance(smart_cfg, dict):
+                    smart_cfg = {}
+                    user_config["smart_model_routing"] = smart_cfg
+                smart_cfg["enabled"] = enabled
+                atomic_yaml_write(config_path, user_config)
+                self._smart_model_routing["enabled"] = enabled
+                self._session_smart_routing_overrides.pop(session_key, None)
+                return (
+                    f"🧭 ✓ Smart routing set to **{'ON' if enabled else 'OFF'}** and saved to config\n"
+                    "This session now follows the updated global setting."
+                )
+            except Exception as exc:
+                logger.error("Failed to persist smart routing setting: %s", exc)
+                self._session_smart_routing_overrides[session_key] = enabled
+                return (
+                    f"🧭 ✓ Smart routing {'enabled' if enabled else 'disabled'} for this session\n"
+                    "⚠️ Saving to config failed, so this change is session-only."
+                )
+
+        self._session_smart_routing_overrides[session_key] = enabled
+        return (
+            f"🧭 ✓ Smart routing {'enabled' if enabled else 'disabled'} for this session\n"
+            "Use `/routing default` to return to the global setting."
+        )
 
     async def _handle_provider_command(self, event: MessageEvent) -> str:
         """Handle /provider command - show available providers."""
@@ -5683,7 +5795,7 @@ class GatewayRunner:
             reasoning_config = self._load_reasoning_config()
             self._reasoning_config = reasoning_config
             self._service_tier = self._load_service_tier()
-            turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
+            turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs, session_key)
 
             def run_sync():
                 agent = AIAgent(
@@ -5849,7 +5961,7 @@ class GatewayRunner:
             platform_key = _platform_config_key(source.platform)
             reasoning_config = self._load_reasoning_config()
             self._service_tier = self._load_service_tier()
-            turn_route = self._resolve_turn_agent_config(question, model, runtime_kwargs)
+            turn_route = self._resolve_turn_agent_config(question, model, runtime_kwargs, session_key)
             pr = self._provider_routing
 
             # Snapshot history from running agent or stored transcript
@@ -8538,7 +8650,7 @@ class GatewayRunner:
                 except Exception as _e:
                     logger.debug("interim_assistant_callback error: %s", _e)
 
-            turn_route = self._resolve_turn_agent_config(message, model, runtime_kwargs)
+            turn_route = self._resolve_turn_agent_config(message, model, runtime_kwargs, session_key)
 
             # Check agent cache — reuse the AIAgent from the previous message
             # in this session to preserve the frozen system prompt and tool

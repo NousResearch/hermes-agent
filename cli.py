@@ -1768,6 +1768,7 @@ class HermesCLI:
 
         # Optional cheap-vs-strong routing for simple turns
         self._smart_model_routing = CLI_CONFIG.get("smart_model_routing", {}) or {}
+        self._smart_model_routing_override_enabled: Optional[bool] = None
         self._active_agent_route_signature = None
 
         # Agent will be initialized on first use
@@ -2771,9 +2772,13 @@ class HermesCLI:
         from agent.smart_model_routing import resolve_turn_route
         from hermes_cli.models import resolve_fast_mode_overrides
 
+        routing_cfg = dict(self._smart_model_routing or {})
+        if self._smart_model_routing_override_enabled is not None:
+            routing_cfg["enabled"] = self._smart_model_routing_override_enabled
+
         route = resolve_turn_route(
             user_message,
-            self._smart_model_routing,
+            routing_cfg,
             {
                 "model": self.model,
                 "api_key": self.api_key,
@@ -4112,6 +4117,7 @@ class HermesCLI:
         self.conversation_history = []
         self._pending_title = None
         self._resumed = False
+        self._smart_model_routing_override_enabled = None
 
         if self.agent:
             self.agent.session_id = self.session_id
@@ -4801,6 +4807,82 @@ class HermesCLI:
         else:
             _cprint("    (session only — add --global to persist)")
 
+    def _handle_routing_command(self, cmd: str):
+        """Handle /routing — manage smart model routing for this session or globally."""
+        import shlex
+
+        raw_args = cmd.strip().split(maxsplit=1)
+        arg_text = raw_args[1] if len(raw_args) > 1 else ""
+        try:
+            tokens = shlex.split(arg_text)
+        except ValueError as exc:
+            _cprint(f"  {_DIM}(._.) Could not parse /routing arguments: {exc}{_RST}")
+            return
+
+        persist_global = False
+        normalized: list[str] = []
+        for token in tokens:
+            if token == "--global":
+                persist_global = True
+            else:
+                normalized.append(token.lower())
+
+        action = normalized[0] if normalized else "status"
+        if len(normalized) > 1:
+            _cprint(f"  {_DIM}(._.) Usage: /routing [on|off|status|default] [--global]{_RST}")
+            return
+
+        if action == "status":
+            global_enabled = bool((self._smart_model_routing or {}).get("enabled", False))
+            override = self._smart_model_routing_override_enabled
+            effective = override if override is not None else global_enabled
+            cheap_model = (self._smart_model_routing or {}).get("cheap_model") or {}
+            cheap_provider = cheap_model.get("provider") or "unconfigured"
+            cheap_model_name = cheap_model.get("model") or "unconfigured"
+            override_label = "inherit global" if override is None else ("on" if override else "off")
+            _cprint(f"  {_ACCENT}Smart routing (global): {('ON' if global_enabled else 'OFF')}{_RST}")
+            _cprint(f"  {_ACCENT}Smart routing (session):{_RST} {override_label}")
+            _cprint(f"  {_ACCENT}Effective for this session:{_RST} {('ON' if effective else 'OFF')}")
+            _cprint(f"  {_ACCENT}Cheap model:{_RST} {cheap_model_name} via {cheap_provider}")
+            _cprint(
+                f"  {_ACCENT}Thresholds:{_RST} "
+                f"{(self._smart_model_routing or {}).get('max_simple_chars', 160)} chars, "
+                f"{(self._smart_model_routing or {}).get('max_simple_words', 28)} words"
+            )
+            _cprint(f"  {_DIM}Usage: /routing [on|off|status|default] [--global]{_RST}")
+            return
+
+        if action not in {"on", "off", "default", "reset"}:
+            _cprint(f"  {_DIM}(._.) Unknown argument: {action}{_RST}")
+            _cprint(f"  {_DIM}Usage: /routing [on|off|status|default] [--global]{_RST}")
+            return
+
+        if action in {"default", "reset"}:
+            self._smart_model_routing_override_enabled = None
+            if persist_global:
+                _cprint(f"  {_DIM}(._.) /routing default ignores --global and just clears the session override.{_RST}")
+            effective = bool((self._smart_model_routing or {}).get("enabled", False))
+            _cprint(f"  {_ACCENT}✓ Smart routing session override cleared{_RST}")
+            _cprint(f"  {_DIM}  Effective state now follows global config: {('ON' if effective else 'OFF')}{_RST}")
+            return
+
+        enabled = action == "on"
+        if persist_global:
+            if save_config_value("smart_model_routing.enabled", enabled):
+                self._smart_model_routing["enabled"] = enabled
+                self._smart_model_routing_override_enabled = None
+                _cprint(f"  {_ACCENT}✓ Smart routing set to {('ON' if enabled else 'OFF')} (saved to config){_RST}")
+                _cprint(f"  {_DIM}  This session now follows the updated global setting.{_RST}")
+            else:
+                self._smart_model_routing_override_enabled = enabled
+                _cprint(f"  {_ACCENT}✓ Smart routing {('enabled' if enabled else 'disabled')} for this session{_RST}")
+                _cprint(f"  {_DIM}  Saving to config failed, so this change is session-only.{_RST}")
+            return
+
+        self._smart_model_routing_override_enabled = enabled
+        _cprint(f"  {_ACCENT}✓ Smart routing {('enabled' if enabled else 'disabled')} for this session{_RST}")
+        _cprint(f"  {_DIM}  Use /routing default to return to the global setting.{_RST}")
+
     def _should_handle_model_command_inline(self, text: str, has_images: bool = False) -> bool:
         """Return True when /model should be handled immediately on the UI thread."""
         if not text or has_images or not _looks_like_slash_command(text):
@@ -5408,6 +5490,8 @@ class HermesCLI:
             self._handle_resume_command(cmd_original)
         elif canonical == "model":
             self._handle_model_switch(cmd_original)
+        elif canonical == "routing":
+            self._handle_routing_command(cmd_original)
         elif canonical == "provider":
             self._show_model_and_providers()
 

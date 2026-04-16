@@ -32,7 +32,7 @@ class TestFindSessionId:
         })
 
         with patch.object(mirror_mod, "_SESSIONS_DIR", sessions_dir), \
-             patch.object(mirror_mod, "_SESSIONS_INDEX", index_file):
+             patch("gateway.session._get_sessions_index_path", return_value=index_file):
             result = _find_session_id("telegram", "12345")
 
         assert result == "sess_abc"
@@ -52,7 +52,7 @@ class TestFindSessionId:
         })
 
         with patch.object(mirror_mod, "_SESSIONS_DIR", sessions_dir), \
-             patch.object(mirror_mod, "_SESSIONS_INDEX", index_file):
+             patch("gateway.session._get_sessions_index_path", return_value=index_file):
             result = _find_session_id("telegram", "12345")
 
         assert result == "sess_new"
@@ -72,7 +72,7 @@ class TestFindSessionId:
         })
 
         with patch.object(mirror_mod, "_SESSIONS_DIR", sessions_dir), \
-             patch.object(mirror_mod, "_SESSIONS_INDEX", index_file):
+             patch("gateway.session._get_sessions_index_path", return_value=index_file):
             result = _find_session_id("telegram", "-1001", thread_id="10")
 
         assert result == "sess_topic_a"
@@ -86,13 +86,13 @@ class TestFindSessionId:
             }
         })
 
-        with patch.object(mirror_mod, "_SESSIONS_INDEX", index_file):
+        with patch("gateway.session._get_sessions_index_path", return_value=index_file):
             result = _find_session_id("telegram", "12345")
 
         assert result is None
 
     def test_missing_sessions_file(self, tmp_path):
-        with patch.object(mirror_mod, "_SESSIONS_INDEX", tmp_path / "nope.json"):
+        with patch("gateway.session._get_sessions_index_path", return_value=tmp_path / "nope.json"):
             result = _find_session_id("telegram", "12345")
 
         assert result is None
@@ -106,7 +106,7 @@ class TestFindSessionId:
             }
         })
 
-        with patch.object(mirror_mod, "_SESSIONS_INDEX", index_file):
+        with patch("gateway.session._get_sessions_index_path", return_value=index_file):
             result = _find_session_id("telegram", "123")
 
         assert result == "sess_1"
@@ -151,7 +151,7 @@ class TestMirrorToSession:
         })
 
         with patch.object(mirror_mod, "_SESSIONS_DIR", sessions_dir), \
-             patch.object(mirror_mod, "_SESSIONS_INDEX", index_file), \
+             patch("gateway.session._get_sessions_index_path", return_value=index_file), \
              patch("gateway.mirror._append_to_sqlite"):
             result = mirror_to_session("telegram", "12345", "Hello!", source_label="cli")
 
@@ -184,7 +184,7 @@ class TestMirrorToSession:
         })
 
         with patch.object(mirror_mod, "_SESSIONS_DIR", sessions_dir), \
-             patch.object(mirror_mod, "_SESSIONS_INDEX", index_file), \
+             patch("gateway.session._get_sessions_index_path", return_value=index_file), \
              patch("gateway.mirror._append_to_sqlite"):
             result = mirror_to_session("telegram", "-1001", "Hello topic!", source_label="cron", thread_id="10")
 
@@ -200,13 +200,13 @@ class TestMirrorToSession:
         sessions_dir, index_file = _setup_sessions(tmp_path, {})
 
         with patch.object(mirror_mod, "_SESSIONS_DIR", sessions_dir), \
-             patch.object(mirror_mod, "_SESSIONS_INDEX", index_file):
+             patch("gateway.session._get_sessions_index_path", return_value=index_file):
             result = mirror_to_session("telegram", "99999", "Hello!")
 
         assert result is False
 
     def test_error_returns_false(self, tmp_path):
-        with patch("gateway.mirror._find_session_id", side_effect=Exception("boom")):
+        with patch("gateway.mirror.find_session_entry_by_origin", side_effect=Exception("boom")):
             result = mirror_to_session("telegram", "123", "msg")
 
         assert result is False

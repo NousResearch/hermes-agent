@@ -11,17 +11,18 @@ the full SessionStore machinery.
 
 import json
 import logging
-import os
-import tempfile
 from datetime import datetime
 from typing import Optional
 
 from hermes_cli.config import get_hermes_home
+from gateway.session import (
+    find_session_entry_by_origin,
+    touch_session_updated_at,
+)
 
 logger = logging.getLogger(__name__)
 
 _SESSIONS_DIR = get_hermes_home() / "sessions"
-_SESSIONS_INDEX = _SESSIONS_DIR / "sessions.json"
 
 
 def mirror_to_session(
@@ -42,9 +43,7 @@ def mirror_to_session(
     """
     try:
         timestamp = datetime.now().isoformat()
-        sessions_data = _load_sessions_index()
-        session_key, session_entry = _find_session_entry(
-            sessions_data,
+        session_key, session_entry = find_session_entry_by_origin(
             platform,
             str(chat_id),
             thread_id=thread_id,
@@ -68,7 +67,7 @@ def mirror_to_session(
         _append_to_jsonl(session_id, mirror_msg)
         _append_to_sqlite(session_id, mirror_msg)
         if session_key is not None:
-            _touch_session_entry(sessions_data, session_key, updated_at=timestamp)
+            touch_session_updated_at(session_key, updated_at=timestamp)
 
         logger.debug("Mirror: wrote to session %s (from %s)", session_id, source_label)
         return True
@@ -80,9 +79,7 @@ def mirror_to_session(
 
 def _find_session_id(platform: str, chat_id: str, thread_id: Optional[str] = None) -> Optional[str]:
     """Find the active session_id for a platform + chat_id pair."""
-    sessions_data = _load_sessions_index()
-    _session_key, session_entry = _find_session_entry(
-        sessions_data,
+    _session_key, session_entry = find_session_entry_by_origin(
         platform,
         chat_id,
         thread_id=thread_id,
@@ -90,98 +87,6 @@ def _find_session_id(platform: str, chat_id: str, thread_id: Optional[str] = Non
     if not session_entry:
         return None
     return session_entry.get("session_id")
-
-
-def _load_sessions_index() -> dict[str, dict]:
-    if not _SESSIONS_INDEX.exists():
-        return {}
-
-    try:
-        with open(_SESSIONS_INDEX, encoding="utf-8") as f:
-            loaded = json.load(f)
-    except Exception:
-        return {}
-    if isinstance(loaded, dict):
-        return loaded
-    return {}
-
-
-def _find_session_entry(
-    sessions_data: dict[str, dict],
-    platform: str,
-    chat_id: str,
-    *,
-    thread_id: Optional[str] = None,
-) -> tuple[Optional[str], Optional[dict]]:
-    """
-    Find the active session entry for a platform + chat_id pair.
-
-    Scans sessions.json entries and matches where origin.chat_id == chat_id
-    on the right platform.  DM session keys don't embed the chat_id
-    (e.g. "agent:main:telegram:dm"), so we check the origin dict.
-    """
-    if not sessions_data:
-        return None, None
-
-    platform_lower = platform.lower()
-    best_match_key = None
-    best_match_entry = None
-    best_updated = ""
-
-    for entry_key, entry in sessions_data.items():
-        origin = entry.get("origin") or {}
-        entry_platform = (origin.get("platform") or entry.get("platform", "")).lower()
-
-        if entry_platform != platform_lower:
-            continue
-
-        origin_chat_id = str(origin.get("chat_id", ""))
-        if origin_chat_id == str(chat_id):
-            origin_thread_id = origin.get("thread_id")
-            if thread_id is not None and str(origin_thread_id or "") != str(thread_id):
-                continue
-            updated = entry.get("updated_at", "")
-            if updated > best_updated:
-                best_updated = updated
-                best_match_key = entry_key
-                best_match_entry = entry
-
-    return best_match_key, best_match_entry
-
-
-def _touch_session_entry(
-    sessions_data: dict[str, dict],
-    session_key: str,
-    *,
-    updated_at: str,
-) -> None:
-    """Refresh the matched session's updated_at in sessions.json."""
-    if session_key not in sessions_data:
-        return
-
-    try:
-        sessions_data[session_key]["updated_at"] = updated_at
-        _write_sessions_index(sessions_data)
-    except Exception as e:
-        logger.debug("Mirror session updated_at refresh failed: %s", e)
-
-
-def _write_sessions_index(sessions_data: dict[str, dict]) -> None:
-    """Atomically rewrite sessions.json with updated metadata."""
-    _SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(dir=str(_SESSIONS_DIR), suffix=".tmp", prefix=".sessions_")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(sessions_data, f, indent=2)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp_path, _SESSIONS_INDEX)
-    except BaseException:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
 
 
 def _append_to_jsonl(session_id: str, message: dict) -> None:

@@ -12,6 +12,7 @@ import hashlib
 import logging
 import os
 import json
+import tempfile
 import threading
 import uuid
 from pathlib import Path
@@ -19,12 +20,114 @@ from datetime import datetime, timedelta
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Any
 
+from hermes_constants import get_hermes_home
+
 logger = logging.getLogger(__name__)
 
 
 def _now() -> datetime:
     """Return the current local time."""
     return datetime.now()
+
+
+def _get_sessions_index_path() -> Path:
+    """Return the sessions index path for the active Hermes home."""
+    return get_hermes_home() / "sessions" / "sessions.json"
+
+
+def _load_sessions_index(sessions_file: Optional[Path] = None) -> dict[str, dict]:
+    """Load sessions.json for lightweight helpers that operate outside SessionStore."""
+    path = sessions_file or _get_sessions_index_path()
+    if not path.exists():
+        return {}
+
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            loaded = json.load(f)
+    except Exception:
+        return {}
+
+    if isinstance(loaded, dict):
+        return loaded
+    return {}
+
+
+def _write_sessions_index(data: dict[str, Any], *, sessions_file: Path) -> None:
+    """Atomically rewrite sessions.json."""
+    sessions_dir = sessions_file.parent
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(
+        dir=str(sessions_dir), suffix=".tmp", prefix=".sessions_"
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, sessions_file)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError as e:
+            logger.debug("Could not remove temp file %s: %s", tmp_path, e)
+        raise
+
+
+def find_session_entry_by_origin(
+    platform: str,
+    chat_id: str,
+    *,
+    thread_id: Optional[str] = None,
+    sessions_file: Optional[Path] = None,
+) -> tuple[Optional[str], Optional[dict]]:
+    """Find the most recently updated session entry for a platform/chat/thread."""
+    data = _load_sessions_index(sessions_file=sessions_file)
+    if not data:
+        return None, None
+
+    platform_lower = platform.lower()
+    best_match_key = None
+    best_match_entry = None
+    best_updated = ""
+
+    for entry_key, entry in data.items():
+        origin = entry.get("origin") or {}
+        entry_platform = (origin.get("platform") or entry.get("platform", "")).lower()
+        if entry_platform != platform_lower:
+            continue
+
+        origin_chat_id = str(origin.get("chat_id", ""))
+        if origin_chat_id != str(chat_id):
+            continue
+
+        origin_thread_id = origin.get("thread_id")
+        if thread_id is not None and str(origin_thread_id or "") != str(thread_id):
+            continue
+
+        updated = entry.get("updated_at", "")
+        if updated > best_updated:
+            best_updated = updated
+            best_match_key = entry_key
+            best_match_entry = entry
+
+    return best_match_key, best_match_entry
+
+
+def touch_session_updated_at(
+    session_key: str,
+    *,
+    updated_at: Optional[str] = None,
+    sessions_file: Optional[Path] = None,
+) -> bool:
+    """Refresh updated_at for a session entry stored in sessions.json."""
+    path = sessions_file or _get_sessions_index_path()
+    data = _load_sessions_index(sessions_file=path)
+    if session_key not in data:
+        return False
+
+    data[session_key]["updated_at"] = updated_at or _now().isoformat()
+    _write_sessions_index(data, sessions_file=path)
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -550,26 +653,11 @@ class SessionStore:
     
     def _save(self) -> None:
         """Save sessions index to disk (kept for session key -> ID mapping)."""
-        import tempfile
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
         sessions_file = self.sessions_dir / "sessions.json"
 
         data = {key: entry.to_dict() for key, entry in self._entries.items()}
-        fd, tmp_path = tempfile.mkstemp(
-            dir=str(self.sessions_dir), suffix=".tmp", prefix=".sessions_"
-        )
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp_path, sessions_file)
-        except BaseException:
-            try:
-                os.unlink(tmp_path)
-            except OSError as e:
-                logger.debug("Could not remove temp file %s: %s", tmp_path, e)
-            raise
+        _write_sessions_index(data, sessions_file=sessions_file)
     
     def _generate_session_key(self, source: SessionSource) -> str:
         """Generate a session key from a source."""

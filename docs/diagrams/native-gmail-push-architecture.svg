@@ -1,0 +1,137 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900" role="img" aria-labelledby="title desc">
+  <title id="title">Native Gmail Push Architecture</title>
+  <desc id="desc">Boundary diagram showing Google-managed systems outside Hermes, the authenticated ingress boundary, and Hermes internal adapter, state, and existing gateway pipeline.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#4b5563"/>
+    </marker>
+    <marker id="arrow-blue" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#2563eb"/>
+    </marker>
+    <marker id="arrow-green" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#047857"/>
+    </marker>
+    <style>
+      .title { font: 700 28px Arial, Helvetica, sans-serif; fill: #111827; }
+      .section { font: 700 18px Arial, Helvetica, sans-serif; fill: #1f2937; letter-spacing: 0.08em; }
+      .box-title { font: 700 18px Arial, Helvetica, sans-serif; fill: #ffffff; }
+      .box-copy { font: 500 14px Arial, Helvetica, sans-serif; fill: #e5eefb; }
+      .box-title-dark { font: 700 18px Arial, Helvetica, sans-serif; fill: #111827; }
+      .box-copy-dark { font: 500 14px Arial, Helvetica, sans-serif; fill: #374151; }
+      .note { font: 600 14px Arial, Helvetica, sans-serif; fill: #374151; }
+      .edge-label { font: 600 13px Arial, Helvetica, sans-serif; fill: #374151; }
+      .mini { font: 600 12px Arial, Helvetica, sans-serif; fill: #475569; }
+      .outside { fill: #0f766e; stroke: #0f5f59; stroke-width: 2; }
+      .inside { fill: #2563eb; stroke: #1d4ed8; stroke-width: 2; }
+      .state { fill: #f59e0b; stroke: #d97706; stroke-width: 2; }
+      .existing { fill: #10b981; stroke: #047857; stroke-width: 2; }
+      .boundary-box { fill: #ec4899; stroke: #be185d; stroke-width: 2; }
+      .lane-outside { fill: #e6f4f1; stroke: #99f6e4; stroke-width: 2.5; }
+      .lane-inside { fill: #eef4ff; stroke: #93c5fd; stroke-width: 2.5; }
+      .edge { stroke: #4b5563; stroke-width: 3; fill: none; marker-end: url(#arrow); }
+      .edge-blue { stroke: #2563eb; stroke-width: 3; fill: none; marker-end: url(#arrow-blue); }
+      .edge-green { stroke: #047857; stroke-width: 3; fill: none; marker-end: url(#arrow-green); }
+      .edge-dashed { stroke-dasharray: 8 6; }
+      .label-bg { fill: #ffffff; stroke: #d1d5db; stroke-width: 1; rx: 8; }
+    </style>
+  </defs>
+
+  <rect width="1600" height="900" fill="#ffffff"/>
+  <text x="800" y="44" text-anchor="middle" class="title">Native Gmail Push Architecture</text>
+
+  <rect x="40" y="80" width="600" height="470" rx="28" class="lane-outside"/>
+  <text x="70" y="118" class="section">OUTSIDE HERMES</text>
+  <text x="70" y="142" class="mini">Google-managed systems and mailbox state</text>
+
+  <rect x="720" y="80" width="840" height="760" rx="28" class="lane-inside"/>
+  <text x="750" y="118" class="section">INSIDE HERMES</text>
+  <text x="750" y="142" class="mini">New adapter plus existing gateway spine</text>
+
+  <rect x="660" y="170" width="20" height="390" rx="10" fill="#111827" opacity="0.08"/>
+  <text x="674" y="365" text-anchor="middle" class="mini" transform="rotate(-90 674 365)">Authenticated ingress boundary</text>
+
+  <rect x="90" y="180" width="220" height="92" rx="16" class="outside"/>
+  <text x="200" y="219" text-anchor="middle" class="box-title">Gmail Mailbox</text>
+  <text x="200" y="244" text-anchor="middle" class="box-copy">real user mail lives here</text>
+
+  <rect x="360" y="180" width="220" height="110" rx="16" class="outside"/>
+  <text x="470" y="218" text-anchor="middle" class="box-title">Gmail API</text>
+  <text x="470" y="243" text-anchor="middle" class="box-copy">users.watch</text>
+  <text x="470" y="263" text-anchor="middle" class="box-copy">users.history.list</text>
+  <text x="470" y="283" text-anchor="middle" class="box-copy">users.messages.get</text>
+
+  <rect x="90" y="370" width="220" height="92" rx="16" class="outside"/>
+  <text x="200" y="409" text-anchor="middle" class="box-title">Cloud Pub/Sub Topic</text>
+  <text x="200" y="434" text-anchor="middle" class="box-copy">watch notifications only</text>
+
+  <rect x="360" y="370" width="220" height="92" rx="16" class="outside"/>
+  <text x="470" y="409" text-anchor="middle" class="box-title">Push Subscription</text>
+  <text x="470" y="434" text-anchor="middle" class="box-copy">POST with OIDC bearer token</text>
+
+  <rect x="780" y="180" width="250" height="108" rx="16" class="inside"/>
+  <text x="905" y="219" text-anchor="middle" class="box-title">hermes gmail-push CLI</text>
+  <text x="905" y="244" text-anchor="middle" class="box-copy">setup, status, renew, resync, test</text>
+  <text x="905" y="264" text-anchor="middle" class="box-copy">OAuth + watch management</text>
+
+  <rect x="1080" y="180" width="250" height="108" rx="16" class="state"/>
+  <text x="1205" y="219" text-anchor="middle" class="box-title-dark">Profile Config + State</text>
+  <text x="1205" y="244" text-anchor="middle" class="box-copy-dark">config.yaml, token.json, state.json</text>
+  <text x="1205" y="264" text-anchor="middle" class="box-copy-dark">recent_delivery_ids.json</text>
+
+  <rect x="760" y="390" width="280" height="132" rx="16" class="boundary-box"/>
+  <text x="900" y="432" text-anchor="middle" class="box-title">Ingress Validation</text>
+  <text x="900" y="458" text-anchor="middle" class="box-copy">verify OIDC audience</text>
+  <text x="900" y="478" text-anchor="middle" class="box-copy">match service account email</text>
+  <text x="900" y="498" text-anchor="middle" class="box-copy">require email_verified</text>
+  <text x="900" y="518" text-anchor="middle" class="box-copy">require messageId, emailAddress, historyId</text>
+
+  <rect x="1100" y="390" width="290" height="132" rx="16" class="inside"/>
+  <text x="1245" y="432" text-anchor="middle" class="box-title">gmail_push Adapter</text>
+  <text x="1245" y="458" text-anchor="middle" class="box-copy">new module in gateway/platforms</text>
+  <text x="1245" y="478" text-anchor="middle" class="box-copy">ack + discard wrong-account pushes</text>
+  <text x="1245" y="498" text-anchor="middle" class="box-copy">reload Gmail client after 401</text>
+
+  <rect x="760" y="610" width="300" height="132" rx="16" class="inside"/>
+  <text x="910" y="652" text-anchor="middle" class="box-title">History Reconciliation</text>
+  <text x="910" y="678" text-anchor="middle" class="box-copy">dedupe Pub/Sub deliveries</text>
+  <text x="910" y="698" text-anchor="middle" class="box-copy">fetch history pages + concrete messages</text>
+  <text x="910" y="718" text-anchor="middle" class="box-copy">rebaseline on stale history cursor</text>
+
+  <rect x="1120" y="610" width="210" height="132" rx="16" class="existing"/>
+  <text x="1225" y="652" text-anchor="middle" class="box-title">Existing Gateway</text>
+  <text x="1225" y="678" text-anchor="middle" class="box-copy">MessageEvent dispatch</text>
+  <text x="1225" y="698" text-anchor="middle" class="box-copy">handle_message</text>
+  <text x="1225" y="718" text-anchor="middle" class="box-copy">agent execution</text>
+
+  <rect x="1380" y="610" width="140" height="132" rx="16" class="existing"/>
+  <text x="1450" y="652" text-anchor="middle" class="box-title">Existing Outputs</text>
+  <text x="1450" y="678" text-anchor="middle" class="box-copy">session storage</text>
+  <text x="1450" y="698" text-anchor="middle" class="box-copy">response log</text>
+  <text x="1450" y="718" text-anchor="middle" class="box-copy">cron follow-ons</text>
+
+  <path d="M 310 226 C 328 226, 340 226, 360 226" class="edge"/>
+  <path d="M 200 272 C 200 318, 200 334, 200 370" class="edge"/>
+  <path d="M 470 290 C 470 330, 470 340, 470 370" class="edge"/>
+  <path d="M 310 416 C 328 416, 340 416, 360 416" class="edge"/>
+
+  <path d="M 580 416 C 660 416, 700 416, 760 456" class="edge"/>
+  <path d="M 1040 456 C 1060 456, 1070 456, 1100 456" class="edge"/>
+  <path d="M 1245 522 C 1245 564, 1245 576, 1245 610" class="edge-blue"/>
+  <path d="M 1060 676 C 1084 676, 1096 676, 1120 676" class="edge-green"/>
+  <path d="M 1330 676 C 1350 676, 1360 676, 1380 676" class="edge-green"/>
+
+  <path d="M 905 180 C 905 152, 780 152, 700 152 C 620 152, 550 154, 470 180" class="edge-blue edge-dashed"/>
+  <path d="M 1205 288 C 1205 338, 1205 348, 1205 390" class="edge"/>
+  <path d="M 910 610 C 910 564, 980 540, 1100 490" class="edge-blue"/>
+  <path d="M 760 660 C 650 660, 610 628, 610 560 C 610 502, 610 356, 470 290" class="edge-blue"/>
+
+  <rect x="270" y="446" width="370" height="28" class="label-bg"/>
+  <text x="455" y="465" text-anchor="middle" class="edge-label">Pub/Sub carries a change signal, not the message body</text>
+
+  <rect x="1084" y="300" width="242" height="28" class="label-bg"/>
+  <text x="1205" y="319" text-anchor="middle" class="edge-label">durable token, cursor, and dedupe state</text>
+
+  <rect x="740" y="760" width="780" height="56" rx="14" fill="#f8fafc" stroke="#cbd5e1" stroke-width="2"/>
+  <text x="1130" y="786" text-anchor="middle" class="note">Key point: the push request only tells Hermes that the mailbox changed.</text>
+  <text x="1130" y="806" text-anchor="middle" class="note">After validation, Hermes fetches authoritative message data from Gmail and then reuses the existing gateway pipeline.</text>
+</svg>

@@ -752,6 +752,12 @@ delegation:
   # provider: "openrouter"                    # Override provider for subagents (empty = inherit parent)
   #                                           # Resolves full credentials (base_url, api_key) automatically.
   #                                           # Supported: openrouter, nous, zai, kimi-coding, minimax
+  #
+  # For custom OpenAI-compatible endpoints:
+  # base_url: "https://my-endpoint.example.com/v1"
+  # api_key: "sk-..."          # Literal key (highest priority)
+  # api_key_env: "MY_API_KEY"  # Env var name (used when api_key is absent)
+  #                            # Falls back to OPENAI_API_KEY if neither is set
 
 # =============================================================================
 # Honcho Integration (Cross-Session User Modeling)

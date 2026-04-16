@@ -9,11 +9,6 @@ metadata:
     tags: [wiki, knowledge-base, research, notes, markdown, rag-alternative]
     category: research
     related_skills: [obsidian, arxiv, agentic-research-ideas]
-    config:
-      - key: wiki.path
-        description: Path to the LLM Wiki knowledge base directory
-        default: "~/wiki"
-        prompt: Wiki directory path
 ---
 
 # Karpathy's LLM Wiki
@@ -39,18 +34,13 @@ Use this skill when the user:
 
 ## Wiki Location
 
-Configured via `skills.config.wiki.path` in `~/.hermes/config.yaml` (prompted
-during `hermes config migrate` or `hermes setup`):
+**Location:** Set via `WIKI_PATH` environment variable (e.g. in `~/.hermes/.env`).
 
-```yaml
-skills:
-  config:
-    wiki:
-      path: ~/wiki
+If unset, defaults to `~/wiki`.
+
+```bash
+WIKI="${WIKI_PATH:-$HOME/wiki}"
 ```
-
-Falls back to `~/wiki` default. The resolved path is injected when this
-skill loads — check the `[Skill config: ...]` block above for the active value.
 
 The wiki is just a directory of markdown files — open it in Obsidian, VS Code, or
 any editor. No database, no special tooling required.
@@ -87,7 +77,7 @@ When the user has an existing wiki, **always orient yourself before doing anythi
 ③ **Scan recent `log.md`** — read the last 20-30 entries to understand recent activity.
 
 ```bash
-WIKI="${wiki_path:-$HOME/wiki}"
+WIKI="${WIKI_PATH:-$HOME/wiki}"
 # Orientation reads at session start
 read_file "$WIKI/SCHEMA.md"
 read_file "$WIKI/index.md"
@@ -107,7 +97,7 @@ at hand before creating anything new.
 
 When the user asks to create or start a wiki:
 
-1. Determine the wiki path (from config, env var, or ask the user; default `~/wiki`)
+1. Determine the wiki path (from `$WIKI_PATH` env var, or ask the user; default `~/wiki`)
 2. Create the directory structure above
 3. Ask the user what domain the wiki covers — be specific
 4. Write `SCHEMA.md` customized to the domain (see template below)

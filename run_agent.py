@@ -607,7 +607,6 @@ class AIAgent:
         checkpoint_max_snapshots: int = 50,
         pass_session_id: bool = False,
         persist_session: bool = True,
-        gateway_session_key: str = None,
     ):
         """
         Initialize the AI Agent.

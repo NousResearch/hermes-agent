@@ -704,9 +704,6 @@ class MessageEvent:
     # Applied at API call time and never persisted to transcript history.
     channel_prompt: Optional[str] = None
     
-    # Per-channel system prompt (resolved from config channel_prompts mapping)
-    channel_prompt: Optional[str] = None
-
     # Internal flag — set for synthetic events (e.g. background process
     # completion notifications) that must bypass user authorization checks.
     internal: bool = False

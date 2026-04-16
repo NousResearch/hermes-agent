@@ -10,7 +10,7 @@ This guide walks you through installing Hermes Agent, setting up a provider, and
 
 ## 1. Install Hermes Agent
 
-Run the one-line installer:
+Fetch and run the installer directly from the GitHub raw URL:
 
 ```bash
 # Linux / macOS / WSL2 / Android (Termux)

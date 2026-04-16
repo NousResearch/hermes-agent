@@ -27,7 +27,9 @@ Use any model you want — [Nous Portal](https://portal.nousresearch.com), [Open
 
 ---
 
-## Quick Install
+## Quick Start
+
+Fetch and run the installer directly from the GitHub raw URL:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash

@@ -4494,9 +4494,26 @@ class HermesCLI:
             _ask()
         return result[0]
 
-    def _open_model_picker(self, providers: list, current_model: str, current_provider: str, user_provs=None, custom_provs=None) -> None:
+    def _open_model_picker(
+        self,
+        providers: list,
+        current_model: str,
+        current_provider: str,
+        user_provs=None,
+        custom_provs=None,
+        *,
+        preserve_draft: bool = True,
+    ) -> None:
         """Open prompt_toolkit-native /model picker modal."""
-        self._capture_modal_input_snapshot()
+        if preserve_draft:
+            self._capture_modal_input_snapshot()
+        else:
+            self._modal_input_snapshot = None
+            if getattr(self, "_app", None):
+                try:
+                    self._app.current_buffer.reset()
+                except Exception:
+                    pass
         default_idx = next((i for i, p in enumerate(providers) if p.get("is_current")), 0)
         self._model_picker_state = {
             "stage": "provider",
@@ -4716,6 +4733,7 @@ class HermesCLI:
                 provider_display,
                 user_provs=user_provs,
                 custom_provs=custom_provs,
+                preserve_draft=False,
             )
             return
 

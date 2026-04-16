@@ -1228,6 +1228,10 @@ class FeishuAdapter(BasePlatformAdapter):
             .register_p2_im_chat_member_bot_deleted_v1(self._on_bot_removed_from_chat)
             .register_p2_im_chat_access_event_bot_p2p_chat_entered_v1(self._on_p2p_chat_entered)
             .register_p2_im_message_recalled_v1(self._on_message_recalled)
+            .register_p2_customized_event(
+                "drive.notice.comment_add_v1",
+                self._on_drive_comment_event,
+            )
             .build()
         )
 
@@ -1965,6 +1969,25 @@ class FeishuAdapter(BasePlatformAdapter):
     def _on_message_recalled(self, data: Any) -> None:
         logger.debug("[Feishu] Message recalled by user")
 
+    def _on_drive_comment_event(self, data: Any) -> None:
+        """Handle drive document comment notification (drive.notice.comment_add_v1).
+
+        Delegates to :mod:`gateway.platforms.feishu_comment` for parsing,
+        logging, and reaction.  Scheduling follows the same
+        ``run_coroutine_threadsafe`` pattern used by ``_on_message_event``.
+        """
+        from gateway.platforms.feishu_comment import handle_drive_comment_event
+
+        loop = self._loop
+        if not self._loop_accepts_callbacks(loop):
+            logger.warning("[Feishu] Dropping drive comment event before adapter loop is ready")
+            return
+        future = asyncio.run_coroutine_threadsafe(
+            handle_drive_comment_event(self._client, data, self_open_id=self._bot_open_id),
+            loop,
+        )
+        future.add_done_callback(self._log_background_failure)
+
     def _on_reaction_event(self, event_type: str, data: Any) -> None:
         """Route user reactions on bot messages as synthetic text events."""
         event = getattr(data, "event", None)
@@ -2590,6 +2613,8 @@ class FeishuAdapter(BasePlatformAdapter):
             self._on_reaction_event(event_type, data)
         elif event_type == "card.action.trigger":
             self._on_card_action_trigger(data)
+        elif event_type == "drive.notice.comment_add_v1":
+            self._on_drive_comment_event(data)
         else:
             logger.debug("[Feishu] Ignoring webhook event type: %s", event_type or "unknown")
         return web.json_response({"code": 0, "msg": "ok"})

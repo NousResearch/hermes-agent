@@ -10,7 +10,6 @@ Hermes Agent includes a rich set of capabilities that extend far beyond basic ch
 
 ## Core
 
-- **[Nous Tool Gateway](tool-gateway.md)** — Paid Nous Portal subscribers can route web search, image generation, text-to-speech, and browser automation through the Tool Gateway — no separate API keys needed. Enable it with `hermes model` or `hermes tools`.
 - **[Tools & Toolsets](tools.md)** — Tools are functions that extend the agent's capabilities. They're organized into logical toolsets that can be enabled or disabled per platform, covering web search, terminal execution, file editing, memory, delegation, and more.
 - **[Skills System](skills.md)** — On-demand knowledge documents the agent can load when needed. Skills follow a progressive disclosure pattern to minimize token usage and are compatible with the [agentskills.io](https://agentskills.io/specification) open standard.
 - **[Persistent Memory](memory.md)** — Bounded, curated memory that persists across sessions. Hermes remembers your preferences, projects, environment, and things it has learned via `MEMORY.md` and `USER.md`.

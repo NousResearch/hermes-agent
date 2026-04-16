@@ -23,6 +23,15 @@ from tools.interrupt import is_interrupted
 
 logger = logging.getLogger(__name__)
 
+_ACTIVITY_TIMEOUT_WALL_MULTIPLIER = max(
+    1,
+    int(os.getenv("TERMINAL_ACTIVITY_TIMEOUT_WALL_MULTIPLIER", "4")),
+)
+_ACTIVITY_TIMEOUT_WALL_MIN_GRACE_SECONDS = max(
+    0,
+    int(os.getenv("TERMINAL_ACTIVITY_TIMEOUT_WALL_MIN_GRACE_SECONDS", "300")),
+)
+
 # Thread-local activity callback.  The agent sets this before a tool call so
 # long-running _wait_for_process loops can report liveness to the gateway.
 _activity_callback_local = threading.local()
@@ -106,6 +115,22 @@ def _save_json_store(path: Path, data: dict) -> None:
     """Write *data* as pretty-printed JSON to *path*."""
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, indent=2))
+
+
+def _compute_wall_timeout(timeout: int | float) -> float:
+    """Return the hard wall-clock cap for a foreground command timeout.
+
+    ``timeout`` is treated as the foreground command's inactivity budget.
+    Commands that continue producing output can run past that budget, but they
+    still stop at a bounded wall-clock cap so a noisy hung command cannot run
+    forever.
+    """
+    timeout = float(timeout)
+    return max(
+        timeout,
+        timeout * _ACTIVITY_TIMEOUT_WALL_MULTIPLIER,
+        timeout + _ACTIVITY_TIMEOUT_WALL_MIN_GRACE_SECONDS,
+    )
 
 
 def _file_mtime_key(host_path: str) -> tuple[float, int] | None:
@@ -387,28 +412,48 @@ class BaseEnvironment(ABC):
         Fires the ``activity_callback`` (if set on this instance) every 10s
         while the process is running so the gateway's inactivity timeout
         doesn't kill long-running commands.
+
+        ``timeout`` is treated as an inactivity budget for foreground
+        commands. Whenever new stdout arrives, the budget resets. A separate
+        hard wall-clock cap still applies so continuously noisy commands cannot
+        run forever.
         """
         output_chunks: list[str] = []
+        activity_lock = threading.Lock()
+        start_time = time.monotonic()
+        last_output_time = start_time
+        saw_output = False
 
         def _drain():
+            nonlocal last_output_time, saw_output
             try:
                 for line in proc.stdout:
-                    output_chunks.append(line)
+                    now = time.monotonic()
+                    with activity_lock:
+                        output_chunks.append(line)
+                        last_output_time = now
+                        saw_output = True
             except UnicodeDecodeError:
-                output_chunks.clear()
-                output_chunks.append(
-                    "[binary output detected — raw bytes not displayable]"
-                )
+                with activity_lock:
+                    output_chunks.clear()
+                    output_chunks.append(
+                        "[binary output detected — raw bytes not displayable]"
+                    )
+                    last_output_time = time.monotonic()
+                    saw_output = True
             except (ValueError, OSError):
                 pass
 
         drain_thread = threading.Thread(target=_drain, daemon=True)
         drain_thread.start()
-        deadline = time.monotonic() + timeout
+        timeout = float(timeout)
+        wall_timeout = _compute_wall_timeout(timeout)
+        wall_deadline = start_time + wall_timeout
         _last_activity_touch = time.monotonic()
         _ACTIVITY_INTERVAL = 10.0  # seconds between activity touches
 
         while proc.poll() is None:
+            _now = time.monotonic()
             if is_interrupted():
                 self._kill_process(proc)
                 drain_thread.join(timeout=2)
@@ -416,11 +461,33 @@ class BaseEnvironment(ABC):
                     "output": "".join(output_chunks) + "\n[Command interrupted]",
                     "returncode": 130,
                 }
-            if time.monotonic() > deadline:
+            with activity_lock:
+                _last_output_time = last_output_time
+                _saw_output = saw_output
+            if _now > wall_deadline:
                 self._kill_process(proc)
                 drain_thread.join(timeout=2)
                 partial = "".join(output_chunks)
-                timeout_msg = f"\n[Command timed out after {timeout}s]"
+                timeout_msg = (
+                    f"\n[Command hit hard timeout after {int(wall_timeout)}s "
+                    f"(inactivity timeout {int(timeout)}s)]"
+                )
+                return {
+                    "output": partial + timeout_msg
+                    if partial
+                    else timeout_msg.lstrip(),
+                    "returncode": 124,
+                }
+            if _now > (_last_output_time + timeout):
+                self._kill_process(proc)
+                drain_thread.join(timeout=2)
+                partial = "".join(output_chunks)
+                if _saw_output:
+                    timeout_msg = (
+                        f"\n[Command timed out after {int(timeout)}s without output]"
+                    )
+                else:
+                    timeout_msg = f"\n[Command timed out after {int(timeout)}s]"
                 return {
                     "output": partial + timeout_msg
                     if partial
@@ -428,13 +495,12 @@ class BaseEnvironment(ABC):
                     "returncode": 124,
                 }
             # Periodic activity touch so the gateway knows we're alive
-            _now = time.monotonic()
             if _now - _last_activity_touch >= _ACTIVITY_INTERVAL:
                 _last_activity_touch = _now
                 _cb = _get_activity_callback()
                 if _cb:
                     try:
-                        _elapsed = int(_now - (deadline - timeout))
+                        _elapsed = int(_now - start_time)
                         _cb(f"terminal command running ({_elapsed}s elapsed)")
                     except Exception:
                         pass
@@ -576,4 +642,3 @@ class BaseEnvironment(ABC):
         from tools.terminal_tool import _transform_sudo_command
 
         return _transform_sudo_command(command)
-

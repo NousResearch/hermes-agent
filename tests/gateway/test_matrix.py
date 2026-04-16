@@ -108,12 +108,23 @@ def _make_fake_mautrix():
         def add_event_handler(self, event_type, handler):
             self._event_handlers.setdefault(event_type, []).append(handler)
 
+        def add_dispatcher(self, dispatcher_type):
+            pass
+
     class InternalEventType:
         INVITE = "internal.invite"
 
     mautrix_client.Client = Client
     mautrix_client.InternalEventType = InternalEventType
     mautrix.client = mautrix_client
+
+    # --- mautrix.client.dispatcher ---
+    mautrix_client_dispatcher = types.ModuleType("mautrix.client.dispatcher")
+
+    class MembershipEventDispatcher:
+        pass
+
+    mautrix_client_dispatcher.MembershipEventDispatcher = MembershipEventDispatcher
 
     # --- mautrix.client.state_store ---
     mautrix_client_state_store = types.ModuleType("mautrix.client.state_store")
@@ -200,6 +211,7 @@ def _make_fake_mautrix():
         "mautrix.api": mautrix_api,
         "mautrix.types": mautrix_types,
         "mautrix.client": mautrix_client,
+        "mautrix.client.dispatcher": mautrix_client_dispatcher,
         "mautrix.client.state_store": mautrix_client_state_store,
         "mautrix.crypto": mautrix_crypto,
         "mautrix.crypto.store": mautrix_crypto_store,

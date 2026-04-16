@@ -1437,7 +1437,7 @@ class HonchoMemoryProvider(MemoryProvider):
                 return json.dumps({"result": card})
 
             elif tool_name == "honcho_search":
-                query = args.get("query", "")
+                query = (args.get("query") or "").strip()
                 if not query:
                     return tool_error("Missing required parameter: query")
                 max_tokens = min(int(args.get("max_tokens", 800)), 2000)
@@ -1450,7 +1450,7 @@ class HonchoMemoryProvider(MemoryProvider):
                 return json.dumps({"result": result})
 
             elif tool_name == "honcho_reasoning":
-                query = args.get("query", "")
+                query = (args.get("query") or "").strip()
                 if not query:
                     return tool_error("Missing required parameter: query")
                 peer = args.get("peer", "user")

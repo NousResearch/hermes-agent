@@ -566,6 +566,19 @@ class TestConcludeToolDispatch:
             peer="hermes",
         )
 
+    def test_honcho_search_rejects_whitespace_only_query(self):
+        """Whitespace-only query must not hit Honcho search API."""
+        import json
+        provider = HonchoMemoryProvider()
+        provider._session_initialized = True
+        provider._session_key = "telegram:123"
+        provider._manager = MagicMock()
+
+        result = provider.handle_tool_call("honcho_search", {"query": "  \t\n  "})
+        parsed = json.loads(result)
+        assert parsed == {"error": "Missing required parameter: query"}
+        provider._manager.search_context.assert_not_called()
+
     def test_honcho_reasoning_can_target_explicit_peer_id(self):
         provider = HonchoMemoryProvider()
         provider._session_initialized = True
@@ -586,6 +599,19 @@ class TestConcludeToolDispatch:
             peer="hermes",
             apply_injection_cap=False,
         )
+
+    def test_honcho_reasoning_rejects_whitespace_only_query(self):
+        """Whitespace-only query must not hit Honcho dialectic API."""
+        import json
+        provider = HonchoMemoryProvider()
+        provider._session_initialized = True
+        provider._session_key = "telegram:123"
+        provider._manager = MagicMock()
+
+        result = provider.handle_tool_call("honcho_reasoning", {"query": "   "})
+        parsed = json.loads(result)
+        assert parsed == {"error": "Missing required parameter: query"}
+        provider._manager.dialectic_query.assert_not_called()
 
     def test_honcho_conclude_missing_both_params_returns_error(self):
         """Calling honcho_conclude with neither conclusion nor delete_id returns a tool error."""

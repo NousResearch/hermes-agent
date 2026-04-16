@@ -1601,7 +1601,7 @@ function Install-Dependencies {
 
         $psi = New-Object System.Diagnostics.ProcessStartInfo
         $psi.FileName = $UvCmd
-        foreach ($arg in $Args) { [void]$psi.ArgumentList.Add($arg) }
+        $psi.Arguments = ($Args -join ' ')
         $psi.RedirectStandardOutput = $true
         $psi.RedirectStandardError = $true
         $psi.UseShellExecute = $false

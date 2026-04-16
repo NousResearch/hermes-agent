@@ -155,10 +155,10 @@ Skills can also declare non-secret config settings (paths, preferences) stored i
 metadata:
   hermes:
     config:
-      - key: wiki.path
-        description: Path to the wiki directory
-        default: "~/wiki"
-        prompt: Wiki directory path
+      - key: myplugin.path
+        description: Path to the plugin data directory
+        default: "~/myplugin-data"
+        prompt: Plugin data directory path
 ```
 
 Settings are stored under `skills.config` in your config.yaml. `hermes config migrate` prompts for unconfigured settings, and `hermes config show` displays them. When a skill loads, its resolved config values are injected into the context so the agent knows the configured values automatically.

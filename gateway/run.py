@@ -9111,6 +9111,9 @@ class GatewayRunner:
                 return
             while True:
                 await asyncio.sleep(_NOTIFY_INTERVAL)
+                # Skip notification if gateway is draining or restart requested
+                if self._draining or self._restart_requested:
+                    continue
                 _elapsed_mins = int((time.time() - _notify_start) // 60)
                 # Include agent activity context if available.
                 _agent_ref = agent_holder[0]

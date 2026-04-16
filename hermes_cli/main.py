@@ -6325,8 +6325,13 @@ Examples:
             sys.stderr = _io.StringIO()
             args = parser.parse_args(_processed_argv)
             sys.stderr = _saved_stderr
-        except SystemExit:
+        except SystemExit as exc:
             sys.stderr = _saved_stderr
+            # Help/version flags (exit code 0) already printed output —
+            # re-raise immediately to avoid a second parse_args printing
+            # the same help text again (#10230).
+            if exc.code == 0:
+                raise
             # Subcommand name was consumed as a flag value (e.g. -c model).
             # Fall back to optional subparsers so argparse handles it normally.
             subparsers.required = False

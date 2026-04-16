@@ -650,9 +650,13 @@ class TestMCPServerTask:
         from tools.mcp_tool import MCPServerTask
 
         async def _test():
-            server = MCPServerTask("bad")
-            with pytest.raises(ValueError, match="no 'command'"):
-                await server.start({"args": []})
+            # Patch backoff sleep so the retry loop finishes fast — the
+            # validation ValueError gets retried _MAX_INITIAL_CONNECT_RETRIES
+            # times (same as any other startup error) before re-raising.
+            with patch("tools.mcp_tool.asyncio.sleep", new_callable=AsyncMock):
+                server = MCPServerTask("bad")
+                with pytest.raises(ValueError, match="no 'command'"):
+                    await server.start({"args": []})
 
         asyncio.run(_test())
 

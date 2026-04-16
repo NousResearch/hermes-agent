@@ -163,7 +163,14 @@ if _MCP_AVAILABLE and not _MCP_MESSAGE_HANDLER_SUPPORTED:
 _DEFAULT_TOOL_TIMEOUT = 120      # seconds for tool calls
 _DEFAULT_CONNECT_TIMEOUT = 60    # seconds for initial connection per server
 _MAX_RECONNECT_RETRIES = 5
-_MAX_INITIAL_CONNECT_RETRIES = 3 # retries for the very first connection attempt
+# Retries for the very first connection attempt.  With exponential backoff
+# starting at 1s (capped by _MAX_BACKOFF_SECONDS), 6 attempts give a
+# cumulative wait of up to 63s (1+2+4+8+16+32) before giving up — enough to
+# cover transient DNS / reverse-proxy warmup on a freshly-booted VM.
+# Previously 3 (cumulative 7s), which repeatedly lost the race to exe.dev
+# integration DNS propagation on VM restart and left MCP servers "down for
+# the whole session" until a second manual restart.
+_MAX_INITIAL_CONNECT_RETRIES = 6
 _MAX_BACKOFF_SECONDS = 60
 
 # Environment variables that are safe to pass to stdio subprocesses

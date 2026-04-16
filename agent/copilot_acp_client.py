@@ -305,6 +305,7 @@ class CopilotACPClient:
         timeout: float | None = None,
         tools: list[dict[str, Any]] | None = None,
         tool_choice: Any = None,
+        stream: bool = False,
         **_: Any,
     ) -> Any:
         prompt_text = _format_messages_as_prompt(
@@ -313,12 +314,27 @@ class CopilotACPClient:
             tools=tools,
             tool_choice=tool_choice,
         )
-        response_text, reasoning_text = self._run_prompt(
-            prompt_text,
-            timeout_seconds=float(timeout or _DEFAULT_TIMEOUT_SECONDS),
-        )
+        # Guard against timeout being passed as a string like "Timeout" or a Timeout class instance
+        try:
+            timeout_seconds = float(timeout) if timeout is not None else _DEFAULT_TIMEOUT_SECONDS
+        except (ValueError, TypeError):
+            timeout_seconds = _DEFAULT_TIMEOUT_SECONDS
+        print(f"[DEBUG ACP] timeout_seconds={timeout_seconds}, model={model}, messages_count={len(messages) if messages else 0}, tools_count={len(tools) if tools else 0}")
+        print(f"[DEBUG ACP] about to call _run_prompt with prompt length={len(prompt_text)}")
+        try:
+            response_text, reasoning_text = self._run_prompt(
+                prompt_text,
+                timeout_seconds=timeout_seconds,
+                model=model,
+            )
+            print(f"[DEBUG ACP] _run_prompt returned text_len={len(response_text)}, text={response_text[:200]!r}")
+        except Exception as e:
+            print(f"[DEBUG ACP] _run_prompt failed: {type(e).__name__}: {e}")
+            raise
 
+        print(f"[DEBUG ACP] response_text={response_text[:200]!r}")
         tool_calls, cleaned_text = _extract_tool_calls_from_text(response_text)
+        print(f"[DEBUG ACP] extracted tool_calls={len(tool_calls)}, cleaned_text={cleaned_text[:100]!r}")
 
         usage = SimpleNamespace(
             prompt_tokens=0,
@@ -326,6 +342,7 @@ class CopilotACPClient:
             total_tokens=0,
             prompt_tokens_details=SimpleNamespace(cached_tokens=0),
         )
+        print(f"[DEBUG ACP] about to build response SimpleNamespace")
         assistant_message = SimpleNamespace(
             content=cleaned_text,
             tool_calls=tool_calls,
@@ -334,17 +351,96 @@ class CopilotACPClient:
             reasoning_details=None,
         )
         finish_reason = "tool_calls" if tool_calls else "stop"
+
+        # When stream=True, yield an OpenAI-compatible chunk iterator so Hermes's
+        # streaming loop (for chunk in stream:) doesn't crash with
+        # "'types.SimpleNamespace' object is not iterable".
+        # Note: _run_prompt blocks until the subprocess completes, so this is
+        # not true streaming — the full response arrives at once.  Real
+        # streaming would require refactoring _run_prompt to yield output
+        # line-by-line as the subprocess runs.
+        if stream:
+
+            def _chunk_generator():
+                model_name = model or "copilot-acp"
+                # Yield a content-delta chunk first (fires first_delta callbacks)
+                if cleaned_text:
+                    yield SimpleNamespace(
+                        id=f"copilot-acp-chunk-{id(cleaned_text)}",
+                        object="chat.completion.chunk",
+                        model=model_name,
+                        choices=[
+                            SimpleNamespace(
+                                index=0,
+                                delta=SimpleNamespace(content=cleaned_text),
+                                finish_reason=None,
+                            )
+                        ],
+                        usage=None,
+                    )
+                # Yield tool-call chunks if any were extracted
+                for idx, tc in enumerate(tool_calls):
+                    yield SimpleNamespace(
+                        id=f"copilot-acp-chunk-tc-{idx}",
+                        object="chat.completion.chunk",
+                        model=model_name,
+                        choices=[
+                            SimpleNamespace(
+                                index=0,
+                                delta=SimpleNamespace(
+                                    tool_calls=[
+                                        SimpleNamespace(
+                                            index=0,
+                                            id=tc.get("id", ""),
+                                            type="function",
+                                            function=SimpleNamespace(
+                                                name=tc.get("function", {}).get("name", ""),
+                                                arguments=tc.get("function", {}).get("arguments", ""),
+                                            ),
+                                        )
+                                    ]
+                                ),
+                                finish_reason=None,
+                            )
+                        ],
+                        usage=None,
+                    )
+                # Yield final chunk with finish reason and usage
+                yield SimpleNamespace(
+                    id=f"copilot-acp-chunk-finish-{id(cleaned_text)}",
+                    object="chat.completion.chunk",
+                    model=model_name,
+                    choices=[
+                        SimpleNamespace(
+                            index=0,
+                            delta=SimpleNamespace(),
+                            finish_reason=finish_reason,
+                        )
+                    ],
+                    usage=usage,
+                )
+
+            return _chunk_generator()
+
         choice = SimpleNamespace(message=assistant_message, finish_reason=finish_reason)
-        return SimpleNamespace(
+        result = SimpleNamespace(
             choices=[choice],
             usage=usage,
             model=model or "copilot-acp",
         )
+        print(f"[DEBUG ACP] returning response with choices count={len(result.choices)}")
+        return result
 
-    def _run_prompt(self, prompt_text: str, *, timeout_seconds: float) -> tuple[str, str]:
+    def _run_prompt(self, prompt_text: str, *, timeout_seconds: float, model: str | None = None) -> tuple[str, str]:
+        # Build args dynamically so different models can be selected via `hermes model`.
+        # If model is provided and not the default, append --model so the copilot CLI
+        # uses the selected model instead of its built-in default (gpt-5-mini).
+        args = list(self._acp_args)
+        if model:
+            args.extend(["--model", model])
         try:
             proc = subprocess.Popen(
-                [self._acp_command] + self._acp_args,
+                [self._acp_command] + args,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,

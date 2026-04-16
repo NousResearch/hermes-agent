@@ -169,6 +169,18 @@ class TestBuildOAuthAuth:
         assert provider is not None
         assert provider.context.client_metadata.scope == "read write admin"
 
+    def test_preserves_server_url_path_for_oauth_resource_validation(self, tmp_path, monkeypatch):
+        try:
+            from mcp.client.auth import OAuthClientProvider
+        except ImportError:
+            pytest.skip("MCP SDK auth not available")
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        provider = build_oauth_auth("granola", "https://mcp.granola.ai/mcp/")
+
+        assert isinstance(provider, OAuthClientProvider)
+        assert provider.context.server_url == "https://mcp.granola.ai/mcp"
+
 
 # ---------------------------------------------------------------------------
 # Utility functions

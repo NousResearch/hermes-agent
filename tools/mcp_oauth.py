@@ -465,13 +465,9 @@ def build_oauth_auth(
         _write_json(storage._client_info_path(), client_info.model_dump(exclude_none=True))
         logger.debug("Pre-registered client_id=%s for '%s'", client_id, server_name)
 
-    # --- Base URL for discovery ---
-    parsed = urlparse(server_url)
-    base_url = f"{parsed.scheme}://{parsed.netloc}"
-
     # --- Build provider ---
     provider = OAuthClientProvider(
-        server_url=base_url,
+        server_url=server_url.rstrip("/"),
         client_metadata=client_metadata,
         storage=storage,
         redirect_handler=_redirect_handler,

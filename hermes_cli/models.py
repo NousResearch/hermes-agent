@@ -11,7 +11,9 @@ import json
 import os
 import urllib.request
 import urllib.error
+import time
 from difflib import get_close_matches
+from pathlib import Path
 from typing import Any, NamedTuple, Optional
 
 COPILOT_BASE_URL = "https://api.githubcopilot.com"
@@ -547,6 +549,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("minimax",        "MiniMax",                  "MiniMax (global direct API)"),
     ProviderEntry("minimax-cn",     "MiniMax (China)",          "MiniMax China (domestic direct API)"),
     ProviderEntry("alibaba",        "Alibaba Cloud (DashScope)","Alibaba Cloud / DashScope Coding (Qwen + multi-provider)"),
+    ProviderEntry("ollama-cloud",   "Ollama Cloud",             "Ollama Cloud (cloud-hosted open models — ollama.com)"),
     ProviderEntry("arcee",          "Arcee AI",                 "Arcee AI (Trinity models — direct API)"),
     ProviderEntry("kilocode",       "Kilo Code",                "Kilo Code (Kilo Gateway API)"),
     ProviderEntry("opencode-zen",   "OpenCode Zen",             "OpenCode Zen (35+ curated models, pay-as-you-go)"),
@@ -558,6 +561,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
 # Derived dicts — used throughout the codebase
 _PROVIDER_LABELS = {p.slug: p.label for p in CANONICAL_PROVIDERS}
 _PROVIDER_LABELS["custom"] = "Custom endpoint"  # special case: not a named provider
+
 
 _PROVIDER_ALIASES = {
     "glm": "zai",
@@ -611,6 +615,8 @@ _PROVIDER_ALIASES = {
     "grok": "xai",
     "x-ai": "xai",
     "x.ai": "xai",
+    "ollama": "custom",  # bare "ollama" = local; use "ollama-cloud" for cloud
+    "ollama_cloud": "ollama-cloud",
 }
 
 
@@ -1784,6 +1790,125 @@ def fetch_api_models(
     be reached (network error, timeout, auth failure, etc.).
     """
     return probe_api_models(api_key, base_url, timeout=timeout).get("models")
+
+
+# ---------------------------------------------------------------------------
+# Ollama Cloud — merged model discovery with disk cache
+# ---------------------------------------------------------------------------
+
+
+
+_OLLAMA_CLOUD_CACHE_TTL = 3600  # 1 hour
+
+
+def _ollama_cloud_cache_path() -> Path:
+    """Return the path for the Ollama Cloud model cache."""
+    from hermes_constants import get_hermes_home
+    return get_hermes_home() / "ollama_cloud_models_cache.json"
+
+
+def _load_ollama_cloud_cache(*, ignore_ttl: bool = False) -> Optional[dict]:
+    """Load cached Ollama Cloud models from disk.
+
+    Args:
+        ignore_ttl: If True, return data even if the TTL has expired (stale fallback).
+    """
+    try:
+        cache_path = _ollama_cloud_cache_path()
+        if not cache_path.exists():
+            return None
+        with open(cache_path, encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            return None
+        models = data.get("models")
+        if not (isinstance(models, list) and models):
+            return None
+        if not ignore_ttl:
+            cached_at = data.get("cached_at", 0)
+            if (time.time() - cached_at) > _OLLAMA_CLOUD_CACHE_TTL:
+                return None  # stale
+        return data
+    except Exception:
+        pass
+    return None
+
+
+def _save_ollama_cloud_cache(models: list[str]) -> None:
+    """Persist the merged Ollama Cloud model list to disk."""
+    try:
+        from utils import atomic_json_write
+        cache_path = _ollama_cloud_cache_path()
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_json_write(cache_path, {"models": models, "cached_at": time.time()}, indent=None)
+    except Exception:
+        pass
+
+
+def fetch_ollama_cloud_models(
+    api_key: Optional[str] = None,
+    base_url: Optional[str] = None,
+    *,
+    force_refresh: bool = False,
+) -> list[str]:
+    """Fetch Ollama Cloud models by merging live API + models.dev, with disk cache.
+
+    Resolution order:
+      1. Disk cache (if fresh, < 1 hour, and not force_refresh)
+      2. Live ``/v1/models`` endpoint (primary — freshest source)
+      3. models.dev registry (secondary — fills gaps for unlisted models)
+      4. Merge: live models first, then models.dev additions (deduped)
+
+    Returns a list of model IDs (never None — empty list on total failure).
+    """
+    # 1. Check disk cache
+    if not force_refresh:
+        cached = _load_ollama_cloud_cache()
+        if cached is not None:
+            return cached["models"]
+
+    # 2. Live API probe
+    if not api_key:
+        api_key = os.getenv("OLLAMA_API_KEY", "")
+    if not base_url:
+        base_url = os.getenv("OLLAMA_BASE_URL", "") or "https://ollama.com/v1"
+
+    live_models: list[str] = []
+    if api_key:
+        result = fetch_api_models(api_key, base_url, timeout=8.0)
+        if result:
+            live_models = result
+
+    # 3. models.dev registry
+    mdev_models: list[str] = []
+    try:
+        from agent.models_dev import list_agentic_models
+        mdev_models = list_agentic_models("ollama-cloud")
+    except Exception:
+        pass
+
+    # 4. Merge: live first, then models.dev additions (deduped, order-preserving)
+    if live_models or mdev_models:
+        seen: set[str] = set()
+        merged: list[str] = []
+        for m in live_models:
+            if m and m not in seen:
+                seen.add(m)
+                merged.append(m)
+        for m in mdev_models:
+            if m and m not in seen:
+                seen.add(m)
+                merged.append(m)
+        if merged:
+            _save_ollama_cloud_cache(merged)
+            return merged
+
+    # Total failure — return stale cache if available (ignore TTL)
+    stale = _load_ollama_cloud_cache(ignore_ttl=True)
+    if stale is not None:
+        return stale["models"]
+
+    return []
 
 
 def validate_requested_model(

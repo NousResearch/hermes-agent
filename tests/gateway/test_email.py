@@ -334,10 +334,29 @@ class TestChannelDirectory(unittest.TestCase):
     """Verify email in channel directory session-based discovery."""
 
     def test_email_in_session_discovery(self):
-        import gateway.channel_directory
-        import inspect
-        source = inspect.getsource(gateway.channel_directory.build_channel_directory)
-        self.assertIn('"email"', source)
+        """build_channel_directory enumerates email (via Platform enum) and
+        falls through to the session-based discovery helper."""
+        from unittest.mock import patch
+
+        import gateway.channel_directory as _cd
+        from gateway.config import Platform
+
+        self.assertEqual(Platform.EMAIL.value, "email")
+
+        seen: list[str] = []
+
+        def _capture(plat_name: str):
+            seen.append(plat_name)
+            return []
+
+        with patch.object(_cd, "_build_from_sessions", side_effect=_capture), \
+             patch.object(_cd, "atomic_json_write", lambda *a, **k: None):
+            directory = _cd.build_channel_directory({})
+
+        # email must be one of the platforms routed through session discovery
+        self.assertIn("email", seen)
+        # and must appear as a top-level key in the built directory
+        self.assertIn("email", directory["platforms"])
 
 
 class TestGatewaySetup(unittest.TestCase):

@@ -113,16 +113,11 @@ class TestMattermostWSAuthRetry:
 class TestMatrixSyncAuthRetry:
     """gateway/platforms/matrix.py — _sync_loop()"""
 
-    def test_unknown_token_sync_error_stops_loop(self):
-        """A SyncError with M_UNKNOWN_TOKEN should stop syncing."""
+    def test_unknown_token_error_stops_loop(self):
+        """An unauthorized sync error should stop syncing."""
         import types
         nio_mock = types.ModuleType("nio")
-
-        class SyncError:
-            def __init__(self, message):
-                self.message = message
-
-        nio_mock.SyncError = SyncError
+        nio_mock.SyncError = type("SyncError", (), {})
 
         from gateway.platforms.matrix import MatrixAdapter
         adapter = MatrixAdapter.__new__(MatrixAdapter)
@@ -130,12 +125,17 @@ class TestMatrixSyncAuthRetry:
 
         sync_count = 0
 
-        async def fake_sync(timeout=30000):
+        async def fake_sync(*, since=None, timeout=30000):
             nonlocal sync_count
             sync_count += 1
-            return SyncError("M_UNKNOWN_TOKEN: Invalid access token")
+            # Production detects auth failures by inspecting the exception
+            # message, so surface the token error the same way the SDK raises
+            # on a revoked access token.
+            raise RuntimeError("M_UNKNOWN_TOKEN: Invalid access token (401)")
 
         adapter._client = MagicMock()
+        # sync_store.get_next_batch is awaited in production
+        adapter._client.sync_store.get_next_batch = AsyncMock(return_value=None)
         adapter._client.sync = fake_sync
 
         async def run():
@@ -157,12 +157,14 @@ class TestMatrixSyncAuthRetry:
 
         call_count = 0
 
-        async def fake_sync(timeout=30000):
+        async def fake_sync(*, since=None, timeout=30000):
             nonlocal call_count
             call_count += 1
             raise RuntimeError("HTTP 401 Unauthorized")
 
         adapter._client = MagicMock()
+        # sync_store.get_next_batch is awaited in production
+        adapter._client.sync_store.get_next_batch = AsyncMock(return_value=None)
         adapter._client.sync = fake_sync
 
         async def run():
@@ -188,7 +190,7 @@ class TestMatrixSyncAuthRetry:
 
         call_count = 0
 
-        async def fake_sync(timeout=30000):
+        async def fake_sync(*, since=None, timeout=30000):
             nonlocal call_count
             call_count += 1
             if call_count >= 2:
@@ -197,6 +199,8 @@ class TestMatrixSyncAuthRetry:
             raise ConnectionError("network timeout")
 
         adapter._client = MagicMock()
+        # sync_store.get_next_batch is awaited in production
+        adapter._client.sync_store.get_next_batch = AsyncMock(return_value=None)
         adapter._client.sync = fake_sync
 
         async def run():

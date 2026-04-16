@@ -28,19 +28,45 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 THINKING_BUDGET = {"xhigh": 32000, "high": 16000, "medium": 8000, "low": 4000}
+# Hermes effort → Anthropic adaptive-thinking effort (output_config.effort).
+# Anthropic exposes 5 levels on 4.7+: low, medium, high, xhigh, max.
+# Opus/Sonnet 4.6 only expose 4 levels: low, medium, high, max — no xhigh.
+# We preserve xhigh as xhigh on 4.7+ (the recommended default for coding/
+# agentic work) and downgrade it to max on pre-4.7 adaptive models (which
+# is the strongest level they accept).  "minimal" is a legacy alias that
+# maps to low on every model.  See:
+# https://platform.claude.com/docs/en/about-claude/models/migration-guide
 ADAPTIVE_EFFORT_MAP = {
-    "xhigh": "max",
-    "high": "high",
-    "medium": "medium",
-    "low": "low",
+    "max":     "max",
+    "xhigh":   "xhigh",
+    "high":    "high",
+    "medium":  "medium",
+    "low":     "low",
     "minimal": "low",
 }
+
+# Models that accept the "xhigh" output_config.effort level.  Opus 4.7 added
+# xhigh as a distinct level between high and max; older adaptive-thinking
+# models (4.6) reject it with a 400.  Keep this substring list in sync with
+# the Anthropic migration guide as new model families ship.
+_XHIGH_EFFORT_SUBSTRINGS = ("4-7", "4.7")
+
+# Models where extended thinking is deprecated/removed (4.6+ behavior: adaptive
+# is the only supported mode; 4.7 additionally forbids manual thinking entirely
+# and drops temperature/top_p/top_k).
+_ADAPTIVE_THINKING_SUBSTRINGS = ("4-6", "4.6", "4-7", "4.7")
+
+# Models where temperature/top_p/top_k return 400 if set to non-default values.
+# This is the Opus 4.7 contract; future 4.x+ models are expected to follow it.
+_NO_SAMPLING_PARAMS_SUBSTRINGS = ("4-7", "4.7")
 
 # ── Max output token limits per Anthropic model ───────────────────────
 # Source: Anthropic docs + Cline model catalog.  Anthropic's API requires
 # max_tokens as a mandatory field.  Previously we hardcoded 16384, which
 # starves thinking-enabled models (thinking tokens count toward the limit).
 _ANTHROPIC_OUTPUT_LIMITS = {
+    # Claude 4.7
+    "claude-opus-4-7":   128_000,
     # Claude 4.6
     "claude-opus-4-6":   128_000,
     "claude-sonnet-4-6":  64_000,
@@ -91,11 +117,37 @@ def _get_anthropic_max_output(model: str) -> int:
 
 
 def _supports_adaptive_thinking(model: str) -> bool:
-    """Return True for Claude 4.6 models that support adaptive thinking."""
-    return any(v in model for v in ("4-6", "4.6"))
+    """Return True for Claude 4.6+ models that support adaptive thinking."""
+    return any(v in model for v in _ADAPTIVE_THINKING_SUBSTRINGS)
 
 
-# Beta headers for enhanced features (sent with ALL auth types)
+def _supports_xhigh_effort(model: str) -> bool:
+    """Return True for models that accept the 'xhigh' adaptive effort level.
+
+    Opus 4.7 introduced xhigh as a distinct level between high and max.
+    Pre-4.7 adaptive models (Opus/Sonnet 4.6) only accept low/medium/high/max
+    and reject xhigh with an HTTP 400. Callers should downgrade xhigh→max
+    when this returns False.
+    """
+    return any(v in model for v in _XHIGH_EFFORT_SUBSTRINGS)
+
+
+def _forbids_sampling_params(model: str) -> bool:
+    """Return True for models that 400 on any non-default temperature/top_p/top_k.
+
+    Opus 4.7 explicitly rejects sampling parameters; later Claude releases are
+    expected to follow suit.  Callers should omit these fields entirely rather
+    than passing zero/default values (the API rejects anything non-null).
+    """
+    return any(v in model for v in _NO_SAMPLING_PARAMS_SUBSTRINGS)
+
+
+# Beta headers for enhanced features (sent with ALL auth types).
+# As of Opus 4.7 (2026-04-16), both of these are GA on Claude 4.6+ — the
+# beta headers are still accepted (harmless no-op) but not required. Kept
+# here so older Claude (4.5, 4.1) + third-party Anthropic-compat endpoints
+# that still gate on the headers continue to get the enhanced features.
+# Migration guide: remove these if you no longer support ≤4.5 models.
 _COMMON_BETAS = [
     "interleaved-thinking-2025-05-14",
     "fine-grained-tool-streaming-2025-05-14",
@@ -1341,24 +1393,46 @@ def build_anthropic_kwargs(
             kwargs["tool_choice"] = {"type": "tool", "name": tool_choice}
 
     # Map reasoning_config to Anthropic's thinking parameter.
-    # Claude 4.6 models use adaptive thinking + output_config.effort.
+    # Claude 4.6+ models use adaptive thinking + output_config.effort.
     # Older models use manual thinking with budget_tokens.
     # MiniMax Anthropic-compat endpoints support thinking (manual mode only,
     # not adaptive).  Haiku does NOT support extended thinking — skip entirely.
+    #
+    # On 4.7+ the `thinking.display` field defaults to "omitted", which
+    # silently hides reasoning text that Hermes surfaces in its CLI. We
+    # request "summarized" so the reasoning blocks stay populated — matching
+    # 4.6 behavior and preserving the activity-feed UX during long tool runs.
     if reasoning_config and isinstance(reasoning_config, dict):
         if reasoning_config.get("enabled") is not False and "haiku" not in model.lower():
             effort = str(reasoning_config.get("effort", "medium")).lower()
             budget = THINKING_BUDGET.get(effort, 8000)
             if _supports_adaptive_thinking(model):
-                kwargs["thinking"] = {"type": "adaptive"}
+                kwargs["thinking"] = {
+                    "type": "adaptive",
+                    "display": "summarized",
+                }
+                adaptive_effort = ADAPTIVE_EFFORT_MAP.get(effort, "medium")
+                # Downgrade xhigh→max on models that don't list xhigh as a
+                # supported level (Opus/Sonnet 4.6). Opus 4.7+ keeps xhigh.
+                if adaptive_effort == "xhigh" and not _supports_xhigh_effort(model):
+                    adaptive_effort = "max"
                 kwargs["output_config"] = {
-                    "effort": ADAPTIVE_EFFORT_MAP.get(effort, "medium")
+                    "effort": adaptive_effort,
                 }
             else:
                 kwargs["thinking"] = {"type": "enabled", "budget_tokens": budget}
                 # Anthropic requires temperature=1 when thinking is enabled on older models
                 kwargs["temperature"] = 1
                 kwargs["max_tokens"] = max(effective_max_tokens, budget + 4096)
+
+    # ── Strip sampling params on 4.7+ ─────────────────────────────────
+    # Opus 4.7 rejects any non-default temperature/top_p/top_k with a 400.
+    # Callers (auxiliary_client, flush_memories, etc.) may set these for
+    # older models; drop them here as a safety net so upstream 4.6 → 4.7
+    # migrations don't require coordinated edits everywhere.
+    if _forbids_sampling_params(model):
+        for _sampling_key in ("temperature", "top_p", "top_k"):
+            kwargs.pop(_sampling_key, None)
 
     # ── Fast mode (Opus 4.6 only) ────────────────────────────────────
     # Adds extra_body.speed="fast" + the fast-mode beta header for ~2.5x
@@ -1417,12 +1491,20 @@ def normalize_anthropic_response(
                 )
             )
 
-    # Map Anthropic stop_reason to OpenAI finish_reason
+    # Map Anthropic stop_reason to OpenAI finish_reason.
+    # Newer stop reasons added in Claude 4.5+ / 4.7:
+    #   - refusal: the model declined to answer (cyber safeguards, CSAM, etc.)
+    #   - model_context_window_exceeded: hit context limit (not max_tokens)
+    # Both need distinct handling upstream — a refusal should surface to the
+    # user with a clear message, and a context-window overflow should trigger
+    # compression/truncation rather than be treated as normal end-of-turn.
     stop_reason_map = {
         "end_turn": "stop",
         "tool_use": "tool_calls",
         "max_tokens": "length",
         "stop_sequence": "stop",
+        "refusal": "content_filter",
+        "model_context_window_exceeded": "length",
     }
     finish_reason = stop_reason_map.get(response.stop_reason, "stop")
 

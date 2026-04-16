@@ -23,7 +23,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
 
-from tools.tool_backend_helpers import managed_nous_tools_enabled as _managed_nous_tools_enabled
 
 _IS_WINDOWS = platform.system() == "Windows"
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -1646,14 +1645,8 @@ OPTIONAL_ENV_VARS = {
     },
 }
 
-if not _managed_nous_tools_enabled():
-    for _hidden_var in (
-        "FIRECRAWL_GATEWAY_URL",
-        "TOOL_GATEWAY_DOMAIN",
-        "TOOL_GATEWAY_SCHEME",
-        "TOOL_GATEWAY_USER_TOKEN",
-    ):
-        OPTIONAL_ENV_VARS.pop(_hidden_var, None)
+# Tool Gateway env vars are always visible — they're useful for
+# self-hosted / custom gateway setups regardless of subscription state.
 
 
 def get_missing_env_vars(required_only: bool = False) -> List[Dict[str, Any]]:

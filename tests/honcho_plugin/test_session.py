@@ -366,6 +366,17 @@ class TestPeerLookupHelpers:
 
 
 class TestConcludeToolDispatch:
+    def test_conclude_schema_has_no_anyof(self):
+        """anyOf/oneOf/allOf breaks Anthropic and Fireworks APIs — schema must be plain object."""
+        from plugins.memory.honcho import CONCLUDE_SCHEMA
+        params = CONCLUDE_SCHEMA["parameters"]
+        assert params["type"] == "object"
+        assert "conclusion" in params["properties"]
+        assert "delete_id" in params["properties"]
+        assert "anyOf" not in params
+        assert "oneOf" not in params
+        assert "allOf" not in params
+
     def test_honcho_conclude_defaults_to_user_peer(self):
         provider = HonchoMemoryProvider()
         provider._session_initialized = True
@@ -470,8 +481,48 @@ class TestConcludeToolDispatch:
         result = provider.handle_tool_call("honcho_conclude", {})
 
         parsed = json.loads(result)
-        assert "error" in parsed or "Missing required" in parsed.get("result", "")
+        assert parsed == {"error": "Exactly one of conclusion or delete_id must be provided."}
         provider._manager.create_conclusion.assert_not_called()
+        provider._manager.delete_conclusion.assert_not_called()
+
+    def test_honcho_conclude_rejects_both_params_at_once(self):
+        """Sending both conclusion and delete_id should be rejected."""
+        import json
+        provider = HonchoMemoryProvider()
+        provider._session_initialized = True
+        provider._session_key = "telegram:123"
+        provider._manager = MagicMock()
+        result = provider.handle_tool_call(
+            "honcho_conclude",
+            {"conclusion": "User prefers dark mode", "delete_id": "conc-123"},
+        )
+        parsed = json.loads(result)
+        assert parsed == {"error": "Exactly one of conclusion or delete_id must be provided."}
+        provider._manager.create_conclusion.assert_not_called()
+        provider._manager.delete_conclusion.assert_not_called()
+
+    def test_honcho_conclude_rejects_whitespace_only_conclusion(self):
+        """Whitespace-only conclusion should be treated as empty."""
+        import json
+        provider = HonchoMemoryProvider()
+        provider._session_initialized = True
+        provider._session_key = "telegram:123"
+        provider._manager = MagicMock()
+        result = provider.handle_tool_call("honcho_conclude", {"conclusion": "   "})
+        parsed = json.loads(result)
+        assert parsed == {"error": "Exactly one of conclusion or delete_id must be provided."}
+        provider._manager.create_conclusion.assert_not_called()
+
+    def test_honcho_conclude_rejects_whitespace_only_delete_id(self):
+        """Whitespace-only delete_id should be treated as empty."""
+        import json
+        provider = HonchoMemoryProvider()
+        provider._session_initialized = True
+        provider._session_key = "telegram:123"
+        provider._manager = MagicMock()
+        result = provider.handle_tool_call("honcho_conclude", {"delete_id": "  "})
+        parsed = json.loads(result)
+        assert parsed == {"error": "Exactly one of conclusion or delete_id must be provided."}
         provider._manager.delete_conclusion.assert_not_called()
 
 

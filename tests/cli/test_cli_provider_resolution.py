@@ -308,7 +308,7 @@ def test_codex_provider_replaces_incompatible_default_model(monkeypatch):
 
 
 def test_model_flow_nous_prints_subscription_guidance_without_mutating_explicit_tts(monkeypatch, capsys):
-    monkeypatch.setenv("HERMES_ENABLE_NOUS_MANAGED_TOOLS", "1")
+    monkeypatch.setattr("hermes_cli.nous_subscription.managed_nous_tools_enabled", lambda: True)
     config = {
         "model": {"provider": "nous", "default": "claude-opus-4-6"},
         "tts": {"provider": "elevenlabs"},
@@ -333,21 +333,17 @@ def test_model_flow_nous_prints_subscription_guidance_without_mutating_explicit_
     monkeypatch.setattr("hermes_cli.auth._prompt_model_selection", lambda model_ids, current_model="", pricing=None, **kw: "claude-opus-4-6")
     monkeypatch.setattr("hermes_cli.auth._save_model_choice", lambda model: None)
     monkeypatch.setattr("hermes_cli.auth._update_config_for_provider", lambda provider, url: None)
-    monkeypatch.setattr(
-        "hermes_cli.nous_subscription.get_nous_subscription_explainer_lines",
-        lambda: ["Nous subscription enables managed web tools."],
-    )
 
     hermes_main._model_flow_nous(config, current_model="claude-opus-4-6")
 
     out = capsys.readouterr().out
-    assert "Nous subscription enables managed web tools." in out
+    assert "Default model set to:" in out
     assert config["tts"]["provider"] == "elevenlabs"
     assert config["browser"]["cloud_provider"] == "browser-use"
 
 
-def test_model_flow_nous_applies_managed_tts_default_when_unconfigured(monkeypatch, capsys):
-    monkeypatch.setenv("HERMES_ENABLE_NOUS_MANAGED_TOOLS", "1")
+def test_model_flow_nous_offers_tool_gateway_prompt_when_unconfigured(monkeypatch, capsys):
+    monkeypatch.setattr("hermes_cli.nous_subscription.managed_nous_tools_enabled", lambda: True)
     config = {
         "model": {"provider": "nous", "default": "claude-opus-4-6"},
         "tts": {"provider": "edge"},
@@ -355,13 +351,13 @@ def test_model_flow_nous_applies_managed_tts_default_when_unconfigured(monkeypat
 
     monkeypatch.setattr(
         "hermes_cli.auth.get_provider_auth_state",
-        lambda provider: {"access_token": "nous-token"},
+        lambda provider: {"access_token": "***"},
     )
     monkeypatch.setattr(
         "hermes_cli.auth.resolve_nous_runtime_credentials",
         lambda *args, **kwargs: {
             "base_url": "https://inference.example.com/v1",
-            "api_key": "nous-key",
+            "api_key": "***",
         },
     )
     monkeypatch.setattr(
@@ -371,17 +367,12 @@ def test_model_flow_nous_applies_managed_tts_default_when_unconfigured(monkeypat
     monkeypatch.setattr("hermes_cli.auth._prompt_model_selection", lambda model_ids, current_model="", pricing=None, **kw: "claude-opus-4-6")
     monkeypatch.setattr("hermes_cli.auth._save_model_choice", lambda model: None)
     monkeypatch.setattr("hermes_cli.auth._update_config_for_provider", lambda provider, url: None)
-    monkeypatch.setattr(
-        "hermes_cli.nous_subscription.get_nous_subscription_explainer_lines",
-        lambda: ["Nous subscription enables managed web tools."],
-    )
-
     hermes_main._model_flow_nous(config, current_model="claude-opus-4-6")
 
     out = capsys.readouterr().out
-    assert "Nous subscription enables managed web tools." in out
-    assert "OpenAI TTS via your Nous subscription" in out
-    assert config["tts"]["provider"] == "openai"
+    # Tool Gateway prompt should be shown (input() raises OSError in pytest
+    # which is caught, so the prompt text appears but nothing is applied)
+    assert "Tool Gateway" in out
 
 
 def test_codex_provider_uses_config_model(monkeypatch):

@@ -212,7 +212,7 @@ def show_status(args):
     if managed_nous_tools_enabled():
         features = get_nous_subscription_features(config)
         print()
-        print(color("◆ Nous Subscription Features", Colors.CYAN, Colors.BOLD))
+        print(color("◆ Nous Tool Gateway", Colors.CYAN, Colors.BOLD))
         if not features.nous_auth_present:
             print("  Nous Portal   ✗ not logged in")
         else:
@@ -230,6 +230,18 @@ def show_status(args):
             else:
                 state = "not configured"
             print(f"  {feature.label:<15} {check_mark(feature.available or feature.active or feature.managed_by_nous)} {state}")
+    elif nous_logged_in:
+        # Logged into Nous but on the free tier — show upgrade nudge
+        print()
+        print(color("◆ Nous Tool Gateway", Colors.CYAN, Colors.BOLD))
+        print("  Your free-tier Nous account does not include Tool Gateway access.")
+        print("  Upgrade your subscription to unlock managed web, image, TTS, and browser tools.")
+        try:
+            portal_url = nous_status.get("portal_base_url", "").rstrip("/")
+            if portal_url:
+                print(f"  Upgrade: {portal_url}")
+        except Exception:
+            pass
 
     # =========================================================================
     # API-Key Providers

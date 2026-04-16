@@ -22,6 +22,7 @@ from gateway.platforms.base import (
     SendResult,
     SUPPORTED_DOCUMENT_TYPES,
 )
+from gateway.session import build_session_key
 
 
 # ---------------------------------------------------------------------------
@@ -1386,6 +1387,43 @@ class TestSlashCommands:
         await adapter._handle_slash_command(command)
         msg = adapter.handle_message.call_args[0][0]
         assert msg.text == "/reasoning"
+
+    @pytest.mark.asyncio
+    async def test_channel_command_uses_group_session_scope(self, adapter):
+        command = {"text": "model gpt-4.1", "user_id": "U1", "channel_id": "C1"}
+
+        await adapter._handle_slash_command(command)
+
+        msg = adapter.handle_message.call_args[0][0]
+        assert msg.source.chat_type == "group"
+        assert msg.source.thread_id is None
+        assert build_session_key(msg.source) == "agent:main:slack:group:C1:U1"
+
+    @pytest.mark.asyncio
+    async def test_dm_command_keeps_dm_session_scope(self, adapter):
+        command = {"text": "model gpt-4.1", "user_id": "U1", "channel_id": "D1"}
+
+        await adapter._handle_slash_command(command)
+
+        msg = adapter.handle_message.call_args[0][0]
+        assert msg.source.chat_type == "dm"
+        assert build_session_key(msg.source) == "agent:main:slack:dm:D1"
+
+    @pytest.mark.asyncio
+    async def test_command_preserves_thread_context_from_container(self, adapter):
+        command = {
+            "text": "model gpt-4.1",
+            "user_id": "U1",
+            "channel_id": "C1",
+            "container": {"thread_ts": "171.000"},
+        }
+
+        await adapter._handle_slash_command(command)
+
+        msg = adapter.handle_message.call_args[0][0]
+        assert msg.source.chat_type == "group"
+        assert msg.source.thread_id == "171.000"
+        assert build_session_key(msg.source) == "agent:main:slack:group:C1:171.000"
 
 
 # ---------------------------------------------------------------------------

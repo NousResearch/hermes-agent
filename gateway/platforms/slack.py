@@ -1491,6 +1491,7 @@ class SlackAdapter(BasePlatformAdapter):
         user_id = command.get("user_id", "")
         channel_id = command.get("channel_id", "")
         team_id = command.get("team_id", "")
+        container = command.get("container") or {}
 
         # Track which workspace owns this channel
         if team_id and channel_id:
@@ -1511,10 +1512,21 @@ class SlackAdapter(BasePlatformAdapter):
         else:
             text = "/help"
 
+        # Match normal Slack message routing as closely as the slash payload
+        # allows so session-scoped commands (/model, /new, /reasoning, ...)
+        # attach to the same conversation instead of a synthetic DM session.
+        thread_ts = (
+            command.get("thread_ts")
+            or container.get("thread_ts")
+            or container.get("message_ts")
+            or ""
+        )
+        chat_type = "dm" if channel_id.startswith("D") else "group"
         source = self.build_source(
             chat_id=channel_id,
-            chat_type="dm",  # Slash commands are always in DM-like context
+            chat_type=chat_type,
             user_id=user_id,
+            thread_id=thread_ts,
         )
 
         event = MessageEvent(

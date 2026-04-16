@@ -222,7 +222,7 @@ def find_gateway_pids(exclude_pids: set | None = None, all_profiles: bool = Fals
                     current_cmd = ""
         else:
             result = subprocess.run(
-                ["ps", "eww", "-ax", "-o", "pid=,command="],
+                ["ps", "-A", "eww", "-o", "pid=,command="],
                 capture_output=True,
                 text=True,
                 timeout=10,

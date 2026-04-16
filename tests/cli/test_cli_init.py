@@ -96,6 +96,26 @@ class TestVerboseAndToolProgress:
         assert cli.tool_progress_mode in ("off", "new", "all", "verbose")
 
 
+class TestLoadCliConfig:
+    def test_missing_current_working_directory_falls_back_safely(self, tmp_path, monkeypatch):
+        import importlib
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        import cli as _cli_mod
+        _cli_mod = importlib.reload(_cli_mod)
+        monkeypatch.setattr(_cli_mod, "_hermes_home", hermes_home)
+        monkeypatch.setenv("TERMINAL_CWD", "/tmp/stale")
+        monkeypatch.setattr(_cli_mod.os, "getcwd", MagicMock(side_effect=FileNotFoundError("gone")))
+
+        cfg = _cli_mod.load_cli_config()
+
+        assert cfg["terminal"].get("cwd") in (None, "")
+        assert "TERMINAL_CWD" not in _cli_mod.os.environ
+
+
 class TestBusyInputMode:
     def test_default_busy_input_mode_is_interrupt(self):
         cli = _make_cli()

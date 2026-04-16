@@ -404,11 +404,18 @@ def load_cli_config() -> Dict[str, Any]:
     if terminal_config.get("cwd") in (".", "auto", "cwd"):
         effective_backend = terminal_config.get("env_type", "local")
         if effective_backend == "local":
-            terminal_config["cwd"] = os.getcwd()
-            defaults["terminal"]["cwd"] = terminal_config["cwd"]
+            try:
+                terminal_config["cwd"] = os.getcwd()
+                defaults["terminal"]["cwd"] = terminal_config["cwd"]
+            except FileNotFoundError:
+                logger.warning("Current working directory no longer exists; leaving terminal.cwd unset")
+                terminal_config.pop("cwd", None)
+                defaults["terminal"].pop("cwd", None)
+                os.environ.pop("TERMINAL_CWD", None)
         else:
             # Remove so TERMINAL_CWD stays unset → tool picks backend default
             terminal_config.pop("cwd", None)
+            os.environ.pop("TERMINAL_CWD", None)
     
     env_mappings = {
         "env_type": "TERMINAL_ENV",

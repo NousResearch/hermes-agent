@@ -9443,6 +9443,19 @@ class GatewayRunner:
                         return result
                     next_message_id = getattr(pending_event, "message_id", None)
 
+                # Restart typing indicator so the user sees activity while
+                # the follow-up turn runs.  The outer _process_message_background
+                # typing task is still alive but may be stale.
+                _followup_adapter = self.adapters.get(source.platform)
+                if _followup_adapter:
+                    try:
+                        await _followup_adapter.send_typing(
+                            source.chat_id,
+                            metadata=_status_thread_metadata,
+                        )
+                    except Exception:
+                        pass
+
                 return await self._run_agent(
                     message=next_message,
                     context_prompt=context_prompt,

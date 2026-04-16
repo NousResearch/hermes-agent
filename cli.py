@@ -7411,7 +7411,15 @@ class HermesCLI:
         self._invalidate()
 
     def _get_approval_display_fragments(self):
-        """Render the dangerous-command approval panel for the prompt_toolkit UI."""
+        """Render the dangerous-command approval panel for the prompt_toolkit UI.
+
+        Layout priority: title + command + choices must always render, even if
+        the terminal is short or the description is long. Description is placed
+        at the bottom of the panel and gets truncated to fit the remaining row
+        budget. This prevents HSplit from clipping approve/deny off-screen when
+        tirith findings produce multi-paragraph descriptions or when the user
+        runs in a compact terminal pane.
+        """
         state = self._approval_state
         if not state:
             return []
@@ -7470,22 +7478,69 @@ class HermesCLI:
         box_width = _panel_box_width(title, preview_lines)
         inner_text_width = max(8, box_width - 2)
 
+        # Pre-wrap the mandatory content — command + choices must always render.
+        cmd_wrapped = _wrap_panel_text(cmd_display, inner_text_width)
+
+        # (choice_index, wrapped_line) so we can re-apply selected styling below
+        choice_wrapped: list[tuple[int, str]] = []
+        for i, choice in enumerate(choices):
+            label = choice_labels.get(choice, choice)
+            prefix = '❯ ' if i == selected else '  '
+            for wrapped in _wrap_panel_text(f"{prefix}{label}", inner_text_width, subsequent_indent="  "):
+                choice_wrapped.append((i, wrapped))
+
+        # Budget vertical space so HSplit never clips the command or choices.
+        # Panel chrome without description: top border + title + blank_after_title
+        # + blank_between_cmd_and_choices + bottom border = 5 rows.
+        # Reserve a conservative number of rows below the panel for
+        # status_bar + input_rule + input_area + margin.
+        term_rows = shutil.get_terminal_size((100, 24)).lines
+        base_chrome = 5
+        reserved_below = 4
+
+        # If the command itself is too long to leave room for choices (e.g. user
+        # hit "view" on a multi-hundred-character command), truncate it so the
+        # approve/deny buttons still render. Keep at least 2 rows of command.
+        max_cmd_rows = max(2, term_rows - reserved_below - base_chrome - len(choice_wrapped))
+        if len(cmd_wrapped) > max_cmd_rows:
+            keep = max(1, max_cmd_rows - 1)
+            cmd_wrapped = cmd_wrapped[:keep] + ["… (command truncated — use /logs or /debug for full text)"]
+
+        # Allocate remaining rows to description. The extra -1 accounts for the
+        # blank separator row between choices and description.
+        mandatory_no_desc = base_chrome + len(cmd_wrapped) + len(choice_wrapped)
+        available_for_desc = term_rows - reserved_below - mandatory_no_desc - 1
+        # Even on huge terminals, cap description height so the panel stays compact.
+        available_for_desc = max(0, min(available_for_desc, 10))
+
+        desc_wrapped = _wrap_panel_text(description, inner_text_width) if description else []
+        if available_for_desc < 1 or not desc_wrapped:
+            desc_wrapped = []
+        elif len(desc_wrapped) > available_for_desc:
+            keep = max(1, available_for_desc - 1)
+            desc_wrapped = desc_wrapped[:keep] + ["… (description truncated)"]
+
+        # Render: title → command → choices → description (description last so
+        # any remaining overflow clips from the bottom of the least-critical
+        # content, never from the command or choices).
         lines = []
         lines.append(('class:approval-border', '╭' + ('─' * box_width) + '╮\n'))
         _append_panel_line(lines, 'class:approval-border', 'class:approval-title', title, box_width)
         _append_blank_panel_line(lines, 'class:approval-border', box_width)
-        for wrapped in _wrap_panel_text(description, inner_text_width):
-            _append_panel_line(lines, 'class:approval-border', 'class:approval-desc', wrapped, box_width)
-        for wrapped in _wrap_panel_text(cmd_display, inner_text_width):
+
+        for wrapped in cmd_wrapped:
             _append_panel_line(lines, 'class:approval-border', 'class:approval-cmd', wrapped, box_width)
         _append_blank_panel_line(lines, 'class:approval-border', box_width)
-        for i, choice in enumerate(choices):
-            label = choice_labels.get(choice, choice)
+
+        for i, wrapped in choice_wrapped:
             style = 'class:approval-selected' if i == selected else 'class:approval-choice'
-            prefix = '❯ ' if i == selected else '  '
-            for wrapped in _wrap_panel_text(f"{prefix}{label}", inner_text_width, subsequent_indent="  "):
-                _append_panel_line(lines, 'class:approval-border', style, wrapped, box_width)
-        _append_blank_panel_line(lines, 'class:approval-border', box_width)
+            _append_panel_line(lines, 'class:approval-border', style, wrapped, box_width)
+
+        if desc_wrapped:
+            _append_blank_panel_line(lines, 'class:approval-border', box_width)
+            for wrapped in desc_wrapped:
+                _append_panel_line(lines, 'class:approval-border', 'class:approval-desc', wrapped, box_width)
+
         lines.append(('class:approval-border', '╰' + ('─' * box_width) + '╯\n'))
         return lines
 
@@ -9137,7 +9192,13 @@ class HermesCLI:
             lines.append((border_style, "│" + (" " * box_width) + "│\n"))
 
         def _get_clarify_display():
-            """Build styled text for the clarify question/choices panel."""
+            """Build styled text for the clarify question/choices panel.
+
+            Layout priority: choices + Other option must always render even if
+            the question is very long. The question is budgeted to leave enough
+            rows for the choices and trailing chrome; anything over the budget
+            is truncated with a marker.
+            """
             state = cli_ref._clarify_state
             if not state:
                 return []
@@ -9158,6 +9219,46 @@ class HermesCLI:
             box_width = _panel_box_width("Hermes needs your input", preview_lines)
             inner_text_width = max(8, box_width - 2)
 
+            # Pre-wrap choices + Other option — these are mandatory.
+            choice_wrapped: list[tuple[int, str]] = []
+            if choices:
+                for i, choice in enumerate(choices):
+                    prefix = '❯ ' if i == selected and not cli_ref._clarify_freetext else '  '
+                    for wrapped in _wrap_panel_text(f"{prefix}{choice}", inner_text_width, subsequent_indent="  "):
+                        choice_wrapped.append((i, wrapped))
+                # Trailing Other row(s)
+                other_idx = len(choices)
+                if selected == other_idx and not cli_ref._clarify_freetext:
+                    other_label_mand = '❯ Other (type your answer)'
+                elif cli_ref._clarify_freetext:
+                    other_label_mand = '❯ Other (type below)'
+                else:
+                    other_label_mand = '  Other (type your answer)'
+                other_wrapped = _wrap_panel_text(other_label_mand, inner_text_width, subsequent_indent="  ")
+            elif cli_ref._clarify_freetext:
+                # Freetext-only mode: the guidance line takes the place of choices.
+                other_wrapped = _wrap_panel_text(
+                    "Type your answer in the prompt below, then press Enter.",
+                    inner_text_width,
+                )
+            else:
+                other_wrapped = []
+
+            # Budget the question so mandatory rows always render.
+            # Chrome: top border (with title) + blank_after_title + blank_after_question
+            # + blank_before_bottom + bottom border = 5 rows.
+            term_rows = shutil.get_terminal_size((100, 24)).lines
+            chrome = 5
+            reserved_below = 4
+            mandatory = chrome + len(choice_wrapped) + len(other_wrapped)
+            max_question_rows = max(2, term_rows - reserved_below - mandatory)
+            max_question_rows = min(max_question_rows, 12)  # soft cap on huge terminals
+
+            question_wrapped = _wrap_panel_text(question, inner_text_width)
+            if len(question_wrapped) > max_question_rows:
+                keep = max(1, max_question_rows - 1)
+                question_wrapped = question_wrapped[:keep] + ["… (question truncated)"]
+
             lines = []
             # Box top border
             lines.append(('class:clarify-border', '╭─ '))
@@ -9165,38 +9266,31 @@ class HermesCLI:
             lines.append(('class:clarify-border', ' ' + ('─' * max(0, box_width - len("Hermes needs your input") - 3)) + '╮\n'))
             _append_blank_panel_line(lines, 'class:clarify-border', box_width)
 
-            # Question text
-            for wrapped in _wrap_panel_text(question, inner_text_width):
+            # Question text (bounded)
+            for wrapped in question_wrapped:
                 _append_panel_line(lines, 'class:clarify-border', 'class:clarify-question', wrapped, box_width)
             _append_blank_panel_line(lines, 'class:clarify-border', box_width)
 
             if cli_ref._clarify_freetext and not choices:
-                guidance = "Type your answer in the prompt below, then press Enter."
-                for wrapped in _wrap_panel_text(guidance, inner_text_width):
+                for wrapped in other_wrapped:
                     _append_panel_line(lines, 'class:clarify-border', 'class:clarify-choice', wrapped, box_width)
                 _append_blank_panel_line(lines, 'class:clarify-border', box_width)
 
             if choices:
                 # Multiple-choice mode: show selectable options
-                for i, choice in enumerate(choices):
+                for i, wrapped in choice_wrapped:
                     style = 'class:clarify-selected' if i == selected and not cli_ref._clarify_freetext else 'class:clarify-choice'
-                    prefix = '❯ ' if i == selected and not cli_ref._clarify_freetext else '  '
-                    wrapped_lines = _wrap_panel_text(f"{prefix}{choice}", inner_text_width, subsequent_indent="  ")
-                    for wrapped in wrapped_lines:
-                        _append_panel_line(lines, 'class:clarify-border', style, wrapped, box_width)
+                    _append_panel_line(lines, 'class:clarify-border', style, wrapped, box_width)
 
-                # "Other" option (5th line, only shown when choices exist)
+                # "Other" option (trailing row(s), only shown when choices exist)
                 other_idx = len(choices)
                 if selected == other_idx and not cli_ref._clarify_freetext:
                     other_style = 'class:clarify-selected'
-                    other_label = '❯ Other (type your answer)'
                 elif cli_ref._clarify_freetext:
                     other_style = 'class:clarify-active-other'
-                    other_label = '❯ Other (type below)'
                 else:
                     other_style = 'class:clarify-choice'
-                    other_label = '  Other (type your answer)'
-                for wrapped in _wrap_panel_text(other_label, inner_text_width, subsequent_indent="  "):
+                for wrapped in other_wrapped:
                     _append_panel_line(lines, 'class:clarify-border', other_style, wrapped, box_width)
 
             _append_blank_panel_line(lines, 'class:clarify-border', box_width)

@@ -8,7 +8,7 @@ from plugins.memory.honcho.session import (
     HonchoSession,
     HonchoSessionManager,
 )
-from plugins.memory.honcho import HonchoMemoryProvider
+from plugins.memory.honcho import CONCLUDE_SCHEMA, HonchoMemoryProvider
 
 
 # ---------------------------------------------------------------------------
@@ -366,6 +366,15 @@ class TestPeerLookupHelpers:
 
 
 class TestConcludeToolDispatch:
+    def test_conclude_schema_uses_plain_object_parameters_for_provider_compatibility(self):
+        params = CONCLUDE_SCHEMA["parameters"]
+
+        assert params["type"] == "object"
+        assert params["required"] == []
+        assert "anyOf" not in params
+        assert "oneOf" not in params
+        assert "allOf" not in params
+
     def test_honcho_conclude_defaults_to_user_peer(self):
         provider = HonchoMemoryProvider()
         provider._session_initialized = True
@@ -470,7 +479,24 @@ class TestConcludeToolDispatch:
         result = provider.handle_tool_call("honcho_conclude", {})
 
         parsed = json.loads(result)
-        assert "error" in parsed or "Missing required" in parsed.get("result", "")
+        assert parsed == {"error": "Exactly one of conclusion or delete_id must be provided."}
+        provider._manager.create_conclusion.assert_not_called()
+        provider._manager.delete_conclusion.assert_not_called()
+
+    def test_honcho_conclude_rejects_both_params_at_once(self):
+        import json
+        provider = HonchoMemoryProvider()
+        provider._session_initialized = True
+        provider._session_key = "telegram:123"
+        provider._manager = MagicMock()
+
+        result = provider.handle_tool_call(
+            "honcho_conclude",
+            {"conclusion": "User prefers dark mode", "delete_id": "conc-123"},
+        )
+
+        parsed = json.loads(result)
+        assert parsed == {"error": "Exactly one of conclusion or delete_id must be provided."}
         provider._manager.create_conclusion.assert_not_called()
         provider._manager.delete_conclusion.assert_not_called()
 

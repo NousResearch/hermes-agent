@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Brain, ChevronDown, ChevronRight, Pencil, RefreshCw, Save, Trash2, User } from "lucide-react";
+import { Brain, ChevronDown, ChevronRight, Pencil, RefreshCw, Save, Search, Trash2, User, X } from "lucide-react";
 import { api } from "@/lib/api";
 import type { MemoryEntry, MemoryResponse, MemoryStoreResponse } from "@/lib/api";
 import { Toast } from "@/components/Toast";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/useToast";
 import { useI18n } from "@/i18n";
 
@@ -48,6 +49,8 @@ function StoreSection({
   drafts,
   savingKey,
   composerValue,
+  searchValue,
+  onSearchChange,
   onToggle,
   onStartEdit,
   onDraftChange,
@@ -66,6 +69,8 @@ function StoreSection({
   drafts: Record<string, string>;
   savingKey: string | null;
   composerValue: string;
+  searchValue: string;
+  onSearchChange: (target: "memory" | "user", value: string) => void;
   onToggle: (id: string) => void;
   onStartEdit: (entry: MemoryEntry) => void;
   onDraftChange: (id: string, value: string) => void;
@@ -75,11 +80,16 @@ function StoreSection({
   onAdd: (target: "memory" | "user") => void;
   m: typeof MEMORY_TEXT;
 }) {
+  const normalizedSearch = searchValue.trim().toLowerCase();
+  const filteredEntries = normalizedSearch
+    ? store.entries.filter((entry) => entry.content.toLowerCase().includes(normalizedSearch))
+    : store.entries;
+
   return (
-    <Card>
+    <Card data-testid={`memory-store-${target}`}>
       <CardHeader className="py-3 px-4">
-        <div className="flex items-center justify-between gap-3 flex-wrap">
-          <div className="flex items-center gap-2 min-w-0">
+        <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:justify-between">
+          <div className="flex items-center gap-2 min-w-0 flex-wrap">
             <Icon className="h-4 w-4 text-muted-foreground shrink-0" />
             <CardTitle className="text-sm">{title}</CardTitle>
             <Badge variant="secondary" className="text-[10px]">
@@ -89,16 +99,35 @@ function StoreSection({
               {store.char_count}/{store.char_limit} {m.chars}
             </Badge>
           </div>
-          <code className="text-[10px] text-muted-foreground bg-muted/50 px-2 py-0.5">{store.path}</code>
+          <div className="relative w-full sm:w-64">
+            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+            <Input
+              aria-label={`${title} ${t.common.search}`}
+              placeholder={t.common.search}
+              value={searchValue}
+              onChange={(e) => onSearchChange(target, e.target.value)}
+              className="pl-8 pr-7 h-8 text-xs"
+            />
+            {searchValue && (
+              <button
+                type="button"
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground cursor-pointer"
+                onClick={() => onSearchChange(target, "")}
+                aria-label={t.common.clear}
+              >
+                <X className="h-3 w-3" />
+              </button>
+            )}
+          </div>
         </div>
       </CardHeader>
       <CardContent className="grid gap-2 px-4 pb-4">
-        {store.entries.length === 0 ? (
+        {filteredEntries.length === 0 ? (
           <div className="border border-border p-4 text-sm text-muted-foreground text-center">
-            {m.emptyStore}
+            {normalizedSearch ? t.common.noResults : m.emptyStore}
           </div>
         ) : (
-          store.entries.map((entry) => {
+          filteredEntries.map((entry) => {
             const expanded = expandedId === entry.id;
             const editing = editingId === entry.id;
             const draftValue = drafts[entry.id] ?? entry.content;
@@ -164,6 +193,7 @@ function StoreSection({
         <div className="border border-border p-4 grid gap-2">
           <span className="text-sm font-medium">{m.addEntry}</span>
           <textarea
+            aria-label={`${title} ${m.addEntry}`}
             className="flex min-h-[120px] w-full border border-input bg-transparent px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring font-courier leading-relaxed"
             value={composerValue}
             onChange={(e) => onComposerChange(target, e.target.value)}
@@ -188,6 +218,7 @@ export default function MemoryPage() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [composer, setComposer] = useState<{ memory: string; user: string }>({ memory: "", user: "" });
+  const [search, setSearch] = useState<{ memory: string; user: string }>({ memory: "", user: "" });
   const { toast, showToast } = useToast();
   const { t } = useI18n();
   const m = MEMORY_TEXT;
@@ -282,7 +313,6 @@ export default function MemoryPage() {
           <Brain className="h-5 w-5 text-muted-foreground shrink-0" />
           <h1 className="text-base font-semibold">{m.title}</h1>
           <Badge variant="secondary" className="text-xs">{totalEntries} {m.entryCount}</Badge>
-          <Badge variant="outline" className="text-xs">{m.provider}: {data.provider_label || m.builtInOnly}</Badge>
         </div>
         <Button size="sm" variant="outline" className="gap-1.5" onClick={() => void load()}>
           <RefreshCw className="h-3.5 w-3.5" />
@@ -290,28 +320,6 @@ export default function MemoryPage() {
         </Button>
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-3">
-        <Card>
-          <CardHeader className="py-3 px-4">
-            <CardTitle className="text-sm">{m.builtIn}</CardTitle>
-          </CardHeader>
-          <CardContent className="px-4 pb-4">
-            <Badge variant="success" className="text-[10px]">{t.common.active}</Badge>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="py-3 px-4">
-            <CardTitle className="text-sm">{m.provider}</CardTitle>
-          </CardHeader>
-          <CardContent className="px-4 pb-4 text-sm text-foreground">{data.provider_label || m.builtInOnly}</CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="py-3 px-4">
-            <CardTitle className="text-sm">{m.directory}</CardTitle>
-          </CardHeader>
-          <CardContent className="px-4 pb-4"><code className="text-xs">{data.directory}</code></CardContent>
-        </Card>
-      </div>
 
       <div className="border border-warning/30 bg-warning/10 p-4 text-sm text-warning">
         {data.note || m.snapshotNote}
@@ -327,6 +335,8 @@ export default function MemoryPage() {
         drafts={drafts}
         savingKey={savingKey}
         composerValue={composer.user}
+        searchValue={search.user}
+        onSearchChange={(target, value) => setSearch((current) => ({ ...current, [target]: value }))}
         onToggle={(id) => setExpandedId((current) => (current === id ? null : id))}
         onStartEdit={(entry) => {
           setExpandedId(entry.id);
@@ -351,6 +361,8 @@ export default function MemoryPage() {
         drafts={drafts}
         savingKey={savingKey}
         composerValue={composer.memory}
+        searchValue={search.memory}
+        onSearchChange={(target, value) => setSearch((current) => ({ ...current, [target]: value }))}
         onToggle={(id) => setExpandedId((current) => (current === id ? null : id))}
         onStartEdit={(entry) => {
           setExpandedId(entry.id);

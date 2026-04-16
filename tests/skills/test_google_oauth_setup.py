@@ -19,6 +19,59 @@ SCRIPT_PATH = (
 )
 
 
+def test_fallback_path_resolves_to_hermes_agent_root():
+    """Upward search finds hermes_constants.py when walking from the repo script location."""
+    found = next(
+        (p for p in SCRIPT_PATH.resolve().parents if (p / "hermes_constants.py").exists()),
+        None,
+    )
+    assert found is not None, "hermes_constants.py not found in any parent directory"
+    assert (found / "hermes_constants.py").exists()
+
+
+def test_installed_layout_fallback(tmp_path, monkeypatch):
+    """HERMES_HOME/hermes-agent fallback is used when script runs from installed path.
+
+    In the installed layout ~/.hermes/skills/.../setup.py, hermes_constants.py is NOT
+    in any ancestor directory — it lives at HERMES_HOME/hermes-agent/hermes_constants.py.
+    The upward walk stops at HERMES_HOME without finding it, then the explicit fallback
+    checks HERMES_HOME/hermes-agent/.
+    """
+    import os
+    # Simulate installed layout: script is under tmp_path/skills/.../scripts/
+    fake_skills = tmp_path / "skills" / "productivity" / "google-workspace" / "scripts"
+    fake_skills.mkdir(parents=True)
+    fake_script = fake_skills / "setup.py"
+    fake_script.write_text("")
+
+    # hermes_constants.py is at HERMES_HOME/hermes-agent/, not a script ancestor
+    agent_root = tmp_path / "hermes-agent"
+    agent_root.mkdir()
+    (agent_root / "hermes_constants.py").write_text("")
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    # Reproduce the fallback logic from setup.py
+    hermes_home = tmp_path
+    found = False
+    sys_path_addition = None
+    for parent in fake_script.resolve().parents:
+        if (parent / "hermes_constants.py").exists():
+            sys_path_addition = str(parent)
+            found = True
+            break
+        if parent == hermes_home:
+            break
+    if not found:
+        agent = hermes_home / "hermes-agent"
+        if (agent / "hermes_constants.py").exists():
+            sys_path_addition = str(agent)
+            found = True
+
+    assert found, "Installed-layout fallback did not find hermes_constants.py"
+    assert sys_path_addition == str(agent_root)
+
+
 class FakeCredentials:
     def __init__(self, payload=None):
         self._payload = payload or {
@@ -238,3 +291,109 @@ class TestExchangeAuthCode:
         assert setup_module.TOKEN_PATH.exists()
         # Pending auth is cleaned up
         assert not setup_module.PENDING_AUTH_PATH.exists()
+
+
+class TestInstallDeps:
+    def test_returns_true_when_already_installed(self, setup_module):
+        """No subprocess calls when packages are already importable."""
+        import sys
+        from unittest.mock import patch, MagicMock
+
+        fake_googleapiclient = MagicMock()
+        fake_google_auth = MagicMock()
+
+        with patch.dict(sys.modules, {
+            "googleapiclient": fake_googleapiclient,
+            "google_auth_oauthlib": fake_google_auth,
+        }), patch("subprocess.check_call") as mock_call:
+            result = setup_module.install_deps()
+
+        assert result is True
+        mock_call.assert_not_called()
+
+    def test_uses_uv_when_available(self, setup_module):
+        """uv pip install --python sys.executable is tried first when uv is on PATH."""
+        import subprocess
+        import sys
+        from unittest.mock import patch, MagicMock
+
+        # Remove cached imports so install_deps() sees them as missing
+        saved = {}
+        for mod in ("googleapiclient", "google_auth_oauthlib"):
+            saved[mod] = sys.modules.pop(mod, None)
+
+        calls = []
+        def fake_check_call(cmd, **kwargs):
+            calls.append(list(cmd))
+
+        try:
+            with patch.object(setup_module.shutil, "which", return_value="/usr/bin/uv"), \
+                 patch("subprocess.check_call", side_effect=fake_check_call):
+                result = setup_module.install_deps()
+        finally:
+            for mod, val in saved.items():
+                if val is not None:
+                    sys.modules[mod] = val
+                else:
+                    sys.modules.pop(mod, None)
+
+        assert result is True
+        assert any(c[0] == "/usr/bin/uv" and "pip" in c for c in calls)
+
+    def test_falls_back_to_pip_user_when_uv_missing(self, setup_module):
+        """Falls back through pip → pip --user when uv is not found."""
+        import subprocess
+        import sys
+        from unittest.mock import patch
+
+        saved = {}
+        for mod in ("googleapiclient", "google_auth_oauthlib"):
+            saved[mod] = sys.modules.pop(mod, None)
+
+        calls = []
+        def fake_check_call(cmd, **kwargs):
+            calls.append(list(cmd))
+            if "--user" not in cmd:
+                raise subprocess.CalledProcessError(1, cmd)
+
+        try:
+            with patch.object(setup_module.shutil, "which", return_value=None), \
+                 patch("subprocess.check_call", side_effect=fake_check_call):
+                result = setup_module.install_deps()
+        finally:
+            for mod, val in saved.items():
+                if val is not None:
+                    sys.modules[mod] = val
+                else:
+                    sys.modules.pop(mod, None)
+
+        assert result is True
+        assert any("--user" in c for c in calls)
+
+    def test_returns_false_when_all_methods_fail(self, setup_module, capsys):
+        """Returns False and prints error when all install methods fail."""
+        import subprocess
+        import sys
+        from unittest.mock import patch
+
+        saved = {}
+        for mod in ("googleapiclient", "google_auth_oauthlib"):
+            saved[mod] = sys.modules.pop(mod, None)
+
+        def always_fail(cmd, **kwargs):
+            raise subprocess.CalledProcessError(1, cmd)
+
+        try:
+            with patch.object(setup_module.shutil, "which", return_value=None), \
+                 patch("subprocess.check_call", side_effect=always_fail):
+                result = setup_module.install_deps()
+        finally:
+            for mod, val in saved.items():
+                if val is not None:
+                    sys.modules[mod] = val
+                else:
+                    sys.modules.pop(mod, None)
+
+        assert result is False
+        out = capsys.readouterr().out
+        assert "ERROR" in out or "failed" in out.lower()

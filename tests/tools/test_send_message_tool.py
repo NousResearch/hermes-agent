@@ -6,7 +6,7 @@ import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 from gateway.config import Platform
 from tools.send_message_tool import (
@@ -134,7 +134,7 @@ class TestSendMessageTool:
             thread_id=None,
             media_files=[],
         )
-        mirror_mock.assert_called_once_with("telegram", "-1002", "hello", source_label="cli", thread_id=None)
+        mirror_mock.assert_called_once_with("telegram", "-1002", "hello", source_label="cli", thread_id=None, db=None)
 
     def test_cron_same_chat_different_thread_still_sends(self):
         config, telegram_cfg = _make_config()
@@ -173,7 +173,7 @@ class TestSendMessageTool:
             thread_id="99999",
             media_files=[],
         )
-        mirror_mock.assert_called_once_with("telegram", "-1001", "hello", source_label="cli", thread_id="99999")
+        mirror_mock.assert_called_once_with("telegram", "-1001", "hello", source_label="cli", thread_id="99999", db=None)
 
     def test_sends_to_explicit_telegram_topic_target(self):
         config, telegram_cfg = _make_config()
@@ -202,7 +202,7 @@ class TestSendMessageTool:
             thread_id="17585",
             media_files=[],
         )
-        mirror_mock.assert_called_once_with("telegram", "-1001", "hello", source_label="cli", thread_id="17585")
+        mirror_mock.assert_called_once_with("telegram", "-1001", "hello", source_label="cli", thread_id="17585", db=None)
 
     def test_resolved_telegram_topic_name_preserves_thread_id(self):
         config, telegram_cfg = _make_config()
@@ -304,6 +304,37 @@ class TestSendMessageTool:
             "[Sent audio attachment]",
             source_label="cli",
             thread_id=None,
+            db=None,
+        )
+
+    def test_passes_shared_session_db_to_mirror(self):
+        config, _telegram_cfg = _make_config()
+        shared_db = MagicMock()
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})), \
+             patch("gateway.mirror.mirror_to_session", return_value=True) as mirror_mock:
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "telegram:-1001",
+                        "message": "hello",
+                    },
+                    session_db=shared_db,
+                )
+            )
+
+        assert result["success"] is True
+        mirror_mock.assert_called_once_with(
+            "telegram",
+            "-1001",
+            "hello",
+            source_label="cli",
+            thread_id=None,
+            db=shared_db,
         )
 
     def test_top_level_send_failure_redacts_query_token(self):

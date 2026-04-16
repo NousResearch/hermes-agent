@@ -51,6 +51,12 @@ def _estimate_cost(
     """Estimate the USD cost for a session row or a model/token tuple."""
     if isinstance(session_or_model, dict):
         session = session_or_model
+        actual_cost = session.get("actual_cost_usd")
+        if actual_cost is not None:
+            try:
+                return float(actual_cost), "actual"
+            except (TypeError, ValueError):
+                pass
         model = session.get("model") or ""
         usage = CanonicalUsage(
             input_tokens=session.get("input_tokens") or 0,
@@ -75,6 +81,59 @@ def _estimate_cost(
         base_url=base_url,
     )
     return float(result.amount_usd or 0.0), result.status
+
+
+def _recompute_estimated_cost(session: Dict[str, Any]) -> float:
+    """Recompute estimated cost from tokens, ignoring any persisted actual cost."""
+    model = session.get("model") or ""
+    usage = CanonicalUsage(
+        input_tokens=session.get("input_tokens") or 0,
+        output_tokens=session.get("output_tokens") or 0,
+        cache_read_tokens=session.get("cache_read_tokens") or 0,
+        cache_write_tokens=session.get("cache_write_tokens") or 0,
+    )
+    result = estimate_usage_cost(
+        model,
+        usage,
+        provider=session.get("billing_provider"),
+        base_url=session.get("billing_base_url"),
+    )
+    return float(result.amount_usd or 0.0)
+
+
+def _session_estimated_cost(session: Dict[str, Any]) -> float:
+    """Return persisted estimated cost when present, otherwise recompute it."""
+    stored = session.get("estimated_cost_usd")
+    stored_status = (session.get("cost_status") or "").strip().lower()
+    stored_source = (session.get("cost_source") or "").strip().lower()
+    billing_mode = (session.get("billing_mode") or "").strip().lower()
+    should_trust_stored = (
+        stored is not None
+        and (
+            bool(stored)
+            or stored_status in {"estimated", "included"}
+            or stored_source not in {"", "none", "provider_generation_api"}
+            or billing_mode == "subscription_included"
+        )
+    )
+    if should_trust_stored:
+        try:
+            return float(stored)
+        except (TypeError, ValueError):
+            pass
+    return _recompute_estimated_cost(session)
+
+
+def _preferred_session_cost(session: Dict[str, Any]) -> tuple[float, str]:
+    """Return the best available display cost for a stored session row."""
+    actual_cost = session.get("actual_cost_usd")
+    if actual_cost is not None:
+        try:
+            return float(actual_cost), "actual"
+        except (TypeError, ValueError):
+            pass
+    status = (session.get("cost_status") or "").strip().lower() or "estimated"
+    return _session_estimated_cost(session), status
 
 
 def _format_duration(seconds: float) -> str:
@@ -333,15 +392,22 @@ class InsightsEngine:
         # Cost estimation (weighted by model)
         total_cost = 0.0
         actual_cost = 0.0
+        display_cost = 0.0
+        actual_cost_sessions = 0
         models_with_pricing = set()
         models_without_pricing = set()
         unknown_cost_sessions = 0
         included_cost_sessions = 0
         for s in sessions:
             model = s.get("model") or ""
-            estimated, status = _estimate_cost(s)
-            total_cost += estimated
-            actual_cost += s.get("actual_cost_usd") or 0.0
+            estimated_cost = _session_estimated_cost(s)
+            preferred_cost, status = _preferred_session_cost(s)
+            total_cost += estimated_cost
+            actual_session_cost = s.get("actual_cost_usd") or 0.0
+            actual_cost += actual_session_cost
+            if s.get("actual_cost_usd") is not None:
+                actual_cost_sessions += 1
+            display_cost += preferred_cost
             display = model.split("/")[-1] if "/" in model else (model or "unknown")
             if status == "included":
                 included_cost_sessions += 1
@@ -379,6 +445,12 @@ class InsightsEngine:
             "total_tokens": total_tokens,
             "estimated_cost": total_cost,
             "actual_cost": actual_cost,
+            "display_cost": display_cost,
+            "display_cost_label": (
+                "actual" if actual_cost_sessions == len(sessions) and sessions
+                else ("blended" if actual_cost_sessions > 0 else "estimated")
+            ),
+            "actual_cost_sessions": actual_cost_sessions,
             "total_hours": total_hours,
             "avg_session_duration": avg_duration,
             "avg_messages_per_session": total_messages / len(sessions) if sessions else 0,
@@ -418,8 +490,8 @@ class InsightsEngine:
             d["cache_write_tokens"] += cache_write
             d["total_tokens"] += inp + out + cache_read + cache_write
             d["tool_calls"] += s.get("tool_call_count") or 0
-            estimate, status = _estimate_cost(s)
-            d["cost"] += estimate
+            preferred_cost, status = _preferred_session_cost(s)
+            d["cost"] += preferred_cost
             d["has_pricing"] = _has_known_pricing(model, s.get("billing_provider"), s.get("billing_base_url"))
             d["cost_status"] = status
 
@@ -637,10 +709,16 @@ class InsightsEngine:
         cache_total = o.get("total_cache_read_tokens", 0) + o.get("total_cache_write_tokens", 0)
         if cache_total > 0:
             lines.append(f"  Cache read:        {o['total_cache_read_tokens']:<12,}  Cache write:     {o['total_cache_write_tokens']:,}")
-        cost_str = f"${o['estimated_cost']:.2f}"
-        if o.get("models_without_pricing"):
+        cost_label = o.get("display_cost_label", "estimated")
+        cost_prefix = {
+            "actual": "Actual cost",
+            "blended": "Cost",
+            "estimated": "Est. cost",
+        }.get(cost_label, "Cost")
+        cost_str = f"${o.get('display_cost', o['estimated_cost']):.2f}"
+        if cost_label == "estimated" and o.get("models_without_pricing"):
             cost_str += " *"
-        lines.append(f"  Total tokens:      {o['total_tokens']:<12,}  Est. cost:       {cost_str}")
+        lines.append(f"  Total tokens:      {o['total_tokens']:<12,}  {cost_prefix + ':':<16} {cost_str}")
         if o["total_hours"] > 0:
             lines.append(f"  Active time:       ~{_format_duration(o['total_hours'] * 3600):<11}  Avg session:     ~{_format_duration(o['avg_session_duration'])}")
         lines.append(f"  Avg msgs/session:  {o['avg_messages_per_session']:.1f}")
@@ -745,9 +823,14 @@ class InsightsEngine:
         else:
             lines.append(f"**Tokens:** {o['total_tokens']:,} (in: {o['total_input_tokens']:,} / out: {o['total_output_tokens']:,})")
         cost_note = ""
-        if o.get("models_without_pricing"):
+        if o.get("models_without_pricing") and o.get("display_cost_label", "estimated") == "estimated":
             cost_note = " _(excludes custom/self-hosted models)_"
-        lines.append(f"**Est. cost:** ${o['estimated_cost']:.2f}{cost_note}")
+        cost_heading = {
+            "actual": "**Actual cost:**",
+            "blended": "**Cost:**",
+            "estimated": "**Est. cost:**",
+        }.get(o.get("display_cost_label", "estimated"), "**Cost:**")
+        lines.append(f"{cost_heading} ${o.get('display_cost', o['estimated_cost']):.2f}{cost_note}")
         if o["total_hours"] > 0:
             lines.append(f"**Active time:** ~{_format_duration(o['total_hours'] * 3600)} | **Avg session:** ~{_format_duration(o['avg_session_duration'])}")
         lines.append("")

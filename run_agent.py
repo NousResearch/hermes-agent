@@ -95,7 +95,11 @@ from agent.context_compressor import ContextCompressor
 from agent.subdirectory_hints import SubdirectoryHintTracker
 from agent.prompt_caching import apply_anthropic_cache_control
 from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt, build_environment_hints, load_soul_md, TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, DEVELOPER_ROLE_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE, OPENAI_MODEL_EXECUTION_GUIDANCE
-from agent.usage_pricing import estimate_usage_cost, normalize_usage
+from agent.usage_pricing import (
+    estimate_usage_cost,
+    extract_actual_cost_result,
+    normalize_usage,
+)
 from agent.display import (
     KawaiiSpinner, build_tool_preview as _build_tool_preview,
     get_cute_tool_message as _get_cute_tool_message_impl,
@@ -1548,6 +1552,7 @@ class AIAgent:
         self.session_cache_write_tokens = 0
         self.session_reasoning_tokens = 0
         self.session_estimated_cost_usd = 0.0
+        self.session_actual_cost_usd = 0.0
         self.session_cost_status = "unknown"
         self.session_cost_source = "none"
         
@@ -1649,6 +1654,7 @@ class AIAgent:
         self.session_reasoning_tokens = 0
         self.session_api_calls = 0
         self.session_estimated_cost_usd = 0.0
+        self.session_actual_cost_usd = 0.0
         self.session_cost_status = "unknown"
         self.session_cost_source = "none"
         
@@ -9357,10 +9363,20 @@ class AIAgent:
                             base_url=self.base_url,
                             api_key=getattr(self, "api_key", ""),
                         )
+                        actual_cost_result = extract_actual_cost_result(
+                            response,
+                            provider=self.provider,
+                            base_url=self.base_url,
+                        )
                         if cost_result.amount_usd is not None:
                             self.session_estimated_cost_usd += float(cost_result.amount_usd)
-                        self.session_cost_status = cost_result.status
-                        self.session_cost_source = cost_result.source
+                        if actual_cost_result and actual_cost_result.amount_usd is not None:
+                            self.session_actual_cost_usd += float(actual_cost_result.amount_usd)
+                            self.session_cost_status = actual_cost_result.status
+                            self.session_cost_source = actual_cost_result.source
+                        else:
+                            self.session_cost_status = cost_result.status
+                            self.session_cost_source = cost_result.source
 
                         # Persist token counts to session DB for /insights.
                         # Do this for every platform with a session_id so non-CLI
@@ -9380,8 +9396,10 @@ class AIAgent:
                                     reasoning_tokens=canonical_usage.reasoning_tokens,
                                     estimated_cost_usd=float(cost_result.amount_usd)
                                     if cost_result.amount_usd is not None else None,
-                                    cost_status=cost_result.status,
-                                    cost_source=cost_result.source,
+                                    actual_cost_usd=float(actual_cost_result.amount_usd)
+                                    if actual_cost_result and actual_cost_result.amount_usd is not None else None,
+                                    cost_status=(actual_cost_result.status if actual_cost_result else cost_result.status),
+                                    cost_source=(actual_cost_result.source if actual_cost_result else cost_result.source),
                                     billing_provider=self.provider,
                                     billing_base_url=self.base_url,
                                     billing_mode="subscription_included"
@@ -11235,6 +11253,7 @@ class AIAgent:
             "total_tokens": self.session_total_tokens,
             "last_prompt_tokens": getattr(self.context_compressor, "last_prompt_tokens", 0) or 0,
             "estimated_cost_usd": self.session_estimated_cost_usd,
+            "actual_cost_usd": self.session_actual_cost_usd,
             "cost_status": self.session_cost_status,
             "cost_source": self.session_cost_source,
         }

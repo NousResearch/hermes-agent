@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from agent.usage_pricing import (
     CanonicalUsage,
     estimate_usage_cost,
+    extract_actual_cost_result,
     get_pricing_entry,
     normalize_usage,
 )
@@ -123,3 +124,35 @@ def test_custom_endpoint_models_api_pricing_is_supported(monkeypatch):
 
     assert float(entry.input_cost_per_million) == 0.5
     assert float(entry.output_cost_per_million) == 2.0
+
+
+def test_extract_actual_cost_result_reads_openrouter_usage_cost():
+    response = SimpleNamespace(
+        usage=SimpleNamespace(
+            cost=0.0123,
+            cost_details=SimpleNamespace(upstream_inference_cost=0.01),
+        )
+    )
+
+    result = extract_actual_cost_result(
+        response,
+        provider="openrouter",
+        base_url="https://openrouter.ai/api/v1",
+    )
+
+    assert result is not None
+    assert result.status == "actual"
+    assert float(result.amount_usd) == 0.0123
+    assert result.source == "provider_generation_api"
+
+
+def test_extract_actual_cost_result_ignores_missing_openrouter_usage_cost():
+    response = SimpleNamespace(usage=SimpleNamespace(prompt_tokens=10, completion_tokens=4))
+
+    result = extract_actual_cost_result(
+        response,
+        provider="openrouter",
+        base_url="https://openrouter.ai/api/v1",
+    )
+
+    assert result is None

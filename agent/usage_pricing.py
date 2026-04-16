@@ -377,6 +377,19 @@ def _to_int(value: Any) -> int:
         return 0
 
 
+def _read_field(obj: Any, *path: str) -> Any:
+    """Read a nested field from dict- or attribute-based response objects."""
+    current = obj
+    for key in path:
+        if current is None:
+            return None
+        if isinstance(current, dict):
+            current = current.get(key)
+        else:
+            current = getattr(current, key, None)
+    return current
+
+
 def resolve_billing_route(
     model_name: str,
     provider: Optional[str] = None,
@@ -628,6 +641,39 @@ def estimate_usage_cost(
         fetched_at=entry.fetched_at,
         pricing_version=entry.pricing_version,
         notes=tuple(notes),
+    )
+
+
+def extract_actual_cost_result(
+    response: Any,
+    *,
+    provider: Optional[str] = None,
+    base_url: Optional[str] = None,
+) -> Optional[CostResult]:
+    """Extract authoritative per-request cost from a provider response when available.
+
+    OpenRouter now includes usage accounting directly in every response, with
+    `usage.cost` present in non-streaming responses and the final streaming chunk.
+    When available, prefer this over local estimation.
+    """
+    route = resolve_billing_route("", provider=provider, base_url=base_url)
+    if route.provider != "openrouter":
+        return None
+
+    cost = _to_decimal(_read_field(response, "usage", "cost"))
+    if cost is None:
+        # Fallbacks for generation metadata or alternate response wrappers.
+        cost = _to_decimal(_read_field(response, "data", "total_cost"))
+    if cost is None:
+        cost = _to_decimal(_read_field(response, "total_cost"))
+    if cost is None:
+        return None
+
+    return CostResult(
+        amount_usd=cost,
+        status="actual",
+        source="provider_generation_api",
+        label=f"${cost:.2f}",
     )
 
 

@@ -60,3 +60,27 @@ def test_run_conversation_persists_tokens_for_cron_sessions():
     assert result["final_response"] == "done"
     session_db.update_token_counts.assert_called_once()
     assert session_db.update_token_counts.call_args.args[0] == "cron-session"
+
+
+def test_run_conversation_persists_actual_openrouter_cost_when_usage_cost_present():
+    session_db = MagicMock()
+    agent = _make_agent(session_db, platform="telegram")
+    agent.provider = "openrouter"
+    agent.base_url = "https://openrouter.ai/api/v1"
+    agent.client.chat.completions.create.return_value = _mock_response(
+        usage={
+            "prompt_tokens": 11,
+            "completion_tokens": 7,
+            "total_tokens": 18,
+            "cost": 0.1234,
+        }
+    )
+
+    result = agent.run_conversation("hello")
+
+    kwargs = session_db.update_token_counts.call_args.kwargs
+    assert result["actual_cost_usd"] == 0.1234
+    assert result["cost_status"] == "actual"
+    assert kwargs["actual_cost_usd"] == 0.1234
+    assert kwargs["cost_status"] == "actual"
+    assert kwargs["cost_source"] == "provider_generation_api"

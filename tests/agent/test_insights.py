@@ -622,6 +622,76 @@ class TestEdgeCases:
         assert llama["has_pricing"] is False
         assert llama["cost"] == 0.0
 
+    def test_insights_prefers_actual_cost_when_present(self, db):
+        db.create_session(session_id="s1", source="cli", model="gpt-4o")
+        db.update_token_counts(
+            "s1",
+            input_tokens=10000,
+            output_tokens=5000,
+            billing_provider="openai",
+            estimated_cost_usd=0.75,
+            actual_cost_usd=0.5,
+            cost_status="actual",
+            cost_source="provider_generation_api",
+        )
+        db._conn.commit()
+
+        engine = InsightsEngine(db)
+        report = engine.generate(days=30)
+        overview = report["overview"]
+
+        assert overview["estimated_cost"] == 0.75
+        assert overview["actual_cost"] == 0.5
+        assert overview["display_cost"] == 0.5
+        assert overview["display_cost_label"] == "actual"
+
+        model = next(m for m in report["models"] if m["model"] == "gpt-4o")
+        assert model["cost"] == 0.5
+        assert model["cost_status"] == "actual"
+
+    def test_insights_recomputes_estimate_when_only_actual_cost_is_persisted(self, db):
+        db.create_session(session_id="s1", source="cli", model="gpt-4o")
+        db.update_token_counts(
+            "s1",
+            input_tokens=10000,
+            output_tokens=5000,
+            billing_provider="openai",
+            actual_cost_usd=0.5,
+            cost_status="actual",
+            cost_source="provider_generation_api",
+        )
+        db._conn.commit()
+
+        engine = InsightsEngine(db)
+        report = engine.generate(days=30)
+        overview = report["overview"]
+
+        assert overview["actual_cost"] == 0.5
+        assert overview["display_cost"] == 0.5
+        assert overview["display_cost_label"] == "actual"
+        assert overview["estimated_cost"] != 0.5
+        assert overview["estimated_cost"] > 0
+
+    def test_insights_falls_back_to_estimated_cost_when_actual_missing(self, db):
+        db.create_session(session_id="s1", source="cli", model="gpt-4o")
+        db.update_token_counts(
+            "s1",
+            input_tokens=10000,
+            output_tokens=5000,
+            billing_provider="openai",
+            estimated_cost_usd=0.75,
+            cost_status="estimated",
+            cost_source="official_docs_snapshot",
+        )
+        db._conn.commit()
+
+        engine = InsightsEngine(db)
+        report = engine.generate(days=30)
+        overview = report["overview"]
+
+        assert overview["display_cost"] == 0.75
+        assert overview["display_cost_label"] == "estimated"
+
     def test_single_session_streak(self, db):
         """Single session should have streak of 0 or 1."""
         db.create_session(session_id="s1", source="cli", model="test")

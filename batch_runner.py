@@ -561,7 +561,10 @@ class BatchRunner:
             provider_sort (str): Sort providers by price/throughput/latency (optional)
             max_tokens (int): Maximum tokens for model responses (optional, uses model default if not set)
             reasoning_config (Dict): OpenRouter reasoning config override (e.g. {"effort": "none"} to disable thinking)
-            prefill_messages (List[Dict]): Messages to prepend as prefilled conversation context (few-shot priming)
+            prefill_messages (List[Dict]): Messages to prepend as prefilled conversation context (few-shot priming).
+                NOTE: Anthropic Sonnet 4.6+ and Opus 4.6+ reject a trailing assistant-role prefill
+                (400 error).  For those models use output_config.format or structured-output
+                schemas instead.  Safe here for user-role priming and for older Claude / non-Claude models.
             max_samples (int): Only process the first N samples from the dataset (optional, processes all if not set)
         """
         self.dataset_file = Path(dataset_file)

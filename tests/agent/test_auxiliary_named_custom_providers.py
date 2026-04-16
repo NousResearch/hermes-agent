@@ -232,7 +232,7 @@ class TestResolveVisionProviderClientModelNormalization:
 
         assert provider == "zai"
         assert client is not None
-        assert model == "glm-5.1"
+        assert model == "glm-5v-turbo"  # zai has dedicated vision model in _PROVIDER_VISION_MODELS
 
 
 class TestVisionPathApiMode:

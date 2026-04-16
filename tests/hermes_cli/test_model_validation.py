@@ -163,7 +163,7 @@ class TestNormalizeProvider:
 class TestProviderLabel:
     def test_known_labels_and_auto(self):
         assert provider_label("anthropic") == "Anthropic"
-        assert provider_label("kimi") == "Kimi / Moonshot"
+        assert provider_label("kimi") == "Kimi / Kimi Coding Plan"
         assert provider_label("copilot") == "GitHub Copilot"
         assert provider_label("copilot-acp") == "GitHub Copilot ACP"
         assert provider_label("auto") == "Auto"

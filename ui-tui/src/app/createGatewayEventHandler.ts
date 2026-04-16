@@ -161,21 +161,24 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         return
 
-      case 'session.info':
+      case 'session.info': {
+        const info = ev.payload
+
         patchUiState(state => ({
           ...state,
-          info: ev.payload,
-          // Flip from 'starting agent…' → 'ready' when the agent is live.
-          // Leave running/interrupted/error statuses alone.
+          info,
+          // agent just came online → flip the 'starting agent…' placeholder.
+          // leave running/interrupted/error statuses alone.
           status: state.status === 'starting agent…' ? 'ready' : state.status,
-          usage: ev.payload.usage ? { ...state.usage, ...ev.payload.usage } : state.usage
+          usage: info.usage ? { ...state.usage, ...info.usage } : state.usage
         }))
-        // Agent init is async in session.create, so the intro message may
-        // have been seeded with partial info (just model/cwd). Upgrade it
-        // in-place when the real session.info lands.
-        setHistoryItems(prev => prev.map(m => (m.kind === 'intro' ? { ...m, info: ev.payload } : m)))
+
+        // upgrade the seeded/partial intro row in-place with the real info
+        setHistoryItems(prev => prev.map(m => (m.kind === 'intro' ? { ...m, info } : m)))
 
         return
+      }
+
       case 'thinking.delta': {
         const text = ev.payload?.text
 

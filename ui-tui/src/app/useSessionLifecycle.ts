@@ -102,30 +102,25 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
         return patchUiState({ status: 'ready' })
       }
 
+      const info = r.info ?? null
+
       resetSession()
       setSessionStartedAt(Date.now())
-      // Python's `session.create` returns instantly with partial info (no `version`
-      // field); the `session.info` event will flip status to 'ready' once the
-      // agent is fully built (~1s later). Until then prompt.submit will block
-      // server-side on `_wait_agent`.
+
+      // session.create returns instantly with partial info (no `version`);
+      // the `session.info` event flips status to 'ready' once the agent is live.
       patchUiState({
-        info: r.info ?? null,
+        info,
         sid: r.session_id,
-        status: r.info?.version ? 'ready' : 'starting agent…',
-        usage: usageFrom(r.info ?? null)
+        status: info?.version ? 'ready' : 'starting agent…',
+        usage: usageFrom(info)
       })
 
-      if (r.info) {
-        setHistoryItems([introMsg(r.info)])
-      }
+      if (info) setHistoryItems([introMsg(info)])
 
-      if (r.info?.credential_warning) {
-        sys(`warning: ${r.info.credential_warning}`)
-      }
+      if (info?.credential_warning) sys(`warning: ${info.credential_warning}`)
 
-      if (msg) {
-        sys(msg)
-      }
+      if (msg) sys(msg)
     },
     [closeSession, colsRef, resetSession, rpc, setHistoryItems, setSessionStartedAt, sys]
   )

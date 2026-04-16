@@ -251,14 +251,16 @@ class TestEmptyResponseNotSuppressed:
         )
 
     def _apply_suppression_logic(self, response, sc):
-        """Reproduce the fixed logic from gateway/run.py return path."""
+        """Reproduce the fixed logic from gateway/run.py return path.
+
+        Only suppresses when final_response_sent is explicitly True —
+        already_sent from tool progress must NOT trigger suppression.
+        (#10748)
+        """
         if sc and isinstance(response, dict) and not response.get("failed"):
             _final = response.get("final_response") or ""
             _is_empty_sentinel = not _final or _final == "(empty)"
-            if not _is_empty_sentinel and (
-                getattr(sc, "final_response_sent", False)
-                or getattr(sc, "already_sent", False)
-            ):
+            if not _is_empty_sentinel and getattr(sc, "final_response_sent", False):
                 response["already_sent"] = True
 
     def test_empty_sentinel_not_suppressed_with_already_sent(self):
@@ -283,13 +285,21 @@ class TestEmptyResponseNotSuppressed:
         self._apply_suppression_logic(response, sc)
         assert "already_sent" not in response
 
-    def test_real_response_still_suppressed_with_already_sent(self):
-        """Normal non-empty response should still be suppressed when
-        streaming delivered content."""
-        sc = self._make_mock_stream_consumer(already_sent=True, final_response_sent=False)
+    def test_real_response_suppressed_when_final_response_sent(self):
+        """Normal non-empty response should be suppressed only when
+        the stream consumer confirmed final delivery."""
+        sc = self._make_mock_stream_consumer(already_sent=True, final_response_sent=True)
         response = {"final_response": "Here are the search results..."}
         self._apply_suppression_logic(response, sc)
         assert response.get("already_sent") is True
+
+    def test_real_response_NOT_suppressed_when_only_already_sent(self):
+        """Tool progress sets already_sent but not final_response_sent.
+        The final response must NOT be suppressed.  (#10748)"""
+        sc = self._make_mock_stream_consumer(already_sent=True, final_response_sent=False)
+        response = {"final_response": "Here are the search results..."}
+        self._apply_suppression_logic(response, sc)
+        assert "already_sent" not in response
 
     def test_failed_empty_response_never_suppressed(self):
         """Failed responses are never suppressed regardless of content."""

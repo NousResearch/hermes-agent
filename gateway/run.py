@@ -9471,10 +9471,12 @@ class GatewayRunner:
         if _sc and isinstance(response, dict) and not response.get("failed"):
             _final = response.get("final_response") or ""
             _is_empty_sentinel = not _final or _final == "(empty)"
-            if not _is_empty_sentinel and (
-                getattr(_sc, "final_response_sent", False)
-                or getattr(_sc, "already_sent", False)
-            ):
+            # Only suppress independent delivery when the stream consumer
+            # confirmed it delivered the final response content.  Do NOT
+            # suppress based on already_sent alone — that flag is also set
+            # by intermediate tool-progress messages which are NOT the
+            # final answer.  (#10748)
+            if not _is_empty_sentinel and getattr(_sc, "final_response_sent", False):
                 response["already_sent"] = True
         
         return response

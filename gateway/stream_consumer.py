@@ -372,7 +372,7 @@ class GatewayStreamConsumer:
                             self._final_response_sent = True
                         elif self._message_id:
                             self._final_response_sent = await self._send_or_edit(self._accumulated)
-                        elif not self._already_sent:
+                        else:
                             self._final_response_sent = await self._send_or_edit(self._accumulated)
                     return
 
@@ -402,20 +402,24 @@ class GatewayStreamConsumer:
                 await asyncio.sleep(0.05)  # Small yield to not busy-loop
 
         except asyncio.CancelledError:
-            # Best-effort final edit on cancellation
+            # Best-effort final edit on cancellation — try to deliver
+            # whatever content has been accumulated so the user doesn't
+            # see silence after tool progress messages.
             if self._accumulated and self._message_id:
                 try:
-                    await self._send_or_edit(self._accumulated)
+                    sent = await self._send_or_edit(self._accumulated)
+                    if sent:
+                        self._final_response_sent = True
                 except Exception:
                     pass
-            # If we delivered any content before being cancelled, mark the
-            # final response as sent so the gateway's already_sent check
-            # doesn't trigger a duplicate message.  The 5-second
-            # stream_task timeout (gateway/run.py) can cancel us while
-            # waiting on a slow Telegram API call — without this flag the
-            # gateway falls through to the normal send path.
-            if self._already_sent:
-                self._final_response_sent = True
+            elif self._accumulated and not self._message_id:
+                # Have content but no existing message — try a fresh send.
+                try:
+                    sent = await self._send_or_edit(self._accumulated)
+                    if sent:
+                        self._final_response_sent = True
+                except Exception:
+                    pass
         except Exception as e:
             logger.error("Stream consumer error: %s", e)
 

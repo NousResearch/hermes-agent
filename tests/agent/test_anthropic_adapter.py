@@ -959,13 +959,28 @@ class TestBuildAnthropicKwargs:
         assert "temperature" not in kwargs
         assert kwargs["max_tokens"] == 4096
 
-    def test_reasoning_config_maps_xhigh_to_xhigh_effort_for_4_6_models(self):
-        # Opus 4.7 added "xhigh" as a distinct effort level (the recommended
-        # default for coding/agentic work). Earlier mapping aliased xhigh→max,
-        # which silently over-efforted every request. 2026-04-16 migration
-        # guide: xhigh and max are distinct levels.
+    def test_reasoning_config_downgrades_xhigh_to_max_for_4_6_models(self):
+        # Opus 4.7 added "xhigh" as a distinct effort level (low/medium/high/
+        # xhigh/max). Opus 4.6 only supports low/medium/high/max — sending
+        # "xhigh" there returns an API 400. Preserve the pre-migration
+        # behavior of aliasing xhigh→max on pre-4.7 adaptive models so users
+        # who prefer xhigh as their default don't 400 every request when
+        # switching back to 4.6.
         kwargs = build_anthropic_kwargs(
             model="claude-sonnet-4-6",
+            messages=[{"role": "user", "content": "think harder"}],
+            tools=None,
+            max_tokens=4096,
+            reasoning_config={"enabled": True, "effort": "xhigh"},
+        )
+        assert kwargs["thinking"] == {"type": "adaptive", "display": "summarized"}
+        assert kwargs["output_config"] == {"effort": "max"}
+
+    def test_reasoning_config_preserves_xhigh_for_4_7_models(self):
+        # On 4.7+ xhigh is a real level and the recommended default for
+        # coding/agentic work — keep it distinct from max.
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4-7",
             messages=[{"role": "user", "content": "think harder"}],
             tools=None,
             max_tokens=4096,

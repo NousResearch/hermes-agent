@@ -19,6 +19,13 @@ def get_token_path() -> Path:
     return get_hermes_home() / "google_token.json"
 
 
+def _normalize_authorized_user_payload(payload: dict) -> dict:
+    normalized = dict(payload)
+    if not normalized.get("type"):
+        normalized["type"] = "authorized_user"
+    return normalized
+
+
 def refresh_token(token_data: dict) -> dict:
     """Refresh the access token using the refresh token."""
     import urllib.error
@@ -55,7 +62,9 @@ def refresh_token(token_data: dict) -> dict:
         tz=timezone.utc,
     ).isoformat()
 
-    get_token_path().write_text(json.dumps(token_data, indent=2))
+    get_token_path().write_text(
+        json.dumps(_normalize_authorized_user_payload(token_data), indent=2)
+    )
     return token_data
 
 

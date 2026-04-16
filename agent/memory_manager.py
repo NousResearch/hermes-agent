@@ -28,6 +28,7 @@ Usage in run_agent.py:
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from typing import Any, Dict, List, Optional
@@ -43,11 +44,22 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _FENCE_TAG_RE = re.compile(r'</?\s*memory-context\s*>', re.IGNORECASE)
+_INTERNAL_CONTEXT_RE = re.compile(
+    r'<\s*memory-context\s*>[\s\S]*?</\s*memory-context\s*>',
+    re.IGNORECASE,
+)
+_INTERNAL_NOTE_RE = re.compile(
+    r'\[System note:\s*The following is recalled memory context,\s*NOT new user input\.\s*Treat as informational background data\.\]\s*',
+    re.IGNORECASE,
+)
 
 
 def sanitize_context(text: str) -> str:
-    """Strip fence-escape sequences from provider output."""
-    return _FENCE_TAG_RE.sub('', text)
+    """Strip fence tags, injected context blocks, and system notes from provider output."""
+    text = _INTERNAL_CONTEXT_RE.sub('', text)
+    text = _INTERNAL_NOTE_RE.sub('', text)
+    text = _FENCE_TAG_RE.sub('', text)
+    return text
 
 
 def build_memory_context_block(raw_context: str) -> str:

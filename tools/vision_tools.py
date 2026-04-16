@@ -816,9 +816,9 @@ def _native_vision_analyze(image_source: str, user_prompt: str):
     except Exception:
         pass
 
+    from hermes_cli.provider_native_tools import native_credential
     url = native_api_url("/v1/coding_plan/vlm")
-    key = (os.getenv("MINIMAX_API_KEY", "").strip()
-           or os.getenv("MINIMAX_CN_API_KEY", "").strip())
+    key = native_credential()
     if not url or not key:
         return None
 

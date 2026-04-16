@@ -65,9 +65,9 @@ def music_generate_tool(
         return json.dumps({"success": False,
                            "error": "no music backend available"})
 
+    from hermes_cli.provider_native_tools import native_credential
     url = native_api_url("/v1/music_generation")
-    key = (os.getenv("MINIMAX_API_KEY", "").strip()
-           or os.getenv("MINIMAX_CN_API_KEY", "").strip())
+    key = native_credential()
     if not url or not key:
         return json.dumps({"success": False,
                            "error": "no music backend configured"})

@@ -695,9 +695,9 @@ def _native_image_generate(prompt, aspect_ratio, num_images, output_format):
     import urllib.request
     from hermes_cli.provider_native_tools import native_api_url
 
+    from hermes_cli.provider_native_tools import native_credential
     url = native_api_url("/v1/image_generation")
-    key = (os.getenv("MINIMAX_API_KEY", "").strip()
-           or os.getenv("MINIMAX_CN_API_KEY", "").strip())
+    key = native_credential()
     if not url or not key:
         return None
 

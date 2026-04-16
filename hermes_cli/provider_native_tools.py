@@ -70,6 +70,18 @@ def native_api_url(subpath, config=None):
     return f"{root}{subpath}" if root else ""
 
 
+def native_credential(config=None):
+    """API key matching the active provider's region, or ``""``."""
+    import os
+    cfg = config if config is not None else _safe_load_config()
+    host = _api_host(cfg)
+    if "minimaxi.com" in host:
+        return (os.environ.get("MINIMAX_CN_API_KEY", "").strip()
+                or os.environ.get("MINIMAX_API_KEY", "").strip())
+    return (os.environ.get("MINIMAX_API_KEY", "").strip()
+            or os.environ.get("MINIMAX_CN_API_KEY", "").strip())
+
+
 def get_native_tools(config):
     """Tool categories served natively by the active provider, or ``()``."""
     if not _is_native_provider(config):

@@ -212,8 +212,84 @@ class IBKRTwsBrokerAdapter(BrokerAdapter):
             broker_status=status,
         )
 
-    def get_order_status(self, order_id: str):
-        raise NotImplementedError("get_order_status not implemented yet")
+    def _find_open_trade(self, order_id: int):
+        ib = self._ensure_ib()
+        for trade in ib.openTrades():
+            trade_order = getattr(trade, "order", None)
+            if getattr(trade_order, "orderId", None) == order_id:
+                return trade
+        return None
+
+    def get_order_status(
+        self,
+        order_id: str,
+        *,
+        account_mode: str | None = None,
+        expected_quantity: int | None = None,
+    ):
+        try:
+            numeric_order_id = int(order_id)
+        except (TypeError, ValueError):
+            return None
+
+        if account_mode:
+            modes_to_try = [account_mode]
+        elif self.connected_mode:
+            modes_to_try = [self.connected_mode]
+        else:
+            modes_to_try = ["paper", "live"]
+
+        seen_modes: set[str] = set()
+        for mode in modes_to_try:
+            if not mode or mode in seen_modes:
+                continue
+            seen_modes.add(mode)
+            try:
+                self._ensure_connected(mode)
+            except Exception:
+                continue
+
+            trade = self._find_open_trade(numeric_order_id)
+            if trade is not None:
+                broker_status = getattr(getattr(trade, "orderStatus", None), "status", None)
+                return {"broker_status": broker_status}
+
+            try:
+                completed = self._ib.reqCompletedOrders(apiOnly=False)
+            except Exception:
+                completed = []
+            for trade in completed:
+                trade_order = getattr(trade, "order", None)
+                if getattr(trade_order, "orderId", None) == numeric_order_id:
+                    return {
+                        "broker_status": getattr(getattr(trade, "orderStatus", None), "status", None)
+                    }
+
+            try:
+                fills = self._ib.reqExecutions()
+            except Exception:
+                fills = []
+            matching_fills = [
+                fill for fill in fills
+                if getattr(getattr(fill, "execution", None), "orderId", None) == numeric_order_id
+            ]
+            if matching_fills:
+                total_shares = sum(
+                    float(getattr(getattr(fill, "execution", None), "shares", 0) or 0)
+                    for fill in matching_fills
+                )
+                latest_execution = getattr(matching_fills[-1], "execution", None)
+                if expected_quantity is not None and total_shares < expected_quantity:
+                    return {
+                        "broker_status": "PartiallyFilled",
+                        "detail": getattr(latest_execution, "execId", None),
+                    }
+                return {
+                    "broker_status": "Filled",
+                    "detail": getattr(latest_execution, "execId", None),
+                }
+
+        return None
 
     def cancel_order(self, order_id: str):
         raise NotImplementedError("cancel_order not implemented yet")

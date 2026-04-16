@@ -150,7 +150,53 @@ class BrokerageService:
         return updated
 
     def get_intent(self, intent_id: str) -> dict:
-        return self._require_intent(intent_id)
+        row = self._require_intent(intent_id)
+        return self._refresh_broker_status(row)
+
+    def _refresh_broker_status(self, row: dict) -> dict:
+        if row.get("status") != "submitted" or not row.get("ibkr_order_id"):
+            return row
+
+        try:
+            broker_status = self.broker.get_order_status(
+                row["ibkr_order_id"],
+                account_mode=row.get("account_mode"),
+                expected_quantity=row.get("quantity"),
+            )
+        except Exception:
+            return row
+
+        if not broker_status:
+            return row
+
+        live_status = broker_status.get("broker_status") or broker_status.get("status")
+        row = dict(row)
+        row["broker_status"] = live_status
+        if broker_status.get("detail") is not None:
+            row["broker_detail"] = broker_status["detail"]
+
+        resolved_status = self._map_broker_status(live_status)
+        if resolved_status is None or resolved_status == row["status"]:
+            return row
+
+        transitioned = self.store.transition_status(
+            row["intent_id"],
+            row["status"],
+            resolved_status,
+        )
+        if transitioned:
+            self.store.append_event(
+                TradeEvent(
+                    intent_id=row["intent_id"],
+                    event_type=resolved_status,
+                    detail=broker_status.get("detail") or live_status,
+                )
+            )
+        refreshed = self._require_intent(row["intent_id"])
+        refreshed["broker_status"] = live_status
+        if broker_status.get("detail") is not None:
+            refreshed["broker_detail"] = broker_status["detail"]
+        return refreshed
 
     def expire_stale_intents(self, *, now: datetime | None = None) -> int:
         timestamp = now or datetime.now(timezone.utc)
@@ -174,6 +220,24 @@ class BrokerageService:
             limit_price=row["limit_price"],
             status=row["status"],
         )
+
+    @staticmethod
+    def _map_broker_status(status: str | None) -> str | None:
+        if not status:
+            return None
+
+        normalized = status.strip().upper()
+        if normalized == "FILLED":
+            return "filled"
+        if normalized in {"CANCELLED", "APICANCELLED"}:
+            return "cancelled"
+        if normalized == "PARTIALLYFILLED":
+            return "submitted"
+        if "REJECT" in normalized or normalized == "INACTIVE":
+            return "rejected"
+        if normalized in {"PENDINGSUBMIT", "PRESUBMITTED", "SUBMITTED", "APIPENDING"}:
+            return "submitted"
+        return None
 
     @staticmethod
     def _intent_preview(intent: TradeIntent) -> dict:

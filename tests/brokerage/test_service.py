@@ -15,20 +15,27 @@ from brokerage.storage import SQLiteBrokerageStore
 
 
 class FakeBroker(BrokerAdapter):
-    def __init__(self, result: BrokerSubmissionResult | None = None):
+    def __init__(self, result: BrokerSubmissionResult | None = None, *, order_statuses: dict[str, dict] | None = None):
         self.result = result or BrokerSubmissionResult(
             accepted=True,
             broker_order_id="ib-123",
             broker_status="Submitted",
         )
+        self.order_statuses = order_statuses or {}
         self.submitted: list[TradeIntent] = []
 
     def submit_order(self, intent: TradeIntent) -> BrokerSubmissionResult:
         self.submitted.append(intent)
         return self.result
 
-    def get_order_status(self, order_id: str):
-        return None
+    def get_order_status(
+        self,
+        order_id: str,
+        *,
+        account_mode: str | None = None,
+        expected_quantity: int | None = None,
+    ):
+        return self.order_statuses.get(order_id)
 
     def cancel_order(self, order_id: str):
         return None
@@ -114,6 +121,70 @@ def test_confirm_intent_with_valid_token_submits_order(tmp_path):
     assert len(broker.submitted) == 1
 
 
+def test_get_intent_reconciles_submitted_trade_to_filled_status(tmp_path):
+    broker = FakeBroker(order_statuses={"ib-123": {"broker_status": "Filled"}})
+    service = _make_service(tmp_path, broker=broker)
+    created = service.create_intent(
+        account_mode="paper",
+        symbol="AAPL",
+        side="BUY",
+        quantity=10,
+        order_type="MARKET",
+        asset_class="stock",
+    )
+
+    service.confirm_intent(created["intent_id"], f"CONFIRM {created['confirmation_code']}")
+    result = service.get_intent(created["intent_id"])
+
+    assert result["status"] == "filled"
+    assert result["broker_status"] == "Filled"
+    events = service.store.list_events(created["intent_id"])
+    assert events[-1]["event_type"] == "filled"
+
+
+def test_get_intent_reconciliation_is_idempotent_for_terminal_status(tmp_path):
+    broker = FakeBroker(order_statuses={"ib-123": {"broker_status": "Filled"}})
+    service = _make_service(tmp_path, broker=broker)
+    created = service.create_intent(
+        account_mode="paper",
+        symbol="AAPL",
+        side="BUY",
+        quantity=10,
+        order_type="MARKET",
+        asset_class="stock",
+    )
+
+    service.confirm_intent(created["intent_id"], f"CONFIRM {created['confirmation_code']}")
+    first = service.get_intent(created["intent_id"])
+    second = service.get_intent(created["intent_id"])
+
+    assert first["status"] == "filled"
+    assert second["status"] == "filled"
+    events = service.store.list_events(created["intent_id"])
+    assert [event["event_type"] for event in events].count("filled") == 1
+
+
+def test_get_intent_keeps_submitted_status_for_pending_cancel_broker_state(tmp_path):
+    broker = FakeBroker(order_statuses={"ib-123": {"broker_status": "PendingCancel"}})
+    service = _make_service(tmp_path, broker=broker)
+    created = service.create_intent(
+        account_mode="paper",
+        symbol="AAPL",
+        side="BUY",
+        quantity=10,
+        order_type="MARKET",
+        asset_class="stock",
+    )
+
+    service.confirm_intent(created["intent_id"], f"CONFIRM {created['confirmation_code']}")
+    result = service.get_intent(created["intent_id"])
+
+    assert result["status"] == "submitted"
+    assert result["broker_status"] == "PendingCancel"
+    events = service.store.list_events(created["intent_id"])
+    assert [event["event_type"] for event in events].count("cancelled") == 0
+
+
 def test_broker_rejection_moves_intent_to_rejected(tmp_path):
     broker = FakeBroker(
         BrokerSubmissionResult(
@@ -184,7 +255,13 @@ class CrashingBroker(BrokerAdapter):
     def submit_order(self, intent: TradeIntent) -> BrokerSubmissionResult:
         raise ConnectionError("TWS connection refused")
 
-    def get_order_status(self, order_id: str):
+    def get_order_status(
+        self,
+        order_id: str,
+        *,
+        account_mode: str | None = None,
+        expected_quantity: int | None = None,
+    ):
         return None
 
     def cancel_order(self, order_id: str):

@@ -15,7 +15,13 @@ class BrokerAdapter(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def get_order_status(self, order_id: str):
+    def get_order_status(
+        self,
+        order_id: str,
+        *,
+        account_mode: str | None = None,
+        expected_quantity: int | None = None,
+    ):
         raise NotImplementedError
 
     @abstractmethod

@@ -119,6 +119,19 @@ class SQLiteBrokerageStore:
             )
             conn.commit()
 
+    def transition_status(self, intent_id: str, from_status: str, to_status: str, *, ibkr_order_id: str | None = None) -> bool:
+        with self._connect() as conn:
+            result = conn.execute(
+                """
+                UPDATE trade_intents
+                SET status = ?, ibkr_order_id = COALESCE(?, ibkr_order_id)
+                WHERE intent_id = ? AND status = ?
+                """,
+                (to_status, ibkr_order_id, intent_id, from_status),
+            )
+            conn.commit()
+            return result.rowcount > 0
+
     def append_event(self, event: TradeEvent) -> None:
         with self._connect() as conn:
             conn.execute(

@@ -138,3 +138,76 @@ def test_submit_order_creates_event_loop_when_called_from_worker_thread():
     assert errors == []
     assert result[0].accepted is True
     assert result[0].broker_order_id == "1234"
+
+
+def test_get_order_status_returns_filled_when_execution_matches_order_id():
+    adapter = IBKRTwsBrokerAdapter(BrokerageSettings())
+    mock_ib = MagicMock()
+    adapter._ib = mock_ib
+    mock_ib.isConnected.return_value = True
+    adapter._connected_mode = "paper"
+    mock_ib.openTrades.return_value = []
+    mock_ib.reqExecutions.return_value = [
+        SimpleNamespace(execution=SimpleNamespace(orderId=1234, execId="abc"))
+    ]
+
+    result = adapter.get_order_status("1234")
+
+    assert result == {"broker_status": "Filled", "detail": "abc"}
+
+
+def test_get_order_status_respects_requested_account_mode_when_disconnected():
+    adapter = IBKRTwsBrokerAdapter(BrokerageSettings())
+    adapter._connected_mode = None
+    adapter._ib = MagicMock()
+    adapter._ib.reqExecutions.return_value = []
+    adapter._ib.reqCompletedOrders.return_value = []
+
+    attempted_modes: list[str] = []
+
+    def fake_ensure_connected(mode: str) -> None:
+        attempted_modes.append(mode)
+
+    with patch.object(adapter, "_ensure_connected", side_effect=fake_ensure_connected), \
+         patch.object(adapter, "_find_open_trade", return_value=None):
+        adapter.get_order_status("1234", account_mode="live")
+
+    assert attempted_modes == ["live"]
+
+
+def test_get_order_status_returns_partially_filled_when_execution_shares_are_below_expected_quantity():
+    adapter = IBKRTwsBrokerAdapter(BrokerageSettings())
+    mock_ib = MagicMock()
+    adapter._ib = mock_ib
+    mock_ib.isConnected.return_value = True
+    adapter._connected_mode = "paper"
+    mock_ib.openTrades.return_value = []
+    mock_ib.reqCompletedOrders.return_value = []
+    mock_ib.reqExecutions.return_value = [
+        SimpleNamespace(execution=SimpleNamespace(orderId=1234, execId="abc", shares=3))
+    ]
+
+    result = adapter.get_order_status("1234", expected_quantity=10)
+
+    assert result == {"broker_status": "PartiallyFilled", "detail": "abc"}
+
+
+def test_get_order_status_prefers_completed_terminal_state_over_execution_history():
+    adapter = IBKRTwsBrokerAdapter(BrokerageSettings())
+    mock_ib = MagicMock()
+    adapter._ib = mock_ib
+    mock_ib.isConnected.return_value = True
+    adapter._connected_mode = "paper"
+    mock_ib.openTrades.return_value = []
+    completed_trade = SimpleNamespace(
+        order=SimpleNamespace(orderId=1234),
+        orderStatus=SimpleNamespace(status="Cancelled"),
+    )
+    mock_ib.reqCompletedOrders.return_value = [completed_trade]
+    mock_ib.reqExecutions.return_value = [
+        SimpleNamespace(execution=SimpleNamespace(orderId=1234, execId="abc", shares=3))
+    ]
+
+    result = adapter.get_order_status("1234", expected_quantity=10)
+
+    assert result == {"broker_status": "Cancelled"}

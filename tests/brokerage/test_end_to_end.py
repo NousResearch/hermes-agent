@@ -19,26 +19,38 @@ import tools.brokerage_tool as brokerage_tool
 
 
 class FakeBroker(BrokerAdapter):
-    def __init__(self, result: BrokerSubmissionResult):
+    def __init__(self, result: BrokerSubmissionResult, *, order_statuses: dict[str, dict] | None = None):
         self.result = result
+        self.order_statuses = order_statuses or {}
         self.submitted: list[TradeIntent] = []
 
     def submit_order(self, intent: TradeIntent) -> BrokerSubmissionResult:
         self.submitted.append(intent)
         return self.result
 
-    def get_order_status(self, order_id: str):
-        return None
+    def get_order_status(
+        self,
+        order_id: str,
+        *,
+        account_mode: str | None = None,
+        expected_quantity: int | None = None,
+    ):
+        return self.order_statuses.get(order_id)
 
     def cancel_order(self, order_id: str):
         return None
 
 
-def _build_stack(tmp_path: Path, broker_result: BrokerSubmissionResult) -> tuple[TestClient, FakeBroker]:
+def _build_stack(
+    tmp_path: Path,
+    broker_result: BrokerSubmissionResult,
+    *,
+    order_statuses: dict[str, dict] | None = None,
+) -> tuple[TestClient, FakeBroker]:
     settings = BrokerageSettings(enabled=True, service_token="test-token")
     store = SQLiteBrokerageStore(tmp_path / "brokerage.db")
     policy = BrokeragePolicy(settings)
-    broker = FakeBroker(broker_result)
+    broker = FakeBroker(broker_result, order_statuses=order_statuses)
     service = BrokerageService(settings, store, policy, broker)
     app = create_app(service=service, auth_token="test-token")
     return TestClient(app), broker
@@ -123,6 +135,46 @@ def test_end_to_end_tool_driven_paper_trade_reaches_submitted_status(tmp_path, m
     assert status["status"] == "submitted"
     assert status["ibkr_order_id"] == "ib-accepted-1"
     assert [intent.symbol for intent in broker.submitted] == ["AAPL"]
+
+
+def test_end_to_end_tool_status_check_reconciles_filled_trade(tmp_path, monkeypatch):
+    client, broker = _build_stack(
+        tmp_path,
+        BrokerSubmissionResult(
+            accepted=True,
+            broker_order_id="ib-accepted-1",
+            broker_status="Submitted",
+        ),
+        order_statuses={"ib-accepted-1": {"broker_status": "Filled"}},
+    )
+    _patch_tool_client(monkeypatch, client)
+
+    created = json.loads(
+        brokerage_tool.create_trade_intent_tool(
+            {
+                "account_mode": "paper",
+                "symbol": "AAPL",
+                "side": "BUY",
+                "quantity": 10,
+                "order_type": "MARKET",
+                "asset_class": "stock",
+            }
+        )
+    )
+    brokerage_tool.confirm_trade_intent_tool(
+        {
+            "intent_id": created["intent_id"],
+            "confirmation_text": f"CONFIRM {created['confirmation_code']}",
+        }
+    )
+
+    status = json.loads(
+        brokerage_tool.get_trade_intent_status_tool({"intent_id": created["intent_id"]})
+    )
+
+    assert status["status"] == "filled"
+    assert status["broker_status"] == "Filled"
+    assert [intent.request_id for intent in broker.submitted] == [created["intent_id"]]
 
 
 def test_end_to_end_tool_driven_paper_trade_records_broker_rejection(tmp_path, monkeypatch):

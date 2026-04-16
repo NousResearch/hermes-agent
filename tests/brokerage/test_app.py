@@ -26,7 +26,13 @@ class FakeBroker(BrokerAdapter):
     def submit_order(self, intent: TradeIntent) -> BrokerSubmissionResult:
         return self.result
 
-    def get_order_status(self, order_id: str):
+    def get_order_status(
+        self,
+        order_id: str,
+        *,
+        account_mode: str | None = None,
+        expected_quantity: int | None = None,
+    ):
         return None
 
     def cancel_order(self, order_id: str):

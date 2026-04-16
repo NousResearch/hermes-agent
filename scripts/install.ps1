@@ -1596,35 +1596,26 @@ function Install-Dependencies {
     $fallbackInstallArgs += @("-e", ".")
     $submoduleInstallArgs += @("-e", ".\tinker-atropos")
 
-    function Invoke-UvAndCapture {
-        param([string[]]$Args)
-
-        $psi = New-Object System.Diagnostics.ProcessStartInfo
-        $psi.FileName = $UvCmd
-        $psi.Arguments = ($UvArgs -join ' ')
-        $psi.WorkingDirectory = $InstallDir
-        $psi.RedirectStandardOutput = $true
-        $psi.RedirectStandardError = $true
-        $psi.UseShellExecute = $false
-        $psi.CreateNoWindow = $true
-        if ($env:VIRTUAL_ENV) {
-            $psi.Environment['VIRTUAL_ENV'] = $env:VIRTUAL_ENV
-        }
-
-        $proc = New-Object System.Diagnostics.Process
-        $proc.StartInfo = $psi
-        [void]$proc.Start()
-        $stdout = $proc.StandardOutput.ReadToEnd()
-        $stderr = $proc.StandardError.ReadToEnd()
-        $proc.WaitForExit()
-
-        return [pscustomobject]@{
-            ExitCode = $proc.ExitCode
-            StdOut = $stdout
-            StdErr = $stderr
-        }
-    }
-
+    function Invoke-UvAndCapture {
+        param([string[]]$UvArgs)
+
+        $stdoutPath = Join-Path $env:TEMP ([System.Guid]::NewGuid().ToString() + '-uv-out.txt')
+        $stderrPath = Join-Path $env:TEMP ([System.Guid]::NewGuid().ToString() + '-uv-err.txt')
+        try {
+            $proc = Start-Process -FilePath $UvCmd -ArgumentList $UvArgs -WorkingDirectory $InstallDir -NoNewWindow -Wait -PassThru -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+            $stdout = if (Test-Path $stdoutPath) { Get-Content -Raw -Path $stdoutPath } else { '' }
+            $stderr = if (Test-Path $stderrPath) { Get-Content -Raw -Path $stderrPath } else { '' }
+            return [pscustomobject]@{
+                ExitCode = $proc.ExitCode
+                StdOut = $stdout
+                StdErr = $stderr
+            }
+        } finally {
+            Remove-Item -Force $stdoutPath -ErrorAction SilentlyContinue
+            Remove-Item -Force $stderrPath -ErrorAction SilentlyContinue
+        }
+    }
+
     # Install main package with all extras
     $mainInstalled = $false
     $mainResult = Invoke-UvAndCapture -UvArgs $mainInstallArgs
@@ -1658,8 +1649,10 @@ function Install-Dependencies {
     Write-Info "Installing tinker-atropos (RL training backend)..."
     if (Test-Path "tinker-atropos\pyproject.toml") {
         try {
-            $submoduleResult = Invoke-UvAndCapture -UvArgs $submoduleInstallArgs
-            if ($submoduleResult.StdOut) { Write-Host $submoduleResult.StdOut }
+            $submoduleResult = Invoke-UvAndCapture -UvArgs $submoduleInstallArgs
+
+            if ($submoduleResult.StdOut) { Write-Host $submoduleResult.StdOut }
+
             if ($submoduleResult.StdErr) { Write-Host $submoduleResult.StdErr }
             if ($LASTEXITCODE -eq 0) {
                 Write-Success "tinker-atropos installed"

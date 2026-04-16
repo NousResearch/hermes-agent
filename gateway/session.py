@@ -632,24 +632,16 @@ def _message_signature(message: Dict[str, Any]) -> tuple:
     )
 
 
-def _messages_start_with(messages: List[Dict[str, Any]], prefix: List[Dict[str, Any]]) -> bool:
-    """Return True when *messages* begins with *prefix* under transcript equality."""
-    if len(prefix) > len(messages):
-        return False
-    for idx, prefix_msg in enumerate(prefix):
-        if _message_signature(messages[idx]) != _message_signature(prefix_msg):
-            return False
-    return True
+def _message_signatures(messages: List[Dict[str, Any]]) -> List[tuple]:
+    """Precompute comparable transcript signatures for a message sequence."""
+    return [_message_signature(msg) for msg in messages]
 
 
-def _longest_overlap(left: List[Dict[str, Any]], right: List[Dict[str, Any]]) -> int:
-    """Return the max suffix/prefix overlap between two transcript sequences."""
+def _longest_overlap(left: List[tuple], right: List[tuple]) -> int:
+    """Return the max suffix/prefix overlap between two signature sequences."""
     max_overlap = min(len(left), len(right))
     for size in range(max_overlap, 0, -1):
-        if all(
-            _message_signature(left[-size + idx]) == _message_signature(right[idx])
-            for idx in range(size)
-        ):
+        if left[-size:] == right[:size]:
             return size
     return 0
 
@@ -668,20 +660,12 @@ def _parse_message_timestamp(value: Any) -> Optional[float]:
     return None
 
 
-def _jsonl_time_bounds(messages: List[Dict[str, Any]]) -> Optional[tuple[float, float]]:
-    """Return (min_ts, max_ts) when every JSONL message has a parseable timestamp."""
+def _time_bounds(messages: List[Dict[str, Any]]) -> Optional[tuple[float, float]]:
+    """Return (min_ts, max_ts) when every message has a parseable timestamp."""
+    if not messages:
+        return None
     stamps = [_parse_message_timestamp(msg.get("timestamp")) for msg in messages]
     if any(ts is None for ts in stamps):
-        return None
-    return (min(stamps), max(stamps))
-
-
-def _db_time_bounds(rows: List[Dict[str, Any]]) -> Optional[tuple[float, float]]:
-    """Return (min_ts, max_ts) for raw SQLite message rows."""
-    if not rows:
-        return None
-    stamps = [row.get("timestamp") for row in rows if row.get("timestamp") is not None]
-    if len(stamps) != len(rows):
         return None
     return (min(stamps), max(stamps))
 
@@ -703,21 +687,24 @@ def _merge_transcript_histories(
     if not jsonl_messages:
         return db_messages, True
 
-    if _messages_start_with(db_messages, jsonl_messages):
+    db_sigs = _message_signatures(db_messages)
+    jsonl_sigs = _message_signatures(jsonl_messages)
+
+    if db_sigs[:len(jsonl_sigs)] == jsonl_sigs:
         return db_messages, True
-    if _messages_start_with(jsonl_messages, db_messages):
+    if jsonl_sigs[:len(db_sigs)] == db_sigs:
         return jsonl_messages, True
 
-    overlap = _longest_overlap(jsonl_messages, db_messages)
+    overlap = _longest_overlap(jsonl_sigs, db_sigs)
     if overlap:
         return jsonl_messages + db_messages[overlap:], True
 
-    overlap = _longest_overlap(db_messages, jsonl_messages)
+    overlap = _longest_overlap(db_sigs, jsonl_sigs)
     if overlap:
         return db_messages + jsonl_messages[overlap:], True
 
-    jsonl_bounds = _jsonl_time_bounds(jsonl_messages)
-    db_bounds = _db_time_bounds(db_rows or [])
+    jsonl_bounds = _time_bounds(jsonl_messages)
+    db_bounds = _time_bounds(db_rows or [])
     if jsonl_bounds and db_bounds:
         jsonl_min, jsonl_max = jsonl_bounds
         db_min, db_max = db_bounds

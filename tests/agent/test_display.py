@@ -41,6 +41,11 @@ class TestBuildToolPreview:
         assert result is not None
         assert "/tmp/test.py" in result
 
+    def test_browser_type_hides_typed_text(self):
+        result = build_tool_preview("browser_type", {"ref": "@e1", "text": "supersecret123"})
+        assert result == "[hidden text]"
+        assert "supersecret123" not in result
+
     def test_unknown_tool_with_fallback_key(self):
         """Unknown tool but with a recognized fallback key should still preview."""
         result = build_tool_preview("custom_tool", {"query": "test query"})

@@ -335,6 +335,22 @@ class TestPoolRotationCycle:
         assert has_retried is False
         pool.mark_exhausted_and_rotate.assert_called_once_with(status_code=402, error_context=None)
 
+    def test_402_exhausted_pool_activates_fallback(self):
+        """402 with no remaining pool entry should activate fallback chain and count as recovery."""
+        agent, pool, _ = self._make_agent_with_pool(1)
+        agent._fallback_chain = [{"model": "fallback/model"}]
+        agent._fallback_index = 0
+        agent._try_activate_fallback = MagicMock(return_value=True)
+
+        recovered, has_retried = agent._recover_with_credential_pool(
+            status_code=402, has_retried_429=False
+        )
+
+        assert recovered is True
+        assert has_retried is False
+        pool.mark_exhausted_and_rotate.assert_called_once_with(status_code=402, error_context=None)
+        agent._try_activate_fallback.assert_called_once()
+
     def test_no_pool_returns_false(self):
         """No pool should return (False, unchanged)."""
         from run_agent import AIAgent

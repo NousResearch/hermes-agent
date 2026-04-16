@@ -1181,6 +1181,25 @@ def convert_messages_to_anthropic(
             if isinstance(b, dict) and b.get("type") in _THINKING_TYPES:
                 b.pop("cache_control", None)
 
+    # Guard against assistant messages whose FINAL content block is a thinking
+    # block. The Anthropic API rejects these with HTTP 400:
+    #   "messages.N: The final block in an assistant message cannot be `thinking`."
+    # Context compression / session truncation can leave a message in this
+    # state by snipping the trailing text or tool_use block while leaving the
+    # thinking block intact. Once this happens, every subsequent API call in
+    # the session fails identically until the session state is purged.
+    #
+    # Append a minimal text sentinel so the turn ends on a valid block.
+    # Preserves reasoning content above; costs one extra token per affected
+    # message. Upstream of this point should ideally prevent the state from
+    # being created — this is a safety net.
+    for m in result:
+        if m.get("role") != "assistant" or not isinstance(m.get("content"), list) or not m["content"]:
+            continue
+        last_block = m["content"][-1]
+        if isinstance(last_block, dict) and last_block.get("type") in _THINKING_TYPES:
+            m["content"].append({"type": "text", "text": "(continuing)"})
+
     return system, result
 
 

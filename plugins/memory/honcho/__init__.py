@@ -171,10 +171,8 @@ CONCLUDE_SCHEMA = {
                 "description": "Peer to query. Built-in aliases: 'user' (default), 'ai'. Or pass any peer ID from this workspace.",
             },
         },
-        "anyOf": [
-            {"required": ["conclusion"]},
-            {"required": ["delete_id"]},
-        ],
+        # Note: Removed anyOf constraint - Anthropic API doesn't support anyOf at root level.
+        # Rely on tool description to guide model behavior (pass exactly one of conclusion/delete_id).
     },
 }
 

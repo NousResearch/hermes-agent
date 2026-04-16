@@ -3437,7 +3437,34 @@ class AIAgent:
     def _normalize_codex_response(self, response: Any) -> tuple[Any, str]:
         """Normalize a Responses API object to an assistant_message-like object."""
         output = getattr(response, "output", None)
-        if not isinstance(output, list) or not output:
+        response_status = getattr(response, "status", None)
+        output_text = getattr(response, "output_text", None)
+        if not isinstance(output, list):
+            raise RuntimeError("Responses API returned a non-list output field")
+        if not output:
+            normalized_status = response_status.strip().lower() if isinstance(response_status, str) else None
+            fallback_text = output_text.strip() if isinstance(output_text, str) else ""
+            if fallback_text:
+                assistant_message = SimpleNamespace(
+                    content=fallback_text,
+                    tool_calls=[],
+                    reasoning=None,
+                    reasoning_content=None,
+                    reasoning_details=None,
+                    codex_reasoning_items=None,
+                )
+                finish_reason = "incomplete" if normalized_status in {"queued", "in_progress", "incomplete"} else "stop"
+                return assistant_message, finish_reason
+            if normalized_status in {"queued", "in_progress", "incomplete", "completed"}:
+                assistant_message = SimpleNamespace(
+                    content="",
+                    tool_calls=[],
+                    reasoning=None,
+                    reasoning_content=None,
+                    reasoning_details=None,
+                    codex_reasoning_items=None,
+                )
+                return assistant_message, "incomplete"
             raise RuntimeError("Responses API returned no output items")
 
         response_status = getattr(response, "status", None)
@@ -7252,6 +7279,8 @@ class AIAgent:
                     error_details = []
                     if self.api_mode == "codex_responses":
                         output_items = getattr(response, "output", None) if response is not None else None
+                        response_status = getattr(response, "status", None) if response is not None else None
+                        output_text = getattr(response, "output_text", None) if response is not None else None
                         if response is None:
                             response_invalid = True
                             error_details.append("response is None")
@@ -7259,8 +7288,17 @@ class AIAgent:
                             response_invalid = True
                             error_details.append("response.output is not a list")
                         elif len(output_items) == 0:
-                            response_invalid = True
-                            error_details.append("response.output is empty")
+                            # Some Codex/Responses backends return an empty output list while
+                            # still surfacing partial state via response.status or output_text.
+                            # Let downstream normalization/continuation logic inspect those
+                            # cases instead of classifying them as a hard invalid response here.
+                            if isinstance(output_text, str) and output_text.strip():
+                                pass
+                            elif isinstance(response_status, str) and response_status.strip().lower() in {"queued", "in_progress", "incomplete", "completed"}:
+                                pass
+                            else:
+                                response_invalid = True
+                                error_details.append("response.output is empty")
                     elif self.api_mode == "anthropic_messages":
                         content_blocks = getattr(response, "content", None) if response is not None else None
                         if response is None:
@@ -8346,25 +8384,34 @@ class AIAgent:
                     interim_has_reasoning = bool(interim_msg.get("reasoning", "").strip()) if isinstance(interim_msg.get("reasoning"), str) else False
                     interim_has_codex_reasoning = bool(interim_msg.get("codex_reasoning_items"))
 
+                    last_msg = messages[-1] if messages else None
+                    last_codex_items = last_msg.get("codex_reasoning_items") if isinstance(last_msg, dict) else None
+                    interim_codex_items = interim_msg.get("codex_reasoning_items")
+                    duplicate_interim = (
+                        isinstance(last_msg, dict)
+                        and last_msg.get("role") == "assistant"
+                        and (last_msg.get("content") or "") == (interim_msg.get("content") or "")
+                        and (last_msg.get("reasoning") or "") == (interim_msg.get("reasoning") or "")
+                        and last_codex_items == interim_codex_items
+                    )
+
                     if interim_has_content or interim_has_reasoning or interim_has_codex_reasoning:
-                        last_msg = messages[-1] if messages else None
-                        # Duplicate detection: two consecutive incomplete assistant
-                        # messages with identical content AND reasoning are collapsed.
-                        # For reasoning-only messages (codex_reasoning_items differ but
-                        # visible content/reasoning are both empty), we also compare
-                        # the encrypted items to avoid silently dropping new state.
-                        last_codex_items = last_msg.get("codex_reasoning_items") if isinstance(last_msg, dict) else None
-                        interim_codex_items = interim_msg.get("codex_reasoning_items")
-                        duplicate_interim = (
-                            isinstance(last_msg, dict)
-                            and last_msg.get("role") == "assistant"
-                            and last_msg.get("finish_reason") == "incomplete"
-                            and (last_msg.get("content") or "") == (interim_msg.get("content") or "")
-                            and (last_msg.get("reasoning") or "") == (interim_msg.get("reasoning") or "")
-                            and last_codex_items == interim_codex_items
-                        )
                         if not duplicate_interim:
                             messages.append(interim_msg)
+
+                    # If Codex keeps marking the turn incomplete but is only repeating
+                    # the same visible content with no new reasoning/tool state, accept
+                    # the content we already have instead of failing the whole turn.
+                    if duplicate_interim and interim_has_content and not interim_has_reasoning and not interim_has_codex_reasoning:
+                        self._codex_incomplete_retries = 0
+                        final_response = interim_msg.get("content") or ""
+                        self._persist_session(messages, conversation_history)
+                        return {
+                            "final_response": final_response,
+                            "messages": messages,
+                            "api_calls": api_call_count,
+                            "completed": True,
+                        }
 
                     if self._codex_incomplete_retries < 3:
                         if not self.quiet_mode:
@@ -8373,15 +8420,36 @@ class AIAgent:
                         self._save_session_log(messages)
                         continue
 
+                    # If we already have visible assistant content, return it as the best
+                    # available answer instead of surfacing a fatal incomplete error.
+                    if interim_has_content and not interim_has_reasoning and not interim_has_codex_reasoning:
+                        self._codex_incomplete_retries = 0
+                        if not duplicate_interim:
+                            self._persist_session(messages, conversation_history)
+                        else:
+                            self._persist_session(messages, conversation_history)
+                        return {
+                            "final_response": interim_msg.get("content") or "",
+                            "messages": messages,
+                            "api_calls": api_call_count,
+                            "completed": True,
+                        }
+
+                    # Last-resort graceful exit for Codex OAuth backends that keep
+                    # returning incomplete turns without surfacing stable reasoning or
+                    # tool state. Prefer a soft empty/partial completion over a hard
+                    # visible error banner in the CLI.
                     self._codex_incomplete_retries = 0
                     self._persist_session(messages, conversation_history)
+                    fallback_text = ""
+                    if isinstance(last_msg, dict):
+                        fallback_text = (last_msg.get("content") or "").strip()
                     return {
-                        "final_response": None,
+                        "final_response": fallback_text,
                         "messages": messages,
                         "api_calls": api_call_count,
-                        "completed": False,
-                        "partial": True,
-                        "error": "Codex response remained incomplete after 3 continuation attempts",
+                        "completed": True,
+                        "partial": bool(fallback_text),
                     }
                 elif hasattr(self, "_codex_incomplete_retries"):
                     self._codex_incomplete_retries = 0

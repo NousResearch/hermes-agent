@@ -41,12 +41,22 @@ def _ensure_discord_mock():
             self.callback = callback
             self.parent = parent
 
+    def _fake_app_command(**cmd_kwargs):
+        """Simulate @discord.app_commands.command(name=..., description=...)"""
+        def decorator(fn):
+            fn.name = cmd_kwargs.get("name", fn.__name__)
+            fn.description = cmd_kwargs.get("description", "")
+            fn.autocomplete = lambda param_name: lambda acfn: acfn
+            return fn
+        return decorator
+
     discord_mod.app_commands = SimpleNamespace(
         describe=lambda **kwargs: (lambda fn: fn),
         choices=lambda **kwargs: (lambda fn: fn),
         Choice=lambda **kwargs: SimpleNamespace(**kwargs),
         Group=_FakeGroup,
         Command=_FakeCommand,
+        command=_fake_app_command,
     )
 
     ext_mod = MagicMock()
@@ -599,76 +609,89 @@ def test_discord_auto_thread_config_bridge(monkeypatch, tmp_path):
 
 
 # ------------------------------------------------------------------
-# /skill group registration
+# /skill autocomplete registration
 # ------------------------------------------------------------------
 
 
-def test_register_skill_group_creates_group(adapter):
-    """_register_skill_group should register a '/skill' Group on the tree."""
-    mock_categories = {
-        "creative": [
-            ("ascii-art", "Generate ASCII art", "/ascii-art"),
-            ("excalidraw", "Hand-drawn diagrams", "/excalidraw"),
-        ],
-        "media": [
-            ("gif-search", "Search for GIFs", "/gif-search"),
-        ],
-    }
-    mock_uncategorized = [
-        ("dogfood", "Exploratory QA testing", "/dogfood"),
-    ]
-
+def test_register_skill_autocomplete_creates_command(adapter):
+    """/skill should be registered as a simple command with autocomplete."""
     with patch(
-        "hermes_cli.commands.discord_skill_commands_by_category",
-        return_value=(mock_categories, mock_uncategorized, 0),
+        "agent.skill_commands.get_skill_commands",
+        return_value={
+            "/ascii-art": {"category": "creative", "description": "Generate ASCII art"},
+            "/gif-search": {"category": "media", "description": "Search for GIFs"},
+        },
     ):
         adapter._register_slash_commands()
 
     tree = adapter._client.tree
-    assert "skill" in tree.commands, "Expected /skill group to be registered"
-    skill_group = tree.commands["skill"]
-    assert skill_group.name == "skill"
-    # Should have 2 category subgroups + 1 uncategorized subcommand
-    children = skill_group._children
-    assert "creative" in children
-    assert "media" in children
-    assert "dogfood" in children
-    # Category groups should have their skills
-    assert "ascii-art" in children["creative"]._children
-    assert "excalidraw" in children["creative"]._children
-    assert "gif-search" in children["media"]._children
+    assert "skill" in tree.commands, "Expected /skill to be registered"
+    skill_cmd = tree.commands["skill"]
+    assert skill_cmd.name == "skill"
+    # Should be a plain Command (function), not a Group
+    assert not hasattr(skill_cmd, '_children')
 
 
-def test_register_skill_group_empty_skills_no_group(adapter):
-    """No /skill group should be added when there are zero skills."""
+def test_register_skill_autocomplete_empty_skills(adapter):
+    """/skill should still be registered even with no skills (autocomplete returns empty)."""
     with patch(
-        "hermes_cli.commands.discord_skill_commands_by_category",
-        return_value=({}, [], 0),
+        "agent.skill_commands.get_skill_commands",
+        return_value={},
     ):
         adapter._register_slash_commands()
 
     tree = adapter._client.tree
-    assert "skill" not in tree.commands
+    # The command is registered regardless — it just returns no autocomplete results
+    assert "skill" in tree.commands
 
 
-def test_register_skill_group_handler_dispatches_command(adapter):
-    """Skill subcommand handlers should dispatch the correct /cmd-key text."""
-    mock_categories = {
-        "media": [
-            ("gif-search", "Search for GIFs", "/gif-search"),
-        ],
+def test_skill_autocomplete_choices_filters():
+    """_skill_autocomplete_choices should filter by substring match."""
+    from gateway.platforms.discord import _skill_autocomplete_choices
+
+    mock_skills = {
+        "/ascii-art": {"category": "creative", "description": "Generate ASCII art"},
+        "/gif-search": {"category": "media", "description": "Search for GIFs"},
+        "/excalidraw": {"category": "creative", "description": "Hand-drawn diagrams"},
     }
+    with patch("agent.skill_commands.get_skill_commands", return_value=mock_skills):
+        # Filter by name
+        results = _skill_autocomplete_choices("ascii")
+        assert len(results) == 1
+        assert results[0].value == "/ascii-art"
 
-    with patch(
-        "hermes_cli.commands.discord_skill_commands_by_category",
-        return_value=(mock_categories, [], 0),
-    ):
-        adapter._register_slash_commands()
+        # Filter by category
+        results = _skill_autocomplete_choices("creative")
+        assert len(results) == 2
 
-    skill_group = adapter._client.tree.commands["skill"]
-    media_group = skill_group._children["media"]
-    gif_cmd = media_group._children["gif-search"]
-    assert gif_cmd.callback is not None
-    # The callback name should reflect the skill
-    assert "gif_search" in gif_cmd.callback.__name__
+        # Filter by description
+        results = _skill_autocomplete_choices("GIF")
+        assert len(results) == 1
+        assert results[0].value == "/gif-search"
+
+        # Empty query returns all
+        results = _skill_autocomplete_choices("")
+        assert len(results) == 3
+
+
+def test_skill_autocomplete_choices_caps_at_25():
+    """_skill_autocomplete_choices should return at most 25 results."""
+    from gateway.platforms.discord import _skill_autocomplete_choices
+
+    mock_skills = {
+        f"/skill-{i}": {"category": "test", "description": f"Skill {i}"}
+        for i in range(50)
+    }
+    with patch("agent.skill_commands.get_skill_commands", return_value=mock_skills):
+        results = _skill_autocomplete_choices("")
+        assert len(results) == 25
+
+
+def test_skill_autocomplete_choices_empty_skills():
+    """_skill_autocomplete_choices should handle empty skill list."""
+    from gateway.platforms.discord import _skill_autocomplete_choices
+
+    with patch("agent.skill_commands.get_skill_commands", return_value={}):
+        results = _skill_autocomplete_choices("anything")
+        assert results == []
 

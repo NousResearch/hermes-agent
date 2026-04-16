@@ -5869,9 +5869,19 @@ class AIAgent:
             fb_base_url_hint = (fb.get("base_url") or "").strip() or None
             fb_api_key_hint = (fb.get("api_key") or "").strip() or None
             # Resolve api_key_env when no literal api_key is provided.
+            # Fail fast: if api_key_env is set but the variable is missing, skip
+            # this entry rather than leaking an unrelated key to the endpoint.
             fb_api_key_env = str(fb.get("api_key_env") or "").strip() or None
             if not fb_api_key_hint and fb_api_key_env:
                 fb_api_key_hint = os.getenv(fb_api_key_env) or None
+                if not fb_api_key_hint:
+                    logging.warning(
+                        "fallback_model.api_key_env '%s' is set but the "
+                        "environment variable is not set or empty; "
+                        "skipping this fallback entry",
+                        fb_api_key_env,
+                    )
+                    return self._try_activate_fallback()
             # For Ollama Cloud endpoints, pull OLLAMA_API_KEY from env
             # when no explicit key is in the fallback config.
             if fb_base_url_hint and "ollama.com" in fb_base_url_hint.lower() and not fb_api_key_hint:

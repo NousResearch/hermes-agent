@@ -271,6 +271,22 @@ class TestTryActivateFallback:
                 explicit_api_key="explicit-key",
             )
 
+    def test_api_key_env_skips_fallback_when_env_var_missing(self):
+        """When api_key_env is set but the env var is absent, fallback is skipped."""
+        agent = _make_agent(
+            fallback_model={
+                "provider": "custom",
+                "model": "my-model",
+                "base_url": "http://localhost:8080/v1",
+                "api_key_env": "NONEXISTENT_FALLBACK_KEY",
+            },
+        )
+        env_without_key = {k: v for k, v in os.environ.items() if k != "NONEXISTENT_FALLBACK_KEY"}
+        with patch.dict(os.environ, env_without_key, clear=True):
+            result = agent._try_activate_fallback()
+        assert result is False
+        assert agent._fallback_activated is False
+
     def test_prompt_caching_enabled_for_claude_on_openrouter(self):
         agent = _make_agent(
             fallback_model={"provider": "openrouter", "model": "anthropic/claude-sonnet-4"},

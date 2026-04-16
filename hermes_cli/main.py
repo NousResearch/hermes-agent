@@ -3814,6 +3814,63 @@ def _load_installable_optional_extras() -> list[str]:
     return referenced
 
 
+def _warn_about_missing_configured_optional_deps(
+    failed_extras: list[str],
+    install_cmd_prefix: list[str],
+) -> None:
+    """Warn when update fallback leaves configured optional deps unavailable."""
+    if not failed_extras:
+        return
+
+    try:
+        import importlib.util
+        import shlex
+        from gateway.config import Platform, load_gateway_config
+    except Exception:
+        return
+
+    failed = set(failed_extras)
+    platform_checks = {
+        Platform.TELEGRAM: ({"messaging"}, "messaging", "telegram", "python-telegram-bot"),
+        Platform.DISCORD: ({"messaging"}, "messaging", "discord", "discord.py"),
+        Platform.SLACK: ({"messaging", "slack"}, "slack", "slack_bolt", "slack-bolt"),
+        Platform.MATRIX: ({"matrix"}, "matrix", "mautrix", "mautrix"),
+        Platform.DINGTALK: ({"dingtalk"}, "dingtalk", "dingtalk_stream", "dingtalk-stream"),
+        Platform.FEISHU: ({"feishu"}, "feishu", "lark_oapi", "lark-oapi"),
+    }
+
+    try:
+        configured_platforms = load_gateway_config().get_connected_platforms()
+    except Exception:
+        return
+
+    warnings: list[tuple[str, str, str]] = []
+    for platform in configured_platforms:
+        check = platform_checks.get(platform)
+        if not check:
+            continue
+        relevant_extras, preferred_extra, module_name, package_name = check
+        if failed.isdisjoint(relevant_extras):
+            continue
+        if importlib.util.find_spec(module_name) is not None:
+            continue
+        reinstall_cmd = " ".join(
+            shlex.quote(part)
+            for part in install_cmd_prefix + ["install", "-e", f".[{preferred_extra}]"]
+        )
+        warnings.append((platform.value, package_name, reinstall_cmd))
+
+    if not warnings:
+        return
+
+    print("  ⚠ Configured gateway dependencies are still missing after the update:")
+    for platform_name, package_name, reinstall_cmd in warnings:
+        print(
+            f"    - {platform_name} is configured, but `{package_name}` is still unavailable. "
+            "Restarting the gateway now may fail."
+        )
+        print(f"      Reinstall with: {reinstall_cmd}")
+
 
 def _install_python_dependencies_with_optional_fallback(
     install_cmd_prefix: list[str],
@@ -3857,6 +3914,7 @@ def _install_python_dependencies_with_optional_fallback(
         print(f"  ✓ Reinstalled optional extras individually: {', '.join(installed_extras)}")
     if failed_extras:
         print(f"  ⚠ Skipped optional extras that still failed: {', '.join(failed_extras)}")
+        _warn_about_missing_configured_optional_deps(failed_extras, install_cmd_prefix)
 
 
 def cmd_update(args):

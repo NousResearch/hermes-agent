@@ -1,3 +1,4 @@
+import importlib.util
 from pathlib import Path
 from subprocess import CalledProcessError
 from types import SimpleNamespace
@@ -351,6 +352,53 @@ def test_cmd_update_retries_optional_extras_individually_when_all_fails(monkeypa
     assert "retrying extras individually" in out
     assert "Reinstalled optional extras individually: mcp" in out
     assert "Skipped optional extras that still failed: matrix" in out
+
+
+def test_cmd_update_warns_when_configured_gateway_extra_is_still_missing(monkeypatch, tmp_path, capsys):
+    _setup_update_mocks(monkeypatch, tmp_path)
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+    monkeypatch.setattr(hermes_main, "_load_installable_optional_extras", lambda: ["feishu", "mcp"])
+    monkeypatch.setenv("FEISHU_APP_ID", "cli_xxx")
+    monkeypatch.setenv("FEISHU_APP_SECRET", "secret_xxx")
+
+    real_find_spec = importlib.util.find_spec
+
+    def fake_find_spec(name, *args, **kwargs):
+        if name == "lark_oapi":
+            return None
+        return real_find_spec(name, *args, **kwargs)
+
+    monkeypatch.setattr(importlib.util, "find_spec", fake_find_spec)
+
+    def fake_run(cmd, **kwargs):
+        if cmd == ["git", "fetch", "origin"]:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if cmd == ["git", "rev-parse", "--abbrev-ref", "HEAD"]:
+            return SimpleNamespace(stdout="main\n", stderr="", returncode=0)
+        if cmd == ["git", "rev-list", "HEAD..origin/main", "--count"]:
+            return SimpleNamespace(stdout="1\n", stderr="", returncode=0)
+        if cmd == ["git", "pull", "origin", "main"]:
+            return SimpleNamespace(stdout="Updating\n", stderr="", returncode=0)
+        if cmd == ["/usr/bin/uv", "pip", "install", "-e", ".[all]", "--quiet"]:
+            raise CalledProcessError(returncode=1, cmd=cmd)
+        if cmd == ["/usr/bin/uv", "pip", "install", "-e", ".", "--quiet"]:
+            return SimpleNamespace(returncode=0)
+        if cmd == ["/usr/bin/uv", "pip", "install", "-e", ".[feishu]", "--quiet"]:
+            raise CalledProcessError(returncode=1, cmd=cmd)
+        if cmd == ["/usr/bin/uv", "pip", "install", "-e", ".[mcp]", "--quiet"]:
+            return SimpleNamespace(returncode=0)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
+
+    hermes_main.cmd_update(SimpleNamespace())
+
+    out = capsys.readouterr().out
+    assert "Configured gateway dependencies are still missing after the update" in out
+    assert "feishu is configured" in out
+    assert "lark-oapi" in out
+    assert "Restarting the gateway now may fail" in out
+    assert ".[feishu]" in out
 
 
 def test_cmd_update_succeeds_with_extras(monkeypatch, tmp_path):

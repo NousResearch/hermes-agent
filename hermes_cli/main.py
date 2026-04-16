@@ -3869,10 +3869,15 @@ def cmd_update(args):
         return
 
     gateway_mode = getattr(args, "gateway", False)
+    check_mode = getattr(args, "check", False)
+    
     # In gateway mode, use file-based IPC for prompts instead of stdin
     gw_input_fn = (lambda prompt, default="": _gateway_prompt(prompt, default)) if gateway_mode else None
     
-    print("⚕ Updating Hermes Agent...")
+    if check_mode:
+        print("🔍 Checking for updates...")
+    else:
+        print("⚕ Updating Hermes Agent...")
     print()
     
     # Try git-based update first, fall back to ZIP download on Windows
@@ -3905,19 +3910,22 @@ def cmd_update(args):
     origin_url = _get_origin_url(git_cmd, PROJECT_ROOT)
     is_fork = _is_fork(origin_url)
 
-    if is_fork:
+    if is_fork and not check_mode:
         print("⚠ Updating from fork:")
         print(f"  {origin_url}")
         print()
 
     if use_zip_update:
         # ZIP-based update for Windows when git is broken
-        _update_via_zip(args)
+        if check_mode:
+            print("✓ ZIP-based install — cannot check for updates")
+            print("  Visit https://github.com/NousResearch/hermes-agent/releases for updates")
+        else:
+            _update_via_zip(args)
         return
 
-    # Fetch and pull
+    # Fetch and check for updates
     try:
-
         print("→ Fetching updates...")
         fetch_result = subprocess.run(
             git_cmd + ["fetch", "origin"],
@@ -3951,6 +3959,41 @@ def cmd_update(args):
         # Always update against main
         branch = "main"
 
+        # Check if there are updates
+        result = subprocess.run(
+            git_cmd + ["rev-list", f"HEAD..origin/{branch}", "--count"],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        commit_count = int(result.stdout.strip())
+
+        if commit_count == 0:
+            _invalidate_update_cache()
+            print("✓ Already up to date!")
+            return
+
+        # In check mode, just report and exit
+        if check_mode:
+            print(f"→ {commit_count} new commit(s) available")
+            print()
+            # Show latest commit info
+            result = subprocess.run(
+                git_cmd + ["log", "HEAD..origin/main", "--oneline", "-5"],
+                cwd=PROJECT_ROOT,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            if result.stdout.strip():
+                print("Latest commits:")
+                for line in result.stdout.strip().split("\n"):
+                    print(f"  {line}")
+            print()
+            print("Run 'hermes update' to install these updates")
+            return
+
         # If user is on a non-main branch or detached HEAD, switch to main
         if current_branch != "main":
             label = "detached HEAD" if current_branch == "HEAD" else f"branch '{current_branch}'"
@@ -3970,33 +4013,6 @@ def cmd_update(args):
         prompt_for_restore = auto_stash_ref is not None and (
             gateway_mode or (sys.stdin.isatty() and sys.stdout.isatty())
         )
-
-        # Check if there are updates
-        result = subprocess.run(
-            git_cmd + ["rev-list", f"HEAD..origin/{branch}", "--count"],
-            cwd=PROJECT_ROOT,
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        commit_count = int(result.stdout.strip())
-
-        if commit_count == 0:
-            _invalidate_update_cache()
-            # Restore stash and switch back to original branch if we moved
-            if auto_stash_ref is not None:
-                _restore_stashed_changes(
-                    git_cmd, PROJECT_ROOT, auto_stash_ref,
-                    prompt_user=prompt_for_restore,
-                    input_fn=gw_input_fn,
-                )
-            if current_branch not in ("main", "HEAD"):
-                subprocess.run(
-                    git_cmd + ["checkout", current_branch],
-                    cwd=PROJECT_ROOT, capture_output=True, text=True, check=False,
-                )
-            print("✓ Already up to date!")
-            return
 
         print(f"→ Found {commit_count} new commit(s)")
 
@@ -6102,6 +6118,10 @@ Examples:
     update_parser.add_argument(
         "--gateway", action="store_true", default=False,
         help="Gateway mode: use file-based IPC for prompts instead of stdin (used internally by /update)"
+    )
+    update_parser.add_argument(
+        "--check", action="store_true", default=False,
+        help="Check for updates without installing them"
     )
     update_parser.set_defaults(func=cmd_update)
     

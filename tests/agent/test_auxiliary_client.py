@@ -822,6 +822,31 @@ class TestAuxiliaryPoolAwareness:
         assert client is not None
         assert provider == "custom:local"
 
+    def test_codex_main_provider_is_not_reported_as_a_vision_backend(self, monkeypatch):
+        with (
+            patch("agent.auxiliary_client._read_nous_auth", return_value=None),
+            patch("agent.auxiliary_client._read_main_provider", return_value="openai-codex"),
+            patch("agent.auxiliary_client._read_main_model", return_value="gpt-5.4"),
+            patch("agent.auxiliary_client._read_codex_access_token", return_value="codex-token"),
+        ):
+            backends = get_available_vision_backends()
+
+        assert "openai-codex" not in backends
+
+    def test_vision_auto_skips_codex_main_provider_without_other_backends(self, monkeypatch):
+        with (
+            patch("agent.auxiliary_client._read_nous_auth", return_value=None),
+            patch("agent.auxiliary_client._read_main_provider", return_value="openai-codex"),
+            patch("agent.auxiliary_client._read_main_model", return_value="gpt-5.4"),
+            patch("agent.auxiliary_client._read_codex_access_token", return_value="codex-token"),
+            patch("agent.auxiliary_client._strict_vision_backend_available", return_value=False),
+        ):
+            provider, client, model = resolve_vision_provider_client()
+
+        assert provider is None
+        assert client is None
+        assert model is None
+
     def test_vision_config_google_provider_uses_gemini_credentials(self, monkeypatch):
         config = {
             "auxiliary": {

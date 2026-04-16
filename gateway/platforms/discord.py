@@ -11,6 +11,7 @@ Uses discord.py library for:
 
 import asyncio
 import logging
+import mimetypes
 import os
 import struct
 import subprocess
@@ -78,6 +79,25 @@ def _clean_discord_id(entry: str) -> str:
 def check_discord_requirements() -> bool:
     """Check if Discord dependencies are available."""
     return DISCORD_AVAILABLE
+
+
+def _infer_attachment_content_type(attachment: Any) -> str:
+    """Best-effort MIME inference for Discord attachments.
+
+    Discord attachment.content_type is often missing for some uploads/pastes,
+    especially images dragged in from clients. Fall back to filename-based MIME
+    guessing so image/audio/video attachments still reach the right tool path.
+    """
+    content_type = str(getattr(attachment, "content_type", "") or "").strip().lower()
+    if content_type:
+        return content_type
+
+    filename = str(getattr(attachment, "filename", "") or "").strip()
+    if not filename:
+        return "application/octet-stream"
+
+    guessed, _ = mimetypes.guess_type(filename)
+    return (guessed or "application/octet-stream").lower()
 
 
 class VoiceReceiver:
@@ -2315,21 +2335,21 @@ class DiscordAdapter(BasePlatformAdapter):
         elif message.attachments:
             # Check attachment types
             for att in message.attachments:
-                if att.content_type:
-                    if att.content_type.startswith("image/"):
-                        msg_type = MessageType.PHOTO
-                    elif att.content_type.startswith("video/"):
-                        msg_type = MessageType.VIDEO
-                    elif att.content_type.startswith("audio/"):
-                        msg_type = MessageType.AUDIO
-                    else:
-                        doc_ext = ""
-                        if att.filename:
-                            _, doc_ext = os.path.splitext(att.filename)
-                            doc_ext = doc_ext.lower()
-                        if doc_ext in SUPPORTED_DOCUMENT_TYPES:
-                            msg_type = MessageType.DOCUMENT
-                    break
+                content_type = _infer_attachment_content_type(att)
+                if content_type.startswith("image/"):
+                    msg_type = MessageType.PHOTO
+                elif content_type.startswith("video/"):
+                    msg_type = MessageType.VIDEO
+                elif content_type.startswith("audio/"):
+                    msg_type = MessageType.AUDIO
+                else:
+                    doc_ext = ""
+                    if att.filename:
+                        _, doc_ext = os.path.splitext(att.filename)
+                        doc_ext = doc_ext.lower()
+                    if doc_ext in SUPPORTED_DOCUMENT_TYPES:
+                        msg_type = MessageType.DOCUMENT
+                break
 
         # When auto-threading kicked in, route responses to the new thread
         effective_channel = auto_threaded_channel or message.channel
@@ -2369,7 +2389,7 @@ class DiscordAdapter(BasePlatformAdapter):
         media_types = []
         pending_text_injection: Optional[str] = None
         for att in message.attachments:
-            content_type = att.content_type or "unknown"
+            content_type = _infer_attachment_content_type(att)
             if content_type.startswith("image/"):
                 try:
                     # Determine extension from content type (image/png -> .png)

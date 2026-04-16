@@ -383,3 +383,38 @@ class TestIncomingDocumentHandling:
         assert event.message_type == MessageType.PHOTO
         assert event.media_urls == ["/tmp/cached_image.png"]
         assert event.media_types == ["image/png"]
+
+    @pytest.mark.asyncio
+    async def test_image_attachment_without_content_type_uses_filename_fallback(self, adapter):
+        """Discord sometimes omits content_type for pasted uploads; infer from filename."""
+        with patch(
+            "gateway.platforms.discord.cache_image_from_url",
+            new_callable=AsyncMock,
+            return_value="/tmp/cached_inferred_image.png",
+        ):
+            msg = make_message([
+                make_attachment(filename="photo.png", content_type=None)
+            ])
+            await adapter._handle_message(msg)
+
+        event = adapter.handle_message.call_args[0][0]
+        assert event.message_type == MessageType.PHOTO
+        assert event.media_urls == ["/tmp/cached_inferred_image.png"]
+        assert event.media_types == ["image/png"]
+
+    @pytest.mark.asyncio
+    async def test_jpeg_attachment_without_content_type_uses_filename_fallback(self, adapter):
+        with patch(
+            "gateway.platforms.discord.cache_image_from_url",
+            new_callable=AsyncMock,
+            return_value="/tmp/cached_inferred_photo.jpg",
+        ):
+            msg = make_message([
+                make_attachment(filename="camera-shot.jpeg", content_type=None)
+            ])
+            await adapter._handle_message(msg)
+
+        event = adapter.handle_message.call_args[0][0]
+        assert event.message_type == MessageType.PHOTO
+        assert event.media_urls == ["/tmp/cached_inferred_photo.jpg"]
+        assert event.media_types == ["image/jpeg"]

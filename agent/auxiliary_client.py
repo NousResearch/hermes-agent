@@ -1665,7 +1665,12 @@ def _resolve_strict_vision_backend(provider: str) -> Tuple[Optional[Any], Option
     if provider == "nous":
         return _try_nous(vision=True)
     if provider == "openai-codex":
-        return _try_codex()
+        # ChatGPT-backed Codex OAuth accounts currently reject multimodal vision
+        # models entirely on the backend-api/codex surface, so treating Codex as
+        # a vision backend produces false-positive tool availability and runtime
+        # failures. Keep Codex for text auxiliary tasks, but disable it for
+        # vision until that backend exposes a supported multimodal model.
+        return None, None
     if provider == "anthropic":
         return _try_anthropic()
     if provider == "custom":
@@ -1687,11 +1692,12 @@ def get_available_vision_backends() -> List[str]:
     available: List[str] = []
     # 1. Active provider — if the user configured a provider, try it first.
     main_provider = _read_main_provider()
-    if main_provider and main_provider not in ("auto", ""):
-        if main_provider in _VISION_AUTO_PROVIDER_ORDER:
-            if _strict_vision_backend_available(main_provider):
-                available.append(main_provider)
-        else:
+    normalized_main_provider = _normalize_vision_provider(main_provider)
+    if normalized_main_provider and normalized_main_provider not in ("auto", ""):
+        if normalized_main_provider in _VISION_AUTO_PROVIDER_ORDER:
+            if _strict_vision_backend_available(normalized_main_provider):
+                available.append(normalized_main_provider)
+        elif normalized_main_provider != "openai-codex":
             client, _ = resolve_provider_client(main_provider, _read_main_model())
             if client is not None:
                 available.append(main_provider)
@@ -1751,17 +1757,18 @@ def resolve_vision_provider_client(
         #   3. Nous Portal (known vision-capable default model)
         #   4. Stop
         main_provider = _read_main_provider()
+        normalized_main_provider = _normalize_vision_provider(main_provider)
         main_model = _read_main_model()
-        if main_provider and main_provider not in ("auto", ""):
-            if main_provider in _VISION_AUTO_PROVIDER_ORDER:
+        if normalized_main_provider and normalized_main_provider not in ("auto", ""):
+            if normalized_main_provider in _VISION_AUTO_PROVIDER_ORDER:
                 # Known strict backend — use its defaults.
-                sync_client, default_model = _resolve_strict_vision_backend(main_provider)
+                sync_client, default_model = _resolve_strict_vision_backend(normalized_main_provider)
                 if sync_client is not None:
-                    return _finalize(main_provider, sync_client, default_model)
-            else:
+                    return _finalize(normalized_main_provider, sync_client, default_model)
+            elif normalized_main_provider != "openai-codex":
                 # Exotic provider (DeepSeek, Alibaba, Xiaomi, named custom, etc.)
                 # Use provider-specific vision model if available, otherwise main model.
-                vision_model = _PROVIDER_VISION_MODELS.get(main_provider, main_model)
+                vision_model = _PROVIDER_VISION_MODELS.get(normalized_main_provider, main_model)
                 rpc_client, rpc_model = resolve_provider_client(
                     main_provider, vision_model,
                     api_mode=resolved_api_mode)
@@ -1783,6 +1790,9 @@ def resolve_vision_provider_client(
 
         logger.debug("Auxiliary vision client: none available")
         return None, None, None
+
+    if requested == "openai-codex":
+        return requested, None, None
 
     if requested in _VISION_AUTO_PROVIDER_ORDER:
         sync_client, default_model = _resolve_strict_vision_backend(requested)

@@ -223,6 +223,19 @@ def test_setup_gateway_in_container_shows_docker_guidance(monkeypatch, capsys):
     assert "restart" in out.lower()
 
 
+def test_setup_wecom_callback_delegates_to_gateway_helper(monkeypatch):
+    """WeCom callback setup wrapper should import and call the gateway helper."""
+    called = []
+
+    import hermes_cli.gateway as gateway_mod
+
+    monkeypatch.setattr(gateway_mod, "_setup_wecom_callback", lambda: called.append(True))
+
+    setup_mod._setup_wecom_callback()
+
+    assert called == [True]
+
+
 def test_setup_syncs_custom_provider_removal_from_disk(tmp_path, monkeypatch):
     """Removing the last custom provider in model setup should persist."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))

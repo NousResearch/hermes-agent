@@ -685,7 +685,7 @@ class AIAgent:
         self.provider = provider_name or ""
         self.acp_command = acp_command or command
         self.acp_args = list(acp_args or args or [])
-        if api_mode in {"chat_completions", "codex_responses", "anthropic_messages"}:
+        if api_mode in {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse"}:
             self.api_mode = api_mode
         elif self.provider == "openai-codex":
             self.api_mode = "codex_responses"
@@ -700,6 +700,9 @@ class AIAgent:
             # use a URL convention ending in /anthropic. Auto-detect these so the
             # Anthropic Messages API adapter is used instead of chat completions.
             self.api_mode = "anthropic_messages"
+        elif self.provider == "bedrock" or "bedrock-runtime" in self._base_url_lower:
+            # AWS Bedrock — auto-detect from provider name or base URL.
+            self.api_mode = "bedrock_converse"
         else:
             self.api_mode = "chat_completions"
 
@@ -721,8 +724,11 @@ class AIAgent:
         # Responses there. ACP runtimes are excluded: CopilotACPClient
         # handles its own routing and does not implement the Responses API
         # surface.
+        # When api_mode was explicitly provided, respect it — the user
+        # knows what their endpoint supports (#10473).
         if (
-            self.api_mode == "chat_completions"
+            api_mode is None
+            and self.api_mode == "chat_completions"
             and self.provider != "copilot-acp"
             and not str(self.base_url or "").lower().startswith("acp://copilot")
             and not str(self.base_url or "").lower().startswith("acp+tcp://")
@@ -889,24 +895,70 @@ class AIAgent:
 
         if self.api_mode == "anthropic_messages":
             from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token
-            # Only fall back to ANTHROPIC_TOKEN when the provider is actually Anthropic.
-            # Other anthropic_messages providers (MiniMax, Alibaba, etc.) must use their own API key.
-            # Falling back would send Anthropic credentials to third-party endpoints (Fixes #1739, #minimax-401).
-            _is_native_anthropic = self.provider == "anthropic"
-            effective_key = (api_key or resolve_anthropic_token() or "") if _is_native_anthropic else (api_key or "")
-            self.api_key = effective_key
-            self._anthropic_api_key = effective_key
-            self._anthropic_base_url = base_url
-            from agent.anthropic_adapter import _is_oauth_token as _is_oat
-            self._is_anthropic_oauth = _is_oat(effective_key)
-            self._anthropic_client = build_anthropic_client(effective_key, base_url)
-            # No OpenAI client needed for Anthropic mode
+            # Bedrock + Claude → use AnthropicBedrock SDK for full feature parity
+            # (prompt caching, thinking budgets, adaptive thinking).
+            _is_bedrock_anthropic = self.provider == "bedrock"
+            if _is_bedrock_anthropic:
+                from agent.anthropic_adapter import build_anthropic_bedrock_client
+                import re as _re
+                _region_match = _re.search(r"bedrock-runtime\.([a-z0-9-]+)\.", base_url or "")
+                _br_region = _region_match.group(1) if _region_match else "us-east-1"
+                self._bedrock_region = _br_region
+                self._anthropic_client = build_anthropic_bedrock_client(_br_region)
+                self._anthropic_api_key = "aws-sdk"
+                self._anthropic_base_url = base_url
+                self._is_anthropic_oauth = False
+                self.api_key = "aws-sdk"
+                self.client = None
+                self._client_kwargs = {}
+                if not self.quiet_mode:
+                    print(f"🤖 AI Agent initialized with model: {self.model} (AWS Bedrock + AnthropicBedrock SDK, {_br_region})")
+            else:
+                # Only fall back to ANTHROPIC_TOKEN when the provider is actually Anthropic.
+                # Other anthropic_messages providers (MiniMax, Alibaba, etc.) must use their own API key.
+                # Falling back would send Anthropic credentials to third-party endpoints (Fixes #1739, #minimax-401).
+                _is_native_anthropic = self.provider == "anthropic"
+                effective_key = (api_key or resolve_anthropic_token() or "") if _is_native_anthropic else (api_key or "")
+                self.api_key = effective_key
+                self._anthropic_api_key = effective_key
+                self._anthropic_base_url = base_url
+                from agent.anthropic_adapter import _is_oauth_token as _is_oat
+                self._is_anthropic_oauth = _is_oat(effective_key)
+                self._anthropic_client = build_anthropic_client(effective_key, base_url)
+                # No OpenAI client needed for Anthropic mode
+                self.client = None
+                self._client_kwargs = {}
+                if not self.quiet_mode:
+                    print(f"🤖 AI Agent initialized with model: {self.model} (Anthropic native)")
+                    if effective_key and len(effective_key) > 12:
+                        print(f"🔑 Using token: {effective_key[:8]}...{effective_key[-4:]}")
+        elif self.api_mode == "bedrock_converse":
+            # AWS Bedrock — uses boto3 directly, no OpenAI client needed.
+            # Region is extracted from the base_url or defaults to us-east-1.
+            import re as _re
+            _region_match = _re.search(r"bedrock-runtime\.([a-z0-9-]+)\.", base_url or "")
+            self._bedrock_region = _region_match.group(1) if _region_match else "us-east-1"
+            # Guardrail config — read from config.yaml at init time.
+            self._bedrock_guardrail_config = None
+            try:
+                from hermes_cli.config import load_config as _load_br_cfg
+                _gr = _load_br_cfg().get("bedrock", {}).get("guardrail", {})
+                if _gr.get("guardrail_identifier") and _gr.get("guardrail_version"):
+                    self._bedrock_guardrail_config = {
+                        "guardrailIdentifier": _gr["guardrail_identifier"],
+                        "guardrailVersion": _gr["guardrail_version"],
+                    }
+                    if _gr.get("stream_processing_mode"):
+                        self._bedrock_guardrail_config["streamProcessingMode"] = _gr["stream_processing_mode"]
+                    if _gr.get("trace"):
+                        self._bedrock_guardrail_config["trace"] = _gr["trace"]
+            except Exception:
+                pass
             self.client = None
             self._client_kwargs = {}
             if not self.quiet_mode:
-                print(f"🤖 AI Agent initialized with model: {self.model} (Anthropic native)")
-                if effective_key and len(effective_key) > 12:
-                    print(f"🔑 Using token: {effective_key[:8]}...{effective_key[-4:]}")
+                _gr_label = " + Guardrails" if self._bedrock_guardrail_config else ""
+                print(f"🤖 AI Agent initialized with model: {self.model} (AWS Bedrock, {self._bedrock_region}{_gr_label})")
         else:
             if api_key and base_url:
                 # Explicit credentials from CLI/gateway — construct directly.
@@ -951,9 +1003,20 @@ class AIAgent:
                     # message instead of silently routing through OpenRouter.
                     _explicit = (self.provider or "").strip().lower()
                     if _explicit and _explicit not in ("auto", "openrouter", "custom"):
+                        # Look up the actual env var name from the provider
+                        # config — some providers use non-standard names
+                        # (e.g. alibaba → DASHSCOPE_API_KEY, not ALIBABA_API_KEY).
+                        _env_hint = f"{_explicit.upper()}_API_KEY"
+                        try:
+                            from hermes_cli.auth import PROVIDER_REGISTRY
+                            _pcfg = PROVIDER_REGISTRY.get(_explicit)
+                            if _pcfg and _pcfg.api_key_env_vars:
+                                _env_hint = _pcfg.api_key_env_vars[0]
+                        except Exception:
+                            pass
                         raise RuntimeError(
                             f"Provider '{_explicit}' is set in config.yaml but no API key "
-                            f"was found. Set the {_explicit.upper()}_API_KEY environment "
+                            f"was found. Set the {_env_hint} environment "
                             f"variable, or switch to a different provider with `hermes model`."
                         )
                     # Final fallback: try raw OpenRouter key
@@ -1217,6 +1280,15 @@ class AIAgent:
                             "hermes_home": str(_ghh()),
                             "agent_context": "primary",
                         }
+                        # Thread session title for memory provider scoping
+                        # (e.g. honcho uses this to derive chat-scoped session keys)
+                        if self._session_db:
+                            try:
+                                _st = self._session_db.get_session_title(self.session_id)
+                                if _st:
+                                    _init_kwargs["session_title"] = _st
+                            except Exception:
+                                pass
                         # Thread gateway user identity for per-user memory scoping
                         if self._user_id:
                             _init_kwargs["user_id"] = self._user_id
@@ -4206,6 +4278,9 @@ class AIAgent:
         return False
 
     def _create_openai_client(self, client_kwargs: dict, *, reason: str, shared: bool) -> Any:
+        from agent.auxiliary_client import _validate_base_url, _validate_proxy_env_urls
+        _validate_proxy_env_urls()
+        _validate_base_url(client_kwargs.get("base_url"))
         if self.provider == "copilot-acp" or str(client_kwargs.get("base_url", "")).startswith("acp://copilot"):
             from agent.copilot_acp_client import CopilotACPClient
 
@@ -4890,6 +4965,17 @@ class AIAgent:
                     )
                 elif self.api_mode == "anthropic_messages":
                     result["response"] = self._anthropic_messages_create(api_kwargs)
+                elif self.api_mode == "bedrock_converse":
+                    # Bedrock uses boto3 directly — no OpenAI client needed.
+                    from agent.bedrock_adapter import (
+                        _get_bedrock_runtime_client,
+                        normalize_converse_response,
+                    )
+                    region = api_kwargs.pop("__bedrock_region__", "us-east-1")
+                    api_kwargs.pop("__bedrock_converse__", None)
+                    client = _get_bedrock_runtime_client(region)
+                    raw_response = client.converse(**api_kwargs)
+                    result["response"] = normalize_converse_response(raw_response)
                 else:
                     request_client_holder["client"] = self._create_request_openai_client(reason="chat_completion_request")
                     result["response"] = request_client_holder["client"].chat.completions.create(**api_kwargs)
@@ -5128,6 +5214,65 @@ class AIAgent:
                 return self._interruptible_api_call(api_kwargs)
             finally:
                 self._codex_on_first_delta = None
+
+        # Bedrock Converse uses boto3's converse_stream() with real-time delta
+        # callbacks — same UX as Anthropic and chat_completions streaming.
+        if self.api_mode == "bedrock_converse":
+            result = {"response": None, "error": None}
+            first_delta_fired = {"done": False}
+            deltas_were_sent = {"yes": False}
+
+            def _fire_first():
+                if not first_delta_fired["done"] and on_first_delta:
+                    first_delta_fired["done"] = True
+                    try:
+                        on_first_delta()
+                    except Exception:
+                        pass
+
+            def _bedrock_call():
+                try:
+                    from agent.bedrock_adapter import (
+                        _get_bedrock_runtime_client,
+                        stream_converse_with_callbacks,
+                    )
+                    region = api_kwargs.pop("__bedrock_region__", "us-east-1")
+                    api_kwargs.pop("__bedrock_converse__", None)
+                    client = _get_bedrock_runtime_client(region)
+                    raw_response = client.converse_stream(**api_kwargs)
+
+                    def _on_text(text):
+                        _fire_first()
+                        self._fire_stream_delta(text)
+                        deltas_were_sent["yes"] = True
+
+                    def _on_tool(name):
+                        _fire_first()
+                        self._fire_tool_gen_started(name)
+
+                    def _on_reasoning(text):
+                        _fire_first()
+                        self._fire_reasoning_delta(text)
+
+                    result["response"] = stream_converse_with_callbacks(
+                        raw_response,
+                        on_text_delta=_on_text if self._has_stream_consumers() else None,
+                        on_tool_start=_on_tool,
+                        on_reasoning_delta=_on_reasoning if self.reasoning_callback or self.stream_delta_callback else None,
+                        on_interrupt_check=lambda: self._interrupt_requested,
+                    )
+                except Exception as e:
+                    result["error"] = e
+
+            t = threading.Thread(target=_bedrock_call, daemon=True)
+            t.start()
+            while t.is_alive():
+                t.join(timeout=0.3)
+                if self._interrupt_requested:
+                    raise InterruptedError("Agent interrupted during Bedrock API call")
+            if result["error"] is not None:
+                raise result["error"]
+            return result["response"]
 
         result = {"response": None, "error": None}
         request_client_holder = {"client": None}
@@ -5760,6 +5905,8 @@ class AIAgent:
                 # provider-specific exceptions like Copilot gpt-5-mini on
                 # chat completions.
                 fb_api_mode = "codex_responses"
+            elif fb_provider == "bedrock" or "bedrock-runtime" in fb_base_url.lower():
+                fb_api_mode = "bedrock_converse"
 
             old_model = self.model
             self.model = fb_model
@@ -6238,6 +6385,25 @@ class AIAgent:
                 base_url=getattr(self, "_anthropic_base_url", None),
                 fast_mode=(self.request_overrides or {}).get("speed") == "fast",
             )
+
+        # AWS Bedrock native Converse API — bypasses the OpenAI client entirely.
+        # The adapter handles message/tool conversion and boto3 calls directly.
+        if self.api_mode == "bedrock_converse":
+            from agent.bedrock_adapter import build_converse_kwargs
+            region = getattr(self, "_bedrock_region", None) or "us-east-1"
+            guardrail = getattr(self, "_bedrock_guardrail_config", None)
+            return {
+                "__bedrock_converse__": True,
+                "__bedrock_region__": region,
+                **build_converse_kwargs(
+                    model=self.model,
+                    messages=api_messages,
+                    tools=self.tools,
+                    max_tokens=self.max_tokens or 4096,
+                    temperature=None,  # Let the model use its default
+                    guardrail_config=guardrail,
+                ),
+            }
 
         if self.api_mode == "codex_responses":
             instructions = ""
@@ -8504,6 +8670,53 @@ class AIAgent:
             api_kwargs = None  # Guard against UnboundLocalError in except handler
 
             while retry_count < max_retries:
+                # ── Nous Portal rate limit guard ──────────────────────
+                # If another session already recorded that Nous is rate-
+                # limited, skip the API call entirely.  Each attempt
+                # (including SDK-level retries) counts against RPH and
+                # deepens the rate limit hole.
+                if self.provider == "nous":
+                    try:
+                        from agent.nous_rate_guard import (
+                            nous_rate_limit_remaining,
+                            format_remaining as _fmt_nous_remaining,
+                        )
+                        _nous_remaining = nous_rate_limit_remaining()
+                        if _nous_remaining is not None and _nous_remaining > 0:
+                            _nous_msg = (
+                                f"Nous Portal rate limit active — "
+                                f"resets in {_fmt_nous_remaining(_nous_remaining)}."
+                            )
+                            self._vprint(
+                                f"{self.log_prefix}⏳ {_nous_msg} Trying fallback...",
+                                force=True,
+                            )
+                            self._emit_status(f"⏳ {_nous_msg}")
+                            if self._try_activate_fallback():
+                                retry_count = 0
+                                compression_attempts = 0
+                                primary_recovery_attempted = False
+                                continue
+                            # No fallback available — return with clear message
+                            self._persist_session(messages, conversation_history)
+                            return {
+                                "final_response": (
+                                    f"⏳ {_nous_msg}\n\n"
+                                    "No fallback provider available. "
+                                    "Try again after the reset, or add a "
+                                    "fallback provider in config.yaml."
+                                ),
+                                "messages": messages,
+                                "api_calls": api_call_count,
+                                "completed": False,
+                                "failed": True,
+                                "error": _nous_msg,
+                            }
+                    except ImportError:
+                        pass
+                    except Exception:
+                        pass  # Never let rate guard break the agent loop
+
                 try:
                     self._reset_stream_delivery_tracking()
                     api_kwargs = self._build_api_kwargs(api_messages)
@@ -8816,7 +9029,7 @@ class AIAgent:
                         # targeted error instead of wasting 3 API calls.
                         _trunc_content = None
                         _trunc_has_tool_calls = False
-                        if self.api_mode == "chat_completions":
+                        if self.api_mode in ("chat_completions", "bedrock_converse"):
                             _trunc_msg = response.choices[0].message if (hasattr(response, "choices") and response.choices) else None
                             _trunc_content = getattr(_trunc_msg, "content", None) if _trunc_msg else None
                             _trunc_has_tool_calls = bool(getattr(_trunc_msg, "tool_calls", None)) if _trunc_msg else False
@@ -8885,7 +9098,7 @@ class AIAgent:
                                 "error": _exhaust_error,
                             }
 
-                        if self.api_mode == "chat_completions":
+                        if self.api_mode in ("chat_completions", "bedrock_converse"):
                             assistant_message = response.choices[0].message
                             if not assistant_message.tool_calls:
                                 length_continue_retries += 1
@@ -8925,7 +9138,7 @@ class AIAgent:
                                     "error": "Response remained truncated after 3 continuation attempts",
                                 }
 
-                        if self.api_mode == "chat_completions":
+                        if self.api_mode in ("chat_completions", "bedrock_converse"):
                             assistant_message = response.choices[0].message
                             if assistant_message.tool_calls:
                                 if truncated_tool_call_retries < 1:
@@ -9092,6 +9305,15 @@ class AIAgent:
                                 self._vprint(f"{self.log_prefix}   💾 Cache: {cached:,}/{prompt:,} tokens ({hit_pct:.0f}% hit, {written:,} written)")
                     
                     has_retried_429 = False  # Reset on success
+                    # Clear Nous rate limit state on successful request —
+                    # proves the limit has reset and other sessions can
+                    # resume hitting Nous.
+                    if self.provider == "nous":
+                        try:
+                            from agent.nous_rate_guard import clear_nous_rate_limit
+                            clear_nous_rate_limit()
+                        except Exception:
+                            pass
                     self._touch_activity(f"API call #{api_call_count} completed")
                     break  # Success, exit retry loop
 
@@ -9502,6 +9724,38 @@ class AIAgent:
                                 compression_attempts = 0
                                 primary_recovery_attempted = False
                                 continue
+
+                    # ── Nous Portal: record rate limit & skip retries ─────
+                    # When Nous returns a 429, record the reset time to a
+                    # shared file so ALL sessions (cron, gateway, auxiliary)
+                    # know not to pile on.  Then skip further retries —
+                    # each one burns another RPH request and deepens the
+                    # rate limit hole.  The retry loop's top-of-iteration
+                    # guard will catch this on the next pass and try
+                    # fallback or bail with a clear message.
+                    if (
+                        is_rate_limited
+                        and self.provider == "nous"
+                        and classified.reason == FailoverReason.rate_limit
+                        and not recovered_with_pool
+                    ):
+                        try:
+                            from agent.nous_rate_guard import record_nous_rate_limit
+                            _err_resp = getattr(api_error, "response", None)
+                            _err_hdrs = (
+                                getattr(_err_resp, "headers", None)
+                                if _err_resp else None
+                            )
+                            record_nous_rate_limit(
+                                headers=_err_hdrs,
+                                error_context=error_context,
+                            )
+                        except Exception:
+                            pass
+                        # Skip straight to max_retries — the top-of-loop
+                        # guard will handle fallback or bail cleanly.
+                        retry_count = max_retries
+                        continue
 
                     is_payload_too_large = (
                         classified.reason == FailoverReason.payload_too_large

@@ -1992,11 +1992,14 @@ class DiscordAdapter(BasePlatformAdapter):
         )
 
         msg_type = MessageType.COMMAND if text.startswith("/") else MessageType.TEXT
+        channel_id = str(interaction.channel_id)
+        parent_id = str(getattr(getattr(interaction, "channel", None), "parent_id", "") or "")
         return MessageEvent(
             text=text,
             message_type=msg_type,
             source=source,
             raw_message=interaction,
+            channel_prompt=self._resolve_channel_prompt(channel_id, parent_id or None),
         )
 
     # ------------------------------------------------------------------
@@ -2067,14 +2070,17 @@ class DiscordAdapter(BasePlatformAdapter):
             chat_topic=chat_topic,
         )
 
-        _parent_id = str(getattr(getattr(interaction, "channel", None), "parent_id", "") or "")
+        _parent_channel = self._thread_parent_channel(getattr(interaction, "channel", None))
+        _parent_id = str(getattr(_parent_channel, "id", "") or "")
         _skills = self._resolve_channel_skills(thread_id, _parent_id or None)
+        _channel_prompt = self._resolve_channel_prompt(thread_id, _parent_id or None)
         event = MessageEvent(
             text=text,
             message_type=MessageType.TEXT,
             source=source,
             raw_message=interaction,
             auto_skill=_skills,
+            channel_prompt=_channel_prompt,
         )
         await self.handle_message(event)
 
@@ -2102,6 +2108,11 @@ class DiscordAdapter(BasePlatformAdapter):
                 if isinstance(skills, list) and skills:
                     return list(dict.fromkeys(skills))  # dedup, preserve order
         return None
+
+    def _resolve_channel_prompt(self, channel_id: str, parent_id: str | None = None) -> str | None:
+        """Resolve a Discord per-channel prompt, preferring the exact channel over its parent."""
+        from gateway.platforms.base import resolve_channel_prompt
+        return resolve_channel_prompt(self.config.extra, channel_id, parent_id)
 
     def _thread_parent_channel(self, channel: Any) -> Any:
         """Return the parent text channel when invoked from a thread."""
@@ -2654,6 +2665,7 @@ class DiscordAdapter(BasePlatformAdapter):
         _parent_id = str(getattr(_chan, "parent_id", "") or "")
         _chan_id = str(getattr(_chan, "id", ""))
         _skills = self._resolve_channel_skills(_chan_id, _parent_id or None)
+        _channel_prompt = self._resolve_channel_prompt(_chan_id, _parent_id or None)
 
         reply_to_id = None
         reply_to_text = None
@@ -2674,6 +2686,7 @@ class DiscordAdapter(BasePlatformAdapter):
             reply_to_text=reply_to_text,
             timestamp=message.created_at,
             auto_skill=_skills,
+            channel_prompt=_channel_prompt,
         )
 
         # Track thread participation so the bot won't require @mention for

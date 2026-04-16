@@ -39,7 +39,10 @@ RUN uv venv && \
     uv pip install --no-cache-dir -e ".[all]"
 
 USER root
-RUN chmod +x /opt/hermes/docker/entrypoint.sh
+RUN chmod +x /opt/hermes/docker/entrypoint.sh && \
+    mkdir -p /app && \
+    cp /opt/hermes/start.sh /app/start.sh && \
+    chmod +x /app/start.sh /opt/hermes/start.sh
 
 ENV HERMES_HOME=/opt/data
 ENTRYPOINT [ "/opt/hermes/docker/entrypoint.sh" ]

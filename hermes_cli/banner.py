@@ -140,12 +140,26 @@ def check_for_updates() -> Optional[int]:
     if not (repo_dir / ".git").exists():
         return None
 
+    # Get current HEAD — used to detect if repo changed since cache was written
+    try:
+        head_result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=5,
+            cwd=str(repo_dir),
+        )
+        current_head = head_result.stdout.strip() if head_result.returncode == 0 else None
+    except Exception:
+        current_head = None
+
     # Read cache
     now = time.time()
     try:
         if cache_file.exists():
             cached = json.loads(cache_file.read_text())
-            if now - cached.get("ts", 0) < _UPDATE_CHECK_CACHE_SECONDS:
+            if (
+                now - cached.get("ts", 0) < _UPDATE_CHECK_CACHE_SECONDS
+                and cached.get("head") == current_head
+            ):
                 return cached.get("behind")
     except Exception:
         pass
@@ -176,7 +190,7 @@ def check_for_updates() -> Optional[int]:
 
     # Write cache
     try:
-        cache_file.write_text(json.dumps({"ts": now, "behind": behind}))
+        cache_file.write_text(json.dumps({"ts": now, "behind": behind, "head": current_head}))
     except Exception:
         pass
 

@@ -1077,6 +1077,10 @@ class GatewayShutdownMixin:
         """
         if agent is None or (executor_task is not None and executor_task.done()):
             return False
+        # Drain/restart already told the chat the task will be interrupted; a "still working"
+        # heartbeat after that notice reads as a contradiction (#10990).
+        if getattr(self, "_draining", False) or getattr(self, "_restart_requested", False):
+            return False
         if session_key:
             _hb_state = self._peek_session_state(session_key)
             if (_hb_state.turn.agent if _hb_state else None) is not agent:

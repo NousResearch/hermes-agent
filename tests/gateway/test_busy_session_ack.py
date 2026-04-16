@@ -518,4 +518,17 @@ class TestLongRunningNotificationOwnership:
             "sess", original_agent, executor_task=None
         ) is False
 
+    @pytest.mark.parametrize("flag", ["_draining", "_restart_requested"])
+    def test_notification_stops_once_shutdown_or_restart_begins(self, flag):
+        """After the restart/shutdown notice a heartbeat would contradict it (#10990)."""
+        from gateway.run import GatewayRunner
+
+        runner = object.__new__(GatewayRunner)
+        runner._running_agents = {}
+        agent = MagicMock()
+        runner._running_agents["sess"] = agent
+        assert runner._should_emit_long_running_notification("sess", agent, executor_task=None) is True
+        setattr(runner, flag, True)
+        assert runner._should_emit_long_running_notification("sess", agent, executor_task=None) is False
+
 

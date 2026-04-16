@@ -157,6 +157,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     ],
     "kimi-coding": [
         "kimi-for-coding",
+        "k2.6-code-preview",
         "kimi-k2.5",
         "kimi-k2-thinking",
         "kimi-k2-thinking-turbo",
@@ -165,11 +166,13 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     ],
     "kimi-coding-cn": [
         "kimi-k2.5",
+        "k2.6-code-preview",
         "kimi-k2-thinking",
         "kimi-k2-turbo-preview",
         "kimi-k2-0905-preview",
     ],
     "moonshot": [
+        "k2.6-code-preview",
         "kimi-k2.5",
         "kimi-k2-thinking",
         "kimi-k2-turbo-preview",
@@ -1949,6 +1952,17 @@ def validate_requested_model(
             # listing (e.g. Z.AI Pro/Max plans can use glm-5 on coding
             # endpoints even though it's not in /models).  Warn but allow.
 
+            # Trust our static curated list when the live API is incomplete
+            # (e.g. Kimi Coding Plan only exposes kimi-for-coding).
+            static_models = _PROVIDER_MODELS.get(normalized, [])
+            if requested_for_lookup in static_models:
+                return {
+                    "accepted": True,
+                    "persist": True,
+                    "recognized": True,
+                    "message": None,
+                }
+
             # Auto-correct if the top match is very similar (e.g. typo)
             auto = get_close_matches(requested_for_lookup, api_models, n=1, cutoff=0.9)
             if auto:
@@ -2015,6 +2029,18 @@ def validate_requested_model(
             pass  # Fall through to generic warning
 
     provider_label = _PROVIDER_LABELS.get(normalized, normalized)
+
+    # Trust our static curated list even when the live API is unreachable.
+    # If we hand-picked the model, there's no value in warning the user.
+    static_models = _PROVIDER_MODELS.get(normalized, [])
+    if requested_for_lookup in static_models:
+        return {
+            "accepted": True,
+            "persist": True,
+            "recognized": True,
+            "message": None,
+        }
+
     return {
         "accepted": True,
         "persist": True,

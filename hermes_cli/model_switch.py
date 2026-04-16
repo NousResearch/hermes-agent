@@ -500,6 +500,25 @@ def switch_model(
             )
 
         target_provider = pdef.id
+        # Some providers have a models.dev ID that differs from the Hermes
+        # internal ID (e.g. models.dev uses "kimi-for-coding" but Hermes uses
+        # "kimi-coding" everywhere else). Prefer the Hermes internal ID when
+        # the user explicitly named a provider we know natively.
+        try:
+            from hermes_cli.auth import PROVIDER_REGISTRY
+            _HERMES_ALIASES = {
+                "kimi": "kimi-coding",
+                "kimi-for-coding": "kimi-coding",
+                "moonshot": "kimi-coding",
+                "kimi-cn": "kimi-coding-cn",
+                "moonshot-cn": "kimi-coding-cn",
+            }
+            _raw = explicit_provider.strip().lower()
+            _canonical_explicit = _HERMES_ALIASES.get(_raw, _raw)
+            if _canonical_explicit in PROVIDER_REGISTRY:
+                target_provider = _canonical_explicit
+        except Exception:
+            pass
 
         # If no model specified, try auto-detect from endpoint
         if not new_model:

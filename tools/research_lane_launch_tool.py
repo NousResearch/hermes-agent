@@ -1444,9 +1444,11 @@ def _run_lane_pipeline(
         return {"status": "blocked", "blocker": blocker, "state_file": str(state_file)}
     if resume_stage is None:
         final_msg = _build_final_message(topic_title, state.get("stages", {}).get("stage-3-writeup", {}), state_file)
-        _send_telegram(origin_target, final_msg, context="research_lane_launch completion")
-        if deliver_target and not _same_telegram_target(origin_target, deliver_target):
+        # Only deliver to the research topic — origin doesn't need the message
+        if deliver_target:
             _send_telegram(deliver_target, final_msg, context="research_lane_launch deliver", target_label=deliver)
+        elif origin_target:
+            _send_telegram(origin_target, final_msg, context="research_lane_launch completion")
         return {"status": "completed", "message": final_msg, "state_file": str(state_file)}
 
     stage_inputs: Dict[str, str] = {}
@@ -1578,9 +1580,11 @@ def _run_lane_pipeline(
                 extras["google_doc_url"] = payload.get("google_doc_url")
             _mark_stage_completed(state, stage_name, state_file, artifact=primary_artifact or None, artifacts=artifacts or None, extras=extras)
             final_message = _build_final_message(topic_title, payload, state_file)
-            _send_telegram(origin_target, final_message, context="research_lane_launch completion")
-            if deliver_target and not _same_telegram_target(origin_target, deliver_target):
+            # Only deliver to the research topic — origin doesn't need the message
+            if deliver_target:
                 _send_telegram(deliver_target, final_message, context="research_lane_launch deliver", target_label=deliver)
+            elif origin_target:
+                _send_telegram(origin_target, final_message, context="research_lane_launch completion")
             return {
                 "status": "completed",
                 "message": final_message,

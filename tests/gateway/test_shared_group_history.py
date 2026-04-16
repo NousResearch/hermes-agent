@@ -76,3 +76,8 @@ def test_shared_group_context_prompt_instructs_model_to_focus_on_latest_batch():
     assert "latest" in prompt.lower()
     assert "current batch" in prompt.lower()
     assert "stale topics" in prompt.lower()
+    assert "real room transcript" in prompt.lower()
+    assert "your own replies" in prompt.lower()
+    assert "completed replies" in prompt.lower()
+    assert "not drafts or pending points" in prompt.lower()
+    assert "newest active prompt only" in prompt.lower()

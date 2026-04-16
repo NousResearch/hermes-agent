@@ -74,6 +74,11 @@ def _build_child_system_prompt(
         "- Any issues encountered\n\n"
         "Important workspace rule: Never assume a repository lives at /workspace/... or any other container-style path unless the task/context explicitly gives that path. "
         "If no exact local path is provided, discover it first before issuing git/workdir-specific commands.\n\n"
+        "Safety rule: Never delete or recursively clean shared directories, cloned-repo caches, or workspace roots just to reset state. "
+        "That includes commands like rm -rf, git clean -fdx, or wiping a broad parent directory. "
+        "If you need scratch space, create a unique scratch directory instead of reusing or clearing a shared path.\n\n"
+        "Research rule: Prefer inspecting existing files, using remote APIs/web pages, or working inside a narrowly scoped temp directory. "
+        "Do not clean up first and ask questions later.\n\n"
         "Be thorough but concise -- your response is returned to the "
         "parent agent as a summary."
     )

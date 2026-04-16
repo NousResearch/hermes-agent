@@ -31,7 +31,10 @@ async def test_build_message_event_from_private_payload():
     from gateway.platforms.qq_napcat import QqNapCatAdapter
 
     adapter = QqNapCatAdapter(
-        PlatformConfig(enabled=True, extra={"ws_url": "ws://127.0.0.1:3001"})
+        PlatformConfig(
+            enabled=True,
+            extra={"ws_url": "ws://127.0.0.1:3001", "allow_all_groups": True},
+        )
     )
 
     event = adapter._build_message_event(
@@ -56,11 +59,49 @@ async def test_build_message_event_from_private_payload():
 
 
 @pytest.mark.asyncio
+async def test_connect_records_runtime_missing_status_after_local_connect_failure():
+    from gateway.platforms.qq_napcat import QqNapCatAdapter
+
+    class _FailingSession:
+        async def ws_connect(self, _url, heartbeat=None):
+            raise ConnectionRefusedError("boom")
+
+        async def close(self):
+            return None
+
+    adapter = QqNapCatAdapter(
+        PlatformConfig(
+            enabled=True,
+            extra={"ws_url": "ws://127.0.0.1:3001", "allow_all_groups": True},
+        )
+    )
+
+    with patch("gateway.platforms.qq_napcat.aiohttp.ClientSession", return_value=_FailingSession()), \
+         patch(
+             "gateway.platforms.qq_napcat.diagnose_local_qq_napcat_endpoint",
+             return_value={
+                 "code": "qq_napcat_runtime_missing",
+                 "message": "QQ NapCat local runtime is missing",
+             },
+         ), \
+         patch("gateway.status.write_runtime_status") as status_mock:
+        connected = await adapter.connect()
+
+    assert connected is False
+    assert status_mock.call_args_list[-1].kwargs["platform_state"] == "unavailable"
+    assert status_mock.call_args_list[-1].kwargs["error_code"] == "qq_napcat_runtime_missing"
+    assert status_mock.call_args_list[-1].kwargs["error_message"] == "QQ NapCat local runtime is missing"
+
+
+@pytest.mark.asyncio
 async def test_build_message_event_from_group_payload():
     from gateway.platforms.qq_napcat import QqNapCatAdapter
 
     adapter = QqNapCatAdapter(
-        PlatformConfig(enabled=True, extra={"ws_url": "ws://127.0.0.1:3001"})
+        PlatformConfig(
+            enabled=True,
+            extra={"ws_url": "ws://127.0.0.1:3001", "allow_all_groups": True},
+        )
     )
 
     event = adapter._build_message_event(
@@ -81,6 +122,202 @@ async def test_build_message_event_from_group_payload():
     assert event.source.chat_type == "group"
     assert event.source.user_id == "456789"
     assert event.source.user_name == "AliceCard"
+
+
+@pytest.mark.asyncio
+async def test_build_message_event_from_group_payload_includes_trigger_reason_metadata():
+    from gateway.platforms.qq_napcat import QqNapCatAdapter
+
+    adapter = QqNapCatAdapter(
+        PlatformConfig(
+            enabled=True,
+            extra={
+                "ws_url": "ws://127.0.0.1:3001",
+                "allow_all_groups": True,
+                "require_mention": False,
+            },
+        )
+    )
+
+    event = adapter._build_message_event(
+        _group_payload(
+            message_id=1242,
+            user_id=456789,
+            text="@马嘎 ok",
+            nickname="Alice",
+            card="AliceCard",
+            segments=[
+                {"type": "at", "data": {"qq": "999001", "name": "马嘎"}},
+                {"type": "text", "data": {"text": " ok"}},
+            ],
+        )
+    )
+
+    assert event.metadata["group_trigger_reason"] == "require_mention_disabled"
+    assert event.metadata["explicit_group_trigger"] is True
+    assert event.metadata["explicit_group_trigger_reason"] == "bot_mention"
+    assert event.metadata["explicit_addressed"] is True
+    assert event.metadata["address_reason"] == "bot_mention"
+    assert event.metadata["requires_reply"] is True
+
+
+@pytest.mark.asyncio
+async def test_build_message_event_strips_cq_image_markup_from_text():
+    from gateway.platforms.qq_napcat import QqNapCatAdapter
+
+    adapter = QqNapCatAdapter(
+        PlatformConfig(enabled=True, extra={"ws_url": "ws://127.0.0.1:3001"})
+    )
+
+    event = adapter._build_message_event(
+        {
+            "post_type": "message",
+            "message_type": "private",
+            "message_id": 1241,
+            "user_id": 456789,
+            "raw_message": (
+                "[CQ:image,file=7CDEAA1F045EF8013AC8631FF3708901.png,sub_type=0,"
+                "url=https://multimedia.nt.qq.com.cn/download?appid=1406&fileid=abc]"
+                "看看这个"
+            ),
+            "message": [
+                {
+                    "type": "image",
+                    "data": {
+                        "file": "7CDEAA1F045EF8013AC8631FF3708901.png",
+                        "url": "https://multimedia.nt.qq.com.cn/download?appid=1406&fileid=abc",
+                    },
+                },
+                {"type": "text", "data": {"text": "看看这个"}},
+            ],
+            "sender": {"nickname": "Alice"},
+        }
+    )
+
+    assert event.text == "看看这个"
+    assert "CQ:image" not in event.text
+    assert "7CDEAA1F045EF8013AC8631FF3708901" not in event.text
+    assert event.message_type == MessageType.PHOTO
+
+
+@pytest.mark.asyncio
+async def test_request_payload_is_persisted_without_dispatching_message():
+    from gateway.platforms.qq_napcat import QqNapCatAdapter
+    from gateway.qq_social_requests import QqSocialRequestStore
+
+    adapter = QqNapCatAdapter(
+        PlatformConfig(enabled=True, extra={"ws_url": "ws://127.0.0.1:3001"})
+    )
+    adapter.handle_message = AsyncMock()
+
+    await adapter._handle_payload(
+        {
+            "post_type": "request",
+            "request_type": "group",
+            "sub_type": "invite",
+            "group_id": 987654321,
+            "user_id": 179033731,
+            "comment": "来群里聊项目",
+            "flag": "group-flag-qqnapcat",
+            "time": 1713012345,
+        }
+    )
+
+    adapter.handle_message.assert_not_awaited()
+    stored = QqSocialRequestStore().get_request("group:group-flag-qqnapcat")
+    assert stored is not None
+    assert stored["status"] == "pending"
+    assert stored["sub_type"] == "invite"
+
+
+@pytest.mark.asyncio
+async def test_friend_request_is_auto_approved_when_policy_enabled():
+    from gateway.platforms.qq_napcat import QqNapCatAdapter
+    from gateway.qq_social_policy import set_social_policy
+    from gateway.qq_social_requests import QqSocialRequestStore
+
+    set_social_policy(
+        auto_approve_friend_requests=True,
+        notify_target="qq_napcat:dm:179033731",
+        updated_by="test",
+    )
+    adapter = QqNapCatAdapter(
+        PlatformConfig(enabled=True, extra={"ws_url": "ws://127.0.0.1:3001"})
+    )
+    adapter.handle_message = AsyncMock()
+
+    with patch.object(adapter, "_call_api", new=AsyncMock(return_value={"ok": True})) as call_mock, \
+         patch.object(adapter, "send", new=AsyncMock(return_value=SimpleNamespace(success=True, error=None))) as send_mock:
+        await adapter._handle_payload(
+            {
+                "post_type": "request",
+                "request_type": "friend",
+                "user_id": 456789,
+                "comment": "加一下",
+                "flag": "friend-auto-1",
+                "time": 1713012345,
+            }
+        )
+
+    stored = QqSocialRequestStore().get_request("friend:friend-auto-1")
+    assert stored is not None
+    assert stored["status"] == "approved"
+    assert stored["handled_by"] == "qq_napcat:auto_social_policy"
+    assert stored["handled_via"] == "auto_social_policy"
+    assert stored["decision_note"] == "按社交自动处理策略自动通过好友请求。"
+    call_mock.assert_awaited_once_with(
+        "set_friend_add_request",
+        {"flag": "friend-auto-1", "approve": True},
+    )
+    send_mock.assert_awaited()
+    notice_text = send_mock.await_args.args[1]
+    assert "当前状态：approved" in notice_text
+    assert "处理来源：auto_social_policy" in notice_text
+
+
+@pytest.mark.asyncio
+async def test_group_invite_is_auto_approved_when_policy_enabled():
+    from gateway.platforms.qq_napcat import QqNapCatAdapter
+    from gateway.qq_social_policy import set_social_policy
+    from gateway.qq_social_requests import QqSocialRequestStore
+
+    set_social_policy(
+        auto_approve_group_invites=True,
+        notify_target="qq_napcat:dm:179033731",
+        updated_by="test",
+    )
+    adapter = QqNapCatAdapter(
+        PlatformConfig(enabled=True, extra={"ws_url": "ws://127.0.0.1:3001"})
+    )
+
+    with patch.object(adapter, "_call_api", new=AsyncMock(return_value={"ok": True})) as call_mock, \
+         patch.object(adapter, "send", new=AsyncMock(return_value=SimpleNamespace(success=True, error=None))) as send_mock:
+        await adapter._handle_payload(
+            {
+                "post_type": "request",
+                "request_type": "group",
+                "sub_type": "invite",
+                "group_id": 987654321,
+                "user_id": 179033731,
+                "comment": "来群里聊项目",
+                "flag": "group-auto-1",
+                "time": 1713012345,
+            }
+        )
+
+    stored = QqSocialRequestStore().get_request("group:group-auto-1")
+    assert stored is not None
+    assert stored["status"] == "approved"
+    assert stored["handled_via"] == "auto_social_policy"
+    assert stored["decision_note"] == "按社交自动处理策略自动通过加群邀请。"
+    call_mock.assert_awaited_once_with(
+        "set_group_add_request",
+        {"flag": "group-auto-1", "sub_type": "invite", "approve": True},
+    )
+    send_mock.assert_awaited()
+    notice_text = send_mock.await_args.args[1]
+    assert "当前状态：approved" in notice_text
+    assert "处理来源：auto_social_policy" in notice_text
 
 
 @pytest.mark.asyncio
@@ -218,6 +455,79 @@ async def test_group_message_matching_default_maga_alias_is_processed():
             "sender": {"nickname": "Alice", "card": "AliceCard"},
         }
     )
+
+    adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_active_intel_worker_group_archives_without_dispatching_even_without_static_allowlist():
+    from gateway.platforms.qq_napcat import QqNapCatAdapter
+    from gateway.qq_group_archive import QqGroupArchiveStore
+    from gateway.qq_intel_assignments import hire_intel_worker
+
+    hire_intel_worker(
+        worker_name="钢镚",
+        target_group_ref="group:987654321",
+        objective="去刺探情报",
+        daily_report_enabled=True,
+        daily_report_target="qq_napcat:dm:179033731",
+        manual_report_target="qq_napcat:dm:179033731",
+        notify_target="qq_napcat:dm:179033731",
+        updated_by="test",
+        joined_groups=[{"group_id": "987654321", "group_name": "目标群"}],
+    )
+
+    adapter = QqNapCatAdapter(
+        PlatformConfig(
+            enabled=True,
+            extra={
+                "ws_url": "ws://127.0.0.1:3001",
+                "allow_all_groups": False,
+                "allowed_groups": [],
+                "require_mention": True,
+            },
+        )
+    )
+    adapter.handle_message = AsyncMock()
+
+    await adapter._handle_payload(
+        _group_payload(
+            message_id=1272,
+            user_id=456789,
+            text="今天群里有动静",
+            nickname="Alice",
+            card="AliceCard",
+        )
+    )
+
+    adapter.handle_message.assert_not_awaited()
+    store = QqGroupArchiveStore()
+    archived = store.list_recent_messages(group_id="987654321", limit=5)
+    assert len(archived) == 1
+    assert archived[0]["text"] == "今天群里有动静"
+
+
+@pytest.mark.asyncio
+async def test_duplicate_private_message_id_is_ignored():
+    from gateway.platforms.qq_napcat import QqNapCatAdapter
+
+    adapter = QqNapCatAdapter(
+        PlatformConfig(enabled=True, extra={"ws_url": "ws://127.0.0.1:3001"})
+    )
+    adapter.handle_message = AsyncMock()
+
+    payload = {
+        "post_type": "message",
+        "message_type": "private",
+        "message_id": 1272,
+        "user_id": 456789,
+        "raw_message": "hello again",
+        "message": [{"type": "text", "data": {"text": "hello again"}}],
+        "sender": {"nickname": "Alice"},
+    }
+
+    await adapter._handle_payload(payload)
+    await adapter._handle_payload(dict(payload))
 
     adapter.handle_message.assert_awaited_once()
 
@@ -630,6 +940,234 @@ async def test_project_group_mode_dispatches_admin_message_without_mention():
 
     adapter.handle_message.assert_awaited_once()
     event = adapter.handle_message.await_args.args[0]
+    assert event.raw_message["latest_is_admin"] is True
+    assert event.raw_message["latest_user_id"] == "179033731"
+    assert "[最新一条来自管理员，请优先直接响应这条消息" not in event.text
+    assert "發發發: 看看这个事情怎么推进" in event.text
+
+
+@pytest.mark.asyncio
+async def test_collect_only_group_archives_without_dispatching_or_loading_media():
+    from gateway.platforms.qq_napcat import QqNapCatAdapter
+    from gateway.qq_group_archive import QqGroupArchiveStore
+    from gateway.qq_group_policies import set_group_policy
+
+    set_group_policy("987654321", mode="collect_only", updated_by="test")
+
+    adapter = QqNapCatAdapter(
+        PlatformConfig(
+            enabled=True,
+            extra={
+                "ws_url": "ws://127.0.0.1:3001",
+                "allow_all_groups": True,
+                "require_mention": True,
+            },
+        )
+    )
+    adapter.handle_message = AsyncMock()
+    adapter._populate_media = AsyncMock()
+
+    await adapter._handle_payload(
+        _group_payload(
+            message_id=2024,
+            user_id=456789,
+            text="卖冬虫夏草，私聊我",
+            nickname="广告哥",
+            card="广告哥",
+            segments=[
+                {"type": "text", "data": {"text": "卖冬虫夏草，私聊我"}},
+                {"type": "image", "data": {"url": "https://example.com/ad.jpg"}},
+            ],
+        )
+    )
+
+    adapter.handle_message.assert_not_awaited()
+    adapter._populate_media.assert_not_awaited()
+
+    archived = QqGroupArchiveStore().list_recent_messages(group_id="987654321", limit=5)
+    assert len(archived) == 1
+    assert archived[0]["message_id"] == "2024"
+    assert archived[0]["text"] == "卖冬虫夏草，私聊我"
+    assert archived[0]["has_media"] is True
+
+
+@pytest.mark.asyncio
+async def test_project_group_batch_is_dropped_if_group_switches_to_collect_only_before_flush():
+    from gateway.platforms.qq_napcat import QqNapCatAdapter
+    from gateway.qq_group_policies import set_group_policy
+
+    adapter = QqNapCatAdapter(
+        PlatformConfig(
+            enabled=True,
+            extra={
+                "ws_url": "ws://127.0.0.1:3001",
+                "allow_all_groups": True,
+                "require_mention": True,
+                "project_group_mode": True,
+                "group_batch_debounce_seconds": 0.05,
+                "group_min_model_interval_seconds": 0.0,
+                "admin_users": ["179033731"],
+            },
+        )
+    )
+    adapter.handle_message = AsyncMock()
+
+    await adapter._handle_payload(
+        _group_payload(
+            message_id=20241,
+            user_id=179033731,
+            text="这条不要再打到主模型",
+            nickname="發發發",
+            card="發發發",
+        )
+    )
+
+    set_group_policy("987654321", mode="collect_only", updated_by="test")
+    await asyncio.sleep(0.08)
+
+    adapter.handle_message.assert_not_awaited()
+    assert adapter._group_pending_batches.get("987654321") is None
+
+
+@pytest.mark.asyncio
+async def test_active_intel_overlay_effective_policy_exposes_report_targets():
+    from gateway.platforms.qq_napcat import QqNapCatAdapter
+    from gateway.qq_intel_assignments import hire_intel_worker
+
+    hire_intel_worker(
+        worker_name="钢镚",
+        target_group_ref="group:987654321",
+        objective="去刺探情报",
+        daily_report_enabled=True,
+        daily_report_target="qq_napcat:dm:179033731",
+        manual_report_target="qq_napcat:dm:179033731",
+        notify_target="qq_napcat:dm:179033731",
+        updated_by="test",
+        joined_groups=[{"group_id": "987654321", "group_name": "目标群"}],
+    )
+
+    adapter = QqNapCatAdapter(
+        PlatformConfig(enabled=True, extra={"ws_url": "ws://127.0.0.1:3001"})
+    )
+
+    effective = adapter._effective_group_policy("987654321")
+
+    assert effective["mode"] == "collect_only"
+    assert effective["archive_enabled"] is True
+    assert effective["daily_report_enabled"] is True
+    assert effective["daily_report_target"] == "qq_napcat:dm:179033731"
+    assert effective["manual_report_target"] == "qq_napcat:dm:179033731"
+    assert effective["daily_report_targets"] == ["qq_napcat:dm:179033731"]
+    assert effective["manual_report_targets"] == ["qq_napcat:dm:179033731"]
+    assert effective["notify_targets"] == ["qq_napcat:dm:179033731"]
+
+
+@pytest.mark.asyncio
+async def test_disabled_group_ignores_message_without_archiving():
+    from gateway.platforms.qq_napcat import QqNapCatAdapter
+    from gateway.qq_group_archive import QqGroupArchiveStore
+    from gateway.qq_group_policies import set_group_policy
+
+    set_group_policy("987654321", mode="disabled", updated_by="test")
+
+    adapter = QqNapCatAdapter(
+        PlatformConfig(
+            enabled=True,
+            extra={
+                "ws_url": "ws://127.0.0.1:3001",
+                "allow_all_groups": True,
+                "require_mention": False,
+            },
+        )
+    )
+    adapter.handle_message = AsyncMock()
+
+    await adapter._handle_payload(
+        _group_payload(
+            message_id=2025,
+            user_id=456789,
+            text="这条不该被处理",
+            nickname="Alice",
+            card="AliceCard",
+        )
+    )
+
+    adapter.handle_message.assert_not_awaited()
+    assert QqGroupArchiveStore().list_recent_messages(group_id="987654321", limit=5) == []
+
+
+@pytest.mark.asyncio
+async def test_group_policy_can_enable_listening_even_when_static_group_allowlist_is_closed():
+    from gateway.platforms.qq_napcat import QqNapCatAdapter
+    from gateway.qq_group_archive import QqGroupArchiveStore
+    from gateway.qq_group_policies import set_group_policy
+
+    set_group_policy("987654321", mode="collect_only", updated_by="test")
+
+    adapter = QqNapCatAdapter(
+        PlatformConfig(
+            enabled=True,
+            extra={
+                "ws_url": "ws://127.0.0.1:3001",
+                "allow_all_groups": False,
+                "allowed_groups": [],
+                "require_mention": True,
+            },
+        )
+    )
+    adapter.handle_message = AsyncMock()
+
+    await adapter._handle_payload(
+        _group_payload(
+            message_id=20251,
+            user_id=456789,
+            text="这个群现在开始监听",
+            nickname="Alice",
+            card="AliceCard",
+        )
+    )
+
+    adapter.handle_message.assert_not_awaited()
+    archived = QqGroupArchiveStore().list_recent_messages(group_id="987654321", limit=5)
+    assert len(archived) == 1
+    assert archived[0]["message_id"] == "20251"
+
+
+@pytest.mark.asyncio
+async def test_group_policy_can_force_project_mode_when_global_mode_is_off():
+    from gateway.platforms.qq_napcat import QqNapCatAdapter
+    from gateway.qq_group_policies import set_group_policy
+
+    set_group_policy("987654321", mode="project_mode", updated_by="test")
+
+    adapter = QqNapCatAdapter(
+        PlatformConfig(
+            enabled=True,
+            extra={
+                "ws_url": "ws://127.0.0.1:3001",
+                "allow_all_groups": True,
+                "require_mention": True,
+                "group_batch_debounce_seconds": 0.01,
+                "admin_users": ["179033731"],
+            },
+        )
+    )
+    adapter.handle_message = AsyncMock()
+
+    await adapter._handle_payload(
+        _group_payload(
+            message_id=2026,
+            user_id=179033731,
+            text="看看这个事情怎么推进",
+            nickname="發發發",
+            card="發發發",
+        )
+    )
+
+    await asyncio.sleep(0.03)
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
     assert "發發發: 看看这个事情怎么推进" in event.text
 
 
@@ -646,7 +1184,7 @@ async def test_project_group_mode_enforces_min_interval_and_merges_cooldown_mess
                 "require_mention": True,
                 "project_group_mode": True,
                 "group_batch_debounce_seconds": 0.01,
-                "group_min_model_interval_seconds": 0.08,
+                "group_min_model_interval_seconds": 0.12,
             },
         )
     )
@@ -695,7 +1233,7 @@ async def test_project_group_mode_enforces_min_interval_and_merges_cooldown_mess
 
     assert adapter.handle_message.await_count == 1
 
-    await asyncio.sleep(0.06)
+    await asyncio.sleep(0.10)
 
     assert adapter.handle_message.await_count == 2
     event = adapter.handle_message.await_args_list[1].args[0]
@@ -1147,3 +1685,129 @@ async def test_cache_segment_media_ignores_query_when_guessing_audio_extension(t
 
     assert Path(cached_path).suffix == ".ogg"
     assert mime_type == "audio/ogg"
+
+
+def test_mime_for_segment_detects_gif_images():
+    from gateway.platforms.qq_napcat import QqNapCatAdapter
+
+    assert QqNapCatAdapter._mime_for_segment("image", "/tmp/animated.gif") == "image/gif"
+
+
+@pytest.mark.asyncio
+async def test_populate_media_preserves_remote_image_source(monkeypatch):
+    from gateway.platforms.qq_napcat import QqNapCatAdapter
+    from gateway.platforms.base import MessageEvent
+    from gateway.session import SessionSource
+
+    adapter = QqNapCatAdapter(
+        PlatformConfig(enabled=True, extra={"ws_url": "ws://127.0.0.1:3001"})
+    )
+
+    async def _fake_cache(seg_type, data):
+        assert seg_type == "image"
+        assert data["url"] == "https://cdn.example.com/a.png"
+        return "/tmp/cached-a.png", "image/png"
+
+    monkeypatch.setattr(adapter, "_cache_segment_media", _fake_cache)
+
+    event = MessageEvent(
+        text="看图",
+        source=SessionSource(platform=Platform.QQ_NAPCAT, chat_id="1"),
+    )
+    payload = {
+        "message": [
+            {
+                "type": "image",
+                "data": {"url": "https://cdn.example.com/a.png"},
+            }
+        ]
+    }
+
+    await adapter._populate_media(event, payload)
+
+    assert event.media_urls == ["/tmp/cached-a.png"]
+    assert event.media_sources == ["https://cdn.example.com/a.png"]
+    assert event.media_types == ["image/png"]
+
+
+@pytest.mark.asyncio
+async def test_populate_media_skips_low_value_gif_and_sticker_segments(monkeypatch):
+    from gateway.platforms.qq_napcat import QqNapCatAdapter
+    from gateway.platforms.base import MessageEvent
+    from gateway.session import SessionSource
+
+    adapter = QqNapCatAdapter(
+        PlatformConfig(enabled=True, extra={"ws_url": "ws://127.0.0.1:3001"})
+    )
+
+    cache_mock = AsyncMock(return_value=("/tmp/should-not-exist", "image/png"))
+    monkeypatch.setattr(adapter, "_cache_segment_media", cache_mock)
+
+    event = MessageEvent(
+        text="看这个表情包",
+        source=SessionSource(platform=Platform.QQ_NAPCAT, chat_id="1"),
+    )
+    payload = {
+        "message": [
+            {
+                "type": "image",
+                "data": {"url": "https://cdn.example.com/animated.gif"},
+            },
+            {
+                "type": "image",
+                "data": {
+                    "url": "https://multimedia.nt.qq.com.cn/download/qq-sticker.webp?fileid=abc"
+                },
+            },
+        ]
+    }
+
+    await adapter._populate_media(event, payload)
+
+    assert event.media_urls == []
+    assert event.media_sources == []
+    assert event.media_types == []
+    cache_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_populate_media_preserves_remote_source_for_qq_signed_images(monkeypatch):
+    from gateway.platforms.qq_napcat import QqNapCatAdapter
+    from gateway.platforms.base import MessageEvent
+    from gateway.session import SessionSource
+
+    adapter = QqNapCatAdapter(
+        PlatformConfig(enabled=True, extra={"ws_url": "ws://127.0.0.1:3001"})
+    )
+
+    async def _fake_cache(seg_type, data):
+        assert seg_type == "image"
+        return "/tmp/localized-qq-image.jpg", "image/jpeg"
+
+    monkeypatch.setattr(adapter, "_cache_segment_media", _fake_cache)
+
+    event = MessageEvent(
+        text="看图",
+        source=SessionSource(platform=Platform.QQ_NAPCAT, chat_id="1"),
+    )
+    payload = {
+        "message": [
+            {
+                "type": "image",
+                "data": {
+                    "url": (
+                        "https://multimedia.nt.qq.com.cn/download"
+                        "?appid=1406&fileid=abc&rkey=def"
+                    )
+                },
+            }
+        ]
+    }
+
+    await adapter._populate_media(event, payload)
+
+    assert event.media_urls == ["/tmp/localized-qq-image.jpg"]
+    assert event.media_sources == [
+        "https://multimedia.nt.qq.com.cn/download?appid=1406&fileid=abc&rkey=def"
+    ]
+    assert event.media_types == ["image/jpeg"]

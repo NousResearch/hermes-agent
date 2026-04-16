@@ -26,8 +26,29 @@ except ImportError:
 import httpx
 
 from gateway.config import Platform, PlatformConfig
+from gateway.group_runtime import (
+    GroupBatchItem,
+    GroupDispatchThresholds,
+    GroupTriggerState,
+    build_group_message_metadata,
+    decide_project_group_dispatch,
+    resolve_group_trigger_reason,
+    text_looks_like_request,
+)
+from gateway.qq_group_archive import QqGroupArchiveStore
+from gateway.qq_intel_assignments import get_group_monitoring_overlay, list_intel_workers
+from gateway.qq_intents import (
+    _QQ_BUSY_SHORTCUT_MARKERS,
+    _QQ_DEFAULT_TRIGGER_ALIASES,
+    _QQ_LOW_VALUE_IMAGE_HINTS,
+)
+from gateway.qq_napcat_runtime import diagnose_local_qq_napcat_endpoint
+from gateway.qq_group_policies import default_group_policy, get_group_policy, has_group_policy
+from gateway.qq_social_policy import get_social_policy
+from gateway.qq_social_requests import record_social_request_event, update_social_request_status
 from gateway.platforms.base import (
     BasePlatformAdapter,
+    MessageAttachment,
     MessageEvent,
     MessageType,
     SendResult,
@@ -37,17 +58,6 @@ from gateway.platforms.base import (
 )
 
 logger = logging.getLogger(__name__)
-
-_QQ_DEFAULT_TRIGGER_ALIASES = (
-    "马嘎",
-    "马噶",
-    "马哥",
-    "老马",
-    "马屌",
-    "马逼",
-    "小马",
-    "马户",
-)
 
 
 @dataclass
@@ -72,6 +82,36 @@ def _decoded_path_from_ref(value: str) -> str:
     text = str(value or "").strip()
     parsed = urlsplit(text)
     return unquote(parsed.path or text)
+
+
+def _normalized_media_ref(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    parsed = urlsplit(text)
+    if parsed.scheme in {"http", "https"}:
+        return f"{parsed.netloc}{unquote(parsed.path)}".lower()
+    return _decoded_path_from_ref(text).lower()
+
+
+def _looks_like_low_value_image_ref(value: Any) -> bool:
+    ref = _normalized_media_ref(value)
+    if not ref:
+        return False
+    if ref.endswith(".gif"):
+        return True
+    if ref.endswith(".webp") and any(hint in ref for hint in _QQ_LOW_VALUE_IMAGE_HINTS):
+        return True
+    return False
+
+
+def _is_qq_signed_image_ref(value: Any) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    parsed = urlsplit(text)
+    host = (parsed.netloc or "").strip().lower()
+    return parsed.scheme in {"http", "https"} and host == "multimedia.nt.qq.com.cn"
 
 
 def _with_access_token(ws_url: str, access_token: str) -> str:
@@ -122,6 +162,18 @@ def _coerce_bool(value: Any, default: bool = False) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in ("true", "1", "yes", "on")
     return bool(value)
+
+
+def _unique_nonempty_text(values: list[Any]) -> list[str]:
+    unique: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = str(value or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        unique.append(text)
+    return unique
 
 
 class QqNapCatAdapter(BasePlatformAdapter):
@@ -176,6 +228,12 @@ class QqNapCatAdapter(BasePlatformAdapter):
         self._group_batch_tasks: Dict[str, asyncio.Task] = {}
         self._group_last_dispatch_at: Dict[str, float] = {}
         self._group_last_included_at: Dict[str, float] = {}
+        self._recent_inbound_message_ids: Dict[str, float] = {}
+        self._inbound_message_dedupe_ttl_seconds = max(
+            5.0,
+            float(extra.get("inbound_message_dedupe_ttl_seconds") or 120.0),
+        )
+        self._group_archive_store = QqGroupArchiveStore()
 
         self._session: Optional[aiohttp.ClientSession] = None
         self._ws: Optional[aiohttp.ClientWebSocketResponse] = None
@@ -259,6 +317,82 @@ class QqNapCatAdapter(BasePlatformAdapter):
                 return True
         return False
 
+    def _is_explicit_busy_followup(self, event: MessageEvent) -> bool:
+        if super()._is_explicit_busy_followup(event):
+            return True
+        if getattr(event.source, "chat_type", "") != "group":
+            return False
+
+        user_id = str(getattr(event.source, "user_id", "") or "").strip()
+        if user_id and user_id in self._admin_users:
+            return True
+
+        for body in self._message_text_candidates(event):
+            if not body:
+                continue
+            if any(alias in body for alias in self._default_trigger_aliases):
+                return True
+            for pattern in self._mention_patterns:
+                try:
+                    if pattern.search(body):
+                        return True
+                except Exception:
+                    continue
+        return False
+
+    @staticmethod
+    def _looks_like_busy_shortcut_phrase(body: str) -> bool:
+        text = str(body or "").strip()
+        if not text:
+            return False
+        return any(marker in text for marker in _QQ_BUSY_SHORTCUT_MARKERS)
+
+    def _should_inline_active_session_message(self, event: MessageEvent) -> bool:
+        source = getattr(event, "source", None)
+        if getattr(source, "platform", None) != Platform.QQ_NAPCAT:
+            return False
+        if event.get_command():
+            return False
+        if getattr(event, "message_type", None) != MessageType.TEXT:
+            return False
+        if getattr(event, "media_urls", None):
+            return False
+
+        user_id = str(getattr(source, "user_id", "") or "").strip()
+        is_admin = bool(user_id and user_id in self._admin_users)
+        explicit_followup = self._is_explicit_busy_followup(event)
+
+        try:
+            from gateway.run import _looks_like_qq_active_session_inline_candidate
+        except Exception:
+            return False
+
+        for body in self._message_text_candidates(event):
+            if not body:
+                continue
+            if explicit_followup and self._looks_like_busy_shortcut_phrase(body):
+                return True
+            if _looks_like_qq_active_session_inline_candidate(
+                body,
+                is_admin=is_admin,
+                explicit_followup=explicit_followup,
+            ):
+                return True
+        return False
+
+    def _busy_followup_ack(self, event: MessageEvent, *, interrupting: bool = False) -> str:
+        source = getattr(event, "source", None)
+        if getattr(source, "chat_type", "") == "dm":
+            if interrupting:
+                return "收到，上一轮有点久，我先切到你这条，马上接着回你。"
+            return "收到，这条我先排队，上一轮忙完马上接着回你。"
+
+        if self._is_explicit_busy_followup(event):
+            if interrupting:
+                return "收到，上一轮有点久，我先切到这条，马上接着回。"
+            return "收到，这条我先排队，上一轮忙完接着回你。"
+        return ""
+
     def _message_matches_mention_patterns(self, payload: Dict[str, Any]) -> bool:
         body = str(payload.get("raw_message") or "")
         if not body:
@@ -278,25 +412,19 @@ class QqNapCatAdapter(BasePlatformAdapter):
     def _group_message_trigger_reason(self, payload: Dict[str, Any]) -> Optional[str]:
         if not self._group_message_allowed(payload):
             return None
-        if not self._qq_require_mention():
-            return "require_mention_disabled"
 
-        raw_text = str(payload.get("raw_message") or "").strip()
-        if raw_text.startswith("/"):
-            return "slash_command"
-        if self._message_mentions_bot(payload):
-            return "bot_mention"
-        if self._message_is_reply_to_bot(payload):
-            return "reply_to_bot"
-        if self._project_group_mode and self._has_group_followup_window(payload):
-            return "group_followup_window"
-        if self._has_followup_window(payload):
-            return "user_followup_window"
-        if self._has_recent_session_followup(payload):
-            return "recent_session_followup"
-        if self._message_matches_mention_patterns(payload):
-            return "name_trigger"
-        return None
+        group_id = str(payload.get("group_id") or "").strip()
+        state = GroupTriggerState(
+            require_explicit_trigger=self._qq_require_mention(),
+            slash_command=str(payload.get("raw_message") or "").strip().startswith("/"),
+            mentioned_bot=self._message_mentions_bot(payload),
+            replied_to_bot=self._message_is_reply_to_bot(payload),
+            shared_followup=self._group_runs_project_mode(group_id) and self._has_group_followup_window(payload),
+            user_followup=self._has_followup_window(payload),
+            recent_session_followup=self._has_recent_session_followup(payload),
+            name_trigger=self._message_matches_mention_patterns(payload),
+        )
+        return resolve_group_trigger_reason(state)
 
     def _clean_bot_mention_text(self, text: str, payload: Dict[str, Any]) -> str:
         bot_id = str(payload.get("self_id") or self._bot_user_id or "").strip()
@@ -354,6 +482,14 @@ class QqNapCatAdapter(BasePlatformAdapter):
         for message_id in expired_message_ids:
             self._recent_group_bot_messages.pop(message_id, None)
 
+        expired_inbound_ids = [
+            message_id
+            for message_id, expires_at in self._recent_inbound_message_ids.items()
+            if expires_at <= now
+        ]
+        for message_id in expired_inbound_ids:
+            self._recent_inbound_message_ids.pop(message_id, None)
+
         overflow = len(self._recent_group_bot_messages) - self._max_recent_group_messages
         if overflow > 0:
             stale_items = sorted(
@@ -366,6 +502,41 @@ class QqNapCatAdapter(BasePlatformAdapter):
         for group_id, items in list(self._group_observed_messages.items()):
             if len(items) > self._group_observed_max_messages:
                 self._group_observed_messages[group_id] = items[-self._group_observed_max_messages:]
+
+    def _inbound_message_dedupe_key(self, payload: Dict[str, Any]) -> Optional[str]:
+        message_id = str(
+            payload.get("message_id")
+            or payload.get("raw_message_id")
+            or payload.get("real_id")
+            or ""
+        ).strip()
+        if not message_id:
+            return None
+
+        message_type = str(payload.get("message_type") or "private").strip().lower()
+        if message_type == "group":
+            chat_id = str(payload.get("group_id") or "").strip()
+        else:
+            chat_id = str(payload.get("user_id") or "").strip()
+        if not chat_id:
+            return None
+        return f"{message_type}:{chat_id}:{message_id}"
+
+    def _is_duplicate_inbound_message(self, payload: Dict[str, Any]) -> bool:
+        dedupe_key = self._inbound_message_dedupe_key(payload)
+        if not dedupe_key:
+            return False
+
+        self._cleanup_group_tracking_state()
+        now = time.time()
+        expires_at = self._recent_inbound_message_ids.get(dedupe_key)
+        if expires_at and expires_at > now:
+            return True
+
+        self._recent_inbound_message_ids[dedupe_key] = (
+            now + self._inbound_message_dedupe_ttl_seconds
+        )
+        return False
 
     def _message_is_reply_to_bot(self, payload: Dict[str, Any]) -> bool:
         group_id = str(payload.get("group_id") or "").strip()
@@ -382,6 +553,30 @@ class QqNapCatAdapter(BasePlatformAdapter):
             self._recent_group_bot_messages.pop(reply_id, None)
             return False
         return tracked_group_id == group_id
+
+    @staticmethod
+    def _segment_text_for_message(segments: Any) -> str:
+        """Rebuild human-visible text from structured QQ message segments.
+
+        NapCat ``raw_message`` may contain CQ markup such as
+        ``[CQ:image,file=...,url=...]``. That markup is not useful to the agent
+        and can leak opaque file hashes into the prompt. For inbound message
+        text, only keep the user-visible text and explicit ``@`` mentions.
+        """
+        if not isinstance(segments, list):
+            return ""
+
+        parts: list[str] = []
+        for segment in segments:
+            seg_type = str(segment.get("type") or "").strip().lower()
+            data = segment.get("data") or {}
+            if seg_type == "text":
+                parts.append(str(data.get("text") or ""))
+            elif seg_type == "at":
+                qq = str(data.get("qq") or "").strip()
+                if qq:
+                    parts.append(f"@{qq}")
+        return "".join(parts).strip()
 
     def _has_followup_window(self, payload: Dict[str, Any]) -> bool:
         group_id = str(payload.get("group_id") or "").strip()
@@ -451,11 +646,104 @@ class QqNapCatAdapter(BasePlatformAdapter):
         group_id = str(payload.get("group_id") or "").strip()
         if not group_id:
             return False
+        if self._intel_group_overlay(group_id).get("active"):
+            return True
+        if has_group_policy(group_id):
+            return True
         if not self.allow_all_groups and self.allowed_groups and group_id not in self.allowed_groups:
             return False
         if not self.allow_all_groups and not self.allowed_groups:
             return False
         return True
+
+    def _intel_group_overlay(self, group_id: str) -> dict[str, Any]:
+        normalized_group_id = str(group_id or "").strip()
+        if not normalized_group_id:
+            return {"active": False, "mode": "default", "archive_enabled": False, "daily_report_enabled": False, "workers": []}
+        try:
+            return get_group_monitoring_overlay(normalized_group_id)
+        except Exception:
+            logger.exception(
+                "[%s] Failed to load QQ intel overlay for %s",
+                self.name,
+                normalized_group_id,
+            )
+            return {"active": False, "mode": "default", "archive_enabled": False, "daily_report_enabled": False, "workers": []}
+
+    @staticmethod
+    def _policy_has_runtime_override(policy: dict[str, Any]) -> bool:
+        mode = str(policy.get("mode") or "").strip().lower()
+        return bool(
+            mode not in {"", "default"}
+            or bool(policy.get("archive_enabled"))
+            or bool(policy.get("daily_report_enabled"))
+            or str(policy.get("daily_report_target") or "").strip()
+            or str(policy.get("manual_report_target") or "").strip()
+            or not bool(policy.get("purge_raw_after_rollup", True))
+        )
+
+    def _effective_group_policy(self, group_id: str) -> dict[str, Any]:
+        normalized_group_id = str(group_id or "").strip()
+        if not normalized_group_id:
+            return default_group_policy("")
+        try:
+            policy = get_group_policy(normalized_group_id)
+        except Exception:
+            logger.exception(
+                "[%s] Failed to load QQ group policy for %s",
+                self.name,
+                normalized_group_id,
+            )
+            policy = default_group_policy(normalized_group_id)
+
+        overlay = self._intel_group_overlay(normalized_group_id)
+        if overlay.get("active") and not self._policy_has_runtime_override(policy):
+            merged = dict(policy)
+            workers = list(overlay.get("workers") or [])
+            daily_report_targets = _unique_nonempty_text(
+                [
+                    worker.get("daily_report_target")
+                    for worker in workers
+                    if bool(worker.get("daily_report_enabled"))
+                ]
+            )
+            manual_report_targets = _unique_nonempty_text(
+                [worker.get("manual_report_target") for worker in workers]
+            )
+            notify_targets = _unique_nonempty_text(
+                [worker.get("notify_target") for worker in workers]
+            )
+            merged["mode"] = "collect_only"
+            merged["archive_enabled"] = bool(overlay.get("archive_enabled"))
+            merged["daily_report_enabled"] = bool(overlay.get("daily_report_enabled"))
+            merged["daily_report_target"] = (
+                daily_report_targets[0] if len(daily_report_targets) == 1 else None
+            )
+            merged["manual_report_target"] = (
+                manual_report_targets[0] if len(manual_report_targets) == 1 else None
+            )
+            merged["notify_target"] = notify_targets[0] if len(notify_targets) == 1 else None
+            merged["daily_report_targets"] = daily_report_targets
+            merged["manual_report_targets"] = manual_report_targets
+            merged["notify_targets"] = notify_targets
+            return merged
+        return policy
+
+    def _group_runs_project_mode(self, group_id: str) -> bool:
+        if self._project_group_mode:
+            return True
+        policy = self._effective_group_policy(group_id)
+        return str(policy.get("mode") or "").strip().lower() == "project_mode"
+
+    async def _archive_group_payload(self, payload: Dict[str, Any]) -> None:
+        try:
+            await asyncio.to_thread(self._group_archive_store.archive_payload, dict(payload))
+        except Exception:
+            logger.exception(
+                "[%s] Failed to archive QQ group message %s",
+                self.name,
+                payload.get("message_id"),
+            )
 
     def _group_message_triggers_ai(self, payload: Dict[str, Any]) -> bool:
         return self._group_message_trigger_reason(payload) is not None
@@ -471,101 +759,31 @@ class QqNapCatAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _text_looks_like_request(text: str) -> bool:
-        body = str(text or "").strip().lower()
-        if not body:
-            return False
-        if any(token in body for token in ("?", "？")):
-            return True
-        request_markers = (
-            "吗",
-            "么",
-            "咋",
-            "怎么",
-            "如何",
-            "为啥",
-            "为什么",
-            "能不能",
-            "可不可以",
-            "要不要",
-            "看看",
-            "看下",
-            "看一下",
-            "帮我",
-            "帮忙",
-            "查下",
-            "查一下",
-            "分析",
-            "安排",
-            "处理",
-            "修",
-            "改",
-            "做一下",
-            "做到哪",
-            "进度",
-            "还在",
-            "在吗",
-            "在?",
-            "在？",
-            "什么情况",
-            "啥情况",
-            "有没有",
-            "发一下",
-            "给我",
-        )
-        return any(marker in body for marker in request_markers)
+        return text_looks_like_request(text)
 
     def _project_group_batch_should_dispatch(
         self,
         group_id: str,
         batch: list[_BufferedGroupMessage],
     ) -> tuple[bool, str]:
-        if not batch:
-            return False, "empty"
-
-        # Hard triggers: once any of these appear, let the main model decide
-        # whether to answer or emit [[NO_REPLY]].
-        for item in batch:
-            payload = item.payload
-            trigger_reason = self._group_message_trigger_reason(payload)
-            if trigger_reason:
-                return True, f"direct_trigger:{trigger_reason}"
-            if str(payload.get("user_id") or "").strip() in self._admin_users:
-                return True, "admin_user"
-            if self._message_has_nontext_media(payload):
-                return True, "media"
-
-        score = 0
-        reasons = []
-        unique_speakers = {
-            str(item.event.source.user_id or "").strip()
+        normalized = [
+            GroupBatchItem(
+                speaker_id=str(item.event.source.user_id or "").strip(),
+                text=str(item.event.text or "").strip(),
+                direct_trigger_reason=self._group_message_trigger_reason(item.payload),
+                is_admin=str(item.payload.get("user_id") or "").strip() in self._admin_users,
+                has_nontext_media=self._message_has_nontext_media(item.payload),
+            )
             for item in batch
-            if str(item.event.source.user_id or "").strip()
-        }
-        total_chars = 0
-
-        if len(batch) >= self._group_trigger_min_messages:
-            score += 1
-            reasons.append("message_volume")
-
-        if len(unique_speakers) >= self._group_trigger_min_speakers:
-            score += 1
-            reasons.append("multi_speaker")
-
-        for item in batch:
-            text = str(item.event.text or "").strip()
-            total_chars += len(text)
-            if self._text_looks_like_request(text):
-                score += 2
-                reasons.append("explicit_request")
-                break
-
-        if total_chars >= self._group_trigger_min_chars:
-            score += 1
-            reasons.append("text_volume")
-
-        if score >= 2:
-            return True, ",".join(reasons) or f"score={score}"
-        return False, ",".join(reasons) or f"score={score}"
+        ]
+        return decide_project_group_dispatch(
+            normalized,
+            thresholds=GroupDispatchThresholds(
+                min_messages=self._group_trigger_min_messages,
+                min_speakers=self._group_trigger_min_speakers,
+                min_chars=self._group_trigger_min_chars,
+            ),
+        )
 
     def _should_process_group_message(self, payload: Dict[str, Any]) -> bool:
         return self._group_message_triggers_ai(payload)
@@ -586,8 +804,8 @@ class QqNapCatAdapter(BasePlatformAdapter):
             )
             await self._connect_websocket()
         except Exception as exc:
-            logger.error("QQ NapCat: websocket connect failed: %s", exc)
             await self.disconnect()
+            self._record_connect_failure(exc)
             return False
 
         self._running = True
@@ -595,6 +813,25 @@ class QqNapCatAdapter(BasePlatformAdapter):
         self._reader_task = asyncio.create_task(self._reader_loop())
         logger.info("QQ NapCat connected to %s", self.ws_url)
         return True
+
+    def _record_connect_failure(self, exc: Exception) -> None:
+        diagnostic = diagnose_local_qq_napcat_endpoint(self.ws_url)
+        if diagnostic:
+            logger.error("QQ NapCat: %s", diagnostic["message"])
+        else:
+            logger.error("QQ NapCat: websocket connect failed: %s", exc)
+
+        try:
+            from gateway.status import write_runtime_status
+
+            write_runtime_status(
+                platform=self.platform.value,
+                platform_state="unavailable" if diagnostic else "disconnected",
+                error_code=(diagnostic or {}).get("code") or "qq_napcat_connect_failed",
+                error_message=(diagnostic or {}).get("message") or str(exc),
+            )
+        except Exception:
+            pass
 
     async def disconnect(self) -> None:
         self._running = False
@@ -679,7 +916,7 @@ class QqNapCatAdapter(BasePlatformAdapter):
                             future.set_result(data)
                         continue
 
-                    if data.get("post_type") == "message":
+                    if data.get("post_type") in {"message", "request"}:
                         asyncio.create_task(self._handle_payload(data))
 
                 if not self._running:
@@ -721,6 +958,147 @@ class QqNapCatAdapter(BasePlatformAdapter):
             raise RuntimeError(f"NapCat API error ({response.get('retcode')}): {message}")
         return response.get("data") or {}
 
+    @staticmethod
+    def _normalize_social_notify_target(target: str | None) -> str | None:
+        text = str(target or "").strip()
+        if not text:
+            return None
+        if text.startswith("qq_napcat:"):
+            text = text.split(":", 1)[1]
+        if text.startswith(("group:", "dm:")):
+            return text
+        return None
+
+    @staticmethod
+    def _worker_matches_request_group(worker: dict[str, Any], group_id: str) -> bool:
+        normalized_group_id = str(group_id or "").strip()
+        if not normalized_group_id:
+            return False
+        if str(worker.get("target_group_id") or "").strip() == normalized_group_id:
+            return True
+        target_ref = str(worker.get("target_group_ref") or "").strip()
+        if target_ref.startswith("qq_napcat:group:"):
+            target_ref = target_ref.split(":", 2)[2]
+        elif target_ref.startswith("group:"):
+            target_ref = target_ref.split(":", 1)[1]
+        return target_ref == normalized_group_id
+
+    async def _send_social_auto_notice(self, target: str | None, message: str) -> None:
+        normalized_target = self._normalize_social_notify_target(target)
+        if not normalized_target or not str(message or "").strip():
+            return
+        result = await self.send(normalized_target, message)
+        if not result.success:
+            logger.warning("[%s] Failed to send QQ social auto-handling notice: %s", self.name, result.error)
+
+    async def _auto_handle_social_request(self, request: dict[str, Any]) -> None:
+        request_key = str(request.get("request_key") or "").strip()
+        if not request_key:
+            return
+        if str(request.get("status") or "pending").strip().lower() != "pending":
+            return
+
+        try:
+            policy = await asyncio.to_thread(get_social_policy)
+        except Exception:
+            logger.exception("[%s] Failed to load QQ social auto-handling policy", self.name)
+            return
+
+        request_type = str(request.get("request_type") or "").strip().lower()
+        sub_type = str(request.get("sub_type") or "add").strip().lower() or "add"
+        group_id = str(request.get("group_id") or "").strip()
+        note: str | None = None
+        handled_by: str | None = None
+        handled_via: str | None = None
+
+        if request_type == "friend":
+            if bool(policy.get("auto_approve_friend_requests")):
+                note = "按社交自动处理策略自动通过好友请求。"
+                handled_by = "qq_napcat:auto_social_policy"
+                handled_via = "auto_social_policy"
+        elif request_type == "group":
+            if sub_type == "invite" and bool(policy.get("auto_approve_group_invites")):
+                note = "按社交自动处理策略自动通过加群邀请。"
+                handled_by = "qq_napcat:auto_social_policy"
+                handled_via = "auto_social_policy"
+            elif sub_type != "invite" and bool(policy.get("auto_approve_group_add_requests")):
+                note = "按社交自动处理策略自动通过加群请求。"
+                handled_by = "qq_napcat:auto_social_policy"
+                handled_via = "auto_social_policy"
+            elif group_id:
+                try:
+                    pending_workers = await asyncio.to_thread(list_intel_workers)
+                except Exception:
+                    logger.exception("[%s] Failed to inspect QQ intel workers for request auto-approval", self.name)
+                    pending_workers = []
+                for worker in pending_workers:
+                    status = str(worker.get("status") or "").strip().lower()
+                    if status not in {"awaiting_group_approval", "failed"}:
+                        continue
+                    if self._worker_matches_request_group(worker, group_id):
+                        worker_name = str(worker.get("worker_name") or "情报员").strip() or "情报员"
+                        note = f"匹配到{worker_name}的潜伏任务，自动通过加群请求。"
+                        handled_by = "qq_napcat:auto_intel_worker"
+                        handled_via = "auto_intel_worker"
+                        break
+
+        if not note:
+            return
+
+        try:
+            if request_type == "group":
+                await self._call_api(
+                    "set_group_add_request",
+                    {
+                        "flag": str(request.get("flag") or "").strip(),
+                        "sub_type": sub_type,
+                        "approve": True,
+                    },
+                )
+            elif request_type == "friend":
+                await self._call_api(
+                    "set_friend_add_request",
+                    {
+                        "flag": str(request.get("flag") or "").strip(),
+                        "approve": True,
+                    },
+                )
+            else:
+                return
+        except Exception as exc:
+            logger.warning("[%s] QQ social auto-handling failed for %s: %s", self.name, request_key, exc)
+            await self._send_social_auto_notice(
+                policy.get("notify_target"),
+                f"QQ 社交请求自动处理失败：{request_key}\n原因：{exc}",
+            )
+            return
+
+        try:
+            updated = await asyncio.to_thread(
+                update_social_request_status,
+                request_key,
+                status="approved",
+                handled_by=handled_by,
+                handled_via=handled_via,
+                note=note,
+            )
+        except Exception:
+            logger.exception("[%s] Failed to persist QQ social auto-handling result for %s", self.name, request_key)
+            updated = request
+
+        request_label = "好友请求" if request_type == "friend" else "加群请求"
+        summary = f"{request_label}已自动通过：{request_key}"
+        requester = str(updated.get("user_id") or "").strip()
+        if requester:
+            summary += f"\n发起人：{requester}"
+        if group_id:
+            summary += f"\n群号：{group_id}"
+        summary += f"\n当前状态：{updated.get('status') or 'approved'}"
+        if handled_via:
+            summary += f"\n处理来源：{handled_via}"
+        summary += f"\n说明：{note}"
+        await self._send_social_auto_notice(policy.get("notify_target"), summary)
+
     def _build_message_event(self, payload: Dict[str, Any]) -> MessageEvent:
         message_type = str(payload.get("message_type") or "private").lower()
         is_group = message_type == "group"
@@ -734,16 +1112,9 @@ class QqNapCatAdapter(BasePlatformAdapter):
 
         segments = payload.get("message")
         text = str(payload.get("raw_message") or "").strip()
-        if not text and isinstance(segments, list):
-            text_parts = []
-            for segment in segments:
-                seg_type = str(segment.get("type") or "")
-                data = segment.get("data") or {}
-                if seg_type == "text":
-                    text_parts.append(str(data.get("text") or ""))
-                elif seg_type == "at":
-                    text_parts.append(f"@{data.get('qq')}")
-            text = "".join(text_parts).strip()
+        structured_text = self._segment_text_for_message(segments)
+        if structured_text or "[CQ:" in text:
+            text = structured_text
 
         normalized_type = MessageType.TEXT
         if isinstance(segments, list):
@@ -764,12 +1135,28 @@ class QqNapCatAdapter(BasePlatformAdapter):
             user_id=user_id or None,
             user_name=user_name or None,
         )
+        metadata = None
+        if is_group:
+            trigger_reason = self._group_message_trigger_reason(payload)
+            explicit_trigger_reason = ""
+            if self._message_mentions_bot(payload):
+                explicit_trigger_reason = "bot_mention"
+            elif self._message_is_reply_to_bot(payload):
+                explicit_trigger_reason = "reply_to_bot"
+            elif self._message_matches_mention_patterns(payload):
+                explicit_trigger_reason = "name_trigger"
+            if trigger_reason:
+                metadata = build_group_message_metadata(
+                    trigger_reason=trigger_reason,
+                    explicit_reason=explicit_trigger_reason,
+                )
         return MessageEvent(
             text=text,
             message_type=normalized_type,
             source=source,
             raw_message=payload,
             message_id=str(payload.get("message_id")) if payload.get("message_id") is not None else None,
+            metadata=metadata,
             reply_to_message_id=self._extract_reply_message_id(payload),
             timestamp=datetime.fromtimestamp(payload.get("time", time.time())),
         )
@@ -792,7 +1179,7 @@ class QqNapCatAdapter(BasePlatformAdapter):
         expires_at = time.time() + self._followup_window_seconds
         if user_id:
             self._group_followup_windows[(group_id, user_id)] = expires_at
-        if self._project_group_mode:
+        if self._group_runs_project_mode(group_id):
             self._group_shared_followup_windows[group_id] = expires_at
 
         for message_id in sent_message_ids:
@@ -857,12 +1244,13 @@ class QqNapCatAdapter(BasePlatformAdapter):
         selected = batch[-self._group_batch_max_messages:]
         omitted_count = len(batch) - len(selected)
         latest = selected[-1]
+        latest_user_id = str(latest.event.source.user_id or "").strip()
+        latest_is_admin = bool(latest_user_id and latest_user_id in self._admin_users)
         merged_lines = [f"[QQ项目群合并消息，共 {len(batch)} 条]"]
         if omitted_count > 0:
             merged_lines.append(f"[已截取最近 {len(selected)} 条，省略 {omitted_count} 条更早消息]")
 
-        merged_media_urls = []
-        merged_media_types = []
+        merged_attachments = []
         for item in selected:
             if item.event.media_urls or item.event.message_type in {
                 MessageType.PHOTO,
@@ -871,8 +1259,7 @@ class QqNapCatAdapter(BasePlatformAdapter):
                 MessageType.DOCUMENT,
             }:
                 await self._populate_media(item.event, item.payload)
-                merged_media_urls.extend(item.event.media_urls)
-                merged_media_types.extend(item.event.media_types)
+                merged_attachments.extend(item.event.ensure_attachments())
 
             speaker = str(item.event.source.user_name or item.event.source.user_id or "unknown").strip()
             merged_lines.append(f"{speaker}: {self._describe_group_message(item)}")
@@ -885,10 +1272,11 @@ class QqNapCatAdapter(BasePlatformAdapter):
                 "qq_group_batch": True,
                 "group_id": group_id,
                 "message_ids": [item.event.message_id for item in selected if item.event.message_id],
+                "latest_user_id": latest_user_id,
+                "latest_is_admin": latest_is_admin,
             },
             message_id=latest.event.message_id,
-            media_urls=merged_media_urls,
-            media_types=merged_media_types,
+            attachments=merged_attachments,
             reply_to_message_id=latest.event.reply_to_message_id,
             timestamp=latest.event.timestamp,
         )
@@ -916,6 +1304,19 @@ class QqNapCatAdapter(BasePlatformAdapter):
                 if session_key in self._active_sessions:
                     await asyncio.sleep(self._group_batch_retry_seconds)
                     continue
+
+                policy = self._effective_group_policy(group_id)
+                policy_mode = str(policy.get("mode") or "").strip().lower()
+                if policy_mode in {"collect_only", "disabled"}:
+                    logger.debug(
+                        "[%s] Dropping buffered QQ group batch for %s (%d messages, mode=%s)",
+                        self.name,
+                        group_id,
+                        len(batch),
+                        policy_mode,
+                    )
+                    self._group_pending_batches.pop(group_id, None)
+                    return
 
                 should_dispatch, reason = self._project_group_batch_should_dispatch(
                     group_id, batch
@@ -979,16 +1380,56 @@ class QqNapCatAdapter(BasePlatformAdapter):
         self._schedule_group_batch_flush(group_id)
 
     async def _handle_payload(self, payload: Dict[str, Any]) -> None:
-        if payload.get("post_type") != "message":
+        post_type = str(payload.get("post_type") or "").strip().lower()
+        if post_type == "request":
+            try:
+                request = await asyncio.to_thread(record_social_request_event, dict(payload))
+            except Exception:
+                logger.exception("QQ NapCat: failed to persist request payload")
+            else:
+                try:
+                    await self._auto_handle_social_request(request)
+                except Exception:
+                    logger.exception("QQ NapCat: failed to auto-handle request payload")
+            return
+
+        if post_type != "message":
             return
 
         message_type = str(payload.get("message_type") or "").lower()
+        if self._is_duplicate_inbound_message(payload):
+            logger.debug(
+                "[%s] Ignoring duplicate QQ %s message %s",
+                self.name,
+                message_type or "unknown",
+                payload.get("message_id"),
+            )
+            return
 
         try:
             if message_type == "group":
                 if not self._group_message_allowed(payload):
                     return
-                if self._project_group_mode:
+                group_id = str(payload.get("group_id") or "").strip()
+                policy = self._effective_group_policy(group_id)
+                policy_mode = str(policy.get("mode") or "").strip().lower()
+                if policy_mode == "disabled":
+                    logger.debug(
+                        "[%s] Ignoring QQ group message for %s (reason=policy_disabled)",
+                        self.name,
+                        group_id,
+                    )
+                    return
+                if bool(policy.get("archive_enabled")):
+                    await self._archive_group_payload(payload)
+                if policy_mode == "collect_only":
+                    logger.debug(
+                        "[%s] Archived QQ group message for %s without dispatch (reason=collect_only)",
+                        self.name,
+                        group_id,
+                    )
+                    return
+                if self._group_runs_project_mode(group_id):
                     await self._handle_project_group_payload(payload)
                     return
                 if not self._should_process_group_message(payload):
@@ -1016,14 +1457,57 @@ class QqNapCatAdapter(BasePlatformAdapter):
             if seg_type not in {"image", "record", "video", "file"}:
                 continue
             data = segment.get("data") or {}
+            if seg_type == "image" and self._should_skip_media_segment(seg_type, data):
+                logger.debug(
+                    "QQ NapCat: skipping low-value %s segment %s",
+                    seg_type,
+                    str(data.get("url") or data.get("file") or "")[:160],
+                )
+                continue
             try:
                 cached_path, mime_type = await self._cache_segment_media(seg_type, data)
             except Exception as exc:
                 logger.debug("QQ NapCat: failed to cache %s segment: %s", seg_type, exc)
                 continue
             if cached_path:
-                event.media_urls.append(cached_path)
-                event.media_types.append(mime_type)
+                event.add_attachment(
+                    MessageAttachment(
+                        kind="image" if seg_type == "image" else (
+                            "audio" if seg_type == "record" else (
+                                "video" if seg_type == "video" else "document"
+                            )
+                        ),
+                        mime_type=mime_type,
+                        local_path=cached_path,
+                        remote_url=self._preferred_media_source(seg_type, data, cached_path),
+                        analysis_ref=self._preferred_media_source(seg_type, data, cached_path),
+                    )
+                )
+
+    @staticmethod
+    def _should_skip_media_segment(seg_type: str, data: Dict[str, Any]) -> bool:
+        if seg_type != "image":
+            return False
+        source_ref = str(data.get("url") or data.get("file") or "").strip()
+        if not source_ref:
+            return False
+        return _looks_like_low_value_image_ref(source_ref)
+
+    @staticmethod
+    def _preferred_media_source(seg_type: str, data: Dict[str, Any], cached_path: str) -> str:
+        """Return the best source string for later media analysis.
+
+        For images, preserve the original remote URL whenever NapCat provides
+        one so providers that reject ``data:image/...`` payloads can analyze
+        the image directly. Local files and non-image media keep using the
+        cached/local path.
+        """
+        if seg_type != "image":
+            return cached_path
+        source_ref = str(data.get("url") or data.get("file") or "").strip()
+        if source_ref.startswith(("http://", "https://")):
+            return source_ref
+        return cached_path
 
     async def _cache_segment_media(self, seg_type: str, data: Dict[str, Any]) -> tuple[Optional[str], str]:
         url = str(data.get("url") or data.get("file") or "").strip()
@@ -1066,6 +1550,7 @@ class QqNapCatAdapter(BasePlatformAdapter):
         suffix = Path(str(value)).suffix.lower()
         if seg_type == "image":
             return {
+                ".gif": "image/gif",
                 ".png": "image/png",
                 ".webp": "image/webp",
             }.get(suffix, "image/jpeg")
@@ -1097,7 +1582,7 @@ class QqNapCatAdapter(BasePlatformAdapter):
         content: str,
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
-    ) -> SendResult:
+        ) -> SendResult:
         try:
             chat_type, numeric_id = self._resolve_target(chat_id)
             action = "send_group_msg" if chat_type == "group" else "send_private_msg"
@@ -1113,6 +1598,15 @@ class QqNapCatAdapter(BasePlatformAdapter):
                 raw_response=data,
             )
         except Exception as exc:
+            logger.warning(
+                "[%s] QQ send failed (action=%s chat_type=%s reply=%s chars=%d): %s",
+                self.name,
+                action if "action" in locals() else "unknown",
+                chat_type if "chat_type" in locals() else "unknown",
+                bool(reply_to),
+                len(str(content or "")),
+                exc,
+            )
             return SendResult(success=False, error=str(exc))
 
     async def _send_media(
@@ -1148,6 +1642,15 @@ class QqNapCatAdapter(BasePlatformAdapter):
                 raw_response=data,
             )
         except Exception as exc:
+            logger.warning(
+                "[%s] QQ media send failed (segment=%s chat_id=%s reply=%s file=%s): %s",
+                self.name,
+                segment_type,
+                chat_id,
+                bool(reply_to),
+                Path(str(path or "")).name or str(path or ""),
+                exc,
+            )
             return SendResult(success=False, error=str(exc))
 
     async def send_image_file(

@@ -6,19 +6,34 @@ import json
 import os
 
 from gateway.config import Platform
-from gateway.platforms.qq_napcat import resolve_qq_napcat_group_id
 from tools.approval import request_dangerous_action_approval
+from tools.qq_group_tool_common import resolve_group_target as _resolve_group_target
 from tools.registry import registry, tool_error
 from tools.send_message_tool import _check_send_message, _error, _qq_napcat_call
 
 
 _MAX_MUTE_SECONDS_DEFAULT = 24 * 60 * 60
+_ACTION_ALIASES = {
+    "mute": "mute_user",
+    "mute_member": "mute_user",
+    "ban": "mute_user",
+    "ban_user": "mute_user",
+    "ban_member": "mute_user",
+    "kick": "kick_user",
+    "kick_member": "kick_user",
+    "remove_user": "kick_user",
+    "remove_member": "kick_user",
+}
 
 
 QQ_GROUP_MODERATION_SCHEMA = {
     "name": "qq_group_moderation",
     "description": (
         "Moderate a QQ/NapCat group by muting or kicking a member. "
+        "Prefer routing model-facing QQ moderation requests through qq_control, which dispatches here "
+        "while preserving the same approval and protected-user guardrails. "
+        "Use this tool directly for QQ group mute/kick requests instead of writing scripts, "
+        "shell commands, or raw NapCat API calls. "
         "Only works for QQ groups, requires a reason, and every action must "
         "be explicitly approved by the configured administrator before execution. "
         "The tool refuses to act on group owners, group admins, protected users, or the bot itself."
@@ -28,7 +43,7 @@ QQ_GROUP_MODERATION_SCHEMA = {
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["mute_user", "kick_user"],
+                "enum": ["mute_user", "kick_user", "mute", "kick"],
                 "description": "Moderation action to perform.",
             },
             "target": {
@@ -50,6 +65,10 @@ QQ_GROUP_MODERATION_SCHEMA = {
                 "type": "integer",
                 "description": "Mute duration in seconds when action='mute_user'. Required for mute_user.",
             },
+            "duration_minutes": {
+                "type": "integer",
+                "description": "Mute duration in minutes when action='mute_user'. Shortcut-friendly alias for duration_seconds.",
+            },
             "reason": {
                 "type": "string",
                 "description": "Short moderator reason explaining why the action is needed. Required.",
@@ -64,7 +83,7 @@ def qq_group_moderation_tool(args, **kw):
     """Handle QQ/NapCat group moderation operations."""
     del kw
 
-    action = str(args.get("action") or "").strip().lower()
+    action = _normalize_action(args.get("action"))
     if action not in {"mute_user", "kick_user"}:
         return tool_error("Unsupported action. Use 'mute_user' or 'kick_user'.")
 
@@ -93,7 +112,7 @@ def qq_group_moderation_tool(args, **kw):
         )
         reason = _normalize_reason(args.get("reason"))
         duration_seconds = _normalize_duration_seconds(
-            args.get("duration_seconds"),
+            _coerce_duration_seconds(args),
             action=action,
             max_mute_seconds=_get_max_mute_seconds(pconfig.extra),
         )
@@ -119,23 +138,9 @@ def qq_group_moderation_tool(args, **kw):
         return json.dumps(_error(f"QQ group moderation failed: {exc}"), ensure_ascii=False)
 
 
-def _resolve_group_target(target) -> str:
-    explicit = str(target or "").strip()
-    if explicit:
-        return str(resolve_qq_napcat_group_id(explicit))
-
-    if os.getenv("HERMES_SESSION_PLATFORM", "").strip().lower() != "qq_napcat":
-        raise ValueError("No QQ group target specified. Use target='group:<id>'.")
-
-    if os.getenv("HERMES_SESSION_CHAT_TYPE", "").strip().lower() != "group":
-        raise ValueError(
-            "No QQ group target specified. This tool only defaults to the current QQ group session; use target='group:<id>' elsewhere."
-        )
-
-    current_group_id = str(os.getenv("HERMES_SESSION_CHAT_ID", "") or "").strip()
-    if not current_group_id:
-        raise ValueError("Current QQ group session is missing HERMES_SESSION_CHAT_ID; specify target='group:<id>'.")
-    return str(resolve_qq_napcat_group_id(current_group_id))
+def _normalize_action(value) -> str:
+    action = str(value or "").strip().lower()
+    return _ACTION_ALIASES.get(action, action)
 
 
 def _normalize_user_id(value, *, arg_name: str) -> str:
@@ -162,6 +167,19 @@ def _normalize_reason(value) -> str:
     if not reason:
         raise ValueError("'reason' is required.")
     return reason[:200]
+
+
+def _coerce_duration_seconds(args: dict) -> int | str | None:
+    if args.get("duration_seconds") is not None and str(args.get("duration_seconds")).strip() != "":
+        return args.get("duration_seconds")
+
+    minutes = args.get("duration_minutes")
+    if minutes is None or str(minutes).strip() == "":
+        return None
+    try:
+        return int(minutes) * 60
+    except (TypeError, ValueError):
+        return minutes
 
 
 def _get_max_mute_seconds(extra: dict) -> int:
@@ -258,11 +276,14 @@ async def _dispatch_group_moderation_action(
             return error
         return {
             "success": True,
+            "approval_required": True,
+            "approved": True,
             "platform": "qq_napcat",
             "action": action,
             "group_id": group_id,
             "user_id": resolved_user_id,
             "duration_seconds": int(duration_seconds or 0),
+            "duration_minutes": max(1, int(duration_seconds or 0) // 60) if duration_seconds else None,
             "reason": reason,
             "member_role": str(member_data.get("role") or "member"),
             "member_name": _member_display_name(member_data),
@@ -278,6 +299,8 @@ async def _dispatch_group_moderation_action(
         return error
     return {
         "success": True,
+        "approval_required": True,
+        "approved": True,
         "platform": "qq_napcat",
         "action": action,
         "group_id": group_id,

@@ -2,8 +2,12 @@
 
 import json
 import os
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from gateway import status
+from gateway.config import Platform
+from gateway.run import GatewayRunner
 
 
 class TestGatewayPidState:
@@ -102,6 +106,219 @@ class TestGatewayRuntimeStatus:
         assert payload["platforms"]["telegram"]["state"] == "fatal"
         assert payload["platforms"]["telegram"]["error_code"] == "telegram_polling_conflict"
         assert payload["platforms"]["telegram"]["error_message"] == "another poller is active"
+
+    def test_write_runtime_status_clears_stale_error_fields_when_passed_none(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        status.write_runtime_status(
+            gateway_state="startup_failed",
+            exit_reason="telegram conflict",
+            platform="telegram",
+            platform_state="fatal",
+            error_code="telegram_polling_conflict",
+            error_message="another poller is active",
+        )
+        status.write_runtime_status(
+            gateway_state="running",
+            exit_reason=None,
+            platform="telegram",
+            platform_state="connected",
+            error_code=None,
+            error_message=None,
+        )
+
+        payload = status.read_runtime_status()
+        assert payload["gateway_state"] == "running"
+        assert payload["exit_reason"] is None
+        assert payload["platforms"]["telegram"]["state"] == "connected"
+        assert payload["platforms"]["telegram"]["error_code"] is None
+        assert payload["platforms"]["telegram"]["error_message"] is None
+
+    def test_write_runtime_status_can_reset_stale_platforms(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        status.write_runtime_status(
+            gateway_state="startup_failed",
+            exit_reason="stale failure",
+            platform="telegram",
+            platform_state="fatal",
+            error_code="telegram_connect_error",
+            error_message="timed out",
+        )
+        status.write_runtime_status(
+            gateway_state="starting",
+            exit_reason=None,
+            reset_platforms=True,
+        )
+
+        payload = status.read_runtime_status()
+        assert payload["gateway_state"] == "starting"
+        assert payload["exit_reason"] is None
+        assert payload["platforms"] == {}
+
+    def test_write_runtime_status_persists_runtime_summary(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        runtime_summary = {
+            "active_sessions_count": 1,
+            "background_jobs": {"active_count": 2, "counts": {"running": 2}},
+        }
+
+        status.write_runtime_status(
+            gateway_state="running",
+            runtime_summary=runtime_summary,
+        )
+
+        payload = status.read_runtime_status()
+        assert payload["runtime_summary"] == runtime_summary
+
+    def test_write_runtime_status_clears_runtime_summary_when_passed_none(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        status.write_runtime_status(
+            gateway_state="running",
+            runtime_summary={"active_sessions_count": 3},
+        )
+        status.write_runtime_status(
+            gateway_state="stopped",
+            runtime_summary=None,
+        )
+
+        payload = status.read_runtime_status()
+        assert payload["runtime_summary"] == {}
+
+    def test_write_runtime_status_preserves_extended_operator_snapshot(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        runtime_summary = {
+            "model": {
+                "configured_model": "claude-opus-4.6",
+                "active_model": "gpt-5.4-mini",
+                "active_provider": "openrouter",
+                "fallback_active": True,
+                "fallback_pinned": False,
+            },
+            "approvals": {"pending_count": 2},
+            "qq_monitoring": {
+                "active_collect_only_groups": 1,
+                "groups": [
+                    {
+                        "group_id": "726109087",
+                        "group_name": "项目群",
+                        "mode": "collect_only",
+                        "worker_names": ["钢镚"],
+                    }
+                ],
+            },
+        }
+
+        status.write_runtime_status(
+            gateway_state="running",
+            runtime_summary=runtime_summary,
+        )
+
+        payload = status.read_runtime_status()
+        assert payload["runtime_summary"] == runtime_summary
+        assert payload["runtime_health"]["status"] == "healthy"
+        assert payload["runtime_health"]["summary"] == "runtime canary healthy"
+
+    def test_write_runtime_status_persists_runtime_health_snapshot(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        status.write_runtime_status(
+            gateway_state="running",
+            runtime_summary={
+                "model": {
+                    "active_provider": "custom",
+                    "active_model": "gpt-5.4",
+                    "degraded_provider": "custom",
+                    "degraded_model": "gpt-5.4",
+                    "degraded_reason": "empty_response",
+                    "degraded_failures": 3,
+                    "degraded_cooldown_until": "2099-01-01T00:00:00+00:00",
+                }
+            },
+        )
+
+        payload = status.read_runtime_status()
+        assert payload["runtime_health"]["healthy"] is False
+        assert payload["runtime_health"]["status"] == "warning"
+        assert payload["runtime_health"]["issue_count"] == 1
+        assert payload["runtime_health"]["issues"][0]["code"] == "provider_degraded"
+
+
+class TestGatewayRuntimeModelSummary:
+    def test_build_runtime_model_summary_includes_primary_degraded_state(self):
+        runner = object.__new__(GatewayRunner)
+        runner._effective_model = None
+        runner._effective_provider = None
+        runner._running_agents = {}
+        runner._agent_cache = {}
+
+        with (
+            patch("gateway.run._resolve_gateway_model", return_value="gpt-5.4"),
+            patch(
+                "gateway.run._resolve_runtime_agent_kwargs",
+                return_value={
+                    "provider": "custom",
+                    "base_url": "https://pay.kxaug.xyz/v1",
+                    "api_mode": "chat_completions",
+                },
+            ),
+            patch(
+                "run_agent.get_provider_health_snapshot",
+                return_value={
+                    "count": 1,
+                    "runtimes": [
+                        {
+                            "provider": "custom",
+                            "model": "gpt-5.4",
+                            "base_url": "https://pay.kxaug.xyz/v1",
+                            "api_mode": "chat_completions",
+                            "reason": "empty_response",
+                            "cooldown_seconds": 118.7,
+                            "updated_at": 1000.0,
+                        }
+                    ],
+                },
+            ),
+        ):
+            summary = GatewayRunner._build_runtime_model_summary(runner)
+
+        assert summary["configured_model"] == "gpt-5.4"
+        assert summary["configured_provider"] == "custom"
+        assert summary["configured_base_url"] == "https://pay.kxaug.xyz/v1"
+        assert summary["primary_degraded"] is True
+        assert summary["primary_degraded_reason"] == "empty_response"
+        assert summary["primary_degraded_cooldown_seconds"] == 118
+        assert summary["degraded_runtime_count"] == 1
+        assert summary["degraded_runtimes"][0]["base_url"] == "https://pay.kxaug.xyz/v1"
+
+
+class TestGatewayRuntimeSnapshotHeartbeat:
+    def test_write_runtime_status_snapshot_refreshes_live_platform_timestamp(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        runner = object.__new__(GatewayRunner)
+        runner._running = True
+        runner.adapters = {Platform.QQ_NAPCAT: SimpleNamespace()}
+        runner._build_runtime_status_summary = lambda: {}
+
+        status.write_runtime_status(
+            gateway_state="running",
+            platform="qq_napcat",
+            platform_state="connected",
+            error_code=None,
+            error_message=None,
+        )
+        initial_payload = status.read_runtime_status()
+        initial_updated_at = initial_payload["platforms"]["qq_napcat"]["updated_at"]
+
+        runner._write_runtime_status_snapshot()
+
+        payload = status.read_runtime_status()
+        assert payload["platforms"]["qq_napcat"]["state"] == "connected"
+        assert payload["platforms"]["qq_napcat"]["updated_at"] >= initial_updated_at
 
 
 class TestScopedLocks:

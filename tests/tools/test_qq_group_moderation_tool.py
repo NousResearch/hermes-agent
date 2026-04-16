@@ -85,6 +85,51 @@ def test_mute_group_member_calls_member_info_then_set_group_ban(monkeypatch):
     )
 
 
+def test_mute_accepts_duration_minutes_and_returns_shortcut_shape(monkeypatch):
+    from tools.qq_group_moderation_tool import qq_group_moderation_tool
+
+    config, qq_cfg = _make_qq_napcat_config()
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "qq_napcat")
+    monkeypatch.setenv("HERMES_SESSION_CHAT_TYPE", "group")
+    monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "987654321")
+
+    with patch("gateway.config.load_gateway_config", return_value=config), \
+         patch("tools.interrupt.is_interrupted", return_value=False), \
+         patch("model_tools._run_async", side_effect=_run_async_immediately), \
+         patch(
+             "tools.qq_group_moderation_tool.request_dangerous_action_approval",
+             return_value={"approved": True, "message": None},
+         ) as approval_mock, \
+         patch(
+             "tools.qq_group_moderation_tool._qq_napcat_call",
+             new=AsyncMock(side_effect=[
+                 ([{"user_id": 123456, "card": "广告哥", "nickname": "广告哥"}], None),
+                 ({"user_id": 123456, "role": "member", "nickname": "广告哥"}, None),
+                 ({"user_id": 999001}, None),
+                 ({}, None),
+             ]),
+         ):
+        result = json.loads(
+            qq_group_moderation_tool(
+                {
+                    "action": "mute",
+                    "user_query": "广告哥",
+                    "duration_minutes": 10,
+                    "reason": "广告",
+                }
+            )
+        )
+
+    assert result["success"] is True
+    assert result["action"] == "mute_user"
+    assert result["duration_seconds"] == 600
+    assert result["duration_minutes"] == 10
+    assert result["reason"] == "广告"
+    assert result["approval_required"] is True
+    assert result["approved"] is True
+    approval_mock.assert_called_once()
+
+
 def test_kick_rejects_group_owner_before_executing(monkeypatch):
     from tools.qq_group_moderation_tool import qq_group_moderation_tool
 
@@ -266,6 +311,46 @@ def test_returns_error_when_action_is_not_approved(monkeypatch):
 
     assert "董事长" in result["error"]
     assert "授权" in result["error"]
+
+
+def test_kick_alias_keeps_approval_guardrail(monkeypatch):
+    from tools.qq_group_moderation_tool import qq_group_moderation_tool
+
+    config, qq_cfg = _make_qq_napcat_config()
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "qq_napcat")
+    monkeypatch.setenv("HERMES_SESSION_CHAT_TYPE", "group")
+    monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "987654321")
+
+    with patch("gateway.config.load_gateway_config", return_value=config), \
+         patch("tools.interrupt.is_interrupted", return_value=False), \
+         patch("model_tools._run_async", side_effect=_run_async_immediately), \
+         patch(
+             "tools.qq_group_moderation_tool.request_dangerous_action_approval",
+             return_value={
+                 "approved": False,
+                 "message": "这事我得先取得董事长的授权。",
+             },
+         ) as approval_mock, \
+         patch(
+             "tools.qq_group_moderation_tool._qq_napcat_call",
+             new=AsyncMock(side_effect=[
+                 ([{"user_id": 123456, "card": "广告哥", "nickname": "广告哥"}], None),
+                 ({"user_id": 123456, "role": "member", "nickname": "广告哥"}, None),
+                 ({"user_id": 999001}, None),
+             ]),
+         ):
+        result = json.loads(
+            qq_group_moderation_tool(
+                {
+                    "action": "kick",
+                    "user_query": "广告哥",
+                    "reason": "广告",
+                }
+            )
+        )
+
+    assert "董事长" in result["error"]
+    approval_mock.assert_called_once()
 
 
 def test_protected_user_ids_include_gateway_and_session_admin_env(monkeypatch):

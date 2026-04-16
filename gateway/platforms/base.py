@@ -10,6 +10,7 @@ import logging
 import os
 import random
 import re
+import time
 import uuid
 from abc import ABC, abstractmethod
 from urllib.parse import urlsplit
@@ -26,6 +27,11 @@ from pathlib import Path as _Path
 sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig, _normalize_busy_input_mode
+from gateway.media_pipeline import (
+    MessageAttachment,
+    attachments_from_legacy_media,
+    legacy_media_from_attachments,
+)
 from gateway.session import SessionSource, build_session_key
 from hermes_constants import get_hermes_dir
 
@@ -33,6 +39,35 @@ from hermes_constants import get_hermes_dir
 GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE = (
     "Secure secret entry is not supported over messaging. "
     "Load this skill in the local CLI to be prompted, or add the key to ~/.hermes/.env manually."
+)
+
+_MEDIA_FILE_EXTENSIONS = (
+    "png|jpe?g|gif|webp|mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|"
+    "txt|md|log|json|ya?ml|pdf|zip|pas"
+)
+_MEDIA_PLACEHOLDER_PATHS = (
+    "/absolute/path/to/file",
+    "/absolute/path/to/file.png",
+    "/absolute/path/to/file.jpg",
+    "/absolute/path/to/file.jpeg",
+    "/absolute/path/to/file.webp",
+    "/absolute/path/to/file.gif",
+    "/absolute/path/to/file.mp4",
+    "/absolute/path/to/file.ogg",
+    "/absolute/path/to/file.mp3",
+    "/absolute/path/to/file.wav",
+    "/absolute/path/to/file.m4a",
+    "/absolute/path/to/file.pdf",
+    "/绝对路径",
+)
+_MEDIA_PLACEHOLDER_ALTERNATION = "|".join(re.escape(path) for path in _MEDIA_PLACEHOLDER_PATHS)
+_MEDIA_PATH_CORE = (
+    rf"(?:{_MEDIA_PLACEHOLDER_ALTERNATION}|"
+    rf"(?:~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:{_MEDIA_FILE_EXTENSIONS}))"
+    rf"(?=[\s`\"',;:)\]}}]|$)"
+)
+_MEDIA_TAG_PATTERN = re.compile(
+    rf"""[`"']?MEDIA:\s*(?P<path>`{_MEDIA_PATH_CORE}`|"{_MEDIA_PATH_CORE}"|'{_MEDIA_PATH_CORE}'|{_MEDIA_PATH_CORE})[`"']?"""
 )
 
 
@@ -403,10 +438,16 @@ class MessageEvent:
     # Original platform data
     raw_message: Any = None
     message_id: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
     
     # Media attachments
+    attachments: List[MessageAttachment] = field(default_factory=list)
     # media_urls: local file paths (for vision tool access)
     media_urls: List[str] = field(default_factory=list)
+    # media_sources: preferred per-item analysis source (remote URL when
+    # preserved, otherwise same as media_urls).  Keeps local cache behavior
+    # while letting vision-capable providers consume original URLs directly.
+    media_sources: List[str] = field(default_factory=list)
     media_types: List[str] = field(default_factory=list)
     
     # Reply context
@@ -418,6 +459,12 @@ class MessageEvent:
     
     # Timestamps
     timestamp: datetime = field(default_factory=datetime.now)
+
+    def __post_init__(self) -> None:
+        if self.attachments:
+            self._sync_legacy_media_fields()
+        elif self.media_urls or self.media_sources or self.media_types:
+            self._sync_attachments()
     
     def is_command(self) -> bool:
         """Check if this is a command message (e.g., /new, /reset)."""
@@ -440,6 +487,34 @@ class MessageEvent:
             return self.text
         parts = self.text.split(maxsplit=1)
         return parts[1] if len(parts) > 1 else ""
+
+    def _sync_attachments(self) -> None:
+        self.attachments = attachments_from_legacy_media(
+            self.media_urls,
+            self.media_sources,
+            self.media_types,
+        )
+
+    def _sync_legacy_media_fields(self) -> None:
+        self.media_urls, self.media_sources, self.media_types = legacy_media_from_attachments(
+            self.attachments
+        )
+
+    def ensure_attachments(self) -> List[MessageAttachment]:
+        self._sync_attachments()
+        return self.attachments
+
+    def add_attachment(self, attachment: MessageAttachment) -> None:
+        self.ensure_attachments()
+        self.attachments.append(attachment)
+        self._sync_legacy_media_fields()
+
+    def extend_attachments(self, attachments: List[MessageAttachment]) -> None:
+        if not attachments:
+            return
+        self.ensure_attachments()
+        self.attachments.extend(list(attachments))
+        self._sync_legacy_media_fields()
 
 
 @dataclass 
@@ -471,6 +546,12 @@ _RETRYABLE_ERROR_PATTERNS = (
     "eoferror",
 )
 
+# In smart busy-input mode, let a fresh turn run undisturbed for a short grace
+# period so quick follow-ups are merged instead of constantly interrupting. If
+# the turn is still running after this window, explicit follow-ups can preempt
+# it so the chat does not feel locked up.
+_SMART_BUSY_INTERRUPT_GRACE_SECONDS = 8.0
+
 
 # Type for message handlers
 MessageHandler = Callable[[MessageEvent], Awaitable[Optional[str]]]
@@ -500,6 +581,7 @@ class BasePlatformAdapter(ABC):
         # Track active message handlers per session for interrupt support
         # Key: session_key (e.g., chat_id), Value: (event, asyncio.Event for interrupt)
         self._active_sessions: Dict[str, asyncio.Event] = {}
+        self._active_session_started_at: Dict[str, float] = {}
         self._pending_messages: Dict[str, MessageEvent] = {}
         # Background message-processing tasks spawned by handle_message().
         # Gateway shutdown cancels these so an old gateway instance doesn't keep
@@ -893,6 +975,14 @@ class BasePlatformAdapter(ABC):
         return await self.send(chat_id=chat_id, content=text, reply_to=reply_to)
 
     @staticmethod
+    def _is_placeholder_media_path(path: str) -> bool:
+        """Reject instructional sample paths that should never be sent."""
+        normalized = str(path or "").strip().replace("\\", "/").lower()
+        if not normalized:
+            return False
+        return normalized in {path.lower() for path in _MEDIA_PLACEHOLDER_PATHS}
+
+    @staticmethod
     def extract_media(content: str) -> Tuple[List[Tuple[str, bool]], str]:
         """
         Extract MEDIA:<path> tags and [[audio_as_voice]] directives from response text.
@@ -914,22 +1004,21 @@ class BasePlatformAdapter(ABC):
         has_voice_tag = "[[audio_as_voice]]" in content
         cleaned = cleaned.replace("[[audio_as_voice]]", "")
         
-        # Extract MEDIA:<path> tags, allowing optional whitespace after the colon
-        # and quoted/backticked paths for LLM-formatted outputs.
-        media_pattern = re.compile(
-            r'''[`"']?MEDIA:\s*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|(?:~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:png|jpe?g|gif|webp|mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a)(?=[\s`"',;:)\]}]|$)|\S+)[`"']?'''
-        )
-        for match in media_pattern.finditer(content):
+        matches = list(_MEDIA_TAG_PATTERN.finditer(content))
+        for match in matches:
             path = match.group("path").strip()
             if len(path) >= 2 and path[0] == path[-1] and path[0] in "`\"'":
                 path = path[1:-1].strip()
             path = path.lstrip("`\"'").rstrip("`\"',.;:)}]")
+            if path and BasePlatformAdapter._is_placeholder_media_path(path):
+                logger.debug("Ignoring placeholder MEDIA path in model response: %s", path)
+                continue
             if path:
                 media.append((path, has_voice_tag))
 
         # Remove MEDIA tags from content (including surrounding quote/backtick wrappers)
-        if media:
-            cleaned = media_pattern.sub('', cleaned)
+        if matches:
+            cleaned = _MEDIA_TAG_PATTERN.sub('', cleaned)
             cleaned = re.sub(r'\n{3,}', '\n\n', cleaned).strip()
         
         return media, cleaned
@@ -940,7 +1029,7 @@ class BasePlatformAdapter(ABC):
         Detect bare local file paths in response text for native media delivery.
 
         Matches absolute paths (/...) and tilde paths (~/) ending in common
-        image or video extensions.  Validates each candidate with
+        image, video, audio, or document extensions. Validates each candidate with
         ``os.path.isfile()`` to avoid false positives from URLs or
         non-existent paths.
 
@@ -954,6 +1043,7 @@ class BasePlatformAdapter(ABC):
         _LOCAL_MEDIA_EXTS = (
             '.png', '.jpg', '.jpeg', '.gif', '.webp',
             '.mp4', '.mov', '.avi', '.mkv', '.webm',
+            '.ogg', '.opus', '.mp3', '.wav', '.m4a',
         )
         ext_part = '|'.join(e.lstrip('.') for e in _LOCAL_MEDIA_EXTS)
 
@@ -1194,14 +1284,73 @@ class BasePlatformAdapter(ABC):
         if isinstance(getattr(self.config, "extra", None), dict):
             self.config.extra["busy_input_mode"] = normalized
 
+    def _active_session_age_seconds(self, session_key: str) -> float:
+        started_at = self._active_session_started_at.get(session_key)
+        if not started_at:
+            return 0.0
+        return max(0.0, time.time() - started_at)
+
+    def _smart_busy_interrupt_grace_seconds(self, event: MessageEvent) -> float:
+        """Return the smart-mode grace period before explicit follow-ups interrupt."""
+        return _SMART_BUSY_INTERRUPT_GRACE_SECONDS
+
+    @staticmethod
+    def _message_text_candidates(event: MessageEvent) -> list[str]:
+        """Return de-duplicated text bodies that may contain the user's intent."""
+        candidates: list[str] = []
+        seen: set[str] = set()
+        for value in (
+            getattr(event, "text", ""),
+            (
+                getattr(event, "raw_message", {}).get("raw_message")
+                if isinstance(getattr(event, "raw_message", None), dict)
+                else getattr(event, "raw_message", "")
+            ),
+        ):
+            text = str(value or "").strip()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            candidates.append(text)
+        return candidates
+
+    def _is_explicit_busy_followup(self, event: MessageEvent) -> bool:
+        """Return True when a busy follow-up should be treated as explicit/urgent."""
+        return getattr(event.source, "chat_type", "") == "dm"
+
+    def _busy_followup_ack(self, event: MessageEvent, *, interrupting: bool = False) -> str:
+        """Return an optional user-visible acknowledgement for a busy follow-up."""
+        return ""
+
+    def _should_inline_active_session_message(self, event: MessageEvent) -> bool:
+        """Return True when a busy-session message should be dispatched inline.
+
+        Platform adapters can use this hook for deterministic control/status
+        turns that must still reach the gateway runner while a foreground turn
+        is active. If the inline dispatch returns no response, normal busy-input
+        queue/interrupt handling continues.
+        """
+        return False
+
+    def _should_interrupt_busy_followup(self, session_key: str, event: MessageEvent) -> bool:
+        """Decide whether smart busy-input mode should interrupt the active run."""
+        if self.get_busy_input_mode() != "smart":
+            return False
+        if event.message_type == MessageType.PHOTO:
+            return False
+        if not self._is_explicit_busy_followup(event):
+            return False
+        if session_key in self._pending_messages:
+            return True
+        return self._active_session_age_seconds(session_key) >= self._smart_busy_interrupt_grace_seconds(event)
+
     def queue_message(self, session_key: str, event: MessageEvent) -> None:
         """Queue or merge a follow-up message for processing after the current run."""
         existing = self._pending_messages.get(session_key)
 
         if event.message_type == MessageType.PHOTO:
             if existing and existing.message_type == MessageType.PHOTO:
-                existing.media_urls.extend(event.media_urls)
-                existing.media_types.extend(event.media_types)
+                existing.extend_attachments(event.ensure_attachments())
                 if event.text:
                     existing.text = self._merge_caption(existing.text, event.text)
                 return
@@ -1267,6 +1416,31 @@ class BasePlatformAdapter(ABC):
                     logger.error("[%s] Command '/%s' dispatch failed: %s", self.name, cmd, e, exc_info=True)
                 return
 
+            if self._should_inline_active_session_message(event):
+                logger.debug(
+                    "[%s] Inline busy-session message bypassing active-session guard for %s",
+                    self.name,
+                    session_key,
+                )
+                try:
+                    _thread_meta = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+                    response = await self._message_handler(event)
+                    if response:
+                        await self._send_with_retry(
+                            chat_id=event.source.chat_id,
+                            content=response,
+                            reply_to=event.message_id,
+                            metadata=_thread_meta,
+                        )
+                        return
+                except Exception as exc:
+                    logger.debug(
+                        "[%s] Inline busy-session dispatch failed for %s: %s",
+                        self.name,
+                        session_key,
+                        exc,
+                    )
+
             # Special case: photo bursts/albums frequently arrive as multiple near-
             # simultaneous messages. Queue them without interrupting the active run,
             # then process them immediately after the current task finishes.
@@ -1275,20 +1449,56 @@ class BasePlatformAdapter(ABC):
                 self.queue_message(session_key, event)
                 return  # Don't interrupt now - will run after current task completes
 
-            if self.get_busy_input_mode() == "queue":
+            busy_mode = self.get_busy_input_mode()
+            should_interrupt = self._should_interrupt_busy_followup(session_key, event)
+
+            if busy_mode == "queue" or (busy_mode == "smart" and not should_interrupt):
                 logger.debug(
-                    "[%s] New message while session %s is active — queueing without interrupt",
+                    "[%s] New message while session %s is active — queueing without interrupt (mode=%s)",
                     self.name,
                     session_key,
+                    busy_mode,
                 )
                 self.queue_message(session_key, event)
+                busy_ack = self._busy_followup_ack(event, interrupting=False)
+                if busy_ack:
+                    try:
+                        _thread_meta = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+                        await self._send_with_retry(
+                            chat_id=event.source.chat_id,
+                            content=busy_ack,
+                            reply_to=event.message_id,
+                            metadata=_thread_meta,
+                        )
+                    except Exception as exc:
+                        logger.debug("[%s] Busy queue ack failed for %s: %s", self.name, session_key, exc)
                 return
 
-            # Default behavior for non-photo follow-ups: interrupt the running agent
-            logger.debug("[%s] New message while session %s is active — triggering interrupt", self.name, session_key)
-            self._pending_messages[session_key] = event
+            # Default behavior for non-photo follow-ups: interrupt the running agent.
+            # In smart mode we merge the newest follow-up into the adapter queue
+            # first so the interrupted turn resumes with the freshest message set.
+            logger.debug(
+                "[%s] New message while session %s is active — triggering interrupt (mode=%s)",
+                self.name,
+                session_key,
+                busy_mode,
+            )
+            self.queue_message(session_key, event)
             # Signal the interrupt (the processing task checks this)
             self._active_sessions[session_key].set()
+            if busy_mode == "smart":
+                busy_ack = self._busy_followup_ack(event, interrupting=True)
+                if busy_ack:
+                    try:
+                        _thread_meta = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+                        await self._send_with_retry(
+                            chat_id=event.source.chat_id,
+                            content=busy_ack,
+                            reply_to=event.message_id,
+                            metadata=_thread_meta,
+                        )
+                    except Exception as exc:
+                        logger.debug("[%s] Busy interrupt ack failed for %s: %s", self.name, session_key, exc)
             return  # Don't process now - will be handled after current task finishes
         
         # Mark session as active BEFORE spawning background task to close
@@ -1297,6 +1507,7 @@ class BasePlatformAdapter(ABC):
         # duplicate task.  (grammY sequentialize / aiogram EventIsolation
         # pattern — set the guard synchronously, not inside the task.)
         self._active_sessions[session_key] = asyncio.Event()
+        self._active_session_started_at[session_key] = time.time()
 
         # Spawn background task to process this message
         task = asyncio.create_task(self._process_message_background(event, session_key))
@@ -1555,6 +1766,7 @@ class BasePlatformAdapter(ABC):
                 # Clean up current session before processing pending
                 if session_key in self._active_sessions:
                     del self._active_sessions[session_key]
+                self._active_session_started_at.pop(session_key, None)
                 typing_task.cancel()
                 try:
                     await typing_task
@@ -1603,6 +1815,7 @@ class BasePlatformAdapter(ABC):
             # Clean up session tracking
             if session_key in self._active_sessions:
                 del self._active_sessions[session_key]
+            self._active_session_started_at.pop(session_key, None)
     
     async def cancel_background_tasks(self) -> None:
         """Cancel any in-flight background message-processing tasks.
@@ -1618,6 +1831,7 @@ class BasePlatformAdapter(ABC):
         self._background_tasks.clear()
         self._pending_messages.clear()
         self._active_sessions.clear()
+        self._active_session_started_at.clear()
 
     def has_pending_interrupt(self, session_key: str) -> bool:
         """Check if there's a pending interrupt for a session."""

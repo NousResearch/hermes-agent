@@ -130,9 +130,11 @@ PLATFORMS = {
     "homeassistant": {"label": "🏠 Home Assistant", "default_toolset": "hermes-homeassistant"},
     "email":    {"label": "📧 Email",      "default_toolset": "hermes-email"},
     "matrix":   {"label": "💬 Matrix",     "default_toolset": "hermes-matrix"},
- "dingtalk": {"label": "💬 DingTalk", "default_toolset": "hermes-dingtalk"},
+    "dingtalk": {"label": "💬 DingTalk", "default_toolset": "hermes-dingtalk"},
     "feishu": {"label": "🪽 Feishu", "default_toolset": "hermes-feishu"},
     "wecom": {"label": "💬 WeCom", "default_toolset": "hermes-wecom"},
+    "wecom_callback": {"label": "💬 WeCom Callback", "default_toolset": "hermes-wecom-callback"},
+    "weixin": {"label": "💬 Weixin", "default_toolset": "hermes-weixin"},
     "api_server": {"label": "🌐 API Server", "default_toolset": "hermes-api-server"},
     "mattermost": {"label": "💬 Mattermost", "default_toolset": "hermes-mattermost"},
     "webhook": {"label": "🔗 Webhook", "default_toolset": "hermes-webhook"},
@@ -450,6 +452,12 @@ def _get_enabled_platforms() -> List[str]:
         enabled.append("whatsapp")
     if get_env_value("QQ_NAPCAT_WS_URL"):
         enabled.append("qq_napcat")
+    if get_env_value("WECOM_BOT_ID"):
+        enabled.append("wecom")
+    if get_env_value("WECOM_CALLBACK_CORP_ID"):
+        enabled.append("wecom_callback")
+    if get_env_value("WEIXIN_ACCOUNT_ID") and get_env_value("WEIXIN_TOKEN"):
+        enabled.append("weixin")
     return enabled
 
 
@@ -540,6 +548,17 @@ def _get_platform_tools(
             ts_tools = set(resolve_toolset(ts_key))
             if ts_tools and ts_tools.issubset(all_tool_names):
                 enabled_toolsets.add(ts_key)
+
+        # Preserve composite/default toolsets when they contribute tools that
+        # cannot be recovered from the configurable toolset reverse mapping.
+        covered_tools = set()
+        for ts_key in enabled_toolsets:
+            covered_tools.update(resolve_toolset(ts_key))
+        for ts_name in toolset_names:
+            resolved = set(resolve_toolset(ts_name))
+            if resolved and not resolved.issubset(covered_tools):
+                enabled_toolsets.add(ts_name)
+                covered_tools.update(resolved)
 
     # Plugin toolsets: enabled by default unless explicitly disabled.
     # A plugin toolset is "known" for a platform once `hermes tools`

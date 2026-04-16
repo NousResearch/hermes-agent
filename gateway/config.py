@@ -51,7 +51,7 @@ def _normalize_busy_input_mode(value: Any, default: str = "interrupt") -> str:
     """Normalize busy-input mode to a supported value."""
     if isinstance(value, str):
         normalized = value.strip().lower()
-        if normalized in {"interrupt", "queue"}:
+        if normalized in {"interrupt", "queue", "smart"}:
             return normalized
     return default
 
@@ -122,6 +122,8 @@ class Platform(Enum):
     WEBHOOK = "webhook"
     FEISHU = "feishu"
     WECOM = "wecom"
+    WECOM_CALLBACK = "wecom_callback"
+    WEIXIN = "weixin"
     QQ_NAPCAT = "qq_napcat"
 
 
@@ -312,7 +314,12 @@ class GatewayConfig:
     unauthorized_dm_behavior: str = "pair"  # "pair" or "ignore"
 
     # What to do when a new message arrives while the agent is already working.
-    busy_input_mode: str = "interrupt"  # "interrupt" or "queue"
+    # "smart" queues briefly, then interrupts explicit follow-ups on long runs.
+    busy_input_mode: str = "interrupt"  # "interrupt" or "queue" or "smart"
+
+    # Whether obvious long-running work requests should be detached into a
+    # background job so the foreground chat stays responsive.
+    auto_background_work: bool = False
 
     # Streaming configuration
     streaming: StreamingConfig = field(default_factory=StreamingConfig)
@@ -347,6 +354,11 @@ class GatewayConfig:
         for platform, config in self.platforms.items():
             if not config.enabled:
                 continue
+            # Weixin requires both a token and an account_id
+            if platform == Platform.WEIXIN:
+                if config.extra.get("account_id") and (config.token or config.extra.get("token")):
+                    connected.append(platform)
+                continue
             # Platforms that use token/api_key auth
             if config.token or config.api_key:
                 connected.append(platform)
@@ -374,6 +386,11 @@ class GatewayConfig:
             # WeCom uses extra dict for bot credentials
             elif platform == Platform.WECOM and config.extra.get("bot_id"):
                 connected.append(platform)
+            # WeCom callback mode uses corp_id or apps list
+            elif platform == Platform.WECOM_CALLBACK and (
+                config.extra.get("corp_id") or config.extra.get("apps")
+            ):
+                connected.append(platform)
             # QQ NapCat uses extra dict for websocket config
             elif platform == Platform.QQ_NAPCAT and config.extra.get("ws_url"):
                 connected.append(platform)
@@ -387,7 +404,22 @@ class GatewayConfig:
             extra = getattr(platform_cfg, "extra", None) if platform_cfg else None
             if isinstance(extra, dict) and "busy_input_mode" in extra:
                 mode = _normalize_busy_input_mode(extra.get("busy_input_mode"), mode)
+            elif platform == Platform.QQ_NAPCAT:
+                # QQ group chats behave better with the hybrid "smart" policy:
+                # explicit follow-ups stay responsive, while ambient group
+                # chatter does not constantly interrupt active work.
+                return "smart"
         return mode
+
+    def get_auto_background_work(self, platform: Optional[Platform] = None) -> bool:
+        """Return whether long work requests should auto-detach into background."""
+        enabled = _coerce_bool(getattr(self, "auto_background_work", None), False)
+        if platform:
+            platform_cfg = self.platforms.get(platform)
+            extra = getattr(platform_cfg, "extra", None) if platform_cfg else None
+            if isinstance(extra, dict) and "auto_background_work" in extra:
+                enabled = _coerce_bool(extra.get("auto_background_work"), enabled)
+        return enabled
     
     def get_home_channel(self, platform: Platform) -> Optional[HomeChannel]:
         """Get the home channel for a platform."""
@@ -437,6 +469,7 @@ class GatewayConfig:
             "thread_sessions_per_user": self.thread_sessions_per_user,
             "unauthorized_dm_behavior": self.unauthorized_dm_behavior,
             "busy_input_mode": self.busy_input_mode,
+            "auto_background_work": self.auto_background_work,
             "streaming": self.streaming.to_dict(),
         }
     
@@ -488,6 +521,10 @@ class GatewayConfig:
             data.get("busy_input_mode"),
             "interrupt",
         )
+        auto_background_work = _coerce_bool(
+            data.get("auto_background_work"),
+            False,
+        )
 
         return cls(
             platforms=platforms,
@@ -503,6 +540,7 @@ class GatewayConfig:
             thread_sessions_per_user=_coerce_bool(thread_sessions_per_user, False),
             unauthorized_dm_behavior=unauthorized_dm_behavior,
             busy_input_mode=busy_input_mode,
+            auto_background_work=auto_background_work,
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
         )
 
@@ -615,6 +653,17 @@ def load_gateway_config() -> GatewayConfig:
                         gw_data.get("busy_input_mode", "interrupt"),
                     )
 
+            if isinstance(gateway_cfg, dict) and "auto_background_work" in gateway_cfg:
+                gw_data["auto_background_work"] = _coerce_bool(
+                    gateway_cfg.get("auto_background_work"),
+                    gw_data.get("auto_background_work", False),
+                )
+            elif "auto_background_work" in yaml_cfg:
+                gw_data["auto_background_work"] = _coerce_bool(
+                    yaml_cfg.get("auto_background_work"),
+                    gw_data.get("auto_background_work", False),
+                )
+
             # Merge platforms section from config.yaml into gw_data so that
             # nested keys like platforms.webhook.extra.routes are loaded.
             yaml_platforms = yaml_cfg.get("platforms")
@@ -660,6 +709,11 @@ def load_gateway_config() -> GatewayConfig:
                         platform_cfg.get("busy_input_mode"),
                         gw_data.get("busy_input_mode", "interrupt"),
                     )
+                if "auto_background_work" in platform_cfg:
+                    bridged["auto_background_work"] = _coerce_bool(
+                        platform_cfg.get("auto_background_work"),
+                        gw_data.get("auto_background_work", False),
+                    )
                 if not bridged:
                     continue
                 plat_data = platforms_data.setdefault(plat.value, {})
@@ -694,6 +748,16 @@ def load_gateway_config() -> GatewayConfig:
                     if key in qq_napcat_cfg and qq_napcat_cfg.get(key) is not None:
                         extra[key] = qq_napcat_cfg.get(key)
 
+                if "employee_routes" in qq_napcat_cfg:
+                    employee_routes = qq_napcat_cfg.get("employee_routes")
+                    if isinstance(employee_routes, list):
+                        extra["employee_routes"] = employee_routes
+                    else:
+                        logger.warning(
+                            "Ignoring invalid qq_napcat.employee_routes=%r in config.yaml",
+                            employee_routes,
+                        )
+
                 for key in ("allowed_users", "allowed_groups", "admin_users"):
                     values = _coerce_list(qq_napcat_cfg.get(key))
                     if values:
@@ -707,6 +771,7 @@ def load_gateway_config() -> GatewayConfig:
                     ("group_sessions_per_user", True),
                     ("thread_sessions_per_user", False),
                     ("project_group_mode", False),
+                    ("auto_background_work", False),
                 ):
                     if key in qq_napcat_cfg:
                         extra[key] = _coerce_bool(
@@ -794,6 +859,7 @@ def load_gateway_config() -> GatewayConfig:
                     "group_batch_retry_seconds": "QQ_NAPCAT_GROUP_BATCH_RETRY_SECONDS",
                     "group_observed_max_messages": "QQ_NAPCAT_GROUP_OBSERVED_MAX_MESSAGES",
                     "group_batch_max_messages": "QQ_NAPCAT_GROUP_BATCH_MAX_MESSAGES",
+                    "auto_background_work": "QQ_NAPCAT_AUTO_BACKGROUND_WORK",
                 }
                 for cfg_key, env_key in env_bridge_map.items():
                     if os.getenv(env_key):
@@ -919,6 +985,7 @@ def load_gateway_config() -> GatewayConfig:
         Platform.SLACK: "SLACK_BOT_TOKEN",
         Platform.MATTERMOST: "MATTERMOST_TOKEN",
         Platform.MATRIX: "MATRIX_ACCESS_TOKEN",
+        Platform.WEIXIN: "WEIXIN_TOKEN",
     }
     for platform, pconfig in config.platforms.items():
         if not pconfig.enabled:
@@ -1353,6 +1420,64 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 platform=Platform.WECOM,
                 chat_id=wecom_home,
                 name=os.getenv("WECOM_HOME_CHANNEL_NAME", "Home"),
+            )
+
+    # WeCom callback mode (self-built apps)
+    wecom_callback_corp_id = os.getenv("WECOM_CALLBACK_CORP_ID")
+    wecom_callback_corp_secret = os.getenv("WECOM_CALLBACK_CORP_SECRET")
+    if wecom_callback_corp_id and wecom_callback_corp_secret:
+        if Platform.WECOM_CALLBACK not in config.platforms:
+            config.platforms[Platform.WECOM_CALLBACK] = PlatformConfig()
+        config.platforms[Platform.WECOM_CALLBACK].enabled = True
+        config.platforms[Platform.WECOM_CALLBACK].extra.update({
+            "corp_id": wecom_callback_corp_id,
+            "corp_secret": wecom_callback_corp_secret,
+            "agent_id": os.getenv("WECOM_CALLBACK_AGENT_ID", ""),
+            "token": os.getenv("WECOM_CALLBACK_TOKEN", ""),
+            "encoding_aes_key": os.getenv("WECOM_CALLBACK_ENCODING_AES_KEY", ""),
+            "host": os.getenv("WECOM_CALLBACK_HOST", "0.0.0.0"),
+            "port": int(os.getenv("WECOM_CALLBACK_PORT", "8645")),
+        })
+
+    # Weixin (personal WeChat via iLink Bot API)
+    weixin_token = os.getenv("WEIXIN_TOKEN")
+    weixin_account_id = os.getenv("WEIXIN_ACCOUNT_ID")
+    if weixin_token or weixin_account_id:
+        if Platform.WEIXIN not in config.platforms:
+            config.platforms[Platform.WEIXIN] = PlatformConfig()
+        config.platforms[Platform.WEIXIN].enabled = True
+        if weixin_token:
+            config.platforms[Platform.WEIXIN].token = weixin_token
+        extra = config.platforms[Platform.WEIXIN].extra
+        if weixin_account_id:
+            extra["account_id"] = weixin_account_id
+        weixin_base_url = os.getenv("WEIXIN_BASE_URL", "").strip()
+        if weixin_base_url:
+            extra["base_url"] = weixin_base_url.rstrip("/")
+        weixin_cdn_base_url = os.getenv("WEIXIN_CDN_BASE_URL", "").strip()
+        if weixin_cdn_base_url:
+            extra["cdn_base_url"] = weixin_cdn_base_url.rstrip("/")
+        weixin_dm_policy = os.getenv("WEIXIN_DM_POLICY", "").strip().lower()
+        if weixin_dm_policy:
+            extra["dm_policy"] = weixin_dm_policy
+        weixin_group_policy = os.getenv("WEIXIN_GROUP_POLICY", "").strip().lower()
+        if weixin_group_policy:
+            extra["group_policy"] = weixin_group_policy
+        weixin_allowed_users = os.getenv("WEIXIN_ALLOWED_USERS", "").strip()
+        if weixin_allowed_users:
+            extra["allow_from"] = weixin_allowed_users
+        weixin_group_allowed_users = os.getenv("WEIXIN_GROUP_ALLOWED_USERS", "").strip()
+        if weixin_group_allowed_users:
+            extra["group_allow_from"] = weixin_group_allowed_users
+        weixin_split_multiline = os.getenv("WEIXIN_SPLIT_MULTILINE_MESSAGES", "").strip()
+        if weixin_split_multiline:
+            extra["split_multiline_messages"] = weixin_split_multiline
+        weixin_home = os.getenv("WEIXIN_HOME_CHANNEL", "").strip()
+        if weixin_home:
+            config.platforms[Platform.WEIXIN].home_channel = HomeChannel(
+                platform=Platform.WEIXIN,
+                chat_id=weixin_home,
+                name=os.getenv("WEIXIN_HOME_CHANNEL_NAME", "Home"),
             )
 
     # Session settings

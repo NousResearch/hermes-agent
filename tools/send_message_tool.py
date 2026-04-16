@@ -15,12 +15,15 @@ from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from agent.redact import redact_sensitive_text
+from gateway.qq_napcat_runtime import diagnose_local_qq_napcat_endpoint
+from tools.group_session_helpers import current_session_target_parts
 
 logger = logging.getLogger(__name__)
 
 _TELEGRAM_TOPIC_TARGET_RE = re.compile(r"^\s*(-?\d+)(?::(\d+))?\s*$")
 _FEISHU_TARGET_RE = re.compile(r"^\s*((?:oc|ou|on|chat|open)_[-A-Za-z0-9]+)(?::([-A-Za-z0-9_]+))?\s*$")
 _QQ_NAPCAT_TARGET_RE = re.compile(r"^\s*(dm|group):(\d+)\s*$")
+_WEIXIN_TARGET_RE = re.compile(r"^\s*((?:wxid|gh|v\d+|wm|wb)_[A-Za-z0-9_-]+|[A-Za-z0-9._-]+@chatroom|filehelper)\s*$")
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".3gp"}
 _AUDIO_EXTS = {".ogg", ".opus", ".mp3", ".wav", ".m4a"}
@@ -71,6 +74,20 @@ def _error(message: str) -> dict:
     return {"error": _sanitize_error_text(message)}
 
 
+def _resolve_local_attachment_path(file_path: str) -> str:
+    """Resolve attachment paths relative to TERMINAL_CWD for gateway sessions."""
+    expanded = os.path.expanduser(str(file_path or "").strip())
+    if not expanded:
+        return expanded
+    if os.path.isabs(expanded):
+        return expanded
+
+    terminal_cwd = os.getenv("TERMINAL_CWD", "").strip()
+    if terminal_cwd:
+        return str((Path(terminal_cwd) / expanded).resolve())
+    return str(Path(expanded).resolve())
+
+
 SEND_MESSAGE_SCHEMA = {
     "name": "send_message",
     "description": (
@@ -96,6 +113,10 @@ SEND_MESSAGE_SCHEMA = {
             "message": {
                 "type": "string",
                 "description": "The message text to send"
+            },
+            "file_path": {
+                "type": "string",
+                "description": "Optional local file path to attach. Supports documents as well as native media where the target platform supports attachments."
             }
         },
         "required": []
@@ -124,21 +145,37 @@ def _handle_list():
 
 def _handle_send(args):
     """Send a message to a platform target."""
-    target = args.get("target", "")
-    message = args.get("message", "")
-    if not target or not message:
-        return tool_error("Both 'target' and 'message' are required when action='send'")
+    target = str(args.get("target", "") or "").strip()
+    message = str(args.get("message", "") or "")
+    file_path = str(args.get("file_path", "") or "").strip()
 
-    parts = target.split(":", 1)
-    platform_name = parts[0].strip().lower()
-    target_ref = parts[1].strip() if len(parts) > 1 else None
+    if not message and not file_path:
+        return tool_error("At least one of 'message' or 'file_path' is required when action='send'")
+
+    platform_name = ""
+    target_ref = None
     chat_id = None
     thread_id = None
+    used_current_session = False
+    is_explicit = False
 
-    if target_ref:
-        chat_id, thread_id, is_explicit = _parse_target_ref(platform_name, target_ref)
+    if target:
+        parts = target.split(":", 1)
+        platform_name = parts[0].strip().lower()
+        target_ref = parts[1].strip() if len(parts) > 1 else None
+        if target_ref:
+            chat_id, thread_id, is_explicit = _parse_target_ref(platform_name, target_ref)
     else:
-        is_explicit = False
+        current_target = _resolve_current_session_send_target()
+        if current_target:
+            platform_name = current_target["platform_name"]
+            chat_id = current_target["chat_id"]
+            thread_id = current_target["thread_id"]
+            used_current_session = True
+        else:
+            return tool_error(
+                "Missing 'target'. Specify a delivery target or call send_message from an active messaging session."
+            )
 
     # Resolve human-friendly channel names to numeric IDs
     if target_ref and not is_explicit:
@@ -190,6 +227,8 @@ def _handle_send(args):
         "dingtalk": Platform.DINGTALK,
         "feishu": Platform.FEISHU,
         "wecom": Platform.WECOM,
+        "wecom_callback": Platform.WECOM_CALLBACK,
+        "weixin": Platform.WEIXIN,
         "email": Platform.EMAIL,
         "sms": Platform.SMS,
     }
@@ -205,6 +244,11 @@ def _handle_send(args):
     from gateway.platforms.base import BasePlatformAdapter
 
     media_files, cleaned_message = BasePlatformAdapter.extract_media(message)
+    if file_path:
+        expanded_file_path = _resolve_local_attachment_path(file_path)
+        if not os.path.isfile(expanded_file_path):
+            return json.dumps(_error(f"Local attachment file not found: {expanded_file_path}"))
+        media_files.append((expanded_file_path, False))
     mirror_text = cleaned_message.strip() or _describe_media_for_mirror(media_files)
 
     used_home_channel = False
@@ -246,6 +290,8 @@ def _handle_send(args):
         )
         if used_home_channel and isinstance(result, dict) and result.get("success"):
             result["note"] = f"Sent to {platform_name} home channel (chat_id: {chat_id})"
+        elif used_current_session and isinstance(result, dict) and result.get("success"):
+            result["note"] = f"Sent to current {platform_name} session target"
 
         # Mirror the sent message into the target's gateway session
         if isinstance(result, dict) and result.get("success") and mirror_text:
@@ -282,6 +328,31 @@ def _handle_send(args):
         return json.dumps(_error(f"Send failed: {e}"))
 
 
+def _resolve_current_session_send_target() -> dict | None:
+    """Resolve the active messaging session into a concrete send target."""
+    target = current_session_target_parts()
+    if not target:
+        return None
+    platform_name = str(target["platform_name"] or "")
+    chat_id = str(target["chat_id"] or "")
+    chat_type = str(target.get("chat_type") or "").lower()
+    thread_id = target.get("thread_id")
+
+    if platform_name == "qq_napcat":
+        target_prefix = "group" if chat_type == "group" else "dm"
+        return {
+            "platform_name": platform_name,
+            "chat_id": f"{target_prefix}:{chat_id}",
+            "thread_id": None,
+        }
+
+    return {
+        "platform_name": platform_name,
+        "chat_id": chat_id,
+        "thread_id": thread_id,
+    }
+
+
 def _parse_target_ref(platform_name: str, target_ref: str):
     """Parse a tool target into chat_id/thread_id and whether it is explicit."""
     if platform_name == "telegram":
@@ -297,6 +368,10 @@ def _parse_target_ref(platform_name: str, target_ref: str):
         match = _FEISHU_TARGET_RE.fullmatch(target_ref)
         if match:
             return match.group(1), match.group(2), True
+    if platform_name == "weixin":
+        match = _WEIXIN_TARGET_RE.fullmatch(target_ref)
+        if match:
+            return match.group(1), None, True
     if target_ref.lstrip("-").isdigit():
         return target_ref, None, True
     return None, None, False
@@ -433,7 +508,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     else:
         chunks = [message]
 
-    # --- Telegram / QQ NapCat: native media attachments supported ---
+    # --- Telegram / QQ NapCat / Weixin: native media attachments supported ---
     if platform == Platform.TELEGRAM:
         last_result = None
         for i, chunk in enumerate(chunks):
@@ -449,6 +524,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
                 return result
             last_result = result
         return last_result
+    if platform == Platform.WEIXIN:
+        return await _send_weixin(pconfig, chat_id, message, media_files=media_files)
     if platform == Platform.QQ_NAPCAT:
         last_result = None
         for i, chunk in enumerate(chunks):
@@ -468,7 +545,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if media_files and not message.strip():
         return {
             "error": (
-                f"send_message MEDIA delivery is currently only supported for telegram and qq_napcat; "
+                f"send_message MEDIA delivery is currently only supported for telegram, discord, weixin, and qq_napcat; "
                 f"target {platform.value} had only media attachments"
             )
         }
@@ -476,7 +553,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if media_files:
         warning = (
             f"MEDIA attachments were omitted for {platform.value}; "
-            "native send_message media delivery is currently only supported for telegram and qq_napcat"
+            "native send_message media delivery is currently only supported for telegram, discord, weixin, and qq_napcat"
         )
 
     last_result = None
@@ -802,6 +879,9 @@ async def _qq_napcat_call(extra, action: str, params: dict):
                         )
                     return data.get("data"), None
     except Exception as e:
+        diagnostic = diagnose_local_qq_napcat_endpoint(ws_url)
+        if diagnostic:
+            return None, _error(diagnostic["message"])
         return None, _error(f"QQ NapCat send failed: {e}")
 
     return None, _error("QQ NapCat send failed: no response from websocket")
@@ -1103,6 +1183,27 @@ async def _send_wecom(extra, chat_id, message):
             await adapter.disconnect()
     except Exception as e:
         return _error(f"WeCom send failed: {e}")
+
+
+async def _send_weixin(pconfig, chat_id, message, media_files=None):
+    """Send via Weixin iLink using the native adapter helper."""
+    try:
+        from gateway.platforms.weixin import check_weixin_requirements, send_weixin_direct
+        if not check_weixin_requirements():
+            return {"error": "Weixin requirements not met. Need aiohttp + cryptography."}
+    except ImportError:
+        return {"error": "Weixin adapter not available."}
+
+    try:
+        return await send_weixin_direct(
+            extra=pconfig.extra,
+            token=pconfig.token,
+            chat_id=chat_id,
+            message=message,
+            media_files=media_files or [],
+        )
+    except Exception as e:
+        return _error(f"Weixin send failed: {e}")
 
 
 async def _send_feishu(pconfig, chat_id, message, media_files=None, thread_id=None):

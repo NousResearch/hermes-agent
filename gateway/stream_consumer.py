@@ -23,6 +23,8 @@ import time
 from dataclasses import dataclass
 from typing import Any, Optional
 
+from gateway.platforms.base import BasePlatformAdapter
+
 logger = logging.getLogger("gateway.stream_consumer")
 
 # Sentinel to signal the stream is complete
@@ -201,10 +203,6 @@ class GatewayStreamConsumer:
         except Exception as e:
             logger.error("Stream consumer error: %s", e)
 
-    # Pattern to strip MEDIA:<path> tags (including optional surrounding quotes).
-    # Matches the simple cleanup regex used by the non-streaming path in
-    # gateway/platforms/base.py for post-processing.
-    _MEDIA_RE = re.compile(r'''[`"']?MEDIA:\s*\S+[`"']?''')
     _HIDDEN_MARKERS = ("[[audio_as_voice]]", "[[NO_REPLY]]")
 
     @staticmethod
@@ -223,7 +221,7 @@ class GatewayStreamConsumer:
         cleaned = text
         for marker in GatewayStreamConsumer._HIDDEN_MARKERS:
             cleaned = cleaned.replace(marker, "")
-        cleaned = GatewayStreamConsumer._MEDIA_RE.sub("", cleaned)
+        _, cleaned = BasePlatformAdapter.extract_media(cleaned)
         # Collapse excessive blank lines left behind by removed tags
         cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
         # Strip trailing whitespace/newlines but preserve leading content

@@ -214,6 +214,29 @@ class TestBlockingGatewayApproval:
         assert e1.event.is_set()
         assert e2.event.is_set()
 
+    def test_unregister_specific_callback_preserves_other_waiters(self):
+        """Removing one callback must not clear the whole session queue if others remain."""
+        from tools.approval import (
+            register_gateway_notify, unregister_gateway_notify,
+            _ApprovalEntry, _gateway_queues, _gateway_notify_cbs,
+        )
+        session_key = "test-multi-callback"
+        cb1 = lambda _data: None
+        cb2 = lambda _data: None
+        token1 = register_gateway_notify(session_key, cb1)
+        token2 = register_gateway_notify(session_key, cb2)
+
+        entry = _ApprovalEntry({"command": "cmd1"})
+        _gateway_queues[session_key] = [entry]
+
+        unregister_gateway_notify(session_key, token2)
+        assert entry.event.is_set() is False
+        assert session_key in _gateway_notify_cbs
+        assert _gateway_notify_cbs[session_key][-1] is cb1
+
+        unregister_gateway_notify(session_key, token1)
+        assert entry.event.is_set() is True
+
     def test_clear_session_signals_all_entries(self):
         """clear_session should unblock all waiting approval threads."""
         from tools.approval import (
@@ -333,6 +356,42 @@ class TestApproveCommand:
         runner = _make_runner()
         result = await runner._handle_approve_command(_make_event("/approve"))
         assert "No pending command" in result
+
+    @pytest.mark.asyncio
+    async def test_approve_resolves_external_background_approval(self):
+        runner = _make_runner()
+        source = _make_source()
+        session_key = runner._session_key_for_source(source)
+        store = runner._get_background_job_store()
+
+        store.create_job(
+            task_id="bg_ext_approve",
+            prompt="restart gateway",
+            source=source,
+            session_key=session_key,
+        )
+        request_id = store.create_approval_request(
+            task_id="bg_ext_approve",
+            session_key=session_key,
+            source=source,
+            approval_data={
+                "command": "systemctl restart hermes-gateway.service",
+                "description": "stop/disable system service",
+                "prompt_title": "Dangerous command requires approval",
+                "approver_name": "管理员",
+                "allow_persistence": False,
+                "pattern_key": "stop/disable system service",
+                "pattern_keys": ["stop/disable system service"],
+            },
+        )
+
+        result = await runner._handle_approve_command(_make_event("/approve", source=source))
+        request = store.get_approval_request(request_id)
+
+        assert "approved" in result.lower()
+        assert request is not None
+        assert request["status"] == "resolved"
+        assert request["choice"] == "once"
 
     @pytest.mark.asyncio
     async def test_approve_stale_old_style_pending(self):
@@ -458,6 +517,42 @@ class TestDenyCommand:
         runner = _make_runner()
         result = await runner._handle_deny_command(_make_event("/deny"))
         assert "No pending command" in result
+
+    @pytest.mark.asyncio
+    async def test_deny_resolves_external_background_approval(self):
+        runner = _make_runner()
+        source = _make_source()
+        session_key = runner._session_key_for_source(source)
+        store = runner._get_background_job_store()
+
+        store.create_job(
+            task_id="bg_ext_deny",
+            prompt="restart gateway",
+            source=source,
+            session_key=session_key,
+        )
+        request_id = store.create_approval_request(
+            task_id="bg_ext_deny",
+            session_key=session_key,
+            source=source,
+            approval_data={
+                "command": "systemctl restart hermes-gateway.service",
+                "description": "stop/disable system service",
+                "prompt_title": "Dangerous command requires approval",
+                "approver_name": "管理员",
+                "allow_persistence": False,
+                "pattern_key": "stop/disable system service",
+                "pattern_keys": ["stop/disable system service"],
+            },
+        )
+
+        result = await runner._handle_deny_command(_make_event("/deny", source=source))
+        request = store.get_approval_request(request_id)
+
+        assert "denied" in result.lower()
+        assert request is not None
+        assert request["status"] == "resolved"
+        assert request["choice"] == "deny"
 
     @pytest.mark.asyncio
     async def test_non_admin_cannot_deny_blocking_approval(self):

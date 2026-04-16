@@ -17,7 +17,7 @@ import pytest
 def _simulate_config_bridge(cfg: dict, initial_env: dict | None = None):
     """Simulate the gateway config bridge logic from gateway/run.py.
 
-    Returns the resulting env dict (only TERMINAL_* and MESSAGING_CWD keys).
+    Returns the resulting env dict for the gateway bridge keys under test.
     """
     env = dict(initial_env or {})
 
@@ -52,6 +52,14 @@ def _simulate_config_bridge(cfg: dict, initial_env: dict | None = None):
             alias_val = cfg.get(alias_key)
             if isinstance(alias_val, str) and alias_val.strip():
                 env[alias_env] = alias_val.strip()
+
+    # --- Replicate agent bridge from gateway/run.py ---
+    agent_cfg = cfg.get("agent", {})
+    if agent_cfg and isinstance(agent_cfg, dict):
+        if "gateway_timeout" in agent_cfg:
+            env["HERMES_AGENT_TIMEOUT"] = str(agent_cfg["gateway_timeout"])
+        if "stream_stale_timeout" in agent_cfg:
+            env["HERMES_STREAM_STALE_TIMEOUT"] = str(agent_cfg["stream_stale_timeout"])
 
     # --- Replicate lines 144-147: MESSAGING_CWD fallback ---
     configured_cwd = env.get("TERMINAL_CWD", "")
@@ -146,3 +154,15 @@ class TestTopLevelCwdAlias:
         cfg = {"cwd": "/from/config"}
         result = _simulate_config_bridge(cfg, {"MESSAGING_CWD": "/from/env"})
         assert result["TERMINAL_CWD"] == "/from/config"
+
+
+class TestAgentTimeoutBridge:
+    def test_agent_gateway_timeout_sets_hermes_agent_timeout(self):
+        cfg = {"agent": {"gateway_timeout": 900}}
+        result = _simulate_config_bridge(cfg)
+        assert result["HERMES_AGENT_TIMEOUT"] == "900"
+
+    def test_agent_stream_stale_timeout_sets_stream_env(self):
+        cfg = {"agent": {"stream_stale_timeout": 90}}
+        result = _simulate_config_bridge(cfg)
+        assert result["HERMES_STREAM_STALE_TIMEOUT"] == "90"

@@ -283,6 +283,23 @@ def build_session_context_prompt(
             "Do not drag stale topics, old task state, or previously completed "
             "answers into a new reply unless someone explicitly asks to continue them."
         )
+        lines.append(
+            "**Transcript semantics:** The replayed conversation history in this session "
+            "is the real room transcript. Messages with role=assistant are your own "
+            "replies that were already sent to the group."
+        )
+        lines.append(
+            "**Repeat suppression:** Treat prior assistant messages as completed replies, "
+            "not drafts or pending points. Do not restate, re-summarize, or re-address "
+            "your own earlier reply unless someone explicitly asks for a summary, a "
+            "continuation, or a correction."
+        )
+        lines.append(
+            "**Batch handling:** When a user turn contains a merged batch of multiple "
+            "speakers, default to replying to the newest active prompt only. Do not "
+            "turn the whole batch into a room-wide recap unless the group explicitly "
+            "asks for one."
+        )
     elif context.source.user_name:
         lines.append(f"**User:** {context.source.user_name}")
     elif context.source.user_id:
@@ -290,6 +307,13 @@ def build_session_context_prompt(
         if redact_pii:
             uid = _hash_sender_id(uid)
         lines.append(f"**User ID:** {uid}")
+
+    if context.source.platform != Platform.LOCAL:
+        lines.append(
+            "**Action truthfulness:** Do not claim that you sent a message, delivered a file, "
+            "checked a file/directory, or completed any verifiable platform action unless a "
+            "tool in this turn actually succeeded. If no tool was called or a tool failed, say that plainly."
+        )
 
     if context.admin_user_ids:
         lines.append("")
@@ -311,11 +335,25 @@ def build_session_context_prompt(
                 "them naturally and respectfully instead of reciting the internal "
                 "privilege block."
             )
+            if context.source.platform == Platform.QQ_NAPCAT and context.source.chat_type == "group":
+                lines.append(
+                    "**QQ group admin turn handling:** In QQ group chats, when the current "
+                    "latest message comes from the administrator, treat it as needing a "
+                    "direct response by default. If the request is brief or ambiguous, "
+                    "ask a short clarifying question instead of returning [[NO_REPLY]]."
+                )
         elif context.is_admin_user is False:
             lines.append("**Current user privilege:** Standard user")
             lines.append(
                 "**Dangerous action policy:** Do not imply that dangerous actions are "
                 "already authorized. State that an administrator must approve them first."
+            )
+            lines.append(
+                "**Addressing note:** Any owner-specific nicknames or titles stored "
+                "in global memory or prompts (for example, '董事长') apply only to "
+                "the administrator user IDs, not to the current user. Do not use "
+                "those titles for this user unless they explicitly ask for them in "
+                "this conversation."
             )
     
     # Platform-specific behavioral notes

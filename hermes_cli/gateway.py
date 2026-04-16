@@ -10,11 +10,19 @@ import shutil
 import signal
 import subprocess
 import sys
+import math
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
-from hermes_cli.config import get_env_value, get_hermes_home, save_env_value, is_managed, managed_error
+from hermes_cli.config import (
+    get_env_value,
+    get_hermes_home,
+    load_config,
+    save_env_value,
+    is_managed,
+    managed_error,
+)
 # display_hermes_home is imported lazily at call sites to avoid ImportError
 # when hermes_constants is cached from a pre-update version during `hermes update`.
 from hermes_cli.setup import (
@@ -593,6 +601,31 @@ def get_hermes_cli_path() -> str:
     return f"{get_python_path()} -m hermes_cli.main"
 
 
+def _resolve_gateway_service_code_root() -> Path:
+    """Return the code root that service definitions should execute from."""
+    try:
+        config = load_config()
+    except Exception:
+        config = {}
+
+    gateway_service = config.get("gateway_service", {})
+    raw = gateway_service.get("code_root") if isinstance(gateway_service, dict) else ""
+    if isinstance(raw, str) and raw.strip():
+        candidate = Path(os.path.expanduser(os.path.expandvars(raw.strip()))).resolve()
+        if candidate.is_dir():
+            return candidate
+    return PROJECT_ROOT
+
+
+def _service_node_bin_paths(code_root: Path) -> list[str]:
+    """Return node_modules/.bin entries for the configured and installed roots."""
+    paths = [str(code_root / "node_modules" / ".bin")]
+    installed_root = PROJECT_ROOT.resolve()
+    if code_root.resolve() != installed_root:
+        paths.append(str(installed_root / "node_modules" / ".bin"))
+    return paths
+
+
 # =============================================================================
 # Systemd (Linux)
 # =============================================================================
@@ -634,15 +667,34 @@ def _hermes_home_for_target_user(target_home_dir: str) -> str:
         return str(current_hermes)
 
 
+def _systemd_timeout_stop_seconds() -> int:
+    """Return a systemd stop timeout aligned with the gateway force-exit window.
+
+    The Python-level SIGTERM watchdog in ``gateway.run`` defaults to 20 seconds.
+    In practice, the interpreter may be stuck in network/C-extension work and
+    fail to process SIGTERM promptly, so systemd needs its own shorter backstop
+    instead of waiting the old 60-second default.
+    """
+    raw = str(os.getenv("HERMES_GATEWAY_FORCE_EXIT_SECONDS", "") or "").strip()
+    if not raw:
+        return 25
+    try:
+        value = float(raw)
+    except ValueError:
+        return 25
+    if value <= 0:
+        return 60
+    return max(25, int(math.ceil(value + 5.0)))
+
+
 def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) -> str:
     python_path = get_python_path()
-    working_dir = str(PROJECT_ROOT)
+    code_root = _resolve_gateway_service_code_root()
+    working_dir = str(code_root)
     detected_venv = _detect_venv_dir()
     venv_dir = str(detected_venv) if detected_venv else str(PROJECT_ROOT / "venv")
     venv_bin = str(detected_venv / "bin") if detected_venv else str(PROJECT_ROOT / "venv" / "bin")
-    node_bin = str(PROJECT_ROOT / "node_modules" / ".bin")
-
-    path_entries = [venv_bin, node_bin]
+    path_entries = [venv_bin, *_service_node_bin_paths(code_root)]
     resolved_node = shutil.which("node")
     if resolved_node:
         resolved_node_dir = str(Path(resolved_node).resolve().parent)
@@ -650,6 +702,7 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
             path_entries.append(resolved_node_dir)
 
     common_bin_paths = ["/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin"]
+    timeout_stop_sec = _systemd_timeout_stop_seconds()
 
     if system:
         username, group_name, home_dir = _system_service_identity(run_as_user)
@@ -681,7 +734,7 @@ Restart=on-failure
 RestartSec=30
 KillMode=mixed
 KillSignal=SIGTERM
-TimeoutStopSec=60
+TimeoutStopSec={timeout_stop_sec}
 StandardOutput=journal
 StandardError=journal
 
@@ -711,7 +764,7 @@ Restart=on-failure
 RestartSec=30
 KillMode=mixed
 KillSignal=SIGTERM
-TimeoutStopSec=60
+TimeoutStopSec={timeout_stop_sec}
 StandardOutput=journal
 StandardError=journal
 
@@ -990,7 +1043,8 @@ def _launchd_domain() -> str:
 
 def generate_launchd_plist() -> str:
     python_path = get_python_path()
-    working_dir = str(PROJECT_ROOT)
+    code_root = _resolve_gateway_service_code_root()
+    working_dir = str(code_root)
     hermes_home = str(get_hermes_home().resolve())
     log_dir = get_hermes_home() / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -1004,10 +1058,9 @@ def generate_launchd_plist() -> str:
     detected_venv = _detect_venv_dir()
     venv_bin = str(detected_venv / "bin") if detected_venv else str(PROJECT_ROOT / "venv" / "bin")
     venv_dir = str(detected_venv) if detected_venv else str(PROJECT_ROOT / "venv")
-    node_bin = str(PROJECT_ROOT / "node_modules" / ".bin")
     # Resolve the directory containing the node binary (e.g. Homebrew, nvm)
     # so it's explicitly in PATH even if the user's shell PATH changes later.
-    priority_dirs = [venv_bin, node_bin]
+    priority_dirs = [venv_bin, *_service_node_bin_paths(code_root)]
     resolved_node = shutil.which("node")
     if resolved_node:
         resolved_node_dir = str(Path(resolved_node).resolve().parent)
@@ -1613,6 +1666,43 @@ _PLATFORMS = [
              "help": "Chat ID for scheduled results and notifications."},
         ],
     },
+    {
+        "key": "wecom_callback",
+        "label": "WeCom Callback (Self-Built App)",
+        "emoji": "💬",
+        "token_var": "WECOM_CALLBACK_CORP_ID",
+        "setup_instructions": [
+            "1. Go to WeCom Admin Console → Applications → Create Self-Built App",
+            "2. Note the Corp ID and create a Corp Secret",
+            "3. Configure the callback URL under Receive Messages",
+            "4. Copy the callback Token and EncodingAESKey",
+            "5. Ensure the callback port is reachable from WeCom",
+            "6. Restrict access with WECOM_CALLBACK_ALLOWED_USERS for production use",
+        ],
+        "vars": [
+            {"name": "WECOM_CALLBACK_CORP_ID", "prompt": "Corp ID", "password": False,
+             "help": "Your WeCom enterprise Corp ID."},
+            {"name": "WECOM_CALLBACK_CORP_SECRET", "prompt": "Corp Secret", "password": True,
+             "help": "The secret for your self-built application."},
+            {"name": "WECOM_CALLBACK_AGENT_ID", "prompt": "Agent ID", "password": False,
+             "help": "The Agent ID of your self-built application."},
+            {"name": "WECOM_CALLBACK_TOKEN", "prompt": "Callback Token", "password": True,
+             "help": "The token from your WeCom callback configuration."},
+            {"name": "WECOM_CALLBACK_ENCODING_AES_KEY", "prompt": "Encoding AES Key", "password": True,
+             "help": "The EncodingAESKey from your WeCom callback configuration."},
+            {"name": "WECOM_CALLBACK_PORT", "prompt": "Callback server port (default: 8645)", "password": False,
+             "help": "Port for the HTTP callback server."},
+            {"name": "WECOM_CALLBACK_ALLOWED_USERS", "prompt": "Allowed user IDs (comma-separated, or empty)", "password": False,
+             "is_allowlist": True,
+             "help": "Restrict which WeCom users can interact with the app."},
+        ],
+    },
+    {
+        "key": "weixin",
+        "label": "Weixin / WeChat",
+        "emoji": "💬",
+        "token_var": "WEIXIN_ACCOUNT_ID",
+    },
 ]
 
 
@@ -1657,6 +1747,13 @@ def _platform_status(platform: dict) -> str:
         if val or password or homeserver:
             return "partially configured"
         return "not configured"
+    if platform.get("key") == "weixin":
+        token = get_env_value("WEIXIN_TOKEN")
+        if val and token:
+            return "configured"
+        if val or token:
+            return "partially configured"
+        return "not configured"
     if val:
         return "configured"
     return "not configured"
@@ -1677,6 +1774,54 @@ def _runtime_health_lines() -> list[str]:
     gateway_state = state.get("gateway_state")
     exit_reason = state.get("exit_reason")
     platforms = state.get("platforms", {}) or {}
+    runtime_summary = state.get("runtime_summary")
+    if not isinstance(runtime_summary, dict):
+        runtime_summary = {}
+    runtime_health = state.get("runtime_health")
+    if not isinstance(runtime_health, dict) or not runtime_health:
+        try:
+            from gateway.runtime_canary import evaluate_runtime_health
+
+            runtime_health = evaluate_runtime_health(state)
+        except Exception:
+            runtime_health = {}
+
+    if gateway_state:
+        lines.append(f"ℹ Gateway: {gateway_state}")
+
+    active_sessions = runtime_summary.get("active_sessions") or []
+    active_foreground_count = int(runtime_summary.get("active_sessions_count") or len(active_sessions) or 0)
+    background_jobs = runtime_summary.get("background_jobs")
+    background_jobs = background_jobs if isinstance(background_jobs, dict) else {}
+    active_background_count = int(background_jobs.get("active_count") or 0)
+    if runtime_health:
+        health_status = str(runtime_health.get("status") or "healthy").strip().lower() or "healthy"
+        health_summary = str(runtime_health.get("summary") or "").strip()
+        if health_status == "healthy":
+            busy_bits: list[str] = []
+            if active_background_count:
+                suffix = "job" if active_background_count == 1 else "jobs"
+                busy_bits.append(f"background busy: {active_background_count} active {suffix}")
+            elif active_foreground_count:
+                suffix = "session" if active_foreground_count == 1 else "sessions"
+                busy_bits.append(f"foreground active: {active_foreground_count} {suffix}")
+            suffix = f" ({'; '.join(busy_bits)})" if busy_bits else ""
+            lines.append(f"ℹ Health: healthy{suffix}")
+        else:
+            prefix = "✗" if health_status == "critical" else "⚠"
+            issue_count = int(runtime_health.get("issue_count") or len(runtime_health.get("issues") or []))
+            issue_suffix = f" ({issue_count} issue{'s' if issue_count != 1 else ''})" if issue_count else ""
+            lines.append(f"{prefix} Health: {health_status}{issue_suffix}")
+            if health_summary:
+                lines.append(f"{prefix} {health_summary}")
+
+    platform_bits: list[str] = []
+    for platform, pdata in sorted(platforms.items()):
+        state_label = str((pdata or {}).get("state") or "unknown").strip() or "unknown"
+        platform_bits.append(f"{platform}={state_label}")
+
+    if platform_bits:
+        lines.append(f"ℹ Platforms: {', '.join(platform_bits)}")
 
     for platform, pdata in platforms.items():
         if pdata.get("state") == "fatal":
@@ -1687,6 +1832,106 @@ def _runtime_health_lines() -> list[str]:
         lines.append(f"⚠ Last startup issue: {exit_reason}")
     elif gateway_state == "stopped" and exit_reason:
         lines.append(f"⚠ Last shutdown reason: {exit_reason}")
+
+    if runtime_summary:
+        model = runtime_summary.get("model")
+        if isinstance(model, dict) and model:
+            configured_model = str(model.get("configured_model") or "").strip()
+            configured_provider = str(model.get("configured_provider") or "").strip()
+            active_model = str(model.get("active_model") or model.get("configured_model") or "").strip()
+            active_provider = str(model.get("active_provider") or "").strip()
+            if configured_model:
+                configured_suffix = f" via {configured_provider}" if configured_provider else ""
+                lines.append(f"ℹ Configured model: {configured_model}{configured_suffix}")
+            if active_model:
+                suffix = f" via {active_provider}" if active_provider else ""
+                if bool(model.get("fallback_pinned")):
+                    suffix += " (fallback pinned)"
+                elif bool(model.get("fallback_active")):
+                    suffix += " (fallback active)"
+                lines.append(f"ℹ Model: {active_model}{suffix}")
+            if bool(model.get("primary_degraded")):
+                seconds = int(model.get("primary_degraded_cooldown_seconds") or 0)
+                reason = str(model.get("primary_degraded_reason") or "").strip().replace("_", " ")
+                suffix = f" ({reason})" if reason else ""
+                lines.append(f"ℹ Primary degraded: {seconds}s{suffix}")
+            elif int(model.get("degraded_runtime_count") or 0) > 0:
+                lines.append(f"ℹ Degraded runtimes: {int(model.get('degraded_runtime_count') or 0)}")
+
+        approvals = runtime_summary.get("approvals")
+        if isinstance(approvals, dict) and approvals:
+            pending_count = int(approvals.get("pending_count") or 0)
+            lines.append(f"ℹ Pending approvals: {pending_count}")
+
+        active_count = active_foreground_count
+        if active_count:
+            session_bits = []
+            if active_sessions and isinstance(active_sessions[0], dict):
+                session = active_sessions[0]
+                location = "/".join(
+                    part
+                    for part in (
+                        str(session.get("platform") or "").strip(),
+                        str(session.get("chat_type") or "").strip(),
+                        str(session.get("chat_id") or "").strip(),
+                    )
+                    if part
+                )
+                current_tool = str(session.get("current_tool") or "").strip()
+                if location:
+                    session_bits.append(location)
+                if current_tool:
+                    session_bits.append(current_tool)
+            suffix = f" ({' · '.join(session_bits)})" if session_bits else ""
+            lines.append(f"ℹ Foreground: {active_count} active{suffix}")
+
+        if isinstance(background_jobs, dict) and background_jobs:
+            active_count = int(background_jobs.get("active_count") or 0)
+            total_count = int(background_jobs.get("total_count") or 0)
+            lines.append(f"ℹ Background jobs: {active_count} active / {total_count} tracked")
+
+        auto_vision = runtime_summary.get("auto_vision")
+        if isinstance(auto_vision, dict) and auto_vision:
+            state_label = str(auto_vision.get("state") or "ready").strip() or "ready"
+            if state_label == "cooldown":
+                seconds = int(auto_vision.get("cooldown_seconds") or 0)
+                reason = str(auto_vision.get("reason") or "").strip()
+                suffix = f" ({reason})" if reason else ""
+                lines.append(f"ℹ Auto vision: cooldown {seconds}s{suffix}")
+            elif state_label == "warming":
+                inflight = int(auto_vision.get("inflight_count") or 0)
+                lines.append(f"ℹ Auto vision: warming ({inflight} in flight)")
+            else:
+                lines.append("ℹ Auto vision: ready")
+
+        qq_archive = runtime_summary.get("qq_archive")
+        if isinstance(qq_archive, dict) and qq_archive:
+            raw_count = int(qq_archive.get("raw_message_count") or 0)
+            raw_groups = int(qq_archive.get("raw_group_count") or 0)
+            due_rollups = int(qq_archive.get("due_rollup_count") or 0)
+            report_count = int(qq_archive.get("report_count") or 0)
+            lines.append(
+                f"ℹ QQ archive: {raw_count} raw msgs / {raw_groups} groups / "
+                f"{due_rollups} due / {report_count} reports"
+            )
+
+        qq_monitoring = runtime_summary.get("qq_monitoring")
+        if isinstance(qq_monitoring, dict) and qq_monitoring:
+            active_collect_only_groups = int(qq_monitoring.get("active_collect_only_groups") or 0)
+            groups = qq_monitoring.get("groups") or []
+            preview = ""
+            if groups and isinstance(groups[0], dict):
+                group = groups[0]
+                group_label = str(group.get("group_name") or group.get("group_id") or "").strip()
+                if not group_label:
+                    group_label = str(group.get("group_id") or "").strip()
+                worker_names = ", ".join(group.get("worker_names") or [])
+                preview_bits = [bit for bit in (group_label, worker_names) if bit]
+                if preview_bits:
+                    preview = f" ({' · '.join(preview_bits)})"
+            lines.append(
+                f"ℹ QQ monitoring: {active_collect_only_groups} collect-only group(s){preview}"
+            )
 
     return lines
 
@@ -1794,6 +2039,134 @@ def _setup_whatsapp():
     from hermes_cli.main import cmd_whatsapp
     import argparse
     cmd_whatsapp(argparse.Namespace())
+
+
+def _setup_weixin():
+    """Interactive setup for Weixin / WeChat personal accounts."""
+    print()
+    print(color("  ─── 💬 Weixin / WeChat Setup ───", Colors.CYAN))
+    print()
+    print_info("  1. Hermes will open Tencent iLink QR login in this terminal.")
+    print_info("  2. Use WeChat to scan and confirm the QR code.")
+    print_info("  3. Hermes will store the returned account_id/token in ~/.hermes/.env.")
+    print_info("  4. This adapter supports native text, image, video, and document delivery.")
+
+    existing_account = get_env_value("WEIXIN_ACCOUNT_ID")
+    existing_token = get_env_value("WEIXIN_TOKEN")
+    if existing_account and existing_token:
+        print()
+        print_success("Weixin is already configured.")
+        if not prompt_yes_no("  Reconfigure Weixin?", False):
+            return
+
+    try:
+        from gateway.platforms.weixin import check_weixin_requirements, qr_login
+    except Exception as exc:
+        print_error(f"  Weixin adapter import failed: {exc}")
+        print_info("  Install gateway dependencies first, then retry.")
+        return
+
+    if not check_weixin_requirements():
+        print_error("  Missing dependencies: Weixin needs aiohttp and cryptography.")
+        print_info("  Install them, then rerun `hermes gateway setup`.")
+        return
+
+    print()
+    if not prompt_yes_no("  Start QR login now?", True):
+        print_info("  Cancelled.")
+        return
+
+    try:
+        credentials = asyncio.run(qr_login(str(get_hermes_home())))
+    except KeyboardInterrupt:
+        print()
+        print_warning("  Weixin setup cancelled.")
+        return
+    except Exception as exc:
+        print_error(f"  QR login failed: {exc}")
+        return
+
+    if not credentials:
+        print_warning("  QR login did not complete.")
+        return
+
+    account_id = credentials.get("account_id", "")
+    token = credentials.get("token", "")
+    base_url = credentials.get("base_url", "")
+    user_id = credentials.get("user_id", "")
+
+    save_env_value("WEIXIN_ACCOUNT_ID", account_id)
+    save_env_value("WEIXIN_TOKEN", token)
+    if base_url:
+        save_env_value("WEIXIN_BASE_URL", base_url)
+    save_env_value(
+        "WEIXIN_CDN_BASE_URL",
+        get_env_value("WEIXIN_CDN_BASE_URL") or "https://novac2c.cdn.weixin.qq.com/c2c",
+    )
+
+    print()
+    access_choices = [
+        "Use DM pairing approval (recommended)",
+        "Allow all direct messages",
+        "Only allow listed user IDs",
+        "Disable direct messages",
+    ]
+    access_idx = prompt_choice("  How should direct messages be authorized?", access_choices, 0)
+    if access_idx == 0:
+        save_env_value("WEIXIN_DM_POLICY", "pairing")
+        save_env_value("WEIXIN_ALLOW_ALL_USERS", "false")
+        save_env_value("WEIXIN_ALLOWED_USERS", "")
+        print_success("  DM pairing enabled.")
+    elif access_idx == 1:
+        save_env_value("WEIXIN_DM_POLICY", "open")
+        save_env_value("WEIXIN_ALLOW_ALL_USERS", "true")
+        save_env_value("WEIXIN_ALLOWED_USERS", "")
+        print_warning("  Open DM access enabled for Weixin.")
+    elif access_idx == 2:
+        default_allow = user_id or ""
+        allowlist = prompt("  Allowed Weixin user IDs (comma-separated)", default_allow, password=False).replace(" ", "")
+        save_env_value("WEIXIN_DM_POLICY", "allowlist")
+        save_env_value("WEIXIN_ALLOW_ALL_USERS", "false")
+        save_env_value("WEIXIN_ALLOWED_USERS", allowlist)
+        print_success("  Weixin allowlist saved.")
+    else:
+        save_env_value("WEIXIN_DM_POLICY", "disabled")
+        save_env_value("WEIXIN_ALLOW_ALL_USERS", "false")
+        save_env_value("WEIXIN_ALLOWED_USERS", "")
+        print_warning("  Direct messages disabled.")
+
+    print()
+    group_choices = [
+        "Disable group chats (recommended)",
+        "Allow all group chats",
+        "Only allow listed group chat IDs",
+    ]
+    group_idx = prompt_choice("  How should group chats be handled?", group_choices, 0)
+    if group_idx == 0:
+        save_env_value("WEIXIN_GROUP_POLICY", "disabled")
+        save_env_value("WEIXIN_GROUP_ALLOWED_USERS", "")
+        print_info("  Group chats disabled.")
+    elif group_idx == 1:
+        save_env_value("WEIXIN_GROUP_POLICY", "open")
+        save_env_value("WEIXIN_GROUP_ALLOWED_USERS", "")
+        print_warning("  All group chats enabled.")
+    else:
+        allow_groups = prompt("  Allowed group chat IDs (comma-separated)", "", password=False).replace(" ", "")
+        save_env_value("WEIXIN_GROUP_POLICY", "allowlist")
+        save_env_value("WEIXIN_GROUP_ALLOWED_USERS", allow_groups)
+        print_success("  Group allowlist saved.")
+
+    if user_id:
+        print()
+        if prompt_yes_no(f"  Use your Weixin user ID ({user_id}) as the home channel?", True):
+            save_env_value("WEIXIN_HOME_CHANNEL", user_id)
+            print_success(f"  Home channel set to {user_id}")
+
+    print()
+    print_success("Weixin configured!")
+    print_info(f"  Account ID: {account_id}")
+    if user_id:
+        print_info(f"  User ID: {user_id}")
 
 
 def _is_service_installed() -> bool:
@@ -2022,6 +2395,8 @@ def gateway_setup():
             _setup_whatsapp()
         elif platform["key"] == "signal":
             _setup_signal()
+        elif platform["key"] == "weixin":
+            _setup_weixin()
         else:
             _setup_standard_platform(platform)
 

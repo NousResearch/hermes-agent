@@ -35,6 +35,10 @@ _approval_current_user_is_admin: contextvars.ContextVar[Optional[bool]] = contex
     "approval_current_user_is_admin",
     default=None,
 )
+_external_approval_backend: contextvars.ContextVar[object | None] = contextvars.ContextVar(
+    "external_approval_backend",
+    default=None,
+)
 
 
 def set_current_session_key(session_key: str) -> contextvars.Token[str]:
@@ -90,6 +94,21 @@ def get_current_admin_policy() -> tuple[list[str], Optional[bool]]:
             is_admin = False
 
     return admin_ids, is_admin
+
+
+def set_external_approval_backend(backend: object | None) -> contextvars.Token[object | None]:
+    """Bind an optional cross-process approval backend to the current context."""
+    return _external_approval_backend.set(backend)
+
+
+def reset_external_approval_backend(token: contextvars.Token[object | None]) -> None:
+    """Restore the prior external approval backend context."""
+    _external_approval_backend.reset(token)
+
+
+def get_external_approval_backend() -> object | None:
+    """Return the active external approval backend, if any."""
+    return _external_approval_backend.get()
 
 # Sensitive write targets that should trigger approval even when referenced
 # via shell expansions like $HOME or $HERMES_HOME.
@@ -333,11 +352,11 @@ class _ApprovalEntry:
         self.result: Optional[str] = None  # "once"|"session"|"always"|"deny"
 
 
-_gateway_queues: dict[str, list] = {}        # session_key → [_ApprovalEntry, …]
-_gateway_notify_cbs: dict[str, object] = {}  # session_key → callable(approval_data)
+_gateway_queues: dict[str, list] = {}          # session_key → [_ApprovalEntry, …]
+_gateway_notify_cbs: dict[str, list[object]] = {}  # session_key → [callable(approval_data), …]
 
 
-def register_gateway_notify(session_key: str, cb) -> None:
+def register_gateway_notify(session_key: str, cb):
     """Register a per-session callback for sending approval requests to the user.
 
     The callback signature is ``cb(approval_data: dict) -> None`` where
@@ -346,18 +365,36 @@ def register_gateway_notify(session_key: str, cb) -> None:
     thread, must schedule the actual send on the event loop).
     """
     with _lock:
-        _gateway_notify_cbs[session_key] = cb
+        _gateway_notify_cbs.setdefault(session_key, []).append(cb)
+    return cb
 
 
-def unregister_gateway_notify(session_key: str) -> None:
+def unregister_gateway_notify(session_key: str, cb=None) -> None:
     """Unregister the per-session gateway approval callback.
 
-    Signals ALL blocked threads for this session so they don't hang forever
-    (e.g. when the agent run finishes or is interrupted).
+    When ``cb`` is provided, only that callback registration is removed.
+    Pending approvals are cancelled only after the final callback for the
+    session is removed. Without ``cb``, the whole session is cleared.
     """
     with _lock:
-        _gateway_notify_cbs.pop(session_key, None)
-        entries = _gateway_queues.pop(session_key, [])
+        callbacks = list(_gateway_notify_cbs.get(session_key, []))
+        clear_session = cb is None
+
+        if clear_session:
+            _gateway_notify_cbs.pop(session_key, None)
+        else:
+            try:
+                callbacks.remove(cb)
+            except ValueError:
+                pass
+
+            if callbacks:
+                _gateway_notify_cbs[session_key] = callbacks
+            else:
+                _gateway_notify_cbs.pop(session_key, None)
+                clear_session = True
+
+        entries = _gateway_queues.pop(session_key, []) if clear_session else []
         for entry in entries:
             entry.event.set()
 
@@ -410,6 +447,13 @@ def pending_approval_count(session_key: str) -> int:
     """Return the number of pending blocking approvals for a session."""
     with _lock:
         return len(_gateway_queues.get(session_key, []))
+
+
+def _get_gateway_notify_cb(session_key: str):
+    """Return the most recently registered gateway approval callback."""
+    with _lock:
+        callbacks = _gateway_notify_cbs.get(session_key) or []
+        return callbacks[-1] if callbacks else None
 
 
 def submit_pending(session_key: str, approval: dict):
@@ -637,8 +681,8 @@ def request_dangerous_action_approval(
     }
 
     if is_gateway or is_ask:
-        with _lock:
-            notify_cb = _gateway_notify_cbs.get(session_key)
+        notify_cb = _get_gateway_notify_cb(session_key)
+        external_backend = get_external_approval_backend()
 
         if notify_cb is not None:
             entry = _ApprovalEntry(approval_data)
@@ -681,6 +725,39 @@ def request_dangerous_action_approval(
                 return {
                     "approved": False,
                     "message": f"BLOCKED: 操作未获授权（{reason}）。不要重试。",
+                    "description": description,
+                }
+
+            return {
+                "approved": True,
+                "message": None,
+                "user_approved": True,
+                "description": description,
+            }
+
+        if external_backend is not None and hasattr(external_backend, "request_and_wait"):
+            timeout = _get_approval_config().get("gateway_timeout", 300)
+            try:
+                timeout = int(timeout)
+            except (ValueError, TypeError):
+                timeout = 300
+            try:
+                choice = external_backend.request_and_wait(
+                    approval_data,
+                    timeout_seconds=timeout,
+                )
+            except Exception as exc:
+                logger.warning("External approval bridge failed for dangerous action: %s", exc)
+                return {
+                    "approved": False,
+                    "message": "BLOCKED: 跨进程授权桥失败。不要重试。",
+                    "description": description,
+                }
+
+            if not choice or choice == "deny":
+                return {
+                    "approved": False,
+                    "message": "BLOCKED: 操作未获授权。不要重试。",
                     "description": description,
                 }
 
@@ -1067,9 +1144,8 @@ def check_all_command_guards(command: str, env_type: str,
     # input() flow.  The agent never sees "approval_required"; it either
     # gets the command output (approved) or a definitive "BLOCKED" message.
     if is_gateway or is_ask:
-        notify_cb = None
-        with _lock:
-            notify_cb = _gateway_notify_cbs.get(session_key)
+        notify_cb = _get_gateway_notify_cb(session_key)
+        external_backend = get_external_approval_backend()
 
         if notify_cb is not None:
             # --- Blocking gateway approval (queue-based) ---
@@ -1142,6 +1218,58 @@ def check_all_command_guards(command: str, env_type: str,
 
             return {"approved": True, "message": None,
                     "user_approved": True, "description": combined_desc}
+
+        if external_backend is not None and hasattr(external_backend, "request_and_wait"):
+            timeout = _get_approval_config().get("gateway_timeout", 300)
+            try:
+                timeout = int(timeout)
+            except (ValueError, TypeError):
+                timeout = 300
+            approval_data = {
+                "command": command,
+                "pattern_key": primary_key,
+                "pattern_keys": all_keys,
+                "description": combined_desc,
+                "prompt_title": "Dangerous command requires approval",
+                "approver_name": "管理员",
+                "allow_persistence": not has_tirith,
+            }
+            try:
+                choice = external_backend.request_and_wait(
+                    approval_data,
+                    timeout_seconds=timeout,
+                )
+            except Exception as exc:
+                logger.warning("External approval bridge failed: %s", exc)
+                return {
+                    "approved": False,
+                    "message": "BLOCKED: 跨进程授权桥失败。不要重试。",
+                    "pattern_key": primary_key,
+                    "description": combined_desc,
+                }
+
+            if not choice or choice == "deny":
+                return {
+                    "approved": False,
+                    "message": "BLOCKED: 命令未获授权。不要重试这条命令。",
+                    "pattern_key": primary_key,
+                    "description": combined_desc,
+                }
+
+            for key, _, is_tirith in warnings:
+                if choice == "session" or (choice == "always" and is_tirith):
+                    approve_session(session_key, key)
+                elif choice == "always":
+                    approve_session(session_key, key)
+                    approve_permanent(key)
+                    save_permanent_allowlist(_permanent_approved)
+
+            return {
+                "approved": True,
+                "message": None,
+                "user_approved": True,
+                "description": combined_desc,
+            }
 
         # Fallback: no gateway callback registered (e.g. cron, batch).
         # Return approval_required for backward compat.

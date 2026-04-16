@@ -23,6 +23,7 @@ from typing import Any, Optional
 _GATEWAY_KIND = "hermes-gateway"
 _RUNTIME_STATUS_FILE = "gateway_state.json"
 _LOCKS_DIRNAME = "gateway-locks"
+_STATUS_UNSET = object()
 
 
 def _get_pid_path() -> Path:
@@ -129,6 +130,8 @@ def _build_runtime_status_record() -> dict[str, Any]:
         "gateway_state": "starting",
         "exit_reason": None,
         "platforms": {},
+        "runtime_summary": {},
+        "runtime_health": {},
         "updated_at": _utc_now_iso(),
     })
     return payload
@@ -187,16 +190,20 @@ def write_pid_file() -> None:
 def write_runtime_status(
     *,
     gateway_state: Optional[str] = None,
-    exit_reason: Optional[str] = None,
+    exit_reason: Any = _STATUS_UNSET,
+    runtime_summary: Any = _STATUS_UNSET,
     platform: Optional[str] = None,
-    platform_state: Optional[str] = None,
-    error_code: Optional[str] = None,
-    error_message: Optional[str] = None,
+    platform_state: Any = _STATUS_UNSET,
+    error_code: Any = _STATUS_UNSET,
+    error_message: Any = _STATUS_UNSET,
+    reset_platforms: bool = False,
 ) -> None:
     """Persist gateway runtime health information for diagnostics/status."""
     path = _get_runtime_status_path()
     payload = _read_json_file(path) or _build_runtime_status_record()
     payload.setdefault("platforms", {})
+    payload.setdefault("runtime_summary", {})
+    payload.setdefault("runtime_health", {})
     payload.setdefault("kind", _GATEWAY_KIND)
     payload["pid"] = os.getpid()
     payload["start_time"] = _get_process_start_time(os.getpid())
@@ -204,19 +211,30 @@ def write_runtime_status(
 
     if gateway_state is not None:
         payload["gateway_state"] = gateway_state
-    if exit_reason is not None:
+    if exit_reason is not _STATUS_UNSET:
         payload["exit_reason"] = exit_reason
+    if runtime_summary is not _STATUS_UNSET:
+        payload["runtime_summary"] = dict(runtime_summary) if isinstance(runtime_summary, dict) else {}
+    if reset_platforms:
+        payload["platforms"] = {}
 
     if platform is not None:
         platform_payload = payload["platforms"].get(platform, {})
-        if platform_state is not None:
+        if platform_state is not _STATUS_UNSET:
             platform_payload["state"] = platform_state
-        if error_code is not None:
+        if error_code is not _STATUS_UNSET:
             platform_payload["error_code"] = error_code
-        if error_message is not None:
+        if error_message is not _STATUS_UNSET:
             platform_payload["error_message"] = error_message
         platform_payload["updated_at"] = _utc_now_iso()
         payload["platforms"][platform] = platform_payload
+
+    try:
+        from gateway.runtime_canary import evaluate_runtime_health
+
+        payload["runtime_health"] = evaluate_runtime_health(payload)
+    except Exception:
+        payload["runtime_health"] = {}
 
     _write_json_file(path, payload)
 

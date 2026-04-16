@@ -84,7 +84,7 @@ class TestGeneratedSystemdUnits:
 
         assert "ExecStart=" in unit
         assert "ExecStop=" not in unit
-        assert "TimeoutStopSec=60" in unit
+        assert "TimeoutStopSec=25" in unit
 
     def test_user_unit_includes_resolved_node_directory_in_path(self, monkeypatch):
         monkeypatch.setattr(gateway_cli.shutil, "which", lambda cmd: "/home/test/.nvm/versions/node/v24.14.0/bin/node" if cmd == "node" else None)
@@ -98,8 +98,59 @@ class TestGeneratedSystemdUnits:
 
         assert "ExecStart=" in unit
         assert "ExecStop=" not in unit
-        assert "TimeoutStopSec=60" in unit
+        assert "TimeoutStopSec=25" in unit
         assert "WantedBy=multi-user.target" in unit
+
+    def test_systemd_timeout_stop_tracks_force_exit_env(self, monkeypatch):
+        monkeypatch.setenv("HERMES_GATEWAY_FORCE_EXIT_SECONDS", "42")
+
+        unit = gateway_cli.generate_systemd_unit(system=False)
+
+        assert "TimeoutStopSec=47" in unit
+
+    def test_user_unit_respects_configured_gateway_service_code_root(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        configured_root = tmp_path / "workspace"
+        configured_root.mkdir()
+        installed_root = tmp_path / "installed-copy"
+        installed_root.mkdir()
+
+        (hermes_home / "config.yaml").write_text(
+            f"gateway_service:\n  code_root: {configured_root}\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(gateway_cli, "PROJECT_ROOT", installed_root)
+
+        unit = gateway_cli.generate_systemd_unit(system=False)
+
+        assert f"WorkingDirectory={configured_root}" in unit
+        assert f"{configured_root}/node_modules/.bin" in unit
+        assert f"{installed_root}/node_modules/.bin" in unit
+
+    def test_launchd_plist_respects_configured_gateway_service_code_root(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        configured_root = tmp_path / "workspace"
+        configured_root.mkdir()
+        installed_root = tmp_path / "installed-copy"
+        installed_root.mkdir()
+
+        (hermes_home / "config.yaml").write_text(
+            f"gateway_service:\n  code_root: {configured_root}\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(gateway_cli, "PROJECT_ROOT", installed_root)
+
+        plist = gateway_cli.generate_launchd_plist()
+
+        assert f"<string>{configured_root}</string>" in plist
+        assert f"{configured_root}/node_modules/.bin" in plist
+        assert f"{installed_root}/node_modules/.bin" in plist
 
 
 class TestGatewayStopCleanup:
@@ -152,6 +203,139 @@ class TestGatewayStopCleanup:
 
         assert service_calls == ["stop"]
         assert kill_calls == [False]
+
+
+class TestRuntimeHealthLines:
+    def test_runtime_health_lines_include_runtime_snapshot(self, monkeypatch):
+        from gateway import status as gateway_status
+
+        monkeypatch.setattr(
+            gateway_status,
+            "read_runtime_status",
+            lambda: {
+                "gateway_state": "running",
+                "exit_reason": None,
+                "platforms": {
+                    "qq_napcat": {"state": "connected"},
+                    "telegram": {"state": "degraded", "error_message": "retrying"},
+                },
+                "runtime_health": {
+                    "healthy": True,
+                    "status": "healthy",
+                    "summary": "runtime canary healthy",
+                    "issue_count": 0,
+                    "issues": [],
+                },
+                "runtime_summary": {
+                    "model": {
+                        "configured_model": "claude-opus-4.6",
+                        "active_model": "gpt-5.4-mini",
+                        "active_provider": "openrouter",
+                        "fallback_active": True,
+                        "fallback_pinned": False,
+                        "primary_degraded": True,
+                        "primary_degraded_reason": "empty_response",
+                        "primary_degraded_cooldown_seconds": 118,
+                        "degraded_runtime_count": 1,
+                    },
+                    "approvals": {
+                        "pending_count": 2,
+                    },
+                    "active_sessions_count": 1,
+                    "active_sessions": [
+                        {
+                            "platform": "qq_napcat",
+                            "chat_type": "group",
+                            "chat_id": "726109087",
+                            "current_tool": "delegate_task",
+                            "age_seconds": 12,
+                        }
+                    ],
+                    "background_jobs": {
+                        "active_count": 2,
+                        "total_count": 3,
+                        "counts": {"running": 1, "queued": 1, "completed": 1},
+                    },
+                    "auto_vision": {
+                        "state": "cooldown",
+                        "cooldown_seconds": 18,
+                        "reason": "timeout",
+                        "inflight_count": 1,
+                    },
+                    "qq_archive": {
+                        "raw_message_count": 42,
+                        "raw_group_count": 2,
+                        "due_rollup_count": 1,
+                        "report_count": 5,
+                    },
+                    "qq_monitoring": {
+                        "active_collect_only_groups": 1,
+                        "groups": [
+                            {
+                                "group_id": "726109087",
+                                "group_name": "项目群",
+                                "mode": "collect_only",
+                                "worker_names": ["钢镚"],
+                            }
+                        ],
+                    },
+                },
+            },
+        )
+
+        lines = gateway_cli._runtime_health_lines()
+
+        assert any("Gateway: running" in line for line in lines)
+        assert any("Health: healthy (background busy: 2 active jobs)" in line for line in lines)
+        assert any("Platforms:" in line and "qq_napcat=connected" in line for line in lines)
+        assert any("telegram=degraded" in line for line in lines)
+        assert any("Configured model: claude-opus-4.6" in line for line in lines)
+        assert any("Model: gpt-5.4-mini via openrouter" in line for line in lines)
+        assert any("fallback active" in line.lower() for line in lines)
+        assert any("Primary degraded: 118s (empty response)" in line for line in lines)
+        assert any("Pending approvals: 2" in line for line in lines)
+        assert any("Foreground: 1 active" in line for line in lines)
+        assert any("delegate_task" in line for line in lines)
+        assert any("Background jobs: 2 active / 3 tracked" in line for line in lines)
+        assert any("Auto vision: cooldown 18s" in line for line in lines)
+        assert any("QQ archive: 42 raw msgs" in line for line in lines)
+        assert any("QQ monitoring: 1 collect-only group" in line for line in lines)
+        assert any("项目群" in line or "726109087" in line for line in lines)
+
+    def test_runtime_health_lines_surface_unhealthy_state(self, monkeypatch):
+        from gateway import status as gateway_status
+
+        monkeypatch.setattr(
+            gateway_status,
+            "read_runtime_status",
+            lambda: {
+                "gateway_state": "running",
+                "runtime_health": {
+                    "healthy": False,
+                    "status": "critical",
+                    "summary": "qq_napcat connectivity stale for 1200s",
+                    "issue_count": 1,
+                    "issues": [
+                        {
+                            "code": "qq_connectivity_stale",
+                            "severity": "critical",
+                            "message": "qq_napcat connectivity stale for 1200s",
+                        }
+                    ],
+                },
+                "runtime_summary": {
+                    "background_jobs": {
+                        "active_count": 2,
+                        "total_count": 2,
+                    }
+                },
+            },
+        )
+
+        lines = gateway_cli._runtime_health_lines()
+
+        assert any("Health: critical" in line for line in lines)
+        assert any("qq_napcat connectivity stale for 1200s" in line for line in lines)
 
 
 class TestLaunchdServiceRecovery:

@@ -6,6 +6,7 @@ from unittest.mock import patch
 from gateway.platforms.base import (
     BasePlatformAdapter,
     GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE,
+    MessageAttachment,
     MessageEvent,
     MessageType,
     _safe_url_for_log,
@@ -113,6 +114,42 @@ class TestMessageEventGetCommandArgs:
     def test_not_a_command_returns_full_text(self):
         event = MessageEvent(text="hello world")
         assert event.get_command_args() == "hello world"
+
+
+class TestMessageEventAttachments:
+    def test_builds_attachments_from_legacy_media_fields(self):
+        event = MessageEvent(
+            text="look",
+            media_urls=["/tmp/cached.png"],
+            media_sources=["https://cdn.example.com/cached.png"],
+            media_types=["image/png"],
+        )
+
+        assert len(event.attachments) == 1
+        attachment = event.attachments[0]
+        assert attachment.kind == "image"
+        assert attachment.local_path == "/tmp/cached.png"
+        assert attachment.remote_url == "https://cdn.example.com/cached.png"
+        assert attachment.analysis_ref == "https://cdn.example.com/cached.png"
+        assert attachment.mime_type == "image/png"
+
+    def test_add_attachment_keeps_legacy_media_fields_in_sync(self):
+        event = MessageEvent(text="look")
+
+        event.add_attachment(
+            MessageAttachment(
+                kind="image",
+                mime_type="image/jpeg",
+                local_path="/tmp/from-attachment.jpg",
+                remote_url="https://cdn.example.com/from-attachment.jpg",
+                analysis_ref="https://cdn.example.com/from-attachment.jpg",
+            )
+        )
+
+        assert [a.local_path for a in event.attachments] == ["/tmp/from-attachment.jpg"]
+        assert event.media_urls == ["/tmp/from-attachment.jpg"]
+        assert event.media_sources == ["https://cdn.example.com/from-attachment.jpg"]
+        assert event.media_types == ["image/jpeg"]
 
 
 # ---------------------------------------------------------------------------
@@ -316,6 +353,21 @@ class TestExtractMedia:
         content = "Here\nMEDIA: '/tmp/my image.png'\nAfter"
         media, cleaned = BasePlatformAdapter.extract_media(content)
         assert media == [("/tmp/my image.png", False)]
+        assert "Here" in cleaned
+        assert "After" in cleaned
+
+    def test_media_tag_supports_explicit_document_paths(self):
+        content = "发你文件\nMEDIA:/tmp/VSOP87D_Moon_DingShuo.pas"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == [("/tmp/VSOP87D_Moon_DingShuo.pas", False)]
+        assert "发你文件" in cleaned
+        assert "MEDIA:" not in cleaned
+
+    def test_placeholder_media_path_is_ignored(self):
+        content = "Here\nMEDIA:/absolute/path/to/file.png\nAfter"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == []
+        assert "MEDIA:" not in cleaned
         assert "Here" in cleaned
         assert "After" in cleaned
 

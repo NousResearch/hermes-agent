@@ -1,0 +1,2019 @@
+"""Tests for auto-detached gateway background jobs."""
+
+import asyncio
+import json
+import time
+from datetime import datetime
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+from gateway.config import GatewayConfig, Platform, PlatformConfig, load_gateway_config
+from gateway.background_jobs import BackgroundJobStore
+from gateway.platforms.base import MessageEvent, MessageType
+from gateway.session import SessionEntry, SessionSource, build_session_key
+
+
+def _make_source(
+    *,
+    chat_type: str = "dm",
+    user_id: str = "179033731",
+    chat_id: str = "179033731",
+) -> SessionSource:
+    return SessionSource(
+        platform=Platform.QQ_NAPCAT,
+        user_id=user_id,
+        user_name="發發發",
+        chat_id=chat_id,
+        chat_type=chat_type,
+    )
+
+
+def _make_event(
+    text: str,
+    *,
+    chat_type: str = "dm",
+    user_id: str = "179033731",
+    chat_id: str = "179033731",
+) -> MessageEvent:
+    return MessageEvent(
+        text=text,
+        source=_make_source(chat_type=chat_type, user_id=user_id, chat_id=chat_id),
+        message_id="m1",
+        message_type=MessageType.TEXT,
+    )
+
+
+def _make_session_entry() -> SessionEntry:
+    source = _make_source()
+    return SessionEntry(
+        session_key=build_session_key(source),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.QQ_NAPCAT,
+        chat_type="dm",
+        total_tokens=42,
+    )
+
+
+def _make_runner(*, auto_background_work: bool = True, employee_routes=None):
+    from gateway.run import GatewayRunner
+
+    extra = {"auto_background_work": auto_background_work}
+    if employee_routes is not None:
+        extra["employee_routes"] = employee_routes
+
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(
+        platforms={
+            Platform.QQ_NAPCAT: PlatformConfig(
+                enabled=True,
+                token="***",
+                extra=extra,
+            )
+        },
+        auto_background_work=auto_background_work,
+    )
+    adapter = MagicMock()
+    adapter.send = AsyncMock()
+    runner.adapters = {Platform.QQ_NAPCAT: adapter}
+    runner._voice_mode = {}
+    runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
+    runner.session_store = MagicMock()
+    session_entry = _make_session_entry()
+    runner.session_store.get_or_create_session.return_value = session_entry
+    runner.session_store.load_transcript.return_value = [
+        {"role": "user", "content": "之前让你把线上部署问题查清楚。"},
+        {"role": "assistant", "content": "收到，我继续排查。"},
+    ]
+    runner.session_store.has_any_sessions.return_value = True
+    runner._running_agents = {}
+    runner._running_agents_ts = {}
+    runner._pending_messages = {}
+    runner._pending_approvals = {}
+    runner._background_tasks = set()
+    runner._managed_background_jobs = {}
+    runner._managed_background_jobs_by_chat = {}
+    runner._managed_background_job_tasks = {}
+    runner._managed_background_job_agents = {}
+    runner._session_db = MagicMock()
+    runner._session_db.get_session_title.return_value = None
+    runner._reasoning_config = None
+    runner._provider_routing = {}
+    runner._fallback_model = None
+    runner._effective_model = None
+    runner._effective_provider = None
+    runner._session_model_overrides = {}
+    runner._agent_cache = {}
+    runner._agent_cache_lock = MagicMock()
+    runner._auto_vision_cache = {}
+    runner._auto_vision_tasks = {}
+    runner._auto_vision_unhealthy_until = 0.0
+    runner._auto_vision_unhealthy_reason = ""
+    runner._update_prompt_pending = {}
+    runner._failed_platforms = {}
+    runner._show_reasoning = False
+    runner._is_user_authorized = lambda _source: True
+    runner._get_unauthorized_dm_behavior = lambda _platform: "pair"
+    runner._set_session_env = lambda _context: None
+    runner._run_agent = AsyncMock(return_value={"final_response": "前台回复"})
+    runner._load_reasoning_config = lambda: None
+    runner.delivery_router = MagicMock()
+    runner.pairing_store = MagicMock()
+    runner._launch_background_worker = MagicMock(
+        return_value={"launcher_type": "subprocess", "launcher_pid": 4321}
+    )
+    return runner
+
+
+@pytest.mark.asyncio
+async def test_handle_message_auto_backgrounds_long_work_request():
+    runner = _make_runner(auto_background_work=True)
+    event = _make_event("继续把上面的部署问题排查并修复，全部做完后给我汇报。")
+
+    with patch(
+        "gateway.run.asyncio.create_task",
+        side_effect=lambda coro, *args, **kwargs: (coro.close(), MagicMock())[1],
+    ):
+        result = await runner._handle_message(event)
+
+    assert "转后台" in result
+    assert runner._run_agent.await_count == 0
+    assert len(runner._managed_background_jobs) == 1
+    job = next(iter(runner._managed_background_jobs.values()))
+    assert job["kind"] == "auto"
+    assert job["status"] == "queued"
+
+
+@pytest.mark.asyncio
+async def test_handle_message_dispatches_design_polish_to_tiezhu_worker_when_heuristic_route_is_configured():
+    runner = _make_runner(
+        auto_background_work=True,
+        employee_routes=[
+            {
+                "worker_name": "铁柱",
+                "preloaded_skills": ["frontend-design-pro"],
+                "match_modes": ["explicit", "heuristic"],
+                "routing_hints": {
+                    "action_terms": ["打磨", "优化"],
+                    "subject_terms": ["页面", "样式", "排版"],
+                    "pain_terms": ["粗糙"],
+                },
+            }
+        ],
+    )
+    event = _make_event("把 fafafa-page 打磨一下，页面太粗糙了，顺手调调样式和排版。")
+
+    with patch(
+        "gateway.run.asyncio.create_task",
+        side_effect=lambda coro, *args, **kwargs: (coro.close(), MagicMock())[1],
+    ):
+        result = await runner._handle_message(event)
+
+    assert "铁柱" in result
+    assert runner._run_agent.await_count == 0
+    assert len(runner._managed_background_jobs) == 1
+    job = next(iter(runner._managed_background_jobs.values()))
+    assert job["kind"] == "auto"
+    assert job["worker_name"] == "铁柱"
+    assert job["preloaded_skills"] == ["frontend-design-pro"]
+
+
+@pytest.mark.asyncio
+async def test_handle_message_uses_recent_context_for_short_design_follow_up_when_heuristic_route_is_configured():
+    runner = _make_runner(
+        auto_background_work=True,
+        employee_routes=[
+            {
+                "worker_name": "铁柱",
+                "preloaded_skills": ["frontend-design-pro"],
+                "match_modes": ["explicit", "heuristic"],
+                "routing_hints": {
+                    "action_terms": ["打磨", "优化"],
+                    "subject_terms": ["页面", "样式", "排版"],
+                    "pain_terms": ["粗糙"],
+                },
+            }
+        ],
+    )
+    runner.session_store.load_transcript.return_value = [
+        {"role": "assistant", "content": "fafafa-page 主页已经能打开了，不过页面样式和排版还比较粗糙。"},
+        {"role": "user", "content": "知道了。"},
+    ]
+    event = _make_event("打磨一下，好粗糙。")
+
+    with patch(
+        "gateway.run.asyncio.create_task",
+        side_effect=lambda coro, *args, **kwargs: (coro.close(), MagicMock())[1],
+    ):
+        result = await runner._handle_message(event)
+
+    assert "铁柱" in result
+    job = next(iter(runner._managed_background_jobs.values()))
+    assert job["worker_name"] == "铁柱"
+    assert job["preloaded_skills"] == ["frontend-design-pro"]
+
+
+@pytest.mark.asyncio
+async def test_handle_message_employee_followup_does_not_route_to_intel_worker_control():
+    runner = _make_runner(auto_background_work=True)
+    runner.config.platforms[Platform.QQ_NAPCAT].extra["admin_users"] = ["179033731"]
+    runner.session_store.load_transcript.return_value = [
+        {"role": "assistant", "content": "公司主页还比较粗糙，交给铁柱继续打磨会更合适。"},
+        {"role": "user", "content": "知道了。"},
+    ]
+    event = _make_event("让铁柱继续优化公司主页")
+
+    with (
+        patch(
+            "gateway.run.asyncio.create_task",
+            side_effect=lambda coro, *args, **kwargs: (coro.close(), MagicMock())[1],
+        ),
+        patch("tools.qq_control_tool.qq_control_tool") as control_mock,
+    ):
+        result = await runner._handle_message(event)
+
+    control_mock.assert_not_called()
+    assert "铁柱" in result
+    assert runner._run_agent.await_count == 0
+    assert len(runner._managed_background_jobs) == 1
+    job = next(iter(runner._managed_background_jobs.values()))
+    assert job["worker_name"] == "铁柱"
+    assert job["preloaded_skills"] == ["frontend-design-pro"]
+
+
+def test_direct_gateway_shortcuts_prioritize_group_control_over_intel_control():
+    runner = _make_runner(auto_background_work=True)
+    event = _make_event("停止QQ 群 192903718 的监听采集,允许开始聊天")
+
+    runner._try_handle_background_job_status_shortcut = MagicMock(return_value=None)
+    runner._try_handle_runtime_status_shortcut = MagicMock(return_value=None)
+    runner._try_handle_admin_qq_send_shortcut = MagicMock(return_value=None)
+    runner._try_handle_admin_qq_group_control = MagicMock(return_value="group-control")
+    runner._try_handle_admin_qq_intel_control = MagicMock(return_value="intel-control")
+    runner._try_handle_admin_qq_social_control = MagicMock(return_value=None)
+    runner._try_handle_admin_qq_group_runtime_status = MagicMock(return_value=None)
+    runner._try_handle_admin_qq_group_moderation = MagicMock(return_value=None)
+
+    result = runner._try_handle_direct_gateway_shortcuts(event)
+
+    assert result == "group-control"
+    runner._try_handle_admin_qq_group_control.assert_called_once_with(event)
+    runner._try_handle_admin_qq_intel_control.assert_not_called()
+
+
+def test_admin_qq_intel_shortcut_requires_explicit_worker_context():
+    runner = _make_runner(auto_background_work=True)
+    runner.config.platforms[Platform.QQ_NAPCAT].extra["admin_users"] = ["179033731"]
+    event = _make_event("让铁柱继续优化公司主页")
+
+    tool_args, shortcut_error = runner._match_admin_qq_intel_control_request(event)
+
+    assert tool_args is None
+    assert shortcut_error is None
+
+
+@pytest.mark.asyncio
+async def test_handle_message_does_not_route_new_server_task_to_tiezhu_from_stale_design_history():
+    runner = _make_runner(
+        auto_background_work=True,
+        employee_routes=[
+            {
+                "worker_name": "铁柱",
+                "preloaded_skills": ["frontend-design-pro"],
+                "match_modes": ["explicit", "heuristic"],
+                "routing_hints": {
+                    "action_terms": ["打磨", "优化"],
+                    "subject_terms": ["页面", "样式", "排版"],
+                    "pain_terms": ["粗糙"],
+                },
+            }
+        ],
+    )
+    runner.session_store.load_transcript.return_value = [
+        {"role": "assistant", "content": "fafafa-page 页面样式还比较粗糙，后面可以继续打磨。"},
+        {"role": "user", "content": "知道了。"},
+    ]
+    event = _make_event("上服务器看看日志，把这个问题查清楚。")
+
+    with patch(
+        "gateway.run.asyncio.create_task",
+        side_effect=lambda coro, *args, **kwargs: (coro.close(), MagicMock())[1],
+    ):
+        result = await runner._handle_message(event)
+
+    assert "转后台" in result
+    assert "铁柱" not in result
+    job = next(iter(runner._managed_background_jobs.values()))
+    assert job["worker_name"] == ""
+    assert job["preloaded_skills"] == []
+
+
+@pytest.mark.asyncio
+async def test_handle_message_default_employee_route_requires_explicit_worker_mention():
+    runner = _make_runner(auto_background_work=True)
+    event = _make_event("把 fafafa-page 打磨一下，页面太粗糙了，顺手调调样式和排版。")
+
+    result = await runner._handle_message(event)
+
+    runner._run_agent.assert_awaited_once()
+    assert result == "前台回复"
+    assert runner._managed_background_jobs == {}
+
+
+@pytest.mark.asyncio
+async def test_handle_message_plain_worker_name_ping_does_not_dispatch_background_job():
+    runner = _make_runner(auto_background_work=True)
+    event = _make_event("铁柱在吗？")
+
+    result = await runner._handle_message(event)
+
+    runner._run_agent.assert_awaited_once()
+    assert result == "前台回复"
+    assert runner._managed_background_jobs == {}
+
+
+@pytest.mark.asyncio
+async def test_handle_message_does_not_auto_background_bare_continue_without_work_context():
+    runner = _make_runner(auto_background_work=True)
+    runner.session_store.load_transcript.return_value = [
+        {"role": "user", "content": "你们公司到底干啥？"},
+        {"role": "assistant", "content": "我们可以一起想想定位和方向。"},
+    ]
+    event = _make_event("继续")
+
+    result = await runner._handle_message(event)
+
+    runner._run_agent.assert_awaited_once()
+    assert result == "前台回复"
+    assert runner._managed_background_jobs == {}
+
+
+@pytest.mark.asyncio
+async def test_handle_message_keeps_short_casual_chat_in_foreground():
+    runner = _make_runner(auto_background_work=True)
+    event = _make_event("今天天气真好")
+
+    result = await runner._handle_message(event)
+
+    runner._run_agent.assert_awaited_once()
+    assert not result or "后台" not in result
+    assert runner._managed_background_jobs == {}
+
+
+@pytest.mark.asyncio
+async def test_admin_dm_can_orally_switch_explicit_group_to_collect_only_monitoring():
+    runner = _make_runner(auto_background_work=True)
+    runner.config.platforms[Platform.QQ_NAPCAT].extra["admin_users"] = ["179033731"]
+    event = _make_event("把 726109087 这个群切成只监听采集，不要走大模型，每天给我日报。")
+
+    with patch(
+        "tools.qq_control_tool.qq_control_tool",
+        return_value=json.dumps(
+            {
+                "success": True,
+                "policy": {
+                    "group_id": "726109087",
+                    "mode": "collect_only",
+                    "archive_enabled": True,
+                    "daily_report_enabled": True,
+                    "daily_report_target": "qq_napcat:dm:179033731",
+                },
+            },
+            ensure_ascii=False,
+        ),
+    ) as control_mock:
+        result = await runner._handle_message(event)
+
+    runner._run_agent.assert_not_awaited()
+    assert "726109087" in result
+    assert "监听" in result
+    assert "日报" in result
+    args = control_mock.call_args.args[0]
+    assert args["action"] == "enable_collect_only"
+    assert args["target"] == "group:726109087"
+    assert args["daily_report_enabled"] is True
+    assert args["daily_report_target"] == "current_user_dm"
+    assert args["manual_report_target"] == "current_user_dm"
+
+
+@pytest.mark.asyncio
+async def test_admin_group_can_orally_switch_current_group_to_collect_only_monitoring():
+    runner = _make_runner(auto_background_work=True)
+    runner.config.platforms[Platform.QQ_NAPCAT].extra["admin_users"] = ["179033731"]
+    event = _make_event(
+        "这个群只监听，不要走大模型。",
+        chat_type="group",
+        chat_id="726109087",
+    )
+
+    with patch(
+        "tools.qq_control_tool.qq_control_tool",
+        return_value=json.dumps(
+            {
+                "success": True,
+                "policy": {
+                    "group_id": "726109087",
+                    "mode": "collect_only",
+                    "archive_enabled": True,
+                    "daily_report_enabled": False,
+                },
+            },
+            ensure_ascii=False,
+        ),
+    ) as control_mock:
+        result = await runner._handle_message(event)
+
+    runner._run_agent.assert_not_awaited()
+    assert "726109087" in result
+    assert "监听" in result
+    args = control_mock.call_args.args[0]
+    assert args["action"] == "enable_collect_only"
+    assert args["target"] == "group:726109087"
+    assert "daily_report_enabled" not in args
+
+
+@pytest.mark.asyncio
+async def test_admin_dm_can_orally_stop_explicit_group_monitoring_and_allow_chat():
+    runner = _make_runner(auto_background_work=True)
+    runner.config.platforms[Platform.QQ_NAPCAT].extra["admin_users"] = ["179033731"]
+    event = _make_event("停止QQ 群 192903718 的监听采集,允许开始聊天")
+
+    with patch(
+        "tools.qq_control_tool.qq_control_tool",
+        return_value=json.dumps(
+            {
+                "success": True,
+                "policy": {
+                    "group_id": "192903718",
+                    "mode": "default",
+                    "archive_enabled": False,
+                    "daily_report_enabled": False,
+                },
+            },
+            ensure_ascii=False,
+        ),
+    ) as control_mock:
+        result = await runner._handle_message(event)
+
+    runner._run_agent.assert_not_awaited()
+    assert "已停止 QQ 群 192903718 的监听采集" in result
+    assert "监听采集模式" not in result
+    args = control_mock.call_args.args[0]
+    assert args["action"] == "resume_chat"
+    assert args["target"] == "group:192903718"
+
+
+@pytest.mark.asyncio
+async def test_admin_dm_stop_monitoring_request_does_not_misparse_bot_pronoun_as_worker():
+    runner = _make_runner(auto_background_work=True)
+    runner.config.platforms[Platform.QQ_NAPCAT].extra["admin_users"] = ["179033731"]
+    event = _make_event("我让你停止QQ 群 192903718 的监听采集,允许开始聊天")
+
+    with patch(
+        "tools.qq_control_tool.qq_control_tool",
+        return_value=json.dumps(
+            {
+                "success": True,
+                "policy": {
+                    "group_id": "192903718",
+                    "mode": "default",
+                    "archive_enabled": False,
+                    "daily_report_enabled": False,
+                },
+            },
+            ensure_ascii=False,
+        ),
+    ) as control_mock:
+        result = await runner._handle_message(event)
+
+    runner._run_agent.assert_not_awaited()
+    assert "已停止 QQ 群 192903718 的监听采集" in result
+    args = control_mock.call_args.args[0]
+    assert args["action"] == "resume_chat"
+    assert args["target"] == "group:192903718"
+    assert "worker_name" not in args
+
+
+@pytest.mark.asyncio
+async def test_admin_dm_can_orally_send_message_to_explicit_group_same_turn():
+    runner = _make_runner(auto_background_work=True)
+    runner.config.platforms[Platform.QQ_NAPCAT].extra["admin_users"] = ["179033731"]
+    event = _make_event("往 QQ 群 192903718 发：绿帽哥！")
+
+    with patch(
+        "tools.send_message_tool.send_message_tool",
+        return_value=json.dumps(
+            {
+                "success": True,
+                "platform": "qq_napcat",
+                "chat_id": "192903718",
+            },
+            ensure_ascii=False,
+        ),
+    ) as send_mock:
+        result = await runner._handle_message(event)
+
+    runner._run_agent.assert_not_awaited()
+    send_mock.assert_called_once()
+    args = send_mock.call_args.args[0]
+    assert args["target"] == "qq_napcat:group:192903718"
+    assert args["message"] == "绿帽哥！"
+    assert "192903718" in result
+    assert "绿帽哥！" in result
+
+
+@pytest.mark.asyncio
+async def test_admin_dm_can_orally_send_message_to_group_from_followup_confirmation():
+    runner = _make_runner(auto_background_work=True)
+    runner.config.platforms[Platform.QQ_NAPCAT].extra["admin_users"] = ["179033731"]
+    runner.session_store.load_transcript.return_value = [
+        {"role": "user", "content": "你现在能在 群 192903718 发送一句话吗"},
+        {"role": "assistant", "content": "可以，把要发的内容直接发我。"},
+    ]
+    event = _make_event("绿帽哥!\n\n发这句")
+
+    with patch(
+        "tools.send_message_tool.send_message_tool",
+        return_value=json.dumps(
+            {
+                "success": True,
+                "platform": "qq_napcat",
+                "chat_id": "192903718",
+            },
+            ensure_ascii=False,
+        ),
+    ) as send_mock:
+        result = await runner._handle_message(event)
+
+    runner._run_agent.assert_not_awaited()
+    send_mock.assert_called_once()
+    args = send_mock.call_args.args[0]
+    assert args["target"] == "qq_napcat:group:192903718"
+    assert args["message"] == "绿帽哥!"
+    assert "192903718" in result
+    assert "绿帽哥!" in result
+
+
+@pytest.mark.asyncio
+async def test_admin_weixin_can_orally_send_message_to_explicit_group_same_turn():
+    runner = _make_runner(auto_background_work=True)
+    runner.config.platforms[Platform.WEIXIN] = PlatformConfig(
+        enabled=True,
+        token="***",
+        extra={"admin_users": ["179033731"]},
+    )
+    runner.adapters[Platform.WEIXIN] = MagicMock()
+    event = MessageEvent(
+        text="往 微信群 project@chatroom 发：开会了",
+        source=SessionSource(
+            platform=Platform.WEIXIN,
+            user_id="179033731",
+            user_name="發發發",
+            chat_id="wxid_admin",
+            chat_type="dm",
+        ),
+        message_id="m1",
+        message_type=MessageType.TEXT,
+    )
+
+    with patch(
+        "tools.send_message_tool.send_message_tool",
+        return_value=json.dumps(
+            {
+                "success": True,
+                "platform": "weixin",
+                "chat_id": "project@chatroom",
+            },
+            ensure_ascii=False,
+        ),
+    ) as send_mock:
+        result = await runner._handle_message(event)
+
+    runner._run_agent.assert_not_awaited()
+    send_mock.assert_called_once()
+    args = send_mock.call_args.args[0]
+    assert args["target"] == "weixin:project@chatroom"
+    assert args["message"] == "开会了"
+    assert "project@chatroom" in result
+    assert "开会了" in result
+
+
+@pytest.mark.asyncio
+async def test_admin_weixin_can_orally_send_message_from_followup_confirmation():
+    runner = _make_runner(auto_background_work=True)
+    runner.config.platforms[Platform.WEIXIN] = PlatformConfig(
+        enabled=True,
+        token="***",
+        extra={"admin_users": ["179033731"]},
+    )
+    runner.adapters[Platform.WEIXIN] = MagicMock()
+    runner.session_store.load_transcript.return_value = [
+        {"role": "user", "content": "你现在能在 微信群 project@chatroom 发送一句话吗"},
+        {"role": "assistant", "content": "可以，把要发的内容直接发我。"},
+    ]
+    event = MessageEvent(
+        text="收到\n发这句",
+        source=SessionSource(
+            platform=Platform.WEIXIN,
+            user_id="179033731",
+            user_name="發發發",
+            chat_id="wxid_admin",
+            chat_type="dm",
+        ),
+        message_id="m1",
+        message_type=MessageType.TEXT,
+    )
+
+    with patch(
+        "tools.send_message_tool.send_message_tool",
+        return_value=json.dumps(
+            {
+                "success": True,
+                "platform": "weixin",
+                "chat_id": "project@chatroom",
+            },
+            ensure_ascii=False,
+        ),
+    ) as send_mock:
+        result = await runner._handle_message(event)
+
+    runner._run_agent.assert_not_awaited()
+    send_mock.assert_called_once()
+    args = send_mock.call_args.args[0]
+    assert args["target"] == "weixin:project@chatroom"
+    assert args["message"] == "收到"
+    assert "project@chatroom" in result
+    assert "收到" in result
+
+
+@pytest.mark.asyncio
+async def test_admin_dm_can_orally_hire_intel_worker():
+    runner = _make_runner(auto_background_work=True)
+    runner.config.platforms[Platform.QQ_NAPCAT].extra["admin_users"] = ["179033731"]
+    event = _make_event("招一个情报员钢镚，去 726109087 这个群刺探情报，每天私聊向我汇报。")
+
+    with patch(
+        "tools.qq_control_tool.qq_control_tool",
+        return_value=json.dumps(
+            {
+                "success": True,
+                "worker": {
+                    "worker_name": "钢镚",
+                    "status": "awaiting_group_approval",
+                    "target_group_ref": "group:726109087",
+                    "daily_report_target": "qq_napcat:dm:179033731",
+                    "manual_report_target": "qq_napcat:dm:179033731",
+                },
+            },
+            ensure_ascii=False,
+        ),
+    ) as control_mock:
+        result = await runner._handle_message(event)
+
+    runner._run_agent.assert_not_awaited()
+    assert "钢镚" in result
+    assert "726109087" in result
+    args = control_mock.call_args.args[0]
+    assert args["action"] == "hire_worker"
+    assert args["worker_name"] == "钢镚"
+    assert args["target_group"] == "group:726109087"
+    assert args["daily_report_target"] == "current_user_dm"
+    assert args["manual_report_target"] == "current_user_dm"
+    assert "刺探情报" in args["objective"]
+
+
+@pytest.mark.asyncio
+async def test_admin_dm_can_orally_pause_intel_worker():
+    runner = _make_runner(auto_background_work=True)
+    runner.config.platforms[Platform.QQ_NAPCAT].extra["admin_users"] = ["179033731"]
+    event = _make_event("让情报员钢镚暂停任务，先别监听了。")
+
+    with patch(
+        "tools.qq_control_tool.qq_control_tool",
+        return_value=json.dumps(
+            {
+                "success": True,
+                "worker": {
+                    "worker_name": "钢镚",
+                    "status": "paused",
+                },
+            },
+            ensure_ascii=False,
+        ),
+    ) as control_mock:
+        result = await runner._handle_message(event)
+
+    runner._run_agent.assert_not_awaited()
+    assert "钢镚" in result
+    assert "暂停" in result
+    args = control_mock.call_args.args[0]
+    assert args == {
+        "action": "pause_worker",
+        "worker_name": "钢镚",
+    }
+
+
+@pytest.mark.asyncio
+async def test_admin_dm_can_orally_resume_intel_worker():
+    runner = _make_runner(auto_background_work=True)
+    runner.config.platforms[Platform.QQ_NAPCAT].extra["admin_users"] = ["179033731"]
+    event = _make_event("让情报员钢镚恢复任务，继续监听。")
+
+    with patch(
+        "tools.qq_control_tool.qq_control_tool",
+        return_value=json.dumps(
+            {
+                "success": True,
+                "worker": {
+                    "worker_name": "钢镚",
+                    "status": "active_collecting",
+                },
+            },
+            ensure_ascii=False,
+        ),
+    ) as control_mock:
+        result = await runner._handle_message(event)
+
+    runner._run_agent.assert_not_awaited()
+    assert "钢镚" in result
+    assert "恢复" in result or "继续" in result
+    args = control_mock.call_args.args[0]
+    assert args == {
+        "action": "resume_worker",
+        "worker_name": "钢镚",
+    }
+
+
+@pytest.mark.asyncio
+async def test_admin_dm_can_orally_request_intel_report_now():
+    runner = _make_runner(auto_background_work=True)
+    runner.config.platforms[Platform.QQ_NAPCAT].extra["admin_users"] = ["179033731"]
+    event = _make_event("让情报员钢镚现在汇报，私聊发我。")
+
+    with patch(
+        "tools.qq_control_tool.qq_control_tool",
+        return_value=json.dumps(
+            {
+                "success": True,
+                "worker": {
+                    "worker_name": "钢镚",
+                    "status": "active_collecting",
+                },
+                "delivery": {"target": "qq_napcat:dm:179033731"},
+            },
+            ensure_ascii=False,
+        ),
+    ) as control_mock:
+        result = await runner._handle_message(event)
+
+    runner._run_agent.assert_not_awaited()
+    assert "钢镚" in result
+    assert "汇报" in result
+    args = control_mock.call_args.args[0]
+    assert args["action"] == "run_report_now"
+    assert args["worker_name"] == "钢镚"
+    assert args["manual_report_target"] == "current_user_dm"
+
+
+@pytest.mark.asyncio
+async def test_admin_dm_can_orally_query_intel_worker_status():
+    runner = _make_runner(auto_background_work=True)
+    runner.config.platforms[Platform.QQ_NAPCAT].extra["admin_users"] = ["179033731"]
+    event = _make_event("看看情报员钢镚现在什么状态。")
+
+    with patch(
+        "tools.qq_control_tool.qq_control_tool",
+        return_value=json.dumps(
+            {
+                "success": True,
+                "worker": {
+                    "worker_name": "钢镚",
+                    "status": "active_collecting",
+                    "target_group_id": "726109087",
+                    "target_group_name": "外部情报群",
+                    "objective": "刺探情报",
+                    "last_error": None,
+                },
+            },
+            ensure_ascii=False,
+        ),
+    ) as control_mock:
+        result = await runner._handle_message(event)
+
+    runner._run_agent.assert_not_awaited()
+    assert "钢镚" in result
+    assert "正在潜伏采集" in result
+    assert "726109087" in result
+    args = control_mock.call_args.args[0]
+    assert args == {
+        "action": "get_worker",
+        "worker_name": "钢镚",
+    }
+
+
+@pytest.mark.asyncio
+async def test_admin_dm_worker_status_mentions_report_targets():
+    runner = _make_runner(auto_background_work=True)
+    runner.config.platforms[Platform.QQ_NAPCAT].extra["admin_users"] = ["179033731"]
+    event = _make_event("看看情报员钢镚现在什么状态。")
+
+    with patch(
+        "tools.qq_control_tool.qq_control_tool",
+        return_value=json.dumps(
+            {
+                "success": True,
+                "worker": {
+                    "worker_name": "钢镚",
+                    "status": "active_collecting",
+                    "target_group_id": "726109087",
+                    "daily_report_enabled": True,
+                    "daily_report_target": "qq_napcat:dm:179033731",
+                    "manual_report_target": "qq_napcat:group:726109087",
+                },
+            },
+            ensure_ascii=False,
+        ),
+    ):
+        result = await runner._handle_message(event)
+
+    runner._run_agent.assert_not_awaited()
+    assert "日报目标：qq_napcat:dm:179033731" in result
+    assert "立即汇报目标：qq_napcat:group:726109087" in result
+
+
+@pytest.mark.asyncio
+async def test_admin_dm_can_orally_list_joined_groups():
+    runner = _make_runner(auto_background_work=True)
+    runner.config.platforms[Platform.QQ_NAPCAT].extra["admin_users"] = ["179033731"]
+    event = _make_event("把你现在加的群列一下。")
+
+    with patch(
+        "tools.qq_control_tool.qq_control_tool",
+        return_value=json.dumps(
+            {
+                "success": True,
+                "groups": [
+                    {"group_id": "726109087", "group_name": "项目群"},
+                    {"group_id": "888888", "group_name": "外部群"},
+                ],
+            },
+            ensure_ascii=False,
+        ),
+    ) as control_mock:
+        result = await runner._handle_message(event)
+
+    runner._run_agent.assert_not_awaited()
+    assert "726109087" in result
+    assert "项目群" in result
+    assert "888888" in result
+    args = control_mock.call_args.args[0]
+    assert args == {"action": "list_joined_groups"}
+
+
+@pytest.mark.asyncio
+async def test_admin_group_can_orally_query_current_group_runtime_status():
+    runner = _make_runner(auto_background_work=True)
+    runner.config.platforms[Platform.QQ_NAPCAT].extra["admin_users"] = ["179033731"]
+    event = _make_event(
+        "这个群现在谁在监听，日报开了吗？",
+        chat_type="group",
+        chat_id="726109087",
+    )
+
+    with patch(
+        "gateway.run.get_group_policy",
+        return_value={
+            "group_id": "726109087",
+            "mode": "collect_only",
+            "archive_enabled": True,
+            "daily_report_enabled": True,
+            "daily_report_target": "qq_napcat:dm:179033731",
+        },
+    ), patch(
+        "gateway.run.get_group_monitoring_overlay",
+        return_value={
+            "active": True,
+            "mode": "collect_only",
+            "archive_enabled": True,
+            "daily_report_enabled": True,
+            "workers": [
+                {"worker_name": "钢镚"},
+                {"worker_name": "二狗"},
+            ],
+        },
+    ):
+        result = await runner._handle_message(event)
+
+    runner._run_agent.assert_not_awaited()
+    assert "726109087" in result
+    assert "collect_only" in result
+    assert "钢镚" in result
+    assert "二狗" in result
+    assert "日报" in result
+
+
+@pytest.mark.asyncio
+async def test_admin_group_runtime_status_uses_effective_collect_only_overlay_and_report_targets():
+    runner = _make_runner(auto_background_work=True)
+    runner.config.platforms[Platform.QQ_NAPCAT].extra["admin_users"] = ["179033731"]
+    event = _make_event("726109087 这个群现在谁在监听，日报发哪，立即汇报发哪？")
+
+    with patch(
+        "gateway.run.get_group_policy",
+        return_value={
+            "group_id": "726109087",
+            "mode": "default",
+            "archive_enabled": False,
+            "daily_report_enabled": False,
+            "daily_report_target": None,
+            "manual_report_target": None,
+        },
+    ), patch(
+        "gateway.run.get_group_monitoring_overlay",
+        return_value={
+            "active": True,
+            "mode": "collect_only",
+            "archive_enabled": True,
+            "daily_report_enabled": True,
+            "workers": [
+                {
+                    "worker_name": "钢镚",
+                    "daily_report_enabled": True,
+                    "daily_report_target": "qq_napcat:dm:179033731",
+                    "manual_report_target": "qq_napcat:group:726109087",
+                }
+            ],
+        },
+    ):
+        result = await runner._handle_message(event)
+
+    runner._run_agent.assert_not_awaited()
+    assert "collect_only" in result
+    assert "归档：开" in result
+    assert "日报：开" in result
+    assert "日报目标：qq_napcat:dm:179033731" in result
+    assert "立即汇报目标：qq_napcat:group:726109087" in result
+    assert "钢镚" in result
+
+
+@pytest.mark.asyncio
+async def test_admin_dm_group_runtime_status_query_can_infer_recent_group_target_from_history():
+    runner = _make_runner(auto_background_work=True)
+    runner.config.platforms[Platform.QQ_NAPCAT].extra["admin_users"] = ["179033731"]
+    runner.session_store.load_transcript.return_value = [
+        {"role": "user", "content": "往 QQ 群 192903718 发：绿帽哥！"},
+        {"role": "assistant", "content": "已发到 QQ 群 192903718：绿帽哥！"},
+    ]
+    event = _make_event("你现在在群里能说话吗 不是监听模式了吗")
+
+    with patch(
+        "gateway.run.get_group_policy",
+        return_value={
+            "group_id": "192903718",
+            "mode": "collect_only",
+            "archive_enabled": True,
+            "daily_report_enabled": False,
+            "daily_report_target": None,
+            "manual_report_target": None,
+        },
+    ), patch(
+        "gateway.run.get_group_monitoring_overlay",
+        return_value={
+            "active": False,
+            "mode": "",
+            "archive_enabled": False,
+            "daily_report_enabled": False,
+            "workers": [],
+        },
+    ), patch("tools.qq_control_tool.qq_control_tool") as control_mock:
+        result = await runner._handle_message(event)
+
+    runner._run_agent.assert_not_awaited()
+    control_mock.assert_not_called()
+    assert "192903718" in result
+    assert "collect_only" in result
+    assert "群里主动说话：不能" in result
+    assert "要切群监听/日报" not in result
+
+
+@pytest.mark.asyncio
+async def test_admin_weixin_group_can_orally_query_current_group_runtime_status():
+    runner = _make_runner(auto_background_work=True)
+    runner.config.platforms[Platform.WEIXIN] = PlatformConfig(
+        enabled=True,
+        token="***",
+        extra={"admin_users": ["179033731"]},
+    )
+    runner.adapters[Platform.WEIXIN] = MagicMock()
+    event = MessageEvent(
+        text="这个群现在谁在监听，日报开了吗？",
+        source=SessionSource(
+            platform=Platform.WEIXIN,
+            user_id="179033731",
+            user_name="發發發",
+            chat_id="project@chatroom",
+            chat_type="group",
+        ),
+        message_id="m1",
+        message_type=MessageType.TEXT,
+    )
+
+    with patch(
+        "gateway.run.get_weixin_group_policy",
+        return_value={
+            "chat_id": "project@chatroom",
+            "mode": "collect_only",
+            "archive_enabled": True,
+            "daily_report_enabled": True,
+            "daily_report_target": "weixin:wxid_admin",
+            "manual_report_target": "weixin:project@chatroom",
+        },
+    ), patch(
+        "gateway.run.WeixinGroupArchiveStore.describe_group_reporting",
+        return_value={
+            "effective_targets": {
+                "daily_report_targets": ["weixin:wxid_admin"],
+                "manual_report_targets": ["weixin:project@chatroom"],
+            },
+            "report_control": {
+                "archive_enabled": True,
+                "daily_report_enabled": True,
+                "reply_behavior": "no_reply",
+            },
+        },
+    ):
+        result = await runner._handle_message(event)
+
+    runner._run_agent.assert_not_awaited()
+    assert "project@chatroom" in result
+    assert "collect_only" in result
+    assert "日报目标：weixin:wxid_admin" in result
+    assert "立即汇报目标：weixin:project@chatroom" in result
+
+
+@pytest.mark.asyncio
+async def test_admin_weixin_group_can_orally_enable_collect_only():
+    runner = _make_runner(auto_background_work=True)
+    runner.config.platforms[Platform.WEIXIN] = PlatformConfig(
+        enabled=True,
+        token="***",
+        extra={"admin_users": ["179033731"]},
+    )
+    runner.adapters[Platform.WEIXIN] = MagicMock()
+    event = MessageEvent(
+        text="这个群切到监听采集，日报发我私聊",
+        source=SessionSource(
+            platform=Platform.WEIXIN,
+            user_id="179033731",
+            user_name="發發發",
+            chat_id="project@chatroom",
+            chat_type="group",
+        ),
+        message_id="m1",
+        message_type=MessageType.TEXT,
+    )
+
+    with patch(
+        "tools.weixin_control_tool.weixin_control_tool",
+        return_value=json.dumps(
+            {
+                "success": True,
+                "policy": {
+                    "chat_id": "project@chatroom",
+                    "mode": "collect_only",
+                    "daily_report_enabled": True,
+                    "daily_report_target": "weixin:wxid_admin",
+                    "manual_report_target": "weixin:wxid_admin",
+                },
+            },
+            ensure_ascii=False,
+        ),
+    ) as control_mock:
+        result = await runner._handle_message(event)
+
+    runner._run_agent.assert_not_awaited()
+    assert "project@chatroom" in result
+    assert "监听采集模式" in result
+    assert "日报已开启" in result
+    args = control_mock.call_args.args[0]
+    assert args["action"] == "collect_only"
+    assert args["target"] == "project@chatroom"
+    assert args["daily_report_target"] == "current_user_dm"
+
+
+@pytest.mark.asyncio
+async def test_admin_group_policy_reply_mentions_manual_report_target():
+    runner = _make_runner(auto_background_work=True)
+    runner.config.platforms[Platform.QQ_NAPCAT].extra["admin_users"] = ["179033731"]
+    event = _make_event(
+        "这个群只监听，不要走大模型，每天给我日报。",
+        chat_type="group",
+        chat_id="726109087",
+    )
+
+    with patch(
+        "tools.qq_control_tool.qq_control_tool",
+        return_value=json.dumps(
+            {
+                "success": True,
+                "policy": {
+                    "group_id": "726109087",
+                    "mode": "collect_only",
+                    "archive_enabled": True,
+                    "daily_report_enabled": True,
+                    "daily_report_target": "qq_napcat:dm:179033731",
+                    "manual_report_target": "qq_napcat:group:726109087",
+                },
+            },
+            ensure_ascii=False,
+        ),
+    ):
+        result = await runner._handle_message(event)
+
+    runner._run_agent.assert_not_awaited()
+    assert "日报已开启" in result
+    assert "立即汇报发到 qq_napcat:group:726109087" in result
+
+
+@pytest.mark.asyncio
+async def test_oral_background_status_query_returns_latest_job_state():
+    runner = _make_runner(auto_background_work=True)
+    source = _make_source()
+    chat_key = runner._background_job_chat_key(source)
+    session_key = runner._session_key_for_source(source)
+    runner._managed_background_jobs["bg_123"] = {
+        "task_id": "bg_123",
+        "chat_key": chat_key,
+        "scope_key": session_key,
+        "session_key": session_key,
+        "status": "running",
+        "kind": "auto",
+        "preview": "继续把线上部署问题排查并修复",
+        "worker_name": "铁柱",
+        "created_at": time.time() - 30,
+        "updated_at": time.time(),
+        "started_at": time.time() - 20,
+        "finished_at": None,
+        "error": None,
+    }
+    runner._managed_background_jobs_by_chat[chat_key] = ["bg_123"]
+
+    result = await runner._handle_message(_make_event("前面那个后台任务还在做吗？"))
+
+    runner._run_agent.assert_not_awaited()
+    assert "bg_123" in result
+    assert "进行中" in result
+    assert "铁柱" in result
+
+
+@pytest.mark.asyncio
+async def test_busy_session_still_answers_oral_background_status_query():
+    runner = _make_runner(auto_background_work=True)
+    source = _make_source()
+    session_key = runner._session_key_for_source(source)
+    chat_key = runner._background_job_chat_key(source)
+    runner._running_agents[session_key] = MagicMock()
+    runner.adapters[Platform.QQ_NAPCAT]._busy_followup_ack.return_value = "busy ack"
+    runner._managed_background_jobs["bg_busy_1"] = {
+        "task_id": "bg_busy_1",
+        "chat_key": chat_key,
+        "scope_key": session_key,
+        "session_key": session_key,
+        "status": "running",
+        "kind": "auto",
+        "preview": "继续处理线上问题",
+        "worker_name": "铁柱",
+        "created_at": time.time() - 20,
+        "updated_at": time.time(),
+        "started_at": time.time() - 18,
+        "finished_at": None,
+        "error": None,
+    }
+    runner._managed_background_jobs_by_chat[chat_key] = ["bg_busy_1"]
+
+    result = await runner._handle_message(_make_event("前面那个后台任务还在做吗？"))
+
+    runner._run_agent.assert_not_awaited()
+    assert result is not None
+    assert "bg_busy_1" in result
+    assert "进行中" in result
+
+
+@pytest.mark.asyncio
+async def test_busy_session_plain_hai_zaima_prefers_background_status_shortcut():
+    runner = _make_runner(auto_background_work=True)
+    source = _make_source(chat_type="group", chat_id="726109087")
+    session_key = runner._session_key_for_source(source)
+    chat_key = runner._background_job_chat_key(source)
+    runner._running_agents[session_key] = MagicMock()
+    runner._managed_background_jobs["bg_busy_2"] = {
+        "task_id": "bg_busy_2",
+        "chat_key": chat_key,
+        "scope_key": session_key,
+        "session_key": session_key,
+        "status": "running",
+        "kind": "auto",
+        "preview": "继续处理线上问题",
+        "worker_name": "铁柱",
+        "created_at": time.time() - 20,
+        "updated_at": time.time(),
+        "started_at": time.time() - 18,
+        "finished_at": None,
+        "error": None,
+    }
+    runner._managed_background_jobs_by_chat[chat_key] = ["bg_busy_2"]
+
+    result = await runner._handle_message(
+        _make_event("@马嘎 还在吗", chat_type="group", chat_id="726109087")
+    )
+
+    runner._run_agent.assert_not_awaited()
+    assert result is not None
+    assert "bg_busy_2" in result
+    assert "进行中" in result
+
+
+@pytest.mark.asyncio
+async def test_busy_session_plain_background_task_ne_stays_on_shortcut_path():
+    runner = _make_runner(auto_background_work=True)
+    source = _make_source(chat_type="group", chat_id="726109087")
+    session_key = runner._session_key_for_source(source)
+    chat_key = runner._background_job_chat_key(source)
+    runner._running_agents[session_key] = MagicMock()
+    runner._managed_background_jobs["bg_busy_3"] = {
+        "task_id": "bg_busy_3",
+        "chat_key": chat_key,
+        "scope_key": session_key,
+        "session_key": session_key,
+        "status": "running",
+        "kind": "auto",
+        "preview": "继续处理线上问题",
+        "worker_name": "铁柱",
+        "created_at": time.time() - 20,
+        "updated_at": time.time(),
+        "started_at": time.time() - 18,
+        "finished_at": None,
+        "error": None,
+    }
+    runner._managed_background_jobs_by_chat[chat_key] = ["bg_busy_3"]
+
+    result = await runner._handle_message(
+        _make_event("@马嘎 前面那个后台任务呢", chat_type="group", chat_id="726109087")
+    )
+
+    runner._run_agent.assert_not_awaited()
+    assert result is not None
+    assert "bg_busy_3" in result
+    assert "进行中" in result
+    assert "排队" not in result
+
+
+@pytest.mark.asyncio
+async def test_busy_session_still_answers_oral_foreground_runtime_status_query():
+    runner = _make_runner(auto_background_work=True)
+    source = _make_source()
+    session_key = runner._session_key_for_source(source)
+    running_agent = MagicMock()
+    running_agent.get_activity_summary.return_value = {
+        "api_call_count": 4,
+        "max_iterations": 60,
+        "current_tool": "delegate_task",
+        "last_activity_desc": "running: delegate_task",
+    }
+    runner._running_agents[session_key] = running_agent
+
+    result = await runner._handle_message(_make_event("你现在忙什么？"))
+
+    runner._run_agent.assert_not_awaited()
+    assert result is not None
+    assert "前台" in result
+    assert "delegate_task" in result
+
+
+@pytest.mark.asyncio
+async def test_busy_session_still_executes_oral_intel_control():
+    runner = _make_runner(auto_background_work=True)
+    runner.config.platforms[Platform.QQ_NAPCAT].extra["admin_users"] = ["179033731"]
+    source = _make_source()
+    session_key = runner._session_key_for_source(source)
+    runner._running_agents[session_key] = MagicMock()
+    runner.adapters[Platform.QQ_NAPCAT]._busy_followup_ack.return_value = "busy ack"
+    event = _make_event("让情报员钢镚暂停任务，先别监听了。")
+
+    with patch(
+        "tools.qq_control_tool.qq_control_tool",
+        return_value=json.dumps(
+            {
+                "success": True,
+                "worker": {"worker_name": "钢镚", "status": "paused"},
+            },
+            ensure_ascii=False,
+        ),
+    ) as control_mock:
+        result = await runner._handle_message(event)
+
+    runner._run_agent.assert_not_awaited()
+    assert "钢镚" in result
+    assert "暂停" in result
+    assert control_mock.call_args.args[0] == {
+        "action": "pause_worker",
+        "worker_name": "钢镚",
+    }
+
+
+@pytest.mark.asyncio
+async def test_busy_session_still_executes_oral_group_policy_control():
+    runner = _make_runner(auto_background_work=True)
+    runner.config.platforms[Platform.QQ_NAPCAT].extra["admin_users"] = ["179033731"]
+    source = _make_source(chat_type="group", chat_id="726109087")
+    session_key = runner._session_key_for_source(source)
+    runner._running_agents[session_key] = MagicMock()
+    runner.adapters[Platform.QQ_NAPCAT]._busy_followup_ack.return_value = "busy ack"
+    event = _make_event(
+        "这个群只监听，不要走大模型。",
+        chat_type="group",
+        chat_id="726109087",
+    )
+
+    with patch(
+        "tools.qq_control_tool.qq_control_tool",
+        return_value=json.dumps(
+            {
+                "success": True,
+                "policy": {
+                    "group_id": "726109087",
+                    "mode": "collect_only",
+                    "archive_enabled": True,
+                },
+            },
+            ensure_ascii=False,
+        ),
+    ) as control_mock:
+        result = await runner._handle_message(event)
+
+    runner._run_agent.assert_not_awaited()
+    assert "726109087" in result
+    assert "监听" in result
+    assert control_mock.call_args.args[0]["action"] == "enable_collect_only"
+
+
+@pytest.mark.asyncio
+async def test_busy_session_still_lists_pending_friend_requests_orally():
+    runner = _make_runner(auto_background_work=True)
+    runner.config.platforms[Platform.QQ_NAPCAT].extra["admin_users"] = ["179033731"]
+    source = _make_source()
+    session_key = runner._session_key_for_source(source)
+    runner._running_agents[session_key] = MagicMock()
+    event = _make_event("看看待处理的好友申请")
+
+    with patch(
+        "tools.qq_social_tool.qq_social_tool",
+        return_value=json.dumps(
+            {
+                "success": True,
+                "requests": [
+                    {
+                        "request_key": "friend:friend-flag-1",
+                        "request_type": "friend",
+                        "user_id": "456789",
+                        "comment": "加一下",
+                        "status": "pending",
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+    ) as social_mock:
+        result = await runner._handle_message(event)
+
+    runner._run_agent.assert_not_awaited()
+    assert "friend:friend-flag-1" in result
+    assert "456789" in result
+    assert social_mock.call_args.args[0] == {
+        "action": "list_requests",
+        "status": "pending",
+        "request_type": "friend",
+        "limit": 20,
+    }
+
+
+@pytest.mark.asyncio
+async def test_busy_session_still_updates_social_policy_orally():
+    runner = _make_runner(auto_background_work=True)
+    runner.config.platforms[Platform.QQ_NAPCAT].extra["admin_users"] = ["179033731"]
+    source = _make_source()
+    session_key = runner._session_key_for_source(source)
+    runner._running_agents[session_key] = MagicMock()
+    event = _make_event("把自动通过好友申请打开，通知发我私聊。")
+
+    with patch(
+        "tools.qq_social_tool.qq_social_tool",
+        return_value=json.dumps(
+            {
+                "success": True,
+                "policy": {
+                    "auto_approve_friend_requests": True,
+                    "auto_approve_group_add_requests": False,
+                    "auto_approve_group_invites": False,
+                    "notify_target": "qq_napcat:dm:179033731",
+                },
+            },
+            ensure_ascii=False,
+        ),
+    ) as social_mock:
+        result = await runner._handle_message(event)
+
+    runner._run_agent.assert_not_awaited()
+    assert "好友申请" in result
+    assert "开启" in result
+    assert social_mock.call_args.args[0] == {
+        "action": "set_social_policy",
+        "auto_approve_friend_requests": True,
+        "notify_target": "current_user_dm",
+    }
+
+
+@pytest.mark.asyncio
+async def test_admin_group_can_orally_mute_member_via_control_plane():
+    runner = _make_runner(auto_background_work=True)
+    runner.config.platforms[Platform.QQ_NAPCAT].extra["admin_users"] = ["179033731"]
+    event = _make_event(
+        "把广告哥禁言10分钟，原因广告。",
+        chat_type="group",
+        chat_id="726109087",
+    )
+
+    with patch(
+        "tools.qq_control_tool.qq_control_tool",
+        return_value=json.dumps(
+            {"success": True, "action": "mute_user", "target_user_id": "123456"},
+            ensure_ascii=False,
+        ),
+    ) as control_mock:
+        result = await runner._handle_message(event)
+
+    runner._run_agent.assert_not_awaited()
+    assert "禁言" in result
+    args = control_mock.call_args.args[0]
+    assert args["action"] == "mute_user"
+    assert args["target"] == "group:726109087"
+    assert args["user_query"] == "广告哥"
+    assert args["duration_seconds"] == 600
+    assert args["reason"] == "广告"
+
+
+@pytest.mark.asyncio
+async def test_admin_group_can_orally_kick_member_via_control_plane():
+    runner = _make_runner(auto_background_work=True)
+    runner.config.platforms[Platform.QQ_NAPCAT].extra["admin_users"] = ["179033731"]
+    event = _make_event(
+        "把广告哥踢了，原因广告。",
+        chat_type="group",
+        chat_id="726109087",
+    )
+
+    with patch(
+        "tools.qq_control_tool.qq_control_tool",
+        return_value=json.dumps(
+            {"success": True, "action": "kick_user", "target_user_id": "123456"},
+            ensure_ascii=False,
+        ),
+    ) as control_mock:
+        result = await runner._handle_message(event)
+
+    runner._run_agent.assert_not_awaited()
+    assert "踢" in result
+    args = control_mock.call_args.args[0]
+    assert args["action"] == "kick_user"
+    assert args["target"] == "group:726109087"
+    assert args["user_query"] == "广告哥"
+    assert args["reason"] == "广告"
+
+
+@pytest.mark.asyncio
+async def test_group_technical_discussion_with_implementation_word_stays_in_foreground():
+    runner = _make_runner(auto_background_work=True)
+    event = _make_event(
+        "我的理解是解耦实现多线程",
+        chat_type="group",
+        chat_id="group:10001",
+    )
+
+    result = await runner._handle_message(event)
+
+    runner._run_agent.assert_awaited_once()
+    assert result == "前台回复"
+    assert runner._managed_background_jobs == {}
+
+
+@pytest.mark.asyncio
+async def test_group_explicit_maga_assignment_stays_foreground_without_configured_employee_heuristic():
+    runner = _make_runner(auto_background_work=True)
+    event = _make_event(
+        "@马嘎 把 fafafa-page 打磨一下，页面太粗糙了，顺手调调样式和排版。",
+        chat_type="group",
+        chat_id="group:10001",
+    )
+
+    result = await runner._handle_message(event)
+
+    runner._run_agent.assert_awaited_once()
+    assert result == "前台回复"
+    assert runner._managed_background_jobs == {}
+
+
+@pytest.mark.asyncio
+async def test_status_command_includes_background_jobs():
+    runner = _make_runner(auto_background_work=True)
+    source = _make_source()
+    chat_key = runner._background_job_chat_key(source)
+    session_key = runner._session_key_for_source(source)
+    runner._managed_background_jobs["bg_123"] = {
+        "task_id": "bg_123",
+        "chat_key": chat_key,
+        "scope_key": session_key,
+        "session_key": session_key,
+        "status": "running",
+        "kind": "auto",
+        "created_at": time.time() - 30,
+        "updated_at": time.time(),
+        "started_at": time.time() - 25,
+        "finished_at": None,
+        "error": None,
+        "worker_name": "铁柱",
+    }
+    runner._managed_background_jobs_by_chat[chat_key] = ["bg_123"]
+
+    result = await runner._handle_status_command(_make_event("/status"))
+
+    assert "**Background Jobs:**" in result
+    assert "`bg_123`" in result
+    assert "running" in result
+    assert "铁柱" in result
+
+
+@pytest.mark.asyncio
+async def test_status_command_includes_pending_approval_and_auto_vision_state(tmp_path):
+    runner = _make_runner(auto_background_work=True)
+    runner._background_job_store = BackgroundJobStore(db_path=tmp_path / "background_jobs.db")
+    source = _make_source()
+    session_key = runner._session_key_for_source(source)
+
+    runner._background_job_store.create_job(
+        task_id="bg_pending_approve",
+        prompt="重启服务",
+        source=source,
+        session_key=session_key,
+    )
+    runner._background_job_store.create_approval_request(
+        task_id="bg_pending_approve",
+        session_key=session_key,
+        source=source,
+        approval_data={
+            "command": "systemctl restart hermes-gateway.service",
+            "description": "stop/disable system service",
+            "prompt_title": "Dangerous command requires approval",
+            "approver_name": "董事长",
+            "allow_persistence": False,
+            "pattern_key": "stop/disable system service",
+            "pattern_keys": ["stop/disable system service"],
+        },
+    )
+    runner._auto_vision_tasks["img:1"] = asyncio.get_running_loop().create_future()
+    runner._auto_vision_unhealthy_until = time.time() + 30
+    runner._auto_vision_unhealthy_reason = "provider_error"
+
+    result = await runner._handle_status_command(_make_event("/status"))
+
+    assert "Pending Approvals" in result
+    assert "1" in result
+    assert "Auto Vision" in result
+    assert "warming" in result or "cooldown" in result
+
+
+@pytest.mark.asyncio
+async def test_status_command_includes_runtime_model_and_collect_only_monitoring_state(tmp_path):
+    runner = _make_runner(auto_background_work=True)
+    runner._background_job_store = BackgroundJobStore(db_path=tmp_path / "background_jobs.db")
+    runner._effective_model = "gpt-5.4-mini"
+    runner._effective_provider = "openrouter"
+    runner._fallback_model = [{"provider": "openrouter", "model": "gpt-5.4-mini"}]
+    source = _make_source(chat_type="group", chat_id="726109087")
+    session_key = runner._session_key_for_source(source)
+    runner._managed_background_jobs["bg_model_1"] = {
+        "task_id": "bg_model_1",
+        "chat_key": runner._background_job_chat_key(source),
+        "scope_key": session_key,
+        "session_key": session_key,
+        "status": "running",
+        "kind": "auto",
+        "created_at": time.time() - 12,
+        "updated_at": time.time(),
+        "started_at": time.time() - 10,
+        "finished_at": None,
+        "error": None,
+        "worker_name": "铁柱",
+        "preview": "继续处理线上问题",
+    }
+    runner._managed_background_jobs_by_chat[runner._background_job_chat_key(source)] = ["bg_model_1"]
+    runner._background_job_store.create_approval_request(
+        task_id="bg_model_1",
+        session_key=session_key,
+        source=source,
+        approval_data={
+            "command": "systemctl restart hermes-gateway.service",
+            "description": "stop/disable system service",
+            "prompt_title": "Dangerous command requires approval",
+            "approver_name": "董事长",
+            "allow_persistence": False,
+            "pattern_key": "stop/disable system service",
+            "pattern_keys": ["stop/disable system service"],
+        },
+    )
+
+    with patch(
+        "gateway.run.list_intel_workers",
+        return_value=[
+            {
+                "worker_name": "钢镚",
+                "status": "active_collecting",
+                "target_group_id": "726109087",
+                "target_group_name": "项目群",
+                "daily_report_enabled": True,
+            }
+        ],
+    ), patch(
+        "gateway.run._resolve_gateway_model",
+        return_value="gpt-5.4",
+    ), patch(
+        "gateway.run._resolve_runtime_agent_kwargs",
+        return_value={"provider": "custom"},
+    ):
+        result = await runner._handle_status_command(
+            _make_event("/status", chat_type="group", chat_id="726109087")
+        )
+
+    assert "Model" in result
+    assert "gpt-5.4-mini" in result
+    assert "openrouter" in result
+    assert "fallback" in result.lower()
+    assert "Pending Approvals" in result
+    assert "QQ Monitoring" in result
+    assert "collect_only" in result
+    assert "钢镚" in result
+
+
+@pytest.mark.asyncio
+async def test_status_command_includes_foreground_activity_detail():
+    runner = _make_runner(auto_background_work=True)
+    source = _make_source()
+    session_key = runner._session_key_for_source(source)
+    running_agent = MagicMock()
+    running_agent.get_activity_summary.return_value = {
+        "api_call_count": 4,
+        "max_iterations": 60,
+        "current_tool": "delegate_task",
+        "last_activity_desc": "running: delegate_task",
+    }
+    runner._running_agents[session_key] = running_agent
+    runner._running_agents_ts[session_key] = time.time() - 12
+
+    result = await runner._handle_status_command(_make_event("/status"))
+
+    assert "Foreground" in result
+    assert "delegate_task" in result
+    assert "4/60" in result
+
+
+def test_runtime_status_summary_includes_foreground_background_vision_and_archive():
+    runner = _make_runner(auto_background_work=True)
+    source = _make_source(chat_type="group", chat_id="726109087")
+    session_key = runner._session_key_for_source(source)
+    runner._effective_model = "gpt-5.4-fallback"
+    runner._effective_provider = "custom-fallback"
+    runner._pending_approvals[session_key] = {"command": "systemctl restart hermes-gateway.service"}
+
+    running_agent = MagicMock()
+    running_agent.get_activity_summary.return_value = {
+        "api_call_count": 3,
+        "max_iterations": 60,
+        "current_tool": "delegate_task",
+        "last_activity_desc": "running: delegate_task",
+    }
+    runner._running_agents[session_key] = running_agent
+    runner._running_agents_ts[session_key] = time.time() - 12
+    runner._managed_background_jobs["bg_runtime_1"] = {
+        "task_id": "bg_runtime_1",
+        "chat_key": runner._background_job_chat_key(source),
+        "scope_key": session_key,
+        "session_key": session_key,
+        "status": "running",
+        "kind": "auto",
+        "created_at": time.time() - 30,
+        "updated_at": time.time(),
+        "started_at": time.time() - 20,
+        "finished_at": None,
+        "error": None,
+        "worker_name": "铁柱",
+        "preview": "继续处理线上问题",
+    }
+    runner._managed_background_jobs["bg_runtime_2"] = {
+        "task_id": "bg_runtime_2",
+        "chat_key": runner._background_job_chat_key(source),
+        "scope_key": session_key,
+        "session_key": session_key,
+        "status": "queued",
+        "kind": "auto",
+        "created_at": time.time() - 10,
+        "updated_at": time.time(),
+        "started_at": None,
+        "finished_at": None,
+        "error": None,
+        "worker_name": "",
+        "preview": "整理群监听日报",
+    }
+    pending_task = MagicMock()
+    pending_task.done.return_value = False
+    runner._auto_vision_tasks = {"vision:1": pending_task}
+    runner._auto_vision_cache = {
+        "cache:1": {
+            "status": "success",
+            "updated_at": time.time(),
+            "expires_at": time.time() + 60,
+        }
+    }
+    runner._auto_vision_unhealthy_until = time.time() + 15
+    runner._auto_vision_unhealthy_reason = "timeout"
+
+    with patch(
+        "gateway.run.QqGroupArchiveStore",
+        return_value=MagicMock(
+            get_runtime_stats=MagicMock(
+                return_value={
+                    "raw_message_count": 42,
+                    "raw_group_count": 2,
+                    "due_rollup_count": 1,
+                    "report_count": 5,
+                }
+            )
+        ),
+    ), patch(
+        "gateway.run._resolve_gateway_model",
+        return_value="gpt-5.4",
+    ), patch(
+        "gateway.run._resolve_runtime_agent_kwargs",
+        return_value={"provider": "custom"},
+    ), patch(
+        "gateway.run.list_group_policies",
+        return_value=[
+            {"group_id": "726109087", "mode": "collect_only"},
+            {"group_id": "999999999", "mode": "default"},
+        ],
+    ), patch(
+        "gateway.run.list_intel_workers",
+        return_value=[
+            {"worker_name": "钢镚", "status": "active_collecting"},
+            {"worker_name": "铁柱", "status": "paused"},
+        ],
+    ):
+        summary = runner._build_runtime_status_summary()
+
+    assert summary["active_sessions_count"] == 1
+    assert summary["active_sessions"][0]["current_tool"] == "delegate_task"
+    assert summary["background_jobs"]["active_count"] == 2
+    assert summary["background_jobs"]["counts"]["running"] == 1
+    assert summary["approvals"]["pending_count"] == 1
+    assert summary["auto_vision"]["state"] == "cooldown"
+    assert summary["auto_vision"]["inflight_count"] == 1
+    assert summary["qq_archive"]["raw_message_count"] == 42
+    assert summary["model"]["configured_model"] == "gpt-5.4"
+    assert summary["model"]["active_model"] == "gpt-5.4-fallback"
+    assert summary["model"]["fallback_active"] is True
+    assert summary["qq_monitoring"]["active_collect_only_groups"] == 1
+    assert summary["qq_monitoring"]["active_worker_count"] == 1
+
+
+def test_runtime_status_summary_includes_model_fallback_approvals_and_collect_only_monitoring(tmp_path):
+    runner = _make_runner(auto_background_work=True)
+    runner._background_job_store = BackgroundJobStore(db_path=tmp_path / "background_jobs.db")
+    source = _make_source(chat_type="group", chat_id="726109087")
+    session_key = runner._session_key_for_source(source)
+    runner._effective_model = "gpt-5.4-mini"
+    runner._effective_provider = "openrouter"
+    runner._fallback_model = [{"provider": "openrouter", "model": "gpt-5.4-mini"}]
+    runner._managed_background_jobs["bg_runtime_extra"] = {
+        "task_id": "bg_runtime_extra",
+        "chat_key": runner._background_job_chat_key(source),
+        "scope_key": session_key,
+        "session_key": session_key,
+        "status": "running",
+        "kind": "auto",
+        "created_at": time.time() - 12,
+        "updated_at": time.time(),
+        "started_at": time.time() - 10,
+        "finished_at": None,
+        "error": None,
+        "worker_name": "铁柱",
+        "preview": "继续处理线上问题",
+        "launcher_type": "subprocess",
+        "launcher_pid": 4321,
+    }
+    runner._managed_background_jobs_by_chat[runner._background_job_chat_key(source)] = ["bg_runtime_extra"]
+    runner._background_job_store.create_approval_request(
+        task_id="bg_runtime_extra",
+        session_key=session_key,
+        source=source,
+        approval_data={
+            "command": "systemctl restart hermes-gateway.service",
+            "description": "stop/disable system service",
+            "prompt_title": "Dangerous command requires approval",
+            "approver_name": "董事长",
+            "allow_persistence": False,
+            "pattern_key": "stop/disable system service",
+            "pattern_keys": ["stop/disable system service"],
+        },
+    )
+
+    with patch(
+        "gateway.run.list_intel_workers",
+        return_value=[
+            {
+                "worker_name": "钢镚",
+                "status": "active_collecting",
+                "target_group_id": "726109087",
+                "target_group_name": "项目群",
+                "daily_report_enabled": True,
+            }
+        ],
+    ), patch(
+        "gateway.run._resolve_gateway_model",
+        return_value="gpt-5.4",
+    ), patch(
+        "gateway.run._resolve_runtime_agent_kwargs",
+        return_value={"provider": "custom"},
+    ):
+        summary = runner._build_runtime_status_summary()
+
+    assert summary["model"]["configured_model"] == "gpt-5.4"
+    assert summary["model"]["active_model"] == "gpt-5.4-mini"
+    assert summary["model"]["active_provider"] == "openrouter"
+    assert summary["model"]["fallback_active"] is True
+    assert summary["approvals"]["pending_count"] == 1
+    assert summary["qq_monitoring"]["active_collect_only_groups"] == 1
+    assert summary["qq_monitoring"]["groups"][0]["group_id"] == "726109087"
+    assert summary["qq_monitoring"]["groups"][0]["worker_names"] == ["钢镚"]
+
+
+@pytest.mark.asyncio
+async def test_oral_background_status_query_mentions_pending_approval(tmp_path):
+    runner = _make_runner(auto_background_work=True)
+    runner._background_job_store = BackgroundJobStore(db_path=tmp_path / "background_jobs.db")
+    source = _make_source()
+    session_key = runner._session_key_for_source(source)
+    runner._background_job_store.create_job(
+        task_id="bg_waiting_approve",
+        prompt="危险操作",
+        source=source,
+        session_key=session_key,
+    )
+    runner._background_job_store.create_approval_request(
+        task_id="bg_waiting_approve",
+        session_key=session_key,
+        source=source,
+        approval_data={
+            "command": "rm -rf /tmp/demo",
+            "description": "recursive delete",
+            "prompt_title": "Dangerous command requires approval",
+            "approver_name": "董事长",
+            "allow_persistence": False,
+            "pattern_key": "recursive delete",
+            "pattern_keys": ["recursive delete"],
+        },
+    )
+
+    result = runner._try_handle_background_job_status_shortcut(_make_event("前面那个任务还在做吗"))
+
+    assert result is not None
+    assert "授权" in result or "审批" in result
+
+
+@pytest.mark.asyncio
+async def test_watchdog_recovers_stale_subprocess_job(tmp_path, monkeypatch):
+    runner = _make_runner(auto_background_work=True)
+    runner._background_job_store = BackgroundJobStore(db_path=tmp_path / "background_jobs.db")
+    source = _make_source()
+    session_key = runner._session_key_for_source(source)
+    runner._background_job_store.create_job(
+        task_id="bg_stale_job",
+        prompt="长任务",
+        source=source,
+        session_key=session_key,
+    )
+    runner._background_job_store.mark_job_running("bg_stale_job")
+    runner._background_job_store.update_job_launcher(
+        "bg_stale_job",
+        {"launcher_type": "subprocess", "launcher_pid": 999999},
+    )
+    monkeypatch.setattr("gateway.background_jobs.os.kill", lambda pid, sig: (_ for _ in ()).throw(ProcessLookupError()))
+
+    recovered = await runner._recover_stale_background_jobs_once(
+        queued_grace_seconds=30,
+        heartbeat_stale_seconds=30,
+        now_ts=time.time() + 600,
+    )
+
+    assert [item["task_id"] for item in recovered] == ["bg_stale_job"]
+    job = runner._background_job_store.get_job("bg_stale_job")
+    assert job is not None
+    assert job["status"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_stop_command_interrupts_background_job():
+    runner = _make_runner(auto_background_work=True)
+    source = _make_source()
+    chat_key = runner._background_job_chat_key(source)
+    session_key = runner._session_key_for_source(source)
+    agent = MagicMock()
+    runner._managed_background_jobs["bg_123"] = {
+        "task_id": "bg_123",
+        "chat_key": chat_key,
+        "scope_key": session_key,
+        "session_key": session_key,
+        "status": "running",
+        "kind": "auto",
+        "created_at": time.time() - 10,
+        "updated_at": time.time(),
+        "started_at": time.time() - 8,
+        "finished_at": None,
+        "error": None,
+    }
+    runner._managed_background_jobs_by_chat[chat_key] = ["bg_123"]
+    runner._managed_background_job_agents["bg_123"] = agent
+
+    result = await runner._handle_stop_command(_make_event("/stop bg_123"))
+
+    agent.interrupt.assert_called_once_with("Stop requested")
+    assert "bg_123" in result
+    assert runner._managed_background_jobs["bg_123"]["status"] == "cancelling"
+
+
+def test_background_jobs_are_scoped_to_session_not_entire_group_chat():
+    runner = _make_runner(auto_background_work=True)
+    source_a = _make_source(chat_type="group", user_id="179033731", chat_id="999")
+    source_b = _make_source(chat_type="group", user_id="888888", chat_id="999")
+
+    session_key_a = runner._session_key_for_source(source_a)
+    chat_key = runner._background_job_chat_key(source_a)
+    runner._managed_background_jobs["bg_a"] = {
+        "task_id": "bg_a",
+        "chat_key": chat_key,
+        "scope_key": session_key_a,
+        "session_key": session_key_a,
+        "status": "running",
+        "kind": "auto",
+        "created_at": time.time() - 15,
+        "updated_at": time.time(),
+        "started_at": time.time() - 12,
+        "finished_at": None,
+        "error": None,
+    }
+    runner._managed_background_jobs_by_chat[chat_key] = ["bg_a"]
+
+    jobs_a = runner._background_jobs_for_source(source_a)
+    jobs_b = runner._background_jobs_for_source(source_b)
+
+    assert [job["task_id"] for job in jobs_a] == ["bg_a"]
+    assert jobs_b == []
+
+
+def test_platform_override_wins_for_auto_background_work():
+    config = GatewayConfig.from_dict(
+        {
+            "auto_background_work": True,
+            "platforms": {
+                "qq_napcat": {
+                    "enabled": True,
+                    "extra": {"auto_background_work": False},
+                }
+            },
+        }
+    )
+
+    assert config.get_auto_background_work() is True
+    assert config.get_auto_background_work(Platform.QQ_NAPCAT) is False
+
+
+def test_load_gateway_config_reads_auto_background_work(monkeypatch, tmp_path):
+    monkeypatch.setattr("gateway.config.get_hermes_home", lambda: tmp_path)
+    (tmp_path / "config.yaml").write_text(
+        "gateway:\n  auto_background_work: true\n",
+        encoding="utf-8",
+    )
+
+    config = load_gateway_config()
+
+    assert config.auto_background_work is True

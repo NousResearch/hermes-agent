@@ -27,6 +27,7 @@ import time
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, Optional, Any, List
+from urllib.parse import urlsplit
 
 # ---------------------------------------------------------------------------
 # SSL certificate auto-detection for NixOS and other non-standard systems.
@@ -77,6 +78,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 # Resolve Hermes home directory (respects HERMES_HOME override)
 from hermes_constants import get_hermes_home
 from utils import atomic_yaml_write
+from agent.skill_commands import build_preloaded_skills_prompt
+from agent.auxiliary_client import resolve_vision_request_target
 _hermes_home = get_hermes_home()
 
 # Load environment variables from ~/.hermes/.env first.
@@ -95,7 +98,7 @@ if _config_path.exists():
         with open(_config_path, encoding="utf-8") as _f:
             _cfg = _yaml.safe_load(_f) or {}
         # Expand ${ENV_VAR} references before bridging to env vars.
-        from hermes_cli.config import _expand_env_vars
+        from hermes_cli.config import _expand_env_vars, bridge_auxiliary_config_to_env
         _cfg = _expand_env_vars(_cfg)
         # Top-level simple values (fallback only — don't override .env)
         for _key, _val in _cfg.items():
@@ -139,43 +142,7 @@ if _config_path.exists():
         # Auxiliary model/direct-endpoint overrides (vision, web_extract).
         # Each task has provider/model/base_url/api_key; bridge non-default values to env vars.
         _auxiliary_cfg = _cfg.get("auxiliary", {})
-        if _auxiliary_cfg and isinstance(_auxiliary_cfg, dict):
-            _aux_task_env = {
-                "vision": {
-                    "provider": "AUXILIARY_VISION_PROVIDER",
-                    "model": "AUXILIARY_VISION_MODEL",
-                    "base_url": "AUXILIARY_VISION_BASE_URL",
-                    "api_key": "AUXILIARY_VISION_API_KEY",
-                },
-                "web_extract": {
-                    "provider": "AUXILIARY_WEB_EXTRACT_PROVIDER",
-                    "model": "AUXILIARY_WEB_EXTRACT_MODEL",
-                    "base_url": "AUXILIARY_WEB_EXTRACT_BASE_URL",
-                    "api_key": "AUXILIARY_WEB_EXTRACT_API_KEY",
-                },
-                "approval": {
-                    "provider": "AUXILIARY_APPROVAL_PROVIDER",
-                    "model": "AUXILIARY_APPROVAL_MODEL",
-                    "base_url": "AUXILIARY_APPROVAL_BASE_URL",
-                    "api_key": "AUXILIARY_APPROVAL_API_KEY",
-                },
-            }
-            for _task_key, _env_map in _aux_task_env.items():
-                _task_cfg = _auxiliary_cfg.get(_task_key, {})
-                if not isinstance(_task_cfg, dict):
-                    continue
-                _prov = str(_task_cfg.get("provider", "")).strip()
-                _model = str(_task_cfg.get("model", "")).strip()
-                _base_url = str(_task_cfg.get("base_url", "")).strip()
-                _api_key = str(_task_cfg.get("api_key", "")).strip()
-                if _prov and _prov != "auto":
-                    os.environ[_env_map["provider"]] = _prov
-                if _model:
-                    os.environ[_env_map["model"]] = _model
-                if _base_url:
-                    os.environ[_env_map["base_url"]] = _base_url
-                if _api_key:
-                    os.environ[_env_map["api_key"]] = _api_key
+        bridge_auxiliary_config_to_env(_auxiliary_cfg)
         _agent_cfg = _cfg.get("agent", {})
         if _agent_cfg and isinstance(_agent_cfg, dict):
             if "max_turns" in _agent_cfg:
@@ -184,6 +151,11 @@ if _config_path.exists():
             # Env var from .env takes precedence (already in os.environ).
             if "gateway_timeout" in _agent_cfg and "HERMES_AGENT_TIMEOUT" not in os.environ:
                 os.environ["HERMES_AGENT_TIMEOUT"] = str(_agent_cfg["gateway_timeout"])
+            # Bridge agent.stream_stale_timeout → HERMES_STREAM_STALE_TIMEOUT.
+            # Controls how long a streaming provider may stay silent before
+            # the gateway tears down the connection and retries/fails over.
+            if "stream_stale_timeout" in _agent_cfg and "HERMES_STREAM_STALE_TIMEOUT" not in os.environ:
+                os.environ["HERMES_STREAM_STALE_TIMEOUT"] = str(_agent_cfg["stream_stale_timeout"])
         # Timezone: bridge config.yaml → HERMES_TIMEZONE env var.
         # HERMES_TIMEZONE from .env takes precedence (already in os.environ).
         _tz_cfg = _cfg.get("timezone", "")
@@ -225,6 +197,83 @@ from gateway.config import (
     load_gateway_config,
     _coerce_list,
 )
+from gateway.direct_shortcuts import run_direct_shortcut_handlers
+from gateway.employee_routes import get_employee_routes
+from gateway.group_control_intents import (
+    looks_like_group_chat_enable_request,
+    looks_like_group_listen_disable_request,
+    looks_like_group_listen_enable_request,
+    looks_like_group_report_disable_request,
+    looks_like_group_report_enable_request,
+    looks_like_group_runtime_status_query as looks_like_shared_group_runtime_status_query,
+    resolve_oral_report_delivery_target,
+)
+from gateway.group_control_requests import match_group_control_request
+from gateway.group_runtime_status_requests import match_group_runtime_status_request
+from gateway.group_target_intents import (
+    extract_qq_group_target,
+    extract_recent_target_from_history,
+    extract_weixin_group_target,
+)
+from gateway.group_reply_formatters import (
+    format_admin_group_control_reply,
+    format_admin_send_reply,
+    format_group_runtime_status_reply,
+)
+from gateway.send_intents import (
+    extract_qq_inline_send_target_and_message,
+    extract_send_confirmation_message,
+    extract_weixin_inline_send_target_and_message,
+    looks_like_send_confirmation,
+    looks_like_send_query,
+)
+from gateway.send_requests import match_send_request
+from gateway.qq_group_archive import QqGroupArchiveStore
+from gateway.qq_group_policies import get_group_policy, list_group_policies
+from gateway.qq_intel_assignments import get_group_monitoring_overlay, list_intel_workers
+from gateway.qq_intel_control_requests import (
+    extract_qq_oral_intel_hire_objective,
+    extract_qq_worker_name,
+    looks_like_qq_intel_worker_context,
+    match_qq_intel_control_request,
+)
+from gateway.qq_group_moderation_requests import (
+    extract_qq_oral_moderation_duration_seconds,
+    extract_qq_oral_moderation_reason,
+    extract_qq_oral_moderation_user_query,
+    match_qq_group_moderation_action,
+    match_qq_group_moderation_request,
+)
+from gateway.qq_social_control_requests import (
+    looks_like_qq_social_policy_query,
+    match_qq_social_control_request,
+    match_qq_social_request_type,
+    qq_social_policy_notify_target,
+)
+from gateway.weixin_group_archive import WeixinGroupArchiveStore
+from gateway.weixin_group_policies import (
+    get_group_policy as get_weixin_group_policy,
+)
+from gateway.qq_intents import (
+    _QQ_BACKGROUND_STATUS_QUERY_TERMS,
+    _QQ_GROUP_REQUEST_HINT_TERMS,
+    _QQ_JOINED_GROUP_LIST_TERMS,
+    _QQ_MEDIA_PLACEHOLDER_MARKERS,
+    _QQ_RUNTIME_STATUS_QUERY_TERMS,
+    _QQ_RUNTIME_STATUS_SHORT_TERMS,
+    _QQ_VISIBLE_NAME_ALIASES,
+    _looks_like_qq_active_session_inline_candidate,
+    _looks_like_qq_background_status_query,
+    _looks_like_qq_group_moderation_candidate,
+    _looks_like_qq_group_request_text,
+    _looks_like_qq_joined_group_list_query,
+    _looks_like_qq_media_message,
+    _looks_like_qq_runtime_short_query,
+    _looks_like_qq_runtime_status_query,
+    _looks_like_qq_social_policy_candidate,
+    _looks_like_qq_social_request_list_query,
+    _qq_group_has_visible_bot_address,
+)
 from gateway.session import (
     SessionStore,
     SessionSource,
@@ -232,6 +281,13 @@ from gateway.session import (
     build_session_context,
     build_session_context_prompt,
     build_session_key,
+)
+from gateway.background_jobs import (
+    BackgroundJobStore,
+    background_job_chat_key as durable_background_job_chat_key,
+    background_job_scope_key as durable_background_job_scope_key,
+    launch_background_worker,
+    stop_background_worker,
 )
 from gateway.delivery import DeliveryRouter
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType
@@ -287,21 +343,16 @@ logger = logging.getLogger(__name__)
 # between the guard check and actual agent creation.
 _AGENT_PENDING_SENTINEL = object()
 _SHARED_GROUP_VISIBLE_HISTORY_LIMIT = 24
-_AUTO_VISION_ANALYSIS_TIMEOUT_SECONDS = 20.0
-_QQ_VISIBLE_NAME_ALIASES = (
-    "@马嘎",
-    "@马噶",
-    "马嘎",
-    "马噶",
-    "马哥",
-    "老马",
-    "马屌",
-    "马逼",
-    "小马",
-    "马户",
-)
-
-
+_AUTO_VISION_ANALYSIS_TIMEOUT_SECONDS = 8.0
+_AUTO_VISION_ANALYSIS_TIMEOUT_CAP_SECONDS = 45.0
+_AUTO_VISION_ANALYSIS_FAILURE_COOLDOWN_SECONDS = 300.0
+_AUTO_VISION_TRANSIENT_COOLDOWN_SECONDS = 5.0
+_AUTO_VISION_INLINE_WAIT_SECONDS = 0.75
+_AUTO_VISION_GROUP_INLINE_WAIT_SECONDS = 0.25
+_AUTO_VISION_IMAGE_ONLY_INLINE_WAIT_SECONDS = 8.0
+_AUTO_VISION_CACHE_TTL_SECONDS = 3600.0
+_AUTO_VISION_MAX_INFLIGHT_TASKS = 4
+_AUTO_VISION_MAX_CACHE_ENTRIES = 256
 def _is_shared_group_internal_artifact(content: Any) -> bool:
     text = str(content or "").strip()
     if not text:
@@ -312,6 +363,105 @@ def _is_shared_group_internal_artifact(content: Any) -> bool:
             "[Your active task list was preserved across context compression]",
         )
     )
+
+
+def _should_forward_agent_status(
+    source: SessionSource,
+    event_type: str,
+    message: str,
+) -> bool:
+    """Return whether a run_agent status event should be shown to the user.
+
+    QQ chats are especially sensitive to internal lifecycle chatter because the
+    adapter operates in conversational contexts with high message volume.  The
+    user-facing value of raw fallback/retry/context-pressure telemetry is low,
+    and forwarding it into QQ groups creates visible spam that looks like the
+    bot is malfunctioning instead of working.
+    """
+    del message  # Reserved for future content-aware filtering.
+
+    if source.platform == Platform.QQ_NAPCAT and event_type in {
+        "lifecycle",
+        "context_pressure",
+    }:
+        return False
+    return True
+
+
+def _image_vision_inputs_from_event(event: MessageEvent) -> List[str]:
+    """Return image analysis inputs for a message event.
+
+    ``media_urls`` stays the durable local-cache path. ``media_sources`` is an
+    optional per-item preferred analysis source, typically a preserved remote
+    URL from the adapter. For QQ/NapCat, some OpenAI-compatible vision gateways
+    accept remote image URLs but reject ``data:image/...`` payloads derived from
+    local cached files, so prefer the preserved remote URL when the currently
+    resolved vision backend is a custom OpenAI-chat endpoint and a remote source
+    is available.
+    """
+    image_inputs: List[str] = []
+    source = getattr(event, "source", None)
+    prefer_local = getattr(source, "platform", None) == Platform.QQ_NAPCAT
+
+    for attachment in event.ensure_attachments():
+        mtype = str(attachment.mime_type or "").strip()
+        if attachment.kind != "image" and not (
+            event.message_type == MessageType.PHOTO and mtype.startswith("image/")
+        ):
+            continue
+        path = str(attachment.local_path or "").strip()
+        preferred = str(attachment.analysis_ref or attachment.remote_url or "").strip()
+        if _should_skip_auto_vision_media(
+            path=path,
+            media_type=mtype,
+            preferred_source=preferred,
+        ):
+            continue
+        if prefer_local and preferred and _should_prefer_remote_auto_vision_source(preferred):
+            image_inputs.append(preferred)
+            continue
+        image_inputs.append(path if prefer_local and path else (preferred or path))
+
+    return image_inputs
+
+
+def _should_prefer_remote_auto_vision_source(image_ref: str) -> bool:
+    """Return True when auto-vision should preserve the remote image ref."""
+    try:
+        from tools.vision_tools import should_prefer_remote_vision_source
+
+        return should_prefer_remote_vision_source(image_ref)
+    except Exception:
+        return False
+
+
+def _should_skip_auto_vision_media(
+    *,
+    path: str,
+    media_type: str,
+    preferred_source: str = "",
+) -> bool:
+    """Drop low-signal animated media before it reaches the vision model."""
+    normalized_type = str(media_type or "").strip().lower()
+    if normalized_type == "image/gif":
+        return True
+    for ref in (preferred_source, path):
+        if _media_ref_suffix(ref) == ".gif":
+            return True
+    return False
+
+
+def _media_ref_suffix(ref: str) -> str:
+    value = str(ref or "").strip()
+    if not value:
+        return ""
+    try:
+        parsed = urlsplit(value)
+        if parsed.scheme:
+            value = parsed.path
+    except Exception:
+        pass
+    return Path(value).suffix.lower()
 
 
 def _simplify_shared_group_history_for_agent(
@@ -375,6 +525,83 @@ def _resolve_runtime_agent_kwargs() -> dict:
     }
 
 
+def _load_gateway_flush_memory_store():
+    """Load a live MemoryStore snapshot for background gateway flushes."""
+    try:
+        from hermes_cli.config import load_config as _load_config
+        mem_cfg = (_load_config().get("memory") or {})
+    except Exception:
+        mem_cfg = {}
+
+    from tools.memory_tool import MemoryStore
+
+    store = MemoryStore(
+        memory_char_limit=mem_cfg.get("memory_char_limit", 2200),
+        user_char_limit=mem_cfg.get("user_char_limit", 1375),
+    )
+    store.load_from_disk()
+    return store
+
+
+def _extract_gateway_flush_tool_calls(response) -> list:
+    """Return tool calls from an auxiliary chat response."""
+    try:
+        choices = getattr(response, "choices", None) or []
+        if not choices:
+            return []
+        message = getattr(choices[0], "message", None)
+        if message is None:
+            return []
+        return list(getattr(message, "tool_calls", None) or [])
+    except Exception:
+        return []
+
+
+def _execute_gateway_flush_tool_call(tool_call, *, memory_store) -> None:
+    """Execute a single tool call emitted by the quiet gateway flush turn."""
+    function = getattr(tool_call, "function", None)
+    if function is None:
+        return
+    tool_name = str(getattr(function, "name", "") or "").strip()
+    if not tool_name:
+        return
+
+    raw_args = getattr(function, "arguments", "{}")
+    if isinstance(raw_args, str):
+        args = json.loads(raw_args or "{}")
+    elif isinstance(raw_args, dict):
+        args = raw_args
+    else:
+        args = {}
+
+    if tool_name == "memory":
+        from tools.memory_tool import memory_tool as _memory_tool
+
+        _memory_tool(
+            action=args.get("action"),
+            target=args.get("target", "memory"),
+            content=args.get("content"),
+            old_text=args.get("old_text"),
+            store=memory_store,
+        )
+        return
+
+    if tool_name == "skill_manage":
+        from tools.skill_manager_tool import skill_manage as _skill_manage
+
+        _skill_manage(
+            action=args.get("action", ""),
+            name=args.get("name", ""),
+            content=args.get("content"),
+            category=args.get("category"),
+            file_path=args.get("file_path"),
+            file_content=args.get("file_content"),
+            old_string=args.get("old_string"),
+            new_string=args.get("new_string"),
+            replace_all=bool(args.get("replace_all", False)),
+        )
+
+
 def _build_media_placeholder(event) -> str:
     """Build a text placeholder for media-only events so they aren't dropped.
 
@@ -397,28 +624,133 @@ def _build_media_placeholder(event) -> str:
     return "\n".join(parts)
 
 
-def _dequeue_pending_text(adapter, session_key: str) -> str | None:
-    """Consume and return the text of a pending queued message.
+def _sync_visible_final_response_into_messages(
+    messages: List[Dict[str, Any]],
+    *,
+    raw_final_response: Any,
+    visible_final_response: Any,
+) -> List[Dict[str, Any]]:
+    """Align persisted assistant transcript text with the actual user-facing reply."""
+    visible = str(visible_final_response or "").strip()
+    if not visible:
+        return messages
+
+    raw = str(raw_final_response or "").strip()
+    if raw == visible:
+        return messages
+
+    synced = [dict(msg) if isinstance(msg, dict) else msg for msg in messages]
+    for idx in range(len(synced) - 1, -1, -1):
+        msg = synced[idx]
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            continue
+        current = str(msg.get("content") or "").strip()
+        if current == visible:
+            return synced
+        if current in {"", "(empty)", "[[NO_REPLY]]", raw}:
+            msg["content"] = visible
+            return synced
+        break
+
+    synced.append({"role": "assistant", "content": visible})
+    return synced
+
+
+def _dequeue_pending_event_text(adapter, session_key: str) -> tuple[MessageEvent | None, str | None]:
+    """Consume and return the pending queued event plus normalized text.
 
     Preserves media context for captionless photo/document events by
     building a placeholder so the message isn't silently dropped.
     """
     event = adapter.get_pending_message(session_key)
     if not event:
-        return None
+        return None, None
     text = event.text
     if not text and getattr(event, "media_urls", None):
         text = _build_media_placeholder(event)
-    return text
+    return event, text
 
 
-def _qq_group_empty_response_fallback(message: str) -> str:
-    """Return a QQ-group fallback when an explicitly addressed turn went silent."""
+def _qq_group_latest_admin_turn(raw_message: Any) -> bool:
+    """Return True when QQ group metadata marks the latest turn as admin-owned."""
+    if not isinstance(raw_message, dict):
+        return False
+    if not bool(raw_message.get("qq_group_batch")):
+        return False
+    return bool(raw_message.get("latest_is_admin"))
+
+
+def _qq_group_no_reply_fallback(
+    message: str,
+    *,
+    is_admin_user: bool = False,
+    raw_message: Any = None,
+) -> str:
+    """Return a QQ-group fallback for explicit-address no-reply turns."""
     body = str(message or "").strip()
     if not body:
         return ""
+    if _qq_group_latest_admin_turn(raw_message):
+        return "刚才这轮接口空转了，消息我收到了。你再发一遍，或者我继续接着干。"
     if any(name in body for name in _QQ_VISIBLE_NAME_ALIASES):
         return "刚才我这轮空转了，但消息我收到了。你再发一遍，或者我继续接着干。"
+    if _looks_like_qq_runtime_short_query(body):
+        return "刚才我这轮空转了，但我还在。你再发一遍，或者我继续接着干。"
+    if is_admin_user and _looks_like_qq_group_request_text(body):
+        return "刚才这轮接口空转了，消息我收到了。你再发一遍，或者我继续接着干。"
+    return ""
+
+
+def _qq_group_empty_response_fallback(
+    message: str,
+    *,
+    is_admin_user: bool = False,
+    explicit_addressed: bool = False,
+) -> str:
+    """Return a QQ-group fallback when a provider/tool turn yielded no final text."""
+    body = str(message or "").strip()
+    if explicit_addressed and not body:
+        return "我在，你继续说。"
+    if not body:
+        return ""
+    if explicit_addressed:
+        if _looks_like_qq_runtime_short_query(body):
+            return "刚才我这轮空转了，但我还在。你再发一遍，或者我继续接着干。"
+        return "刚才我这轮空转了，但消息我收到了。你再发一遍，或者我继续接着干。"
+    if _qq_group_has_visible_bot_address(body):
+        return "刚才我这轮空转了，但消息我收到了。你再发一遍，或者我继续接着干。"
+    if _looks_like_qq_runtime_short_query(body):
+        return "刚才我这轮空转了，但我还在。你再发一遍，或者我继续接着干。"
+    if _looks_like_qq_media_message(body):
+        return "刚才这条带图/附件的消息我这轮没读出来。你再发一次，或者补一句文字我继续接。"
+    if _looks_like_qq_group_request_text(body):
+        return "刚才这轮接口空转了，但消息我收到了。你再发一遍，或者我继续接着干。"
+    if is_admin_user:
+        return "刚才这轮接口空转了，消息我收到了。你再发一遍，或者我继续接着干。"
+    return ""
+
+
+def _explicit_group_trigger_label(event: MessageEvent | None) -> str:
+    source = getattr(event, "source", None)
+    if getattr(source, "chat_type", "") != "group":
+        return ""
+
+    metadata = getattr(event, "metadata", None) or {}
+    explicit_trigger = bool(
+        metadata.get("explicit_addressed")
+        or metadata.get("requires_reply")
+        or metadata.get("explicit_group_trigger")
+    )
+    explicit_reason = str(
+        metadata.get("address_reason")
+        or metadata.get("explicit_group_trigger_reason")
+        or ""
+    ).strip()
+    trigger_reason = str(metadata.get("group_trigger_reason") or "").strip()
+    if explicit_trigger:
+        return explicit_reason or trigger_reason or "explicit_address"
+    if trigger_reason in {"bot_mention", "reply_to_bot", "name_trigger"}:
+        return trigger_reason
     return ""
 
 
@@ -435,18 +767,277 @@ def _qq_busy_followup_ack(source: SessionSource, message: str = "") -> str:
     return ""
 
 
-def _empty_response_fallback(source: SessionSource, message: str = "") -> str:
+def _truncate_status_preview(value: Any, *, limit: int = 120) -> str:
+    """Return a single-line preview for status/approval messages."""
+    text = " ".join(str(value or "").strip().split())
+    if len(text) <= limit:
+        return text
+    return text[: max(limit - 3, 0)].rstrip() + "..."
+
+
+def _build_long_running_status_detail(agent_ref: Any, session_key: str = "") -> str:
+    """Build the detail suffix for periodic long-running gateway updates."""
+    parts: list[str] = []
+    if agent_ref and hasattr(agent_ref, "get_activity_summary"):
+        try:
+            activity = agent_ref.get_activity_summary() or {}
+        except Exception:
+            activity = {}
+        if isinstance(activity, dict) and activity:
+            parts.append(
+                f"iteration {activity.get('api_call_count', 0)}/{activity.get('max_iterations', 0)}"
+            )
+            current_tool = str(activity.get("current_tool") or "").strip()
+            if current_tool:
+                parts.append(f"running: {current_tool}")
+            else:
+                last_desc = str(activity.get("last_activity_desc") or "").strip()
+                if last_desc:
+                    parts.append(last_desc)
+
+    if session_key:
+        try:
+            from tools.approval import has_blocking_approval, peek_blocking_approval
+
+            if has_blocking_approval(session_key):
+                approval = peek_blocking_approval(session_key) or {}
+                command_preview = _truncate_status_preview(approval.get("command", ""))
+                if command_preview:
+                    parts.append(f"waiting for approval: {command_preview}")
+                else:
+                    parts.append("waiting for approval")
+        except Exception:
+            pass
+
+    return f" — {', '.join(parts)}" if parts else ""
+
+
+def _empty_response_fallback(
+    source: SessionSource,
+    message: str = "",
+    *,
+    empty_kind: str = "empty",
+    is_admin_user: bool = False,
+    raw_message: Any = None,
+    event: MessageEvent | None = None,
+) -> str:
     """Return a user-facing fallback when the model yields no final text."""
     if getattr(source, "chat_type", "") == "dm":
         if getattr(source, "platform", None) == Platform.QQ_NAPCAT:
             return "刚才接口抽了，没吐出正文。你再发一条，或者我继续接着刚才的话题说。"
         return "I didn't get a usable response just now. Please send that again."
-    if (
-        getattr(source, "chat_type", "") == "group"
-        and getattr(source, "platform", None) == Platform.QQ_NAPCAT
-    ):
-        return _qq_group_empty_response_fallback(message)
+    if getattr(source, "chat_type", "") == "group":
+        explicit_group_trigger = bool(_explicit_group_trigger_label(event))
+        if getattr(source, "platform", None) == Platform.QQ_NAPCAT:
+            if empty_kind == "no_reply":
+                if explicit_group_trigger:
+                    return "收到，你继续说。"
+                return _qq_group_no_reply_fallback(
+                    message,
+                    is_admin_user=is_admin_user,
+                    raw_message=raw_message,
+                )
+            return _qq_group_empty_response_fallback(
+                message,
+                is_admin_user=is_admin_user,
+                explicit_addressed=explicit_group_trigger,
+            )
+        if explicit_group_trigger:
+            if empty_kind == "no_reply":
+                return "收到，你继续说。"
+            if not str(message or "").strip():
+                return "我在，你继续说。"
+            return "刚才这轮没吐出正文，但消息我收到了。你再发一遍，或者我继续接着干。"
     return ""
+
+
+def _explicit_group_reply_context_note(event: MessageEvent) -> str:
+    label = _explicit_group_trigger_label(event)
+    if not label:
+        return ""
+    return (
+        "[Current group turn note: This message explicitly addressed you "
+        f"(trigger reason: {label}). You must reply briefly to this turn. "
+        "Do not return [[NO_REPLY]] for this turn.]"
+    )
+
+
+_AUTO_BACKGROUND_SHORTCUTS = (
+    "继续",
+    "继续啊",
+    "继续!",
+    "继续！",
+    "接着做",
+    "继续处理",
+    "按你建议做",
+    "马上做",
+    "整套",
+)
+_AUTO_BACKGROUND_ACTION_TERMS = (
+    "修复", "排查", "审查", "部署", "实现", "开发", "收尾", "调查",
+    "分析", "制定", "设计", "重启", "同步", "处理", "看看日志",
+    "上服务器", "查原因", "完整实施", "全部修复", "计划清单",
+)
+_AUTO_BACKGROUND_DOMAIN_TERMS = (
+    "服务器", "日志", "配置", "代码", "接口", "模型", "端点", "并发",
+    "群聊", "私聊", "gateway", "cron", "qq", "napcat", "服务", "任务",
+    "问题", "故障",
+)
+_NON_INTERRUPTIBLE_RUNNING_TOOLS = frozenset({
+    "qq_group_moderation",
+})
+_GATEWAY_SIGNAL_FORCE_EXIT_SECONDS = 20.0
+def _safe_float(value: Any, default: float) -> float:
+    """Best-effort float conversion that never raises for mocks or bad values."""
+    try:
+        if value is None or isinstance(value, bool):
+            raise TypeError("invalid numeric value")
+        return float(value)
+    except Exception:
+        return default
+
+
+def _contains_any(text: str, terms: tuple[str, ...]) -> bool:
+    """Return True when any term is present in the normalized text."""
+    if not text:
+        return False
+    lowered = text.lower()
+    return any(term in lowered for term in terms)
+
+
+def _is_auto_background_shortcut(text: str) -> bool:
+    """Return True when the message is a bare follow-up shortcut like '继续'."""
+    compact = str(text or "").strip().lower()
+    return compact in _AUTO_BACKGROUND_SHORTCUTS
+
+
+def _looks_like_auto_background_work_request(text: str) -> bool:
+    """Return True when the message itself looks like a real work assignment."""
+    body = str(text or "").strip()
+    if not body:
+        return False
+
+    compact = body.lower()
+    action_hits = {term for term in _AUTO_BACKGROUND_ACTION_TERMS if term in body}
+    domain_hits = {term for term in _AUTO_BACKGROUND_DOMAIN_TERMS if term in compact}
+    overlapping_hits = {term for term in action_hits if term in domain_hits}
+    distinct_hits = (action_hits | domain_hits) - overlapping_hits
+    has_structure = (
+        len(body) >= 80
+        or body.count("\n") >= 2
+        or "```" in body
+        or body.count("http://") + body.count("https://") > 0
+    )
+    has_action = bool(action_hits)
+
+    if distinct_hits and has_action:
+        return True
+    if has_structure and has_action:
+        return True
+    if "全部修复" in body or "完整实施" in body or "上服务器" in body:
+        return True
+    return False
+
+
+def _looks_like_explicit_worker_assignment(text: str, worker_names: list[str]) -> bool:
+    """Return True when a named employee is being explicitly assigned work."""
+    body = str(text or "").strip()
+    if not body:
+        return False
+    if any(mark in body for mark in ("?", "？")):
+        return False
+    if _is_auto_background_shortcut(body) or _looks_like_auto_background_work_request(body):
+        return True
+
+    lead_markers = ("让", "叫", "安排", "交给", "给", "找", "请", "麻烦")
+    tail_markers = (
+        "继续",
+        "去",
+        "来",
+        "做",
+        "处理",
+        "跟进",
+        "修",
+        "查",
+        "看",
+        "优化",
+        "打磨",
+        "润色",
+        "改",
+        "整",
+    )
+    for name in worker_names:
+        candidate = str(name or "").strip()
+        if not candidate or candidate not in body:
+            continue
+        before, _, after = body.partition(candidate)
+        if any(marker in before[-4:] for marker in lead_markers):
+            return True
+        if any(after.startswith(marker) for marker in tail_markers):
+            return True
+    return False
+
+
+def _load_gateway_signal_force_exit_seconds() -> float:
+    """Return the forced-exit grace period after SIGTERM/SIGINT.
+
+    Set ``HERMES_GATEWAY_FORCE_EXIT_SECONDS=0`` to disable the watchdog.
+    """
+    raw = str(os.getenv("HERMES_GATEWAY_FORCE_EXIT_SECONDS", "") or "").strip()
+    if not raw:
+        return _GATEWAY_SIGNAL_FORCE_EXIT_SECONDS
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning(
+            "Invalid HERMES_GATEWAY_FORCE_EXIT_SECONDS=%r, using %.1fs",
+            raw,
+            _GATEWAY_SIGNAL_FORCE_EXIT_SECONDS,
+        )
+        return _GATEWAY_SIGNAL_FORCE_EXIT_SECONDS
+    return max(0.0, value)
+
+
+def _make_gateway_signal_handler(runner: "GatewayRunner", *, force_exit_after: float):
+    """Create a signal handler that triggers graceful stop with a hard-exit watchdog."""
+    force_exit_timer = None
+
+    def _force_exit():
+        logger.error(
+            "Gateway shutdown exceeded %.1fs after signal; forcing process exit.",
+            force_exit_after,
+        )
+        try:
+            from gateway.status import remove_pid_file, write_runtime_status
+            remove_pid_file()
+            write_runtime_status(
+                gateway_state="stopped",
+                exit_reason="forced_signal_exit",
+                runtime_summary={},
+            )
+        except Exception:
+            pass
+        os._exit(0)
+
+    def _cancel_force_exit_timer() -> None:
+        nonlocal force_exit_timer
+        if force_exit_timer is None:
+            return
+        try:
+            force_exit_timer.cancel()
+        except Exception:
+            pass
+        force_exit_timer = None
+
+    def _signal_handler() -> None:
+        nonlocal force_exit_timer
+        if force_exit_after > 0 and force_exit_timer is None:
+            force_exit_timer = threading.Timer(force_exit_after, _force_exit)
+            force_exit_timer.daemon = True
+            force_exit_timer.start()
+        asyncio.create_task(runner.stop())
+
+    return _signal_handler, _cancel_force_exit_timer
 
 
 def _check_unavailable_skill(command_name: str) -> str | None:
@@ -667,6 +1258,15 @@ class GatewayRunner:
 
         # Track background tasks to prevent garbage collection mid-execution
         self._background_tasks: set = set()
+        self._managed_background_jobs: Dict[str, Dict[str, Any]] = {}
+        self._managed_background_jobs_by_chat: Dict[str, List[str]] = {}
+        self._managed_background_job_tasks: Dict[str, asyncio.Task] = {}
+        self._managed_background_job_agents: Dict[str, Any] = {}
+        self._background_job_store = BackgroundJobStore()
+        self._auto_vision_cache: Dict[str, Dict[str, Any]] = {}
+        self._auto_vision_tasks: Dict[str, asyncio.Task] = {}
+        self._auto_vision_unhealthy_until = 0.0
+        self._auto_vision_unhealthy_reason = ""
 
 
 
@@ -680,6 +1280,36 @@ class GatewayRunner:
             return _find_skill("hermes-agent-setup") is not None
         except Exception:
             return False
+
+    def _persist_gateway_direct_reply(
+        self,
+        *,
+        session_id: str,
+        source: SessionSource,
+        history: list[dict[str, Any]],
+        user_message: str,
+        assistant_message: str,
+    ) -> None:
+        ts = datetime.now().isoformat()
+        if not history:
+            self.session_store.append_to_transcript(
+                session_id,
+                {
+                    "role": "session_meta",
+                    "tools": [],
+                    "model": _resolve_gateway_model(),
+                    "platform": source.platform.value if source.platform else "",
+                    "timestamp": ts,
+                },
+            )
+        self.session_store.append_to_transcript(
+            session_id,
+            {"role": "user", "content": user_message, "timestamp": ts},
+        )
+        self.session_store.append_to_transcript(
+            session_id,
+            {"role": "assistant", "content": assistant_message, "timestamp": ts},
+        )
 
     # -- Voice mode persistence ------------------------------------------
 
@@ -752,7 +1382,9 @@ class GatewayRunner:
             if not history or len(history) < 4:
                 return
 
-            from run_agent import AIAgent
+            from agent.auxiliary_client import call_llm
+            from model_tools import get_tool_definitions
+
             runtime_kwargs = _resolve_runtime_agent_kwargs()
             if not runtime_kwargs.get("api_key"):
                 return
@@ -762,26 +1394,14 @@ class GatewayRunner:
             # active provider is openai-codex.
             model = _resolve_gateway_model()
 
-            tmp_agent = AIAgent(
-                **runtime_kwargs,
-                model=model,
-                max_iterations=8,
-                quiet_mode=True,
-                skip_memory=True,  # Flush agent — no memory provider
-                enabled_toolsets=["memory", "skills"],
-                session_id=old_session_id,
-            )
-            # Fully silence the flush agent — quiet_mode only suppresses init
-            # messages; tool call output still leaks to the terminal through
-            # _safe_print → _print_fn.  Set a no-op to prevent that.
-            tmp_agent._print_fn = lambda *a, **kw: None
-
             # Build conversation history from transcript
             msgs = [
                 {"role": m.get("role"), "content": m.get("content")}
                 for m in history
                 if m.get("role") in ("user", "assistant") and m.get("content")
             ]
+            if len(msgs) < 4:
+                return
 
             # Read live memory state from disk so the flush agent can see
             # what's already saved and avoid overwriting newer entries.
@@ -830,10 +1450,37 @@ class GatewayRunner:
                 "tools if needed, then stop.]"
             )
 
-            tmp_agent.run_conversation(
-                user_message=flush_prompt,
-                conversation_history=msgs,
+            tool_defs = [
+                td
+                for td in get_tool_definitions(
+                    enabled_toolsets=["memory", "skills"],
+                    quiet_mode=True,
+                )
+                if td.get("function", {}).get("name") in {"memory", "skill_manage"}
+            ]
+            if not tool_defs:
+                return
+
+            response = call_llm(
+                task="flush_memories",
+                provider=runtime_kwargs.get("provider"),
+                model=model,
+                base_url=runtime_kwargs.get("base_url"),
+                api_key=runtime_kwargs.get("api_key"),
+                messages=msgs + [{"role": "user", "content": flush_prompt}],
+                tools=tool_defs,
+                temperature=0.3,
+                max_tokens=5120,
+                timeout=30.0,
             )
+            tool_calls = _extract_gateway_flush_tool_calls(response)
+            if tool_calls:
+                memory_store = _load_gateway_flush_memory_store()
+                for tool_call in tool_calls:
+                    _execute_gateway_flush_tool_call(
+                        tool_call,
+                        memory_store=memory_store,
+                    )
             logger.info("Pre-reset memory flush completed for session %s", old_session_id)
         except Exception as e:
             logger.debug("Pre-reset memory flush failed for session %s: %s", old_session_id, e)
@@ -1167,7 +1814,11 @@ class GatewayRunner:
             pass
         try:
             from gateway.status import write_runtime_status
-            write_runtime_status(gateway_state="starting", exit_reason=None)
+            write_runtime_status(
+                gateway_state="starting",
+                exit_reason=None,
+                reset_platforms=True,
+            )
         except Exception:
             pass
         
@@ -1183,6 +1834,8 @@ class GatewayRunner:
                        "MATRIX_ALLOWED_USERS", "DINGTALK_ALLOWED_USERS",
                        "FEISHU_ALLOWED_USERS",
                        "WECOM_ALLOWED_USERS",
+                       "WECOM_CALLBACK_ALLOWED_USERS",
+                       "WEIXIN_ALLOWED_USERS",
                        "GATEWAY_ALLOWED_USERS")
         )
         _allow_all = os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in ("true", "1", "yes") or any(
@@ -1194,7 +1847,9 @@ class GatewayRunner:
                        "SMS_ALLOW_ALL_USERS", "MATTERMOST_ALLOW_ALL_USERS",
                        "MATRIX_ALLOW_ALL_USERS", "DINGTALK_ALLOW_ALL_USERS",
                        "FEISHU_ALLOW_ALL_USERS",
-                       "WECOM_ALLOW_ALL_USERS")
+                       "WECOM_ALLOW_ALL_USERS",
+                       "WECOM_CALLBACK_ALLOW_ALL_USERS",
+                       "WEIXIN_ALLOW_ALL_USERS")
         )
         if not _any_allowlist and not _allow_all:
             logger.warning(
@@ -1291,7 +1946,11 @@ class GatewayRunner:
                 logger.error("Gateway hit a non-retryable startup conflict: %s", reason)
                 try:
                     from gateway.status import write_runtime_status
-                    write_runtime_status(gateway_state="startup_failed", exit_reason=reason)
+                    write_runtime_status(
+                        gateway_state="startup_failed",
+                        exit_reason=reason,
+                        runtime_summary={},
+                    )
                 except Exception:
                     pass
                 self._request_clean_exit(reason)
@@ -1301,7 +1960,11 @@ class GatewayRunner:
                 logger.error("Gateway failed to connect any configured messaging platform: %s", reason)
                 try:
                     from gateway.status import write_runtime_status
-                    write_runtime_status(gateway_state="startup_failed", exit_reason=reason)
+                    write_runtime_status(
+                        gateway_state="startup_failed",
+                        exit_reason=reason,
+                        runtime_summary={},
+                    )
                 except Exception:
                     pass
                 return False
@@ -1314,7 +1977,11 @@ class GatewayRunner:
         self._running = True
         try:
             from gateway.status import write_runtime_status
-            write_runtime_status(gateway_state="running", exit_reason=None)
+            write_runtime_status(
+                gateway_state="running",
+                exit_reason=None,
+                runtime_summary=self._build_runtime_status_summary(),
+            )
         except Exception:
             pass
         
@@ -1371,6 +2038,12 @@ class GatewayRunner:
                 ", ".join(p.value for p in self._failed_platforms),
             )
         asyncio.create_task(self._platform_reconnect_watcher())
+        _bg_delivery_task = asyncio.create_task(self._background_job_delivery_poller())
+        self._background_tasks.add(_bg_delivery_task)
+        _bg_delivery_task.add_done_callback(self._background_tasks.discard)
+        _runtime_status_task = asyncio.create_task(self._runtime_status_heartbeat())
+        self._background_tasks.add(_runtime_status_task)
+        _runtime_status_task.add_done_callback(self._background_tasks.discard)
 
         logger.info("Press Ctrl+C to stop")
         
@@ -1636,7 +2309,11 @@ class GatewayRunner:
         from gateway.status import remove_pid_file, write_runtime_status
         remove_pid_file()
         try:
-            write_runtime_status(gateway_state="stopped", exit_reason=self._exit_reason)
+            write_runtime_status(
+                gateway_state="stopped",
+                exit_reason=self._exit_reason,
+                runtime_summary={},
+            )
         except Exception:
             pass
         
@@ -1739,12 +2416,29 @@ class GatewayRunner:
                 return None
             return FeishuAdapter(config)
 
+        elif platform == Platform.WECOM_CALLBACK:
+            from gateway.platforms.wecom_callback import (
+                WecomCallbackAdapter,
+                check_wecom_callback_requirements,
+            )
+            if not check_wecom_callback_requirements():
+                logger.warning("WeCom Callback: aiohttp/httpx not installed or callback credentials not set")
+                return None
+            return WecomCallbackAdapter(config)
+
         elif platform == Platform.WECOM:
             from gateway.platforms.wecom import WeComAdapter, check_wecom_requirements
             if not check_wecom_requirements():
                 logger.warning("WeCom: aiohttp not installed or WECOM_BOT_ID/SECRET not set")
                 return None
             return WeComAdapter(config)
+
+        elif platform == Platform.WEIXIN:
+            from gateway.platforms.weixin import WeixinAdapter, check_weixin_requirements
+            if not check_weixin_requirements():
+                logger.warning("Weixin: aiohttp/cryptography not installed or WEIXIN credentials missing")
+                return None
+            return WeixinAdapter(config)
 
         elif platform == Platform.MATTERMOST:
             from gateway.platforms.mattermost import MattermostAdapter, check_mattermost_requirements
@@ -1818,6 +2512,8 @@ class GatewayRunner:
             Platform.DINGTALK: "DINGTALK_ALLOWED_USERS",
             Platform.FEISHU: "FEISHU_ALLOWED_USERS",
             Platform.WECOM: "WECOM_ALLOWED_USERS",
+            Platform.WECOM_CALLBACK: "WECOM_CALLBACK_ALLOWED_USERS",
+            Platform.WEIXIN: "WEIXIN_ALLOWED_USERS",
         }
         platform_allow_all_map = {
             Platform.TELEGRAM: "TELEGRAM_ALLOW_ALL_USERS",
@@ -1833,6 +2529,8 @@ class GatewayRunner:
             Platform.DINGTALK: "DINGTALK_ALLOW_ALL_USERS",
             Platform.FEISHU: "FEISHU_ALLOW_ALL_USERS",
             Platform.WECOM: "WECOM_ALLOW_ALL_USERS",
+            Platform.WECOM_CALLBACK: "WECOM_CALLBACK_ALLOW_ALL_USERS",
+            Platform.WEIXIN: "WEIXIN_ALLOW_ALL_USERS",
         }
 
         # Per-platform allow-all flag (e.g., DISCORD_ALLOW_ALL_USERS=true)
@@ -1964,6 +2662,1822 @@ class GatewayRunner:
         if config and hasattr(config, "get_busy_input_mode"):
             return config.get_busy_input_mode(platform)
         return "interrupt"
+
+    def _get_auto_background_work(self, platform: Optional[Platform]) -> bool:
+        """Return whether obvious long-running work should detach to background."""
+        config = getattr(self, "config", None)
+        if config and hasattr(config, "get_auto_background_work"):
+            return bool(config.get_auto_background_work(platform))
+        return False
+
+    def _busy_followup_force_queue_reason(self, session_key: str, running_agent: Any) -> str:
+        """Return a reason when the active run must not be interrupted."""
+        try:
+            from tools.approval import has_blocking_approval
+
+            if has_blocking_approval(session_key):
+                return "approval_pending"
+        except Exception:
+            pass
+        try:
+            if self._get_background_job_store().has_pending_approval_requests(session_key):
+                return "approval_pending"
+        except Exception:
+            pass
+
+        if running_agent in (None, _AGENT_PENDING_SENTINEL):
+            return ""
+        if not hasattr(running_agent, "get_activity_summary"):
+            return ""
+
+        try:
+            activity = running_agent.get_activity_summary()
+        except Exception:
+            return ""
+        if not isinstance(activity, dict):
+            return ""
+
+        current_tool = str(activity.get("current_tool") or "").strip()
+        if current_tool in _NON_INTERRUPTIBLE_RUNNING_TOOLS:
+            return f"critical_tool:{current_tool}"
+        return ""
+
+    def _ensure_background_job_state(self) -> None:
+        """Initialize background-job registries for tests and older runner state."""
+        if not hasattr(self, "_managed_background_jobs"):
+            self._managed_background_jobs = {}
+        if not hasattr(self, "_managed_background_jobs_by_chat"):
+            self._managed_background_jobs_by_chat = {}
+        if not hasattr(self, "_managed_background_job_tasks"):
+            self._managed_background_job_tasks = {}
+        if not hasattr(self, "_managed_background_job_agents"):
+            self._managed_background_job_agents = {}
+        if not hasattr(self, "_background_tasks"):
+            self._background_tasks = set()
+        if not hasattr(self, "_background_job_store") or self._background_job_store is None:
+            self._background_job_store = BackgroundJobStore()
+
+    def _get_background_job_store(self) -> BackgroundJobStore:
+        self._ensure_background_job_state()
+        return self._background_job_store
+
+    def _background_job_chat_key(self, source: SessionSource) -> str:
+        """Return a stable chat-scoped key for managed background jobs."""
+        return durable_background_job_chat_key(source)
+
+    def _background_job_scope_key(
+        self,
+        source: SessionSource,
+        *,
+        session_key: str = "",
+    ) -> str:
+        """Return the session-scoped key used to isolate background jobs."""
+        resolved = str(session_key or "").strip()
+        if not resolved:
+            try:
+                resolved = str(self._session_key_for_source(source) or "").strip()
+            except Exception:
+                resolved = ""
+        return durable_background_job_scope_key(source, session_key=resolved)
+
+    def _background_jobs_for_source(
+        self,
+        source: SessionSource,
+        *,
+        active_only: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """Return managed background jobs associated with the source chat."""
+        self._ensure_background_job_state()
+        chat_key = self._background_job_chat_key(source)
+        scope_key = self._background_job_scope_key(source)
+        jobs_by_id: Dict[str, Dict[str, Any]] = {}
+        try:
+            durable_jobs = self._get_background_job_store().list_jobs(
+                chat_key=chat_key,
+                scope_key=scope_key,
+                active_only=active_only,
+            )
+        except Exception:
+            durable_jobs = []
+        for job in durable_jobs:
+            task_id = str(job.get("task_id") or "").strip()
+            if task_id:
+                jobs_by_id[task_id] = job
+        for task_id in self._managed_background_jobs_by_chat.get(chat_key, []):
+            job = self._managed_background_jobs.get(task_id)
+            if not job:
+                continue
+            job_scope_key = str(job.get("scope_key") or job.get("session_key") or job.get("chat_key") or "")
+            if job_scope_key != scope_key:
+                continue
+            if active_only and job.get("status") not in {"queued", "running", "cancelling"}:
+                continue
+            jobs_by_id.setdefault(task_id, job)
+        return sorted(
+            jobs_by_id.values(),
+            key=lambda item: _safe_float(item.get("created_at"), 0.0),
+        )
+
+    def _refresh_managed_background_job_cache(self, job: Dict[str, Any]) -> None:
+        """Mirror durable background job state into the legacy in-memory cache."""
+        self._ensure_background_job_state()
+        task_id = str(job.get("task_id") or "").strip()
+        chat_key = str(job.get("chat_key") or "").strip()
+        if not task_id or not chat_key:
+            return
+        self._managed_background_jobs[task_id] = dict(job)
+        task_ids = self._managed_background_jobs_by_chat.setdefault(chat_key, [])
+        if task_id not in task_ids:
+            task_ids.append(task_id)
+
+    def _launch_background_worker(self, task_id: str) -> Dict[str, Any]:
+        """Launch an external worker for a durable background job."""
+        return launch_background_worker(task_id=task_id)
+
+    def _stop_background_worker(self, job: Dict[str, Any]) -> bool:
+        """Stop an external worker for a durable background job."""
+        return stop_background_worker(job)
+
+    def _format_background_job_age(self, job: Dict[str, Any]) -> str:
+        """Return a short human-readable elapsed time for a background job."""
+        started_at = _safe_float(job.get("started_at"), 0.0)
+        created_at = _safe_float(job.get("created_at"), time.time())
+        finished_at = _safe_float(job.get("finished_at"), time.time())
+        anchor = finished_at if job.get("status") in {"completed", "failed", "cancelled"} else time.time()
+        base = started_at or created_at
+        elapsed = max(0, int(anchor - base))
+        if elapsed >= 3600:
+            return f"{elapsed // 3600}h{(elapsed % 3600) // 60:02d}m"
+        if elapsed >= 60:
+            return f"{elapsed // 60}m{elapsed % 60:02d}s"
+        return f"{elapsed}s"
+
+    def _should_auto_background_message(self, event: MessageEvent, message_text: str) -> bool:
+        """Heuristic: detach obvious work assignments to keep chat responsive."""
+        if not self._get_auto_background_work(getattr(event.source, "platform", None)):
+            return False
+        if event.get_command():
+            return False
+        if getattr(event, "message_type", None) != MessageType.TEXT:
+            return False
+        if getattr(event, "media_urls", None):
+            return False
+
+        body = str(message_text or "").strip()
+        if not body:
+            return False
+        return _looks_like_auto_background_work_request(body)
+
+    def _history_suggests_auto_background_work(
+        self,
+        conversation_history: Optional[List[Dict[str, Any]]] = None,
+    ) -> bool:
+        """Return True when recent history clearly looks like an ongoing work task."""
+        recent_parts: List[str] = []
+        for item in list(conversation_history or [])[-4:]:
+            if not isinstance(item, dict):
+                continue
+            content = item.get("content")
+            if content:
+                recent_parts.append(str(content))
+        recent_text = "\n".join(recent_parts)
+        if not recent_text.strip():
+            return False
+
+        lowered = recent_text.lower()
+        action_hits = {term for term in _AUTO_BACKGROUND_ACTION_TERMS if term in recent_text}
+        domain_hits = {term for term in _AUTO_BACKGROUND_DOMAIN_TERMS if term in lowered}
+        overlapping_hits = {term for term in action_hits if term in domain_hits}
+        distinct_hits = (action_hits | domain_hits) - overlapping_hits
+        return bool(action_hits) and bool(distinct_hits)
+
+    def _resolve_employee_background_dispatch(
+        self,
+        message_text: str,
+        *,
+        platform: Platform = Platform.QQ_NAPCAT,
+        conversation_history: Optional[List[Dict[str, Any]]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Return worker-routing metadata for tasks that should run as employees."""
+        body = str(message_text or "").strip()
+        if not body:
+            return None
+
+        employee_routes = get_employee_routes(self.config, platform=platform)
+        if not employee_routes:
+            return None
+
+        current_text = body.lower()
+        recent_context_parts: List[str] = [body]
+        for item in list(conversation_history or [])[-4:]:
+            if not isinstance(item, dict):
+                continue
+            content = item.get("content")
+            if content:
+                recent_context_parts.append(str(content))
+        recent_context = "\n".join(recent_context_parts).lower()
+        shortcut_followup = _is_auto_background_shortcut(body)
+
+        for route in employee_routes:
+            route_names = [str(route.get("worker_name") or "").strip(), *list(route.get("aliases") or [])]
+            match_modes = {str(mode or "").strip().lower() for mode in (route.get("match_modes") or ())}
+            explicit_worker_mention = any(name and name in body for name in route_names)
+            current_has_action = _contains_any(current_text, tuple(route.get("action_terms") or ()))
+            current_has_subject = _contains_any(current_text, tuple(route.get("subject_terms") or ()))
+            current_has_pain = _contains_any(current_text, tuple(route.get("pain_terms") or ()))
+            combined_has_action = _contains_any(recent_context, tuple(route.get("action_terms") or ()))
+            combined_has_subject = _contains_any(recent_context, tuple(route.get("subject_terms") or ()))
+            combined_has_pain = _contains_any(recent_context, tuple(route.get("pain_terms") or ()))
+
+            if "explicit" in match_modes and explicit_worker_mention and (
+                shortcut_followup
+                or current_has_action
+                or current_has_subject
+                or current_has_pain
+                or _looks_like_auto_background_work_request(body)
+                or _looks_like_explicit_worker_assignment(body, route_names)
+            ):
+                return {
+                    "worker_name": str(route["worker_name"]),
+                    "preloaded_skills": list(route.get("preloaded_skills") or []),
+                }
+            if "heuristic" not in match_modes:
+                continue
+            if current_has_subject and (current_has_action or current_has_pain):
+                return {
+                    "worker_name": str(route["worker_name"]),
+                    "preloaded_skills": list(route.get("preloaded_skills") or []),
+                }
+            if (current_has_action or current_has_pain) and combined_has_subject:
+                return {
+                    "worker_name": str(route["worker_name"]),
+                    "preloaded_skills": list(route.get("preloaded_skills") or []),
+                }
+            if shortcut_followup and combined_has_subject and (combined_has_action or combined_has_pain):
+                return {
+                    "worker_name": str(route["worker_name"]),
+                    "preloaded_skills": list(route.get("preloaded_skills") or []),
+                }
+        return None
+
+    def _resolve_auto_background_dispatch(
+        self,
+        event: MessageEvent,
+        message_text: str,
+        *,
+        conversation_history: Optional[List[Dict[str, Any]]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Return auto-background metadata when this turn should detach."""
+        if not self._get_auto_background_work(getattr(event.source, "platform", None)):
+            return None
+        if event.get_command():
+            return None
+        if getattr(event, "message_type", None) != MessageType.TEXT:
+            return None
+        if getattr(event, "media_urls", None):
+            return None
+
+        body = str(message_text or "").strip()
+        if not body:
+            return None
+        if getattr(event.source, "chat_type", "") == "group":
+            is_shortcut = _is_auto_background_shortcut(body)
+            if not _qq_group_has_visible_bot_address(body) and not (
+                is_shortcut and self._history_suggests_auto_background_work(conversation_history)
+            ):
+                return None
+
+        dispatch = self._resolve_employee_background_dispatch(
+            body,
+            platform=getattr(event.source, "platform", Platform.QQ_NAPCAT),
+            conversation_history=conversation_history,
+        )
+        if dispatch:
+            return dispatch
+        if _is_auto_background_shortcut(body):
+            if self._history_suggests_auto_background_work(conversation_history):
+                return {
+                    "worker_name": "",
+                    "preloaded_skills": [],
+                }
+            return None
+        if self._should_auto_background_message(event, body):
+            return {
+                "worker_name": "",
+                "preloaded_skills": [],
+            }
+        return None
+
+    def _format_auto_background_ack(self, prompt: str, task_id: str, *, worker_name: str = "") -> str:
+        """Return the immediate acknowledgement for an auto-detached job."""
+        preview = prompt[:60] + ("..." if len(prompt) > 60 else "")
+        lead = f"🛠️ 这活我交给{worker_name}后台处理了。" if worker_name else "🛠️ 这事我转后台做了。"
+        return (
+            f"{lead}\n"
+            f"任务ID：`{task_id}`\n"
+            f"内容：{preview}\n"
+            "你继续发消息就行，我做完会回来汇报。"
+        )
+
+    @staticmethod
+    def _looks_like_qq_group_listen_disable_request(message_text: str) -> bool:
+        return looks_like_group_listen_disable_request(message_text)
+
+    @staticmethod
+    def _looks_like_qq_group_listen_enable_request(message_text: str) -> bool:
+        return looks_like_group_listen_enable_request(message_text)
+
+    @staticmethod
+    def _looks_like_background_status_query(message_text: str) -> bool:
+        return _looks_like_qq_background_status_query(message_text)
+
+    @staticmethod
+    def _looks_like_runtime_status_query(message_text: str) -> bool:
+        return _looks_like_qq_runtime_status_query(message_text) or _looks_like_qq_runtime_short_query(
+            message_text
+        )
+
+    @staticmethod
+    def _looks_like_joined_group_list_query(message_text: str) -> bool:
+        return _looks_like_qq_joined_group_list_query(message_text)
+
+    @staticmethod
+    def _looks_like_group_runtime_status_query(message_text: str) -> bool:
+        return looks_like_shared_group_runtime_status_query(message_text)
+
+    @staticmethod
+    def _format_intel_worker_status_label(status: str) -> str:
+        return {
+            "awaiting_group_approval": "等待入群通过",
+            "active_collecting": "正在潜伏采集",
+            "paused": "已暂停",
+            "stopped": "已停止",
+            "failed": "任务失联",
+            "rejected": "已拒绝",
+        }.get(str(status or "").strip().lower(), str(status or "").strip() or "unknown")
+
+    def _format_background_job_short_status(self, job: dict[str, Any]) -> str:
+        status_labels = {
+            "queued": "排队中",
+            "running": "进行中",
+            "cancelling": "停止中",
+            "completed": "已完成",
+            "failed": "失败",
+            "cancelled": "已停止",
+        }
+        task_id = str(job.get("task_id") or "").strip()
+        status = status_labels.get(str(job.get("status") or "").strip().lower(), str(job.get("status") or "unknown"))
+        worker_name = str(job.get("worker_name") or "").strip()
+        preview = str(job.get("preview") or job.get("prompt") or "").strip()
+        age = self._format_background_job_age(job)
+        line = f"后台任务 `{task_id}` 当前{status}"
+        if worker_name:
+            line += f"，负责人：{worker_name}"
+        line += f"，已持续 {age}。"
+        if preview:
+            line += f"\n内容：{preview}"
+        error = str(job.get("error") or "").strip()
+        if error:
+            line += f"\n错误：{error}"
+        session_key = str(job.get("session_key") or "").strip()
+        pending_approval_count = 0
+        if session_key:
+            try:
+                pending_approval_count = self._get_background_job_store().count_pending_approval_requests(
+                    session_key
+                )
+            except Exception:
+                pending_approval_count = 0
+        if pending_approval_count:
+            line += f"\n当前卡在授权审批，待处理 {pending_approval_count} 条。"
+        return line
+
+    def _format_running_session_short_status(self, session_key: str, agent_ref: Any) -> str:
+        detail = _build_long_running_status_detail(agent_ref, session_key)
+        if detail:
+            return f"当前前台这轮还在跑：{detail}。"
+        return "当前前台这轮还在跑，我还没做完。"
+
+    @staticmethod
+    def _unique_report_targets(values: list[Any]) -> list[str]:
+        targets: list[str] = []
+        seen: set[str] = set()
+        for value in values:
+            text = str(value or "").strip()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            targets.append(text)
+        return targets
+
+    @classmethod
+    def _worker_report_targets(
+        cls,
+        workers: list[dict[str, Any]],
+        key: str,
+        *,
+        require_daily_enabled: bool = False,
+    ) -> list[str]:
+        values: list[Any] = []
+        for item in workers:
+            if not isinstance(item, dict):
+                continue
+            if require_daily_enabled and not bool(item.get("daily_report_enabled")):
+                continue
+            values.append(item.get(key))
+        return cls._unique_report_targets(values)
+
+    @staticmethod
+    def _runtime_session_metadata(session_key: str) -> dict[str, str]:
+        parts = str(session_key or "").split(":")
+        return {
+            "platform": parts[2] if len(parts) > 2 else "",
+            "chat_type": parts[3] if len(parts) > 3 else "",
+            "chat_id": parts[4] if len(parts) > 4 else "",
+        }
+
+    def _build_runtime_model_summary(self) -> dict[str, Any]:
+        configured_model = str(_resolve_gateway_model() or "").strip()
+        configured_base_url = ""
+        try:
+            configured_runtime = _resolve_runtime_agent_kwargs() or {}
+            configured_provider = str(configured_runtime.get("provider") or "").strip()
+            configured_base_url = str(configured_runtime.get("base_url") or "").strip()
+        except Exception:
+            configured_provider = ""
+        active_model = str(getattr(self, "_effective_model", None) or configured_model).strip()
+        active_provider = str(getattr(self, "_effective_provider", None) or configured_provider).strip()
+        fallback_pinned = False
+
+        candidate_agents: list[Any] = []
+        for agent_ref in getattr(self, "_running_agents", {}).values():
+            if agent_ref not in (None, _AGENT_PENDING_SENTINEL):
+                candidate_agents.append(agent_ref)
+        for cached in getattr(self, "_agent_cache", {}).values():
+            agent_ref = cached[0] if isinstance(cached, tuple) and cached else cached
+            if agent_ref in (None, _AGENT_PENDING_SENTINEL):
+                continue
+            if agent_ref not in candidate_agents:
+                candidate_agents.append(agent_ref)
+
+        for agent_ref in candidate_agents:
+            raw_model = getattr(agent_ref, "model", "")
+            raw_provider = getattr(agent_ref, "provider", "")
+            model = raw_model.strip() if isinstance(raw_model, str) else ""
+            provider = raw_provider.strip() if isinstance(raw_provider, str) else ""
+            if model and (not active_model or model != configured_model):
+                active_model = model
+            if provider and (model == active_model or not active_provider):
+                active_provider = provider
+            has_pinned_fallback = getattr(agent_ref, "_has_pinned_fallback", None)
+            if callable(has_pinned_fallback):
+                try:
+                    if has_pinned_fallback():
+                        fallback_pinned = True
+                        if model:
+                            active_model = model
+                        if provider:
+                            active_provider = provider
+                except Exception:
+                    logger.debug("Could not evaluate fallback pin state", exc_info=True)
+
+        fallback_active = bool(
+            active_model and configured_model and active_model != configured_model
+        )
+        degraded_runtime_count = 0
+        degraded_runtimes: list[dict[str, Any]] = []
+        primary_degraded = False
+        primary_degraded_reason = ""
+        primary_degraded_cooldown_seconds = 0
+        try:
+            from run_agent import get_provider_health_snapshot, _runtime_targets_match
+
+            degraded_snapshot = get_provider_health_snapshot(limit=5)
+            degraded_runtime_count = int(degraded_snapshot.get("count") or 0)
+            degraded_runtimes = list(degraded_snapshot.get("runtimes") or [])
+            for runtime in degraded_runtimes:
+                if _runtime_targets_match(
+                    configured_provider,
+                    configured_model,
+                    configured_base_url,
+                    runtime.get("provider"),
+                    runtime.get("model"),
+                    runtime.get("base_url"),
+                ):
+                    primary_degraded = True
+                    primary_degraded_reason = str(runtime.get("reason") or "").strip()
+                    primary_degraded_cooldown_seconds = int(
+                        max(0.0, float(runtime.get("cooldown_seconds") or 0.0))
+                    )
+                    break
+        except Exception:
+            logger.debug("Could not load provider health snapshot", exc_info=True)
+        return {
+            "configured_model": configured_model,
+            "configured_provider": configured_provider,
+            "configured_base_url": configured_base_url,
+            "active_model": active_model or configured_model,
+            "active_provider": active_provider,
+            "fallback_active": fallback_active,
+            "fallback_pinned": fallback_pinned,
+            "primary_degraded": primary_degraded,
+            "primary_degraded_reason": primary_degraded_reason,
+            "primary_degraded_cooldown_seconds": primary_degraded_cooldown_seconds,
+            "degraded_runtime_count": degraded_runtime_count,
+            "degraded_runtimes": degraded_runtimes,
+        }
+
+    def _build_runtime_approval_summary(self) -> dict[str, Any]:
+        store = self._get_background_job_store()
+        try:
+            pending_count = store.count_all_pending_approval_requests()
+        except Exception:
+            pending_count = 0
+
+        live_sessions: set[str] = set(
+            str(session_key or "").strip()
+            for session_key in getattr(self, "_pending_approvals", {})
+            if str(session_key or "").strip()
+        )
+        pending_sessions = set(live_sessions)
+        live_sessions.update(
+            str(session_key or "").strip()
+            for session_key in getattr(self, "_running_agents", {})
+            if str(session_key or "").strip()
+        )
+        for session_key in pending_sessions:
+            try:
+                already_counted = store.has_pending_approval_requests(session_key)
+            except Exception:
+                already_counted = False
+            if not already_counted:
+                pending_count += 1
+        try:
+            from tools.approval import has_blocking_approval
+
+            for session_key in live_sessions:
+                if not has_blocking_approval(session_key):
+                    continue
+                try:
+                    already_counted = store.has_pending_approval_requests(session_key)
+                except Exception:
+                    already_counted = False
+                if not already_counted:
+                    pending_count += 1
+        except Exception:
+            pass
+
+        return {
+            "pending_count": int(max(pending_count, 0)),
+        }
+
+    def _build_runtime_qq_monitoring_summary(self) -> dict[str, Any]:
+        groups_by_id: dict[str, dict[str, Any]] = {}
+        try:
+            policy_groups = list_group_policies()
+        except Exception as exc:
+            logger.debug("Failed to load QQ group policy snapshot: %s", exc)
+            policy_groups = []
+
+        for policy in policy_groups:
+            if not isinstance(policy, dict):
+                continue
+            if str(policy.get("mode") or "").strip().lower() != "collect_only":
+                continue
+            group_id = str(policy.get("group_id") or "").strip()
+            if not group_id:
+                continue
+            groups_by_id.setdefault(
+                group_id,
+                {
+                    "group_id": group_id,
+                    "group_name": str(policy.get("group_name") or group_id).strip(),
+                    "mode": "collect_only",
+                    "worker_names": [],
+                    "daily_report_enabled": bool(policy.get("daily_report_enabled")),
+                },
+            )
+
+        try:
+            workers = list_intel_workers(status="active_collecting")
+        except Exception as exc:
+            logger.debug("Failed to collect QQ monitoring runtime stats: %s", exc)
+            workers = []
+
+        for worker in workers:
+            if not isinstance(worker, dict):
+                continue
+            group_id = str(worker.get("target_group_id") or "").strip()
+            group_name = str(worker.get("target_group_name") or group_id).strip()
+            group_ref = str(worker.get("target_group_ref") or "").strip()
+            if not group_id and group_ref.startswith("group:"):
+                group_id = group_ref.split(":", 1)[1]
+            if not group_id and not group_name:
+                continue
+            key = group_id or group_name
+            entry = groups_by_id.setdefault(
+                key,
+                {
+                    "group_id": group_id,
+                    "group_name": group_name,
+                    "mode": "collect_only",
+                    "worker_names": [],
+                    "daily_report_enabled": False,
+                },
+            )
+            worker_name = str(worker.get("worker_name") or "").strip()
+            if worker_name and worker_name not in entry["worker_names"]:
+                entry["worker_names"].append(worker_name)
+            if bool(worker.get("daily_report_enabled")):
+                entry["daily_report_enabled"] = True
+
+        groups = sorted(
+            groups_by_id.values(),
+            key=lambda item: (
+                str(item.get("group_name") or "").strip(),
+                str(item.get("group_id") or "").strip(),
+            ),
+        )
+        active_worker_count = 0
+        for worker in workers:
+            if not isinstance(worker, dict):
+                continue
+            if str(worker.get("status") or "").strip().lower() == "active_collecting":
+                active_worker_count += 1
+        return {
+            "active_collect_only_groups": len(groups),
+            "active_worker_count": active_worker_count,
+            "groups": groups[:8],
+        }
+
+    def _build_runtime_status_summary(self) -> dict[str, Any]:
+        now_ts = time.time()
+
+        active_sessions: list[dict[str, Any]] = []
+        for session_key, agent_ref in getattr(self, "_running_agents", {}).items():
+            if agent_ref is _AGENT_PENDING_SENTINEL:
+                continue
+            session_meta = self._runtime_session_metadata(session_key)
+            started_at = _safe_float(
+                getattr(self, "_running_agents_ts", {}).get(session_key),
+                now_ts,
+            )
+            age_seconds = max(0, int(now_ts - started_at))
+            activity: dict[str, Any] = {}
+            if hasattr(agent_ref, "get_activity_summary"):
+                try:
+                    raw_activity = agent_ref.get_activity_summary() or {}
+                except Exception:
+                    raw_activity = {}
+                if isinstance(raw_activity, dict):
+                    activity = raw_activity
+            active_sessions.append(
+                {
+                    "session_key": session_key,
+                    "platform": session_meta["platform"],
+                    "chat_type": session_meta["chat_type"],
+                    "chat_id": session_meta["chat_id"],
+                    "age_seconds": age_seconds,
+                    "current_tool": str(activity.get("current_tool") or "").strip(),
+                    "last_activity_desc": str(activity.get("last_activity_desc") or "").strip(),
+                    "api_call_count": int(_safe_float(activity.get("api_call_count"), 0.0)),
+                    "max_iterations": int(_safe_float(activity.get("max_iterations"), 0.0)),
+                }
+            )
+
+        active_sessions.sort(key=lambda item: item.get("age_seconds", 0), reverse=True)
+
+        self._ensure_background_job_state()
+        jobs_by_id: dict[str, dict[str, Any]] = {}
+        for task_id, job in getattr(self, "_managed_background_jobs", {}).items():
+            if isinstance(job, dict):
+                jobs_by_id[str(task_id)] = job
+
+        background_counts: dict[str, int] = {}
+        active_background_jobs: list[dict[str, Any]] = []
+        for job in jobs_by_id.values():
+            status = str(job.get("status") or "").strip().lower() or "unknown"
+            background_counts[status] = background_counts.get(status, 0) + 1
+            if status not in {"queued", "running", "cancelling"}:
+                continue
+            active_background_jobs.append(
+                {
+                    "task_id": str(job.get("task_id") or "").strip(),
+                    "status": status,
+                    "worker_name": str(job.get("worker_name") or "").strip(),
+                    "preview": _truncate_status_preview(job.get("preview") or job.get("prompt") or ""),
+                    "age_seconds": int(
+                        max(
+                            0.0,
+                            now_ts - _safe_float(job.get("created_at"), now_ts),
+                        )
+                    ),
+                }
+            )
+
+        active_background_jobs.sort(key=lambda item: item.get("age_seconds", 0), reverse=True)
+
+        self._ensure_auto_vision_state()
+        self._prune_auto_vision_state()
+        inflight_count = 0
+        for task in getattr(self, "_auto_vision_tasks", {}).values():
+            try:
+                if task and not task.done():
+                    inflight_count += 1
+            except Exception:
+                continue
+        cooldown_seconds, cooldown_reason = self._auto_vision_cooldown_remaining()
+        auto_vision_state = "ready"
+        if cooldown_seconds > 0:
+            auto_vision_state = "cooldown"
+        elif inflight_count > 0:
+            auto_vision_state = "warming"
+
+        try:
+            qq_archive = QqGroupArchiveStore().get_runtime_stats()
+        except Exception as exc:
+            logger.debug("Failed to collect QQ archive runtime stats: %s", exc)
+            qq_archive = {}
+
+        return {
+            "model": self._build_runtime_model_summary(),
+            "approvals": self._build_runtime_approval_summary(),
+            "active_sessions_count": len(active_sessions),
+            "active_sessions": active_sessions[:8],
+            "background_jobs": {
+                "active_count": len(active_background_jobs),
+                "total_count": len(jobs_by_id),
+                "counts": background_counts,
+                "active": active_background_jobs[:8],
+            },
+            "auto_vision": {
+                "state": auto_vision_state,
+                "inflight_count": inflight_count,
+                "cooldown_seconds": int(max(0.0, cooldown_seconds)),
+                "reason": cooldown_reason,
+                "cache_entries": len(getattr(self, "_auto_vision_cache", {})),
+            },
+            "qq_archive": qq_archive,
+            "qq_monitoring": self._build_runtime_qq_monitoring_summary(),
+        }
+
+    def _write_runtime_status_snapshot(self) -> None:
+        try:
+            from gateway.status import write_runtime_status
+
+            write_runtime_status(
+                gateway_state="running" if self._running else None,
+                runtime_summary=self._build_runtime_status_summary(),
+            )
+            for platform in getattr(self, "adapters", {}) or {}:
+                try:
+                    platform_name = platform.value if hasattr(platform, "value") else str(platform)
+                    write_runtime_status(
+                        platform=platform_name,
+                        platform_state="connected",
+                        error_code=None,
+                        error_message=None,
+                    )
+                except Exception:
+                    logger.debug("Failed to refresh runtime status for platform %s", platform, exc_info=True)
+        except Exception as exc:
+            logger.debug("Failed to write runtime status snapshot: %s", exc)
+
+    async def _runtime_status_heartbeat(self, interval: float = 15.0) -> None:
+        self._write_runtime_status_snapshot()
+        while self._running:
+            for _ in range(max(1, int(interval))):
+                if not self._running:
+                    return
+                await asyncio.sleep(1)
+            self._write_runtime_status_snapshot()
+
+    def _try_handle_background_job_status_shortcut(self, event: MessageEvent) -> str | None:
+        source = getattr(event, "source", None)
+        if not source:
+            return None
+        if event.get_command():
+            return None
+        if getattr(event, "message_type", None) != MessageType.TEXT:
+            return None
+        if not self._looks_like_background_status_query(getattr(event, "text", "")):
+            return None
+
+        jobs = self._background_jobs_for_source(source)
+        if not jobs:
+            return None
+
+        def _job_rank(job: dict[str, Any]) -> tuple[int, float]:
+            status = str(job.get("status") or "").strip().lower()
+            priority = 0 if status in {"running", "queued", "cancelling"} else 1
+            return priority, -_safe_float(job.get("updated_at"), 0.0)
+
+        latest = sorted(jobs, key=_job_rank)[0]
+        return self._format_background_job_short_status(latest)
+
+    def _try_handle_runtime_status_shortcut(self, event: MessageEvent) -> str | None:
+        source = getattr(event, "source", None)
+        if not source:
+            return None
+        if event.get_command():
+            return None
+        if getattr(event, "message_type", None) != MessageType.TEXT:
+            return None
+        if not self._looks_like_runtime_status_query(getattr(event, "text", "")):
+            return None
+
+        session_key = self._session_key_for_source(source)
+        running_agent = self._running_agents.get(session_key)
+        if running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
+            return self._format_running_session_short_status(session_key, running_agent)
+
+        jobs = self._background_jobs_for_source(source)
+        if jobs:
+            def _job_rank(job: dict[str, Any]) -> tuple[int, float]:
+                status = str(job.get("status") or "").strip().lower()
+                priority = 0 if status in {"running", "queued", "cancelling"} else 1
+                return priority, -_safe_float(job.get("updated_at"), 0.0)
+
+            latest = sorted(jobs, key=_job_rank)[0]
+            return self._format_background_job_short_status(latest)
+        return None
+
+    def _prime_session_env_for_direct_shortcuts(self, source: SessionSource) -> None:
+        """Populate session env so tool-backed direct shortcuts can run off the main path."""
+        if not source:
+            return
+        session_entry = self.session_store.get_or_create_session(source)
+        admin_user_ids = self._configured_admin_user_ids(source.platform)
+        is_admin_user = self._is_admin_user(source) if admin_user_ids else None
+        context = build_session_context(
+            source,
+            self.config,
+            session_entry,
+            admin_user_ids=admin_user_ids,
+            is_admin_user=is_admin_user,
+        )
+        self._set_session_env(context)
+
+    def _try_handle_direct_gateway_shortcuts(
+        self,
+        event: MessageEvent,
+        *,
+        prepare_session_env: bool = False,
+        conversation_history: Optional[List[Dict[str, Any]]] = None,
+    ) -> str | None:
+        source = getattr(event, "source", None)
+        if prepare_session_env and source is not None:
+            try:
+                self._prime_session_env_for_direct_shortcuts(source)
+            except Exception as exc:
+                logger.debug("Failed to prime direct-shortcut session env: %s", exc)
+        return run_direct_shortcut_handlers(
+            self,
+            event,
+            conversation_history=conversation_history,
+            logger=logger,
+        )
+
+    @staticmethod
+    def _looks_like_send_query(message_text: str) -> bool:
+        return looks_like_send_query(message_text)
+
+    @staticmethod
+    def _looks_like_send_confirmation(message_text: str) -> bool:
+        return looks_like_send_confirmation(message_text)
+
+    @staticmethod
+    def _extract_send_confirmation_message(message_text: str) -> str:
+        return extract_send_confirmation_message(message_text)
+
+    @staticmethod
+    def _extract_qq_inline_send_target_and_message(message_text: str) -> tuple[str, str]:
+        return extract_qq_inline_send_target_and_message(message_text)
+
+    @staticmethod
+    def _extract_weixin_inline_send_target_and_message(message_text: str) -> tuple[str, str]:
+        return extract_weixin_inline_send_target_and_message(message_text)
+
+    def _extract_recent_send_target_from_history(
+        self,
+        source: SessionSource,
+        conversation_history: Optional[List[Dict[str, Any]]],
+        *,
+        target_extractor,
+    ) -> str:
+        return extract_recent_target_from_history(
+            source,
+            conversation_history,
+            extractor=target_extractor,
+            predicate=lambda item, content: (
+                str(item.get("role") or "").strip().lower() == "user"
+                and self._looks_like_send_query(content)
+            ),
+        )
+
+    @staticmethod
+    def _extract_recent_group_target_from_history(
+        source: SessionSource,
+        conversation_history: Optional[List[Dict[str, Any]]],
+        extractor,
+    ) -> str:
+        return extract_recent_target_from_history(
+            source,
+            conversation_history,
+            extractor=extractor,
+        )
+
+    def _match_admin_qq_send_request(
+        self,
+        event: MessageEvent,
+        *,
+        conversation_history: Optional[List[Dict[str, Any]]] = None,
+    ) -> tuple[dict[str, Any] | None, str | None]:
+        return self._match_admin_platform_send_request(
+            event,
+            conversation_history=conversation_history,
+            platform=Platform.QQ_NAPCAT,
+            inline_extractor=self._extract_qq_inline_send_target_and_message,
+            history_target_extractor=lambda source, history: self._extract_recent_send_target_from_history(
+                source,
+                history,
+                target_extractor=extract_qq_group_target,
+            ),
+            direct_target_extractor=extract_qq_group_target,
+            query_prompt_formatter=lambda target_label: (
+                f"可以。把要发的内容直接发我，或者一句话说“往 QQ 群 {target_label} 发：xxx”。"
+            ),
+        )
+
+    @staticmethod
+    def _format_admin_qq_send_reply(tool_args: dict[str, Any]) -> str:
+        return format_admin_send_reply(
+            tool_args,
+            platform_label="QQ 群",
+            target_normalizer=lambda value: str(value or "").replace("qq_napcat:group:", "").replace("group:", "").strip(),
+        )
+
+    def _try_handle_admin_qq_send_shortcut(
+        self,
+        event: MessageEvent,
+        *,
+        conversation_history: Optional[List[Dict[str, Any]]] = None,
+    ) -> str | None:
+        return self._try_handle_admin_send_shortcut_common(
+            event,
+            conversation_history=conversation_history,
+            matcher=self._match_admin_qq_send_request,
+            target_formatter=lambda target: (
+                f"qq_napcat:{target}" if str(target).startswith("group:") else str(target)
+            ),
+            error_prefix="QQ 发消息执行失败",
+            reply_formatter=self._format_admin_qq_send_reply,
+        )
+
+    def _match_admin_weixin_send_request(
+        self,
+        event: MessageEvent,
+        *,
+        conversation_history: Optional[List[Dict[str, Any]]] = None,
+    ) -> tuple[dict[str, Any] | None, str | None]:
+        return self._match_admin_platform_send_request(
+            event,
+            conversation_history=conversation_history,
+            platform=Platform.WEIXIN,
+            inline_extractor=self._extract_weixin_inline_send_target_and_message,
+            history_target_extractor=lambda source, history: self._extract_recent_send_target_from_history(
+                source,
+                history,
+                target_extractor=extract_weixin_group_target,
+            ),
+            direct_target_extractor=extract_weixin_group_target,
+            query_prompt_formatter=lambda target_label: (
+                f"可以。把要发的内容直接发我，或者一句话说“往 微信群 {target_label} 发：xxx”。"
+            ),
+        )
+
+    @staticmethod
+    def _format_admin_weixin_send_reply(tool_args: dict[str, Any]) -> str:
+        return format_admin_send_reply(
+            tool_args,
+            platform_label="微信群",
+            target_normalizer=lambda value: str(value or "").replace("weixin:", "").strip(),
+        )
+
+    def _try_handle_admin_weixin_send_shortcut(
+        self,
+        event: MessageEvent,
+        *,
+        conversation_history: Optional[List[Dict[str, Any]]] = None,
+    ) -> str | None:
+        return self._try_handle_admin_send_shortcut_common(
+            event,
+            conversation_history=conversation_history,
+            matcher=self._match_admin_weixin_send_request,
+            target_formatter=lambda target: (
+                str(target) if str(target).startswith("weixin:") else f"weixin:{str(target)}"
+            ),
+            error_prefix="微信发消息执行失败",
+            reply_formatter=self._format_admin_weixin_send_reply,
+        )
+
+    def _match_admin_platform_send_request(
+        self,
+        event: MessageEvent,
+        *,
+        conversation_history: Optional[List[Dict[str, Any]]] = None,
+        platform: Platform,
+        inline_extractor,
+        history_target_extractor,
+        direct_target_extractor,
+        query_prompt_formatter,
+    ) -> tuple[dict[str, Any] | None, str | None]:
+        source, body = self._extract_platform_text_event_body(
+            event,
+            platform=platform,
+        )
+        if source is None:
+            return None, None
+
+        if not self._configured_admin_user_ids(getattr(source, "platform", None)):
+            return None, None
+        if not self._is_admin_user(source):
+            return None, None
+
+        return self._match_admin_send_request_common(
+            source=source,
+            body=body,
+            conversation_history=conversation_history,
+            inline_extractor=inline_extractor,
+            history_target_extractor=history_target_extractor,
+            direct_target_extractor=direct_target_extractor,
+            query_prompt_formatter=query_prompt_formatter,
+        )
+
+    @staticmethod
+    def _extract_platform_text_event_body(
+        event: MessageEvent,
+        *,
+        platform: Platform,
+    ) -> tuple[SessionSource | None, str]:
+        source = getattr(event, "source", None)
+        if getattr(source, "platform", None) != platform:
+            return None, ""
+        if event.get_command():
+            return None, ""
+        if getattr(event, "message_type", None) != MessageType.TEXT:
+            return None, ""
+        if getattr(event, "media_urls", None):
+            return None, ""
+
+        body = str(getattr(event, "text", "") or "").strip()
+        if not body:
+            return None, ""
+        return source, body
+
+    def _match_admin_send_request_common(
+        self,
+        *,
+        source: SessionSource,
+        body: str,
+        conversation_history: Optional[List[Dict[str, Any]]],
+        inline_extractor,
+        history_target_extractor,
+        direct_target_extractor,
+        query_prompt_formatter,
+    ) -> tuple[dict[str, Any] | None, str | None]:
+        return match_send_request(
+            source=source,
+            body=body,
+            conversation_history=conversation_history,
+            inline_extractor=inline_extractor,
+            history_target_extractor=history_target_extractor,
+            direct_target_extractor=direct_target_extractor,
+            looks_like_send_query=self._looks_like_send_query,
+            looks_like_send_confirmation=self._looks_like_send_confirmation,
+            extract_send_confirmation_message=self._extract_send_confirmation_message,
+            query_prompt_formatter=query_prompt_formatter,
+        )
+
+    @staticmethod
+    def _run_send_shortcut_tool(tool_args: dict[str, Any], *, target_formatter):
+        from tools.send_message_tool import send_message_tool
+
+        target = str(tool_args.get("target") or "").strip()
+        message = str(tool_args.get("message") or "").strip()
+        raw = send_message_tool(
+            {
+                "action": "send",
+                "target": target_formatter(target),
+                "message": message,
+            }
+        )
+        return json.loads(raw) if isinstance(raw, str) else (raw or {})
+
+    def _try_handle_admin_send_shortcut_common(
+        self,
+        event: MessageEvent,
+        *,
+        conversation_history: Optional[List[Dict[str, Any]]] = None,
+        matcher,
+        target_formatter,
+        error_prefix: str,
+        reply_formatter,
+    ) -> str | None:
+        tool_args, shortcut_error = matcher(
+            event,
+            conversation_history=conversation_history,
+        )
+        if shortcut_error:
+            return shortcut_error
+        if not tool_args:
+            return None
+
+        try:
+            result = self._run_send_shortcut_tool(
+                tool_args,
+                target_formatter=target_formatter,
+            )
+        except Exception as exc:
+            logger.warning("%s: %s", error_prefix, exc)
+            return f"{error_prefix}：{exc}"
+
+        if result.get("error"):
+            return str(result["error"])
+        return reply_formatter(tool_args)
+
+    def _match_admin_qq_intel_control_request(
+        self,
+        event: MessageEvent,
+    ) -> tuple[dict[str, Any] | None, str | None]:
+        source, body = self._extract_platform_text_event_body(
+            event,
+            platform=Platform.QQ_NAPCAT,
+        )
+        if source is None:
+            return None, None
+        known_worker_names = {
+            str(item.get("worker_name") or "").strip()
+            for item in list_intel_workers()
+            if isinstance(item, dict) and str(item.get("worker_name") or "").strip()
+        }
+        return match_qq_intel_control_request(
+            source=source,
+            body=body,
+            admin_ids_configured=bool(self._configured_admin_user_ids(getattr(source, "platform", None))),
+            is_admin_user=self._is_admin_user(source),
+            looks_like_joined_group_list_query=self._looks_like_joined_group_list_query,
+            extract_worker_name=extract_qq_worker_name,
+            looks_like_worker_context=looks_like_qq_intel_worker_context,
+            known_worker_names=known_worker_names,
+            target_extractor=extract_qq_group_target,
+            report_target_resolver=self._resolve_oral_report_delivery_target,
+            hire_objective_extractor=extract_qq_oral_intel_hire_objective,
+        )
+
+    def _format_admin_qq_intel_control_reply(self, tool_args: dict[str, Any], result: dict[str, Any]) -> str:
+        action = str(tool_args.get("action") or "").strip().lower()
+        if action == "list_joined_groups":
+            groups = list(result.get("groups") or [])
+            if not groups:
+                return "当前还没查到已加入的 QQ 群。"
+            lines = ["当前已加入的 QQ 群："]
+            for item in groups[:20]:
+                if not isinstance(item, dict):
+                    continue
+                group_id = str(item.get("group_id") or "").strip()
+                group_name = str(item.get("group_name") or group_id).strip()
+                lines.append(f"- {group_name} ({group_id})")
+            return "\n".join(lines)
+
+        worker = result.get("worker") or {}
+        worker_name = str(worker.get("worker_name") or tool_args.get("worker_name") or "").strip()
+        status_label = self._format_intel_worker_status_label(worker.get("status"))
+        if action == "hire_worker":
+            target_group = str(
+                worker.get("target_group_id")
+                or worker.get("target_group_ref")
+                or tool_args.get("target_group")
+                or ""
+            ).replace("group:", "").strip()
+            return f"已安排情报员 {worker_name} 去 QQ 群 {target_group} 执行任务。当前状态：{status_label}。"
+        if action == "pause_worker":
+            return f"情报员 {worker_name} 已暂停。当前状态：{status_label}。"
+        if action == "resume_worker":
+            return f"情报员 {worker_name} 已恢复任务。当前状态：{status_label}。"
+        if action == "stop_worker":
+            return f"情报员 {worker_name} 已停用。当前状态：{status_label}。"
+        if action == "run_report_now":
+            delivery = str((result.get("delivery") or {}).get("target") or tool_args.get("manual_report_target") or "").strip()
+            if delivery:
+                return f"已让情报员 {worker_name} 立即汇报，发送到 {delivery}。"
+            return f"已让情报员 {worker_name} 立即汇报。"
+
+        group_id = str(worker.get("target_group_id") or "").strip()
+        group_name = str(worker.get("target_group_name") or "").strip()
+        objective = str(worker.get("objective") or "").strip()
+        lines = [f"情报员 {worker_name} 当前状态：{status_label}。"]
+        if group_id or group_name:
+            label = group_name or group_id
+            if group_id and group_name and group_id != group_name:
+                label = f"{group_name} ({group_id})"
+            lines.append(f"目标群：{label}")
+        if objective:
+            lines.append(f"任务：{objective}")
+        daily_targets = self._unique_report_targets([worker.get("daily_report_target")])
+        manual_targets = self._unique_report_targets([worker.get("manual_report_target")])
+        if bool(worker.get("daily_report_enabled")) and daily_targets:
+            lines.append(f"日报目标：{', '.join(daily_targets)}")
+        if manual_targets:
+            lines.append(f"立即汇报目标：{', '.join(manual_targets)}")
+        last_error = str(worker.get("last_error") or "").strip()
+        if last_error:
+            lines.append(f"备注：{last_error}")
+        return "\n".join(lines)
+
+    def _try_handle_admin_qq_intel_control(self, event: MessageEvent) -> str | None:
+        tool_args, shortcut_error = self._match_admin_qq_intel_control_request(event)
+        if shortcut_error:
+            return shortcut_error
+        if not tool_args:
+            return None
+
+        try:
+            from tools.qq_control_tool import qq_control_tool
+
+            raw = qq_control_tool(tool_args)
+            result = json.loads(raw) if isinstance(raw, str) else (raw or {})
+        except Exception as exc:
+            logger.warning("Admin QQ oral intel control shortcut failed: %s", exc)
+            return f"QQ 情报员控制执行失败：{exc}"
+
+        if result.get("error"):
+            return str(result["error"])
+        return self._format_admin_qq_intel_control_reply(tool_args, result)
+
+    def _try_handle_admin_qq_group_runtime_status(
+        self,
+        event: MessageEvent,
+        *,
+        conversation_history: Optional[List[Dict[str, Any]]] = None,
+    ) -> str | None:
+        return self._try_handle_admin_platform_group_runtime_status(
+            event,
+            conversation_history=conversation_history,
+            platform=Platform.QQ_NAPCAT,
+            target_extractor=extract_qq_group_target,
+            history_target_extractor=lambda source, history: self._extract_recent_group_target_from_history(
+                source,
+                history,
+                extract_qq_group_target,
+            ),
+            status_loader=self._load_qq_group_runtime_status_details,
+        )
+
+    def _load_qq_group_runtime_status_details(self, target: str) -> dict[str, Any]:
+        group_id = str(target).replace("group:", "").strip()
+        policy = get_group_policy(group_id)
+        overlay = get_group_monitoring_overlay(group_id)
+        workers = list((overlay or {}).get("workers") or [])
+        worker_names = [str(item.get("worker_name") or "").strip() for item in workers if isinstance(item, dict)]
+        policy_mode = str(policy.get("mode") or "default").strip() or "default"
+        overlay_mode = str((overlay or {}).get("mode") or "").strip()
+        effective_mode = policy_mode
+        if policy_mode == "default" and overlay_mode:
+            effective_mode = overlay_mode
+        effective_archive_enabled = bool(policy.get("archive_enabled") or (overlay or {}).get("archive_enabled"))
+        effective_daily_enabled = bool(
+            policy.get("daily_report_enabled") or (overlay or {}).get("daily_report_enabled")
+        )
+        can_reply_in_group = effective_mode not in {"collect_only", "disabled"}
+        daily_targets = self._unique_report_targets(
+            [policy.get("daily_report_target")] + self._worker_report_targets(
+                workers,
+                "daily_report_target",
+                require_daily_enabled=True,
+            )
+        )
+        manual_targets = self._unique_report_targets(
+            [policy.get("manual_report_target")] + self._worker_report_targets(
+                workers,
+                "manual_report_target",
+            )
+        )
+        return {
+            "platform_label": "QQ 群",
+            "target_label": group_id,
+            "effective_mode": effective_mode,
+            "can_reply_in_group": can_reply_in_group,
+            "archive_enabled": effective_archive_enabled,
+            "daily_report_enabled": effective_daily_enabled,
+            "daily_targets": daily_targets,
+            "manual_targets": manual_targets,
+            "worker_names": worker_names,
+        }
+
+    def _try_handle_admin_weixin_group_runtime_status(
+        self,
+        event: MessageEvent,
+        *,
+        conversation_history: Optional[List[Dict[str, Any]]] = None,
+    ) -> str | None:
+        return self._try_handle_admin_platform_group_runtime_status(
+            event,
+            conversation_history=conversation_history,
+            platform=Platform.WEIXIN,
+            target_extractor=extract_weixin_group_target,
+            history_target_extractor=lambda source, history: self._extract_recent_group_target_from_history(
+                source,
+                history,
+                extract_weixin_group_target,
+            ),
+            status_loader=self._load_weixin_group_runtime_status_details,
+        )
+
+    def _load_weixin_group_runtime_status_details(self, target: str) -> dict[str, Any]:
+        policy = get_weixin_group_policy(target)
+        reporting = WeixinGroupArchiveStore().describe_group_reporting(chat_id=target)
+        effective_mode = str(policy.get("mode") or "default").strip() or "default"
+        effective_archive_enabled = bool(policy.get("archive_enabled"))
+        effective_daily_enabled = bool(policy.get("daily_report_enabled"))
+        can_reply_in_group = effective_mode not in {"collect_only", "disabled"}
+        daily_targets = self._unique_report_targets(
+            list((reporting.get("effective_targets") or {}).get("daily_report_targets") or [])
+        )
+        manual_targets = self._unique_report_targets(
+            list((reporting.get("effective_targets") or {}).get("manual_report_targets") or [])
+        )
+        return {
+            "platform_label": "微信群",
+            "target_label": target,
+            "effective_mode": effective_mode,
+            "can_reply_in_group": can_reply_in_group,
+            "archive_enabled": effective_archive_enabled,
+            "daily_report_enabled": effective_daily_enabled,
+            "daily_targets": daily_targets,
+            "manual_targets": manual_targets,
+            "worker_names": [],
+        }
+
+    def _try_handle_admin_platform_group_runtime_status(
+        self,
+        event: MessageEvent,
+        *,
+        conversation_history: Optional[List[Dict[str, Any]]] = None,
+        platform: Platform,
+        target_extractor,
+        history_target_extractor,
+        status_loader,
+    ) -> str | None:
+        source, body = self._extract_platform_text_event_body(
+            event,
+            platform=platform,
+        )
+        if source is None:
+            return None
+        target = match_group_runtime_status_request(
+            source=source,
+            body=body,
+            conversation_history=conversation_history,
+            admin_ids_configured=bool(self._configured_admin_user_ids(getattr(source, "platform", None))),
+            is_admin_user=self._is_admin_user(source),
+            looks_like_group_runtime_status_query=self._looks_like_group_runtime_status_query,
+            target_extractor=target_extractor,
+            history_target_extractor=history_target_extractor,
+        )
+        if not target:
+            return None
+
+        status_details = status_loader(target)
+        return format_group_runtime_status_reply(**status_details)
+
+    @staticmethod
+    def _sanitize_background_visible_text(text: str) -> str:
+        cleaned = str(text or "").replace("[[NO_REPLY]]", "").replace("(empty)", "")
+        return cleaned.strip()
+
+    @staticmethod
+    def _background_completion_should_stay_silent(*, job_kind: str, worker_name: str = "") -> bool:
+        return job_kind == "auto" or bool(worker_name)
+
+    @staticmethod
+    def _build_background_delivery_header(
+        *,
+        task_id: str,
+        preview: str = "",
+        worker_name: str = "",
+        state: str = "completed",
+    ) -> str:
+        normalized_state = str(state or "").strip().lower()
+        title = {
+            "completed": "后台任务完成",
+            "failed": "后台任务失败",
+            "approval": "后台任务待授权",
+        }.get(normalized_state, "后台任务更新")
+        icon = {
+            "completed": "✅",
+            "failed": "❌",
+            "approval": "⚠️",
+        }.get(normalized_state, "ℹ️")
+        lines = [f"{icon} {title} · `{str(task_id or '').strip()}`"]
+        if worker_name:
+            lines.append(f"负责人：{worker_name}")
+        if preview:
+            lines.append(f"任务：{preview}")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _resolve_oral_report_delivery_target(
+        source: SessionSource,
+        message_text: str,
+        *,
+        prefer_dm: bool,
+    ) -> str:
+        del source
+        return resolve_oral_report_delivery_target(message_text, prefer_dm=prefer_dm)
+
+    def _match_admin_qq_group_control_request(
+        self,
+        event: MessageEvent,
+    ) -> tuple[dict[str, Any] | None, str | None]:
+        return self._match_admin_platform_group_control_request(
+            event,
+            platform=Platform.QQ_NAPCAT,
+            target_extractor=extract_qq_group_target,
+            missing_target_message="要切群监听/日报，请直接说清群号，或者在目标群里明确说“这个群”。",
+            admin_action_label="调整 QQ 群监听/日报策略",
+            collect_only_action="enable_collect_only",
+            unresolved_target_guard=lambda body: any(marker in body for marker in ("情报员", "员工")),
+        )
+
+    @staticmethod
+    def _format_admin_qq_group_control_reply(tool_args: dict[str, Any], result: dict[str, Any]) -> str:
+        return format_admin_group_control_reply(
+            tool_args,
+            result,
+            platform_label="QQ 群",
+            target_key="group_id",
+            collect_only_action="enable_collect_only",
+            strip_group_prefix=True,
+        )
+
+    def _try_handle_admin_qq_group_control(self, event: MessageEvent) -> str | None:
+        return self._try_handle_admin_group_control_common(
+            event,
+            matcher=self._match_admin_qq_group_control_request,
+            tool_runner=self._run_qq_group_control_tool,
+            error_prefix="QQ 群监听控制执行失败",
+            reply_formatter=self._format_admin_qq_group_control_reply,
+        )
+
+    def _match_admin_weixin_group_control_request(
+        self,
+        event: MessageEvent,
+    ) -> tuple[dict[str, Any] | None, str | None]:
+        return self._match_admin_platform_group_control_request(
+            event,
+            platform=Platform.WEIXIN,
+            target_extractor=extract_weixin_group_target,
+            missing_target_message="要切微信群监听/日报，请直接说清 chatroom，或者在目标群里明确说“这个群”。",
+            admin_action_label="调整微信群监听/日报策略",
+            collect_only_action="collect_only",
+        )
+
+    @staticmethod
+    def _format_admin_weixin_group_control_reply(tool_args: dict[str, Any], result: dict[str, Any]) -> str:
+        return format_admin_group_control_reply(
+            tool_args,
+            result,
+            platform_label="微信群",
+            target_key="chat_id",
+            collect_only_action="collect_only",
+            strip_group_prefix=False,
+        )
+
+    def _try_handle_admin_weixin_group_control(self, event: MessageEvent) -> str | None:
+        return self._try_handle_admin_group_control_common(
+            event,
+            matcher=self._match_admin_weixin_group_control_request,
+            tool_runner=self._run_weixin_group_control_tool,
+            error_prefix="微信群监听控制执行失败",
+            reply_formatter=self._format_admin_weixin_group_control_reply,
+        )
+
+    @staticmethod
+    def _run_qq_group_control_tool(tool_args: dict[str, Any]) -> dict[str, Any]:
+        from tools.qq_control_tool import qq_control_tool
+
+        raw = qq_control_tool(tool_args)
+        return json.loads(raw) if isinstance(raw, str) else (raw or {})
+
+    @staticmethod
+    def _run_weixin_group_control_tool(tool_args: dict[str, Any]) -> dict[str, Any]:
+        from tools.weixin_control_tool import weixin_control_tool
+
+        raw = weixin_control_tool(tool_args)
+        return json.loads(raw) if isinstance(raw, str) else (raw or {})
+
+    def _try_handle_admin_group_control_common(
+        self,
+        event: MessageEvent,
+        *,
+        matcher,
+        tool_runner,
+        error_prefix: str,
+        reply_formatter,
+    ) -> str | None:
+        tool_args, shortcut_error = matcher(event)
+        if shortcut_error:
+            return shortcut_error
+        if not tool_args:
+            return None
+
+        try:
+            result = tool_runner(tool_args)
+        except Exception as exc:
+            logger.warning("%s: %s", error_prefix, exc)
+            return f"{error_prefix}：{exc}"
+
+        if result.get("error"):
+            return str(result["error"])
+        return reply_formatter(tool_args, result)
+
+    def _match_admin_platform_group_control_request(
+        self,
+        event: MessageEvent,
+        *,
+        platform: Platform,
+        target_extractor,
+        missing_target_message: str,
+        admin_action_label: str,
+        collect_only_action: str,
+        unresolved_target_guard=None,
+    ) -> tuple[dict[str, Any] | None, str | None]:
+        source, body = self._extract_platform_text_event_body(
+            event,
+            platform=platform,
+        )
+        if source is None:
+            return None, None
+
+        target = target_extractor(source, body)
+        if unresolved_target_guard is not None and unresolved_target_guard(body) and not target:
+            return None, None
+        return self._match_admin_group_control_request_common(
+            source=source,
+            body=body,
+            target=target,
+            missing_target_message=missing_target_message,
+            admin_action_label=admin_action_label,
+            collect_only_action=collect_only_action,
+            report_target_resolver=self._resolve_oral_report_delivery_target,
+        )
+
+    def _match_admin_group_control_request_common(
+        self,
+        *,
+        source: SessionSource,
+        body: str,
+        target: str | None,
+        missing_target_message: str,
+        admin_action_label: str,
+        collect_only_action: str,
+        report_target_resolver,
+    ) -> tuple[dict[str, Any] | None, str | None]:
+        return match_group_control_request(
+            source=source,
+            body=body,
+            target=target,
+            admin_ids_configured=bool(self._configured_admin_user_ids(getattr(source, "platform", None))),
+            is_admin_user=self._is_admin_user(source),
+            missing_target_message=missing_target_message,
+            admin_only_message=self._admin_only_message(source, admin_action_label),
+            collect_only_action=collect_only_action,
+            report_target_resolver=report_target_resolver,
+        )
+
+    def _match_admin_qq_group_moderation_request(
+        self,
+        event: MessageEvent,
+    ) -> tuple[dict[str, Any] | None, str | None]:
+        source, body = self._extract_platform_text_event_body(
+            event,
+            platform=Platform.QQ_NAPCAT,
+        )
+        if source is None:
+            return None, None
+        return match_qq_group_moderation_request(
+            source=source,
+            body=body,
+            admin_ids_configured=bool(self._configured_admin_user_ids(getattr(source, "platform", None))),
+            is_admin_user=self._is_admin_user(source),
+            admin_only_message=self._admin_only_message(source, "操作 QQ 群禁言/踢人"),
+            action_matcher=match_qq_group_moderation_action,
+            target_extractor=extract_qq_group_target,
+            user_query_extractor=extract_qq_oral_moderation_user_query,
+            reason_extractor=extract_qq_oral_moderation_reason,
+            duration_extractor=extract_qq_oral_moderation_duration_seconds,
+        )
+
+    @staticmethod
+    def _format_admin_qq_group_moderation_reply(tool_args: dict[str, Any], result: dict[str, Any]) -> str:
+        action = str(result.get("action") or tool_args.get("action") or "").strip().lower()
+        group_id = str(result.get("group_id") or tool_args.get("target") or "").replace("group:", "").strip()
+        member_name = str(
+            result.get("member_name")
+            or tool_args.get("user_query")
+            or result.get("user_id")
+            or "目标成员"
+        ).strip()
+        reason = str(result.get("reason") or tool_args.get("reason") or "").strip()
+        if action == "mute_user":
+            duration_seconds = int(result.get("duration_seconds") or tool_args.get("duration_seconds") or 0)
+            line = f"已把 QQ 群 {group_id} 的 {member_name} 禁言 {duration_seconds} 秒。"
+        else:
+            line = f"已把 QQ 群 {group_id} 的 {member_name} 踢出。"
+        if reason:
+            line += f" 原因：{reason}。"
+        return line
+
+    def _try_handle_admin_qq_group_moderation(self, event: MessageEvent) -> str | None:
+        tool_args, shortcut_error = self._match_admin_qq_group_moderation_request(event)
+        if shortcut_error:
+            return shortcut_error
+        if not tool_args:
+            return None
+
+        try:
+            from tools.qq_control_tool import qq_control_tool
+
+            raw = qq_control_tool(tool_args)
+            result = json.loads(raw) if isinstance(raw, str) else (raw or {})
+        except Exception as exc:
+            logger.warning("Admin QQ oral moderation shortcut failed: %s", exc)
+            return f"QQ 群管理执行失败：{exc}"
+
+        if result.get("error"):
+            return str(result["error"])
+        return self._format_admin_qq_group_moderation_reply(tool_args, result)
+
+    def _match_admin_qq_social_control_request(
+        self,
+        event: MessageEvent,
+    ) -> tuple[dict[str, Any] | None, str | None]:
+        source, body = self._extract_platform_text_event_body(
+            event,
+            platform=Platform.QQ_NAPCAT,
+        )
+        if source is None:
+            return None, None
+        return match_qq_social_control_request(
+            source=source,
+            body=body,
+            admin_ids_configured=bool(self._configured_admin_user_ids(getattr(source, "platform", None))),
+            is_admin_user=self._is_admin_user(source),
+            admin_only_message=self._admin_only_message(source, "处理 QQ 社交请求"),
+            looks_like_request_list_query=_looks_like_qq_social_request_list_query,
+            looks_like_policy_candidate=_looks_like_qq_social_policy_candidate,
+            looks_like_policy_query=looks_like_qq_social_policy_query,
+            request_type_matcher=match_qq_social_request_type,
+            notify_target_resolver=qq_social_policy_notify_target,
+        )
+
+    @staticmethod
+    def _format_admin_qq_social_control_reply(tool_args: dict[str, Any], result: dict[str, Any]) -> str:
+        action = str(tool_args.get("action") or "").strip().lower()
+        if action == "list_requests":
+            requests = list(result.get("requests") or [])
+            request_type = str(tool_args.get("request_type") or "").strip().lower()
+            if not requests:
+                if request_type == "friend":
+                    return "当前没有待处理的 QQ 好友申请。"
+                if request_type == "group":
+                    return "当前没有待处理的 QQ 加群/邀请申请。"
+                return "当前没有待处理的 QQ 社交申请。"
+
+            if request_type == "friend":
+                lines = ["当前待处理的 QQ 好友申请："]
+            elif request_type == "group":
+                lines = ["当前待处理的 QQ 加群/邀请申请："]
+            else:
+                lines = ["当前待处理的 QQ 社交申请："]
+            for item in requests[:10]:
+                if not isinstance(item, dict):
+                    continue
+                key = str(item.get("request_key") or "").strip()
+                user_id = str(item.get("user_id") or "").strip()
+                group_id = str(item.get("group_id") or "").strip()
+                comment = str(item.get("comment") or "").strip()
+                line = f"- {key}"
+                if user_id:
+                    line += f" | 用户 {user_id}"
+                if group_id:
+                    line += f" | 群 {group_id}"
+                if comment:
+                    line += f" | 备注：{comment}"
+                lines.append(line)
+            return "\n".join(lines)
+
+        policy = result.get("policy") or {}
+        lines = ["QQ 社交自动处理策略已更新：" if action == "set_social_policy" else "QQ 社交自动处理策略："]
+        enabled_label = "已开启" if action == "set_social_policy" else "开"
+        disabled_label = "已关闭" if action == "set_social_policy" else "关"
+        lines.append(
+            f"- 好友申请自动通过：{enabled_label if bool(policy.get('auto_approve_friend_requests')) else disabled_label}"
+        )
+        lines.append(
+            f"- 加群申请自动通过：{enabled_label if bool(policy.get('auto_approve_group_add_requests')) else disabled_label}"
+        )
+        lines.append(
+            f"- 群邀请自动通过：{enabled_label if bool(policy.get('auto_approve_group_invites')) else disabled_label}"
+        )
+        notify_target = str(policy.get("notify_target") or "").strip()
+        if notify_target:
+            lines.append(f"- 通知目标：{notify_target}")
+        return "\n".join(lines)
+
+    def _try_handle_admin_qq_social_control(self, event: MessageEvent) -> str | None:
+        tool_args, shortcut_error = self._match_admin_qq_social_control_request(event)
+        if shortcut_error:
+            return shortcut_error
+        if not tool_args:
+            return None
+
+        try:
+            from tools.qq_social_tool import qq_social_tool
+
+            raw = qq_social_tool(tool_args)
+            result = json.loads(raw) if isinstance(raw, str) else (raw or {})
+        except Exception as exc:
+            logger.warning("Admin QQ social shortcut failed: %s", exc)
+            return f"QQ 社交控制执行失败：{exc}"
+
+        if result.get("error"):
+            return str(result["error"])
+        return self._format_admin_qq_social_control_reply(tool_args, result)
+
+    def _start_background_job(
+        self,
+        prompt: str,
+        source: SessionSource,
+        *,
+        conversation_history: Optional[List[Dict[str, Any]]] = None,
+        context_prompt: str = "",
+        session_key: str = "",
+        job_kind: str = "manual",
+        worker_name: str = "",
+        preloaded_skills: Optional[List[str]] = None,
+        admin_user_ids: Optional[List[str]] = None,
+        is_admin_user: Optional[bool] = None,
+    ) -> str:
+        """Register and launch a durable managed background agent job."""
+        self._ensure_background_job_state()
+        task_id = f"bg_{datetime.now().strftime('%H%M%S')}_{os.urandom(3).hex()}"
+        store = self._get_background_job_store()
+        record = store.create_job(
+            task_id=task_id,
+            prompt=prompt,
+            source=source,
+            session_key=session_key,
+            job_kind=job_kind,
+            worker_name=worker_name,
+            preloaded_skills=list(preloaded_skills or []),
+            conversation_history=list(conversation_history or []),
+            context_prompt=context_prompt,
+            admin_user_ids=list(admin_user_ids or []),
+            is_admin_user=is_admin_user,
+        )
+        self._refresh_managed_background_job_cache(record)
+        try:
+            metadata = self._launch_background_worker(task_id)
+            record = store.update_job_launcher(task_id, metadata) or record
+            self._refresh_managed_background_job_cache(record)
+        except Exception as exc:
+            logger.exception("Failed to launch background worker for %s", task_id)
+            record = store.mark_job_failed(task_id, error=str(exc)) or record
+            self._refresh_managed_background_job_cache(record)
+        return task_id
+
+    def _resolve_background_job_for_stop(
+        self,
+        source: SessionSource,
+        raw_task_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Resolve a background job for /stop within the current chat."""
+        active_jobs = self._background_jobs_for_source(source, active_only=True)
+        if not active_jobs:
+            return None
+
+        task_id = str(raw_task_id or "").strip()
+        if task_id:
+            for job in active_jobs:
+                if job.get("task_id") == task_id or str(job.get("task_id", "")).startswith(task_id):
+                    return job
+            return None
+
+        if len(active_jobs) == 1:
+            return active_jobs[0]
+        return {"ambiguous": True, "jobs": active_jobs}
     
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """
@@ -2070,19 +4584,23 @@ class GatewayRunner:
             # Never evict the pending sentinel — it was just placed moments
             # ago during the async setup phase before the real agent is
             # created.  Sentinels have no get_activity_summary(), so the
-            # idle check below would always evaluate to inf >= timeout and
-            # immediately evict them, racing with the setup path.
-            _stale_idle = float("inf")  # assume idle if we can't check
+            # idle check below must stay conservative or tests/mocks and
+            # partially-constructed agents get evicted spuriously.
+            _stale_idle = 0.0
             _stale_detail = ""
             if _stale_agent and hasattr(_stale_agent, "get_activity_summary"):
                 try:
                     _sa = _stale_agent.get_activity_summary()
-                    _stale_idle = _sa.get("seconds_since_activity", float("inf"))
-                    _stale_detail = (
-                        f" | last_activity={_sa.get('last_activity_desc', 'unknown')} "
-                        f"({_stale_idle:.0f}s ago) "
-                        f"| iteration={_sa.get('api_call_count', 0)}/{_sa.get('max_iterations', 0)}"
-                    )
+                    if isinstance(_sa, dict):
+                        _stale_idle = _safe_float(
+                            _sa.get("seconds_since_activity"),
+                            float("inf"),
+                        )
+                        _stale_detail = (
+                            f" | last_activity={_sa.get('last_activity_desc', 'unknown')} "
+                            f"({_stale_idle:.0f}s ago) "
+                            f"| iteration={_sa.get('api_call_count', 0)}/{_sa.get('max_iterations', 0)}"
+                        )
                 except Exception:
                     pass
             # Evict if: agent is idle beyond timeout, OR wall-clock age is
@@ -2109,6 +4627,19 @@ class GatewayRunner:
         if _quick_key in self._running_agents:
             if event.get_command() == "status":
                 return await self._handle_status_command(event)
+            shortcut_history = None
+            try:
+                shortcut_session = self.session_store.get_or_create_session(source)
+                shortcut_history = self.session_store.load_transcript(shortcut_session.session_id)
+            except Exception:
+                shortcut_history = None
+            direct_shortcut_response = self._try_handle_direct_gateway_shortcuts(
+                event,
+                prepare_session_env=True,
+                conversation_history=list(shortcut_history or []),
+            )
+            if direct_shortcut_response is not None:
+                return direct_shortcut_response
             _busy_input_mode = self._get_busy_input_mode(source.platform)
 
             # Resolve the command once for all early-intercept checks below.
@@ -2190,9 +4721,71 @@ class GatewayRunner:
                     return await self._handle_approve_command(event)
                 return await self._handle_deny_command(event)
 
+            adapter = self.adapters.get(source.platform)
+            _explicit_followup = getattr(source, "chat_type", "") == "dm"
+            if (
+                not _explicit_followup
+                and adapter
+                and hasattr(adapter, "_is_explicit_busy_followup")
+            ):
+                try:
+                    _explicit_followup = bool(adapter._is_explicit_busy_followup(event))
+                except Exception:
+                    _explicit_followup = False
+
+            if event.message_type == MessageType.TEXT and not _evt_cmd and _explicit_followup:
+                try:
+                    from tools.approval import (
+                        has_blocking_approval,
+                        peek_blocking_approval,
+                        resolve_gateway_approval,
+                    )
+
+                    if has_blocking_approval(_quick_key):
+                        admin_only_message = self._admin_only_message(
+                            source,
+                            "deny dangerous commands",
+                        )
+                        if admin_only_message is None:
+                            current_approval = peek_blocking_approval(_quick_key) or {}
+                            resolved = resolve_gateway_approval(
+                                _quick_key,
+                                "deny",
+                                resolve_all=True,
+                            )
+                            if resolved:
+                                if adapter:
+                                    adapter.resume_typing_for_chat(source.chat_id)
+                                running_agent = self._running_agents.get(_quick_key)
+                                if running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
+                                    running_agent.interrupt(event.text)
+
+                                followup_text = str(event.text or "").strip()
+                                if followup_text:
+                                    if _quick_key in self._pending_messages:
+                                        self._pending_messages[_quick_key] += "\n" + followup_text
+                                    else:
+                                        self._pending_messages[_quick_key] = followup_text
+
+                                cmd_preview = _truncate_status_preview(
+                                    current_approval.get("command", "")
+                                )
+                                if resolved > 1:
+                                    return (
+                                        f"刚才挂起的 {resolved} 条危险命令我先给你拒了。"
+                                        "你这条我接着处理。"
+                                    )
+                                if cmd_preview:
+                                    return (
+                                        f"刚才那条危险命令我先给你拒了：{cmd_preview}。"
+                                        "你这条我接着处理。"
+                                    )
+                                return "刚才那条危险命令我先给你拒了。你这条我接着处理。"
+                except Exception:
+                    pass
+
             if event.message_type == MessageType.PHOTO:
                 logger.debug("PRIORITY photo follow-up for session %s — queueing without interrupt", _quick_key[:20])
-                adapter = self.adapters.get(source.platform)
                 if adapter:
                     if hasattr(adapter, "queue_message"):
                         adapter.queue_message(_quick_key, event)
@@ -2217,7 +4810,11 @@ class GatewayRunner:
                         adapter.queue_message(_quick_key, event)
                     else:
                         adapter._pending_messages[_quick_key] = event
-                busy_ack = _qq_busy_followup_ack(source, event.text)
+                busy_ack = ""
+                if adapter and hasattr(adapter, "_busy_followup_ack"):
+                    busy_ack = adapter._busy_followup_ack(event, interrupting=False)
+                elif _busy_input_mode == "queue":
+                    busy_ack = _qq_busy_followup_ack(source, event.text)
                 if busy_ack:
                     logger.info(
                         "queued follow-up while session pending: platform=%s chat=%s session=%s",
@@ -2227,19 +4824,44 @@ class GatewayRunner:
                     )
                     return busy_ack
                 return None
-
-            if _busy_input_mode == "queue":
-                logger.debug(
-                    "PRIORITY queue for session %s — deferring follow-up without interrupt",
+            _force_queue_reason = self._busy_followup_force_queue_reason(
+                _quick_key,
+                running_agent,
+            )
+            if _force_queue_reason:
+                logger.info(
+                    "PRIORITY force-queue for session %s — preserving active run (%s)",
                     _quick_key[:20],
+                    _force_queue_reason,
                 )
-                adapter = self.adapters.get(source.platform)
                 if adapter:
                     if hasattr(adapter, "queue_message"):
                         adapter.queue_message(_quick_key, event)
                     else:
                         adapter._pending_messages[_quick_key] = event
-                busy_ack = _qq_busy_followup_ack(source, event.text)
+                busy_ack = ""
+                if adapter and hasattr(adapter, "_busy_followup_ack"):
+                    busy_ack = adapter._busy_followup_ack(event, interrupting=False)
+                elif _busy_input_mode == "queue":
+                    busy_ack = _qq_busy_followup_ack(source, event.text)
+                if busy_ack:
+                    return busy_ack
+                return None
+            if _busy_input_mode == "queue":
+                logger.debug(
+                    "PRIORITY queue for session %s — deferring follow-up without interrupt",
+                    _quick_key[:20],
+                )
+                if adapter:
+                    if hasattr(adapter, "queue_message"):
+                        adapter.queue_message(_quick_key, event)
+                    else:
+                        adapter._pending_messages[_quick_key] = event
+                busy_ack = ""
+                if adapter and hasattr(adapter, "_busy_followup_ack"):
+                    busy_ack = adapter._busy_followup_ack(event, interrupting=False)
+                else:
+                    busy_ack = _qq_busy_followup_ack(source, event.text)
                 if busy_ack:
                     logger.info(
                         "queued follow-up for active session: platform=%s chat=%s session=%s",
@@ -2247,6 +4869,59 @@ class GatewayRunner:
                         source.chat_id or "unknown",
                         _quick_key[:32],
                     )
+                    return busy_ack
+                return None
+
+            if _busy_input_mode == "smart":
+                should_interrupt = False
+                if adapter and hasattr(adapter, "_should_interrupt_busy_followup"):
+                    try:
+                        if (
+                            hasattr(adapter, "_active_session_started_at")
+                            and _quick_key not in adapter._active_session_started_at
+                            and _quick_key in self._running_agents_ts
+                        ):
+                            adapter._active_session_started_at[_quick_key] = self._running_agents_ts[_quick_key]
+                        should_interrupt = bool(adapter._should_interrupt_busy_followup(_quick_key, event))
+                    except Exception as exc:
+                        logger.debug("smart busy follow-up decision failed for %s: %s", _quick_key[:20], exc)
+                if not should_interrupt:
+                    logger.debug(
+                        "PRIORITY smart-queue for session %s — deferring follow-up during grace window",
+                        _quick_key[:20],
+                    )
+                    if adapter:
+                        if hasattr(adapter, "queue_message"):
+                            adapter.queue_message(_quick_key, event)
+                        else:
+                            adapter._pending_messages[_quick_key] = event
+                    busy_ack = ""
+                    if adapter and hasattr(adapter, "_busy_followup_ack"):
+                        busy_ack = adapter._busy_followup_ack(event, interrupting=False)
+                    if busy_ack:
+                        logger.info(
+                            "smart-queued follow-up for active session: platform=%s chat=%s session=%s",
+                            source.platform.value if getattr(source, "platform", None) else "unknown",
+                            source.chat_id or "unknown",
+                            _quick_key[:32],
+                        )
+                        return busy_ack
+                    return None
+
+                logger.info(
+                    "PRIORITY smart-interrupt for session %s — switching to fresher follow-up",
+                    _quick_key[:20],
+                )
+                if adapter:
+                    if hasattr(adapter, "queue_message"):
+                        adapter.queue_message(_quick_key, event)
+                    else:
+                        adapter._pending_messages[_quick_key] = event
+                running_agent.interrupt(event.text)
+                busy_ack = ""
+                if adapter and hasattr(adapter, "_busy_followup_ack"):
+                    busy_ack = adapter._busy_followup_ack(event, interrupting=True)
+                if busy_ack:
                     return busy_ack
                 return None
 
@@ -2576,6 +5251,15 @@ class GatewayRunner:
         
         # Set environment variables for tools
         self._set_session_env(context)
+
+        history = self.session_store.load_transcript(session_entry.session_id)
+
+        direct_shortcut_response = self._try_handle_direct_gateway_shortcuts(
+            event,
+            conversation_history=list(history or []),
+        )
+        if direct_shortcut_response is not None:
+            return direct_shortcut_response
         
         # Read privacy.redact_pii from config (re-read per message)
         _redact_pii = False
@@ -2589,6 +5273,9 @@ class GatewayRunner:
 
         # Build the context prompt to inject
         context_prompt = build_session_context_prompt(context, redact_pii=_redact_pii)
+        explicit_group_reply_note = _explicit_group_reply_context_note(event)
+        if explicit_group_reply_note:
+            context_prompt = f"{context_prompt}\n\n{explicit_group_reply_note}"
         
         # If the previous session expired and was auto-reset, prepend a notice
         # so the agent knows this is a fresh conversation (not an intentional /reset).
@@ -2681,7 +5368,6 @@ class GatewayRunner:
                 logger.warning("[Gateway] Failed to auto-load topic skill '%s': %s", event.auto_skill, e)
 
         # Load conversation history from transcript
-        history = self.session_store.load_transcript(session_entry.session_id)
         history_for_agent = history
         if getattr(context, "shared_session_kind", None) == "group":
             history_for_agent = _simplify_shared_group_history_for_agent(history)
@@ -2692,7 +5378,48 @@ class GatewayRunner:
                     len(history),
                     len(history_for_agent),
                 )
-        
+
+        background_message_text = event.text or ""
+        _background_shared_thread = (
+            source.chat_type != "dm"
+            and source.thread_id
+            and not getattr(self.config, "thread_sessions_per_user", False)
+        )
+        if _background_shared_thread and source.user_name:
+            background_message_text = f"[{source.user_name}] {background_message_text}"
+        if getattr(event, "reply_to_text", None) and event.reply_to_message_id:
+            reply_snippet = event.reply_to_text[:500]
+            found_in_history = any(
+                reply_snippet[:200] in (msg.get("content") or "")
+                for msg in history
+                if msg.get("role") in ("assistant", "user", "tool")
+            )
+            if not found_in_history:
+                background_message_text = f'[Replying to: "{reply_snippet}"]\n\n{background_message_text}'
+        background_dispatch = self._resolve_auto_background_dispatch(
+            event,
+            background_message_text,
+            conversation_history=list(history_for_agent or []),
+        )
+        if background_dispatch:
+            task_id = self._start_background_job(
+                background_message_text,
+                source,
+                conversation_history=list(history_for_agent or []),
+                context_prompt=context_prompt,
+                session_key=session_key,
+                job_kind="auto",
+                worker_name=str(background_dispatch.get("worker_name") or ""),
+                preloaded_skills=list(background_dispatch.get("preloaded_skills") or []),
+                admin_user_ids=context.admin_user_ids,
+                is_admin_user=context.is_admin_user,
+            )
+            return self._format_auto_background_ack(
+                background_message_text,
+                task_id,
+                worker_name=str(background_dispatch.get("worker_name") or ""),
+            )
+
         # -----------------------------------------------------------------
         # Session hygiene: auto-compress pathologically large transcripts
         #
@@ -2976,7 +5703,8 @@ class GatewayRunner:
         # attachments (documents, audio, etc.) are not sent to the vision
         # tool even when they appear in the same message.
         # -----------------------------------------------------------------
-        message_text = event.text or ""
+        raw_message_text = event.text or ""
+        message_text = raw_message_text
 
         # -----------------------------------------------------------------
         # Sender attribution for shared thread sessions.
@@ -2991,37 +5719,37 @@ class GatewayRunner:
             and source.thread_id
             and not getattr(self.config, "thread_sessions_per_user", False)
         )
-        if _is_shared_thread and source.user_name:
-            message_text = f"[{source.user_name}] {message_text}"
+        attachments = event.ensure_attachments()
+        image_attachments = [
+            attachment
+            for attachment in attachments
+            if attachment.kind == "image" and not bool(attachment.is_animated)
+        ]
 
-        if event.media_urls:
-            image_paths = []
-            for i, path in enumerate(event.media_urls):
-                # Check media_types if available; otherwise infer from message type
-                mtype = event.media_types[i] if i < len(event.media_types) else ""
-                is_image = (
-                    mtype.startswith("image/")
-                    or event.message_type == MessageType.PHOTO
-                )
-                if is_image:
-                    image_paths.append(path)
+        if image_attachments:
+            image_paths = _image_vision_inputs_from_event(event)
             if image_paths:
                 message_text = await self._enrich_message_with_vision(
-                    message_text, image_paths
+                    raw_message_text,
+                    image_paths,
+                    source=source,
                 )
+            elif not raw_message_text.strip():
+                message_text = self._auto_vision_degraded_note("", pending=False)
         
         # -----------------------------------------------------------------
         # Auto-transcribe voice/audio messages sent by the user
         # -----------------------------------------------------------------
-        if event.media_urls:
+        if attachments:
             audio_paths = []
-            for i, path in enumerate(event.media_urls):
-                mtype = event.media_types[i] if i < len(event.media_types) else ""
+            for attachment in attachments:
+                path = str(attachment.local_path or attachment.analysis_ref or "").strip()
+                mtype = str(attachment.mime_type or "").strip()
                 is_audio = (
                     mtype.startswith("audio/")
                     or event.message_type in (MessageType.VOICE, MessageType.AUDIO)
                 )
-                if is_audio:
+                if is_audio and path:
                     audio_paths.append(path)
             if audio_paths:
                 message_text = await self._enrich_message_with_transcription(
@@ -3062,11 +5790,14 @@ class GatewayRunner:
         # -----------------------------------------------------------------
         # Enrich document messages with context notes for the agent
         # -----------------------------------------------------------------
-        if event.media_urls and event.message_type == MessageType.DOCUMENT:
+        if attachments and event.message_type == MessageType.DOCUMENT:
             import mimetypes as _mimetypes
             _TEXT_EXTENSIONS = {".txt", ".md", ".csv", ".log", ".json", ".xml", ".yaml", ".yml", ".toml", ".ini", ".cfg"}
-            for i, path in enumerate(event.media_urls):
-                mtype = event.media_types[i] if i < len(event.media_types) else ""
+            for attachment in attachments:
+                path = str(attachment.local_path or attachment.analysis_ref or "").strip()
+                if not path:
+                    continue
+                mtype = str(attachment.mime_type or "").strip()
                 # Fall back to extension-based detection when MIME type is unreliable.
                 if mtype in ("", "application/octet-stream"):
                     import os as _os2
@@ -3120,6 +5851,9 @@ class GatewayRunner:
             if not found_in_history:
                 message_text = f'[Replying to: "{reply_snippet}"]\n\n{message_text}'
 
+        if _is_shared_thread and source.user_name and message_text.strip():
+            message_text = f"[{source.user_name}] {message_text}"
+
         try:
             # Emit agent:start hook
             hook_ctx = {
@@ -3163,8 +5897,10 @@ class GatewayRunner:
                 session_id=session_entry.session_id,
                 session_key=session_key,
                 event_message_id=event.message_id,
+                event=event,
                 admin_user_ids=context.admin_user_ids,
                 is_admin_user=context.is_admin_user,
+                raw_message=event.raw_message,
             )
 
             # Stop persistent typing indicator now that the agent is done
@@ -3179,7 +5915,15 @@ class GatewayRunner:
             suppress_reply = bool(agent_result.get("suppress_reply"))
             response_state = "sent"
             if response.strip() in {"(empty)", "[[NO_REPLY]]"}:
-                fallback = _empty_response_fallback(source, message_text)
+                empty_kind = "no_reply" if response.strip() == "[[NO_REPLY]]" else "empty"
+                fallback = _empty_response_fallback(
+                    source,
+                    message_text,
+                    empty_kind=empty_kind,
+                    is_admin_user=bool(context.is_admin_user),
+                    raw_message=event.raw_message,
+                    event=event,
+                )
                 if fallback:
                     response = fallback
                     suppress_reply = False
@@ -3321,6 +6065,11 @@ class GatewayRunner:
             if not agent_failed_early:
                 history_len = agent_result.get("history_offset", len(history))
                 new_messages = agent_messages[history_len:] if len(agent_messages) > history_len else []
+                new_messages = _sync_visible_final_response_into_messages(
+                    new_messages,
+                    raw_final_response=agent_result.get("final_response"),
+                    visible_final_response=response,
+                )
                 
                 # If no new messages found (edge case), fall back to simple user/assistant
                 if not new_messages:
@@ -3742,9 +6491,136 @@ class GatewayRunner:
             f"**Last Activity:** {session_entry.updated_at.strftime('%Y-%m-%d %H:%M')}",
             f"**Tokens:** {session_entry.total_tokens:,}",
             f"**Agent Running:** {'Yes ⚡' if is_running else 'No'}",
-            "",
-            f"**Connected Platforms:** {', '.join(connected_platforms)}",
         ])
+
+        if is_running:
+            running_agent = self._running_agents.get(session_key)
+            if running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
+                activity: dict[str, Any] = {}
+                if hasattr(running_agent, "get_activity_summary"):
+                    try:
+                        raw_activity = running_agent.get_activity_summary() or {}
+                    except Exception:
+                        raw_activity = {}
+                    if isinstance(raw_activity, dict):
+                        activity = raw_activity
+                foreground_bits: list[str] = []
+                api_call_count = int(_safe_float(activity.get("api_call_count"), 0.0))
+                max_iterations = int(_safe_float(activity.get("max_iterations"), 0.0))
+                if api_call_count or max_iterations:
+                    foreground_bits.append(f"{api_call_count}/{max_iterations}")
+                current_tool = str(activity.get("current_tool") or "").strip()
+                if current_tool:
+                    foreground_bits.append(current_tool)
+                else:
+                    last_activity_desc = str(activity.get("last_activity_desc") or "").strip()
+                    if last_activity_desc:
+                        foreground_bits.append(last_activity_desc)
+                started_at = _safe_float(
+                    getattr(self, "_running_agents_ts", {}).get(session_key),
+                    0.0,
+                )
+                if started_at > 0:
+                    foreground_bits.append(f"{max(0, int(time.time() - started_at))}s")
+                lines.append(
+                    f"**Foreground:** {' · '.join(bit for bit in foreground_bits if bit) or 'running'}"
+                )
+
+        lines.extend(
+            [
+                "",
+                f"**Connected Platforms:** {', '.join(connected_platforms)}",
+            ]
+        )
+
+        pending_approval_count = 0
+        try:
+            pending_approval_count = self._get_background_job_store().count_pending_approval_requests(
+                session_key
+            )
+        except Exception:
+            pending_approval_count = 0
+        if session_key in getattr(self, "_pending_approvals", {}):
+            pending_approval_count = max(pending_approval_count, 1)
+        try:
+            from tools.approval import has_blocking_approval
+
+            if has_blocking_approval(session_key):
+                pending_approval_count = max(pending_approval_count, 1)
+        except Exception:
+            pass
+
+        self._ensure_auto_vision_state()
+        self._prune_auto_vision_state()
+        inflight_vision = sum(
+            1
+            for task in getattr(self, "_auto_vision_tasks", {}).values()
+            if task and not task.done()
+        )
+        cooldown_remaining, cooldown_reason = self._auto_vision_cooldown_remaining()
+        auto_vision_bits: list[str] = []
+        if inflight_vision:
+            auto_vision_bits.append(f"warming ({inflight_vision} in flight)")
+        if cooldown_remaining > 0:
+            reason_suffix = f": {cooldown_reason}" if cooldown_reason else ""
+            auto_vision_bits.append(f"cooldown ({int(cooldown_remaining)}s{reason_suffix})")
+        if not auto_vision_bits:
+            auto_vision_bits.append("ready")
+
+        model_summary = self._build_runtime_model_summary()
+        model_label = str(model_summary.get("active_model") or model_summary.get("configured_model") or "").strip()
+        provider_label = str(model_summary.get("active_provider") or "").strip()
+        model_bits = [model_label or "unknown"]
+        if provider_label:
+            model_bits.append(f"via {provider_label}")
+        if bool(model_summary.get("fallback_active")):
+            fallback_label = "fallback pinned" if bool(model_summary.get("fallback_pinned")) else "fallback active"
+            model_bits.append(f"({fallback_label})")
+
+        monitoring_summary = self._build_runtime_qq_monitoring_summary()
+        monitoring_count = int(monitoring_summary.get("active_collect_only_groups") or 0)
+
+        lines.extend(
+            [
+                "",
+                f"**Model:** {' '.join(bit for bit in model_bits if bit).strip()}",
+                f"**Pending Approvals:** {pending_approval_count}",
+                f"**Auto Vision:** {', '.join(auto_vision_bits)}",
+            ]
+        )
+
+        lines.extend(
+            [
+                "",
+                f"**QQ Monitoring:** {monitoring_count} collect_only group(s)",
+            ]
+        )
+        for group in list(monitoring_summary.get("groups") or [])[:3]:
+            group_label = str(group.get("group_name") or group.get("group_id") or "unknown").strip()
+            if group.get("group_id") and group.get("group_name") and group["group_id"] != group["group_name"]:
+                group_label = f"{group['group_name']} ({group['group_id']})"
+            worker_names = ", ".join(group.get("worker_names") or []) or "无人值守"
+            report_label = "日报开" if bool(group.get("daily_report_enabled")) else "日报关"
+            lines.append(f"- {group_label} · collect_only · {worker_names} · {report_label}")
+
+        jobs = self._background_jobs_for_source(source)
+        if jobs:
+            status_labels = {
+                "queued": "queued",
+                "running": "running",
+                "cancelling": "stopping",
+                "completed": "done",
+                "failed": "failed",
+                "cancelled": "stopped",
+            }
+            lines.extend(["", "**Background Jobs:**"])
+            for job in jobs[-5:]:
+                label = status_labels.get(job.get("status"), str(job.get("status") or "unknown"))
+                worker_name = str(job.get("worker_name") or "").strip()
+                worker_suffix = f" · {worker_name}" if worker_name else ""
+                lines.append(
+                    f"- `{job['task_id']}` — {label}{worker_suffix} ({self._format_background_job_age(job)})"
+                )
 
         return "\n".join(lines)
     
@@ -3775,8 +6651,41 @@ class GatewayRunner:
             if session_key in self._running_agents:
                 del self._running_agents[session_key]
             return "⚡ Force-stopped. The session is unlocked — you can send a new message."
-        else:
-            return "No active task to stop."
+
+        raw_job_id = event.get_command_args().strip()
+        job = self._resolve_background_job_for_stop(source, raw_job_id)
+        if isinstance(job, dict) and job.get("ambiguous"):
+            active_ids = ", ".join(f"`{item['task_id']}`" for item in job.get("jobs", []))
+            return f"Multiple background jobs are running here. Use `/stop <task_id>`: {active_ids}"
+        if job:
+            task_id = str(job.get("task_id") or "")
+            managed_agent = self._managed_background_job_agents.get(task_id)
+            managed_task = self._managed_background_job_tasks.get(task_id)
+            if managed_agent and hasattr(managed_agent, "interrupt"):
+                try:
+                    managed_agent.interrupt("Stop requested")
+                except Exception:
+                    pass
+                job["status"] = "cancelling"
+            elif managed_task and not managed_task.done():
+                managed_task.cancel()
+                job["status"] = "cancelled"
+                job["finished_at"] = time.time()
+            else:
+                try:
+                    self._stop_background_worker(job)
+                    job = self._get_background_job_store().mark_job_cancelled(
+                        task_id,
+                        reason="stop requested",
+                    ) or job
+                except Exception as exc:
+                    logger.warning("Failed to stop external background job %s: %s", task_id, exc)
+                    job = self._get_background_job_store().mark_job_cancelling(task_id) or job
+            job["updated_at"] = time.time()
+            self._refresh_managed_background_job_cache(job)
+            return f"⏹️ Requested stop for background job `{task_id}`."
+
+        return "No active task to stop."
     
     async def _handle_help_command(self, event: MessageEvent) -> str:
         """Handle /help command - list available commands."""
@@ -4868,34 +7777,78 @@ class GatewayRunner:
             )
 
         source = event.source
-        task_id = f"bg_{datetime.now().strftime('%H%M%S')}_{os.urandom(3).hex()}"
-
-        # Fire-and-forget the background task
-        _task = asyncio.create_task(
-            self._run_background_task(prompt, source, task_id)
+        admin_user_ids = self._configured_admin_user_ids(source.platform)
+        is_admin_user = self._is_admin_user(source) if admin_user_ids else None
+        dispatch = self._resolve_employee_background_dispatch(
+            prompt,
+            platform=getattr(source, "platform", Platform.QQ_NAPCAT),
         )
-        self._background_tasks.add(_task)
-        _task.add_done_callback(self._background_tasks.discard)
+        task_id = self._start_background_job(
+            prompt,
+            source,
+            session_key=self._session_key_for_source(source),
+            job_kind="manual",
+            worker_name=str((dispatch or {}).get("worker_name") or ""),
+            preloaded_skills=list((dispatch or {}).get("preloaded_skills") or []),
+            admin_user_ids=admin_user_ids,
+            is_admin_user=is_admin_user,
+        )
 
         preview = prompt[:60] + ("..." if len(prompt) > 60 else "")
+        worker_name = str((dispatch or {}).get("worker_name") or "")
+        if worker_name:
+            return (
+                f"🔄 已交给{worker_name}后台处理：\"{preview}\"\n"
+                f"任务ID：{task_id}\n"
+                "你可以继续聊天，结果回来我会发到这里。"
+            )
         return f'🔄 Background task started: "{preview}"\nTask ID: {task_id}\nYou can keep chatting — results will appear when done.'
 
     async def _run_background_task(
-        self, prompt: str, source: "SessionSource", task_id: str
+        self,
+        prompt: str,
+        source: "SessionSource",
+        task_id: str,
+        *,
+        conversation_history: Optional[List[Dict[str, Any]]] = None,
+        context_prompt: str = "",
+        session_key: str = "",
+        job_kind: str = "manual",
+        worker_name: str = "",
+        preloaded_skills: Optional[List[str]] = None,
+        admin_user_ids: Optional[List[str]] = None,
+        is_admin_user: Optional[bool] = None,
     ) -> None:
         """Execute a background agent task and deliver the result to the chat."""
         from run_agent import AIAgent
 
+        self._ensure_background_job_state()
+        job = self._managed_background_jobs.get(task_id)
         adapter = self.adapters.get(source.platform)
         if not adapter:
             logger.warning("No adapter for platform %s in background task %s", source.platform, task_id)
+            if job:
+                job["status"] = "failed"
+                job["error"] = "adapter unavailable"
+                job["finished_at"] = time.time()
+                job["updated_at"] = time.time()
             return
+
+        if job:
+            job["status"] = "running"
+            job["started_at"] = time.time()
+            job["updated_at"] = time.time()
 
         _thread_metadata = {"thread_id": source.thread_id} if source.thread_id else None
 
         try:
             runtime_kwargs = _resolve_runtime_agent_kwargs()
             if not runtime_kwargs.get("api_key"):
+                if job:
+                    job["status"] = "failed"
+                    job["error"] = "no provider credentials configured"
+                    job["finished_at"] = time.time()
+                    job["updated_at"] = time.time()
                 await adapter.send(
                     source.chat_id,
                     f"❌ Background task {task_id} failed: no provider credentials configured.",
@@ -4915,8 +7868,38 @@ class GatewayRunner:
             reasoning_config = self._load_reasoning_config()
             self._reasoning_config = reasoning_config
             turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
+            bg_history = list(conversation_history or [])
+            event_loop = asyncio.get_event_loop()
 
             def run_sync():
+                combined_ephemeral = (context_prompt or "").strip()
+                loaded_skill_names: List[str] = []
+                missing_skills: List[str] = []
+                if preloaded_skills:
+                    skill_prompt, loaded_skill_names, missing_skills = build_preloaded_skills_prompt(
+                        list(preloaded_skills),
+                        task_id=task_id,
+                    )
+                    if skill_prompt:
+                        combined_ephemeral = (
+                            f"{skill_prompt}\n\n{combined_ephemeral}".strip()
+                            if combined_ephemeral
+                            else skill_prompt
+                        )
+                if job:
+                    job["loaded_skills"] = loaded_skill_names
+                    job["missing_skills"] = missing_skills
+                    job["updated_at"] = time.time()
+                platform_system_prompt = ""
+                try:
+                    platform_config = self.config.platforms.get(source.platform)
+                    if platform_config and isinstance(getattr(platform_config, "extra", None), dict):
+                        platform_system_prompt = str(platform_config.extra.get("system_prompt") or "").strip()
+                except Exception:
+                    platform_system_prompt = ""
+                if platform_system_prompt:
+                    combined_ephemeral = (combined_ephemeral + "\n\n" + platform_system_prompt).strip()
+
                 agent = AIAgent(
                     model=turn_route["model"],
                     **turn_route["runtime"],
@@ -4924,6 +7907,7 @@ class GatewayRunner:
                     quiet_mode=True,
                     verbose_logging=False,
                     enabled_toolsets=enabled_toolsets,
+                    ephemeral_system_prompt=combined_ephemeral or None,
                     reasoning_config=reasoning_config,
                     providers_allowed=pr.get("only"),
                     providers_ignored=pr.get("ignore"),
@@ -4937,11 +7921,67 @@ class GatewayRunner:
                     session_db=self._session_db,
                     fallback_model=self._fallback_model,
                 )
+                self._managed_background_job_agents[task_id] = agent
 
-                return agent.run_conversation(
-                    user_message=prompt,
-                    task_id=task_id,
+                from tools.approval import (
+                    build_gateway_approval_message,
+                    register_gateway_notify,
+                    reset_current_admin_policy,
+                    reset_current_session_key,
+                    set_current_admin_policy,
+                    set_current_session_key,
+                    unregister_gateway_notify,
                 )
+                approval_session_key = session_key or task_id
+                approval_thread_meta = {"thread_id": source.thread_id} if source.thread_id else None
+
+                def _approval_notify_sync(approval_data: dict) -> None:
+                    cmd = approval_data.get("command", "")
+                    desc = approval_data.get("description", "dangerous command")
+                    title = approval_data.get("prompt_title", "Dangerous command requires approval")
+                    approver_name = approval_data.get("approver_name", "管理员")
+                    allow_persistence = bool(approval_data.get("allow_persistence", True))
+                    msg = build_gateway_approval_message(
+                        command=cmd,
+                        description=desc,
+                        prompt_title=title,
+                        approver_name=approver_name,
+                        allow_persistence=allow_persistence,
+                    )
+                    admin_note = self._admin_only_message(source, "approve dangerous commands")
+                    if admin_note:
+                        msg = f"{msg}\n\n{admin_note}"
+                    try:
+                        asyncio.run_coroutine_threadsafe(
+                            adapter.send(
+                                source.chat_id,
+                                msg,
+                                metadata=approval_thread_meta,
+                            ),
+                            event_loop,
+                        ).result(timeout=15)
+                    except Exception as exc:
+                        logger.error("Failed to send background approval request: %s", exc)
+
+                approval_session_token = set_current_session_key(approval_session_key)
+                approval_admin_tokens = set_current_admin_policy(
+                    list(admin_user_ids or []),
+                    is_admin_user,
+                )
+                approval_notify_handle = register_gateway_notify(
+                    approval_session_key,
+                    _approval_notify_sync,
+                )
+                try:
+                    return agent.run_conversation(
+                        user_message=prompt,
+                        conversation_history=bg_history or None,
+                        task_id=task_id,
+                    )
+                finally:
+                    unregister_gateway_notify(approval_session_key, approval_notify_handle)
+                    reset_current_admin_policy(approval_admin_tokens)
+                    reset_current_session_key(approval_session_token)
 
             loop = asyncio.get_event_loop()
             result = await loop.run_in_executor(None, run_sync)
@@ -4954,9 +7994,14 @@ class GatewayRunner:
             if response:
                 media_files, response = adapter.extract_media(response)
                 images, text_content = adapter.extract_images(response)
+                text_content = self._sanitize_background_visible_text(text_content)
 
                 preview = prompt[:60] + ("..." if len(prompt) > 60 else "")
-                header = f'✅ Background task complete\nPrompt: "{preview}"\n\n'
+                if job_kind == "auto" or worker_name:
+                    worker_prefix = f"{worker_name} " if worker_name else ""
+                    header = f"✅ {worker_prefix}后台任务完成\n任务ID：`{task_id}`\n内容：{preview}\n\n"
+                else:
+                    header = f'✅ Background task complete\nPrompt: "{preview}"\n\n'
 
                 if text_content:
                     await adapter.send(
@@ -4964,7 +8009,10 @@ class GatewayRunner:
                         content=header + text_content,
                         metadata=_thread_metadata,
                     )
-                elif not images and not media_files:
+                elif not images and not media_files and not self._background_completion_should_stay_silent(
+                    job_kind=job_kind,
+                    worker_name=worker_name,
+                ):
                     await adapter.send(
                         chat_id=source.chat_id,
                         content=header + "(No response generated)",
@@ -4993,14 +8041,38 @@ class GatewayRunner:
                         pass
             else:
                 preview = prompt[:60] + ("..." if len(prompt) > 60 else "")
-                await adapter.send(
-                    chat_id=source.chat_id,
-                    content=f'✅ Background task complete\nPrompt: "{preview}"\n\n(No response generated)',
-                    metadata=_thread_metadata,
-                )
+                if not self._background_completion_should_stay_silent(
+                    job_kind=job_kind,
+                    worker_name=worker_name,
+                ):
+                    await adapter.send(
+                        chat_id=source.chat_id,
+                        content=(
+                            f"✅ {f'{worker_name} ' if worker_name else ''}后台任务完成\n任务ID：`{task_id}`\n内容：{preview}\n\n(No response generated)"
+                            if job_kind == "auto" or worker_name
+                            else f'✅ Background task complete\nPrompt: "{preview}"\n\n(No response generated)'
+                        ),
+                        metadata=_thread_metadata,
+                    )
 
+            if job:
+                job["status"] = "completed"
+                job["finished_at"] = time.time()
+                job["updated_at"] = time.time()
+
+        except asyncio.CancelledError:
+            if job:
+                job["status"] = "cancelled"
+                job["finished_at"] = time.time()
+                job["updated_at"] = time.time()
+            raise
         except Exception as e:
             logger.exception("Background task %s failed", task_id)
+            if job:
+                job["status"] = "failed"
+                job["error"] = str(e)
+                job["finished_at"] = time.time()
+                job["updated_at"] = time.time()
             try:
                 await adapter.send(
                     chat_id=source.chat_id,
@@ -5009,6 +8081,197 @@ class GatewayRunner:
                 )
             except Exception:
                 pass
+        finally:
+            self._managed_background_job_agents.pop(task_id, None)
+
+    async def _deliver_background_job_updates_once(self) -> None:
+        """Deliver one polling pass of durable background job completions and approvals."""
+        self._ensure_background_job_state()
+        store = self._get_background_job_store()
+        claimer = f"gateway:{os.getpid()}"
+
+        from tools.approval import build_gateway_approval_message
+
+        approval_requests = store.claim_approval_notifications(
+            claimer=claimer,
+            limit=20,
+            lease_seconds=60,
+        )
+        for request in approval_requests:
+            source_data = request.get("source") or {}
+            try:
+                source = SessionSource.from_dict(source_data)
+            except Exception:
+                store.release_approval_notification_claim(int(request["request_id"]))
+                continue
+            adapter = self.adapters.get(source.platform)
+            if not adapter:
+                store.release_approval_notification_claim(int(request["request_id"]))
+                continue
+            task_id = str(request.get("task_id") or "").strip()
+            preview = str(
+                request.get("prompt")
+                or request.get("preview")
+                or (store.get_job(task_id) or {}).get("preview")
+                or (store.get_job(task_id) or {}).get("prompt")
+                or ""
+            ).strip()
+            header = self._build_background_delivery_header(
+                task_id=task_id,
+                preview=_truncate_status_preview(preview, limit=200),
+                state="approval",
+            )
+            message = build_gateway_approval_message(
+                command=str(request.get("command") or ""),
+                description=str(request.get("description") or ""),
+                prompt_title=str(request.get("prompt_title") or "Dangerous command requires approval"),
+                approver_name=str(request.get("approver_name") or "管理员"),
+                allow_persistence=bool(request.get("allow_persistence", True)),
+            )
+            if header:
+                message = f"{header}\n\n{message}"
+            admin_note = self._admin_only_message(source, "approve dangerous commands")
+            if admin_note:
+                message = f"{message}\n\n{admin_note}"
+            metadata = {"thread_id": source.thread_id} if source.thread_id else None
+            try:
+                await adapter.send(
+                    chat_id=source.chat_id,
+                    content=message,
+                    metadata=metadata,
+                )
+                store.mark_approval_notified(int(request["request_id"]))
+            except Exception:
+                logger.exception("Failed to deliver background approval request %s", request.get("request_id"))
+                store.release_approval_notification_claim(int(request["request_id"]))
+
+        jobs = store.claim_delivery_jobs(
+            claimer=claimer,
+            limit=20,
+            lease_seconds=60,
+        )
+        for job in jobs:
+            task_id = str(job.get("task_id") or "")
+            self._refresh_managed_background_job_cache(job)
+            source_data = job.get("source") or {}
+            try:
+                source = SessionSource.from_dict(source_data)
+            except Exception:
+                store.release_delivery_claim(task_id, error="invalid source metadata")
+                continue
+            adapter = self.adapters.get(source.platform)
+            if not adapter:
+                store.release_delivery_claim(task_id, error="adapter unavailable")
+                continue
+
+            metadata = {"thread_id": source.thread_id} if source.thread_id else None
+            preview = str(job.get("preview") or job.get("prompt") or "").strip()
+            worker_name = str(job.get("worker_name") or "").strip()
+            job_kind = str(job.get("kind") or "manual")
+            raw_response = str(job.get("raw_response") or "")
+            try:
+                if str(job.get("status") or "").strip().lower() == "failed":
+                    error = str(job.get("error") or "background task failed")
+                    if job_kind == "btw":
+                        message = f"❌ /btw failed: {error}"
+                    else:
+                        header = self._build_background_delivery_header(
+                            task_id=task_id,
+                            preview=_truncate_status_preview(preview, limit=200),
+                            worker_name=worker_name,
+                            state="failed",
+                        )
+                        message = f"{header}\n错误：{error}"
+                    await adapter.send(
+                        chat_id=source.chat_id,
+                        content=message,
+                        metadata=metadata,
+                    )
+                    store.mark_job_delivered(task_id)
+                    continue
+
+                media_files, response = adapter.extract_media(raw_response)
+                images, text_content = adapter.extract_images(response)
+                text_content = self._sanitize_background_visible_text(text_content)
+
+                if job_kind == "btw":
+                    header = f'💬 /btw: "{preview}"\n\n'
+                else:
+                    header = self._build_background_delivery_header(
+                        task_id=task_id,
+                        preview=_truncate_status_preview(preview, limit=200),
+                        worker_name=worker_name,
+                        state="completed",
+                    )
+
+                if text_content:
+                    await adapter.send(
+                        chat_id=source.chat_id,
+                        content=f"{header}\n\n{text_content}",
+                        metadata=metadata,
+                    )
+                elif not images and not media_files and not self._background_completion_should_stay_silent(
+                    job_kind=job_kind,
+                    worker_name=worker_name,
+                ):
+                    await adapter.send(
+                        chat_id=source.chat_id,
+                        content=f"{header}\n\n未生成可见结果。",
+                        metadata=metadata,
+                    )
+
+                for image_url, alt_text in (images or []):
+                    try:
+                        await adapter.send_image(
+                            chat_id=source.chat_id,
+                            image_url=image_url,
+                            caption=alt_text,
+                        )
+                    except Exception:
+                        logger.debug("Background job image delivery failed for %s", task_id, exc_info=True)
+
+                for media_path in (media_files or []):
+                    try:
+                        await adapter.send_document(
+                            chat_id=source.chat_id,
+                            file_path=media_path,
+                        )
+                    except Exception:
+                        logger.debug("Background job document delivery failed for %s", task_id, exc_info=True)
+
+                store.mark_job_delivered(task_id)
+            except Exception as exc:
+                logger.exception("Failed to deliver background job %s", task_id)
+                store.release_delivery_claim(task_id, error=str(exc))
+
+    async def _background_job_delivery_poller(self, interval: float = 2.0) -> None:
+        """Background poller for durable job completions and approval prompts."""
+        while self._running:
+            try:
+                await self._recover_stale_background_jobs_once()
+                await self._deliver_background_job_updates_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Background job delivery poller error")
+            await asyncio.sleep(max(float(interval or 0.0), 0.2))
+
+    async def _recover_stale_background_jobs_once(
+        self,
+        *,
+        queued_grace_seconds: float = 120.0,
+        heartbeat_stale_seconds: float = 120.0,
+        now_ts: float | None = None,
+    ) -> list[dict[str, Any]]:
+        self._ensure_background_job_state()
+        recovered = self._get_background_job_store().recover_stale_jobs(
+            now_ts=now_ts,
+            queued_grace_seconds=queued_grace_seconds,
+            heartbeat_stale_seconds=heartbeat_stale_seconds,
+        )
+        for job in recovered:
+            self._refresh_managed_background_job_cache(job)
+        return recovered
 
     async def _handle_btw_command(self, event: MessageEvent) -> str:
         """Handle /btw <question> — ephemeral side question in the same chat."""
@@ -5017,32 +8280,34 @@ class GatewayRunner:
             return (
                 "Usage: /btw <question>\n"
                 "Example: /btw what module owns session title sanitization?\n\n"
-                "Answers using session context. No tools, not persisted."
+                "Answers using session context in a detached background turn."
             )
 
         source = event.source
         session_key = self._session_key_for_source(source)
 
-        # Guard: one /btw at a time per session
-        existing = getattr(self, "_active_btw_tasks", {}).get(session_key)
-        if existing and not existing.done():
+        existing = [
+            job
+            for job in self._background_jobs_for_source(source, active_only=True)
+            if str(job.get("kind") or "").strip().lower() == "btw"
+        ]
+        if existing:
             return "A /btw is already running for this chat. Wait for it to finish."
 
-        if not hasattr(self, "_active_btw_tasks"):
-            self._active_btw_tasks: dict = {}
+        running_agent = self._running_agents.get(session_key)
+        if running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
+            history_snapshot = list(getattr(running_agent, "_session_messages", []) or [])
+        else:
+            session_entry = self.session_store.get_or_create_session(source)
+            history_snapshot = self.session_store.load_transcript(session_entry.session_id)
 
-        import uuid as _uuid
-        task_id = f"btw_{datetime.now().strftime('%H%M%S')}_{_uuid.uuid4().hex[:6]}"
-        _task = asyncio.create_task(self._run_btw_task(question, source, session_key, task_id))
-        self._background_tasks.add(_task)
-        self._active_btw_tasks[session_key] = _task
-
-        def _cleanup(task):
-            self._background_tasks.discard(task)
-            if self._active_btw_tasks.get(session_key) is task:
-                self._active_btw_tasks.pop(session_key, None)
-
-        _task.add_done_callback(_cleanup)
+        task_id = self._start_background_job(
+            question,
+            source,
+            conversation_history=list(history_snapshot or []),
+            session_key=session_key,
+            job_kind="btw",
+        )
 
         preview = question[:60] + ("..." if len(question) > 60 else "")
         return f'💬 /btw: "{preview}"\nReply will appear here shortly.'
@@ -5804,14 +9069,20 @@ class GatewayRunner:
         from tools.approval import (
             has_blocking_approval, peek_blocking_approval, resolve_gateway_approval,
         )
+        store = self._get_background_job_store()
 
         if not has_blocking_approval(session_key):
-            if session_key in self._pending_approvals:
-                self._pending_approvals.pop(session_key)
-                return "⚠️ Approval expired (agent is no longer waiting). Ask the agent to try again."
-            return "No pending command to approve."
+            external_approval = store.peek_pending_approval_request(session_key)
+            if external_approval:
+                current_approval = external_approval
+            else:
+                if session_key in self._pending_approvals:
+                    self._pending_approvals.pop(session_key)
+                    return "⚠️ Approval expired (agent is no longer waiting). Ask the agent to try again."
+                return "No pending command to approve."
+        else:
+            current_approval = peek_blocking_approval(session_key) or {}
 
-        current_approval = peek_blocking_approval(session_key) or {}
         allow_persistence = bool(current_approval.get("allow_persistence", True))
 
         # Parse args: support "all", "all session", "all always", "session", "always"
@@ -5833,7 +9104,14 @@ class GatewayRunner:
             choice = "once"
             scope_msg = " (approved for this action only)"
 
-        count = resolve_gateway_approval(session_key, choice, resolve_all=resolve_all)
+        if has_blocking_approval(session_key):
+            count = resolve_gateway_approval(session_key, choice, resolve_all=resolve_all)
+        else:
+            count = store.resolve_approval_requests(
+                session_key=session_key,
+                choice=choice,
+                resolve_all=resolve_all,
+            )
         if not count:
             return "No pending command to approve."
 
@@ -5845,6 +9123,7 @@ class GatewayRunner:
         count_msg = f" ({count} commands)" if count > 1 else ""
         logger.info("User approved %d dangerous command(s) via /approve%s", count, scope_msg)
         return f"✅ Command{'s' if count > 1 else ''} approved{scope_msg}{count_msg}. The agent is resuming..."
+
 
     async def _handle_deny_command(self, event: MessageEvent) -> str:
         """Handle /deny command — reject pending dangerous command(s).
@@ -5866,17 +9145,26 @@ class GatewayRunner:
         from tools.approval import (
             resolve_gateway_approval, has_blocking_approval,
         )
+        store = self._get_background_job_store()
 
         if not has_blocking_approval(session_key):
-            if session_key in self._pending_approvals:
-                self._pending_approvals.pop(session_key)
-                return "❌ Command denied (approval was stale)."
-            return "No pending command to deny."
+            if not store.has_pending_approval_requests(session_key):
+                if session_key in self._pending_approvals:
+                    self._pending_approvals.pop(session_key)
+                    return "❌ Command denied (approval was stale)."
+                return "No pending command to deny."
 
         args = event.get_command_args().strip().lower()
         resolve_all = "all" in args
 
-        count = resolve_gateway_approval(session_key, "deny", resolve_all=resolve_all)
+        if has_blocking_approval(session_key):
+            count = resolve_gateway_approval(session_key, "deny", resolve_all=resolve_all)
+        else:
+            count = store.resolve_approval_requests(
+                session_key=session_key,
+                choice="deny",
+                resolve_all=resolve_all,
+            )
         if not count:
             return "No pending command to deny."
 
@@ -5895,7 +9183,8 @@ class GatewayRunner:
         Platform.TELEGRAM, Platform.DISCORD, Platform.SLACK, Platform.WHATSAPP,
         Platform.SIGNAL, Platform.MATTERMOST, Platform.MATRIX,
         Platform.HOMEASSISTANT, Platform.EMAIL, Platform.SMS, Platform.DINGTALK,
-        Platform.FEISHU, Platform.WECOM, Platform.LOCAL,
+        Platform.FEISHU, Platform.WECOM, Platform.WECOM_CALLBACK,
+        Platform.WEIXIN, Platform.LOCAL,
     })
 
     async def _handle_update_command(self, event: MessageEvent) -> str:
@@ -6322,75 +9611,113 @@ class GatewayRunner:
         self,
         user_text: str,
         image_paths: List[str],
+        *,
+        source: Optional[SessionSource] = None,
     ) -> str:
         """
-        Auto-analyze user-attached images with the vision tool and prepend
-        the descriptions to the message text.
+        Opportunistically analyze user-attached images without blocking the
+        foreground chat path.
 
-        Each image is analyzed with a general-purpose prompt.  The resulting
-        description *and* the local cache path are injected so the model can:
-          1. Immediately understand what the user sent (no extra tool call).
-          2. Re-examine the image with vision_analyze if it needs more detail.
+        Successful analyses are cached per local image file so later turns can
+        reuse the description instantly.  Cache misses warm in a background
+        task; the foreground waits only a very short grace period and then
+        degrades to a non-blocking placeholder note.
 
         Args:
             user_text:   The user's original caption / message text.
             image_paths: List of local file paths to cached images.
+            source:      Optional session source used for chat-aware latency caps.
 
         Returns:
             The enriched message string with vision descriptions prepended.
         """
-        from tools.vision_tools import vision_analyze_tool
-        import json as _json
-
+        self._ensure_auto_vision_state()
         analysis_prompt = (
             "Describe everything visible in this image in thorough detail. "
             "Include any text, code, data, objects, people, layout, colors, "
             "and any other notable visual information."
         )
+        analysis_timeout = self._auto_vision_analysis_timeout_seconds()
+        inline_wait = self._auto_vision_inline_wait_seconds(
+            source,
+            has_user_text=bool(str(user_text or "").strip()),
+        )
+        inline_deadline = time.monotonic() + inline_wait if inline_wait > 0 else None
 
         enriched_parts = []
+        pending_tasks: List[tuple[str, str, asyncio.Task]] = []
         for path in image_paths:
-            try:
-                logger.debug("Auto-analyzing user image: %s", path)
-                result_json = await asyncio.wait_for(
-                    vision_analyze_tool(
-                        image_url=path,
-                        user_prompt=analysis_prompt,
-                    ),
-                    timeout=_AUTO_VISION_ANALYSIS_TIMEOUT_SECONDS,
-                )
-                result = _json.loads(result_json)
-                if result.get("success"):
-                    description = result.get("analysis", "")
-                    enriched_parts.append(
-                        f"[The user sent an image~ Here's what I can see:\n{description}]\n"
-                        f"[If you need a closer look, use vision_analyze with "
-                        f"image_url: {path} ~]"
-                    )
-                else:
-                    enriched_parts.append(
-                        "[The user sent an image but I couldn't quite see it "
-                        "this time (>_<) You can try looking at it yourself "
-                        f"with vision_analyze using image_url: {path}]"
-                    )
-            except asyncio.TimeoutError:
-                logger.warning(
-                    "Vision auto-analysis timed out after %.1fs for %s",
-                    _AUTO_VISION_ANALYSIS_TIMEOUT_SECONDS,
+            cache_key = self._auto_vision_cache_key(path)
+            cached = self._get_auto_vision_cache_entry(cache_key)
+            if cached:
+                if cached.get("status") == "success":
+                    description = str(cached.get("analysis") or "").strip()
+                    if description:
+                        enriched_parts.append(
+                            f"[The user sent an image~ Here's what I can see:\n{description}]"
+                        )
+                        continue
+                elif cached.get("status") == "error":
+                    enriched_parts.append(self._auto_vision_degraded_note(path, pending=False))
+                    continue
+
+            remaining, reason = self._auto_vision_cooldown_remaining()
+            if remaining > 0:
+                logger.debug(
+                    "Skipping vision auto-analysis for %.1fs after %s (image=%s)",
+                    remaining,
+                    reason or "recent_failure",
                     path,
                 )
-                enriched_parts.append(
-                    "[The user sent an image but I couldn't quite see it "
-                    "this time (>_<) You can try looking at it yourself "
-                    f"with vision_analyze using image_url: {path}]"
+                enriched_parts.append(self._auto_vision_degraded_note(path, pending=False))
+                continue
+
+            task = self._start_auto_vision_task(
+                cache_key=cache_key,
+                path=path,
+                analysis_prompt=analysis_prompt,
+                analysis_timeout=analysis_timeout,
+            )
+            if task is None:
+                enriched_parts.append(self._auto_vision_degraded_note(path, pending=False))
+                continue
+            pending_tasks.append((path, cache_key, task))
+
+        completed_tasks: set[asyncio.Task] = set()
+        if pending_tasks:
+            if inline_deadline is not None:
+                remaining_inline = max(0.0, inline_deadline - time.monotonic())
+            else:
+                remaining_inline = 0.0
+            if remaining_inline > 0:
+                done, _pending = await asyncio.wait(
+                    [task for _, _, task in pending_tasks],
+                    timeout=remaining_inline,
                 )
-            except Exception as e:
-                logger.error("Vision auto-analysis error: %s", e)
-                enriched_parts.append(
-                    f"[The user sent an image but something went wrong when I "
-                    f"tried to look at it~ You can try examining it yourself "
-                    f"with vision_analyze using image_url: {path}]"
-                )
+                completed_tasks = set(done)
+
+        for path, cache_key, task in pending_tasks:
+            task_entry: Optional[Dict[str, Any]] = None
+            if task in completed_tasks or task.done():
+                try:
+                    task_entry = task.result()
+                except Exception as exc:
+                    logger.debug("Auto vision background task failed for %s: %s", path, exc)
+                    task_entry = self._get_auto_vision_cache_entry(cache_key)
+
+            if task_entry and task_entry.get("status") == "success":
+                description = str(task_entry.get("analysis") or "").strip()
+                if description:
+                    enriched_parts.append(
+                        f"[The user sent an image~ Here's what I can see:\n{description}]"
+                    )
+                    continue
+
+            if task_entry and task_entry.get("status") == "error":
+                enriched_parts.append(self._auto_vision_degraded_note(path, pending=False))
+                continue
+
+            enriched_parts.append(self._auto_vision_degraded_note(path, pending=True))
 
         # Combine: vision descriptions first, then the user's original text
         if enriched_parts:
@@ -6399,6 +9726,337 @@ class GatewayRunner:
                 return f"{prefix}\n\n{user_text}"
             return prefix
         return user_text
+
+    def _ensure_auto_vision_state(self) -> None:
+        if not hasattr(self, "_background_tasks") or not isinstance(self._background_tasks, set):
+            self._background_tasks = set()
+        if not hasattr(self, "_auto_vision_cache") or not isinstance(self._auto_vision_cache, dict):
+            self._auto_vision_cache = {}
+        if not hasattr(self, "_auto_vision_tasks") or not isinstance(self._auto_vision_tasks, dict):
+            self._auto_vision_tasks = {}
+        if not hasattr(self, "_auto_vision_unhealthy_until"):
+            self._auto_vision_unhealthy_until = 0.0
+        if not hasattr(self, "_auto_vision_unhealthy_reason"):
+            self._auto_vision_unhealthy_reason = ""
+
+    def _prune_auto_vision_state(self) -> None:
+        self._ensure_auto_vision_state()
+        now = time.time()
+
+        for cache_key, task in list(self._auto_vision_tasks.items()):
+            try:
+                done = bool(task.done())
+            except Exception:
+                done = True
+            if done:
+                self._auto_vision_tasks.pop(cache_key, None)
+
+        for cache_key, entry in list(self._auto_vision_cache.items()):
+            if not isinstance(entry, dict):
+                self._auto_vision_cache.pop(cache_key, None)
+                continue
+            expires_at = entry.get("expires_at")
+            try:
+                expires_at_value = float(expires_at) if expires_at is not None else 0.0
+            except (TypeError, ValueError):
+                expires_at_value = 0.0
+            if expires_at_value and expires_at_value <= now:
+                self._auto_vision_cache.pop(cache_key, None)
+
+        overflow = len(self._auto_vision_cache) - int(_AUTO_VISION_MAX_CACHE_ENTRIES)
+        if overflow > 0:
+            ranked_keys = sorted(
+                self._auto_vision_cache,
+                key=lambda key: float(
+                    (self._auto_vision_cache.get(key) or {}).get("updated_at") or 0.0
+                ),
+            )
+            for cache_key in ranked_keys[:overflow]:
+                self._auto_vision_cache.pop(cache_key, None)
+
+    def _auto_vision_cache_key(self, path: str) -> str:
+        candidate = Path(os.path.expanduser(str(path or "")))
+        try:
+            resolved = candidate.resolve(strict=False)
+        except Exception:
+            resolved = candidate
+        try:
+            stat = resolved.stat()
+            return f"{resolved}:{stat.st_mtime_ns}:{stat.st_size}"
+        except OSError:
+            return str(resolved)
+
+    def _get_auto_vision_cache_entry(self, cache_key: str) -> Optional[Dict[str, Any]]:
+        self._prune_auto_vision_state()
+        entry = self._auto_vision_cache.get(cache_key)
+        if not isinstance(entry, dict):
+            return None
+        expires_at = entry.get("expires_at")
+        try:
+            expires_at_value = float(expires_at) if expires_at is not None else 0.0
+        except (TypeError, ValueError):
+            expires_at_value = 0.0
+        if expires_at_value and expires_at_value <= time.time():
+            self._auto_vision_cache.pop(cache_key, None)
+            return None
+        return entry
+
+    def _auto_vision_inline_wait_seconds(
+        self,
+        source: Optional[SessionSource] = None,
+        *,
+        has_user_text: bool = True,
+    ) -> float:
+        wait_seconds = float(_AUTO_VISION_INLINE_WAIT_SECONDS)
+        image_only_wait = float(_AUTO_VISION_IMAGE_ONLY_INLINE_WAIT_SECONDS)
+        try:
+            cfg = _load_gateway_config()
+            vision_cfg = (((cfg or {}).get("auxiliary") or {}).get("vision") or {})
+            explicit = vision_cfg.get("auto_inline_wait")
+            if explicit is not None:
+                configured_wait = float(explicit)
+                if configured_wait >= 0:
+                    wait_seconds = configured_wait
+            image_only_explicit = vision_cfg.get("image_only_inline_wait")
+            if image_only_explicit is not None:
+                configured_image_only_wait = float(image_only_explicit)
+                if configured_image_only_wait >= 0:
+                    image_only_wait = configured_image_only_wait
+        except Exception:
+            pass
+        if not has_user_text:
+            return max(0.0, min(image_only_wait, self._auto_vision_analysis_timeout_seconds()))
+        chat_type = str(getattr(source, "chat_type", "") or "").strip().lower()
+        if chat_type and chat_type != "dm":
+            wait_seconds = min(wait_seconds, float(_AUTO_VISION_GROUP_INLINE_WAIT_SECONDS))
+        return max(0.0, wait_seconds)
+
+    def _auto_vision_degraded_note(self, path: str, *, pending: bool) -> str:
+        del path
+        if pending:
+            return "[Image attached; no verified image description is available yet.]"
+        return "[Image attached; no verified image description is available for this turn.]"
+
+    def _classify_auto_vision_failure(self, error_text: str) -> str:
+        lowered = str(error_text or "").strip().lower()
+        if not lowered:
+            return "none"
+        deterministic_markers = (
+            "payment required",
+            "insufficient",
+            "credits",
+            "billing",
+            "does not support",
+            "not support image",
+            "content_policy",
+            "unauthorized",
+            "blocked",
+            "forbidden",
+            "no available channel",
+            "no available accounts for this model tier",
+        )
+        transient_markers = (
+            "timed out",
+            "timeout",
+            "empty content",
+            "http 5",
+            "httpx",
+            "remoteprotocolerror",
+            "connection",
+            "provider",
+        )
+        if any(marker in lowered for marker in deterministic_markers):
+            return "deterministic"
+        if any(marker in lowered for marker in transient_markers):
+            return "transient"
+        return "none"
+
+    async def _run_auto_vision_task(
+        self,
+        *,
+        cache_key: str,
+        path: str,
+        analysis_prompt: str,
+        analysis_timeout: float,
+    ) -> Dict[str, Any]:
+        from tools.vision_tools import vision_analyze_tool
+
+        self._ensure_auto_vision_state()
+        try:
+            logger.debug("Auto-analyzing user image in background: %s", path)
+            result_json = await asyncio.wait_for(
+                vision_analyze_tool(
+                    image_url=path,
+                    user_prompt=analysis_prompt,
+                ),
+                timeout=analysis_timeout,
+            )
+            result = json.loads(result_json)
+            if result.get("success"):
+                description = str(result.get("analysis") or "").strip()
+                if description:
+                    now = time.time()
+                    entry = {
+                        "status": "success",
+                        "analysis": description,
+                        "updated_at": now,
+                        "expires_at": now + _AUTO_VISION_CACHE_TTL_SECONDS,
+                    }
+                    self._auto_vision_cache[cache_key] = entry
+                    self._clear_auto_vision_cooldown()
+                    return entry
+            error_text = str(result.get("error") or result.get("analysis") or "auto vision failed").strip()
+            classification = self._classify_auto_vision_failure(error_text)
+            cooldown_seconds = _AUTO_VISION_ANALYSIS_FAILURE_COOLDOWN_SECONDS
+            if classification == "transient":
+                cooldown_seconds = _AUTO_VISION_TRANSIENT_COOLDOWN_SECONDS
+            if classification in {"deterministic", "transient"}:
+                self._mark_auto_vision_cooldown(
+                    reason=classification,
+                    seconds=cooldown_seconds,
+                )
+            entry = {
+                "status": "error",
+                "error": error_text or "auto vision failed",
+            }
+            if classification == "deterministic":
+                now = time.time()
+                entry["updated_at"] = now
+                entry["expires_at"] = now + cooldown_seconds
+                self._auto_vision_cache[cache_key] = entry
+            return entry
+        except asyncio.TimeoutError:
+            self._mark_auto_vision_cooldown(
+                reason="timeout",
+                seconds=_AUTO_VISION_TRANSIENT_COOLDOWN_SECONDS,
+            )
+            logger.warning(
+                "Vision auto-analysis timed out after %.2fs for %s; "
+                "skipping auto-analysis for %.1fs",
+                analysis_timeout,
+                path,
+                _AUTO_VISION_TRANSIENT_COOLDOWN_SECONDS,
+            )
+            entry = {
+                "status": "error",
+                "error": "Vision auto-analysis timed out",
+            }
+            return entry
+        except Exception as exc:
+            error_text = str(exc)
+            classification = self._classify_auto_vision_failure(error_text)
+            cooldown_seconds = _AUTO_VISION_ANALYSIS_FAILURE_COOLDOWN_SECONDS
+            if classification == "transient":
+                cooldown_seconds = _AUTO_VISION_TRANSIENT_COOLDOWN_SECONDS
+            if classification in {"deterministic", "transient"}:
+                self._mark_auto_vision_cooldown(
+                    reason=classification,
+                    seconds=cooldown_seconds,
+                )
+            logger.error("Vision auto-analysis error: %s", exc)
+            entry = {
+                "status": "error",
+                "error": error_text or "Vision auto-analysis error",
+            }
+            if classification == "deterministic":
+                now = time.time()
+                entry["updated_at"] = now
+                entry["expires_at"] = now + cooldown_seconds
+                self._auto_vision_cache[cache_key] = entry
+            return entry
+        finally:
+            current = asyncio.current_task()
+            existing = self._auto_vision_tasks.get(cache_key)
+            if existing is current:
+                self._auto_vision_tasks.pop(cache_key, None)
+
+    def _start_auto_vision_task(
+        self,
+        *,
+        cache_key: str,
+        path: str,
+        analysis_prompt: str,
+        analysis_timeout: float,
+    ) -> Optional[asyncio.Task]:
+        self._prune_auto_vision_state()
+        existing = self._auto_vision_tasks.get(cache_key)
+        if existing and not existing.done():
+            return existing
+        inflight_count = 0
+        for task in self._auto_vision_tasks.values():
+            try:
+                if not task.done():
+                    inflight_count += 1
+            except Exception:
+                continue
+        if inflight_count >= int(_AUTO_VISION_MAX_INFLIGHT_TASKS):
+            logger.debug(
+                "Skipping auto vision warmup for %s; inflight limit reached (%d)",
+                path,
+                inflight_count,
+            )
+            return None
+        task = asyncio.create_task(
+            self._run_auto_vision_task(
+                cache_key=cache_key,
+                path=path,
+                analysis_prompt=analysis_prompt,
+                analysis_timeout=analysis_timeout,
+            )
+        )
+        self._auto_vision_tasks[cache_key] = task
+        self._background_tasks.add(task)
+        if hasattr(task, "add_done_callback"):
+            task.add_done_callback(self._background_tasks.discard)
+        return task
+
+    def _auto_vision_analysis_timeout_seconds(self) -> float:
+        """Return the timeout for opportunistic auto vision analysis."""
+        timeout = float(_AUTO_VISION_ANALYSIS_TIMEOUT_SECONDS)
+        try:
+            cfg = _load_gateway_config()
+            vision_cfg = (((cfg or {}).get("auxiliary") or {}).get("vision") or {})
+            explicit = vision_cfg.get("auto_timeout")
+            if explicit is not None:
+                explicit_timeout = float(explicit)
+                if explicit_timeout > 0:
+                    return explicit_timeout
+
+            configured = vision_cfg.get("timeout")
+            if configured is not None:
+                configured_timeout = float(configured)
+                if configured_timeout > 0:
+                    return min(
+                        configured_timeout,
+                        _AUTO_VISION_ANALYSIS_TIMEOUT_CAP_SECONDS,
+                    )
+        except Exception:
+            pass
+        return timeout
+
+    def _auto_vision_cooldown_remaining(self) -> tuple[float, str]:
+        until = float(getattr(self, "_auto_vision_unhealthy_until", 0.0) or 0.0)
+        reason = str(getattr(self, "_auto_vision_unhealthy_reason", "") or "").strip()
+        remaining = until - time.time()
+        if remaining <= 0:
+            self._auto_vision_unhealthy_until = 0.0
+            self._auto_vision_unhealthy_reason = ""
+            return 0.0, ""
+        return remaining, reason
+
+    def _mark_auto_vision_cooldown(self, *, reason: str, seconds: float) -> None:
+        try:
+            seconds = float(seconds)
+        except (TypeError, ValueError):
+            return
+        if seconds <= 0:
+            return
+        self._auto_vision_unhealthy_until = time.time() + seconds
+        self._auto_vision_unhealthy_reason = str(reason or "").strip()
+
+    def _clear_auto_vision_cooldown(self) -> None:
+        self._auto_vision_unhealthy_until = 0.0
+        self._auto_vision_unhealthy_reason = ""
 
     async def _enrich_message_with_transcription(
         self,
@@ -6704,6 +10362,24 @@ class GatewayRunner:
             with _lock:
                 self._agent_cache.pop(session_key, None)
 
+    @staticmethod
+    def _should_evict_cached_agent_after_turn(agent, configured_model: str) -> bool:
+        """Return True when a post-turn cached agent should be discarded."""
+        if agent is None or not hasattr(agent, "model"):
+            return False
+        if agent.model == configured_model:
+            return False
+
+        has_pinned_fallback = getattr(agent, "_has_pinned_fallback", None)
+        if callable(has_pinned_fallback):
+            try:
+                if has_pinned_fallback():
+                    return False
+            except Exception:
+                logger.debug("Could not evaluate fallback pin state", exc_info=True)
+
+        return True
+
     async def _run_agent(
         self,
         message: str,
@@ -6714,8 +10390,10 @@ class GatewayRunner:
         session_key: str = None,
         _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None,
+        event: MessageEvent | None = None,
         admin_user_ids: Optional[List[str]] = None,
         is_admin_user: Optional[bool] = None,
+        raw_message: Any = None,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -6997,6 +10675,8 @@ class GatewayRunner:
 
         def _status_callback_sync(event_type: str, message: str) -> None:
             if not _status_adapter:
+                return
+            if not _should_forward_agent_status(source, event_type, message):
                 return
             try:
                 asyncio.run_coroutine_threadsafe(
@@ -7340,11 +11020,19 @@ class GatewayRunner:
                 list(admin_user_ids or []),
                 is_admin_user,
             )
-            register_gateway_notify(_approval_session_key, _approval_notify_sync)
+            _approval_notify_handle = register_gateway_notify(
+                _approval_session_key,
+                _approval_notify_sync,
+            )
             try:
                 result = agent.run_conversation(message, conversation_history=agent_history, task_id=session_id)
             finally:
-                unregister_gateway_notify(_approval_session_key)
+                try:
+                    unregister_gateway_notify(_approval_session_key, _approval_notify_handle)
+                except TypeError:
+                    # Backward-compat for tests / older shims still exposing the
+                    # legacy single-argument unregister signature.
+                    unregister_gateway_notify(_approval_session_key)
                 reset_current_admin_policy(_approval_admin_tokens)
                 reset_current_session_key(_approval_session_token)
             result_holder[0] = result
@@ -7373,7 +11061,15 @@ class GatewayRunner:
                 "(empty)",
                 "[[NO_REPLY]]",
             }:
-                fallback = _empty_response_fallback(source, message)
+                empty_kind = "no_reply" if final_response.strip() == "[[NO_REPLY]]" else "empty"
+                fallback = _empty_response_fallback(
+                    source,
+                    message,
+                    empty_kind=empty_kind,
+                    is_admin_user=bool(is_admin_user),
+                    raw_message=raw_message,
+                    event=event,
+                )
                 if fallback:
                     final_response = fallback
                 else:
@@ -7412,12 +11108,14 @@ class GatewayRunner:
                     if msg.get("role") in ("tool", "function"):
                         content = msg.get("content", "")
                         if "MEDIA:" in content:
-                            for match in re.finditer(r'MEDIA:(\S+)', content):
-                                path = match.group(1).strip().rstrip('",}')
+                            extracted_media, _ = BasePlatformAdapter.extract_media(content)
+                            for path, is_voice in extracted_media:
                                 if path and path not in _history_media_paths:
                                     media_tags.append(f"MEDIA:{path}")
-                            if "[[audio_as_voice]]" in content:
-                                has_voice_directive = True
+                                if is_voice:
+                                    has_voice_directive = True
+                        elif "[[audio_as_voice]]" in content:
+                            has_voice_directive = True
                 
                 if media_tags:
                     seen = set()
@@ -7559,18 +11257,10 @@ class GatewayRunner:
                 _elapsed_mins = int((time.time() - _notify_start) // 60)
                 # Include agent activity context if available.
                 _agent_ref = agent_holder[0]
-                _status_detail = ""
-                if _agent_ref and hasattr(_agent_ref, "get_activity_summary"):
-                    try:
-                        _a = _agent_ref.get_activity_summary()
-                        _parts = [f"iteration {_a['api_call_count']}/{_a['max_iterations']}"]
-                        if _a.get("current_tool"):
-                            _parts.append(f"running: {_a['current_tool']}")
-                        else:
-                            _parts.append(_a.get("last_activity_desc", ""))
-                        _status_detail = " — " + ", ".join(_parts)
-                    except Exception:
-                        pass
+                _status_detail = _build_long_running_status_detail(
+                    _agent_ref,
+                    session_key,
+                )
                 try:
                     await _notify_adapter.send(
                         source.chat_id,
@@ -7702,9 +11392,9 @@ class GatewayRunner:
                 if _agent.model != _cfg_model:
                     self._effective_model = _agent.model
                     self._effective_provider = getattr(_agent, 'provider', None)
-                    # Fallback activated — evict cached agent so the next
-                    # message starts fresh and retries the primary model.
-                    self._evict_cached_agent(session_key)
+                    if self._should_evict_cached_agent_after_turn(_agent, _cfg_model):
+                        # Unpinned fallback: next message should try the primary again.
+                        self._evict_cached_agent(session_key)
                 else:
                     # Primary model worked — clear any stale fallback state
                     self._effective_model = None
@@ -7717,13 +11407,14 @@ class GatewayRunner:
             # Get pending message from adapter.
             # Use session_key (not source.chat_id) to match adapter's storage keys.
             pending = None
+            pending_event = None
             if result and adapter and session_key:
                 if result.get("interrupted"):
-                    pending = _dequeue_pending_text(adapter, session_key)
+                    pending_event, pending = _dequeue_pending_event_text(adapter, session_key)
                     if not pending and result.get("interrupt_message"):
                         pending = result.get("interrupt_message")
                 else:
-                    pending = _dequeue_pending_text(adapter, session_key)
+                    pending_event, pending = _dequeue_pending_event_text(adapter, session_key)
                     if pending:
                         logger.debug("Processing queued message after agent completion: '%s...'", pending[:40])
             
@@ -7775,7 +11466,7 @@ class GatewayRunner:
                                 text=pending,
                                 message_type=_MT.TEXT,
                                 source=source,
-                                message_id=event.message_id,
+                                message_id=getattr(pending_event, "message_id", None) or getattr(event, "message_id", None),
                             ),
                         )
                     return result_holder[0] or {"final_response": response, "messages": history}
@@ -7795,7 +11486,7 @@ class GatewayRunner:
                     if first_response and not _already_streamed and not suppress_first_response:
                         try:
                             await adapter.send(source.chat_id, first_response,
-                                               metadata=getattr(event, "metadata", None))
+                                               metadata=getattr(pending_event, "metadata", None) or getattr(event, "metadata", None))
                         except Exception as e:
                             logger.warning("Failed to send first response before queued message: %s", e)
                 # else: interrupted — discard the interrupted response ("Operation
@@ -7812,6 +11503,11 @@ class GatewayRunner:
                     session_id=session_id,
                     session_key=session_key,
                     _interrupt_depth=_interrupt_depth + 1,
+                    event_message_id=getattr(pending_event, "message_id", None),
+                    event=pending_event,
+                    admin_user_ids=admin_user_ids,
+                    is_admin_user=is_admin_user,
+                    raw_message=getattr(pending_event, "raw_message", None),
                 )
         finally:
             # Stop progress sender, interrupt monitor, and notification task
@@ -8034,8 +11730,10 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     runner = GatewayRunner(config)
     
     # Set up signal handlers
-    def signal_handler():
-        asyncio.create_task(runner.stop())
+    signal_handler, cancel_force_exit_timer = _make_gateway_signal_handler(
+        runner,
+        force_exit_after=_load_gateway_signal_force_exit_seconds(),
+    )
     
     loop = asyncio.get_event_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
@@ -8073,6 +11771,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     
     # Wait for shutdown
     await runner.wait_for_shutdown()
+    cancel_force_exit_timer()
 
     if runner.should_exit_with_failure:
         if runner.exit_reason:

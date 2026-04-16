@@ -8,6 +8,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 from gateway.config import Platform
 from tools.send_message_tool import (
     _qq_napcat_call,
@@ -48,6 +50,155 @@ def _install_telegram_mock(monkeypatch, bot):
 
 
 class TestSendMessageTool:
+    def test_gateway_session_defaults_send_message_to_current_qq_dm_and_attaches_file(self, tmp_path):
+        config, qq_cfg = _make_qq_napcat_config()
+        platform = getattr(Platform, "QQ_NAPCAT")
+        file_path = tmp_path / "VSOP87D_Moon_DingShuo.pas"
+        file_path.write_text("unit VSOP87D_Moon_DingShuo;", encoding="utf-8")
+
+        with patch.dict(
+            os.environ,
+            {
+                "HERMES_SESSION_PLATFORM": "qq_napcat",
+                "HERMES_SESSION_CHAT_ID": "179033731",
+                "HERMES_SESSION_CHAT_TYPE": "dm",
+            },
+            clear=False,
+        ), \
+             patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("gateway.mirror.mirror_to_session", return_value=True) as mirror_mock:
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "message": "文件发你了",
+                        "file_path": str(file_path),
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        send_mock.assert_awaited_once_with(
+            platform,
+            qq_cfg,
+            "dm:179033731",
+            "文件发你了",
+            thread_id=None,
+            media_files=[(str(file_path), False)],
+        )
+        mirror_mock.assert_called_once_with(
+            "qq_napcat",
+            "179033731",
+            "文件发你了",
+            source_label="qq_napcat",
+            thread_id=None,
+            chat_type="dm",
+        )
+
+    def test_send_message_rejects_missing_file_path_before_claiming_success(self):
+        config, _qq_cfg = _make_qq_napcat_config()
+
+        with patch.dict(
+            os.environ,
+            {
+                "HERMES_SESSION_PLATFORM": "qq_napcat",
+                "HERMES_SESSION_CHAT_ID": "179033731",
+                "HERMES_SESSION_CHAT_TYPE": "dm",
+            },
+            clear=False,
+        ), \
+             patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock:
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "message": "文件发你了",
+                        "file_path": "/tmp/definitely-missing-file.pas",
+                    }
+                )
+            )
+
+        assert "error" in result
+        assert "not found" in result["error"].lower()
+        send_mock.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_qq_napcat_call_returns_runtime_missing_diagnostic(self):
+        class _ExplodingSession:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            def ws_connect(self, _url):
+                raise ConnectionRefusedError("boom")
+
+        with patch("aiohttp.ClientSession", return_value=_ExplodingSession()), \
+             patch(
+                 "tools.send_message_tool.diagnose_local_qq_napcat_endpoint",
+                 return_value={
+                     "code": "qq_napcat_runtime_missing",
+                     "message": "QQ NapCat local runtime is missing",
+                 },
+             ):
+            data, error = await _qq_napcat_call(
+                {"ws_url": "ws://127.0.0.1:3001"},
+                "get_group_list",
+                {},
+            )
+
+        assert data is None
+        assert error == {"error": "QQ NapCat local runtime is missing"}
+
+    def test_send_message_resolves_relative_file_path_from_terminal_cwd(self, tmp_path):
+        config, qq_cfg = _make_qq_napcat_config()
+        platform = getattr(Platform, "QQ_NAPCAT")
+        project_dir = tmp_path / "fafafa-page"
+        project_dir.mkdir()
+        rel_file = project_dir / "VSOP87D_Moon_DingShuo.pas"
+        rel_file.write_text("unit VSOP87D_Moon_DingShuo;", encoding="utf-8")
+
+        with patch.dict(
+            os.environ,
+            {
+                "HERMES_SESSION_PLATFORM": "qq_napcat",
+                "HERMES_SESSION_CHAT_ID": "179033731",
+                "HERMES_SESSION_CHAT_TYPE": "dm",
+                "TERMINAL_CWD": str(project_dir),
+            },
+            clear=False,
+        ), \
+             patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("gateway.mirror.mirror_to_session", return_value=True):
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "message": "文件发你了",
+                        "file_path": "VSOP87D_Moon_DingShuo.pas",
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        send_mock.assert_awaited_once_with(
+            platform,
+            qq_cfg,
+            "dm:179033731",
+            "文件发你了",
+            thread_id=None,
+            media_files=[(str(rel_file.resolve()), False)],
+        )
+
     def test_cron_duplicate_target_is_skipped_and_explained(self):
         home = SimpleNamespace(chat_id="-1001")
         config, _telegram_cfg = _make_config()

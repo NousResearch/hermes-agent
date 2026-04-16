@@ -11,6 +11,7 @@ from gateway.platforms.qq_napcat import (
     normalize_qq_napcat_local_path,
     resolve_qq_napcat_group_id,
 )
+from tools.group_scope_helpers import resolve_group_chat_id
 from tools.registry import registry, tool_error
 from tools.send_message_tool import _check_send_message, _error, _qq_napcat_call
 
@@ -165,15 +166,16 @@ def qq_group_file_tool(args, **kw):
 
 def _resolve_group_target(target, config) -> str:
     """Resolve an explicit target or QQ home channel into a group id string."""
-    if str(target or "").strip():
-        return str(resolve_qq_napcat_group_id(target))
-
     home = config.get_home_channel(Platform.QQ_NAPCAT)
-    if not home:
-        raise ValueError(
+    return resolve_group_chat_id(
+        target,
+        expected_platform="qq_napcat",
+        explicit_resolver=lambda value: str(resolve_qq_napcat_group_id(value)),
+        home_chat_id=(home.chat_id if home else None),
+        missing_target_error=(
             "No QQ group target specified. Use target='group:<id>' or configure a QQ group home channel."
+        ),
     )
-    return str(resolve_qq_napcat_group_id(home.chat_id))
 
 
 def _parse_bool_arg(value, *, arg_name: str, default: bool):

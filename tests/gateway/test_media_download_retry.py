@@ -18,6 +18,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 import httpx
 
+TEST_IMAGE_URL = "http://example.com/img.jpg"
+TEST_AUDIO_URL = "http://example.com/voice.ogg"
+
 # ---------------------------------------------------------------------------
 # Helpers for building httpx exceptions
 # ---------------------------------------------------------------------------
@@ -55,10 +58,11 @@ class TestCacheImageFromUrl:
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
         async def run():
-            with patch("httpx.AsyncClient", return_value=mock_client):
+            with patch("httpx.AsyncClient", return_value=mock_client), \
+                 patch("tools.url_safety.is_safe_url", return_value=True):
                 from gateway.platforms.base import cache_image_from_url
                 return await cache_image_from_url(
-                    "http://example.com/img.jpg", ext=".jpg"
+                    TEST_IMAGE_URL, ext=".jpg"
                 )
 
         path = asyncio.run(run())
@@ -84,10 +88,11 @@ class TestCacheImageFromUrl:
 
         async def run():
             with patch("httpx.AsyncClient", return_value=mock_client), \
-                 patch("asyncio.sleep", mock_sleep):
+                 patch("asyncio.sleep", mock_sleep), \
+                 patch("tools.url_safety.is_safe_url", return_value=True):
                 from gateway.platforms.base import cache_image_from_url
                 return await cache_image_from_url(
-                    "http://example.com/img.jpg", ext=".jpg", retries=2
+                    TEST_IMAGE_URL, ext=".jpg", retries=2
                 )
 
         path = asyncio.run(run())
@@ -112,10 +117,11 @@ class TestCacheImageFromUrl:
 
         async def run():
             with patch("httpx.AsyncClient", return_value=mock_client), \
-                 patch("asyncio.sleep", new_callable=AsyncMock):
+                 patch("asyncio.sleep", new_callable=AsyncMock), \
+                 patch("tools.url_safety.is_safe_url", return_value=True):
                 from gateway.platforms.base import cache_image_from_url
                 return await cache_image_from_url(
-                    "http://example.com/img.jpg", ext=".jpg", retries=2
+                    TEST_IMAGE_URL, ext=".jpg", retries=2
                 )
 
         path = asyncio.run(run())
@@ -133,10 +139,11 @@ class TestCacheImageFromUrl:
 
         async def run():
             with patch("httpx.AsyncClient", return_value=mock_client), \
-                 patch("asyncio.sleep", new_callable=AsyncMock):
+                 patch("asyncio.sleep", new_callable=AsyncMock), \
+                 patch("tools.url_safety.is_safe_url", return_value=True):
                 from gateway.platforms.base import cache_image_from_url
                 await cache_image_from_url(
-                    "http://example.com/img.jpg", ext=".jpg", retries=2
+                    TEST_IMAGE_URL, ext=".jpg", retries=2
                 )
 
         with pytest.raises(httpx.TimeoutException):
@@ -157,10 +164,11 @@ class TestCacheImageFromUrl:
 
         async def run():
             with patch("httpx.AsyncClient", return_value=mock_client), \
-                 patch("asyncio.sleep", mock_sleep):
+                 patch("asyncio.sleep", mock_sleep), \
+                 patch("tools.url_safety.is_safe_url", return_value=True):
                 from gateway.platforms.base import cache_image_from_url
                 await cache_image_from_url(
-                    "http://example.com/img.jpg", ext=".jpg", retries=2
+                    TEST_IMAGE_URL, ext=".jpg", retries=2
                 )
 
         with pytest.raises(httpx.HTTPStatusError):
@@ -192,10 +200,11 @@ class TestCacheAudioFromUrl:
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
         async def run():
-            with patch("httpx.AsyncClient", return_value=mock_client):
+            with patch("httpx.AsyncClient", return_value=mock_client), \
+                 patch("tools.url_safety.is_safe_url", return_value=True):
                 from gateway.platforms.base import cache_audio_from_url
                 return await cache_audio_from_url(
-                    "http://example.com/voice.ogg", ext=".ogg"
+                    TEST_AUDIO_URL, ext=".ogg"
                 )
 
         path = asyncio.run(run())
@@ -221,10 +230,11 @@ class TestCacheAudioFromUrl:
 
         async def run():
             with patch("httpx.AsyncClient", return_value=mock_client), \
-                 patch("asyncio.sleep", mock_sleep):
+                 patch("asyncio.sleep", mock_sleep), \
+                 patch("tools.url_safety.is_safe_url", return_value=True):
                 from gateway.platforms.base import cache_audio_from_url
                 return await cache_audio_from_url(
-                    "http://example.com/voice.ogg", ext=".ogg", retries=2
+                    TEST_AUDIO_URL, ext=".ogg", retries=2
                 )
 
         path = asyncio.run(run())
@@ -249,10 +259,11 @@ class TestCacheAudioFromUrl:
 
         async def run():
             with patch("httpx.AsyncClient", return_value=mock_client), \
-                 patch("asyncio.sleep", new_callable=AsyncMock):
+                 patch("asyncio.sleep", new_callable=AsyncMock), \
+                 patch("tools.url_safety.is_safe_url", return_value=True):
                 from gateway.platforms.base import cache_audio_from_url
                 return await cache_audio_from_url(
-                    "http://example.com/voice.ogg", ext=".ogg", retries=2
+                    TEST_AUDIO_URL, ext=".ogg", retries=2
                 )
 
         path = asyncio.run(run())
@@ -276,10 +287,11 @@ class TestCacheAudioFromUrl:
 
         async def run():
             with patch("httpx.AsyncClient", return_value=mock_client), \
-                 patch("asyncio.sleep", new_callable=AsyncMock):
+                 patch("asyncio.sleep", new_callable=AsyncMock), \
+                 patch("tools.url_safety.is_safe_url", return_value=True):
                 from gateway.platforms.base import cache_audio_from_url
                 return await cache_audio_from_url(
-                    "http://example.com/voice.ogg", ext=".ogg", retries=2
+                    TEST_AUDIO_URL, ext=".ogg", retries=2
                 )
 
         path = asyncio.run(run())
@@ -297,10 +309,11 @@ class TestCacheAudioFromUrl:
 
         async def run():
             with patch("httpx.AsyncClient", return_value=mock_client), \
-                 patch("asyncio.sleep", new_callable=AsyncMock):
+                 patch("asyncio.sleep", new_callable=AsyncMock), \
+                 patch("tools.url_safety.is_safe_url", return_value=True):
                 from gateway.platforms.base import cache_audio_from_url
                 await cache_audio_from_url(
-                    "http://example.com/voice.ogg", ext=".ogg", retries=2
+                    TEST_AUDIO_URL, ext=".ogg", retries=2
                 )
 
         with pytest.raises(httpx.TimeoutException):
@@ -321,10 +334,11 @@ class TestCacheAudioFromUrl:
 
         async def run():
             with patch("httpx.AsyncClient", return_value=mock_client), \
-                 patch("asyncio.sleep", mock_sleep):
+                 patch("asyncio.sleep", mock_sleep), \
+                 patch("tools.url_safety.is_safe_url", return_value=True):
                 from gateway.platforms.base import cache_audio_from_url
                 await cache_audio_from_url(
-                    "http://example.com/voice.ogg", ext=".ogg", retries=2
+                    TEST_AUDIO_URL, ext=".ogg", retries=2
                 )
 
         with pytest.raises(httpx.HTTPStatusError):

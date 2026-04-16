@@ -245,6 +245,28 @@ class TestBuildSessionContextPrompt:
         assert "dangerous actions" in prompt.lower()
         assert "standard user" in prompt.lower()
 
+    def test_prompt_requires_truthful_verifiable_action_claims(self):
+        config = GatewayConfig(
+            platforms={
+                Platform.QQ_NAPCAT: PlatformConfig(enabled=True),
+            },
+        )
+        source = SessionSource(
+            platform=Platform.QQ_NAPCAT,
+            chat_id="179033731",
+            chat_type="dm",
+            user_id="179033731",
+            user_name="發發發",
+        )
+        ctx = build_session_context(source, config)
+
+        prompt = build_session_context_prompt(ctx)
+
+        assert "action truthfulness" in prompt.lower()
+        assert "do not claim" in prompt.lower()
+        assert "tool in this turn actually succeeded" in prompt.lower()
+        assert "checked a file/directory" in prompt.lower()
+
     def test_prompt_tells_agent_not_to_parrot_admin_metadata(self):
         config = GatewayConfig(
             platforms={
@@ -269,6 +291,59 @@ class TestBuildSessionContextPrompt:
 
         assert "address them naturally and respectfully" in prompt.lower()
         assert "do not mechanically repeat raw user ids" in prompt.lower()
+
+    def test_prompt_biases_qq_group_admin_turns_toward_direct_reply(self):
+        config = GatewayConfig(
+            platforms={
+                Platform.QQ_NAPCAT: PlatformConfig(enabled=True),
+            },
+        )
+        source = SessionSource(
+            platform=Platform.QQ_NAPCAT,
+            chat_id="640672495",
+            chat_type="group",
+            user_id="179033731",
+            user_name="發發發",
+            chat_name="QQ项目群",
+        )
+        ctx = build_session_context(
+            source,
+            config,
+            admin_user_ids=["179033731"],
+            is_admin_user=True,
+        )
+
+        prompt = build_session_context_prompt(ctx)
+
+        assert "qq group admin turn handling" in prompt.lower()
+        assert "direct response by default" in prompt.lower()
+        assert "instead of returning [[no_reply]]" in prompt.lower()
+
+    def test_non_admin_prompt_scopes_owner_titles_to_admin_only(self):
+        config = GatewayConfig(
+            platforms={
+                Platform.QQ_NAPCAT: PlatformConfig(enabled=True),
+            },
+        )
+        source = SessionSource(
+            platform=Platform.QQ_NAPCAT,
+            chat_id="555001",
+            chat_type="dm",
+            user_id="555001",
+            user_name="陌生人",
+        )
+        ctx = build_session_context(
+            source,
+            config,
+            admin_user_ids=["179033731"],
+            is_admin_user=False,
+        )
+
+        prompt = build_session_context_prompt(ctx)
+
+        assert "董事长" in prompt
+        assert "owner-specific nicknames or titles" in prompt.lower()
+        assert "administrator user ids" in prompt.lower()
 
     def test_discord_prompt_with_channel_topic(self):
         """Channel topic should appear in the session context prompt."""

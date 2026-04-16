@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, SendResult
+from gateway.platforms.base import BasePlatformAdapter, MessageEvent, SendResult
 from gateway.session import SessionSource
 
 
@@ -89,6 +89,39 @@ class LongPreviewAgent:
         }
 
 
+class StatusOnlyAgent:
+    def __init__(self, **kwargs):
+        self.status_callback = kwargs.get("status_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        self.status_callback(
+            "lifecycle",
+            "🔄 Primary model failed — switching to fallback: gpt-5.4 via custom",
+        )
+        self.status_callback(
+            "context_pressure",
+            "⚠️ Context: ▰▰▰▰▰▰▰▰▰▰ 100% to compaction",
+        )
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class EmptyReplyAgent:
+    def __init__(self, **kwargs):
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        return {
+            "final_response": "(empty)",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
 def _make_runner(adapter):
     gateway_run = importlib.import_module("gateway.run")
     GatewayRunner = gateway_run.GatewayRunner
@@ -141,14 +174,11 @@ async def test_run_agent_progress_stays_in_originating_topic(monkeypatch, tmp_pa
     )
 
     assert result["final_response"] == "done"
-    assert adapter.sent == [
-        {
-            "chat_id": "-1001",
-            "content": '💻 terminal: "pwd"',
-            "reply_to": None,
-            "metadata": {"thread_id": "17585"},
-        }
-    ]
+    assert len(adapter.sent) == 1
+    assert adapter.sent[0]["chat_id"] == "-1001"
+    assert adapter.sent[0]["content"].endswith('terminal: "pwd"')
+    assert adapter.sent[0]["reply_to"] is None
+    assert adapter.sent[0]["metadata"] == {"thread_id": "17585"}
     assert adapter.edits
     assert all(call["metadata"] == {"thread_id": "17585"} for call in adapter.typing)
 
@@ -235,6 +265,56 @@ async def test_run_agent_progress_uses_event_message_id_for_slack_dm(monkeypatch
     assert adapter.sent
     assert adapter.sent[0]["metadata"] == {"thread_id": "1234567890.000001"}
     assert all(call["metadata"] == {"thread_id": "1234567890.000001"} for call in adapter.typing)
+
+
+@pytest.mark.asyncio
+async def test_run_agent_empty_reply_uses_event_metadata_for_group_fallback(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "off")
+
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = EmptyReplyAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    adapter = ProgressCaptureAdapter(platform=Platform.QQ_NAPCAT)
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
+
+    source = SessionSource(
+        platform=Platform.QQ_NAPCAT,
+        chat_id="987654",
+        chat_type="group",
+        user_id="123456",
+        user_name="tester",
+    )
+    event = MessageEvent(
+        text="ok",
+        source=source,
+        metadata={
+            "group_trigger_reason": "require_mention_disabled",
+            "explicit_group_trigger": True,
+            "explicit_group_trigger_reason": "bot_mention",
+        },
+        message_id="m-empty-reply",
+    )
+
+    result = await runner._run_agent(
+        message="ok",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-empty",
+        session_key="agent:main:qq_napcat:group:987654",
+        raw_message=event.raw_message,
+        event=event,
+    )
+
+    assert result["final_response"] == "刚才我这轮空转了，但消息我收到了。你再发一遍，或者我继续接着干。"
 
 
 # ---------------------------------------------------------------------------
@@ -334,3 +414,88 @@ def test_all_mode_no_truncation_when_preview_fits(monkeypatch, tmp_path):
     content = adapter.sent[0]["content"]
     # With a 200-char cap, the 165-char command should NOT be truncated
     assert "..." not in content, f"Preview was truncated when it shouldn't be: {content}"
+
+
+@pytest.mark.asyncio
+async def test_run_agent_suppresses_internal_status_messages_for_qq(monkeypatch, tmp_path):
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = StatusOnlyAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    adapter = ProgressCaptureAdapter(platform=Platform.QQ_NAPCAT)
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+
+    source = SessionSource(
+        platform=Platform.QQ_NAPCAT,
+        chat_id="987654",
+        chat_type="group",
+        thread_id=None,
+    )
+
+    result = await runner._run_agent(
+        message="@马嘎 在?",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-qq-status",
+        session_key="agent:main:qq_napcat:group:987654",
+    )
+
+    assert result["final_response"] == "done"
+    assert adapter.sent == []
+
+
+@pytest.mark.asyncio
+async def test_run_agent_preserves_internal_status_messages_for_telegram(monkeypatch, tmp_path):
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = StatusOnlyAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    adapter = ProgressCaptureAdapter(platform=Platform.TELEGRAM)
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="12345",
+        chat_type="dm",
+        thread_id=None,
+    )
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-telegram-status",
+        session_key="agent:main:telegram:dm:12345",
+    )
+
+    assert result["final_response"] == "done"
+    assert adapter.sent == [
+        {
+            "chat_id": "12345",
+            "content": "🔄 Primary model failed — switching to fallback: gpt-5.4 via custom",
+            "reply_to": None,
+            "metadata": None,
+        },
+        {
+            "chat_id": "12345",
+            "content": "⚠️ Context: ▰▰▰▰▰▰▰▰▰▰ 100% to compaction",
+            "reply_to": None,
+            "metadata": None,
+        },
+    ]

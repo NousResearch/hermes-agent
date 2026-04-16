@@ -105,3 +105,95 @@ async def test_gateway_stop_interrupts_running_agents_and_cancels_adapter_tasks(
     assert runner._pending_messages == {}
     assert runner._pending_approvals == {}
     assert runner._shutdown_event.is_set() is True
+
+
+def test_signal_handler_arms_single_force_exit_timer(monkeypatch):
+    from gateway.run import _make_gateway_signal_handler
+
+    runner = MagicMock()
+    runner.stop = AsyncMock()
+
+    scheduled = []
+
+    class FakeTimer:
+        def __init__(self, interval, fn):
+            self.interval = interval
+            self.fn = fn
+            self.daemon = False
+            self.started = False
+            self.cancelled = False
+            scheduled.append(self)
+
+        def start(self):
+            self.started = True
+
+        def cancel(self):
+            self.cancelled = True
+
+    def fake_create_task(coro):
+        coro.close()
+        return MagicMock()
+
+    monkeypatch.setattr("gateway.run.threading.Timer", FakeTimer)
+    monkeypatch.setattr("gateway.run.asyncio.create_task", fake_create_task)
+
+    handler, cancel = _make_gateway_signal_handler(runner, force_exit_after=12.0)
+
+    handler()
+    handler()
+
+    assert len(scheduled) == 1
+    assert scheduled[0].interval == 12.0
+    assert scheduled[0].started is True
+
+    cancel()
+    assert scheduled[0].cancelled is True
+
+
+def test_force_exit_timer_callback_writes_status_and_exits(monkeypatch):
+    from gateway.run import _make_gateway_signal_handler
+
+    runner = MagicMock()
+    runner.stop = AsyncMock()
+
+    scheduled = []
+
+    class FakeTimer:
+        def __init__(self, interval, fn):
+            self.interval = interval
+            self.fn = fn
+            self.daemon = False
+            scheduled.append(self)
+
+        def start(self):
+            return None
+
+        def cancel(self):
+            return None
+
+    def fake_create_task(coro):
+        coro.close()
+        return MagicMock()
+
+    monkeypatch.setattr("gateway.run.threading.Timer", FakeTimer)
+    monkeypatch.setattr("gateway.run.asyncio.create_task", fake_create_task)
+
+    exits = []
+
+    def fake_exit(code):
+        exits.append(code)
+        raise SystemExit(code)
+
+    monkeypatch.setattr("gateway.run.os._exit", fake_exit)
+
+    with patch("gateway.status.remove_pid_file") as mock_remove_pid, \
+         patch("gateway.status.write_runtime_status") as mock_write_status:
+        handler, _cancel = _make_gateway_signal_handler(runner, force_exit_after=7.0)
+        handler()
+
+        with pytest.raises(SystemExit):
+            scheduled[0].fn()
+
+    mock_remove_pid.assert_called_once()
+    mock_write_status.assert_called_once()
+    assert exits == [0]

@@ -4371,24 +4371,47 @@ class AIAgent:
         # socket in CLOSE-WAIT and epoll_wait may never fire, causing the
         # agent to hang indefinitely.  Keepalive probes detect the dead
         # peer within ~60s (30s idle + 3×10s probes).
-        if "http_client" not in client_kwargs:
-            try:
-                import httpx as _httpx
-                import socket as _socket
-                _sock_opts = [(_socket.SOL_SOCKET, _socket.SO_KEEPALIVE, 1)]
-                if hasattr(_socket, "TCP_KEEPIDLE"):
-                    # Linux
-                    _sock_opts.append((_socket.IPPROTO_TCP, _socket.TCP_KEEPIDLE, 30))
-                    _sock_opts.append((_socket.IPPROTO_TCP, _socket.TCP_KEEPINTVL, 10))
-                    _sock_opts.append((_socket.IPPROTO_TCP, _socket.TCP_KEEPCNT, 3))
-                elif hasattr(_socket, "TCP_KEEPALIVE"):
-                    # macOS (uses TCP_KEEPALIVE instead of TCP_KEEPIDLE)
-                    _sock_opts.append((_socket.IPPROTO_TCP, _socket.TCP_KEEPALIVE, 30))
-                client_kwargs["http_client"] = _httpx.Client(
-                    transport=_httpx.HTTPTransport(socket_options=_sock_opts),
-                )
-            except Exception:
-                pass  # Fall through to default transport if socket opts fail
+        #
+        # Always create a *fresh* httpx.Client here regardless of whether
+        # client_kwargs already carries one.  The former guard
+        # ``if "http_client" not in client_kwargs`` caused a use-after-close
+        # bug: _create_request_openai_client copies self._client_kwargs
+        # (shallow copy), so the per-request OpenAI client receives the same
+        # httpx.Client object as the shared/init client.  OpenAI.close() calls
+        # httpx.Client.close(), which marks that transport as closed.  Any
+        # subsequent OpenAI client built from the same self._client_kwargs
+        # inherits the already-closed transport and immediately raises
+        # APIConnectionError("Connection error.") on the first request —
+        # typically the second API call in a session (e.g. after a tool result).
+        try:
+            import httpx as _httpx
+            import socket as _socket
+            _sock_opts = [(_socket.SOL_SOCKET, _socket.SO_KEEPALIVE, 1)]
+            if hasattr(_socket, "TCP_KEEPIDLE"):
+                # Linux
+                _sock_opts.append((_socket.IPPROTO_TCP, _socket.TCP_KEEPIDLE, 30))
+                _sock_opts.append((_socket.IPPROTO_TCP, _socket.TCP_KEEPINTVL, 10))
+                _sock_opts.append((_socket.IPPROTO_TCP, _socket.TCP_KEEPCNT, 3))
+            elif hasattr(_socket, "TCP_KEEPALIVE"):
+                # macOS (uses TCP_KEEPALIVE instead of TCP_KEEPIDLE)
+                _sock_opts.append((_socket.IPPROTO_TCP, _socket.TCP_KEEPALIVE, 30))
+            # Also honour standard proxy environment variables.  httpx ignores
+            # HTTPS_PROXY / HTTP_PROXY when a custom transport is supplied, so
+            # we must forward them explicitly.
+            _proxy_url = (
+                os.environ.get("HTTPS_PROXY")
+                or os.environ.get("https_proxy")
+                or os.environ.get("HTTP_PROXY")
+                or os.environ.get("http_proxy")
+            )
+            _http_client_kwargs: dict = {
+                "transport": _httpx.HTTPTransport(socket_options=_sock_opts),
+            }
+            if _proxy_url:
+                _http_client_kwargs["proxy"] = _proxy_url
+            client_kwargs["http_client"] = _httpx.Client(**_http_client_kwargs)
+        except Exception:
+            pass  # Fall through to default transport if socket opts fail
         client = OpenAI(**client_kwargs)
         logger.info(
             "OpenAI client created (%s, shared=%s) %s",

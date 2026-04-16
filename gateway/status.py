@@ -188,8 +188,8 @@ def _write_json_file(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(payload))
 
 
-def _read_pid_record() -> Optional[dict]:
-    pid_path = _get_pid_path()
+def _read_pid_record(pid_path: Optional[Path] = None) -> Optional[dict]:
+    pid_path = pid_path or _get_pid_path()
     if not pid_path.exists():
         return None
 
@@ -210,6 +210,18 @@ def _read_pid_record() -> Optional[dict]:
     if isinstance(payload, dict):
         return payload
     return None
+
+
+def _cleanup_invalid_pid_path(pid_path: Path, *, cleanup_stale: bool) -> None:
+    if not cleanup_stale:
+        return
+    try:
+        if pid_path == _get_pid_path():
+            remove_pid_file()
+        else:
+            pid_path.unlink(missing_ok=True)
+    except Exception:
+        pass
 
 
 def write_pid_file() -> None:
@@ -413,43 +425,52 @@ def release_all_scoped_locks() -> int:
     return removed
 
 
-def get_running_pid() -> Optional[int]:
+def get_running_pid(
+    pid_path: Optional[Path] = None,
+    *,
+    cleanup_stale: bool = True,
+) -> Optional[int]:
     """Return the PID of a running gateway instance, or ``None``.
 
     Checks the PID file and verifies the process is actually alive.
     Cleans up stale PID files automatically.
     """
-    record = _read_pid_record()
+    resolved_pid_path = pid_path or _get_pid_path()
+    record = _read_pid_record(resolved_pid_path)
     if not record:
-        remove_pid_file()
+        _cleanup_invalid_pid_path(resolved_pid_path, cleanup_stale=cleanup_stale)
         return None
 
     try:
         pid = int(record["pid"])
     except (KeyError, TypeError, ValueError):
-        remove_pid_file()
+        _cleanup_invalid_pid_path(resolved_pid_path, cleanup_stale=cleanup_stale)
         return None
 
     try:
         os.kill(pid, 0)  # signal 0 = existence check, no actual signal sent
     except (ProcessLookupError, PermissionError):
-        remove_pid_file()
+        _cleanup_invalid_pid_path(resolved_pid_path, cleanup_stale=cleanup_stale)
         return None
 
     recorded_start = record.get("start_time")
     current_start = _get_process_start_time(pid)
     if recorded_start is not None and current_start is not None and current_start != recorded_start:
-        remove_pid_file()
+        _cleanup_invalid_pid_path(resolved_pid_path, cleanup_stale=cleanup_stale)
         return None
 
     if not _looks_like_gateway_process(pid):
         if not _record_looks_like_gateway(record):
-            remove_pid_file()
+            _cleanup_invalid_pid_path(resolved_pid_path, cleanup_stale=cleanup_stale)
             return None
 
     return pid
 
 
-def is_gateway_running() -> bool:
+def is_gateway_running(
+    pid_path: Optional[Path] = None,
+    *,
+    cleanup_stale: bool = True,
+) -> bool:
     """Check if the gateway daemon is currently running."""
-    return get_running_pid() is not None
+    return get_running_pid(pid_path, cleanup_stale=cleanup_stale) is not None

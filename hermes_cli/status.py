@@ -342,73 +342,36 @@ def show_status(args):
     # =========================================================================
     print()
     print(color("◆ Gateway Service", Colors.CYAN, Colors.BOLD))
-    
-    if _is_termux():
-        try:
-            from hermes_cli.gateway import find_gateway_pids
-            gateway_pids = find_gateway_pids()
-        except Exception:
-            gateway_pids = []
-        is_running = bool(gateway_pids)
+
+    try:
+        from hermes_cli.gateway import get_gateway_runtime_snapshot, _format_gateway_pids
+
+        snapshot = get_gateway_runtime_snapshot()
+        is_running = snapshot.running
         print(f"  Status:       {check_mark(is_running)} {'running' if is_running else 'stopped'}")
-        print("  Manager:      Termux / manual process")
-        if gateway_pids:
-            rendered = ", ".join(str(pid) for pid in gateway_pids[:3])
-            if len(gateway_pids) > 3:
-                rendered += ", ..."
-            print(f"  PID(s):       {rendered}")
-        else:
+        print(f"  Manager:      {snapshot.manager}")
+        if snapshot.gateway_pids:
+            print(f"  PID(s):       {_format_gateway_pids(snapshot.gateway_pids)}")
+        if snapshot.has_process_service_mismatch:
+            print("  Service:      installed but not managing the current running gateway")
+        elif _is_termux() and not snapshot.gateway_pids:
             print("  Start with:   hermes gateway")
             print("  Note:         Android may stop background jobs when Termux is suspended")
-
-    elif sys.platform.startswith('linux'):
-        from hermes_constants import is_container
-        if is_container():
-            # Docker/Podman: no systemd — check for running gateway processes
-            try:
-                from hermes_cli.gateway import find_gateway_pids
-                gateway_pids = find_gateway_pids()
-                is_active = len(gateway_pids) > 0
-            except Exception:
-                is_active = False
-            print(f"  Status:       {check_mark(is_active)} {'running' if is_active else 'stopped'}")
-            print("  Manager:      docker (foreground)")
+        elif snapshot.service_installed and not snapshot.service_running:
+            print("  Service:      installed but stopped")
+    except Exception:
+        if _is_termux():
+            print(f"  Status:       {color('unknown', Colors.DIM)}")
+            print("  Manager:      Termux / manual process")
+        elif sys.platform.startswith('linux'):
+            print(f"  Status:       {color('unknown', Colors.DIM)}")
+            print("  Manager:      systemd/manual")
+        elif sys.platform == 'darwin':
+            print(f"  Status:       {color('unknown', Colors.DIM)}")
+            print("  Manager:      launchd")
         else:
-            try:
-                from hermes_cli.gateway import get_service_name
-                _gw_svc = get_service_name()
-            except Exception:
-                _gw_svc = "hermes-gateway"
-            try:
-                result = subprocess.run(
-                    ["systemctl", "--user", "is-active", _gw_svc],
-                    capture_output=True,
-                    text=True,
-                    timeout=5
-                )
-                is_active = result.stdout.strip() == "active"
-            except (FileNotFoundError, subprocess.TimeoutExpired):
-                is_active = False
-            print(f"  Status:       {check_mark(is_active)} {'running' if is_active else 'stopped'}")
-            print("  Manager:      systemd (user)")
-        
-    elif sys.platform == 'darwin':
-        from hermes_cli.gateway import get_launchd_label
-        try:
-            result = subprocess.run(
-                ["launchctl", "list", get_launchd_label()],
-                capture_output=True,
-                text=True,
-                timeout=5
-            )
-            is_loaded = result.returncode == 0
-        except subprocess.TimeoutExpired:
-            is_loaded = False
-        print(f"  Status:       {check_mark(is_loaded)} {'loaded' if is_loaded else 'not loaded'}")
-        print("  Manager:      launchd")
-    else:
-        print(f"  Status:       {color('N/A', Colors.DIM)}")
-        print("  Manager:      (not supported on this platform)")
+            print(f"  Status:       {color('N/A', Colors.DIM)}")
+            print("  Manager:      (not supported on this platform)")
     
     # =========================================================================
     # Cron Jobs

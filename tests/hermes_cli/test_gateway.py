@@ -179,6 +179,21 @@ def test_install_linux_gateway_from_setup_system_choice_as_root_installs(monkeyp
     assert calls == [(True, True, "alice")]
 
 
+def test_find_gateway_pids_falls_back_to_pid_file_when_process_scan_fails(monkeypatch):
+    monkeypatch.setattr(gateway, "_get_service_pids", lambda: set())
+    monkeypatch.setattr(gateway, "is_windows", lambda: False)
+    monkeypatch.setattr("gateway.status.get_running_pid", lambda: 321)
+
+    def fake_run(cmd, **kwargs):
+        if cmd[:4] == ["ps", "-A", "eww", "-o"]:
+            return SimpleNamespace(returncode=1, stdout="", stderr="ps failed")
+        raise AssertionError(f"Unexpected command: {cmd}")
+
+    monkeypatch.setattr(gateway.subprocess, "run", fake_run)
+
+    assert gateway.find_gateway_pids() == [321]
+
+
 # ---------------------------------------------------------------------------
 # _wait_for_gateway_exit
 # ---------------------------------------------------------------------------

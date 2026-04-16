@@ -6,7 +6,6 @@ import os
 from pathlib import Path
 from typing import Any, Dict
 
-from utils import env_var_enabled
 
 _DEFAULT_BROWSER_PROVIDER = "local"
 _DEFAULT_MODAL_MODE = "auto"
@@ -14,8 +13,26 @@ _VALID_MODAL_MODES = {"auto", "direct", "managed"}
 
 
 def managed_nous_tools_enabled() -> bool:
-    """Return True when the hidden Nous-managed tools feature flag is enabled."""
-    return env_var_enabled("HERMES_ENABLE_NOUS_MANAGED_TOOLS")
+    """Return True when the user has an active paid Nous subscription.
+
+    The Tool Gateway is available to any Nous subscriber who is NOT on
+    the free tier.  We intentionally catch all exceptions and return
+    False — never block the agent startup path.
+    """
+    try:
+        from hermes_cli.auth import get_nous_auth_status
+
+        status = get_nous_auth_status()
+        if not status.get("logged_in"):
+            return False
+
+        from hermes_cli.models import check_nous_free_tier
+
+        if check_nous_free_tier():
+            return False  # free-tier users don't get gateway access
+        return True
+    except Exception:
+        return False
 
 
 def normalize_browser_cloud_provider(value: object | None) -> str:
@@ -87,3 +104,18 @@ def resolve_openai_audio_api_key() -> str:
         os.getenv("VOICE_TOOLS_OPENAI_KEY", "")
         or os.getenv("OPENAI_API_KEY", "")
     ).strip()
+
+
+def prefers_gateway(config_section: str) -> bool:
+    """Return True when the user opted into the Tool Gateway for this tool.
+
+    Reads ``<section>.use_gateway`` from config.yaml.  Never raises.
+    """
+    try:
+        from hermes_cli.config import load_config
+        section = (load_config() or {}).get(config_section)
+        if isinstance(section, dict):
+            return bool(section.get("use_gateway"))
+    except Exception:
+        pass
+    return False

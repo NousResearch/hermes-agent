@@ -258,6 +258,15 @@ def get_nous_subscription_features(
         terminal_cfg.get("modal_mode")
     )
 
+    # use_gateway flags — when True, the user explicitly opted into the
+    # Tool Gateway via `hermes model`, so direct credentials should NOT
+    # prevent gateway routing.
+    web_use_gateway = bool(web_cfg.get("use_gateway"))
+    tts_use_gateway = bool(tts_cfg.get("use_gateway"))
+    browser_use_gateway = bool(browser_cfg.get("use_gateway"))
+    image_gen_cfg = config.get("image_gen") if isinstance(config.get("image_gen"), dict) else {}
+    image_use_gateway = bool(image_gen_cfg.get("use_gateway"))
+
     direct_exa = bool(get_env_value("EXA_API_KEY"))
     direct_firecrawl = bool(get_env_value("FIRECRAWL_API_KEY") or get_env_value("FIRECRAWL_API_URL"))
     direct_parallel = bool(get_env_value("PARALLEL_API_KEY"))
@@ -269,6 +278,21 @@ def get_nous_subscription_features(
     direct_browserbase = bool(get_env_value("BROWSERBASE_API_KEY") and get_env_value("BROWSERBASE_PROJECT_ID"))
     direct_browser_use = bool(get_env_value("BROWSER_USE_API_KEY"))
     direct_modal = has_direct_modal_credentials()
+
+    # When use_gateway is set, suppress direct credentials for managed detection
+    if web_use_gateway:
+        direct_firecrawl = False
+        direct_exa = False
+        direct_parallel = False
+        direct_tavily = False
+    if image_use_gateway:
+        direct_fal = False
+    if tts_use_gateway:
+        direct_openai_tts = False
+        direct_elevenlabs = False
+    if browser_use_gateway:
+        direct_browser_use = False
+        direct_browserbase = False
 
     managed_web_available = managed_tools_flag and nous_auth_present and is_managed_tool_gateway_ready("firecrawl")
     managed_image_available = managed_tools_flag and nous_auth_present and is_managed_tool_gateway_ready("fal-queue")
@@ -440,37 +464,7 @@ def get_nous_subscription_features(
     )
 
 
-def get_nous_subscription_explainer_lines() -> list[str]:
-    if not managed_nous_tools_enabled():
-        return []
 
-    return [
-        "Nous subscription enables managed web tools, image generation, OpenAI TTS, and browser automation by default.",
-        "Those managed tools bill to your Nous subscription. Modal execution is optional and can bill to your subscription too.",
-        "Change these later with: hermes setup tools, hermes setup terminal, or hermes status.",
-    ]
-
-
-def apply_nous_provider_defaults(config: Dict[str, object]) -> set[str]:
-    """Apply provider-level Nous defaults shared by `hermes setup` and `hermes model`."""
-    if not managed_nous_tools_enabled():
-        return set()
-
-    features = get_nous_subscription_features(config)
-    if not features.provider_is_nous:
-        return set()
-
-    tts_cfg = config.get("tts")
-    if not isinstance(tts_cfg, dict):
-        tts_cfg = {}
-        config["tts"] = tts_cfg
-
-    current_tts = str(tts_cfg.get("provider") or "edge").strip().lower()
-    if current_tts not in {"", "edge"}:
-        return set()
-
-    tts_cfg["provider"] = "openai"
-    return {"tts"}
 
 
 def apply_nous_managed_defaults(
@@ -529,4 +523,256 @@ def apply_nous_managed_defaults(
     if "image_gen" in selected_toolsets and not get_env_value("FAL_KEY"):
         changed.add("image_gen")
 
+    return changed
+
+
+# ---------------------------------------------------------------------------
+# Tool Gateway offer — single Y/n prompt after model selection
+# ---------------------------------------------------------------------------
+
+_GATEWAY_TOOL_LABELS = {
+    "web": "Web search & extract (Firecrawl)",
+    "image_gen": "Image generation (FAL)",
+    "tts": "Text-to-speech (OpenAI TTS)",
+    "browser": "Browser automation (Browser Use)",
+}
+
+
+def _get_gateway_direct_credentials() -> Dict[str, bool]:
+    """Return a dict of tool_key -> has_direct_credentials."""
+    return {
+        "web": bool(
+            get_env_value("FIRECRAWL_API_KEY")
+            or get_env_value("FIRECRAWL_API_URL")
+            or get_env_value("PARALLEL_API_KEY")
+            or get_env_value("TAVILY_API_KEY")
+            or get_env_value("EXA_API_KEY")
+        ),
+        "image_gen": bool(get_env_value("FAL_KEY")),
+        "tts": bool(
+            resolve_openai_audio_api_key()
+            or get_env_value("ELEVENLABS_API_KEY")
+        ),
+        "browser": bool(
+            get_env_value("BROWSER_USE_API_KEY")
+            or (get_env_value("BROWSERBASE_API_KEY") and get_env_value("BROWSERBASE_PROJECT_ID"))
+        ),
+    }
+
+
+_GATEWAY_DIRECT_LABELS = {
+    "web": "Firecrawl/Exa/Parallel/Tavily key",
+    "image_gen": "FAL key",
+    "tts": "OpenAI/ElevenLabs key",
+    "browser": "Browser Use/Browserbase key",
+}
+
+_ALL_GATEWAY_KEYS = ("web", "image_gen", "tts", "browser")
+
+
+def get_gateway_eligible_tools(
+    config: Optional[Dict[str, object]] = None,
+) -> tuple[list[str], list[str], list[str]]:
+    """Return (unconfigured, has_direct, already_managed) tool key lists.
+
+    - unconfigured: tools with no direct credentials (easy switch)
+    - has_direct: tools where the user has their own API keys
+    - already_managed: tools already routed through the gateway
+
+    All lists are empty when the user is not a paid Nous subscriber or
+    is not using Nous as their provider.
+    """
+    if not managed_nous_tools_enabled():
+        return [], [], []
+
+    if config is None:
+        from hermes_cli.config import load_config
+        config = load_config() or {}
+
+    # Quick provider check without the heavy get_nous_subscription_features call
+    model_cfg = config.get("model")
+    if not isinstance(model_cfg, dict) or str(model_cfg.get("provider") or "").strip().lower() != "nous":
+        return [], [], []
+
+    direct = _get_gateway_direct_credentials()
+
+    # Check which tools the user has explicitly opted into the gateway for.
+    # This is distinct from managed_by_nous which fires implicitly when
+    # no direct keys exist — we only skip the prompt for tools where
+    # use_gateway was explicitly set.
+    opted_in = {
+        "web": bool((config.get("web") if isinstance(config.get("web"), dict) else {}).get("use_gateway")),
+        "image_gen": bool((config.get("image_gen") if isinstance(config.get("image_gen"), dict) else {}).get("use_gateway")),
+        "tts": bool((config.get("tts") if isinstance(config.get("tts"), dict) else {}).get("use_gateway")),
+        "browser": bool((config.get("browser") if isinstance(config.get("browser"), dict) else {}).get("use_gateway")),
+    }
+
+    unconfigured: list[str] = []
+    has_direct: list[str] = []
+    already_managed: list[str] = []
+    for key in _ALL_GATEWAY_KEYS:
+        if opted_in.get(key):
+            already_managed.append(key)
+        elif direct.get(key):
+            has_direct.append(key)
+        else:
+            unconfigured.append(key)
+    return unconfigured, has_direct, already_managed
+
+
+def apply_gateway_defaults(
+    config: Dict[str, object],
+    tool_keys: list[str],
+) -> set[str]:
+    """Apply Tool Gateway config for the given tool keys.
+
+    Sets ``use_gateway: true`` in each tool's config section so the
+    runtime prefers the gateway even when direct API keys are present.
+
+    Returns the set of tools that were actually changed.
+    """
+    changed: set[str] = set()
+
+    web_cfg = config.get("web")
+    if not isinstance(web_cfg, dict):
+        web_cfg = {}
+        config["web"] = web_cfg
+
+    tts_cfg = config.get("tts")
+    if not isinstance(tts_cfg, dict):
+        tts_cfg = {}
+        config["tts"] = tts_cfg
+
+    browser_cfg = config.get("browser")
+    if not isinstance(browser_cfg, dict):
+        browser_cfg = {}
+        config["browser"] = browser_cfg
+
+    if "web" in tool_keys:
+        web_cfg["backend"] = "firecrawl"
+        web_cfg["use_gateway"] = True
+        changed.add("web")
+
+    if "tts" in tool_keys:
+        tts_cfg["provider"] = "openai"
+        tts_cfg["use_gateway"] = True
+        changed.add("tts")
+
+    if "browser" in tool_keys:
+        browser_cfg["cloud_provider"] = "browser-use"
+        browser_cfg["use_gateway"] = True
+        changed.add("browser")
+
+    if "image_gen" in tool_keys:
+        image_cfg = config.get("image_gen")
+        if not isinstance(image_cfg, dict):
+            image_cfg = {}
+            config["image_gen"] = image_cfg
+        image_cfg["use_gateway"] = True
+        changed.add("image_gen")
+
+    return changed
+
+
+def prompt_enable_tool_gateway(config: Dict[str, object]) -> set[str]:
+    """If eligible tools exist, prompt the user to enable the Tool Gateway.
+
+    Uses prompt_choice() with a description parameter so the curses TUI
+    shows the tool context alongside the choices.
+
+    Returns the set of tools that were enabled, or empty set if the user
+    declined or no tools were eligible.
+    """
+    unconfigured, has_direct, already_managed = get_gateway_eligible_tools(config)
+    if not unconfigured and not has_direct:
+        return set()
+
+    try:
+        from hermes_cli.setup import prompt_choice
+    except Exception:
+        return set()
+
+    # Build description lines showing full status of all gateway tools
+    desc_parts: list[str] = [
+        "",
+        "  The Tool Gateway gives you access to web search, image generation,",
+        "  text-to-speech, and browser automation through your Nous subscription.",
+        "  No need to sign up for separate API keys — just pick the tools you want.",
+        "",
+    ]
+    if already_managed:
+        for k in already_managed:
+            desc_parts.append(f"  ✓ {_GATEWAY_TOOL_LABELS[k]} — using Tool Gateway")
+    if unconfigured:
+        for k in unconfigured:
+            desc_parts.append(f"  ○ {_GATEWAY_TOOL_LABELS[k]} — not configured")
+    if has_direct:
+        for k in has_direct:
+            desc_parts.append(f"  ○ {_GATEWAY_TOOL_LABELS[k]} — using {_GATEWAY_DIRECT_LABELS[k]}")
+
+    # Build short choice labels — detail is in the description above
+    choices: list[str] = []
+    choice_keys: list[str] = []  # maps choice index -> action
+
+    if unconfigured and has_direct:
+        choices.append("Enable for all tools (existing keys kept, not used)")
+        choice_keys.append("all")
+
+        choices.append("Enable only for tools without existing keys")
+        choice_keys.append("unconfigured")
+
+        choices.append("Skip")
+        choice_keys.append("skip")
+
+    elif unconfigured:
+        choices.append("Enable Tool Gateway")
+        choice_keys.append("unconfigured")
+
+        choices.append("Skip")
+        choice_keys.append("skip")
+
+    else:
+        choices.append("Enable Tool Gateway (existing keys kept, not used)")
+        choice_keys.append("all")
+
+        choices.append("Skip")
+        choice_keys.append("skip")
+
+    description = "\n".join(desc_parts) if desc_parts else None
+    # Default to "Enable" when user has no direct keys (new user),
+    # default to "Skip" when they have existing keys to preserve.
+    default_idx = 0 if not has_direct else len(choices) - 1
+
+    try:
+        idx = prompt_choice(
+            "Your Nous subscription includes the Tool Gateway.",
+            choices,
+            default_idx,
+            description=description,
+        )
+    except (KeyboardInterrupt, EOFError, OSError, SystemExit):
+        return set()
+
+    action = choice_keys[idx]
+    if action == "skip":
+        return set()
+
+    if action == "all":
+        # Apply to switchable tools + ensure already-managed tools also
+        # have use_gateway persisted in config for consistency.
+        to_apply = list(_ALL_GATEWAY_KEYS)
+    else:
+        to_apply = unconfigured
+
+    changed = apply_gateway_defaults(config, to_apply)
+    if changed:
+        from hermes_cli.config import save_config
+        save_config(config)
+        # Only report the tools that actually switched (not already-managed ones)
+        newly_switched = changed - set(already_managed)
+        for key in sorted(newly_switched):
+            label = _GATEWAY_TOOL_LABELS.get(key, key)
+            print(f"  ✓ {label}: enabled via Nous subscription")
+        if already_managed and not newly_switched:
+            print("  (all tools already using Tool Gateway)")
     return changed

@@ -24,7 +24,7 @@ def test_get_nous_subscription_features_recognizes_direct_exa_backend(monkeypatc
 
 
 def test_get_nous_subscription_features_prefers_managed_modal_in_auto_mode(monkeypatch):
-    monkeypatch.setenv("HERMES_ENABLE_NOUS_MANAGED_TOOLS", "1")
+    monkeypatch.setattr("tools.tool_backend_helpers.managed_nous_tools_enabled", lambda: True)
     monkeypatch.setattr(ns, "get_env_value", lambda name: "")
     monkeypatch.setattr(ns, "get_nous_auth_status", lambda: {"logged_in": True})
     monkeypatch.setattr(ns, "managed_nous_tools_enabled", lambda: True)

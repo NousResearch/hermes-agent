@@ -39,7 +39,7 @@ from urllib.parse import urlencode
 import fal_client
 from tools.debug_helpers import DebugSession
 from tools.managed_tool_gateway import resolve_managed_tool_gateway
-from tools.tool_backend_helpers import managed_nous_tools_enabled
+from tools.tool_backend_helpers import managed_nous_tools_enabled, prefers_gateway
 
 logger = logging.getLogger(__name__)
 
@@ -87,8 +87,9 @@ _managed_fal_client_lock = threading.Lock()
 
 
 def _resolve_managed_fal_gateway():
-    """Return managed fal-queue gateway config when direct FAL credentials are absent."""
-    if os.getenv("FAL_KEY"):
+    """Return managed fal-queue gateway config when the user prefers the gateway
+    or direct FAL credentials are absent."""
+    if os.getenv("FAL_KEY") and not prefers_gateway("image_gen"):
         return None
     return resolve_managed_tool_gateway("fal-queue")
 

@@ -762,8 +762,8 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             if modal_state["managed_mode_blocked"]:
                 raise ValueError(
                     "Modal backend is configured for managed mode, but "
-                    "HERMES_ENABLE_NOUS_MANAGED_TOOLS is not enabled and no direct "
-                    "Modal credentials/config were found. Enable the feature flag or "
+                    "a paid Nous subscription is required for the Tool Gateway and no direct "
+                    "Modal credentials/config were found. Log in with `hermes model` or "
                     "choose TERMINAL_MODAL_MODE=direct/auto."
                 )
             if modal_state["mode"] == "managed":
@@ -1577,8 +1577,8 @@ def check_terminal_requirements() -> bool:
                 if modal_state["managed_mode_blocked"]:
                     logger.error(
                         "Modal backend selected with TERMINAL_MODAL_MODE=managed, but "
-                        "HERMES_ENABLE_NOUS_MANAGED_TOOLS is not enabled and no direct "
-                        "Modal credentials/config were found. Enable the feature flag "
+                        "a paid Nous subscription is required for the Tool Gateway and no direct "
+                        "Modal credentials/config were found. Log in with `hermes model` "
                         "or choose TERMINAL_MODAL_MODE=direct/auto."
                     )
                     return False

@@ -167,3 +167,42 @@ def test_env_d_user_tier_still_overrides_project(tmp_path, monkeypatch):
 
     assert os.getenv("API_KEY") == "from-secrets"
     assert os.getenv("OTHER") == "project-val"
+
+
+def test_env_d_broken_symlink_skipped(tmp_path):
+    """Broken symlinks in env.d/ (stale nix-N.env) are silently skipped."""
+    home = tmp_path / "hermes"
+    home.mkdir()
+    env_d = home / "env.d"
+    env_d.mkdir()
+
+    # Valid file
+    (env_d / "a-good.env").write_text("GOOD=yes\n", encoding="utf-8")
+
+    # Broken symlink (target doesn't exist — simulates stale nix-2.env)
+    (env_d / "b-broken.env").symlink_to("/nonexistent/secret/path")
+
+    loaded = load_hermes_dotenv(hermes_home=home)
+
+    assert loaded == [env_d / "a-good.env"]
+    assert os.getenv("GOOD") == "yes"
+
+
+def test_env_d_valid_symlink_loaded(tmp_path):
+    """Valid symlinks in env.d/ (sops-nix/agenix secrets) are loaded."""
+    home = tmp_path / "hermes"
+    home.mkdir()
+    env_d = home / "env.d"
+    env_d.mkdir()
+
+    # Real secret file (simulates /run/secrets/hermes-env)
+    secret = tmp_path / "secret.env"
+    secret.write_text("SECRET_API_KEY=sk-live-abc\n", encoding="utf-8")
+
+    # Symlink in env.d pointing to the secret
+    (env_d / "nix-0.env").symlink_to(secret)
+
+    loaded = load_hermes_dotenv(hermes_home=home)
+
+    assert (env_d / "nix-0.env") in loaded
+    assert os.getenv("SECRET_API_KEY") == "sk-live-abc"

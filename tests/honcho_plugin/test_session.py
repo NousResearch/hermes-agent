@@ -501,6 +501,30 @@ class TestConcludeToolDispatch:
         provider._manager.create_conclusion.assert_not_called()
         provider._manager.delete_conclusion.assert_not_called()
 
+    def test_honcho_conclude_rejects_whitespace_only_conclusion(self):
+        """Whitespace-only conclusion should be treated as empty."""
+        import json
+        provider = HonchoMemoryProvider()
+        provider._session_initialized = True
+        provider._session_key = "telegram:123"
+        provider._manager = MagicMock()
+        result = provider.handle_tool_call("honcho_conclude", {"conclusion": "   "})
+        parsed = json.loads(result)
+        assert parsed == {"error": "Exactly one of conclusion or delete_id must be provided."}
+        provider._manager.create_conclusion.assert_not_called()
+
+    def test_honcho_conclude_rejects_whitespace_only_delete_id(self):
+        """Whitespace-only delete_id should be treated as empty."""
+        import json
+        provider = HonchoMemoryProvider()
+        provider._session_initialized = True
+        provider._session_key = "telegram:123"
+        provider._manager = MagicMock()
+        result = provider.handle_tool_call("honcho_conclude", {"delete_id": "  "})
+        parsed = json.loads(result)
+        assert parsed == {"error": "Exactly one of conclusion or delete_id must be provided."}
+        provider._manager.delete_conclusion.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # Message chunking

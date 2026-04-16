@@ -28,6 +28,9 @@ from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 
+# Internationalization support
+from hermes_cli.i18n.i18n import t, set_locale, get_locale
+
 logger = logging.getLogger(__name__)
 
 # Suppress startup messages for clean CLI experience

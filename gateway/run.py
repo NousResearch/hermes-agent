@@ -1992,7 +1992,20 @@ class GatewayRunner:
         
         if connected_count > 0:
             logger.info("Gateway running with %s platform(s)", connected_count)
-        
+
+        # Pre-wire voice callbacks on Discord adapters so persistent/auto-joined
+        # voice channels receive speech input immediately.  Without this, the
+        # callbacks are only set on the first manual join_voice_channel() call,
+        # so auto-joined channels silently drop all transcribed speech.
+        from gateway.platforms import discord as discord_mod
+        for platform_type, adapter in self.adapters.items():
+            if isinstance(adapter, discord_mod.DiscordAdapter):
+                if hasattr(adapter, "_voice_input_callback") and not adapter._voice_input_callback:
+                    adapter._voice_input_callback = self._handle_voice_channel_input
+                if hasattr(adapter, "_on_voice_disconnect") and not adapter._on_voice_disconnect:
+                    adapter._on_voice_disconnect = self._handle_voice_timeout_cleanup
+                logger.info("Pre-wired voice callbacks for Discord adapter")
+
         # Build initial channel directory for send_message name resolution
         try:
             from gateway.channel_directory import build_channel_directory

@@ -1916,6 +1916,41 @@ class TelegramAdapter(BasePlatformAdapter):
 
         text = content
 
+        # 0) Convert Markdown tables to bullet lists (tables don't render in Telegram)
+        def _convert_table(text: str) -> str:
+            lines = text.split('\n')
+            result = []
+            i = 0
+            while i < len(lines):
+                line = lines[i].strip()
+                # Detect table: line starts and ends with |
+                if line.startswith('|') and line.endswith('|') and line.count('|') >= 3:
+                    # Parse header
+                    headers = [c.strip() for c in line.split('|')[1:-1]]
+                    # Skip separator line (|---|---|)
+                    if i + 1 < len(lines) and re.match(r'^\|[\s\-:|]+\|$', lines[i + 1].strip()):
+                        i += 2
+                    else:
+                        i += 1
+                    # Parse data rows
+                    while i < len(lines):
+                        row = lines[i].strip()
+                        if not (row.startswith('|') and row.endswith('|')):
+                            break
+                        cells = [c.strip() for c in row.split('|')[1:-1]]
+                        if len(cells) >= 2 and len(headers) >= 2:
+                            result.append(f"• {cells[0]} → {cells[1]}")
+                        elif len(cells) >= 1:
+                            result.append(f"• {cells[0]}")
+                        i += 1
+                    result.append('')  # blank line after table
+                else:
+                    result.append(lines[i])
+                    i += 1
+            return '\n'.join(result)
+
+        text = _convert_table(text)
+
         # 1) Protect fenced code blocks (``` ... ```)
         #    Per MarkdownV2 spec, \ and ` inside pre/code must be escaped.
         def _protect_fenced(m):

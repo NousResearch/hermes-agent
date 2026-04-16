@@ -515,9 +515,17 @@ class GatewayStreamConsumer:
         self._fallback_final_send = False
         if not continuation.strip():
             # Nothing new to send — the visible partial already matches final text.
-            self._already_sent = True
-            self._final_response_sent = True
-            return
+            # BUT: if final_text itself has meaningful content (e.g. a timeout
+            # message after a long tool call), the prefix-based continuation
+            # calculation may wrongly conclude "already shown" because the
+            # streamed prefix was from a *previous* segment (before the tool
+            # boundary).  In that case, send the full final_text as-is (#10807).
+            if final_text.strip() and final_text != self._visible_prefix():
+                continuation = final_text
+            else:
+                self._already_sent = True
+                self._final_response_sent = True
+                return
 
         raw_limit = getattr(self.adapter, "MAX_MESSAGE_LENGTH", 4096)
         safe_limit = max(500, raw_limit - 100)

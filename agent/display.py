@@ -600,6 +600,45 @@ class KawaiiSpinner:
         "analyzing", "computing", "synthesizing", "formulating", "brainstorming",
     ]
 
+    @classmethod
+    def get_waiting_faces(cls) -> list:
+        """Return waiting faces from the active skin, falling back to KAWAII_WAITING."""
+        try:
+            skin = _get_skin()
+            if skin:
+                faces = skin.spinner.get("waiting_faces", [])
+                if faces:
+                    return faces
+        except Exception:
+            pass
+        return cls.KAWAII_WAITING
+
+    @classmethod
+    def get_thinking_faces(cls) -> list:
+        """Return thinking faces from the active skin, falling back to KAWAII_THINKING."""
+        try:
+            skin = _get_skin()
+            if skin:
+                faces = skin.spinner.get("thinking_faces", [])
+                if faces:
+                    return faces
+        except Exception:
+            pass
+        return cls.KAWAII_THINKING
+
+    @classmethod
+    def get_thinking_verbs(cls) -> list:
+        """Return thinking verbs from the active skin, falling back to THINKING_VERBS."""
+        try:
+            skin = _get_skin()
+            if skin:
+                verbs = skin.spinner.get("thinking_verbs", [])
+                if verbs:
+                    return verbs
+        except Exception:
+            pass
+        return cls.THINKING_VERBS
+
     def __init__(self, message: str = "", spinner_type: str = 'dots', print_fn=None):
         self.message = message
         self.spinner_frames = self.SPINNERS.get(spinner_type, self.SPINNERS['dots'])

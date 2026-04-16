@@ -447,6 +447,9 @@ def _resolve_openrouter_runtime(
                 use_config_base_url = True
         elif requested_norm == "custom" and cfg_provider == "custom":
             use_config_base_url = True
+        elif requested_norm == "openrouter" and cfg_provider == "openrouter":
+            # Explicit OpenRouter provider should honor config mirror (fixes #10622)
+            use_config_base_url = True
 
     base_url = (
         (explicit_base_url or "").strip()

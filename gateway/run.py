@@ -3805,7 +3805,12 @@ class GatewayRunner:
         if not history and source.platform and source.platform != Platform.LOCAL and source.platform != Platform.WEBHOOK:
             platform_name = source.platform.value
             env_key = f"{platform_name.upper()}_HOME_CHANNEL"
-            if not os.getenv(env_key):
+            # Check env var first, then config.yaml (fixes #10581)
+            home_channel = os.getenv(env_key)
+            if not home_channel:
+                gateway_config = _load_gateway_config()
+                home_channel = gateway_config.get(env_key)
+            if not home_channel:
                 adapter = self.adapters.get(source.platform)
                 if adapter:
                     await adapter.send(

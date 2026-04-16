@@ -1,5 +1,6 @@
 """Tests for the IBKR TWS/IB Gateway broker adapter."""
-
+import asyncio
+import threading
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -89,3 +90,51 @@ def test_submit_order_rejects_non_stock_assets_defensively():
 
     with pytest.raises(ValueError):
         adapter.submit_order(bad_intent)
+
+
+def test_submit_order_creates_event_loop_when_called_from_worker_thread():
+    adapter = IBKRTwsBrokerAdapter(BrokerageSettings())
+
+    class EventLoopCheckingIB:
+        def __init__(self):
+            self.connected = False
+
+        def isConnected(self):
+            return self.connected
+
+        def connect(self, host, port, clientId=0):
+            asyncio.get_event_loop()
+            self.connected = True
+            return True
+
+        def disconnect(self):
+            self.connected = False
+
+        def qualifyContracts(self, contract):
+            asyncio.get_event_loop()
+            return [contract]
+
+        def placeOrder(self, contract, order):
+            asyncio.get_event_loop()
+            return SimpleNamespace(
+                orderStatus=SimpleNamespace(status="Submitted"),
+                order=SimpleNamespace(orderId=1234),
+            )
+
+    result: list = []
+    errors: list[Exception] = []
+
+    def worker() -> None:
+        try:
+            result.append(adapter.submit_order(_make_intent()))
+        except Exception as exc:  # pragma: no cover - exercised in the red phase
+            errors.append(exc)
+
+    with patch("brokerage.brokers.ibkr_tws.IB", EventLoopCheckingIB):
+        thread = threading.Thread(target=worker)
+        thread.start()
+        thread.join()
+
+    assert errors == []
+    assert result[0].accepted is True
+    assert result[0].broker_order_id == "1234"

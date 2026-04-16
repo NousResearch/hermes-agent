@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 
@@ -91,7 +92,22 @@ class IBKRTwsBrokerAdapter(BrokerAdapter):
 
     # --- Connection management ---
 
+    def _ensure_thread_event_loop(self):
+        """Ensure the current thread has a live asyncio event loop for ib_insync."""
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            return loop
+
+        if loop.is_closed():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        return loop
+
     def _ensure_ib(self):
+        self._ensure_thread_event_loop()
         if IB is None:
             raise RuntimeError("ib_insync is not installed")
         if self._ib is None:

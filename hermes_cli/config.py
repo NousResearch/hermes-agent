@@ -241,13 +241,41 @@ def _secure_dir(path):
         pass
 
 
+def _is_container() -> bool:
+    """Detect if we're running inside a Docker/Podman/LXC container.
+
+    When Hermes runs in a container with volume-mounted config files, forcing
+    0o600 permissions breaks multi-process setups where the gateway and
+    dashboard run as different UIDs or the volume mount requires broader
+    permissions.
+    """
+    # Explicit opt-out
+    if os.environ.get("HERMES_CONTAINER") or os.environ.get("HERMES_SKIP_CHMOD"):
+        return True
+    # Docker / Podman marker file
+    if os.path.exists("/.dockerenv"):
+        return True
+    # LXC / cgroup-based detection
+    try:
+        with open("/proc/1/cgroup", "r") as f:
+            cgroup_content = f.read()
+        if "docker" in cgroup_content or "lxc" in cgroup_content or "kubepods" in cgroup_content:
+            return True
+    except (OSError, IOError):
+        pass
+    return False
+
+
 def _secure_file(path):
     """Set file to owner-only read/write (0600). No-op on Windows.
 
     Skipped in managed mode — the NixOS activation script sets
     group-readable permissions (0640) on config files.
+
+    Skipped in containers — Docker/Podman volume mounts often need broader
+    permissions.  Set HERMES_SKIP_CHMOD=1 to force-skip on other systems.
     """
-    if is_managed():
+    if is_managed() or _is_container():
         return
     try:
         if os.path.exists(str(path)):
@@ -2900,12 +2928,25 @@ def save_env_value(key: str, value: str):
         lines.append(f"{key}={value}\n")
     
     fd, tmp_path = tempfile.mkstemp(dir=str(env_path.parent), suffix='.tmp', prefix='.env_')
+    # Preserve original permissions so Docker volume mounts aren't clobbered.
+    original_mode = None
+    if env_path.exists():
+        try:
+            original_mode = stat.S_IMODE(env_path.stat().st_mode)
+        except OSError:
+            pass
     try:
         with os.fdopen(fd, 'w', **write_kw) as f:
             f.writelines(lines)
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp_path, env_path)
+        # Restore original permissions before _secure_file may tighten them.
+        if original_mode is not None:
+            try:
+                os.chmod(env_path, original_mode)
+            except OSError:
+                pass
     except BaseException:
         try:
             os.unlink(tmp_path)
@@ -2915,13 +2956,6 @@ def save_env_value(key: str, value: str):
     _secure_file(env_path)
 
     os.environ[key] = value
-
-    # Restrict .env permissions to owner-only (contains API keys)
-    if not _IS_WINDOWS:
-        try:
-            os.chmod(env_path, stat.S_IRUSR | stat.S_IWUSR)
-        except OSError:
-            pass
 
 
 def remove_env_value(key: str) -> bool:
@@ -2951,12 +2985,23 @@ def remove_env_value(key: str) -> bool:
 
     if found:
         fd, tmp_path = tempfile.mkstemp(dir=str(env_path.parent), suffix='.tmp', prefix='.env_')
+        # Preserve original permissions so Docker volume mounts aren't clobbered.
+        original_mode = None
+        try:
+            original_mode = stat.S_IMODE(env_path.stat().st_mode)
+        except OSError:
+            pass
         try:
             with os.fdopen(fd, 'w', **write_kw) as f:
                 f.writelines(new_lines)
                 f.flush()
                 os.fsync(f.fileno())
             os.replace(tmp_path, env_path)
+            if original_mode is not None:
+                try:
+                    os.chmod(env_path, original_mode)
+                except OSError:
+                    pass
         except BaseException:
             try:
                 os.unlink(tmp_path)

@@ -799,6 +799,35 @@ class TestFindGatewayPidsExclude:
 
         assert pids == [100]
 
+    def test_freebsd_ps_ww_output_detects_gateway(self, monkeypatch, tmp_path):
+        profile_dir = tmp_path / ".hermes"
+        profile_dir.mkdir(parents=True)
+        seen = {}
+
+        monkeypatch.setattr(gateway_cli, "is_windows", lambda: False)
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "_get_service_pids", lambda: set())
+        monkeypatch.setattr(gateway_cli, "_profile_arg", lambda hermes_home=None: "")
+
+        def fake_run(cmd, **kwargs):
+            seen["cmd"] = cmd
+            return subprocess.CompletedProcess(
+                cmd, 0,
+                stdout=(
+                    "87727 /home/pader/.hermes/hermes-agent/venv/bin/python3 "
+                    "/home/pader/.local/bin/hermes gateway run -v (python3.11)\n"
+                ),
+                stderr="",
+            )
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+        monkeypatch.setattr("os.getpid", lambda: 999)
+
+        pids = gateway_cli.find_gateway_pids()
+
+        assert pids == [87727]
+        assert seen["cmd"] == ["ps", "-A", "ww", "-o", "pid=,command="]
+
 
 # ---------------------------------------------------------------------------
 # Gateway mode writes exit code before restart (#8300)

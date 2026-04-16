@@ -221,8 +221,11 @@ def find_gateway_pids(exclude_pids: set | None = None, all_profiles: bool = Fals
                             pass
                     current_cmd = ""
         else:
+            # ``ps eww -ax`` fails on procps-ng 4.x (including common Docker
+            # images) with "must set personality to get -x option". The
+            # simpler GNU/BSD-compatible form works across those environments.
             result = subprocess.run(
-                ["ps", "-A", "eww", "-o", "pid=,command="],
+                ["ps", "ax", "-o", "pid=,command="],
                 capture_output=True,
                 text=True,
                 timeout=10,

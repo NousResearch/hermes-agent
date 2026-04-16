@@ -799,6 +799,31 @@ class TestFindGatewayPidsExclude:
 
         assert pids == [100]
 
+    def test_uses_portable_ps_args_on_linux(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "is_windows", lambda: False)
+        monkeypatch.setattr(gateway_cli, "_get_service_pids", lambda: set())
+        monkeypatch.setattr(gateway_cli, "_profile_arg", lambda hermes_home=None: "")
+        monkeypatch.setattr("os.getpid", lambda: 999)
+
+        seen_cmds = []
+
+        def fake_run(cmd, **kwargs):
+            seen_cmds.append(cmd)
+            assert cmd == ["ps", "ax", "-o", "pid=,command="]
+            return subprocess.CompletedProcess(
+                cmd,
+                0,
+                stdout="321 /usr/bin/python3 -m hermes_cli.main gateway run\n",
+                stderr="",
+            )
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        pids = gateway_cli.find_gateway_pids()
+
+        assert seen_cmds == [["ps", "ax", "-o", "pid=,command="]]
+        assert pids == [321]
+
 
 # ---------------------------------------------------------------------------
 # Gateway mode writes exit code before restart (#8300)

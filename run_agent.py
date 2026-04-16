@@ -614,6 +614,7 @@ class AIAgent:
         checkpoint_max_snapshots: int = 50,
         pass_session_id: bool = False,
         persist_session: bool = True,
+        cron_delivery_target: dict = None,
     ):
         """
         Initialize the AI Agent.
@@ -1167,6 +1168,8 @@ class AIAgent:
         # SQLite session store (optional -- provided by CLI or gateway)
         self._session_db = session_db
         self._parent_session_id = parent_session_id
+        # Per-job delivery target passed by cron scheduler (avoids os.environ race, issue #10769)
+        self._cron_delivery_target = cron_delivery_target
         self._last_flushed_db_idx = 0  # tracks DB-write cursor to prevent duplicate writes
         if self._session_db:
             try:
@@ -8131,6 +8134,11 @@ class AIAgent:
         # Guard stdio against OSError from broken pipes (systemd/headless/daemon).
         # Installed once, transparent when streams are healthy, prevents crash on write.
         _install_safe_stdio()
+
+        # Register this agent as the active agent for the current thread so
+        # tools (e.g. send_message_tool) can retrieve per-job context without
+        # relying on process-global os.environ (fixes issue #10769).
+        _set_current_agent(self)
 
         # Tag all log records on this thread with the session ID so
         # ``hermes logs --session <id>`` can filter a single conversation.

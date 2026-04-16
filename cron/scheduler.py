@@ -620,12 +620,10 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         except UnicodeDecodeError:
             load_dotenv(str(_hermes_home / ".env"), override=True, encoding="latin-1")
 
+        # Resolve delivery target into a local variable — NOT os.environ.
+        # Writing to os.environ is process-global and causes cross-talk when
+        # multiple cron jobs run concurrently (issue #10769).
         delivery_target = _resolve_delivery_target(job)
-        if delivery_target:
-            os.environ["HERMES_CRON_AUTO_DELIVER_PLATFORM"] = delivery_target["platform"]
-            os.environ["HERMES_CRON_AUTO_DELIVER_CHAT_ID"] = str(delivery_target["chat_id"])
-            if delivery_target.get("thread_id") is not None:
-                os.environ["HERMES_CRON_AUTO_DELIVER_THREAD_ID"] = str(delivery_target["thread_id"])
 
         model = job.get("model") or os.getenv("HERMES_MODEL") or ""
 
@@ -757,6 +755,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             platform="cron",
             session_id=_cron_session_id,
             session_db=_session_db,
+            cron_delivery_target=delivery_target,
         )
         
         # Run the agent with an *inactivity*-based timeout: the job can run
@@ -887,9 +886,6 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             "HERMES_SESSION_PLATFORM",
             "HERMES_SESSION_CHAT_ID",
             "HERMES_SESSION_CHAT_NAME",
-            "HERMES_CRON_AUTO_DELIVER_PLATFORM",
-            "HERMES_CRON_AUTO_DELIVER_CHAT_ID",
-            "HERMES_CRON_AUTO_DELIVER_THREAD_ID",
         ):
             os.environ.pop(key, None)
         if _session_db:

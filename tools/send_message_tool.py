@@ -274,7 +274,25 @@ def _describe_media_for_mirror(media_files):
 
 
 def _get_cron_auto_delivery_target():
-    """Return the cron scheduler's auto-delivery target for the current run, if any."""
+    """Return the cron scheduler's auto-delivery target for the current run, if any.
+
+    Prefers the per-agent instance attribute set by the cron scheduler
+    (thread-safe) over the legacy process-global os.environ fallback.
+    The env-var path is kept only for backward compatibility with any
+    external callers that still set HERMES_CRON_AUTO_DELIVER_* directly.
+    """
+    # Prefer per-agent delivery target (thread-safe, set by scheduler.run_job)
+    try:
+        from run_agent import _get_current_agent
+        agent = _get_current_agent()
+        if agent is not None:
+            target = getattr(agent, "_cron_delivery_target", None)
+            if target:
+                return target
+    except Exception:
+        pass
+
+    # Legacy fallback: read from os.environ (not thread-safe under concurrency)
     platform = os.getenv("HERMES_CRON_AUTO_DELIVER_PLATFORM", "").strip().lower()
     chat_id = os.getenv("HERMES_CRON_AUTO_DELIVER_CHAT_ID", "").strip()
     if not platform or not chat_id:

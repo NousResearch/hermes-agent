@@ -94,7 +94,7 @@ from agent.model_metadata import (
 from agent.context_compressor import ContextCompressor
 from agent.subdirectory_hints import SubdirectoryHintTracker
 from agent.prompt_caching import apply_anthropic_cache_control
-from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt, build_environment_hints, load_soul_md, TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, DEVELOPER_ROLE_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE, OPENAI_MODEL_EXECUTION_GUIDANCE
+from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt, build_environment_hints, load_soul_md, TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, DEVELOPER_ROLE_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE, OPENAI_MODEL_EXECUTION_GUIDANCE, BEHAVIOR_EXAMPLES
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
 from agent.display import (
     KawaiiSpinner, build_tool_preview as _build_tool_preview,
@@ -1021,6 +1021,11 @@ class AIAgent:
             disabled_toolsets=disabled_toolsets,
             quiet_mode=self.quiet_mode,
         )
+        
+        # Track tools declared by active skills via uses_tools frontmatter.
+        # When a skill declares uses_tools, those tool schemas are surfaced
+        # first in the API call, improving model tool-selection accuracy.
+        self._active_skill_tools: set[str] = set()
         
         # Show tool configuration and store valid tool names for validation
         self.valid_tool_names = set()
@@ -3210,6 +3215,7 @@ class AIAgent:
                 _inject = any(p in model_lower for p in TOOL_USE_ENFORCEMENT_MODELS)
             if _inject:
                 prompt_parts.append(TOOL_USE_ENFORCEMENT_GUIDANCE)
+                prompt_parts.append(BEHAVIOR_EXAMPLES)
                 _model_lower = (self.model or "").lower()
                 # Google model operational guidance (conciseness, absolute
                 # paths, parallel tool calls, verify-before-edit, etc.)
@@ -7001,6 +7007,70 @@ class AIAgent:
                 skip_pre_tool_call_hook=True,
             )
 
+    # ------------------------------------------------------------------
+    # Skill tool tracking — surface skill-declared tools first in schema
+    # ------------------------------------------------------------------
+
+    def _track_skill_tools(self, function_result: str) -> None:
+        """Extract uses_tools from a skill_view result and update priority set.
+
+        When a skill declares ``uses_tools`` in its frontmatter, those tool
+        names are tracked so that subsequent API calls surface those tools
+        first in the schema array.  Models attend more strongly to tools
+        listed earlier, which improves tool-selection accuracy.
+        """
+        try:
+            parsed = json.loads(function_result)
+            if not isinstance(parsed, dict):
+                return
+            metadata = parsed.get("metadata")
+            if not isinstance(metadata, dict):
+                return
+            hermes = metadata.get("hermes")
+            if not isinstance(hermes, dict):
+                return
+            uses_tools = hermes.get("uses_tools")
+            if isinstance(uses_tools, list) and uses_tools:
+                before = len(self._active_skill_tools)
+                self._active_skill_tools.update(str(t) for t in uses_tools)
+                added = len(self._active_skill_tools) - before
+                if added:
+                    logger.debug(
+                        "Skill uses_tools tracking: +%d tools → %s",
+                        added,
+                        sorted(self._active_skill_tools),
+                    )
+                    # Rebuild tool schema order so priority tools appear first
+                    self._rebuild_tools_with_priority()
+        except (json.JSONDecodeError, TypeError, AttributeError):
+            pass
+
+    def _rebuild_tools_with_priority(self) -> None:
+        """Rebuild self.tools with active skill tools surfaced first.
+
+        Re-queries the registry with prioritize_tools so that the next API
+        call sends skill-declared tools at the top of the schema array.
+        """
+        if not self._active_skill_tools:
+            return
+        from model_tools import get_tool_definitions as _get_defs
+        from toolsets import resolve_toolset, get_all_toolsets
+        from tools.registry import registry as _reg
+
+        # Determine the current toolset configuration
+        all_tool_names: set = set()
+        for ts_name in get_all_toolsets():
+            all_tool_names.update(resolve_toolset(ts_name))
+
+        # Get re-ordered definitions
+        reordered = _reg.get_definitions(
+            all_tool_names,
+            quiet=True,
+            prioritize_tools=self._active_skill_tools & self.valid_tool_names,
+        )
+        if reordered:
+            self.tools = reordered
+
     @staticmethod
     def _wrap_verbose(label: str, text: str, indent: str = "     ") -> str:
         """Word-wrap verbose tool output to fit the terminal width.
@@ -7214,6 +7284,12 @@ class AIAgent:
                 tool_use_id=tc.id,
                 env=get_active_env(effective_task_id),
             )
+
+            # Track uses_tools from skill_view results — when a skill
+            # declares which tools it uses, surface those tools first in
+            # subsequent API calls for better model tool-selection accuracy.
+            if name == "skill_view" and function_result:
+                self._track_skill_tools(function_result)
 
             subdir_hints = self._subdirectory_hints.check_tool_call(name, args)
             if subdir_hints:
@@ -7559,6 +7635,10 @@ class AIAgent:
                 tool_use_id=tool_call.id,
                 env=get_active_env(effective_task_id),
             )
+
+            # Track uses_tools from skill_view results
+            if function_name == "skill_view" and function_result:
+                self._track_skill_tools(function_result)
 
             # Discover subdirectory context files from tool arguments
             subdir_hints = self._subdirectory_hints.check_tool_call(function_name, function_args)

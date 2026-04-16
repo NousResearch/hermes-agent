@@ -197,6 +197,7 @@ def get_tool_definitions(
     enabled_toolsets: List[str] = None,
     disabled_toolsets: List[str] = None,
     quiet_mode: bool = False,
+    prioritize_tools: Set[str] | None = None,
 ) -> List[Dict[str, Any]]:
     """
     Get tool definitions for model API calls with toolset-based filtering.
@@ -207,6 +208,8 @@ def get_tool_definitions(
         enabled_toolsets: Only include tools from these toolsets.
         disabled_toolsets: Exclude tools from these toolsets (if enabled_toolsets is None).
         quiet_mode: Suppress status prints.
+        prioritize_tools: Tool names to surface first in the schema array.
+            Models attend more strongly to tools listed earlier.
 
     Returns:
         Filtered list of OpenAI-format tool definitions.
@@ -261,7 +264,7 @@ def get_tool_definitions(
     # other toolset.
 
     # Ask the registry for schemas (only returns tools whose check_fn passes)
-    filtered_tools = registry.get_definitions(tools_to_include, quiet=quiet_mode)
+    filtered_tools = registry.get_definitions(tools_to_include, quiet=quiet_mode, prioritize_tools=prioritize_tools)
 
     # The set of tool names that actually passed check_fn filtering.
     # Use this (not tools_to_include) for any downstream schema that references

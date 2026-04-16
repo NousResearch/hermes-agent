@@ -182,7 +182,20 @@ TOOL_USE_ENFORCEMENT_GUIDANCE = (
     "the task, use them instead of telling the user what you would do.\n"
     "Every response should either (a) contain tool calls that make progress, or "
     "(b) deliver a final result to the user. Responses that only describe intentions "
-    "without acting are not acceptable."
+    "without acting are not acceptable.\n"
+    "\n"
+    "# Definition of done\n"
+    "A task is complete ONLY when ALL of the following are true:\n"
+    "1. Every stated requirement has been addressed — no partial deliveries.\n"
+    "2. The result has been verified (tests pass, files exist, command succeeds, "
+    "output matches expected format). Do not declare completion without running verification.\n"
+    "3. The user receives a concise summary of what was done and what changed.\n"
+    "\n"
+    "Common failure modes — do NOT declare done when:\n"
+    "- You wrote code but didn't run it or test it.\n"
+    "- You made a change but didn't verify the change had the intended effect.\n"
+    "- You found an error and reported it but didn't attempt to fix it.\n"
+    "- You completed part of a multi-part request and summarized the rest as 'you can do X next'."
 )
 
 # Model name substrings that trigger tool-use enforcement guidance.
@@ -273,6 +286,43 @@ GOOGLE_MODEL_OPERATIONAL_GUIDANCE = (
     "to prevent CLI tools from hanging on prompts.\n"
     "- **Keep going:** Work autonomously until the task is fully resolved. "
     "Don't stop with a plan — execute it.\n"
+)
+
+# Concrete behavior examples — models follow examples far more reliably than
+# abstract rules.  Injected alongside enforcement guidance so the model sees
+# what "done right" looks like for the most common task types.
+BEHAVIOR_EXAMPLES = (
+    "# Behavioral examples\n"
+    "These examples demonstrate the expected pattern: ACT, then VERIFY, then REPORT.\n"
+    "\n"
+    "EXAMPLE 1 — Fix a bug:\n"
+    "  User: \"The login button doesn't work\"\n"
+    "  Agent: [reads LoginButton.tsx] → [identifies missing onClick on line 42] "
+    "→ [patches the file] → [runs tests: 3/3 pass]\n"
+    "  Response: \"Fixed: the onClick handler was missing on line 42 of "
+    "LoginButton.tsx. Patched and verified — 3/3 tests pass.\"\n"
+    "\n"
+    "EXAMPLE 2 — Answer a factual question:\n"
+    "  User: \"What's the current AWS Lambda memory limit?\"\n"
+    "  Agent: [uses web_search to verify against current AWS docs]\n"
+    "  Response: \"AWS Lambda memory: 128 MB – 10,240 MB (as of 2026). "
+    "Source: AWS Lambda developer guide.\"\n"
+    "\n"
+    "EXAMPLE 3 — Create a new feature:\n"
+    "  User: \"Add a /health endpoint to the API\"\n"
+    "  Agent: [reads existing routes] → [writes the endpoint] → [adds a test] "
+    "→ [runs tests: all pass] → [starts server and curls /health: 200 OK]\n"
+    "  Response: \"Added /health endpoint in routes.py (line 87). Returns "
+    "{\"status\": \"ok\"}. Test added in test_routes.py. Verified: curl "
+    "/health returns 200.\"\n"
+    "\n"
+    "ANTI-PATTERN — Describing without doing:\n"
+    "  User: \"Fix the failing test\"\n"
+    "  BAD:  \"The test is failing because the mock isn't set up correctly. "
+    "You should update the mock to return the right value.\" (no tool call)\n"
+    "  GOOD: [reads the test] → [reads the mock setup] → [patches the mock] "
+    "→ [runs the test: passes] → \"Fixed the mock in test_foo.py line 23. "
+    "Test passes now.\""
 )
 
 # Model name substrings that should use the 'developer' role instead of

@@ -255,11 +255,20 @@ class ToolRegistry:
     # Schema retrieval
     # ------------------------------------------------------------------
 
-    def get_definitions(self, tool_names: Set[str], quiet: bool = False) -> List[dict]:
+    def get_definitions(self, tool_names: Set[str], quiet: bool = False, prioritize_tools: Set[str] | None = None) -> List[dict]:
         """Return OpenAI-format tool schemas for the requested tool names.
 
         Only tools whose ``check_fn()`` returns True (or have no check_fn)
         are included.
+
+        Args:
+            tool_names: Set of tool names to include.
+            quiet: Suppress debug logging.
+            prioritize_tools: Tool names that should appear FIRST in the
+                returned list.  Models attend more strongly to tools listed
+                earlier in the schema array, so surfacing skill-declared
+                tools first improves tool-calling accuracy and reduces
+                wrong-tool selections.
         """
         result = []
         check_results: Dict[Callable, bool] = {}
@@ -283,6 +292,22 @@ class ToolRegistry:
             # Ensure schema always has a "name" field — use entry.name as fallback
             schema_with_name = {**entry.schema, "name": entry.name}
             result.append({"type": "function", "function": schema_with_name})
+
+        # Reorder: prioritized tools first, then the rest.  This keeps the
+        # full tool set available but surfaces the most relevant tools at
+        # the top where model attention is strongest.
+        if prioritize_tools:
+            priority_set = {t for t in prioritize_tools if t in {t["function"]["name"] for t in result}}
+            if priority_set:
+                priority = [t for t in result if t["function"]["name"] in priority_set]
+                rest = [t for t in result if t["function"]["name"] not in priority_set]
+                result = priority + rest
+                if not quiet:
+                    logger.debug(
+                        "Tool schema priority reordering: %s first (from active skill uses_tools)",
+                        sorted(priority_set),
+                    )
+
         return result
 
     # ------------------------------------------------------------------

@@ -1255,6 +1255,13 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
                     exc_info=True,
                 )
 
+        # ── Track skill usage for self-evolution pipeline ──
+        try:
+            from agent.skill_usage import record_skill_usage
+            record_skill_usage(skill_name, source="skill_view")
+        except Exception:
+            pass
+
         result = {
             "success": True,
             "name": skill_name,

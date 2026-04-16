@@ -7,7 +7,6 @@ import pytest
 from hermes_cli.provider_native_tools import (
     active_provider_api_root,
     apply_provider_native_tool_defaults,
-    _credential,
     describe_changes,
     endpoint_and_key,
     get_native_tools,
@@ -170,23 +169,6 @@ class TestDescribeChanges:
         out = describe_changes({"image_gen", "video_gen"}, _cfg(_INTL))
         assert "image-01" in out
         assert "Hailuo" in out
-
-
-class TestCredential:
-    def test_prefers_minimax_key(self, monkeypatch):
-        monkeypatch.setenv("MINIMAX_API_KEY", "sk-intl")
-        monkeypatch.setenv("MINIMAX_CN_API_KEY", "sk-cn")
-        assert _credential() == "sk-intl"
-
-    def test_fallback_to_cn_key(self, monkeypatch):
-        monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
-        monkeypatch.setenv("MINIMAX_CN_API_KEY", "sk-cn")
-        assert _credential() == "sk-cn"
-
-    def test_empty_when_no_key(self, monkeypatch):
-        monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
-        monkeypatch.delenv("MINIMAX_CN_API_KEY", raising=False)
-        assert _credential() == ""
 
 
 class TestEndpointAndKey:

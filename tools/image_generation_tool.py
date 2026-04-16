@@ -567,10 +567,14 @@ def check_image_generation_requirements() -> bool:
     except Exception:
         pass
     try:
+        # Check API key
         if not check_fal_api_key():
             return False
+
+        # Check if fal_client is available
         import fal_client  # noqa: F401 — SDK presence check
         return True
+
     except ImportError:
         return False
 

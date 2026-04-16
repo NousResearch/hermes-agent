@@ -183,12 +183,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
         return
       }
 
-      const live = getUiState()
-
-      if (!live.sid) {
-        return sys('session not ready yet')
-      }
-
+      // Slash + shell run regardless of session state (each handles its own sid needs).
       if (looksLikeSlashCommand(full)) {
         appendMessage({ kind: 'slash', role: 'system', text: full })
         composerActions.pushHistory(full)
@@ -202,6 +197,17 @@ export function useSubmission(opts: UseSubmissionOptions) {
         composerActions.clearIn()
 
         return shellExec(full.slice(1).trim())
+      }
+
+      const live = getUiState()
+
+      // No session yet — queue the text and let the ready-flush effect send it.
+      if (!live.sid) {
+        composerActions.pushHistory(full)
+        composerActions.enqueue(full)
+        composerActions.clearIn()
+
+        return
       }
 
       const editIdx = composerRefs.queueEditRef.current
@@ -269,10 +275,10 @@ export function useSubmission(opts: UseSubmissionOptions) {
           return turnController.interruptTurn({ appendMessage, gw, sid: live.sid, sys })
         }
 
-        if (doubleTap && composerRefs.queueRef.current.length) {
+        if (doubleTap && live.sid && composerRefs.queueRef.current.length) {
           const next = composerActions.dequeue()
 
-          if (next && live.sid) {
+          if (next) {
             composerActions.setQueueEdit(null)
             dispatchSubmission(next)
           }

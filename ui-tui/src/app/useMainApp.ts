@@ -372,6 +372,28 @@ export function useMainApp(gw: GatewayClient) {
     sys
   })
 
+  // Flush any pre-session queued input once the session lands.
+  // Message.complete already drains subsequent items; this only kicks off the first.
+  const prevSidRef = useRef<null | string>(null)
+  useEffect(() => {
+    const prev = prevSidRef.current
+    prevSidRef.current = ui.sid
+
+    if (prev !== null || !ui.sid || ui.busy) {
+      return
+    }
+
+    if (composerRefs.queueEditRef.current !== null) {
+      return
+    }
+
+    const next = composerActions.dequeue()
+
+    if (next) {
+      sendQueued(next)
+    }
+  }, [ui.sid, ui.busy, composerActions, composerRefs, sendQueued])
+
   const { pagerPageSize } = useInputHandlers({
     actions: {
       answerClarify,

@@ -132,6 +132,10 @@ def test_api_calendar_list_uses_agenda_by_default(api_module):
         captured["cmd"] = cmd
         return MagicMock(returncode=0)
 
+    # Create a mock token file to bypass authentication check
+    token_path = api_module.TOKEN_PATH
+    _write_token(token_path)
+
     args = api_module.argparse.Namespace(
         start="", end="", max=25, calendar="primary", func=api_module.calendar_list,
     )
@@ -153,6 +157,10 @@ def test_api_calendar_list_respects_date_range(api_module):
     def capture_run(cmd, **kwargs):
         captured["cmd"] = cmd
         return MagicMock(returncode=0)
+
+    # Create a mock token file to bypass authentication check
+    token_path = api_module.TOKEN_PATH
+    _write_token(token_path)
 
     args = api_module.argparse.Namespace(
         start="2026-04-01T00:00:00Z",

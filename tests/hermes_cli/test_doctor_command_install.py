@@ -259,6 +259,15 @@ class TestDoctorCommandInstallation:
             TOOLSET_REQUIREMENTS={},
         )
         monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+        
+        # Mock discord module to avoid ssl issues on Linux when simulating Windows
+        monkeypatch.setitem(sys.modules, "discord", types.SimpleNamespace())
+        monkeypatch.setitem(sys.modules, "discord.client", types.SimpleNamespace())
+        
+        # Mock shutil.which to avoid _winapi issues on Linux when simulating Windows
+        import shutil
+        monkeypatch.setattr(shutil, "which", lambda cmd: None)
+        
         try:
             from hermes_cli import auth as _auth_mod
             monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})

@@ -363,9 +363,12 @@ class TestExpiredCodexFallback:
 
 
     def test_hermes_oauth_file_sets_oauth_flag(self, monkeypatch):
-        """OAuth-style tokens should get is_oauth=*** (token is not sk-ant-api-*)."""
-        # Mock resolve_anthropic_token to return an OAuth-style token
-        with patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="hermes-oauth-jwt-token"), \
+        """Anthropic OAuth tokens (sk-ant-*/eyJ*) should set is_oauth=True."""
+        # Use a token that agent.anthropic_adapter._is_oauth_token() actually
+        # recognises as OAuth.  "sk-ant-oat-*" is the setup-token format and
+        # "eyJ*" is the JWT format; "hermes-oauth-jwt-token" matches neither.
+        oauth_token = "sk-ant-oat-01-fake-for-test"
+        with patch("agent.anthropic_adapter.resolve_anthropic_token", return_value=oauth_token), \
              patch("agent.anthropic_adapter.build_anthropic_client") as mock_build, \
              patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
             mock_build.return_value = MagicMock()
@@ -373,7 +376,7 @@ class TestExpiredCodexFallback:
             client, model = _try_anthropic()
             assert client is not None, "Should resolve token"
             adapter = client.chat.completions
-            assert adapter._is_oauth is True, "Non-sk-ant-api token should set is_oauth=True"
+            assert adapter._is_oauth is True, "sk-ant-oat-* token should set is_oauth=True"
 
     def test_jwt_missing_exp_passes_through(self, tmp_path, monkeypatch):
         """JWT with valid JSON but no exp claim should pass through."""
@@ -420,7 +423,13 @@ class TestExpiredCodexFallback:
 
     def test_claude_code_oauth_env_sets_flag(self, monkeypatch):
         """CLAUDE_CODE_OAUTH_TOKEN env var should get is_oauth=True."""
-        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "cc-oauth-token-test")
+        # Tokens issued by the Claude Code OAuth flow use the sk-ant-oat-*
+        # setup-token format, which agent.anthropic_adapter._is_oauth_token()
+        # recognises as OAuth.  The previous literal "cc-oauth-token-test"
+        # string matched neither the sk-ant-* nor the eyJ* prefix and so was
+        # (correctly) classified as a non-OAuth key, which is how the bug
+        # escaped — the test asserted OAuth on a non-OAuth token.
+        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat-01-fake-for-test")
         monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
         with patch("agent.anthropic_adapter.build_anthropic_client") as mock_build:
             mock_build.return_value = MagicMock()

@@ -665,14 +665,14 @@ class TelegramAdapter(BasePlatformAdapter):
                 from telegram.error import NetworkError, TimedOut
             except ImportError:
                 NetworkError = TimedOut = OSError  # type: ignore[misc,assignment]
-            _max_connect = 3
+            _max_connect = 8
             for _attempt in range(_max_connect):
                 try:
                     await self._app.initialize()
                     break
                 except (NetworkError, TimedOut, OSError) as init_err:
                     if _attempt < _max_connect - 1:
-                        wait = 2 ** _attempt
+                        wait = min(2 ** _attempt, 15)
                         logger.warning(
                             "[%s] Connect attempt %d/%d failed: %s — retrying in %ds",
                             self.name, _attempt + 1, _max_connect, init_err, wait,

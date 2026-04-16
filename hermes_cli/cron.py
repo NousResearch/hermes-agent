@@ -96,15 +96,20 @@ def cron_list(show_all: bool = False):
 
         # Execution history
         last_status = job.get("last_status")
+        delivery_err = job.get("last_delivery_error")
         if last_status:
             last_run = job.get("last_run_at", "?")
             if last_status == "ok":
-                status_display = color("ok", Colors.GREEN)
+                if delivery_err:
+                    # Agent succeeded but delivery failed — flag it inline so the
+                    # warning isn't missed when scanning a long job list.
+                    status_display = color("ok", Colors.GREEN) + "  " + color("⚠ delivery failed", Colors.YELLOW)
+                else:
+                    status_display = color("ok", Colors.GREEN)
             else:
                 status_display = color(f"{last_status}: {job.get('last_error', '?')}", Colors.RED)
             print(f"    Last run:  {last_run}  {status_display}")
 
-        delivery_err = job.get("last_delivery_error")
         if delivery_err:
             print(f"    {color('⚠ Delivery failed:', Colors.YELLOW)} {delivery_err}")
 

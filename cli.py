@@ -5105,7 +5105,12 @@ class HermesCLI:
                     print(f"  Skills: {', '.join(job['skills'])}")
                 print(f"  Prompt: {job.get('prompt_preview', '')}")
                 if job.get("last_run_at"):
-                    print(f"  Last run: {job['last_run_at']} ({job.get('last_status', '?')})")
+                    last_status = job.get("last_status", "?")
+                    delivery_err = job.get("last_delivery_error")
+                    status_str = f"{last_status} ⚠ delivery failed" if (last_status == "ok" and delivery_err) else last_status
+                    print(f"  Last run: {job['last_run_at']} ({status_str})")
+                    if delivery_err:
+                        print(f"  Delivery error: {delivery_err}")
                 print()
             return
 

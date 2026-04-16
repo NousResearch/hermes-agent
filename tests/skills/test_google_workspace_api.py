@@ -100,6 +100,7 @@ def test_bridge_refreshes_expired_token(bridge_module, tmp_path):
     # Verify persisted
     saved = json.loads(token_path.read_text())
     assert saved["token"] == "ya29.refreshed"
+    assert saved["type"] == "authorized_user"
 
 
 def test_bridge_exits_on_missing_token(bridge_module):
@@ -182,3 +183,54 @@ def test_api_calendar_list_respects_date_range(api_module):
     params = json.loads(cmd[params_idx + 1])
     assert params["timeMin"] == "2026-04-01T00:00:00Z"
     assert params["timeMax"] == "2026-04-07T23:59:59Z"
+
+
+def test_api_get_credentials_refresh_persists_authorized_user_type(api_module, monkeypatch):
+    token_path = api_module.TOKEN_PATH
+    _write_token(token_path, token="ya29.old")
+
+    class FakeCredentials:
+        def __init__(self):
+            self.expired = True
+            self.refresh_token = "1//refresh"
+            self.valid = True
+
+        def refresh(self, request):
+            self.expired = False
+
+        def to_json(self):
+            return json.dumps({
+                "token": "ya29.refreshed",
+                "refresh_token": "1//refresh",
+                "client_id": "123.apps.googleusercontent.com",
+                "client_secret": "secret",
+                "token_uri": "https://oauth2.googleapis.com/token",
+            })
+
+    class FakeCredentialsModule:
+        @staticmethod
+        def from_authorized_user_file(filename, scopes):
+            assert filename == str(token_path)
+            assert scopes == api_module.SCOPES
+            return FakeCredentials()
+
+    google_module = types.ModuleType("google")
+    oauth2_module = types.ModuleType("google.oauth2")
+    credentials_module = types.ModuleType("google.oauth2.credentials")
+    credentials_module.Credentials = FakeCredentialsModule
+    transport_module = types.ModuleType("google.auth.transport")
+    requests_module = types.ModuleType("google.auth.transport.requests")
+    requests_module.Request = lambda: object()
+
+    monkeypatch.setitem(sys.modules, "google", google_module)
+    monkeypatch.setitem(sys.modules, "google.oauth2", oauth2_module)
+    monkeypatch.setitem(sys.modules, "google.oauth2.credentials", credentials_module)
+    monkeypatch.setitem(sys.modules, "google.auth.transport", transport_module)
+    monkeypatch.setitem(sys.modules, "google.auth.transport.requests", requests_module)
+
+    creds = api_module.get_credentials()
+
+    saved = json.loads(token_path.read_text())
+    assert isinstance(creds, FakeCredentials)
+    assert saved["token"] == "ya29.refreshed"
+    assert saved["type"] == "authorized_user"

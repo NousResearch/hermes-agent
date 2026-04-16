@@ -358,6 +358,7 @@ _URL_TO_PROVIDER: Dict[str, str] = {
     "api.deepseek.com": "deepseek",
     "api.githubcopilot.com": "copilot",
     "models.github.ai": "copilot",
+    "models.inference.ai.azure.com": "github-models",
     "api.fireworks.ai": "fireworks",
     "opencode.ai": "opencode-go",
     "api.x.ai": "xai",

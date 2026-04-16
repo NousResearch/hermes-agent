@@ -241,13 +241,41 @@ def _secure_dir(path):
         pass
 
 
+def _is_container() -> bool:
+    """Detect if we're running inside a Docker/Podman/LXC container.
+
+    When Hermes runs in a container with volume-mounted config files, forcing
+    0o600 permissions breaks multi-process setups where the gateway and
+    dashboard run as different UIDs or the volume mount requires broader
+    permissions.
+    """
+    # Explicit opt-out
+    if os.environ.get("HERMES_CONTAINER") or os.environ.get("HERMES_SKIP_CHMOD"):
+        return True
+    # Docker / Podman marker file
+    if os.path.exists("/.dockerenv"):
+        return True
+    # LXC / cgroup-based detection
+    try:
+        with open("/proc/1/cgroup", "r") as f:
+            cgroup_content = f.read()
+        if "docker" in cgroup_content or "lxc" in cgroup_content or "kubepods" in cgroup_content:
+            return True
+    except (OSError, IOError):
+        pass
+    return False
+
+
 def _secure_file(path):
     """Set file to owner-only read/write (0600). No-op on Windows.
 
     Skipped in managed mode — the NixOS activation script sets
     group-readable permissions (0640) on config files.
+
+    Skipped in containers — Docker/Podman volume mounts often need broader
+    permissions.  Set HERMES_SKIP_CHMOD=1 to force-skip on other systems.
     """
-    if is_managed():
+    if is_managed() or _is_container():
         return
     try:
         if os.path.exists(str(path)):
@@ -392,8 +420,7 @@ DEFAULT_CONFIG = {
         "allow_private_urls": False,  # Allow navigating to private/internal IPs (localhost, 192.168.x.x, etc.)
         "camofox": {
             # When true, Hermes sends a stable profile-scoped userId to Camofox
-            # so the server can map it to a persistent browser profile directory.
-            # Requires Camofox server to be configured with CAMOFOX_PROFILE_DIR.
+            # so the server maps it to a persistent Firefox profile automatically.
             # When false (default), each session gets a random userId (ephemeral).
             "managed_persistence": False,
         },
@@ -531,6 +558,11 @@ DEFAULT_CONFIG = {
         "platforms": {},  # Per-platform display overrides: {"telegram": {"tool_progress": "all"}, "slack": {"tool_progress": "off"}}
     },
 
+    # Web dashboard settings
+    "dashboard": {
+        "theme": "default",  # Dashboard visual theme: "default", "midnight", "ember", "mono", "cyberpunk", "rose"
+    },
+
     # Privacy settings
     "privacy": {
         "redact_pii": False,  # When True, hash user IDs and strip phone numbers from LLM context
@@ -538,7 +570,7 @@ DEFAULT_CONFIG = {
     
     # Text-to-speech configuration
     "tts": {
-        "provider": "edge",  # "edge" (free) | "elevenlabs" (premium) | "openai" | "minimax" | "mistral" | "neutts" (local)
+        "provider": "edge",  # "edge" (free) | "elevenlabs" (premium) | "openai" | "xai" | "minimax" | "mistral" | "neutts" (local)
         "edge": {
             "voice": "en-US-AriaNeural",
             # Popular: AriaNeural, JennyNeural, AndrewNeural, BrianNeural, SoniaNeural
@@ -551,6 +583,12 @@ DEFAULT_CONFIG = {
             "model": "gpt-4o-mini-tts",
             "voice": "alloy",
             # Voices: alloy, echo, fable, onyx, nova, shimmer
+        },
+        "xai": {
+            "voice_id": "eve",
+            "language": "en",
+            "sample_rate": 24000,
+            "bit_rate": 128000,
         },
         "mistral": {
             "model": "voxtral-mini-tts-2603",
@@ -808,6 +846,22 @@ OPTIONAL_ENV_VARS = {
         "category": "provider",
         "advanced": True,
     },
+    "XAI_API_KEY": {
+        "description": "xAI API key",
+        "prompt": "xAI API key",
+        "url": "https://console.x.ai/",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "XAI_BASE_URL": {
+        "description": "xAI base URL override",
+        "prompt": "xAI base URL (leave empty for default)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
     "GLM_API_KEY": {
         "description": "Z.AI / GLM API key (also recognized as ZAI_API_KEY / Z_AI_API_KEY)",
         "prompt": "Z.AI / GLM API key",
@@ -991,6 +1045,22 @@ OPTIONAL_ENV_VARS = {
     "HF_BASE_URL": {
         "description": "Hugging Face Inference Providers base URL override",
         "prompt": "HF base URL (leave empty for default)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
+    "OLLAMA_API_KEY": {
+        "description": "Ollama Cloud API key (ollama.com — cloud-hosted open models)",
+        "prompt": "Ollama Cloud API key",
+        "url": "https://ollama.com/settings",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "OLLAMA_BASE_URL": {
+        "description": "Ollama Cloud base URL override (default: https://ollama.com/v1)",
+        "prompt": "Ollama base URL (leave empty for default)",
         "url": None,
         "password": False,
         "category": "provider",
@@ -1221,6 +1291,12 @@ OPTIONAL_ENV_VARS = {
         "description": "Comma-separated Telegram user IDs allowed to use the bot (get ID from @userinfobot)",
         "prompt": "Allowed Telegram user IDs (comma-separated)",
         "url": "https://t.me/userinfobot",
+        "password": False,
+        "category": "messaging",
+    },
+    "TELEGRAM_PROXY": {
+        "description": "Proxy URL for Telegram connections (overrides HTTPS_PROXY). Supports http://, https://, socks5://",
+        "prompt": "Telegram proxy URL (optional)",
         "password": False,
         "category": "messaging",
     },
@@ -2900,12 +2976,25 @@ def save_env_value(key: str, value: str):
         lines.append(f"{key}={value}\n")
     
     fd, tmp_path = tempfile.mkstemp(dir=str(env_path.parent), suffix='.tmp', prefix='.env_')
+    # Preserve original permissions so Docker volume mounts aren't clobbered.
+    original_mode = None
+    if env_path.exists():
+        try:
+            original_mode = stat.S_IMODE(env_path.stat().st_mode)
+        except OSError:
+            pass
     try:
         with os.fdopen(fd, 'w', **write_kw) as f:
             f.writelines(lines)
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp_path, env_path)
+        # Restore original permissions before _secure_file may tighten them.
+        if original_mode is not None:
+            try:
+                os.chmod(env_path, original_mode)
+            except OSError:
+                pass
     except BaseException:
         try:
             os.unlink(tmp_path)
@@ -2915,13 +3004,6 @@ def save_env_value(key: str, value: str):
     _secure_file(env_path)
 
     os.environ[key] = value
-
-    # Restrict .env permissions to owner-only (contains API keys)
-    if not _IS_WINDOWS:
-        try:
-            os.chmod(env_path, stat.S_IRUSR | stat.S_IWUSR)
-        except OSError:
-            pass
 
 
 def remove_env_value(key: str) -> bool:
@@ -2951,12 +3033,23 @@ def remove_env_value(key: str) -> bool:
 
     if found:
         fd, tmp_path = tempfile.mkstemp(dir=str(env_path.parent), suffix='.tmp', prefix='.env_')
+        # Preserve original permissions so Docker volume mounts aren't clobbered.
+        original_mode = None
+        try:
+            original_mode = stat.S_IMODE(env_path.stat().st_mode)
+        except OSError:
+            pass
         try:
             with os.fdopen(fd, 'w', **write_kw) as f:
                 f.writelines(new_lines)
                 f.flush()
                 os.fsync(f.fileno())
             os.replace(tmp_path, env_path)
+            if original_mode is not None:
+                try:
+                    os.chmod(env_path, original_mode)
+                except OSError:
+                    pass
         except BaseException:
             try:
                 os.unlink(tmp_path)

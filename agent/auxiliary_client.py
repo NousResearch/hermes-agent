@@ -58,6 +58,9 @@ _PROVIDER_ALIASES = {
     "google": "gemini",
     "google-gemini": "gemini",
     "google-ai-studio": "gemini",
+    "x-ai": "xai",
+    "x.ai": "xai",
+    "grok": "xai",
     "glm": "zai",
     "z-ai": "zai",
     "z.ai": "zai",
@@ -104,6 +107,7 @@ _API_KEY_PROVIDER_AUX_MODELS: Dict[str, str] = {
     "opencode-zen": "gemini-3-flash",
     "opencode-go": "glm-5",
     "kilocode": "google/gemini-3-flash-preview",
+    "ollama-cloud": "nemotron-3-nano:30b",
 }
 
 # Vision-specific model overrides for direct providers.

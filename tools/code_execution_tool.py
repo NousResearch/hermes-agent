@@ -988,7 +988,8 @@ def execute_code(
         # (terminal.env_passthrough) are passed through.
         _SAFE_ENV_PREFIXES = ("PATH", "HOME", "USER", "LANG", "LC_", "TERM",
                               "TMPDIR", "TMP", "TEMP", "SHELL", "LOGNAME",
-                              "XDG_", "PYTHONPATH", "VIRTUAL_ENV", "CONDA")
+                              "XDG_", "PYTHONPATH", "VIRTUAL_ENV", "CONDA",
+                              "HERMES_")
         _SECRET_SUBSTRINGS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL",
                               "PASSWD", "AUTH")
         try:
@@ -1015,10 +1016,13 @@ def execute_code(
         _existing_pp = child_env.get("PYTHONPATH", "")
         child_env["PYTHONPATH"] = _hermes_root + (os.pathsep + _existing_pp if _existing_pp else "")
         # Inject user's configured timezone so datetime.now() in sandboxed
-        # code reflects the correct wall-clock time.
+        # code reflects the correct wall-clock time.  Only TZ is set —
+        # HERMES_TIMEZONE is an internal Hermes setting and must not leak
+        # into child processes.
         _tz_name = os.getenv("HERMES_TIMEZONE", "").strip()
         if _tz_name:
             child_env["TZ"] = _tz_name
+        child_env.pop("HERMES_TIMEZONE", None)
 
         # Per-profile HOME isolation: redirect system tool configs into
         # {HERMES_HOME}/home/ when that directory exists.

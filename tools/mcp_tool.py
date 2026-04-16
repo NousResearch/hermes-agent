@@ -1166,6 +1166,14 @@ class MCPServerTask:
 
 _servers: Dict[str, MCPServerTask] = {}
 
+# Circuit breaker: consecutive error counts per server.  After
+# _CIRCUIT_BREAKER_THRESHOLD consecutive failures, the handler returns
+# a "server unreachable" message that tells the model to stop retrying,
+# preventing the 90-iteration burn loop described in #10447.
+# Reset to 0 on any successful call.
+_server_error_counts: Dict[str, int] = {}
+_CIRCUIT_BREAKER_THRESHOLD = 3
+
 # Dedicated event loop running in a background daemon thread.
 _mcp_loop: Optional[asyncio.AbstractEventLoop] = None
 _mcp_thread: Optional[threading.Thread] = None
@@ -1356,9 +1364,23 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
     """
 
     def _handler(args: dict, **kwargs) -> str:
+        # Circuit breaker: if this server has failed too many times
+        # consecutively, short-circuit with a clear message so the model
+        # stops retrying and uses alternative approaches (#10447).
+        if _server_error_counts.get(server_name, 0) >= _CIRCUIT_BREAKER_THRESHOLD:
+            return json.dumps({
+                "error": (
+                    f"MCP server '{server_name}' is unreachable after "
+                    f"{_CIRCUIT_BREAKER_THRESHOLD} consecutive failures. "
+                    f"Do NOT retry this tool — use alternative approaches "
+                    f"or ask the user to check the MCP server."
+                )
+            }, ensure_ascii=False)
+
         with _lock:
             server = _servers.get(server_name)
         if not server or not server.session:
+            _server_error_counts[server_name] = _server_error_counts.get(server_name, 0) + 1
             return json.dumps({
                 "error": f"MCP server '{server_name}' is not connected"
             }, ensure_ascii=False)
@@ -1399,10 +1421,21 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             return json.dumps({"result": text_result}, ensure_ascii=False)
 
         try:
-            return _run_on_mcp_loop(_call(), timeout=tool_timeout)
+            result = _run_on_mcp_loop(_call(), timeout=tool_timeout)
+            # Check if the MCP tool itself returned an error
+            try:
+                parsed = json.loads(result)
+                if "error" in parsed:
+                    _server_error_counts[server_name] = _server_error_counts.get(server_name, 0) + 1
+                else:
+                    _server_error_counts[server_name] = 0  # success — reset
+            except (json.JSONDecodeError, TypeError):
+                _server_error_counts[server_name] = 0  # non-JSON = success
+            return result
         except InterruptedError:
             return _interrupted_call_result()
         except Exception as exc:
+            _server_error_counts[server_name] = _server_error_counts.get(server_name, 0) + 1
             logger.error(
                 "MCP tool %s/%s call failed: %s",
                 server_name, tool_name, exc,

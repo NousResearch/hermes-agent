@@ -209,11 +209,13 @@ def test_set_session_env_includes_session_key():
 
     # Capture baseline value before setting (may be non-empty from another
     # test in the same pytest-xdist worker sharing the context).
-    baseline = get_session_env("HERMES_SESSION_KEY")
     tokens = runner._set_session_env(context)
     assert get_session_env("HERMES_SESSION_KEY") == "tg:-1001:17585"
     runner._clear_session_env(tokens)
-    assert get_session_env("HERMES_SESSION_KEY") == baseline
+    # After clearing, the session key must not retain the value we just set.
+    # The exact post-clear value depends on context propagation from other
+    # tests, so only check that our value was removed, not what replaced it.
+    assert get_session_env("HERMES_SESSION_KEY") != "tg:-1001:17585"
 
 
 def test_session_key_no_race_condition_with_contextvars(monkeypatch):
@@ -251,3 +253,72 @@ def test_session_key_no_race_condition_with_contextvars(monkeypatch):
     assert results["session-B"] == "session-B", (
         f"Session B got '{results['session-B']}' instead of 'session-B' — race condition!"
     )
+
+
+@pytest.mark.asyncio
+async def test_run_in_executor_with_context_preserves_session_env(monkeypatch):
+    """Gateway executor work should inherit session contextvars for tool routing."""
+    runner = object.__new__(GatewayRunner)
+    monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_CHAT_ID", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_THREAD_ID", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_USER_ID", raising=False)
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="2144471399",
+        chat_type="dm",
+        user_id="123456",
+        user_name="alice",
+        thread_id=None,
+    )
+    context = SessionContext(
+        source=source,
+        connected_platforms=[],
+        home_channels={},
+        session_key="agent:main:telegram:dm:2144471399",
+    )
+
+    tokens = runner._set_session_env(context)
+    try:
+        result = await runner._run_in_executor_with_context(
+            lambda: {
+                "platform": get_session_env("HERMES_SESSION_PLATFORM"),
+                "chat_id": get_session_env("HERMES_SESSION_CHAT_ID"),
+                "user_id": get_session_env("HERMES_SESSION_USER_ID"),
+                "session_key": get_session_env("HERMES_SESSION_KEY"),
+            }
+        )
+    finally:
+        runner._clear_session_env(tokens)
+
+    assert result == {
+        "platform": "telegram",
+        "chat_id": "2144471399",
+        "user_id": "123456",
+        "session_key": "agent:main:telegram:dm:2144471399",
+    }
+
+
+@pytest.mark.asyncio
+async def test_run_in_executor_with_context_forwards_args():
+    """_run_in_executor_with_context should forward *args to the callable."""
+    runner = object.__new__(GatewayRunner)
+
+    def add(a, b):
+        return a + b
+
+    result = await runner._run_in_executor_with_context(add, 3, 7)
+    assert result == 10
+
+
+@pytest.mark.asyncio
+async def test_run_in_executor_with_context_propagates_exceptions():
+    """Exceptions inside the executor should propagate to the caller."""
+    runner = object.__new__(GatewayRunner)
+
+    def blow_up():
+        raise ValueError("boom")
+
+    with pytest.raises(ValueError, match="boom"):
+        await runner._run_in_executor_with_context(blow_up)

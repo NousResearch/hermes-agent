@@ -25,7 +25,6 @@ Environment variables:
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import mimetypes
 import os
@@ -730,6 +729,14 @@ class MatrixAdapter(BasePlatformAdapter):
             except Exception:
                 pass
 
+    async def stop_typing(self, chat_id: str) -> None:
+        """Stop the Matrix typing indicator."""
+        if self._client:
+            try:
+                await self._client.set_typing(RoomID(chat_id), timeout=0)
+            except Exception:
+                pass
+
     async def edit_message(
         self, chat_id: str, message_id: str, content: str
     ) -> SendResult:
@@ -959,6 +966,16 @@ class MatrixAdapter(BasePlatformAdapter):
                 sync_data = await client.sync(
                     since=next_batch, timeout=30000,
                 )
+
+                # nio returns SyncError objects (not exceptions) for auth
+                # failures like M_UNKNOWN_TOKEN.  Detect and stop immediately.
+                _sync_msg = getattr(sync_data, "message", None)
+                if _sync_msg and isinstance(_sync_msg, str):
+                    _lower = _sync_msg.lower()
+                    if "m_unknown_token" in _lower or "unknown_token" in _lower:
+                        logger.error("Matrix: permanent auth error from sync: %s — stopping", _sync_msg)
+                        return
+
                 if isinstance(sync_data, dict):
                     # Update joined rooms from sync response.
                     rooms_join = sync_data.get("rooms", {}).get("join", {})
@@ -1613,52 +1630,6 @@ class MatrixAdapter(BasePlatformAdapter):
             return False
 
     # ------------------------------------------------------------------
-    # Room history
-    # ------------------------------------------------------------------
-
-    async def fetch_room_history(
-        self,
-        room_id: str,
-        limit: int = 50,
-        start: str = "",
-    ) -> list:
-        """Fetch recent messages from a room."""
-        if not self._client:
-            return []
-        try:
-            resp = await self._client.get_messages(
-                RoomID(room_id),
-                direction=PaginationDirection.BACKWARD,
-                from_token=SyncToken(start) if start else None,
-                limit=limit,
-            )
-        except Exception as exc:
-            logger.warning("Matrix: get_messages failed for %s: %s", room_id, exc)
-            return []
-
-        if not resp:
-            return []
-
-        events = getattr(resp, "chunk", []) or (resp.get("chunk", []) if isinstance(resp, dict) else [])
-        messages = []
-        for event in reversed(events):
-            body = ""
-            content = getattr(event, "content", None)
-            if content:
-                if hasattr(content, "body"):
-                    body = content.body or ""
-                elif isinstance(content, dict):
-                    body = content.get("body", "")
-            messages.append({
-                "event_id": str(getattr(event, "event_id", "")),
-                "sender": str(getattr(event, "sender", "")),
-                "body": body,
-                "timestamp": getattr(event, "timestamp", 0) or getattr(event, "server_timestamp", 0),
-                "type": type(event).__name__,
-            })
-        return messages
-
-    # ------------------------------------------------------------------
     # Room creation & management
     # ------------------------------------------------------------------
 
@@ -1760,18 +1731,6 @@ class MatrixAdapter(BasePlatformAdapter):
             return SendResult(success=True, message_id=str(event_id))
         except Exception as exc:
             return SendResult(success=False, error=str(exc))
-
-    async def send_emote(
-        self, chat_id: str, text: str, metadata: Optional[Dict[str, Any]] = None,
-    ) -> SendResult:
-        """Send an emote message (/me style action)."""
-        return await self._send_simple_message(chat_id, text, "m.emote")
-
-    async def send_notice(
-        self, chat_id: str, text: str, metadata: Optional[Dict[str, Any]] = None,
-    ) -> SendResult:
-        """Send a notice message (bot-appropriate, non-alerting)."""
-        return await self._send_simple_message(chat_id, text, "m.notice")
 
     # ------------------------------------------------------------------
     # Helpers

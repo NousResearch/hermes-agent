@@ -180,3 +180,113 @@ class TestMCPReloadTimeout:
         # The fix adds threading.Thread for _reload_mcp
         assert "Thread" in source or "thread" in source.lower(), \
             "_check_config_mcp_changes should use a thread for _reload_mcp"
+
+
+# ---------------------------------------------------------------------------
+# Fix 4: MCP initial connection retry with backoff
+# (Ported from Kilo Code's MCP resilience fix)
+# ---------------------------------------------------------------------------
+
+class TestMCPInitialConnectionRetry:
+    """MCPServerTask.run() retries initial connection failures instead of giving up."""
+
+    def test_initial_connect_retries_constant_exists(self):
+        """_MAX_INITIAL_CONNECT_RETRIES should be defined."""
+        from tools.mcp_tool import _MAX_INITIAL_CONNECT_RETRIES
+        assert _MAX_INITIAL_CONNECT_RETRIES >= 1
+
+    def test_initial_connect_retry_succeeds_on_second_attempt(self):
+        """Server succeeds after one transient initial failure."""
+        from tools.mcp_tool import MCPServerTask, _MAX_INITIAL_CONNECT_RETRIES
+
+        call_count = 0
+
+        async def _run():
+            nonlocal call_count
+            server = MCPServerTask("test-retry")
+
+            # Track calls via patching the method on the class
+            original_run_stdio = MCPServerTask._run_stdio
+
+            async def fake_run_stdio(self_inner, config):
+                nonlocal call_count
+                call_count += 1
+                if call_count == 1:
+                    raise ConnectionError("DNS resolution failed")
+                # Second attempt: success — set ready and "run" until shutdown
+                self_inner._ready.set()
+                await self_inner._shutdown_event.wait()
+
+            with patch.object(MCPServerTask, '_run_stdio', fake_run_stdio):
+                task = asyncio.ensure_future(server.run({"command": "fake"}))
+                await server._ready.wait()
+
+                # It should have succeeded (no error) after retrying
+                assert server._error is None, f"Expected no error, got: {server._error}"
+                assert call_count == 2, f"Expected 2 attempts, got {call_count}"
+
+                # Clean shutdown
+                server._shutdown_event.set()
+                await task
+
+        asyncio.get_event_loop().run_until_complete(_run())
+
+    def test_initial_connect_gives_up_after_max_retries(self):
+        """Server gives up after _MAX_INITIAL_CONNECT_RETRIES failures."""
+        from tools.mcp_tool import MCPServerTask, _MAX_INITIAL_CONNECT_RETRIES
+
+        call_count = 0
+
+        async def _run():
+            nonlocal call_count
+            server = MCPServerTask("test-exhaust")
+
+            async def fake_run_stdio(self_inner, config):
+                nonlocal call_count
+                call_count += 1
+                raise ConnectionError("DNS resolution failed")
+
+            with patch.object(MCPServerTask, '_run_stdio', fake_run_stdio):
+                task = asyncio.ensure_future(server.run({"command": "fake"}))
+                await server._ready.wait()
+
+                # Should have an error after exhausting retries
+                assert server._error is not None
+                assert "DNS resolution failed" in str(server._error)
+                # 1 initial + N retries = _MAX_INITIAL_CONNECT_RETRIES + 1 total attempts
+                assert call_count == _MAX_INITIAL_CONNECT_RETRIES + 1
+
+                await task
+
+        asyncio.get_event_loop().run_until_complete(_run())
+
+    def test_initial_connect_retry_respects_shutdown(self):
+        """Shutdown during initial retry backoff aborts cleanly."""
+        from tools.mcp_tool import MCPServerTask
+
+        async def _run():
+            server = MCPServerTask("test-shutdown")
+            attempt = 0
+
+            async def fake_run_stdio(self_inner, config):
+                nonlocal attempt
+                attempt += 1
+                if attempt == 1:
+                    raise ConnectionError("transient failure")
+                # Should not reach here because shutdown fires during sleep
+                raise AssertionError("Should not attempt after shutdown")
+
+            with patch.object(MCPServerTask, '_run_stdio', fake_run_stdio):
+                task = asyncio.ensure_future(server.run({"command": "fake"}))
+
+                # Give the first attempt time to fail, then set shutdown
+                # during the backoff sleep
+                await asyncio.sleep(0.1)
+                server._shutdown_event.set()
+                await server._ready.wait()
+
+                # Should have the error set and be done
+                assert server._error is not None
+                await task
+
+        asyncio.get_event_loop().run_until_complete(_run())

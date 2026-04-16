@@ -8,6 +8,7 @@ import os
 import sys
 import subprocess
 import shutil
+from pathlib import Path
 
 from hermes_cli.config import get_project_root, get_hermes_home, get_env_path
 from hermes_constants import display_hermes_home
@@ -42,6 +43,7 @@ _PROVIDER_ENV_HINTS = (
     "ZAI_API_KEY",
     "Z_AI_API_KEY",
     "KIMI_API_KEY",
+    "KIMI_CN_API_KEY",
     "MINIMAX_API_KEY",
     "MINIMAX_CN_API_KEY",
     "KILOCODE_API_KEY",
@@ -512,7 +514,87 @@ def run_doctor(args):
             pass
 
     _check_gateway_service_linger(issues)
-    
+
+    # =========================================================================
+    # Check: Command installation (hermes bin symlink)
+    # =========================================================================
+    if sys.platform != "win32":
+        print()
+        print(color("◆ Command Installation", Colors.CYAN, Colors.BOLD))
+
+        # Determine the venv entry point location
+        _venv_bin = None
+        for _venv_name in ("venv", ".venv"):
+            _candidate = PROJECT_ROOT / _venv_name / "bin" / "hermes"
+            if _candidate.exists():
+                _venv_bin = _candidate
+                break
+
+        # Determine the expected command link directory (mirrors install.sh logic)
+        _prefix = os.environ.get("PREFIX", "")
+        _is_termux_env = bool(os.environ.get("TERMUX_VERSION")) or "com.termux/files/usr" in _prefix
+        if _is_termux_env and _prefix:
+            _cmd_link_dir = Path(_prefix) / "bin"
+            _cmd_link_display = "$PREFIX/bin"
+        else:
+            _cmd_link_dir = Path.home() / ".local" / "bin"
+            _cmd_link_display = "~/.local/bin"
+        _cmd_link = _cmd_link_dir / "hermes"
+
+        if _venv_bin is None:
+            check_warn(
+                "Venv entry point not found",
+                "(hermes not in venv/bin/ or .venv/bin/ — reinstall with pip install -e '.[all]')"
+            )
+            manual_issues.append(
+                f"Reinstall entry point: cd {PROJECT_ROOT} && source venv/bin/activate && pip install -e '.[all]'"
+            )
+        else:
+            check_ok(f"Venv entry point exists ({_venv_bin.relative_to(PROJECT_ROOT)})")
+
+            # Check the symlink at the command link location
+            if _cmd_link.is_symlink():
+                _target = _cmd_link.resolve()
+                _expected = _venv_bin.resolve()
+                if _target == _expected:
+                    check_ok(f"{_cmd_link_display}/hermes → correct target")
+                else:
+                    check_warn(
+                        f"{_cmd_link_display}/hermes points to wrong target",
+                        f"(→ {_target}, expected → {_expected})"
+                    )
+                    if should_fix:
+                        _cmd_link.unlink()
+                        _cmd_link.symlink_to(_venv_bin)
+                        check_ok(f"Fixed symlink: {_cmd_link_display}/hermes → {_venv_bin}")
+                        fixed_count += 1
+                    else:
+                        issues.append(f"Broken symlink at {_cmd_link_display}/hermes — run 'hermes doctor --fix'")
+            elif _cmd_link.exists():
+                # It's a regular file, not a symlink — possibly a wrapper script
+                check_ok(f"{_cmd_link_display}/hermes exists (non-symlink)")
+            else:
+                check_fail(
+                    f"{_cmd_link_display}/hermes not found",
+                    "(hermes command may not work outside the venv)"
+                )
+                if should_fix:
+                    _cmd_link_dir.mkdir(parents=True, exist_ok=True)
+                    _cmd_link.symlink_to(_venv_bin)
+                    check_ok(f"Created symlink: {_cmd_link_display}/hermes → {_venv_bin}")
+                    fixed_count += 1
+
+                    # Check if the link dir is on PATH
+                    _path_dirs = os.environ.get("PATH", "").split(os.pathsep)
+                    if str(_cmd_link_dir) not in _path_dirs:
+                        check_warn(
+                            f"{_cmd_link_display} is not on your PATH",
+                            "(add it to your shell config: export PATH=\"$HOME/.local/bin:$PATH\")"
+                        )
+                        manual_issues.append(f"Add {_cmd_link_display} to your PATH")
+                else:
+                    issues.append(f"Missing {_cmd_link_display}/hermes symlink — run 'hermes doctor --fix'")
+
     # =========================================================================
     # Check: External tools
     # =========================================================================
@@ -721,16 +803,19 @@ def run_doctor(args):
     _apikey_providers = [
         ("Z.AI / GLM",      ("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"), "https://api.z.ai/api/paas/v4/models", "GLM_BASE_URL", True),
         ("Kimi / Moonshot",  ("KIMI_API_KEY",),                              "https://api.moonshot.ai/v1/models",   "KIMI_BASE_URL", True),
+        ("Kimi / Moonshot (China)", ("KIMI_CN_API_KEY",),                    "https://api.moonshot.cn/v1/models",   None, True),
+        ("Arcee AI",         ("ARCEEAI_API_KEY",),                            "https://api.arcee.ai/api/v1/models",  "ARCEE_BASE_URL", True),
         ("DeepSeek",         ("DEEPSEEK_API_KEY",),                           "https://api.deepseek.com/v1/models",  "DEEPSEEK_BASE_URL", True),
         ("Hugging Face",     ("HF_TOKEN",),                                   "https://router.huggingface.co/v1/models", "HF_BASE_URL", True),
         ("Alibaba/DashScope", ("DASHSCOPE_API_KEY",),                         "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models", "DASHSCOPE_BASE_URL", True),
         # MiniMax: the /anthropic endpoint doesn't support /models, but the /v1 endpoint does.
         ("MiniMax",          ("MINIMAX_API_KEY",),                            "https://api.minimax.io/v1/models",    "MINIMAX_BASE_URL", True),
         ("MiniMax (China)",  ("MINIMAX_CN_API_KEY",),                         "https://api.minimaxi.com/v1/models",  "MINIMAX_CN_BASE_URL", True),
-        ("AI Gateway",       ("AI_GATEWAY_API_KEY",),                          "https://ai-gateway.vercel.sh/v1/models", "AI_GATEWAY_BASE_URL", True),
+        ("Vercel AI Gateway",       ("AI_GATEWAY_API_KEY",),                          "https://ai-gateway.vercel.sh/v1/models", "AI_GATEWAY_BASE_URL", True),
         ("Kilo Code",        ("KILOCODE_API_KEY",),                            "https://api.kilo.ai/api/gateway/models",  "KILOCODE_BASE_URL", True),
         ("OpenCode Zen",     ("OPENCODE_ZEN_API_KEY",),                        "https://opencode.ai/zen/v1/models",  "OPENCODE_ZEN_BASE_URL", True),
-        ("OpenCode Go",      ("OPENCODE_GO_API_KEY",),                         "https://opencode.ai/zen/go/v1/models", "OPENCODE_GO_BASE_URL", True),
+        # OpenCode Go has no shared /models endpoint; skip the health check.
+        ("OpenCode Go",      ("OPENCODE_GO_API_KEY",),                         None,                                  "OPENCODE_GO_BASE_URL", False),
     ]
     for _pname, _env_vars, _default_url, _base_env, _supports_health_check in _apikey_providers:
         _key = ""
@@ -747,7 +832,7 @@ def run_doctor(args):
             print(f"  Checking {_pname} API...", end="", flush=True)
             try:
                 import httpx
-                _base = os.getenv(_base_env, "")
+                _base = os.getenv(_base_env, "") if _base_env else ""
                 # Auto-detect Kimi Code keys (sk-kimi-) → api.kimi.com
                 if not _base and _key.startswith("sk-kimi-"):
                     _base = "https://api.kimi.com/coding/v1"
@@ -774,6 +859,31 @@ def run_doctor(args):
                     print(f"\r  {color('⚠', Colors.YELLOW)} {_label} {color(f'(HTTP {_resp.status_code})', Colors.DIM)}           ")
             except Exception as _e:
                 print(f"\r  {color('⚠', Colors.YELLOW)} {_label} {color(f'({_e})', Colors.DIM)}           ")
+
+    # -- AWS Bedrock --
+    # Bedrock uses the AWS SDK credential chain, not API keys.
+    try:
+        from agent.bedrock_adapter import has_aws_credentials, resolve_aws_auth_env_var, resolve_bedrock_region
+        if has_aws_credentials():
+            _auth_var = resolve_aws_auth_env_var()
+            _region = resolve_bedrock_region()
+            _label = "AWS Bedrock".ljust(20)
+            print(f"  Checking AWS Bedrock...", end="", flush=True)
+            try:
+                import boto3
+                _br_client = boto3.client("bedrock", region_name=_region)
+                _br_resp = _br_client.list_foundation_models()
+                _model_count = len(_br_resp.get("modelSummaries", []))
+                print(f"\r  {color('✓', Colors.GREEN)} {_label} {color(f'({_auth_var}, {_region}, {_model_count} models)', Colors.DIM)}           ")
+            except ImportError:
+                print(f"\r  {color('⚠', Colors.YELLOW)} {_label} {color('(boto3 not installed — pip install hermes-agent[bedrock])', Colors.DIM)}           ")
+                issues.append("Install boto3 for Bedrock: pip install hermes-agent[bedrock]")
+            except Exception as _e:
+                _err_name = type(_e).__name__
+                print(f"\r  {color('⚠', Colors.YELLOW)} {_label} {color(f'({_err_name}: {_e})', Colors.DIM)}           ")
+                issues.append(f"AWS Bedrock: {_err_name} — check IAM permissions for bedrock:ListFoundationModels")
+    except ImportError:
+        pass  # bedrock_adapter not available — skip silently
 
     # =========================================================================
     # Check: Submodules

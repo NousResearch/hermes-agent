@@ -56,6 +56,7 @@ def _make_agent(monkeypatch, api_mode, provider, response_fn):
 
         def run_conversation(self, msg, conversation_history=None, task_id=None):
             self._interruptible_api_call = lambda kw: response_fn()
+            self._disable_streaming = True
             return super().run_conversation(msg, conversation_history=conversation_history, task_id=task_id)
 
     return _A(model="test-model", api_key="test-key", provider=provider, api_mode=api_mode)

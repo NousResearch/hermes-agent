@@ -1,7 +1,7 @@
 """Random tips shown at CLI session start to help users discover features."""
 
 import random
-from typing import Optional
+
 
 # ---------------------------------------------------------------------------
 # Tip corpus — one-liners covering slash commands, CLI flags, config,
@@ -346,6 +346,4 @@ def get_random_tip(exclude_recent: int = 0) -> str:
     return random.choice(TIPS)
 
 
-def get_tip_count() -> int:
-    """Return the total number of tips available."""
-    return len(TIPS)
+

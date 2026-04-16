@@ -310,7 +310,15 @@ def session_search(
     if db is None:
         return tool_error("Session database not available.", success=False)
 
-    limit = min(limit, 5)  # Cap at 5 sessions to avoid excessive LLM calls
+    # Defensive: models (especially open-source) may send non-int limit values
+    # (None when JSON null, string "int", or even a type object).  Coerce to a
+    # safe integer before any arithmetic/comparison to prevent TypeError.
+    if not isinstance(limit, int):
+        try:
+            limit = int(limit)
+        except (TypeError, ValueError):
+            limit = 3
+    limit = max(1, min(limit, 5))  # Clamp to [1, 5]
 
     # Recent sessions mode: when query is empty, return metadata for recent sessions.
     # No LLM calls — just DB queries for titles, previews, timestamps.

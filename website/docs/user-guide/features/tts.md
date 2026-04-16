@@ -65,8 +65,9 @@ tts:
     exaggeration: 0.5            # 0.0–2.0, emotion/expression intensity
     cfg_weight: 0.5              # 0.0–1.0, classifier-free guidance strength
     temperature: 0.8             # Sampling temperature
-    language_id: en              # Language (multilingual model only)
+    language_id: en              # Language code (multilingual model only). Optional — if omitted, langdetect auto-detects the language. If set, this value is always used and langdetect is bypassed.
     url: http://localhost:7860   # Server mode URL
+    predefined_voice_id: Alice.wav  # Predefined voice (server mode)
   neutts:
     ref_audio: ''
     ref_text: ''

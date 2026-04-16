@@ -537,6 +537,9 @@ class MatrixAdapter(BasePlatformAdapter):
 
         # Register event handlers.
         from mautrix.client import InternalEventType as IntEvt
+        from mautrix.client.dispatcher import MembershipEventDispatcher
+
+        client.add_dispatcher(MembershipEventDispatcher)
 
         client.add_event_handler(EventType.ROOM_MESSAGE, self._on_room_message)
         client.add_event_handler(EventType.REACTION, self._on_reaction)

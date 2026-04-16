@@ -1,8 +1,13 @@
 """ClawMem REST client — httpx wrapper for the ClawMem Git Server API.
 
 Stateless async client.  All public methods are async; callers use
-``run_sync()`` from a module-level persistent event loop when invoked
-from synchronous MemoryProvider hooks.
+``run_sync()`` to bridge from synchronous MemoryProvider hooks.
+
+Each ``run_sync()`` call spins up a fresh event loop so concurrent
+threads (background prefetch, sync_turn, on_memory_write) never
+collide on a shared loop.  This is safe because every ``_request``
+creates its own ``httpx.AsyncClient`` — there is no connection pool
+to preserve across calls.
 """
 
 from __future__ import annotations
@@ -10,9 +15,8 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
-import threading
 from datetime import date
-from typing import Any, Optional
+from typing import Any
 from urllib.parse import quote, urlencode
 
 import httpx
@@ -20,24 +24,21 @@ import httpx
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Sync-async bridging (persistent event loop)
+# Sync-async bridging
 # ---------------------------------------------------------------------------
-
-_loop: Optional[asyncio.AbstractEventLoop] = None
-_loop_lock = threading.Lock()
-
-
-def _get_loop() -> asyncio.AbstractEventLoop:
-    global _loop
-    with _loop_lock:
-        if _loop is None or _loop.is_closed():
-            _loop = asyncio.new_event_loop()
-        return _loop
 
 
 def run_sync(coro):
-    """Run an async coroutine from a synchronous context."""
-    return _get_loop().run_until_complete(coro)
+    """Run an async coroutine from a synchronous context.
+
+    Creates a throwaway event loop per call.  Thread-safe — multiple
+    threads can call ``run_sync()`` concurrently without contention.
+    """
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
 
 
 # ---------------------------------------------------------------------------

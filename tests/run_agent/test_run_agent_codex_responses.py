@@ -179,6 +179,39 @@ class _FakeCreateStream:
         self.closed = True
 
 
+class _FakeStreamingToolCallResponsesStream(_FakeResponsesStream):
+    def __init__(self, *, final_response=None, tool_name="clarify", arguments='{"question":"What should I update?"}'):
+        super().__init__(final_response=final_response)
+        self._tool_name = tool_name
+        self._arguments = arguments
+
+    def __iter__(self):
+        item = SimpleNamespace(
+            type="function_call",
+            id="fc_stream_1",
+            call_id="call_stream_1",
+            name=self._tool_name,
+            status="completed",
+        )
+        return iter(
+            [
+                SimpleNamespace(type="response.output_item.added", output_index=0, item=item),
+                SimpleNamespace(
+                    type="response.function_call_arguments.delta",
+                    output_index=0,
+                    item_id="fc_stream_1",
+                    delta=self._arguments,
+                ),
+                SimpleNamespace(
+                    type="response.function_call_arguments.done",
+                    output_index=0,
+                    item_id="fc_stream_1",
+                ),
+                SimpleNamespace(type="response.output_item.done", output_index=0, item=item),
+            ]
+        )
+
+
 def _codex_request_kwargs():
     return {
         "model": "gpt-5-codex",
@@ -474,6 +507,104 @@ def test_run_codex_stream_fallback_parses_create_stream_events(monkeypatch):
     assert calls["create"] == 1
     assert create_stream.closed is True
     assert response.output[0].content[0].text == "streamed create ok"
+
+
+def test_run_codex_stream_salvages_function_call_arguments_when_final_response_is_empty(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(
+            stream=lambda **kwargs: _FakeStreamingToolCallResponsesStream(
+                final_response=SimpleNamespace(
+                    output=[],
+                    output_text="",
+                    usage=SimpleNamespace(input_tokens=5, output_tokens=3, total_tokens=8),
+                    status="completed",
+                    model="gpt-5-codex",
+                )
+            ),
+            create=lambda **kwargs: _codex_message_response("unused fallback"),
+        )
+    )
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+    assistant_message, finish_reason = agent._normalize_codex_response(response)
+
+    assert finish_reason == "tool_calls"
+    assert len(assistant_message.tool_calls) == 1
+    assert assistant_message.tool_calls[0].function.name == "clarify"
+    assert assistant_message.tool_calls[0].function.arguments == '{"question":"What should I update?"}'
+
+
+def test_codex_create_stream_fallback_salvages_function_call_arguments(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    create_stream = _FakeCreateStream(
+        [
+            SimpleNamespace(type="response.created"),
+            SimpleNamespace(
+                type="response.function_call_arguments.delta",
+                output_index=0,
+                item_id="fc_stream_1",
+                delta='{"question":"What should I update?"}',
+            ),
+            SimpleNamespace(
+                type="response.output_item.done",
+                output_index=0,
+                item=SimpleNamespace(
+                    type="function_call",
+                    id="fc_stream_1",
+                    call_id="call_stream_1",
+                    name="clarify",
+                    status="completed",
+                ),
+            ),
+            SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(
+                    output=[],
+                    output_text="",
+                    usage=SimpleNamespace(input_tokens=5, output_tokens=3, total_tokens=8),
+                    status="completed",
+                    model="gpt-5-codex",
+                ),
+            ),
+        ]
+    )
+    agent.client = SimpleNamespace(responses=SimpleNamespace(create=lambda **kwargs: create_stream))
+
+    response = agent._run_codex_create_stream_fallback(_codex_request_kwargs())
+    assistant_message, finish_reason = agent._normalize_codex_response(response)
+
+    assert finish_reason == "tool_calls"
+    assert len(assistant_message.tool_calls) == 1
+    assert assistant_message.tool_calls[0].function.name == "clarify"
+    assert assistant_message.tool_calls[0].function.arguments == '{"question":"What should I update?"}'
+
+
+def test_normalize_codex_response_supports_dict_tool_items(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    response = SimpleNamespace(
+        output=[
+            {
+                "type": "function_call",
+                "id": "fc_dict_1",
+                "call_id": "call_dict_1",
+                "name": "clarify",
+                "arguments": '{"question":"What should I update?"}',
+                "status": "completed",
+            }
+        ],
+        output_text="",
+        usage=SimpleNamespace(input_tokens=5, output_tokens=3, total_tokens=8),
+        status="completed",
+        model="gpt-5-codex",
+    )
+
+    assistant_message, finish_reason = agent._normalize_codex_response(response)
+
+    assert finish_reason == "tool_calls"
+    assert len(assistant_message.tool_calls) == 1
+    assert assistant_message.tool_calls[0].function.name == "clarify"
+    assert assistant_message.tool_calls[0].function.arguments == '{"question":"What should I update?"}'
 
 
 def test_run_conversation_codex_plain_text(monkeypatch):

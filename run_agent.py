@@ -4038,35 +4038,72 @@ class AIAgent:
 
     def _extract_responses_message_text(self, item: Any) -> str:
         """Extract assistant text from a Responses message output item."""
-        content = getattr(item, "content", None)
+        content = item.get("content") if isinstance(item, dict) else getattr(item, "content", None)
         if not isinstance(content, list):
             return ""
 
         chunks: List[str] = []
         for part in content:
-            ptype = getattr(part, "type", None)
+            if isinstance(part, dict):
+                ptype = part.get("type")
+                text = part.get("text")
+            else:
+                ptype = getattr(part, "type", None)
+                text = getattr(part, "text", None)
             if ptype not in {"output_text", "text"}:
                 continue
-            text = getattr(part, "text", None)
             if isinstance(text, str) and text:
                 chunks.append(text)
         return "".join(chunks).strip()
 
     def _extract_responses_reasoning_text(self, item: Any) -> str:
         """Extract a compact reasoning text from a Responses reasoning item."""
-        summary = getattr(item, "summary", None)
+        summary = item.get("summary") if isinstance(item, dict) else getattr(item, "summary", None)
         if isinstance(summary, list):
             chunks: List[str] = []
             for part in summary:
-                text = getattr(part, "text", None)
+                text = part.get("text") if isinstance(part, dict) else getattr(part, "text", None)
                 if isinstance(text, str) and text:
                     chunks.append(text)
             if chunks:
                 return "\n".join(chunks).strip()
-        text = getattr(item, "text", None)
+        text = item.get("text") if isinstance(item, dict) else getattr(item, "text", None)
         if isinstance(text, str) and text:
             return text.strip()
         return ""
+
+    def _response_stream_item_with_arguments(self, item: Any, arguments_text: str | None):
+        """Return a copy of a streamed tool-call item with arguments/input backfilled."""
+        if item is None or not isinstance(arguments_text, str) or not arguments_text:
+            return item
+
+        if isinstance(item, dict):
+            item_type = item.get("type")
+            if item_type not in {"function_call", "custom_tool_call"}:
+                return item
+            field_name = "input" if item_type == "custom_tool_call" else "arguments"
+            existing = item.get(field_name)
+            if isinstance(existing, str) and existing.strip():
+                return item
+            patched = dict(item)
+            patched[field_name] = arguments_text
+            return patched
+
+        item_type = getattr(item, "type", None)
+        if item_type not in {"function_call", "custom_tool_call"}:
+            return item
+
+        field_name = "input" if item_type == "custom_tool_call" else "arguments"
+        existing = getattr(item, field_name, None)
+        if isinstance(existing, str) and existing.strip():
+            return item
+
+        item_dict = getattr(item, "__dict__", None)
+        if isinstance(item_dict, dict):
+            patched = dict(item_dict)
+            patched[field_name] = arguments_text
+            return SimpleNamespace(**patched)
+        return item
 
     def _normalize_codex_response(self, response: Any) -> tuple[Any, str]:
         """Normalize a Responses API object to an assistant_message-like object."""
@@ -4112,8 +4149,9 @@ class AIAgent:
         saw_final_answer_phase = False
 
         for item in output:
-            item_type = getattr(item, "type", None)
-            item_status = getattr(item, "status", None)
+            is_dict_item = isinstance(item, dict)
+            item_type = item.get("type") if is_dict_item else getattr(item, "type", None)
+            item_status = item.get("status") if is_dict_item else getattr(item, "status", None)
             if isinstance(item_status, str):
                 item_status = item_status.strip().lower()
             else:
@@ -4123,7 +4161,7 @@ class AIAgent:
                 has_incomplete_items = True
 
             if item_type == "message":
-                item_phase = getattr(item, "phase", None)
+                item_phase = item.get("phase") if is_dict_item else getattr(item, "phase", None)
                 if isinstance(item_phase, str):
                     normalized_phase = item_phase.strip().lower()
                     if normalized_phase in {"commentary", "analysis"}:
@@ -4140,18 +4178,18 @@ class AIAgent:
                 # Capture the full reasoning item for multi-turn continuity.
                 # encrypted_content is an opaque blob the API needs back on
                 # subsequent turns to maintain coherent reasoning chains.
-                encrypted = getattr(item, "encrypted_content", None)
+                encrypted = item.get("encrypted_content") if is_dict_item else getattr(item, "encrypted_content", None)
                 if isinstance(encrypted, str) and encrypted:
                     raw_item = {"type": "reasoning", "encrypted_content": encrypted}
-                    item_id = getattr(item, "id", None)
+                    item_id = item.get("id") if is_dict_item else getattr(item, "id", None)
                     if isinstance(item_id, str) and item_id:
                         raw_item["id"] = item_id
                     # Capture summary — required by the API when replaying reasoning items
-                    summary = getattr(item, "summary", None)
+                    summary = item.get("summary") if is_dict_item else getattr(item, "summary", None)
                     if isinstance(summary, list):
                         raw_summary = []
                         for part in summary:
-                            text = getattr(part, "text", None)
+                            text = part.get("text") if isinstance(part, dict) else getattr(part, "text", None)
                             if isinstance(text, str):
                                 raw_summary.append({"type": "summary_text", "text": text})
                         raw_item["summary"] = raw_summary
@@ -4159,12 +4197,12 @@ class AIAgent:
             elif item_type == "function_call":
                 if item_status in {"queued", "in_progress", "incomplete"}:
                     continue
-                fn_name = getattr(item, "name", "") or ""
-                arguments = getattr(item, "arguments", "{}")
+                fn_name = (item.get("name") if is_dict_item else getattr(item, "name", "")) or ""
+                arguments = item.get("arguments", "{}") if is_dict_item else getattr(item, "arguments", "{}")
                 if not isinstance(arguments, str):
                     arguments = json.dumps(arguments, ensure_ascii=False)
-                raw_call_id = getattr(item, "call_id", None)
-                raw_item_id = getattr(item, "id", None)
+                raw_call_id = item.get("call_id") if is_dict_item else getattr(item, "call_id", None)
+                raw_item_id = item.get("id") if is_dict_item else getattr(item, "id", None)
                 embedded_call_id, _ = self._split_responses_tool_id(raw_item_id)
                 call_id = raw_call_id if isinstance(raw_call_id, str) and raw_call_id.strip() else embedded_call_id
                 if not isinstance(call_id, str) or not call_id.strip():
@@ -4180,12 +4218,12 @@ class AIAgent:
                     function=SimpleNamespace(name=fn_name, arguments=arguments),
                 ))
             elif item_type == "custom_tool_call":
-                fn_name = getattr(item, "name", "") or ""
-                arguments = getattr(item, "input", "{}")
+                fn_name = (item.get("name") if is_dict_item else getattr(item, "name", "")) or ""
+                arguments = item.get("input", "{}") if is_dict_item else getattr(item, "input", "{}")
                 if not isinstance(arguments, str):
                     arguments = json.dumps(arguments, ensure_ascii=False)
-                raw_call_id = getattr(item, "call_id", None)
-                raw_item_id = getattr(item, "id", None)
+                raw_call_id = item.get("call_id") if is_dict_item else getattr(item, "call_id", None)
+                raw_item_id = item.get("id") if is_dict_item else getattr(item, "id", None)
                 embedded_call_id, _ = self._split_responses_tool_id(raw_item_id)
                 call_id = raw_call_id if isinstance(raw_call_id, str) and raw_call_id.strip() else embedded_call_id
                 if not isinstance(call_id, str) or not call_id.strip():
@@ -4519,6 +4557,7 @@ class AIAgent:
         self._codex_streamed_text_parts: list = []
         for attempt in range(max_stream_retries + 1):
             collected_output_items: list = []
+            streamed_tool_arguments: dict[str, list[str]] = {}
             try:
                 with active_client.responses.stream(**api_kwargs) as stream:
                     for event in stream:
@@ -4540,8 +4579,14 @@ class AIAgent:
                                         except Exception:
                                             pass
                                 self._fire_stream_delta(delta_text)
+                        elif event_type in {"response.function_call_arguments.delta", "response.custom_tool_call_input.delta"}:
+                            has_tool_calls = True
+                            item_id = getattr(event, "item_id", None)
+                            delta_text = getattr(event, "delta", "")
+                            if isinstance(item_id, str) and item_id and isinstance(delta_text, str) and delta_text:
+                                streamed_tool_arguments.setdefault(item_id, []).append(delta_text)
                         # Track tool calls to suppress text streaming
-                        elif "function_call" in event_type:
+                        elif "function_call" in event_type or "custom_tool_call" in event_type:
                             has_tool_calls = True
                         # Fire reasoning callbacks
                         elif "reasoning" in event_type and "delta" in event_type:
@@ -4555,6 +4600,12 @@ class AIAgent:
                         elif event_type == "response.output_item.done":
                             done_item = getattr(event, "item", None)
                             if done_item is not None:
+                                done_item_id = getattr(done_item, "id", None)
+                                if isinstance(done_item_id, str) and done_item_id in streamed_tool_arguments:
+                                    done_item = self._response_stream_item_with_arguments(
+                                        done_item,
+                                        "".join(streamed_tool_arguments[done_item_id]),
+                                    )
                                 collected_output_items.append(done_item)
                         # Log non-completed terminal events for diagnostics
                         elif event_type in ("response.incomplete", "response.failed"):
@@ -4645,6 +4696,7 @@ class AIAgent:
         terminal_response = None
         collected_output_items: list = []
         collected_text_deltas: list = []
+        streamed_tool_arguments: dict[str, list[str]] = {}
         try:
             for event in stream_or_response:
                 self._touch_activity("receiving stream response")
@@ -4658,6 +4710,14 @@ class AIAgent:
                     if done_item is None and isinstance(event, dict):
                         done_item = event.get("item")
                     if done_item is not None:
+                        done_item_id = getattr(done_item, "id", None)
+                        if done_item_id is None and isinstance(done_item, dict):
+                            done_item_id = done_item.get("id")
+                        if isinstance(done_item_id, str) and done_item_id in streamed_tool_arguments:
+                            done_item = self._response_stream_item_with_arguments(
+                                done_item,
+                                "".join(streamed_tool_arguments[done_item_id]),
+                            )
                         collected_output_items.append(done_item)
                 elif event_type in ("response.output_text.delta",):
                     delta = getattr(event, "delta", "")
@@ -4665,6 +4725,15 @@ class AIAgent:
                         delta = event.get("delta", "")
                     if delta:
                         collected_text_deltas.append(delta)
+                elif event_type in {"response.function_call_arguments.delta", "response.custom_tool_call_input.delta"}:
+                    item_id = getattr(event, "item_id", None)
+                    delta = getattr(event, "delta", "")
+                    if item_id is None and isinstance(event, dict):
+                        item_id = event.get("item_id")
+                    if not delta and isinstance(event, dict):
+                        delta = event.get("delta", "")
+                    if isinstance(item_id, str) and item_id and isinstance(delta, str) and delta:
+                        streamed_tool_arguments.setdefault(item_id, []).append(delta)
 
                 if event_type not in {"response.completed", "response.incomplete", "response.failed"}:
                     continue

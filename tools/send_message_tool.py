@@ -5,12 +5,14 @@ Sends a message to a user or channel on any connected messaging platform
 human-friendly channel names to IDs. Works in both CLI and gateway contexts.
 """
 
+from contextvars import ContextVar
 import json
 import logging
 import os
 import re
 import ssl
 import time
+from typing import Any
 
 from agent.redact import redact_sensitive_text
 
@@ -32,6 +34,20 @@ _URL_SECRET_QUERY_RE = re.compile(
 _GENERIC_SECRET_ASSIGN_RE = re.compile(
     r"\b(access_token|api[_-]?key|auth[_-]?token|signature|sig)\s*=\s*([^\s,;]+)",
     re.IGNORECASE,
+)
+_UNSET: Any = object()
+
+_CRON_AUTO_DELIVER_PLATFORM: ContextVar = ContextVar(
+    "HERMES_CRON_AUTO_DELIVER_PLATFORM",
+    default=_UNSET,
+)
+_CRON_AUTO_DELIVER_CHAT_ID: ContextVar = ContextVar(
+    "HERMES_CRON_AUTO_DELIVER_CHAT_ID",
+    default=_UNSET,
+)
+_CRON_AUTO_DELIVER_THREAD_ID: ContextVar = ContextVar(
+    "HERMES_CRON_AUTO_DELIVER_THREAD_ID",
+    default=_UNSET,
 )
 
 
@@ -273,8 +289,58 @@ def _describe_media_for_mirror(media_files):
     return f"[Sent {len(media_files)} media attachments]"
 
 
+def set_cron_auto_delivery_target(
+    platform: str = "",
+    chat_id: str = "",
+    thread_id: str = "",
+) -> list:
+    """Set cron auto-delivery context for the current task and return tokens."""
+    return [
+        _CRON_AUTO_DELIVER_PLATFORM.set(platform),
+        _CRON_AUTO_DELIVER_CHAT_ID.set(chat_id),
+        _CRON_AUTO_DELIVER_THREAD_ID.set(thread_id),
+    ]
+
+
+def clear_cron_auto_delivery_target(tokens: list) -> None:
+    """Mark cron auto-delivery context as cleared for this task."""
+    for var in (
+        _CRON_AUTO_DELIVER_PLATFORM,
+        _CRON_AUTO_DELIVER_CHAT_ID,
+        _CRON_AUTO_DELIVER_THREAD_ID,
+    ):
+        var.set("")
+
+
+def _get_cron_auto_delivery_target_from_context():
+    """Read the current task's cron auto-delivery target, if one was set."""
+    platform = _CRON_AUTO_DELIVER_PLATFORM.get()
+    chat_id = _CRON_AUTO_DELIVER_CHAT_ID.get()
+    thread_id = _CRON_AUTO_DELIVER_THREAD_ID.get()
+
+    if platform is _UNSET and chat_id is _UNSET and thread_id is _UNSET:
+        return None
+
+    platform_value = "" if platform is _UNSET else str(platform).strip().lower()
+    chat_id_value = "" if chat_id is _UNSET else str(chat_id).strip()
+    thread_id_value = None if thread_id is _UNSET else (str(thread_id).strip() or None)
+
+    if not platform_value or not chat_id_value:
+        return None
+
+    return {
+        "platform": platform_value,
+        "chat_id": chat_id_value,
+        "thread_id": thread_id_value,
+    }
+
+
 def _get_cron_auto_delivery_target():
     """Return the cron scheduler's auto-delivery target for the current run, if any."""
+    context_target = _get_cron_auto_delivery_target_from_context()
+    if context_target is not None:
+        return context_target
+
     platform = os.getenv("HERMES_CRON_AUTO_DELIVER_PLATFORM", "").strip().lower()
     chat_id = os.getenv("HERMES_CRON_AUTO_DELIVER_CHAT_ID", "").strip()
     if not platform or not chat_id:

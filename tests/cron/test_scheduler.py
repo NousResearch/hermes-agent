@@ -1,15 +1,22 @@
 """Tests for cron/scheduler.py — origin resolution, delivery routing, and error logging."""
 
+import concurrent.futures
 import json
 import logging
 import os
+import sys
+import threading
 from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
 
 from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, run_job, SILENT_MARKER, _build_job_prompt
+from gateway.session_context import get_session_env
+from tools.send_message_tool import _get_cron_auto_delivery_target
 from tools.env_passthrough import clear_env_passthrough
 from tools.credential_files import clear_credential_files
+
+sys.modules.setdefault("fire", MagicMock())
 
 
 class TestResolveOrigin:
@@ -735,9 +742,7 @@ class TestRunJobSessionPersistence:
                 pass
 
             def run_conversation(self, *args, **kwargs):
-                seen["platform"] = os.getenv("HERMES_CRON_AUTO_DELIVER_PLATFORM")
-                seen["chat_id"] = os.getenv("HERMES_CRON_AUTO_DELIVER_CHAT_ID")
-                seen["thread_id"] = os.getenv("HERMES_CRON_AUTO_DELIVER_THREAD_ID")
+                seen.update(_get_cron_auto_delivery_target() or {})
                 return {"final_response": "ok"}
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
@@ -763,10 +768,99 @@ class TestRunJobSessionPersistence:
             "chat_id": "-2002",
             "thread_id": None,
         }
+        assert _get_cron_auto_delivery_target() is None
         assert os.getenv("HERMES_CRON_AUTO_DELIVER_PLATFORM") is None
         assert os.getenv("HERMES_CRON_AUTO_DELIVER_CHAT_ID") is None
         assert os.getenv("HERMES_CRON_AUTO_DELIVER_THREAD_ID") is None
         fake_db.close.assert_called_once()
+
+    def test_run_job_isolates_origin_and_delivery_context_per_concurrent_job(self, tmp_path, monkeypatch):
+        jobs = [
+            {
+                "id": "job-a",
+                "name": "job a",
+                "prompt": "alpha prompt",
+                "deliver": "telegram:-1001:100",
+                "origin": {
+                    "platform": "telegram",
+                    "chat_id": "origin-a",
+                    "chat_name": "Origin A",
+                },
+            },
+            {
+                "id": "job-b",
+                "name": "job b",
+                "prompt": "beta prompt",
+                "deliver": "telegram:-1002:200",
+                "origin": {
+                    "platform": "telegram",
+                    "chat_id": "origin-b",
+                    "chat_name": "Origin B",
+                },
+            },
+        ]
+        fake_db = MagicMock()
+        started = threading.Barrier(2)
+        seen = {}
+
+        monkeypatch.delenv("HERMES_CRON_AUTO_DELIVER_PLATFORM", raising=False)
+        monkeypatch.delenv("HERMES_CRON_AUTO_DELIVER_CHAT_ID", raising=False)
+        monkeypatch.delenv("HERMES_CRON_AUTO_DELIVER_THREAD_ID", raising=False)
+
+        class FakeAgent:
+            def __init__(self, *args, **kwargs):
+                self.job_id = kwargs["session_id"].split("_", 2)[1]
+
+            def run_conversation(self, *args, **kwargs):
+                started.wait(timeout=5)
+                seen[self.job_id] = {
+                    "origin_platform": get_session_env("HERMES_SESSION_PLATFORM"),
+                    "origin_chat_id": get_session_env("HERMES_SESSION_CHAT_ID"),
+                    "origin_chat_name": get_session_env("HERMES_SESSION_CHAT_NAME"),
+                    "delivery_target": _get_cron_auto_delivery_target(),
+                }
+                return {"final_response": "ok"}
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "***",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent", FakeAgent):
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+                futures = [pool.submit(run_job, job) for job in jobs]
+                results = [future.result(timeout=10) for future in futures]
+
+        assert all(success is True and error is None and final_response == "ok" for success, _output, final_response, error in results)
+        assert seen == {
+            "job-a": {
+                "origin_platform": "telegram",
+                "origin_chat_id": "origin-a",
+                "origin_chat_name": "Origin A",
+                "delivery_target": {
+                    "platform": "telegram",
+                    "chat_id": "-1001",
+                    "thread_id": "100",
+                },
+            },
+            "job-b": {
+                "origin_platform": "telegram",
+                "origin_chat_id": "origin-b",
+                "origin_chat_name": "Origin B",
+                "delivery_target": {
+                    "platform": "telegram",
+                    "chat_id": "-1002",
+                    "thread_id": "200",
+                },
+            },
+        }
+        assert _get_cron_auto_delivery_target() is None
 
 
 class TestRunJobConfigLogging:

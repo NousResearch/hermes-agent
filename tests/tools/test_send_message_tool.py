@@ -10,12 +10,15 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from gateway.config import Platform
 from tools.send_message_tool import (
+    _get_cron_auto_delivery_target,
     _parse_target_ref,
     _send_discord,
     _send_matrix_via_adapter,
     _send_telegram,
     _send_to_platform,
+    clear_cron_auto_delivery_target,
     send_message_tool,
+    set_cron_auto_delivery_target,
 )
 
 
@@ -136,6 +139,47 @@ class TestSendMessageTool:
             media_files=[],
         )
         mirror_mock.assert_called_once_with("telegram", "-1002", "hello", source_label="cli", thread_id=None)
+
+    def test_context_target_overrides_stale_env_when_checking_duplicates(self):
+        config, _telegram_cfg = _make_config()
+        tokens = set_cron_auto_delivery_target(
+            platform="telegram",
+            chat_id="-1002",
+            thread_id="",
+        )
+
+        try:
+            with patch.dict(
+                os.environ,
+                {
+                    "HERMES_CRON_AUTO_DELIVER_PLATFORM": "telegram",
+                    "HERMES_CRON_AUTO_DELIVER_CHAT_ID": "-1001",
+                },
+                clear=False,
+            ), \
+                 patch("gateway.config.load_gateway_config", return_value=config), \
+                 patch("tools.interrupt.is_interrupted", return_value=False), \
+                 patch("model_tools._run_async", side_effect=_run_async_immediately), \
+                 patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+                 patch("gateway.mirror.mirror_to_session", return_value=True) as mirror_mock:
+                result = json.loads(
+                    send_message_tool(
+                        {
+                            "action": "send",
+                            "target": "telegram:-1002",
+                            "message": "hello",
+                        }
+                    )
+                )
+        finally:
+            clear_cron_auto_delivery_target(tokens)
+
+        assert result["success"] is True
+        assert result["skipped"] is True
+        assert result["target"] == "telegram:-1002"
+        assert _get_cron_auto_delivery_target() is None
+        send_mock.assert_not_awaited()
+        mirror_mock.assert_not_called()
 
     def test_cron_same_chat_different_thread_still_sends(self):
         config, telegram_cfg = _make_config()

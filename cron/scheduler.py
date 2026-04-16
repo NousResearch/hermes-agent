@@ -585,6 +585,11 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         Tuple of (success, full_output_doc, final_response, error_message)
     """
     from run_agent import AIAgent
+    from gateway.session_context import clear_session_vars, set_session_vars
+    from tools.send_message_tool import (
+        clear_cron_auto_delivery_target,
+        set_cron_auto_delivery_target,
+    )
     
     # Initialize SQLite session store so cron job messages are persisted
     # and discoverable via session_search (same pattern as gateway/run.py).
@@ -600,6 +605,8 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     prompt = _build_job_prompt(job)
     origin = _resolve_origin(job)
     _cron_session_id = f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}"
+    _session_tokens = []
+    _delivery_tokens = []
 
     logger.info("Running job '%s' (ID: %s)", job_name, job_id)
     logger.info("Prompt: %s", prompt[:100])
@@ -608,10 +615,11 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         # Inject origin context so the agent's send_message tool knows the chat.
         # Must be INSIDE the try block so the finally cleanup always runs.
         if origin:
-            os.environ["HERMES_SESSION_PLATFORM"] = origin["platform"]
-            os.environ["HERMES_SESSION_CHAT_ID"] = str(origin["chat_id"])
-            if origin.get("chat_name"):
-                os.environ["HERMES_SESSION_CHAT_NAME"] = origin["chat_name"]
+            _session_tokens = set_session_vars(
+                platform=origin["platform"],
+                chat_id=str(origin["chat_id"]),
+                chat_name=origin.get("chat_name", "") or "",
+            )
         # Re-read .env and config.yaml fresh every run so provider/key
         # changes take effect without a gateway restart.
         from dotenv import load_dotenv
@@ -622,10 +630,11 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
 
         delivery_target = _resolve_delivery_target(job)
         if delivery_target:
-            os.environ["HERMES_CRON_AUTO_DELIVER_PLATFORM"] = delivery_target["platform"]
-            os.environ["HERMES_CRON_AUTO_DELIVER_CHAT_ID"] = str(delivery_target["chat_id"])
-            if delivery_target.get("thread_id") is not None:
-                os.environ["HERMES_CRON_AUTO_DELIVER_THREAD_ID"] = str(delivery_target["thread_id"])
+            _delivery_tokens = set_cron_auto_delivery_target(
+                platform=delivery_target["platform"],
+                chat_id=str(delivery_target["chat_id"]),
+                thread_id="" if delivery_target.get("thread_id") is None else str(delivery_target["thread_id"]),
+            )
 
         model = job.get("model") or os.getenv("HERMES_MODEL") or ""
 
@@ -882,16 +891,8 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         return False, output, "", error_msg
 
     finally:
-        # Clean up injected env vars so they don't leak to other jobs
-        for key in (
-            "HERMES_SESSION_PLATFORM",
-            "HERMES_SESSION_CHAT_ID",
-            "HERMES_SESSION_CHAT_NAME",
-            "HERMES_CRON_AUTO_DELIVER_PLATFORM",
-            "HERMES_CRON_AUTO_DELIVER_CHAT_ID",
-            "HERMES_CRON_AUTO_DELIVER_THREAD_ID",
-        ):
-            os.environ.pop(key, None)
+        clear_cron_auto_delivery_target(_delivery_tokens)
+        clear_session_vars(_session_tokens)
         if _session_db:
             try:
                 _session_db.end_session(_cron_session_id, "cron_complete")

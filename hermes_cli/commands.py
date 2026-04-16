@@ -10,6 +10,7 @@ To add an alias: set ``aliases=("short",)`` on the existing ``CommandDef``.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -582,6 +583,62 @@ def discord_skill_commands(
     )
 
 
+def _estimate_discord_skill_group_payload_chars(
+    categories: dict[str, list[tuple[str, str, str]]],
+    uncategorized: list[tuple[str, str, str]],
+) -> int:
+    """Approximate the serialized Discord ``/skill`` payload size.
+
+    Discord rejects oversize application-command payloads with
+    ``Command exceeds maximum size (8000)``. The exact size check happens after
+    discord.py serializes the group/subcommands to JSON, so we mirror that shape
+    closely enough to enforce a conservative budget before sync.
+    """
+
+    def _subcommand_payload(name: str, description: str) -> dict[str, Any]:
+        return {
+            "type": 1,
+            "name": name,
+            "description": description or f"Run the {name} skill",
+            "options": [
+                {
+                    "type": 3,
+                    "name": "args",
+                    "description": "Optional arguments for the skill",
+                    "required": False,
+                }
+            ],
+        }
+
+    payload = {
+        "type": 1,
+        "name": "skill",
+        "description": "Run a Hermes skill",
+        "options": [],
+    }
+
+    for name, description, _cmd_key in uncategorized:
+        payload["options"].append(_subcommand_payload(name, description))
+
+    for cat_name in sorted(categories):
+        cat_desc = f"{cat_name.replace('-', ' ').title()} skills"
+        if len(cat_desc) > 100:
+            cat_desc = cat_desc[:97] + "..."
+        payload["options"].append(
+            {
+                "type": 2,
+                "name": cat_name,
+                "description": cat_desc,
+                "options": [
+                    _subcommand_payload(name, description)
+                    for name, description, _cmd_key in categories[cat_name]
+                ],
+            }
+        )
+
+    return len(json.dumps(payload, separators=(",", ":"), sort_keys=True))
+
+
 def discord_skill_commands_by_category(
     reserved_names: set[str],
 ) -> tuple[dict[str, list[tuple[str, str, str]]], list[tuple[str, str, str]], int]:
@@ -688,6 +745,38 @@ def discord_skill_commands_by_category(
     if len(uncategorized) > remaining_slots:
         hidden += len(uncategorized) - remaining_slots
         uncategorized = uncategorized[:remaining_slots]
+
+    # Discord also enforces an overall serialized command payload limit (8000
+    # chars). A skill catalog can fit the group-count limits and still fail to
+    # sync if the combined names/descriptions/options are too large. Trim from
+    # the largest buckets until we're comfortably under the payload cap.
+    _PAYLOAD_BUDGET = 7900
+    while _estimate_discord_skill_group_payload_chars(trimmed_categories, uncategorized) > _PAYLOAD_BUDGET:
+        non_empty_categories = [cat for cat, entries in trimmed_categories.items() if entries]
+        uncategorized_size = len(uncategorized)
+        largest_category = max(
+            non_empty_categories,
+            key=lambda cat: (len(trimmed_categories[cat]), cat),
+            default=None,
+        )
+
+        if largest_category is None and not uncategorized:
+            break
+
+        largest_category_size = len(trimmed_categories[largest_category]) if largest_category else 0
+        if uncategorized_size >= largest_category_size and uncategorized:
+            uncategorized.pop()
+            hidden += 1
+            continue
+
+        if largest_category:
+            trimmed_categories[largest_category].pop()
+            hidden += 1
+            if not trimmed_categories[largest_category]:
+                del trimmed_categories[largest_category]
+            continue
+
+        break
 
     return trimmed_categories, uncategorized, hidden
 

@@ -1179,3 +1179,42 @@ class TestDiscordSkillCommandsByCategory:
         assert "axolotl" in names
         assert "vllm" in names
         assert len(uncategorized) == 0
+
+    def test_trims_to_fit_discord_group_payload_budget(self, tmp_path, monkeypatch):
+        """Large skill sets should be trimmed so the /skill payload stays under Discord's size cap."""
+        from unittest.mock import patch
+        from hermes_cli.commands import _estimate_discord_skill_group_payload_chars
+
+        fake_skills_dir = tmp_path / "skills"
+        fake_cmds = {}
+
+        # Build a deliberately oversized skill catalog: many categories and long
+        # descriptions. This previously produced a /skill group too large for
+        # Discord to sync.
+        for cat_idx in range(1, 21):
+            category = f"category-{cat_idx:02d}"
+            for skill_idx in range(1, 6):
+                skill_name = f"skill-{cat_idx:02d}-{skill_idx:02d}"
+                skill_dir = fake_skills_dir / category / skill_name
+                skill_dir.mkdir(parents=True, exist_ok=True)
+                (skill_dir / "SKILL.md").write_text("---\nname: test\n---\n")
+                fake_cmds[f"/{skill_name}"] = {
+                    "name": skill_name,
+                    "description": (
+                        "This is an intentionally long description for Discord payload budgeting tests. "
+                        "It should be truncated and, if needed, hidden to keep the command schema under budget."
+                    ),
+                    "skill_md_path": str(skill_dir / "SKILL.md"),
+                }
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        with (
+            patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
+            patch("tools.skills_tool.SKILLS_DIR", fake_skills_dir),
+        ):
+            categories, uncategorized, hidden = discord_skill_commands_by_category(
+                reserved_names=set(),
+            )
+
+        assert hidden > 0
+        assert _estimate_discord_skill_group_payload_chars(categories, uncategorized) <= 7900

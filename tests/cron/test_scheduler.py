@@ -3,6 +3,8 @@
 import json
 import logging
 import os
+import threading
+import time
 from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
@@ -10,6 +12,15 @@ import pytest
 from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, run_job, SILENT_MARKER, _build_job_prompt
 from tools.env_passthrough import clear_env_passthrough
 from tools.credential_files import clear_credential_files
+
+
+@pytest.fixture(autouse=True)
+def isolated_tick_lock(tmp_path, monkeypatch):
+    """Keep scheduler tick tests from contending with any live gateway lock."""
+    import cron.scheduler as scheduler
+
+    monkeypatch.setattr(scheduler, "_LOCK_DIR", tmp_path)
+    monkeypatch.setattr(scheduler, "_LOCK_FILE", tmp_path / ".tick.lock")
 
 
 class TestResolveOrigin:
@@ -1313,6 +1324,50 @@ class TestTickAdvanceBeforeRun:
         adv_mock.assert_called_once_with("test-advance")
         # advance must happen before run
         assert call_order == [("advance", "test-advance"), ("run", "test-advance")]
+
+
+class TestTickParallelExecution:
+    """Verify tick() can run due jobs concurrently when cron.max_parallel_jobs > 1."""
+
+    def _job(self, job_id: str):
+        return {
+            "id": job_id,
+            "name": job_id,
+            "prompt": f"job {job_id}",
+            "enabled": True,
+            "schedule": {"kind": "cron", "expr": "*/15 * * * *"},
+        }
+
+    def test_due_jobs_can_overlap_when_parallelism_enabled(self, tmp_path):
+        jobs = [self._job("job-a"), self._job("job-b")]
+        active = 0
+        max_active = 0
+        lock = threading.Lock()
+
+        def fake_run_job(job):
+            nonlocal active, max_active
+            with lock:
+                active += 1
+                max_active = max(max_active, active)
+            time.sleep(0.15)
+            with lock:
+                active -= 1
+            return True, f"output-{job['id']}", f"response-{job['id']}", None
+
+        with patch("cron.scheduler.get_due_jobs", return_value=jobs), \
+             patch("cron.scheduler.advance_next_run", return_value=True), \
+             patch("cron.scheduler.run_job", side_effect=fake_run_job), \
+             patch("cron.scheduler.save_job_output", return_value=tmp_path / "out.md"), \
+             patch("cron.scheduler.mark_job_run"), \
+             patch("cron.scheduler._deliver_result"), \
+             patch("cron.scheduler._LOCK_DIR", tmp_path), \
+             patch("cron.scheduler._LOCK_FILE", tmp_path / ".tick.lock"), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"max_parallel_jobs": 2}}):
+            from cron.scheduler import tick
+            executed = tick(verbose=False)
+
+        assert executed == 2
+        assert max_active >= 2
 
 
 class TestSendMediaViaAdapter:

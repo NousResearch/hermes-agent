@@ -371,6 +371,9 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
 _DEFAULT_SCRIPT_TIMEOUT = 120  # seconds
 # Backward-compatible module override used by tests and emergency monkeypatches.
 _SCRIPT_TIMEOUT = _DEFAULT_SCRIPT_TIMEOUT
+_DEFAULT_MAX_PARALLEL_JOBS = 4
+# Backward-compatible module override used by tests and emergency monkeypatches.
+_MAX_PARALLEL_JOBS = _DEFAULT_MAX_PARALLEL_JOBS
 
 
 def _get_script_timeout() -> int:
@@ -404,6 +407,78 @@ def _get_script_timeout() -> int:
         logger.debug("Failed to load cron script timeout from config: %s", exc)
 
     return _DEFAULT_SCRIPT_TIMEOUT
+
+
+def _get_max_parallel_jobs() -> int:
+    """Resolve how many due cron jobs may run concurrently within one tick."""
+    if _MAX_PARALLEL_JOBS != _DEFAULT_MAX_PARALLEL_JOBS:
+        try:
+            configured = int(float(_MAX_PARALLEL_JOBS))
+            if configured >= 1:
+                return configured
+        except Exception:
+            logger.warning("Invalid patched _MAX_PARALLEL_JOBS=%r; using env/config/default", _MAX_PARALLEL_JOBS)
+
+    env_value = os.getenv("HERMES_CRON_MAX_PARALLEL_JOBS", "").strip()
+    if env_value:
+        try:
+            configured = int(float(env_value))
+            if configured >= 1:
+                return configured
+        except Exception:
+            logger.warning("Invalid HERMES_CRON_MAX_PARALLEL_JOBS=%r; using config/default", env_value)
+
+    try:
+        cfg = load_config() or {}
+        cron_cfg = cfg.get("cron", {}) if isinstance(cfg, dict) else {}
+        configured = cron_cfg.get("max_parallel_jobs")
+        if configured is not None:
+            parsed = int(float(configured))
+            if parsed >= 1:
+                return parsed
+    except Exception as exc:
+        logger.debug("Failed to load cron max_parallel_jobs from config: %s", exc)
+
+    return _DEFAULT_MAX_PARALLEL_JOBS
+
+
+def _finalize_job_result(
+    job: dict,
+    *,
+    success: bool,
+    output: str,
+    final_response: str,
+    error: Optional[str],
+    verbose: bool,
+    adapters=None,
+    loop=None,
+) -> None:
+    """Persist output, deliver, and mark job completion after run_job() returns."""
+    output_file = save_job_output(job["id"], output)
+    if verbose:
+        logger.info("Output saved to: %s", output_file)
+
+    deliver_content = final_response if success else f"⚠️ Cron job '{job.get('name', job['id'])}' failed:\n{error}"
+    should_deliver = bool(deliver_content)
+    if should_deliver and success and SILENT_MARKER in deliver_content.strip().upper():
+        logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
+        should_deliver = False
+
+    delivery_error = None
+    if should_deliver:
+        try:
+            delivery_error = _deliver_result(job, deliver_content, adapters=adapters, loop=loop)
+        except Exception as de:
+            delivery_error = str(de)
+            logger.error("Delivery failed for job %s: %s", job["id"], de)
+
+    # Treat empty final_response as a soft failure so last_status is not "ok"
+    # — the agent ran but produced nothing useful. (issue #8585)
+    if success and not final_response:
+        success = False
+        error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
+
+    mark_job_run(job["id"], success, error, delivery_error=delivery_error)
 
 
 def _run_job_script(script_path: str) -> tuple[bool, str]:
@@ -949,49 +1024,54 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
 
         executed = 0
         for job in due_jobs:
-            try:
-                # For recurring jobs (cron/interval), advance next_run_at to the
-                # next future occurrence BEFORE execution.  This way, if the
-                # process crashes mid-run, the job won't re-fire on restart.
-                # One-shot jobs are left alone so they can retry on restart.
-                advance_next_run(job["id"])
+            # For recurring jobs (cron/interval), advance next_run_at to the
+            # next future occurrence BEFORE execution.  This way, if the
+            # process crashes mid-run, the job won't re-fire on restart.
+            # One-shot jobs are left alone so they can retry on restart.
+            advance_next_run(job["id"])
 
-                success, output, final_response, error = run_job(job)
+        max_parallel = max(1, min(_get_max_parallel_jobs(), len(due_jobs)))
 
-                output_file = save_job_output(job["id"], output)
-                if verbose:
-                    logger.info("Output saved to: %s", output_file)
+        if max_parallel == 1 or len(due_jobs) == 1:
+            for job in due_jobs:
+                try:
+                    success, output, final_response, error = run_job(job)
+                    _finalize_job_result(
+                        job,
+                        success=success,
+                        output=output,
+                        final_response=final_response,
+                        error=error,
+                        verbose=verbose,
+                        adapters=adapters,
+                        loop=loop,
+                    )
+                    executed += 1
+                except Exception as e:
+                    logger.error("Error processing job %s: %s", job['id'], e)
+                    mark_job_run(job["id"], False, str(e))
+            return executed
 
-                # Deliver the final response to the origin/target chat.
-                # If the agent responded with [SILENT], skip delivery (but
-                # output is already saved above).  Failed jobs always deliver.
-                deliver_content = final_response if success else f"⚠️ Cron job '{job.get('name', job['id'])}' failed:\n{error}"
-                should_deliver = bool(deliver_content)
-                if should_deliver and success and SILENT_MARKER in deliver_content.strip().upper():
-                    logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
-                    should_deliver = False
-
-                delivery_error = None
-                if should_deliver:
-                    try:
-                        delivery_error = _deliver_result(job, deliver_content, adapters=adapters, loop=loop)
-                    except Exception as de:
-                        delivery_error = str(de)
-                        logger.error("Delivery failed for job %s: %s", job["id"], de)
-
-                # Treat empty final_response as a soft failure so last_status
-                # is not "ok" — the agent ran but produced nothing useful.
-                # (issue #8585)
-                if success and not final_response:
-                    success = False
-                    error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
-
-                mark_job_run(job["id"], success, error, delivery_error=delivery_error)
-                executed += 1
-
-            except Exception as e:
-                logger.error("Error processing job %s: %s", job['id'], e)
-                mark_job_run(job["id"], False, str(e))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_parallel) as pool:
+            future_to_job = {pool.submit(run_job, job): job for job in due_jobs}
+            for future in concurrent.futures.as_completed(future_to_job):
+                job = future_to_job[future]
+                try:
+                    success, output, final_response, error = future.result()
+                    _finalize_job_result(
+                        job,
+                        success=success,
+                        output=output,
+                        final_response=final_response,
+                        error=error,
+                        verbose=verbose,
+                        adapters=adapters,
+                        loop=loop,
+                    )
+                    executed += 1
+                except Exception as e:
+                    logger.error("Error processing job %s: %s", job['id'], e)
+                    mark_job_run(job["id"], False, str(e))
 
         return executed
     finally:

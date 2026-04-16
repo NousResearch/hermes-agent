@@ -617,8 +617,22 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                     save_jobs(jobs)
                     return
             
-            # Compute next run
-            job["next_run_at"] = compute_next_run(job["schedule"], now)
+            # Compute next run.
+            #
+            # For recurring jobs, tick() already calls advance_next_run() BEFORE
+            # execution and writes the next scheduled wall-clock bucket into
+            # next_run_at. Recomputing here from completion time drifts cadence
+            # toward "period after finish" and can skip aligned buckets (e.g.
+            # a */15 job finishing at 16:18 gets moved to 16:30 instead of
+            # keeping the pre-advanced 16:15 bucket available for catch-up).
+            # Preserve the existing recurring next_run_at and let get_due_jobs()
+            # decide whether it is due, within grace, or stale enough to
+            # fast-forward.
+            kind = job.get("schedule", {}).get("kind")
+            if kind in ("cron", "interval") and job.get("next_run_at"):
+                pass
+            else:
+                job["next_run_at"] = compute_next_run(job["schedule"], now)
 
             # If no next run (one-shot completed), disable
             if job["next_run_at"] is None:

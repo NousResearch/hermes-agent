@@ -370,6 +370,35 @@ class TestMarkJobRun:
         assert updated["last_delivery_error"] == "platform 'discord' not enabled"
 
 
+    def test_preserves_preadvanced_recurring_next_run_at(self, tmp_cron_dir, monkeypatch):
+        """Recurring jobs should keep the scheduler-preadvanced wall-clock bucket.
+
+        If tick() advanced a */15 job to 16:15 before execution, finishing at
+        16:18 must not recompute next_run_at from completion time (16:30).
+        The preserved 16:15 bucket lets get_due_jobs() decide whether to catch
+        up or fast-forward based on grace, keeping cadence aligned to quarter
+        hours instead of drifting to "15 minutes after finish".
+        """
+        pytest.importorskip("croniter")
+
+        start = datetime(2026, 3, 18, 16, 0, 0, tzinfo=timezone.utc)
+        finish = datetime(2026, 3, 18, 16, 18, 0, tzinfo=timezone.utc)
+        preadvanced_next = "2026-03-18T16:15:00+00:00"
+
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: start)
+        job = create_job(prompt="Quarter-hour", schedule="*/15 * * * *")
+
+        jobs = load_jobs()
+        jobs[0]["next_run_at"] = preadvanced_next
+        save_jobs(jobs)
+
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: finish)
+        mark_job_run(job["id"], success=True)
+
+        updated = get_job(job["id"])
+        assert updated["next_run_at"] == preadvanced_next
+
+
 class TestAdvanceNextRun:
     """Tests for advance_next_run() — crash-safety for recurring jobs."""
 

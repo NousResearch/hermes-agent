@@ -162,6 +162,37 @@ class TestDelegateTask(unittest.TestCase):
         self.assertIn("total_duration_seconds", result)
 
     @patch("tools.delegate_tool._run_single_child")
+    def test_batch_mode_tolerates_wait_timeout_without_done_futures(self, mock_run):
+        mock_run.side_effect = [
+            {"task_index": 0, "status": "completed", "summary": "Result A", "api_calls": 2, "duration_seconds": 3.0},
+            {"task_index": 1, "status": "completed", "summary": "Result B", "api_calls": 4, "duration_seconds": 6.0},
+        ]
+        parent = _make_mock_parent()
+        tasks = [
+            {"goal": "Research topic A"},
+            {"goal": "Research topic B"},
+        ]
+
+        real_wait = __import__("concurrent.futures", fromlist=["wait"]).wait
+        wait_calls = {"count": 0}
+
+        def fake_wait(fs, timeout=None, return_when=None):
+            wait_calls["count"] += 1
+            if wait_calls["count"] == 1:
+                return set(), set(fs)
+            return real_wait(fs, timeout=timeout, return_when=return_when)
+
+        with patch("concurrent.futures.wait", side_effect=fake_wait):
+            result = json.loads(delegate_task(tasks=tasks, parent_agent=parent))
+
+        self.assertGreaterEqual(wait_calls["count"], 2)
+        self.assertIn("results", result)
+        self.assertEqual(len(result["results"]), 2)
+        self.assertEqual(result["results"][0]["summary"], "Result A")
+        self.assertEqual(result["results"][1]["summary"], "Result B")
+        self.assertIn("total_duration_seconds", result)
+
+    @patch("tools.delegate_tool._run_single_child")
     def test_batch_capped_at_3(self, mock_run):
         mock_run.return_value = {
             "task_index": 0, "status": "completed",

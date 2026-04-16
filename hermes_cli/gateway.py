@@ -221,12 +221,35 @@ def find_gateway_pids(exclude_pids: set | None = None, all_profiles: bool = Fals
                             pass
                     current_cmd = ""
         else:
-            result = subprocess.run(
-                ["ps", "-A", "eww", "-o", "pid=,command="],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
+            # Use a portable ps command that works across different ps implementations
+            # (BSD, GNU procps, procps-ng in Docker containers)
+            # - 'ps ax' is POSIX-compliant and works everywhere
+            # - Avoid 'eww' and '-A' flags which may not be available in all implementations
+            try:
+                result = subprocess.run(
+                    ["ps", "ax", "-o", "pid=,command="],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                result = None
+            
+            # Fallback to 'ps -e' if 'ps ax' fails
+            if result is None or result.returncode != 0:
+                try:
+                    result = subprocess.run(
+                        ["ps", "-e", "-o", "pid=,command="],
+                        capture_output=True,
+                        text=True,
+                        timeout=10,
+                    )
+                except (OSError, subprocess.TimeoutExpired):
+                    result = None
+            
+            if result is None:
+                return pids
+                
             for line in result.stdout.split('\n'):
                 stripped = line.strip()
                 if not stripped or 'grep' in stripped:

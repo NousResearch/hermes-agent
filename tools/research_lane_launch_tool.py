@@ -1660,7 +1660,7 @@ def _launch_runner(
 def launch_research_lane(
     *,
     lane: str,
-    topic: str,
+    topic: Optional[str] = None,
     request: Optional[str] = None,
     playbook_slug: Optional[str] = None,
     deliver: Optional[str] = None,
@@ -1674,7 +1674,8 @@ def launch_research_lane(
     if not (lane or "").strip():
         return json.dumps({"error": "lane is required."})
     if not (topic or "").strip():
-        return json.dumps({"error": "topic is required."})
+        # Default to fundamentals for new lanes
+        topic = f"{lane.strip()} Fundamentals"
 
     lane_slug = _slugify(lane)
     topic_slug = _slugify(topic)
@@ -1797,21 +1798,42 @@ def launch_research_lane(
 
 LAUNCH_RESEARCH_LANE_SCHEMA = {
     "name": "launch_research_lane",
-    "description": "Create or resume a research lane: generate the lane playbook from the standard template when missing, create the Obsidian lane artifacts, stub the Google Drive step if needed, and run the first 3-stage research pipeline quietly in the background.",
+    "description": (
+        "Launch or continue research in a lane. Handles everything automatically: "
+        "creates the playbook, Telegram topic, Obsidian folder, and Google Drive folder "
+        "if they don't exist, then runs the 3-stage research pipeline in the background.\n\n"
+        "TWO MODES:\n"
+        "1. NEW LANE: Dax says 'I want to learn about X' — provide lane name. "
+        "The tool creates all setup and runs the first foundational research.\n"
+        "2. GO DEEPER: Dax says 'do more research on X' or 'go deeper on X' — "
+        "provide the lane name and pick the most logical next topic yourself based on "
+        "what's already been researched. Check the lane's knowledge-brief.md and existing "
+        "docs to decide what gap to fill next. Do NOT ask Dax follow-up questions unless "
+        "he explicitly asked for something specific.\n\n"
+        "If Dax specifies a particular topic or question, use that as the topic. "
+        "If he just says 'go deeper' or 'do more research', YOU decide the topic.\n\n"
+        "QUIET UX: Send one short acknowledgment, then deliver the Google Doc link "
+        "to the research topic when done. No status spam."
+    ),
     "parameters": {
         "type": "object",
         "properties": {
             "lane": {
                 "type": "string",
-                "description": "Research lane/domain name, e.g. 'SEO', 'GBP', 'Reviews Reputation', 'Paid Advertising'.",
+                "description": "Research lane/domain name, e.g. 'SEO', 'GBP', 'Website Capabilities'.",
             },
             "topic": {
                 "type": "string",
-                "description": "Specific topic for the first run, e.g. 'local SEO quick wins'.",
+                "description": (
+                    "Specific research topic. If Dax specified one, use it. "
+                    "If Dax just said 'go deeper' or 'do more research', YOU pick "
+                    "the most logical next topic based on existing lane docs. "
+                    "For a brand new lane, use '{Lane} Fundamentals'."
+                ),
             },
             "request": {
                 "type": "string",
-                "description": "The actual research ask/scope to execute. Defaults to the topic if omitted.",
+                "description": "The actual research ask/scope. Defaults to the topic if omitted.",
             },
             "playbook_slug": {
                 "type": "string",
@@ -1819,25 +1841,25 @@ LAUNCH_RESEARCH_LANE_SCHEMA = {
             },
             "deliver": {
                 "type": "string",
-                "description": "Optional final delivery target for the short completion line (topic name or telegram:chat_id:thread_id). Defaults to origin if omitted.",
+                "description": "Optional delivery target. Usually auto-resolved from the lane's Telegram topic.",
             },
             "create_playbook_if_missing": {
                 "type": "boolean",
-                "description": "When true, generate a standardized domain playbook and index template if they do not exist yet.",
+                "description": "Generate playbook and index template if missing.",
                 "default": True,
             },
             "resume_existing": {
                 "type": "boolean",
-                "description": "When true, resume an interrupted pipeline-state.json instead of starting from scratch.",
+                "description": "Resume interrupted pipeline instead of starting fresh.",
                 "default": True,
             },
             "background": {
                 "type": "boolean",
-                "description": "Run the full lane launch in a background thread so Atlas can send a short acknowledgment immediately.",
+                "description": "Run in background thread.",
                 "default": True,
             },
         },
-        "required": ["lane", "topic"],
+        "required": ["lane"],
     },
 }
 

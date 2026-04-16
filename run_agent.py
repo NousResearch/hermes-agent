@@ -8819,7 +8819,7 @@ class AIAgent:
 
                     try:
                         from hermes_cli.plugins import invoke_hook as _invoke_hook
-                        _invoke_hook(
+                        _hook_results = _invoke_hook(
                             "pre_api_request",
                             task_id=effective_task_id,
                             session_id=self.session_id or "",
@@ -8834,7 +8834,12 @@ class AIAgent:
                             approx_input_tokens=approx_tokens,
                             request_char_count=total_chars,
                             max_tokens=self.max_tokens,
+                            api_kwargs=api_kwargs,
                         )
+                        # Let plugins mutate the request — last non-None dict wins
+                        for _hr in _hook_results:
+                            if isinstance(_hr, dict):
+                                api_kwargs = _hr
                     except Exception:
                         pass
 

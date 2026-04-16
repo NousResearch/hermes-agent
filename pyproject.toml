@@ -32,6 +32,8 @@ dependencies = [
   "fal-client>=0.13.1,<1",
   # Text-to-speech (Edge TTS is free, no API key needed)
   "edge-tts>=7.2.7,<8",
+  # Language detection (used by Chatterbox TTS to auto-detect prompt language)
+  "langdetect>=1.0.9,<2",
   # Skills Hub (GitHub App JWT auth — optional, only needed for bot identity)
   "PyJWT[crypto]>=2.12.0,<3",  # CVE-2026-32597
 ]

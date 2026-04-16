@@ -515,6 +515,29 @@ def _generate_server(
 
 
 # ===========================================================================
+# Language detection
+# ===========================================================================
+
+def _detect_language(text: str, fallback: str = DEFAULT_CHATTERBOX_LANGUAGE_ID) -> str:
+    """Detect the ISO 639-1 language code of *text* using langdetect.
+
+    Args:
+        text: The input text.
+        fallback: Language code to return when detection fails.
+
+    Returns:
+        Two-letter ISO 639-1 language code (e.g. ``"en"``, ``"fr"``).
+    """
+    try:
+        from langdetect import detect, LangDetectException
+
+        return detect(text)
+    except Exception:
+        logger.debug("Language detection failed, falling back to %s", fallback)
+        return fallback
+
+
+# ===========================================================================
 # Public entry point
 # ===========================================================================
 
@@ -546,8 +569,17 @@ def generate_chatterbox_tts(
     if not text or not text.strip():
         raise ValueError("Text is required for Chatterbox TTS generation")
 
-    cb_config = tts_config.get("chatterbox", {})
+    cb_config = dict(tts_config.get("chatterbox", {}))
     mode = cb_config.get("mode", DEFAULT_CHATTERBOX_MODE)
+
+    # Auto-detect language when not explicitly configured (multilingual model only).
+    if (
+        cb_config.get("model", DEFAULT_CHATTERBOX_MODEL) == "multilingual"
+        and not cb_config.get("language_id")
+    ):
+        detected = _detect_language(text)
+        logger.info("Chatterbox auto-detected language: %s", detected)
+        cb_config["language_id"] = detected
 
     # Chatterbox generates WAV natively.  If the caller requests a
     # different extension, generate WAV first — the gateway's Opus

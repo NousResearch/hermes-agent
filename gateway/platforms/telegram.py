@@ -283,6 +283,11 @@ class TelegramAdapter(BasePlatformAdapter):
     MEDIA_GROUP_WAIT_SECONDS = 0.8
     _GENERAL_TOPIC_THREAD_ID = "1"
 
+    @property
+    def message_len_fn(self):
+        """Telegram measures message length in UTF-16 code units."""
+        return utf16_len
+
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.TELEGRAM)
         self._app: Optional[Application] = None

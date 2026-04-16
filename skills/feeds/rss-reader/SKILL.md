@@ -29,17 +29,23 @@ Fetch and parse any RSS or Atom feed using only `curl` and Python's standard lib
 ## Reading a Feed
 
 ```bash
-curl -sL "https://hnrss.org/frontpage" | python3 -c "
+curl -sL --max-time 10 "https://hnrss.org/frontpage" | python3 -c "
 import sys, xml.etree.ElementTree as ET
 from email.utils import parsedate_to_datetime
 
 def parse_date(s):
     if not s: return ''
     try: return parsedate_to_datetime(s).strftime('%Y-%m-%d')  # RSS RFC 2822
-    except Exception: return s[:10]  # Atom ISO-8601 fallback
+    except ValueError: return s[:10]  # Atom ISO-8601 fallback
 
 feed = sys.stdin.read()
-root = ET.fromstring(feed)
+# Python 3.8+ stdlib ET does not expand external entities by default.
+# For production use with fully untrusted feeds, pip install defusedxml
+# and replace ET with defusedxml.ElementTree for Billion Laughs protection.
+try:
+    root = ET.fromstring(feed)
+except ET.ParseError as e:
+    sys.exit(f'Feed parse error: {e}')
 ns = {'atom': 'http://www.w3.org/2005/Atom'}
 
 # Detect RSS vs Atom
@@ -99,14 +105,39 @@ Fetch several feeds at once and merge into a single digest:
 
 ```bash
 python3 << 'EOF'
-import urllib.request, xml.etree.ElementTree as ET
+import sys, urllib.request, urllib.error, xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
+from urllib.parse import urlparse
 
 def parse_date(s):
     if not s: return '0000-00-00'
     try: return parsedate_to_datetime(s.strip()).strftime('%Y-%m-%d')
-    except Exception: return s.strip()[:10]
+    except ValueError: return s.strip()[:10]
+
+def safe_url(url):
+    """Reject non-http(s) schemes and loopback/link-local hosts."""
+    p = urlparse(url)
+    if p.scheme not in ('http', 'https'):
+        raise ValueError(f"Blocked scheme: {p.scheme}")
+    host = p.hostname or ''
+    blocked = ('localhost', '127.0.0.1', '0.0.0.0', '::1', '169.254.169.254')
+    if host in blocked or host.startswith('192.168.') or host.startswith('10.'):
+        raise ValueError(f"Blocked host: {host}")
+    return url
+
+def fetch_feed(url):
+    req = urllib.request.Request(safe_url(url), headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=10) as r:
+        return r.read()
+
+def parse_feed(raw):
+    # stdlib ET (Python 3.8+) does not expand external entities.
+    # For untrusted feeds in production, use defusedxml.ElementTree instead.
+    try:
+        return ET.fromstring(raw)
+    except ET.ParseError as e:
+        raise ET.ParseError(f"Feed parse error: {e}") from e
 
 FEEDS = [
     ("arXiv cs.AI",   "https://export.arxiv.org/rss/cs.AI"),
@@ -120,10 +151,7 @@ items = []
 
 for name, url in FEEDS:
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=10) as r:
-            raw = r.read()
-        root = ET.fromstring(raw)
+        root = parse_feed(fetch_feed(url))
         entries = root.findall('.//item') or root.findall('{http://www.w3.org/2005/Atom}entry')
         for entry in entries[:MAX_PER_FEED]:
             get = lambda t, fb='': (entry.findtext(t) or entry.findtext(f'{{http://www.w3.org/2005/Atom}}{t}') or fb).strip()
@@ -134,7 +162,7 @@ for name, url in FEEDS:
                 link = a.get('href', '') if a is not None else ''
             date = parse_date(get('pubDate') or get('published') or get('updated', ''))
             items.append((date, name, title, link))
-    except Exception as e:
+    except (urllib.error.URLError, ET.ParseError, ValueError, OSError) as e:
         print(f"[{name}] fetch error: {e}")
 
 items.sort(reverse=True)
@@ -154,11 +182,15 @@ EOF
 Filter a feed for items matching a keyword (useful for high-volume feeds like arXiv):
 
 ```bash
+# Keyword passed as sys.argv[1] — not interpolated into code, safe from injection
 KEYWORD="reinforcement learning"
-curl -sL "https://export.arxiv.org/rss/cs.AI" | python3 -c "
+curl -sL --max-time 10 "https://export.arxiv.org/rss/cs.AI" | python3 -c "
 import sys, xml.etree.ElementTree as ET
-kw = '${KEYWORD}'.lower()
-root = ET.fromstring(sys.stdin.read())
+kw = sys.argv[1].lower()
+try:
+    root = ET.fromstring(sys.stdin.read())
+except ET.ParseError as e:
+    sys.exit(f'Parse error: {e}')
 for item in root.findall('.//item'):
     title = (item.findtext('title') or '').strip()
     desc  = (item.findtext('description') or '').strip()
@@ -167,7 +199,7 @@ for item in root.findall('.//item'):
         print(f'  {title}')
         print(f'  {link}')
         print()
-"
+" "${KEYWORD}"
 ```
 
 ---

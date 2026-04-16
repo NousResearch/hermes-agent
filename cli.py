@@ -1719,7 +1719,11 @@ class HermesCLI:
         elif CLI_CONFIG.get("max_turns"):  # Backwards compat: root-level max_turns
             self.max_turns = CLI_CONFIG["max_turns"]
         elif os.getenv("HERMES_MAX_ITERATIONS"):
-            self.max_turns = int(os.getenv("HERMES_MAX_ITERATIONS"))
+            try:
+                self.max_turns = int(os.getenv("HERMES_MAX_ITERATIONS"))
+            except ValueError:
+                logger.warning("HERMES_MAX_ITERATIONS has non-numeric value %r, using default 90", os.getenv("HERMES_MAX_ITERATIONS"))
+                self.max_turns = 90
         else:
             self.max_turns = 90
         

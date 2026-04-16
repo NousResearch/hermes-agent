@@ -236,6 +236,12 @@ ALIASES: Dict[str, str] = {
     "mimo": "xiaomi",
     "xiaomi-mimo": "xiaomi",
 
+    # bedrock
+    "aws": "bedrock",
+    "aws-bedrock": "bedrock",
+    "amazon-bedrock": "bedrock",
+    "amazon": "bedrock",
+
     # arcee
     "arcee-ai": "arcee",
     "arceeai": "arcee",
@@ -262,6 +268,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "copilot-acp": "GitHub Copilot ACP",
     "xiaomi": "Xiaomi MiMo",
     "local": "Local endpoint",
+    "bedrock": "AWS Bedrock",
 }
 
 
@@ -271,6 +278,7 @@ TRANSPORT_TO_API_MODE: Dict[str, str] = {
     "openai_chat": "chat_completions",
     "anthropic_messages": "anthropic_messages",
     "codex_responses": "codex_responses",
+    "bedrock_converse": "bedrock_converse",
 }
 
 
@@ -388,6 +396,10 @@ def determine_api_mode(provider: str, base_url: str = "") -> str:
     if pdef is not None:
         return TRANSPORT_TO_API_MODE.get(pdef.transport, "chat_completions")
 
+    # Direct provider checks for providers not in HERMES_OVERLAYS
+    if provider == "bedrock":
+        return "bedrock_converse"
+
     # URL-based heuristics for custom / unknown providers
     if base_url:
         url_lower = base_url.rstrip("/").lower()
@@ -395,6 +407,8 @@ def determine_api_mode(provider: str, base_url: str = "") -> str:
             return "anthropic_messages"
         if "api.openai.com" in url_lower:
             return "codex_responses"
+        if "bedrock-runtime" in url_lower and "amazonaws.com" in url_lower:
+            return "bedrock_converse"
 
     return "chat_completions"
 

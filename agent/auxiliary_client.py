@@ -775,6 +775,21 @@ def _try_openrouter() -> Tuple[Optional[OpenAI], Optional[str]]:
 
 
 def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
+    # Check cross-session rate limit guard before attempting Nous —
+    # if another session already recorded a 429, skip Nous entirely
+    # to avoid piling more requests onto the tapped RPH bucket.
+    try:
+        from agent.nous_rate_guard import nous_rate_limit_remaining
+        _remaining = nous_rate_limit_remaining()
+        if _remaining is not None and _remaining > 0:
+            logger.debug(
+                "Auxiliary: skipping Nous Portal (rate-limited, resets in %.0fs)",
+                _remaining,
+            )
+            return None, None
+    except Exception:
+        pass
+
     nous = _read_nous_auth()
     if not nous:
         return None, None
@@ -897,6 +912,51 @@ def _resolve_custom_runtime() -> Tuple[Optional[str], Optional[str], Optional[st
 def _current_custom_base_url() -> str:
     custom_base, _, _ = _resolve_custom_runtime()
     return custom_base or ""
+
+
+def _validate_proxy_env_urls() -> None:
+    """Fail fast with a clear error when proxy env vars have malformed URLs.
+
+    Common cause: shell config (e.g. .zshrc) with a typo like
+    ``export HTTP_PROXY=http://127.0.0.1:6153export NEXT_VAR=...``
+    which concatenates 'export' into the port number.  Without this
+    check the OpenAI/httpx client raises a cryptic ``Invalid port``
+    error that doesn't name the offending env var.
+    """
+    from urllib.parse import urlparse
+
+    for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
+                "https_proxy", "http_proxy", "all_proxy"):
+        value = str(os.environ.get(key) or "").strip()
+        if not value:
+            continue
+        try:
+            parsed = urlparse(value)
+            if parsed.scheme:
+                _ = parsed.port          # raises ValueError for e.g. '6153export'
+        except ValueError as exc:
+            raise RuntimeError(
+                f"Malformed proxy environment variable {key}={value!r}. "
+                "Fix or unset your proxy settings and try again."
+            ) from exc
+
+
+def _validate_base_url(base_url: str) -> None:
+    """Reject obviously broken custom endpoint URLs before they reach httpx."""
+    from urllib.parse import urlparse
+
+    candidate = str(base_url or "").strip()
+    if not candidate or candidate.startswith("acp://"):
+        return
+    try:
+        parsed = urlparse(candidate)
+        if parsed.scheme in {"http", "https"}:
+            _ = parsed.port              # raises ValueError for malformed ports
+    except ValueError as exc:
+        raise RuntimeError(
+            f"Malformed custom endpoint URL: {candidate!r}. "
+            "Run `hermes setup` or `hermes model` and enter a valid http(s) base URL."
+        ) from exc
 
 
 def _try_custom_endpoint() -> Tuple[Optional[OpenAI], Optional[str]]:
@@ -1299,6 +1359,7 @@ def resolve_provider_client(
     Returns:
         (client, resolved_model) or (None, None) if auth is unavailable.
     """
+    _validate_proxy_env_urls()
     # Normalise aliases
     provider = _normalize_aux_provider(provider)
 

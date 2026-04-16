@@ -368,6 +368,27 @@ def _interactive_auth() -> None:
     print("=" * 50)
 
     auth_list_command(SimpleNamespace(provider=None))
+
+    # Show AWS Bedrock credential status (not in the pool — uses boto3 chain)
+    try:
+        from agent.bedrock_adapter import has_aws_credentials, resolve_aws_auth_env_var, resolve_bedrock_region
+        if has_aws_credentials():
+            auth_source = resolve_aws_auth_env_var() or "unknown"
+            region = resolve_bedrock_region()
+            print(f"bedrock (AWS SDK credential chain):")
+            print(f"  Auth: {auth_source}")
+            print(f"  Region: {region}")
+            try:
+                import boto3
+                sts = boto3.client("sts", region_name=region)
+                identity = sts.get_caller_identity()
+                arn = identity.get("Arn", "unknown")
+                print(f"  Identity: {arn}")
+            except Exception:
+                print(f"  Identity: (could not resolve — boto3 STS call failed)")
+            print()
+    except ImportError:
+        pass  # boto3 or bedrock_adapter not available
     print()
 
     # Main menu

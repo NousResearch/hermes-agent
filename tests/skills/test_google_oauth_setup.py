@@ -20,23 +20,13 @@ SCRIPT_PATH = (
 
 
 def test_fallback_path_resolves_to_hermes_agent_root():
-    """Fallback path search finds hermes_constants.py from both repo and installed locations."""
-    from pathlib import Path
-
-    # Repo location: parents[4] directly has hermes_constants.py
-    repo_script = SCRIPT_PATH.resolve()
-    repo_candidate = repo_script.parents[4]
-    assert (repo_candidate / "hermes_constants.py").exists(), (
-        f"Repo path: expected hermes_constants.py at {repo_candidate}"
+    """Upward search finds hermes_constants.py when walking from the script's location."""
+    found = next(
+        (p for p in SCRIPT_PATH.resolve().parents if (p / "hermes_constants.py").exists()),
+        None,
     )
-
-    # Installed location: parents[4] is ~/.hermes, need parents[4]/"hermes-agent"
-    # Simulate by computing what parents[4] would be from the installed path
-    installed_parents4 = repo_candidate.parent  # ~/.hermes
-    installed_candidate = installed_parents4 / "hermes-agent"
-    assert (installed_candidate / "hermes_constants.py").exists(), (
-        f"Installed path: expected hermes_constants.py at {installed_candidate}"
-    )
+    assert found is not None, "hermes_constants.py not found in any parent directory"
+    assert (found / "hermes_constants.py").exists()
 
 
 class FakeCredentials:

@@ -32,12 +32,14 @@ from pathlib import Path
 try:
     from hermes_constants import display_hermes_home, get_hermes_home
 except ModuleNotFoundError:
-    _script = Path(__file__).resolve()
-    # Skill runs from repo (parents[4]=hermes-agent/) or installed (parents[4]=~/.hermes/).
-    # Try both so the fallback works regardless of install location.
-    for _candidate in (_script.parents[4], _script.parents[4] / "hermes-agent"):
-        if (_candidate / "hermes_constants.py").exists():
-            sys.path.insert(0, str(_candidate))
+    # Walk up from this file until hermes_constants.py is found.
+    # Stop at HERMES_HOME — never search outside the hermes directory.
+    _hermes_home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
+    for _parent in Path(__file__).resolve().parents:
+        if (_parent / "hermes_constants.py").exists():
+            sys.path.insert(0, str(_parent))
+            break
+        if _parent == _hermes_home:
             break
     from hermes_constants import display_hermes_home, get_hermes_home
 

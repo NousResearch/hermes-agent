@@ -320,6 +320,7 @@ export interface GatewayEventHandlerContext {
 }
 
 export interface SlashHandlerContext {
+  slashFlightRef: MutableRefObject<number>
   composer: {
     enqueue: (text: string) => void
     hasSelection: boolean

@@ -39,6 +39,73 @@ describe('createSlashHandler', () => {
     expect(ctx.transcript.sys).toHaveBeenNthCalledWith(3, 'MCP tool: /tools enable github:create_issue')
   })
 
+  it('drops stale slash.exec output after a newer slash', async () => {
+    let resolveLate: (v: { output?: string }) => void
+    let slashExecCalls = 0
+
+    const ctx = buildCtx({
+      gateway: {
+        gw: {
+          getLogTail: vi.fn(() => ''),
+          request: vi.fn((method: string) => {
+            if (method === 'slash.exec') {
+              slashExecCalls += 1
+
+              if (slashExecCalls === 1) {
+                return new Promise<{ output?: string }>(res => {
+                  resolveLate = res
+                })
+              }
+
+              return Promise.resolve({ output: 'fresh' })
+            }
+
+            return Promise.resolve({})
+          })
+        },
+        rpc: vi.fn(() => Promise.resolve({}))
+      }
+    })
+
+    const h = createSlashHandler(ctx)
+    expect(h('/slow')).toBe(true)
+    expect(h('/fast')).toBe(true)
+    resolveLate!({ output: 'too late' })
+    await vi.waitFor(() => {
+      expect(ctx.transcript.sys).toHaveBeenCalled()
+    })
+
+    expect(ctx.transcript.sys).not.toHaveBeenCalledWith('too late')
+  })
+
+  it('dispatches command.dispatch with typed alias', async () => {
+    const ctx = buildCtx({
+      gateway: {
+        gw: {
+          getLogTail: vi.fn(() => ''),
+          request: vi.fn((method: string) => {
+            if (method === 'slash.exec') {
+              return Promise.reject(new Error('no'))
+            }
+
+            if (method === 'command.dispatch') {
+              return Promise.resolve({ type: 'alias', target: 'help' })
+            }
+
+            return Promise.resolve({})
+          })
+        },
+        rpc: vi.fn(() => Promise.resolve({}))
+      }
+    })
+
+    const h = createSlashHandler(ctx)
+    expect(h('/zzz')).toBe(true)
+    await vi.waitFor(() => {
+      expect(ctx.transcript.panel).toHaveBeenCalledWith('Commands', expect.any(Array))
+    })
+  })
+
   it('resolves unique local aliases through the catalog', () => {
     const ctx = buildCtx({
       local: {
@@ -58,6 +125,7 @@ describe('createSlashHandler', () => {
 
 const buildCtx = (overrides: Partial<Ctx> = {}): Ctx => ({
   ...overrides,
+  slashFlightRef: overrides.slashFlightRef ?? { current: 0 },
   composer: { ...buildComposer(), ...overrides.composer },
   gateway: { ...buildGateway(), ...overrides.gateway },
   local: { ...buildLocal(), ...overrides.local },
@@ -114,6 +182,7 @@ const buildVoice = () => ({
 })
 
 interface Ctx {
+  slashFlightRef: { current: number }
   composer: ReturnType<typeof buildComposer>
   gateway: ReturnType<typeof buildGateway>
   local: ReturnType<typeof buildLocal>

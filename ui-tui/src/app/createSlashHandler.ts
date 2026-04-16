@@ -1,9 +1,11 @@
-import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
+import type { SlashExecResponse } from '../gatewayTypes.js'
+import { asCommandDispatch, rpcErrorMessage } from '../lib/rpc.js'
 
 import type { SlashHandlerContext } from './interfaces.js'
 import { createSlashCoreHandler } from './slash/createSlashCoreHandler.js'
 import { createSlashOpsHandler } from './slash/createSlashOpsHandler.js'
 import { createSlashSessionHandler } from './slash/createSlashSessionHandler.js'
+import { isStaleSlash } from './slash/isStaleSlash.js'
 import { createSlashShared, parseSlashCommand } from './slash/shared.js'
 import { getUiState } from './uiStore.js'
 
@@ -11,14 +13,16 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
   const { gw } = ctx.gateway
   const { catalog } = ctx.local
   const { send, sys } = ctx.transcript
-  const shared = createSlashShared({ ...ctx.transcript, gw })
+  const shared = createSlashShared({ ...ctx.transcript, gw, slashFlightRef: ctx.slashFlightRef })
   const handleCore = createSlashCoreHandler(ctx)
   const handleSession = createSlashSessionHandler(ctx, shared)
   const handleOps = createSlashOpsHandler(ctx)
 
   const handler = (cmd: string): boolean => {
+    const flight = ++ctx.slashFlightRef.current
     const ui = getUiState()
-    const parsed = { ...parseSlashCommand(cmd), sid: ui.sid, ui }
+    const sidAtSend = ui.sid
+    const parsed = { ...parseSlashCommand(cmd), flight, sid: sidAtSend, ui }
     const argTail = parsed.arg ? ` ${parsed.arg}` : ''
 
     if (handleCore(parsed) || handleSession(parsed) || handleOps(parsed)) {
@@ -47,8 +51,12 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
       }
     }
 
-    gw.request('slash.exec', { command: cmd.slice(1), session_id: ui.sid })
-      .then((r: any) => {
+    gw.request<SlashExecResponse>('slash.exec', { command: cmd.slice(1), session_id: sidAtSend })
+      .then(r => {
+        if (isStaleSlash(ctx, flight, sidAtSend)) {
+          return
+        }
+
         sys(
           r?.warning
             ? `warning: ${r.warning}\n${r?.output || `/${parsed.name}: no output`}`
@@ -56,11 +64,15 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
         )
       })
       .catch(() => {
-        gw.request('command.dispatch', { name: parsed.name, arg: parsed.arg, session_id: ui.sid })
-          .then((raw: any) => {
-            const d = asRpcResult(raw)
+        gw.request('command.dispatch', { name: parsed.name, arg: parsed.arg, session_id: sidAtSend })
+          .then((raw: unknown) => {
+            if (isStaleSlash(ctx, flight, sidAtSend)) {
+              return
+            }
 
-            if (!d?.type) {
+            const d = asCommandDispatch(raw)
+
+            if (!d) {
               sys('error: invalid response: command.dispatch')
 
               return
@@ -80,7 +92,13 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
               }
             }
           })
-          .catch((e: unknown) => sys(`error: ${rpcErrorMessage(e)}`))
+          .catch((e: unknown) => {
+            if (isStaleSlash(ctx, flight, sidAtSend)) {
+              return
+            }
+
+            sys(`error: ${rpcErrorMessage(e)}`)
+          })
       })
 
     return true

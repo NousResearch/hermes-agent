@@ -1,5 +1,8 @@
+import type { MutableRefObject } from 'react'
+
 import type { SlashExecResponse } from '../../gatewayTypes.js'
 import { rpcErrorMessage } from '../../lib/rpc.js'
+import { getUiState } from '../uiStore.js'
 
 export const parseSlashCommand = (cmd: string): ParsedSlashCommand => {
   const [rawName = '', ...rest] = cmd.slice(1).split(/\s+/)
@@ -11,10 +14,14 @@ export const parseSlashCommand = (cmd: string): ParsedSlashCommand => {
   }
 }
 
-export const createSlashShared = ({ gw, page, sys }: SlashSharedDeps): SlashShared => ({
-  showSlashOutput: (title, command, sid) => {
+export const createSlashShared = ({ gw, page, slashFlightRef, sys }: SlashSharedDeps): SlashShared => ({
+  showSlashOutput: ({ command, flight, sid, title }) => {
     gw.request<SlashExecResponse>('slash.exec', { command, session_id: sid })
       .then(r => {
+        if (flight !== slashFlightRef.current || getUiState().sid !== sid) {
+          return
+        }
+
         const text = r?.warning ? `warning: ${r.warning}\n${r?.output || '(no output)'}` : r?.output || '(no output)'
 
         const lines = text.split('\n').filter(Boolean)
@@ -25,7 +32,13 @@ export const createSlashShared = ({ gw, page, sys }: SlashSharedDeps): SlashShar
           sys(text)
         }
       })
-      .catch((e: unknown) => sys(`error: ${rpcErrorMessage(e)}`))
+      .catch((e: unknown) => {
+        if (flight !== slashFlightRef.current || getUiState().sid !== sid) {
+          return
+        }
+
+        sys(`error: ${rpcErrorMessage(e)}`)
+      })
   }
 })
 
@@ -36,7 +49,7 @@ export interface ParsedSlashCommand {
 }
 
 export interface SlashShared {
-  showSlashOutput: (title: string, command: string, sid: null | string) => void
+  showSlashOutput: (opts: { command: string; flight: number; sid: null | string; title: string }) => void
 }
 
 interface SlashSharedDeps {
@@ -44,5 +57,6 @@ interface SlashSharedDeps {
     request: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
   }
   page: (text: string, title?: string) => void
+  slashFlightRef: MutableRefObject<number>
   sys: (text: string) => void
 }

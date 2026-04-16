@@ -6,6 +6,8 @@ import type { SlashHandlerContext } from '../interfaces.js'
 import { patchOverlayState } from '../overlayStore.js'
 import { patchUiState } from '../uiStore.js'
 
+import { isStaleSlash } from './isStaleSlash.js'
+
 const FORTUNES = [
   'you are one clean refactor away from clarity',
   'a tiny rename today prevents a huge bug tomorrow',
@@ -53,7 +55,7 @@ export function createSlashCoreHandler(ctx: SlashHandlerContext) {
   const { guardBusySessionSwitch, newSession, resumeById } = ctx.session
   const { panel, send, setHistoryItems, sys, trimLastExchange } = ctx.transcript
 
-  return ({ arg, name, sid, ui }: SlashCommand) => {
+  return ({ arg, flight, name, sid, ui }: SlashCommand) => {
     switch (name) {
       case 'help': {
         const sections: PanelSection[] = (catalog?.categories ?? []).map(({ name: catName, pairs }: any) => ({
@@ -132,12 +134,22 @@ export function createSlashCoreHandler(ctx: SlashHandlerContext) {
           ctx.gateway
             .rpc('config.get', { key: 'details_mode' })
             .then((r: any) => {
+              if (isStaleSlash(ctx, flight, sid)) {
+                return
+              }
+
               const mode = parseDetailsMode(r?.value) ?? ui.detailsMode
 
               patchUiState({ detailsMode: mode })
               sys(`details: ${mode}`)
             })
-            .catch(() => sys(`details: ${ui.detailsMode}`))
+            .catch(() => {
+              if (isStaleSlash(ctx, flight, sid)) {
+                return
+              }
+
+              sys(`details: ${ui.detailsMode}`)
+            })
 
           return true
         }
@@ -265,7 +277,7 @@ export function createSlashCoreHandler(ctx: SlashHandlerContext) {
         }
 
         ctx.gateway.rpc('session.undo', { session_id: sid }).then((r: any) => {
-          if (!r) {
+          if (isStaleSlash(ctx, flight, sid) || !r) {
             return
           }
 
@@ -294,7 +306,7 @@ export function createSlashCoreHandler(ctx: SlashHandlerContext) {
         }
 
         ctx.gateway.rpc('session.undo', { session_id: sid }).then((r: any) => {
-          if (!r) {
+          if (isStaleSlash(ctx, flight, sid) || !r) {
             return
           }
 
@@ -318,6 +330,7 @@ export function createSlashCoreHandler(ctx: SlashHandlerContext) {
 
 interface SlashCommand {
   arg: string
+  flight: number
   name: string
   sid: null | string
   ui: {

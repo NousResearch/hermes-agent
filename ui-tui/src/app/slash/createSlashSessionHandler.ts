@@ -7,6 +7,7 @@ import type { SlashHandlerContext } from '../interfaces.js'
 import { patchOverlayState } from '../overlayStore.js'
 import { patchUiState } from '../uiStore.js'
 
+import { isStaleSlash } from './isStaleSlash.js'
 import type { ParsedSlashCommand, SlashShared } from './shared.js'
 
 const SLASH_OUTPUT_PAGE: Record<string, string> = {
@@ -24,11 +25,12 @@ export function createSlashSessionHandler(ctx: SlashHandlerContext, shared: Slas
   const { page, panel, setHistoryItems, sys } = ctx.transcript
   const { setVoiceEnabled } = ctx.voice
 
-  return ({ arg, cmd, name, sid }: SessionSlashCommand) => {
+  return ({ arg, cmd, flight, name, sid }: SessionSlashCommand) => {
+    const stale = () => isStaleSlash(ctx, flight, sid)
     const pageTitle = SLASH_OUTPUT_PAGE[name]
 
     if (pageTitle) {
-      shared.showSlashOutput(pageTitle, cmd.slice(1), sid)
+      shared.showSlashOutput({ command: cmd.slice(1), flight, sid, title: pageTitle })
 
       return true
     }
@@ -44,6 +46,10 @@ export function createSlashSessionHandler(ctx: SlashHandlerContext, shared: Slas
         }
 
         rpc<BackgroundStartResponse>('prompt.background', { session_id: sid, text: arg }).then(r => {
+          if (stale()) {
+            return
+          }
+
           const taskId = r?.task_id
 
           if (!taskId) {
@@ -64,7 +70,7 @@ export function createSlashSessionHandler(ctx: SlashHandlerContext, shared: Slas
         }
 
         rpc('prompt.btw', { session_id: sid, text: arg }).then((r: any) => {
-          if (!r) {
+          if (stale() || !r) {
             return
           }
 
@@ -86,7 +92,7 @@ export function createSlashSessionHandler(ctx: SlashHandlerContext, shared: Slas
         }
 
         rpc('config.set', { session_id: sid, key: 'model', value: arg.trim() }).then((r: any) => {
-          if (!r) {
+          if (stale() || !r) {
             return
           }
 
@@ -108,7 +114,7 @@ export function createSlashSessionHandler(ctx: SlashHandlerContext, shared: Slas
 
       case 'image':
         rpc('image.attach', { session_id: sid, path: arg }).then((r: any) => {
-          if (!r) {
+          if (stale() || !r) {
             return
           }
 
@@ -122,56 +128,94 @@ export function createSlashSessionHandler(ctx: SlashHandlerContext, shared: Slas
 
       case 'provider':
         gw.request('slash.exec', { command: 'provider', session_id: sid })
-          .then((r: any) =>
+          .then((r: any) => {
+            if (stale()) {
+              return
+            }
+
             page(
               r?.warning ? `warning: ${r.warning}\n\n${r?.output || '(no output)'}` : r?.output || '(no output)',
               'Provider'
             )
-          )
-          .catch((e: unknown) => sys(`error: ${rpcErrorMessage(e)}`))
+          })
+          .catch((e: unknown) => {
+            if (stale()) {
+              return
+            }
+
+            sys(`error: ${rpcErrorMessage(e)}`)
+          })
 
         return true
 
       case 'skin':
         if (arg) {
-          rpc('config.set', { key: 'skin', value: arg }).then((r: any) => r?.value && sys(`skin → ${r.value}`))
+          rpc('config.set', { key: 'skin', value: arg }).then((r: any) => {
+            if (stale() || !r?.value) {
+              return
+            }
+
+            sys(`skin → ${r.value}`)
+          })
         } else {
-          rpc('config.get', { key: 'skin' }).then((r: any) => r && sys(`skin: ${r.value || 'default'}`))
+          rpc('config.get', { key: 'skin' }).then((r: any) => {
+            if (stale() || !r) {
+              return
+            }
+
+            sys(`skin: ${r.value || 'default'}`)
+          })
         }
 
         return true
 
       case 'yolo':
-        rpc('config.set', { session_id: sid, key: 'yolo' }).then(
-          (r: any) => r && sys(`yolo ${r.value === '1' ? 'on' : 'off'}`)
-        )
+        rpc('config.set', { session_id: sid, key: 'yolo' }).then((r: any) => {
+          if (stale() || !r) {
+            return
+          }
+
+          sys(`yolo ${r.value === '1' ? 'on' : 'off'}`)
+        })
 
         return true
 
       case 'reasoning':
         if (!arg) {
-          rpc('config.get', { key: 'reasoning' }).then(
-            (r: any) => r?.value && sys(`reasoning: ${r.value} · display ${r.display || 'hide'}`)
-          )
+          rpc('config.get', { key: 'reasoning' }).then((r: any) => {
+            if (stale() || !r?.value) {
+              return
+            }
+
+            sys(`reasoning: ${r.value} · display ${r.display || 'hide'}`)
+          })
         } else {
-          rpc('config.set', { session_id: sid, key: 'reasoning', value: arg }).then(
-            (r: any) => r?.value && sys(`reasoning: ${r.value}`)
-          )
+          rpc('config.set', { session_id: sid, key: 'reasoning', value: arg }).then((r: any) => {
+            if (stale() || !r?.value) {
+              return
+            }
+
+            sys(`reasoning: ${r.value}`)
+          })
         }
 
         return true
 
       case 'verbose':
-        rpc('config.set', { session_id: sid, key: 'verbose', value: arg || 'cycle' }).then(
-          (r: any) => r?.value && sys(`verbose: ${r.value}`)
-        )
+        rpc('config.set', { session_id: sid, key: 'verbose', value: arg || 'cycle' }).then((r: any) => {
+          if (stale() || !r?.value) {
+            return
+          }
+
+          sys(`verbose: ${r.value}`)
+        })
 
         return true
 
       case 'personality':
         if (arg) {
           rpc('config.set', { session_id: sid, key: 'personality', value: arg }).then((r: any) => {
-            if (!r) {
+            if (stale() || !r) {
               return
             }
 
@@ -184,20 +228,30 @@ export function createSlashSessionHandler(ctx: SlashHandlerContext, shared: Slas
         }
 
         gw.request('slash.exec', { command: 'personality', session_id: sid })
-          .then((r: any) =>
+          .then((r: any) => {
+            if (stale()) {
+              return
+            }
+
             panel('Personality', [
               {
                 text: r?.warning ? `warning: ${r.warning}\n\n${r?.output || '(no output)'}` : r?.output || '(no output)'
               }
             ])
-          )
-          .catch((e: unknown) => sys(`error: ${rpcErrorMessage(e)}`))
+          })
+          .catch((e: unknown) => {
+            if (stale()) {
+              return
+            }
+
+            sys(`error: ${rpcErrorMessage(e)}`)
+          })
 
         return true
 
       case 'compress':
         rpc('session.compress', { session_id: sid, ...(arg ? { focus_topic: arg } : {}) }).then((r: any) => {
-          if (!r) {
+          if (stale() || !r) {
             return
           }
 
@@ -220,7 +274,13 @@ export function createSlashSessionHandler(ctx: SlashHandlerContext, shared: Slas
         return true
 
       case 'stop':
-        rpc('process.stop', {}).then((r: any) => r && sys(`killed ${r.killed ?? 0} registered process(es)`))
+        rpc('process.stop', {}).then((r: any) => {
+          if (stale() || !r) {
+            return
+          }
+
+          sys(`killed ${r.killed ?? 0} registered process(es)`)
+        })
 
         return true
 
@@ -229,7 +289,7 @@ export function createSlashSessionHandler(ctx: SlashHandlerContext, shared: Slas
         const prevSid = sid
 
         rpc('session.branch', { session_id: sid, name: arg }).then((r: any) => {
-          if (!r?.session_id) {
+          if (stale() || !r?.session_id) {
             return
           }
 
@@ -246,19 +306,33 @@ export function createSlashSessionHandler(ctx: SlashHandlerContext, shared: Slas
       case 'reload-mcp':
 
       case 'reload_mcp':
-        rpc('reload.mcp', { session_id: sid }).then((r: any) => r && sys('MCP reloaded'))
+        rpc('reload.mcp', { session_id: sid }).then((r: any) => {
+          if (stale() || !r) {
+            return
+          }
+
+          sys('MCP reloaded')
+        })
 
         return true
 
       case 'title':
-        rpc('session.title', { session_id: sid, ...(arg ? { title: arg } : {}) }).then(
-          (r: any) => r && sys(`title: ${r.title || '(none)'}`)
-        )
+        rpc('session.title', { session_id: sid, ...(arg ? { title: arg } : {}) }).then((r: any) => {
+          if (stale() || !r) {
+            return
+          }
+
+          sys(`title: ${r.title || '(none)'}`)
+        })
 
         return true
 
       case 'usage':
         rpc('session.usage', { session_id: sid }).then((r: any) => {
+          if (stale()) {
+            return
+          }
+
           if (r) {
             patchUiState({
               usage: { input: r.input ?? 0, output: r.output ?? 0, total: r.total ?? 0, calls: r.calls ?? 0 }
@@ -272,6 +346,7 @@ export function createSlashSessionHandler(ctx: SlashHandlerContext, shared: Slas
           }
 
           const f = (v: number) => (v ?? 0).toLocaleString()
+
           const cost =
             r.cost_usd != null ? `${r.cost_status === 'estimated' ? '~' : ''}$${r.cost_usd.toFixed(4)}` : null
 
@@ -297,13 +372,19 @@ export function createSlashSessionHandler(ctx: SlashHandlerContext, shared: Slas
         return true
 
       case 'save':
-        rpc('session.save', { session_id: sid }).then((r: any) => r?.file && sys(`saved: ${r.file}`))
+        rpc('session.save', { session_id: sid }).then((r: any) => {
+          if (stale() || !r?.file) {
+            return
+          }
+
+          sys(`saved: ${r.file}`)
+        })
 
         return true
 
       case 'history':
         rpc<SessionHistoryResponse>('session.history', { session_id: sid }).then(r => {
-          if (typeof r?.count !== 'number') {
+          if (stale() || typeof r?.count !== 'number') {
             return
           }
 
@@ -329,7 +410,7 @@ export function createSlashSessionHandler(ctx: SlashHandlerContext, shared: Slas
 
       case 'profile':
         rpc('config.get', { key: 'profile' }).then((r: any) => {
-          if (!r) {
+          if (stale() || !r) {
             return
           }
 
@@ -343,7 +424,7 @@ export function createSlashSessionHandler(ctx: SlashHandlerContext, shared: Slas
 
       case 'voice':
         rpc('voice.toggle', { action: arg === 'on' || arg === 'off' ? arg : 'status' }).then((r: any) => {
-          if (!r) {
+          if (stale() || !r) {
             return
           }
 
@@ -355,7 +436,7 @@ export function createSlashSessionHandler(ctx: SlashHandlerContext, shared: Slas
 
       case 'insights':
         rpc('insights.get', { days: parseInt(arg) || 30 }).then((r: any) => {
-          if (!r) {
+          if (stale() || !r) {
             return
           }
 
@@ -378,5 +459,6 @@ export function createSlashSessionHandler(ctx: SlashHandlerContext, shared: Slas
 }
 
 interface SessionSlashCommand extends ParsedSlashCommand {
+  flight: number
   sid: null | string
 }

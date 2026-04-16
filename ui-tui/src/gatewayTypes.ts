@@ -147,6 +147,11 @@ export interface SlashExecResponse {
   warning?: string
 }
 
+export type CommandDispatchResponse =
+  | { output?: string; type: 'exec' | 'plugin' }
+  | { target: string; type: 'alias' }
+  | { message?: string; name: string; type: 'skill' }
+
 export interface SubagentEventPayload {
   duration_seconds?: number
   goal: string

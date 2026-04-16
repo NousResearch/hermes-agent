@@ -3,6 +3,7 @@ import { rpcErrorMessage } from '../../lib/rpc.js'
 import type { PanelSection } from '../../types.js'
 import type { SlashHandlerContext } from '../interfaces.js'
 
+import { isStaleSlash } from './isStaleSlash.js'
 import type { ParsedSlashCommand } from './shared.js'
 
 export function createSlashOpsHandler(ctx: SlashHandlerContext) {
@@ -10,14 +11,16 @@ export function createSlashOpsHandler(ctx: SlashHandlerContext) {
   const { resetVisibleHistory, setSessionStartedAt } = ctx.session
   const { panel, sys } = ctx.transcript
 
-  return ({ arg, cmd, name, sid }: OpsSlashCommand) => {
+  return ({ arg, cmd, flight, name, sid }: OpsSlashCommand) => {
+    const stale = () => isStaleSlash(ctx, flight, sid)
+
     switch (name) {
       case 'rollback': {
         const [sub, ...rest] = (arg || 'list').split(/\s+/)
 
         if (!sub || sub === 'list') {
           rpc('rollback.list', { session_id: sid }).then((r: any) => {
-            if (!r) {
+            if (stale() || !r) {
               return
             }
 
@@ -46,7 +49,13 @@ export function createSlashOpsHandler(ctx: SlashHandlerContext) {
           session_id: sid,
           hash,
           ...(sub === 'diff' || !filePath ? {} : { file_path: filePath })
-        }).then((r: any) => r && sys(r.rendered || r.diff || r.message || 'done'))
+        }).then((r: any) => {
+          if (stale() || !r) {
+            return
+          }
+
+          sys(r.rendered || r.diff || r.message || 'done')
+        })
 
         return true
       }
@@ -54,16 +63,20 @@ export function createSlashOpsHandler(ctx: SlashHandlerContext) {
       case 'browser': {
         const [action, ...rest] = (arg || 'status').split(/\s+/)
 
-        rpc('browser.manage', { action, ...(rest[0] ? { url: rest[0] } : {}) }).then(
-          (r: any) => r && sys(r.connected ? `browser: ${r.url}` : 'browser: disconnected')
-        )
+        rpc('browser.manage', { action, ...(rest[0] ? { url: rest[0] } : {}) }).then((r: any) => {
+          if (stale() || !r) {
+            return
+          }
+
+          sys(r.connected ? `browser: ${r.url}` : 'browser: disconnected')
+        })
 
         return true
       }
 
       case 'plugins':
         rpc('plugins.list', {}).then((r: any) => {
-          if (!r) {
+          if (stale() || !r) {
             return
           }
 
@@ -86,7 +99,7 @@ export function createSlashOpsHandler(ctx: SlashHandlerContext) {
 
         if (!sub || sub === 'list') {
           rpc('skills.manage', { action: 'list' }).then((r: any) => {
-            if (!r) {
+            if (stale() || !r) {
               return
             }
 
@@ -111,7 +124,7 @@ export function createSlashOpsHandler(ctx: SlashHandlerContext) {
           const pageNumber = parseInt(rest[0] ?? '1', 10) || 1
 
           rpc('skills.manage', { action: 'browse', page: pageNumber }).then((r: any) => {
-            if (!r) {
+            if (stale() || !r) {
               return
             }
 
@@ -149,14 +162,24 @@ export function createSlashOpsHandler(ctx: SlashHandlerContext) {
 
         ctx.gateway.gw
           .request('slash.exec', { command: cmd.slice(1), session_id: sid })
-          .then((r: any) =>
+          .then((r: any) => {
+            if (stale()) {
+              return
+            }
+
             sys(
               r?.warning
                 ? `warning: ${r.warning}\n${r?.output || '/skills: no output'}`
                 : r?.output || '/skills: no output'
             )
-          )
-          .catch((e: unknown) => sys(`error: ${rpcErrorMessage(e)}`))
+          })
+          .catch((e: unknown) => {
+            if (stale()) {
+              return
+            }
+
+            sys(`error: ${rpcErrorMessage(e)}`)
+          })
 
         return true
       }
@@ -166,7 +189,7 @@ export function createSlashOpsHandler(ctx: SlashHandlerContext) {
       case 'tasks':
         rpc('agents.list', {})
           .then((r: any) => {
-            if (!r) {
+            if (stale() || !r) {
               return
             }
 
@@ -188,7 +211,13 @@ export function createSlashOpsHandler(ctx: SlashHandlerContext) {
             !sections.length && sections.push({ text: 'No active processes' })
             panel('Agents', sections)
           })
-          .catch((e: unknown) => sys(`error: ${rpcErrorMessage(e)}`))
+          .catch((e: unknown) => {
+            if (stale()) {
+              return
+            }
+
+            sys(`error: ${rpcErrorMessage(e)}`)
+          })
 
         return true
 
@@ -196,7 +225,7 @@ export function createSlashOpsHandler(ctx: SlashHandlerContext) {
         if (!arg || arg === 'list') {
           rpc('cron.manage', { action: 'list' })
             .then((r: any) => {
-              if (!r) {
+              if (stale() || !r) {
                 return
               }
 
@@ -217,14 +246,30 @@ export function createSlashOpsHandler(ctx: SlashHandlerContext) {
                 }
               ])
             })
-            .catch((e: unknown) => sys(`error: ${rpcErrorMessage(e)}`))
+            .catch((e: unknown) => {
+              if (stale()) {
+                return
+              }
+
+              sys(`error: ${rpcErrorMessage(e)}`)
+            })
         } else {
           ctx.gateway.gw
             .request('slash.exec', { command: cmd.slice(1), session_id: sid })
-            .then((r: any) =>
+            .then((r: any) => {
+              if (stale()) {
+                return
+              }
+
               sys(r?.warning ? `warning: ${r.warning}\n${r?.output || '(no output)'}` : r?.output || '(no output)')
-            )
-            .catch((e: unknown) => sys(`error: ${rpcErrorMessage(e)}`))
+            })
+            .catch((e: unknown) => {
+              if (stale()) {
+                return
+              }
+
+              sys(`error: ${rpcErrorMessage(e)}`)
+            })
         }
 
         return true
@@ -232,7 +277,7 @@ export function createSlashOpsHandler(ctx: SlashHandlerContext) {
       case 'config':
         rpc('config.show', {})
           .then((r: any) => {
-            if (!r) {
+            if (stale() || !r) {
               return
             }
 
@@ -244,7 +289,13 @@ export function createSlashOpsHandler(ctx: SlashHandlerContext) {
               }))
             )
           })
-          .catch((e: unknown) => sys(`error: ${rpcErrorMessage(e)}`))
+          .catch((e: unknown) => {
+            if (stale()) {
+              return
+            }
+
+            sys(`error: ${rpcErrorMessage(e)}`)
+          })
 
         return true
       case 'tools': {
@@ -253,6 +304,10 @@ export function createSlashOpsHandler(ctx: SlashHandlerContext) {
         if (!subcommand) {
           rpc<ToolsShowResponse>('tools.show', { session_id: sid })
             .then(r => {
+              if (stale()) {
+                return
+              }
+
               if (!r?.sections?.length) {
                 sys('no tools')
 
@@ -267,7 +322,13 @@ export function createSlashOpsHandler(ctx: SlashHandlerContext) {
                 }))
               )
             })
-            .catch((e: unknown) => sys(`error: ${rpcErrorMessage(e)}`))
+            .catch((e: unknown) => {
+              if (stale()) {
+                return
+              }
+
+              sys(`error: ${rpcErrorMessage(e)}`)
+            })
 
           return true
         }
@@ -275,6 +336,10 @@ export function createSlashOpsHandler(ctx: SlashHandlerContext) {
         if (subcommand === 'list') {
           rpc<ToolsListResponse>('tools.list', { session_id: sid })
             .then(r => {
+              if (stale()) {
+                return
+              }
+
               if (!r?.toolsets?.length) {
                 sys('no tools')
 
@@ -289,7 +354,13 @@ export function createSlashOpsHandler(ctx: SlashHandlerContext) {
                 }))
               )
             })
-            .catch((e: unknown) => sys(`error: ${rpcErrorMessage(e)}`))
+            .catch((e: unknown) => {
+              if (stale()) {
+                return
+              }
+
+              sys(`error: ${rpcErrorMessage(e)}`)
+            })
 
           return true
         }
@@ -309,7 +380,7 @@ export function createSlashOpsHandler(ctx: SlashHandlerContext) {
             session_id: sid
           })
             .then(r => {
-              if (!r) {
+              if (stale() || !r) {
                 return
               }
 
@@ -323,7 +394,13 @@ export function createSlashOpsHandler(ctx: SlashHandlerContext) {
               r.missing_servers?.length && sys(`missing MCP servers: ${r.missing_servers.join(', ')}`)
               r.reset && sys('session reset. new tool configuration is active.')
             })
-            .catch((e: unknown) => sys(`error: ${rpcErrorMessage(e)}`))
+            .catch((e: unknown) => {
+              if (stale()) {
+                return
+              }
+
+              sys(`error: ${rpcErrorMessage(e)}`)
+            })
 
           return true
         }
@@ -336,7 +413,7 @@ export function createSlashOpsHandler(ctx: SlashHandlerContext) {
       case 'toolsets':
         rpc('toolsets.list', { session_id: sid })
           .then((r: any) => {
-            if (!r) {
+            if (stale() || !r) {
               return
             }
 
@@ -358,7 +435,13 @@ export function createSlashOpsHandler(ctx: SlashHandlerContext) {
               }
             ])
           })
-          .catch((e: unknown) => sys(`error: ${rpcErrorMessage(e)}`))
+          .catch((e: unknown) => {
+            if (stale()) {
+              return
+            }
+
+            sys(`error: ${rpcErrorMessage(e)}`)
+          })
 
         return true
     }
@@ -368,5 +451,6 @@ export function createSlashOpsHandler(ctx: SlashHandlerContext) {
 }
 
 interface OpsSlashCommand extends ParsedSlashCommand {
+  flight: number
   sid: null | string
 }

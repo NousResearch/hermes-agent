@@ -3797,8 +3797,15 @@ class GatewayRunner:
             group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
             thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False),
         )
-        if _is_shared_multi_user and source.user_name:
-            message_text = f"[{source.user_name}] {message_text}"
+        if _is_shared_multi_user:
+            # Fall back to user_id when the display name is unavailable
+            # (e.g. Feishu Contact API returned 41050 for users outside
+            # the app's Contact Scope).  Without this fallback, shared
+            # sessions with unresolved names silently drop the prefix
+            # and lose speaker attribution entirely.
+            _sender_label = source.user_name or source.user_id
+            if _sender_label:
+                message_text = f"[{_sender_label}] {message_text}"
 
         if event.media_urls:
             image_paths = []

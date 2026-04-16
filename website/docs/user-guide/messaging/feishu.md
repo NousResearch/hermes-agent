@@ -49,10 +49,33 @@ If scan-to-create is not available, the wizard falls back to manual input:
 2. Create a new app.
 3. In **Credentials & Basic Info**, copy the **App ID** and **App Secret**.
 4. Enable the **Bot** capability for the app.
-5. Run `hermes gateway setup`, select **Feishu / Lark**, and enter the credentials when prompted.
+5. Grant the required permission scopes (see [Required Permissions](#required-permissions) below).
+6. Run `hermes gateway setup`, select **Feishu / Lark**, and enter the credentials when prompted.
 
 :::warning
 Keep the App Secret private. Anyone with it can impersonate your app.
+:::
+
+### Required Permissions
+
+Grant these permission scopes in the Feishu/Lark developer console under **Permissions & Scopes**:
+
+| Scope | Purpose |
+|-------|---------|
+| `im:message` | Receive and read messages |
+| `im:message:send` | Send messages and interactive cards |
+| `im:resource` | Receive images and file attachments |
+| `contact:user.base:readonly` | Resolve sender display names in group chats |
+| `admin:app.info:readonly` | Auto-detect bot identity for @mention gating (optional) |
+
+:::warning Contact Scope
+The `contact:user.base:readonly` permission controls **API access**, but there is a separate **Contact Scope** (sometimes called "Data Access Scope") that controls **which users** the app can see. If group chat participants show up as raw IDs (e.g., `ou_abc123`) instead of display names, expand the contact scope:
+
+1. In the developer console, go to **Security** (or **Permissions & Scopes**) → **Data Access Scope** / **Contact Scope**.
+2. Set the visible range to **All employees**, or add the specific departments that contain your group chat participants.
+3. Publish a new app version.
+
+Without this, the Contact API returns error `41050 (no user authority)` for users outside the configured scope, even though the permission itself is granted.
 :::
 
 ## Step 2: Choose a Connection Mode
@@ -488,6 +511,7 @@ WebSocket and per-group ACL settings are configured via `config.yaml` under `pla
 | Post messages show as plain text | The Feishu API rejected the post payload; this is normal fallback behavior. Check logs for details. |
 | Images/files not received by bot | Grant `im:message` and `im:resource` permission scopes to your Feishu app |
 | Bot identity not auto-detected | Grant `admin:app.info:readonly` scope, or set `FEISHU_BOT_OPEN_ID` / `FEISHU_BOT_NAME` manually |
+| Group chat users show as raw IDs (`ou_xxx`) | Error `41050 (no user authority)` — the app has `contact:user.base:readonly` but the user is outside the app's **Contact Scope**. Expand the scope in **Security → Data Access Scope** to include the user's department, or set to "All employees". See [Required Permissions](#required-permissions). |
 | Error 200340 when clicking approval buttons | Enable **Interactive Card** capability and configure **Card Request URL** in the Feishu Developer Console. See [Required Feishu App Configuration](#required-feishu-app-configuration) above. |
 | `Webhook rate limit exceeded` | More than 120 requests/minute from the same IP. This is usually a misconfiguration or loop. |
 

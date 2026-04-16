@@ -626,6 +626,14 @@ def _sort_skills(skills: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return sorted(skills, key=lambda s: (s.get("category") or "", s["name"]))
 
 
+def _find_regular_skill_by_category(category: str, bare_name: str) -> Optional[Dict[str, Any]]:
+    """Return a regular skill whose category/name look like ``category:skill`` confusion."""
+    for skill in _find_all_skills():
+        if skill.get("category") == category and skill.get("name") == bare_name:
+            return skill
+    return None
+
+
 def _load_category_description(category_dir: Path) -> Optional[str]:
     """
     Load category description from DESCRIPTION.md if it exists.
@@ -923,6 +931,21 @@ def skill_view(
                         "error": f"Skill '{bare}' not found in plugin '{namespace}'.",
                         "available_skills": [f"{namespace}:{s}" for s in available],
                         "hint": f"The '{namespace}' plugin provides {len(available)} skill(s).",
+                    },
+                    ensure_ascii=False,
+                )
+
+            regular_skill = _find_regular_skill_by_category(namespace, bare)
+            if regular_skill:
+                return json.dumps(
+                    {
+                        "success": False,
+                        "error": (
+                            f"'{namespace}' looks like a skill category, not a plugin namespace. "
+                            f"The regular skill '{bare}' exists in that category."
+                        ),
+                        "hint": f'Try skill_view("{bare}") instead.',
+                        "suggested_name": bare,
                     },
                     ensure_ascii=False,
                 )

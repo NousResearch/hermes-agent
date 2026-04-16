@@ -241,6 +241,24 @@ class TestSkillViewQualifiedName:
         assert result["success"] is False
         assert "not found" in result["error"].lower()
 
+    def test_category_name_reports_helpful_error(self, tmp_path, monkeypatch):
+        from tools.skills_tool import skill_view
+
+        skills_dir = tmp_path / "local-skills"
+        skill_dir = skills_dir / "autonomous-ai-agents" / "hermes-agent"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: hermes-agent\ndescription: local\n---\nLocal body.\n"
+        )
+        monkeypatch.setattr("tools.skills_tool.SKILLS_DIR", skills_dir)
+
+        result = json.loads(skill_view("autonomous-ai-agents:hermes-agent"))
+
+        assert result["success"] is False
+        assert "looks like a skill category" in result["error"]
+        assert result["hint"] == 'Try skill_view("hermes-agent") instead.'
+        assert result["suggested_name"] == "hermes-agent"
+
     def test_stale_entry_self_heals(self, tmp_path):
         from tools.skills_tool import skill_view
 

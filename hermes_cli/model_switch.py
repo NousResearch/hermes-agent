@@ -21,6 +21,7 @@ OpenRouter variant suffixes (``:free``, ``:extended``, ``:fast``).
 from __future__ import annotations
 
 import logging
+import os
 import re
 from dataclasses import dataclass
 from typing import List, NamedTuple, Optional
@@ -44,6 +45,37 @@ from agent.models_dev import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _openrouter_missing_key_error(*, target_provider: str, base_url: str, api_key: str) -> str:
+    """Detect the common OpenRouter auth misconfiguration during `/model`.
+
+    Users often have ``OPENAI_API_KEY`` in their shell and no
+    ``OPENROUTER_API_KEY``. Runtime resolution currently allows that
+    fallback, which means `/model --provider openrouter` appears to work,
+    but the first real request to ``openrouter.ai`` fails with HTTP 400.
+
+    Guard the model-switch path so provider selection fails early with a
+    precise setup message instead of persisting a broken OpenRouter config.
+    """
+    if target_provider != "openrouter":
+        return ""
+    if "openrouter.ai" not in (base_url or "").lower():
+        return ""
+
+    openrouter_key = str(os.getenv("OPENROUTER_API_KEY") or "").strip()
+    openai_key = str(os.getenv("OPENAI_API_KEY") or "").strip()
+    if openrouter_key or not openai_key:
+        return ""
+    if str(api_key or "").strip() != openai_key:
+        return ""
+
+    return (
+        "OpenRouter requires OPENROUTER_API_KEY. Hermes only found "
+        "OPENAI_API_KEY for this switch, which openrouter.ai will reject "
+        "and typically surfaces later as HTTP 400. Set OPENROUTER_API_KEY "
+        "or run `hermes setup` before switching to OpenRouter."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -671,6 +703,21 @@ def switch_model(
             api_mode = runtime.get("api_mode", "")
         except Exception:
             pass
+
+    openrouter_key_error = _openrouter_missing_key_error(
+        target_provider=target_provider,
+        base_url=base_url,
+        api_key=api_key,
+    )
+    if openrouter_key_error:
+        return ModelSwitchResult(
+            success=False,
+            new_model=new_model,
+            target_provider=target_provider,
+            provider_label=provider_label,
+            is_global=is_global,
+            error_message=openrouter_key_error,
+        )
 
     # --- Direct alias override: use exact base_url from the alias if set ---
     if resolved_alias:

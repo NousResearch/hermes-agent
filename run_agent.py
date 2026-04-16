@@ -1357,6 +1357,7 @@ class AIAgent:
         compression_enabled = str(_compression_cfg.get("enabled", True)).lower() in ("true", "1", "yes")
         compression_target_ratio = float(_compression_cfg.get("target_ratio", 0.20))
         compression_protect_last = int(_compression_cfg.get("protect_last_n", 20))
+        compression_warnings = str(_compression_cfg.get("warnings", True)).lower() in ("true", "1", "yes")
 
         # Read explicit context_length override from model config
         _model_cfg = _agent_cfg.get("model", {})
@@ -1499,6 +1500,7 @@ class AIAgent:
                 api_mode=self.api_mode,
             )
         self.compression_enabled = compression_enabled
+        self.compression_warnings = compression_warnings
 
         # Reject models whose context window is below the minimum required
         # for reliable tool-calling workflows (64K tokens).
@@ -10667,7 +10669,7 @@ class AIAgent:
                             _warn_tier = 0.95
                         elif _compaction_progress >= 0.85:
                             _warn_tier = 0.85
-                        if _warn_tier > self._context_pressure_warned_at:
+                        if _warn_tier > self._context_pressure_warned_at and self.compression_warnings:
                             # Class-level dedup: check if this session was already
                             # warned at this tier within the cooldown window.
                             _sid = self.session_id or "default"

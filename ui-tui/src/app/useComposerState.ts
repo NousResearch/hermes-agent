@@ -7,12 +7,12 @@ import { useStore } from '@nanostores/react'
 import { useCallback, useMemo, useState } from 'react'
 
 import type { PasteEvent } from '../components/textInput.js'
+import { LARGE_PASTE } from '../config/limits.js'
 import { useCompletion } from '../hooks/useCompletion.js'
 import { useInputHistory } from '../hooks/useInputHistory.js'
 import { useQueue } from '../hooks/useQueue.js'
 import { pasteTokenLabel, stripTrailingPasteNewlines } from '../lib/text.js'
 
-import { LARGE_PASTE } from './constants.js'
 import type { PasteSnippet, UseComposerStateOptions, UseComposerStateResult } from './interfaces.js'
 import { $isBlocked } from './overlayStore.js'
 

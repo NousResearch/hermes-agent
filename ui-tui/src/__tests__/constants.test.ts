@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest'
 
-import { FACES, HOTKEYS, INTERPOLATION_RE, PLACEHOLDERS, ROLE, TOOL_VERBS, VERBS, ZERO } from '../constants.js'
+import { FACES } from '../content/faces.js'
+import { HOTKEYS } from '../content/hotkeys.js'
+import { PLACEHOLDERS } from '../content/placeholders.js'
+import { TOOL_VERBS, VERBS } from '../content/verbs.js'
+import { ROLE } from '../domain/roles.js'
+import { ZERO } from '../domain/usage.js'
+import { INTERPOLATION_RE } from '../protocol/interpolation.js'
 import { DEFAULT_THEME } from '../theme.js'
 
 describe('constants', () => {

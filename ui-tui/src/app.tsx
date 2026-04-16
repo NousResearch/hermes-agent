@@ -1,7 +1,7 @@
-import { MOUSE_TRACKING } from './app/constants.js'
 import { GatewayProvider } from './app/gatewayContext.js'
 import { useMainApp } from './app/useMainApp.js'
 import { AppLayout } from './components/appLayout.js'
+import { MOUSE_TRACKING } from './config/env.js'
 import type { GatewayClient } from './gatewayClient.js'
 
 export function App({ gw }: { gw: GatewayClient }) {

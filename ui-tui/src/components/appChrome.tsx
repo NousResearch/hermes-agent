@@ -1,7 +1,8 @@
 import { Box, type ScrollBoxHandle, Text } from '@hermes/ink'
 import { type ReactNode, type RefObject, useCallback, useEffect, useState, useSyncExternalStore } from 'react'
 
-import { fmtDuration, stickyPromptFromViewport } from '../app/helpers.js'
+import { fmtDuration } from '../domain/messages.js'
+import { stickyPromptFromViewport } from '../domain/viewport.js'
 import { fmtK } from '../lib/text.js'
 import type { Theme } from '../theme.js'
 import type { Msg, Usage } from '../types.js'
@@ -66,7 +67,7 @@ export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
     return () => clearTimeout(id)
   }, [t.color.amber, tick])
 
-  return <Text color={color as any}>{active ? '♥' : ' '}</Text>
+  return <Text color={color}>{active ? '♥' : ' '}</Text>
 }
 
 export function StatusRule({
@@ -108,29 +109,29 @@ export function StatusRule({
   return (
     <Box>
       <Box flexShrink={1} width={leftWidth}>
-        <Text color={t.color.bronze as any} wrap="truncate-end">
+        <Text color={t.color.bronze} wrap="truncate-end">
           {'─ '}
-          <Text color={statusColor as any}>{status}</Text>
-          <Text color={t.color.dim as any}> │ {model}</Text>
-          {ctxLabel ? <Text color={t.color.dim as any}> │ {ctxLabel}</Text> : null}
+          <Text color={statusColor}>{status}</Text>
+          <Text color={t.color.dim}> │ {model}</Text>
+          {ctxLabel ? <Text color={t.color.dim}> │ {ctxLabel}</Text> : null}
           {bar ? (
-            <Text color={t.color.dim as any}>
+            <Text color={t.color.dim}>
               {' │ '}
-              <Text color={barColor as any}>[{bar}]</Text> <Text color={barColor as any}>{pctLabel}</Text>
+              <Text color={barColor}>[{bar}]</Text> <Text color={barColor}>{pctLabel}</Text>
             </Text>
           ) : null}
           {sessionStartedAt ? (
-            <Text color={t.color.dim as any}>
+            <Text color={t.color.dim}>
               {' │ '}
               <SessionDuration startedAt={sessionStartedAt} />
             </Text>
           ) : null}
-          {voiceLabel ? <Text color={t.color.dim as any}> │ {voiceLabel}</Text> : null}
-          {bgCount > 0 ? <Text color={t.color.dim as any}> │ {bgCount} bg</Text> : null}
+          {voiceLabel ? <Text color={t.color.dim}> │ {voiceLabel}</Text> : null}
+          {bgCount > 0 ? <Text color={t.color.dim}> │ {bgCount} bg</Text> : null}
         </Text>
       </Box>
-      <Text color={t.color.bronze as any}> ─ </Text>
-      <Text color={t.color.label as any}>{cwdLabel}</Text>
+      <Text color={t.color.bronze}> ─ </Text>
+      <Text color={t.color.label}>{cwdLabel}</Text>
     </Box>
   )
 }
@@ -139,7 +140,7 @@ export function FloatBox({ children, color }: { children: ReactNode; color: stri
   return (
     <Box
       alignSelf="flex-start"
-      borderColor={color as any}
+      borderColor={color}
       borderStyle="double"
       flexDirection="column"
       marginTop={1}
@@ -247,21 +248,21 @@ export function TranscriptScrollbar({ scrollRef, t }: { scrollRef: RefObject<Scr
       width={1}
     >
       {!scrollable ? (
-        <Text color={trackColor as any} dim>
+        <Text color={trackColor} dim>
           {' \n'.repeat(Math.max(0, vp - 1))}{' '}
         </Text>
       ) : (
         <>
           {thumbTop > 0 ? (
-            <Text color={trackColor as any} dim={!hover}>
+            <Text color={trackColor} dim={!hover}>
               {`${'│\n'.repeat(Math.max(0, thumbTop - 1))}${thumbTop > 0 ? '│' : ''}`}
             </Text>
           ) : null}
           {thumb > 0 ? (
-            <Text color={thumbColor as any}>{`${'┃\n'.repeat(Math.max(0, thumb - 1))}${thumb > 0 ? '┃' : ''}`}</Text>
+            <Text color={thumbColor}>{`${'┃\n'.repeat(Math.max(0, thumb - 1))}${thumb > 0 ? '┃' : ''}`}</Text>
           ) : null}
           {vp - thumbTop - thumb > 0 ? (
-            <Text color={trackColor as any} dim={!hover}>
+            <Text color={trackColor} dim={!hover}>
               {`${'│\n'.repeat(Math.max(0, vp - thumbTop - thumb - 1))}${vp - thumbTop - thumb > 0 ? '│' : ''}`}
             </Text>
           ) : null}

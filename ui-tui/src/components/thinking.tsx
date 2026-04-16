@@ -2,6 +2,7 @@ import { Box, NoSelect, Text } from '@hermes/ink'
 import { memo, type ReactNode, useEffect, useMemo, useState } from 'react'
 import spinners, { type BrailleSpinnerName } from 'unicode-animations'
 
+import { THINKING_COT_MAX } from '../config/limits.js'
 import {
   compactPreview,
   estimateTokensRough,
@@ -9,7 +10,6 @@ import {
   formatToolCall,
   parseToolTrailResultLine,
   pick,
-  THINKING_COT_MAX,
   thinkingPreview,
   toolTrailLabel
 } from '../lib/text.js'
@@ -55,7 +55,7 @@ function TreeRow({
   return (
     <Box>
       <NoSelect flexShrink={0} fromLeftEdge width={lead.length}>
-        <Text color={(stemColor ?? t.color.dim) as any} dim={stemDim}>
+        <Text color={stemColor ?? t.color.dim} dim={stemDim}>
           {lead}
         </Text>
       </NoSelect>
@@ -84,11 +84,11 @@ function TreeTextRow({
   wrap?: 'truncate-end' | 'wrap' | 'wrap-trim'
 }) {
   const text = dimColor ? (
-    <Text color={color as any} dim wrap={wrap}>
+    <Text color={color} dim wrap={wrap}>
       {content}
     </Text>
   ) : (
-    <Text color={color as any} wrap={wrap}>
+    <Text color={color} wrap={wrap}>
       {content}
     </Text>
   )
@@ -144,7 +144,7 @@ export function Spinner({ color, variant = 'think' }: { color: string; variant?:
     return () => clearInterval(id)
   }, [spin])
 
-  return <Text color={color as any}>{spin.frames[frame]}</Text>
+  return <Text color={color}>{spin.frames[frame]}</Text>
 }
 
 interface DetailRow {
@@ -195,11 +195,11 @@ function StreamCursor({
   }
 
   return dimColor ? (
-    <Text color={color as any} dim>
+    <Text color={color} dim>
       {streaming && on ? '▍' : ' '}
     </Text>
   ) : (
-    <Text color={color as any}>{streaming && on ? '▍' : ' '}</Text>
+    <Text color={color}>{streaming && on ? '▍' : ' '}</Text>
   )
 }
 
@@ -224,12 +224,12 @@ function Chevron({
 
   return (
     <Box onClick={(e: any) => onClick(!!e?.shiftKey || !!e?.ctrlKey)}>
-      <Text color={color as any} dim={tone === 'dim'}>
-        <Text color={t.color.amber as any}>{open ? '▾ ' : '▸ '}</Text>
+      <Text color={color} dim={tone === 'dim'}>
+        <Text color={t.color.amber}>{open ? '▾ ' : '▸ '}</Text>
         {title}
         {typeof count === 'number' ? ` (${count})` : ''}
         {suffix ? (
-          <Text color={t.color.statusFg as any} dim>
+          <Text color={t.color.statusFg} dim>
             {'  '}
             {suffix}
           </Text>
@@ -366,7 +366,7 @@ function SubagentAccordion({
               color={t.color.cornsilk}
               content={
                 <>
-                  <Text color={t.color.amber as any}>● </Text>
+                  <Text color={t.color.amber}>● </Text>
                   {line}
                 </>
               }
@@ -501,7 +501,7 @@ export const Thinking = memo(function Thinking({
         {preview ? (
           mode === 'full' ? (
             lines.map((line, index) => (
-              <Text color={t.color.dim as any} dim key={index} wrap="wrap-trim">
+              <Text color={t.color.dim} dim key={index} wrap="wrap-trim">
                 {line || ' '}
                 {index === lines.length - 1 ? (
                   <StreamCursor color={t.color.dim} dimColor streaming={streaming} visible={active} />
@@ -509,13 +509,13 @@ export const Thinking = memo(function Thinking({
               </Text>
             ))
           ) : (
-            <Text color={t.color.dim as any} dim wrap="truncate-end">
+            <Text color={t.color.dim} dim wrap="truncate-end">
               {preview}
               <StreamCursor color={t.color.dim} dimColor streaming={streaming} visible={active} />
             </Text>
           )
         ) : (
-          <Text color={t.color.dim as any} dim>
+          <Text color={t.color.dim} dim>
             <StreamCursor color={t.color.dim} dimColor streaming={streaming} visible={active} />
           </Text>
         )}
@@ -715,7 +715,7 @@ export const ToolTrail = memo(function ToolTrail({
     return alerts.length ? (
       <Box flexDirection="column">
         {alerts.map(i => (
-          <Text color={(i.tone === 'error' ? t.color.error : t.color.warn) as any} key={`ha-${i.id}`}>
+          <Text color={i.tone === 'error' ? t.color.error : t.color.warn} key={`ha-${i.id}`}>
             {i.tone === 'error' ? '✗' : '!'} {i.text}
           </Text>
         ))}
@@ -773,19 +773,19 @@ export const ToolTrail = memo(function ToolTrail({
             }
           }}
         >
-          <Text color={t.color.dim as any} dim={!thinkingLive}>
-            <Text color={t.color.amber as any}>{detailsMode === 'expanded' || openThinking ? '▾ ' : '▸ '}</Text>
+          <Text color={t.color.dim} dim={!thinkingLive}>
+            <Text color={t.color.amber}>{detailsMode === 'expanded' || openThinking ? '▾ ' : '▸ '}</Text>
             {thinkingLive ? (
-              <Text bold color={t.color.cornsilk as any}>
+              <Text bold color={t.color.cornsilk}>
                 Thinking
               </Text>
             ) : (
-              <Text color={t.color.dim as any} dim>
+              <Text color={t.color.dim} dim>
                 Thinking
               </Text>
             )}
             {thinkingTokensLabel ? (
-              <Text color={t.color.statusFg as any} dim>
+              <Text color={t.color.statusFg} dim>
                 {'  '}
                 {thinkingTokensLabel}
               </Text>
@@ -843,7 +843,7 @@ export const ToolTrail = memo(function ToolTrail({
                   color={group.color}
                   content={
                     <>
-                      <Text color={t.color.amber as any}>● </Text>
+                      <Text color={t.color.amber}>● </Text>
                       {group.content}
                     </>
                   }
@@ -952,7 +952,7 @@ export const ToolTrail = memo(function ToolTrail({
           color={t.color.statusFg}
           content={
             <>
-              <Text color={t.color.amber as any}>Σ </Text>
+              <Text color={t.color.amber}>Σ </Text>
               {totalTokensLabel}
             </>
           }

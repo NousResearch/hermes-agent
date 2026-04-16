@@ -1,23 +1,26 @@
 import { useEffect, useRef } from 'react'
 
-import { toolTrailLabel } from '../lib/text.js'
-import type { ActiveTool, ActivityItem } from '../types.js'
+import { LONG_RUN_CHARMS } from '../content/charms.js'
+import { pick, toolTrailLabel } from '../lib/text.js'
+import type { ActiveTool } from '../types.js'
+
+import { turnController } from './turnController.js'
 
 const DELAY_MS = 8_000
 const INTERVAL_MS = 10_000
-const MAX = 2
-const CHARMS = ['still cooking…', 'polishing edges…', 'asking the void nicely…']
+const MAX_CHARMS_PER_TOOL = 2
 
-export function useLongRunToolCharms(
-  busy: boolean,
-  tools: ActiveTool[],
-  pushActivity: (text: string, tone?: ActivityItem['tone'], replaceLabel?: string) => void
-) {
-  const slotRef = useRef(new Map<string, { count: number; lastAt: number }>())
+interface Slot {
+  count: number
+  lastAt: number
+}
+
+export function useLongRunToolCharms(busy: boolean, tools: ActiveTool[]) {
+  const slots = useRef(new Map<string, Slot>())
 
   useEffect(() => {
     if (!busy || !tools.length) {
-      slotRef.current.clear()
+      slots.current.clear()
 
       return
     }
@@ -26,9 +29,9 @@ export function useLongRunToolCharms(
       const now = Date.now()
       const liveIds = new Set(tools.map(t => t.id))
 
-      for (const key of [...slotRef.current.keys()]) {
+      for (const key of [...slots.current.keys()]) {
         if (!liveIds.has(key)) {
-          slotRef.current.delete(key)
+          slots.current.delete(key)
         }
       }
 
@@ -37,20 +40,17 @@ export function useLongRunToolCharms(
           continue
         }
 
-        const slot = slotRef.current.get(tool.id) ?? { count: 0, lastAt: 0 }
+        const slot = slots.current.get(tool.id) ?? { count: 0, lastAt: 0 }
 
-        if (slot.count >= MAX || now - slot.lastAt < INTERVAL_MS) {
+        if (slot.count >= MAX_CHARMS_PER_TOOL || now - slot.lastAt < INTERVAL_MS) {
           continue
         }
 
-        slot.count += 1
-        slot.lastAt = now
-        slotRef.current.set(tool.id, slot)
+        slots.current.set(tool.id, { count: slot.count + 1, lastAt: now })
 
-        const charm = CHARMS[Math.floor(Math.random() * CHARMS.length)]!
         const sec = Math.round((now - tool.startedAt) / 1000)
 
-        pushActivity(`${charm} (${toolTrailLabel(tool.name)} · ${sec}s)`)
+        turnController.pushActivity(`${pick(LONG_RUN_CHARMS)} (${toolTrailLabel(tool.name)} · ${sec}s)`)
       }
     }
 
@@ -58,5 +58,5 @@ export function useLongRunToolCharms(
     const id = setInterval(tick, 1000)
 
     return () => clearInterval(id)
-  }, [busy, pushActivity, tools])
+  }, [busy, tools])
 }

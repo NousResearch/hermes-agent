@@ -112,7 +112,7 @@ export function AppOverlays({
           <Box flexDirection="column" paddingX={1} paddingY={1}>
             {overlay.pager.title && (
               <Box justifyContent="center" marginBottom={1}>
-                <Text bold color={ui.theme.color.gold as any}>
+                <Text bold color={ui.theme.color.gold}>
                   {overlay.pager.title}
                 </Text>
               </Box>
@@ -123,7 +123,7 @@ export function AppOverlays({
             ))}
 
             <Box marginTop={1}>
-              <Text color={ui.theme.color.dim as any}>
+              <Text color={ui.theme.color.dim}>
                 {overlay.pager.offset + pagerPageSize < overlay.pager.lines.length
                   ? `Enter/Space for more · q to close (${Math.min(overlay.pager.offset + pagerPageSize, overlay.pager.lines.length)}/${overlay.pager.lines.length})`
                   : `end · q to close (${overlay.pager.lines.length} lines)`}
@@ -141,16 +141,16 @@ export function AppOverlays({
 
               return (
                 <Box
-                  backgroundColor={active ? (ui.theme.color.completionCurrentBg as any) : undefined}
+                  backgroundColor={active ? ui.theme.color.completionCurrentBg : undefined}
                   flexDirection="row"
                   key={`${start + i}:${item.text}:${item.display}:${item.meta ?? ''}`}
                   width="100%"
                 >
-                  <Text bold={active} color={ui.theme.color.bronze as any}>
+                  <Text bold={active} color={ui.theme.color.bronze}>
                     {' '}
                     {item.display}
                   </Text>
-                  {item.meta ? <Text color={ui.theme.color.dim as any}> {item.meta}</Text> : null}
+                  {item.meta ? <Text color={ui.theme.color.dim}> {item.meta}</Text> : null}
                 </Box>
               )
             })}

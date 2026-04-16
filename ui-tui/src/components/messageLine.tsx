@@ -1,8 +1,10 @@
 import { Ansi, Box, NoSelect, Text } from '@hermes/ink'
 import { memo } from 'react'
 
-import { LONG_MSG, ROLE } from '../constants.js'
-import { compactPreview, hasAnsi, isPasteBackedText, stripAnsi, userDisplay } from '../lib/text.js'
+import { LONG_MSG } from '../config/limits.js'
+import { userDisplay } from '../domain/messages.js'
+import { ROLE } from '../domain/roles.js'
+import { compactPreview, hasAnsi, isPasteBackedText, stripAnsi } from '../lib/text.js'
 import type { Theme } from '../theme.js'
 import type { DetailsMode, Msg } from '../types.js'
 

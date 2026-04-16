@@ -2,10 +2,10 @@ import { AlternateScreen, Box, NoSelect, ScrollBox, Text } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
 import { memo } from 'react'
 
-import { PLACEHOLDER } from '../app/constants.js'
 import type { AppLayoutProps } from '../app/interfaces.js'
 import { $isBlocked } from '../app/overlayStore.js'
 import { $uiState } from '../app/uiStore.js'
+import { PLACEHOLDER } from '../content/placeholders.js'
 
 import { GoodVibesHeart, StatusRule, StickyPromptTracker, TranscriptScrollbar } from './appChrome.js'
 import { AppOverlays } from './appOverlays.js'
@@ -119,14 +119,14 @@ const ComposerPane = memo(function ComposerPane({
       />
 
       {ui.bgTasks.size > 0 && (
-        <Text color={ui.theme.color.dim as any}>
+        <Text color={ui.theme.color.dim}>
           {ui.bgTasks.size} background {ui.bgTasks.size === 1 ? 'task' : 'tasks'} running
         </Text>
       )}
 
       {status.showStickyPrompt ? (
-        <Text color={ui.theme.color.dim as any} wrap="truncate-end">
-          <Text color={ui.theme.color.label as any}>↳ </Text>
+        <Text color={ui.theme.color.dim} wrap="truncate-end">
+          <Text color={ui.theme.color.label}>↳ </Text>
 
           {status.stickyPrompt}
         </Text>
@@ -169,19 +169,19 @@ const ComposerPane = memo(function ComposerPane({
           {composer.inputBuf.map((line, i) => (
             <Box key={i}>
               <Box width={3}>
-                <Text color={ui.theme.color.dim as any}>{i === 0 ? `${ui.theme.brand.prompt} ` : '  '}</Text>
+                <Text color={ui.theme.color.dim}>{i === 0 ? `${ui.theme.brand.prompt} ` : '  '}</Text>
               </Box>
 
-              <Text color={ui.theme.color.cornsilk as any}>{line || ' '}</Text>
+              <Text color={ui.theme.color.cornsilk}>{line || ' '}</Text>
             </Box>
           ))}
 
           <Box position="relative">
             <Box width={pw}>
               {sh ? (
-                <Text color={ui.theme.color.shellDollar as any}>$ </Text>
+                <Text color={ui.theme.color.shellDollar}>$ </Text>
               ) : (
-                <Text bold color={ui.theme.color.gold as any}>
+                <Text bold color={ui.theme.color.gold}>
                   {composer.inputBuf.length ? '  ' : `${ui.theme.brand.prompt} `}
                 </Text>
               )}
@@ -204,7 +204,7 @@ const ComposerPane = memo(function ComposerPane({
         </Box>
       )}
 
-      {!composer.empty && !ui.sid && <Text color={ui.theme.color.dim as any}>⚕ {ui.status}</Text>}
+      {!composer.empty && !ui.sid && <Text color={ui.theme.color.dim}>⚕ {ui.status}</Text>}
     </NoSelect>
   )
 })

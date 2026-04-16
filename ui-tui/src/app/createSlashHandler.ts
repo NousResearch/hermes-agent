@@ -1,12 +1,11 @@
+import { parseSlashCommand } from '../domain/slash.js'
 import type { SlashExecResponse } from '../gatewayTypes.js'
 import { asCommandDispatch, rpcErrorMessage } from '../lib/rpc.js'
 
 import type { SlashHandlerContext } from './interfaces.js'
-import { createSlashCoreHandler } from './slash/createSlashCoreHandler.js'
-import { createSlashOpsHandler } from './slash/createSlashOpsHandler.js'
-import { createSlashSessionHandler } from './slash/createSlashSessionHandler.js'
-import { isStaleSlash } from './slash/isStaleSlash.js'
-import { createSlashShared, parseSlashCommand } from './slash/shared.js'
+import { findSlashCommand } from './slash/registry.js'
+import { createSlashShared } from './slash/shared.js'
+import type { SlashRunCtx } from './slash/types.js'
 import { getUiState } from './uiStore.js'
 
 export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => boolean {
@@ -14,18 +13,37 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
   const { catalog } = ctx.local
   const { send, sys } = ctx.transcript
   const shared = createSlashShared({ ...ctx.transcript, gw, slashFlightRef: ctx.slashFlightRef })
-  const handleCore = createSlashCoreHandler(ctx)
-  const handleSession = createSlashSessionHandler(ctx, shared)
-  const handleOps = createSlashOpsHandler(ctx)
 
   const handler = (cmd: string): boolean => {
     const flight = ++ctx.slashFlightRef.current
     const ui = getUiState()
-    const sidAtSend = ui.sid
-    const parsed = { ...parseSlashCommand(cmd), flight, sid: sidAtSend, ui }
+    const sid = ui.sid
+    const parsed = parseSlashCommand(cmd)
     const argTail = parsed.arg ? ` ${parsed.arg}` : ''
 
-    if (handleCore(parsed) || handleSession(parsed) || handleOps(parsed)) {
+    const stale = () => flight !== ctx.slashFlightRef.current || getUiState().sid !== sid
+
+    const guarded =
+      <T>(fn: (r: T) => void) =>
+      (r: null | T): void => {
+        if (!stale() && r) {
+          fn(r)
+        }
+      }
+
+    const guardedErr = (e: unknown) => {
+      if (!stale()) {
+        sys(`error: ${rpcErrorMessage(e)}`)
+      }
+    }
+
+    const runCtx: SlashRunCtx = { ...ctx, flight, guarded, guardedErr, shared, sid, stale, ui }
+
+    const found = findSlashCommand(parsed.name)
+
+    if (found) {
+      found.run(parsed.arg, runCtx, cmd)
+
       return true
     }
 
@@ -51,9 +69,9 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
       }
     }
 
-    gw.request<SlashExecResponse>('slash.exec', { command: cmd.slice(1), session_id: sidAtSend })
+    gw.request<SlashExecResponse>('slash.exec', { command: cmd.slice(1), session_id: sid })
       .then(r => {
-        if (isStaleSlash(ctx, flight, sidAtSend)) {
+        if (stale()) {
           return
         }
 
@@ -64,41 +82,33 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
         )
       })
       .catch(() => {
-        gw.request('command.dispatch', { name: parsed.name, arg: parsed.arg, session_id: sidAtSend })
+        gw.request('command.dispatch', { arg: parsed.arg, name: parsed.name, session_id: sid })
           .then((raw: unknown) => {
-            if (isStaleSlash(ctx, flight, sidAtSend)) {
+            if (stale()) {
               return
             }
 
             const d = asCommandDispatch(raw)
 
             if (!d) {
-              sys('error: invalid response: command.dispatch')
-
-              return
+              return sys('error: invalid response: command.dispatch')
             }
 
             if (d.type === 'exec' || d.type === 'plugin') {
-              sys(d.output || '(no output)')
-            } else if (d.type === 'alias') {
-              handler(`/${d.target}${argTail}`)
-            } else if (d.type === 'skill') {
+              return sys(d.output || '(no output)')
+            }
+
+            if (d.type === 'alias') {
+              return handler(`/${d.target}${argTail}`)
+            }
+
+            if (d.type === 'skill') {
               sys(`⚡ loading skill: ${d.name}`)
 
-              if (typeof d.message === 'string' && d.message.trim()) {
-                send(d.message)
-              } else {
-                sys(`/${parsed.name}: skill payload missing message`)
-              }
+              return d.message?.trim() ? send(d.message) : sys(`/${parsed.name}: skill payload missing message`)
             }
           })
-          .catch((e: unknown) => {
-            if (isStaleSlash(ctx, flight, sidAtSend)) {
-              return
-            }
-
-            sys(`error: ${rpcErrorMessage(e)}`)
-          })
+          .catch(guardedErr)
       })
 
     return true

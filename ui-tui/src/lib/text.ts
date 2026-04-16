@@ -1,4 +1,4 @@
-import { INTERPOLATION_RE, LONG_MSG } from '../constants.js'
+import { THINKING_COT_MAX } from '../config/limits.js'
 import type { ThinkingMode } from '../types.js'
 
 // eslint-disable-next-line no-control-regex
@@ -73,7 +73,7 @@ export const pasteTokenLabel = (text: string, lineCount: number) => {
     : `[[ ${preview} [${fmtK(lineCount)} lines] ]]`
 }
 
-export const thinkingPreview = (reasoning: string, mode: ThinkingMode, max: number) => {
+export const thinkingPreview = (reasoning: string, mode: ThinkingMode, max: number = THINKING_COT_MAX) => {
   const raw = reasoning.trim()
 
   if (!raw || mode === 'collapsed') {
@@ -155,8 +155,6 @@ export const lastCotTrailIndex = (trail: readonly string[]) => {
   return -1
 }
 
-export const THINKING_COT_MAX = 160
-
 export const estimateRows = (text: string, w: number, compact = false) => {
   let fence: { char: '`' | '~'; len: number } | null = null
   let rows = 0
@@ -213,25 +211,7 @@ const COMPACT_NUMBER = new Intl.NumberFormat('en-US', {
 
 export const fmtK = (n: number) => COMPACT_NUMBER.format(n).replace(/[KMBT]$/, s => s.toLowerCase())
 
-export const hasInterpolation = (s: string) => {
-  INTERPOLATION_RE.lastIndex = 0
-
-  return INTERPOLATION_RE.test(s)
-}
-
 export const pick = <T>(a: T[]) => a[Math.floor(Math.random() * a.length)]!
-
-export const userDisplay = (text: string): string => {
-  if (text.length <= LONG_MSG) {
-    return text
-  }
-
-  const first = text.split('\n')[0]?.trim() ?? ''
-  const words = first.split(/\s+/).filter(Boolean)
-  const prefix = (words.length > 1 ? words.slice(0, 4).join(' ') : first).slice(0, 80)
-
-  return `${prefix || '(message)'} [long message]`
-}
 
 export const isPasteBackedText = (text: string): boolean =>
   /\[\[paste:\d+(?:[^\n]*?)\]\]|\[paste #\d+ (?:attached|excerpt)(?:[^\n]*?)\]/.test(text)

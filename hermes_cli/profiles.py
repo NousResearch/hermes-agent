@@ -920,13 +920,25 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
     if profile_dir.exists():
         raise FileExistsError(f"Profile '{inferred_name}' already exists at {profile_dir}")
 
+    # Guard: the archive's top-level directory may differ from the target
+    # name.  Extracting directly into profiles_root would clobber an
+    # existing profile whose name matches the archive root.
+    archive_root = top_dirs.pop() if top_dirs else inferred_name
     profiles_root = _get_profiles_root()
+    if archive_root != inferred_name:
+        existing = profiles_root / archive_root
+        if existing.exists():
+            raise FileExistsError(
+                f"Cannot import: archive top-level directory '{archive_root}' "
+                f"collides with existing profile at {existing}"
+            )
+
     profiles_root.mkdir(parents=True, exist_ok=True)
 
     _safe_extract_profile_archive(archive, profiles_root)
 
     # If the archive extracted under a different name, rename
-    extracted = profiles_root / (top_dirs.pop() if top_dirs else inferred_name)
+    extracted = profiles_root / archive_root
     if extracted != profile_dir and extracted.exists():
         extracted.rename(profile_dir)
 

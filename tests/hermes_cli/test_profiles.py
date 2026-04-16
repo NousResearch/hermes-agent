@@ -636,6 +636,34 @@ class TestExportImport:
         assert (imported / "config.yaml").read_text() == "model: opus"
         assert (imported / "memories" / "MEMORY.md").read_text() == "important fact"
 
+    def test_import_rejects_archive_root_colliding_with_existing_profile(
+        self, profile_env, tmp_path
+    ):
+        """Importing bar.tar.gz as 'foo' must not clobber existing 'bar' profile."""
+        # Create an existing profile named "bar"
+        create_profile("bar", no_alias=True)
+        bar_dir = get_profile_dir("bar")
+        (bar_dir / "keep.txt").write_text("original-bar")
+
+        # Build an archive whose top-level directory is "bar/"
+        archive = tmp_path / "export" / "bar.tar.gz"
+        archive.parent.mkdir(parents=True, exist_ok=True)
+        with tarfile.open(archive, "w:gz") as tf:
+            payload = b"new-from-archive"
+            info = tarfile.TarInfo("bar/new.txt")
+            info.size = len(payload)
+            tf.addfile(info, io.BytesIO(payload))
+
+        # Importing under a different name must fail — not silently clobber
+        with pytest.raises(FileExistsError, match="collides with existing profile"):
+            import_profile(str(archive), name="foo")
+
+        # Existing "bar" profile must remain untouched
+        assert (bar_dir / "keep.txt").read_text() == "original-bar"
+        assert not (bar_dir / "new.txt").exists()
+        # Target "foo" must not have been created
+        assert not get_profile_dir("foo").exists()
+
 
 # ===================================================================
 # TestProfileIsolation

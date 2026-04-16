@@ -540,13 +540,6 @@ class AIAgent:
     for AI models that support function calling.
     """
 
-    # ── Class-level context pressure dedup (survives across instances) ──
-    # The gateway creates a new AIAgent per message, so instance-level flags
-    # reset every time.  This dict tracks {session_id: (warn_level, timestamp)}
-    # to suppress duplicate warnings within a cooldown window.
-    _context_pressure_last_warned: dict = {}
-    _CONTEXT_PRESSURE_COOLDOWN = 300  # seconds between re-warning same session
-
     @property
     def base_url(self) -> str:
         return self._base_url
@@ -825,12 +818,6 @@ class AIAgent:
         # models to "give up" prematurely on complex tasks (#7915).
         self._budget_exhausted_injected = False
         self._budget_grace_call = False
-
-        # Context pressure warnings: notify the USER (not the LLM) as context
-        # fills up.  Purely informational — displayed in CLI output and sent via
-        # status_callback for gateway platforms.  Does NOT inject into messages.
-        # Tiered: fires at 85% and again at 95% of compaction threshold.
-        self._context_pressure_warned_at = 0.0  # highest tier already shown
 
         # Activity tracking — updated on each API call, tool execution, and
         # stream chunk.  Used by the gateway timeout handler to report what the
@@ -4353,6 +4340,15 @@ class AIAgent:
 
     def _create_openai_client(self, client_kwargs: dict, *, reason: str, shared: bool) -> Any:
         from agent.auxiliary_client import _validate_base_url, _validate_proxy_env_urls
+        # Treat client_kwargs as read-only. Callers pass self._client_kwargs (or shallow
+        # copies of it) in; any in-place mutation leaks back into the stored dict and is
+        # reused on subsequent requests. #10933 hit this by injecting an httpx.Client
+        # transport that was torn down after the first request, so the next request
+        # wrapped a closed transport and raised "Cannot send a request, as the client
+        # has been closed" on every retry. The revert resolved that specific path; this
+        # copy locks the contract so future transport/keepalive work can't reintroduce
+        # the same class of bug.
+        client_kwargs = dict(client_kwargs)
         _validate_proxy_env_urls()
         _validate_base_url(client_kwargs.get("base_url"))
         if self.provider == "copilot-acp" or str(client_kwargs.get("base_url", "")).startswith("acp://copilot"):
@@ -7221,20 +7217,6 @@ class AIAgent:
         self.context_compressor.last_prompt_tokens = _compressed_est
         self.context_compressor.last_completion_tokens = 0
 
-        # Only reset the pressure warning if compression actually brought
-        # us below the warning level (85% of threshold).  When compression
-        # can't reduce enough (e.g. threshold is very low, or system prompt
-        # alone exceeds the warning level), keep the tier set to prevent
-        # spamming the user with repeated warnings every loop iteration.
-        if self.context_compressor.threshold_tokens > 0:
-            _post_progress = _compressed_est / self.context_compressor.threshold_tokens
-            if _post_progress < 0.85:
-                self._context_pressure_warned_at = 0.0
-                # Clear class-level dedup for this session so a fresh
-                # warning cycle can start if context grows again.
-                _sid = self.session_id or "default"
-                AIAgent._context_pressure_last_warned.pop(_sid, None)
-
         # Clear the file-read dedup cache.  After compression the original
         # read content is summarised away — if the model re-reads the same
         # file it needs the full content, not a "file unchanged" stub.
@@ -8033,45 +8015,6 @@ class AIAgent:
             enforce_turn_budget(messages[-num_tools_seq:], env=get_active_env(effective_task_id))
 
 
-
-    def _emit_context_pressure(self, compaction_progress: float, compressor) -> None:
-        """Notify the user that context is approaching the compaction threshold.
-
-        Args:
-            compaction_progress: How close to compaction (0.0–1.0, where 1.0 = fires).
-            compressor: The ContextCompressor instance (for threshold/context info).
-
-        Purely user-facing — does NOT modify the message stream.
-        For CLI: prints a formatted line with a progress bar.
-        For gateway: fires status_callback so the platform can send a chat message.
-        """
-        from agent.display import format_context_pressure, format_context_pressure_gateway
-
-        threshold_pct = compressor.threshold_tokens / compressor.context_length if compressor.context_length else 0.5
-
-        # CLI output — always shown (these are user-facing status notifications,
-        # not verbose debug output, so they bypass quiet_mode).
-        # Gateway users also get the callback below.
-        if self.platform in (None, "cli"):
-            line = format_context_pressure(
-                compaction_progress=compaction_progress,
-                threshold_tokens=compressor.threshold_tokens,
-                threshold_percent=threshold_pct,
-                compression_enabled=self.compression_enabled,
-            )
-            self._safe_print(line)
-
-        # Gateway / external consumers
-        if self.status_callback:
-            try:
-                msg = format_context_pressure_gateway(
-                    compaction_progress=compaction_progress,
-                    threshold_percent=threshold_pct,
-                    compression_enabled=self.compression_enabled,
-                )
-                self.status_callback("context_pressure", msg)
-            except Exception:
-                logger.debug("status_callback error in context pressure", exc_info=True)
 
     def _handle_max_iterations(self, messages: list, api_call_count: int) -> str:
         """Request a summary when max iterations are reached. Returns the final response text."""
@@ -10799,38 +10742,6 @@ class AIAgent:
                         )
                     else:
                         _real_tokens = estimate_messages_tokens_rough(messages)
-
-                    # ── Context pressure warnings (user-facing only) ──────────
-                    # Notify the user (NOT the LLM) as context approaches the
-                    # compaction threshold.  Thresholds are relative to where
-                    # compaction fires, not the raw context window.
-                    # Does not inject into messages — just prints to CLI output
-                    # and fires status_callback for gateway platforms.
-                    # Tiered: 85% (orange) and 95% (red/critical).
-                    if _compressor.threshold_tokens > 0:
-                        _compaction_progress = _real_tokens / _compressor.threshold_tokens
-                        # Determine the warning tier for this progress level
-                        _warn_tier = 0.0
-                        if _compaction_progress >= 0.95:
-                            _warn_tier = 0.95
-                        elif _compaction_progress >= 0.85:
-                            _warn_tier = 0.85
-                        if _warn_tier > self._context_pressure_warned_at:
-                            # Class-level dedup: check if this session was already
-                            # warned at this tier within the cooldown window.
-                            _sid = self.session_id or "default"
-                            _last = AIAgent._context_pressure_last_warned.get(_sid)
-                            _now = time.time()
-                            if _last is None or _last[0] < _warn_tier or (_now - _last[1]) >= self._CONTEXT_PRESSURE_COOLDOWN:
-                                self._context_pressure_warned_at = _warn_tier
-                                AIAgent._context_pressure_last_warned[_sid] = (_warn_tier, _now)
-                                self._emit_context_pressure(_compaction_progress, _compressor)
-                                # Evict stale entries (older than 2x cooldown)
-                                _cutoff = _now - self._CONTEXT_PRESSURE_COOLDOWN * 2
-                                AIAgent._context_pressure_last_warned = {
-                                    k: v for k, v in AIAgent._context_pressure_last_warned.items()
-                                    if v[1] > _cutoff
-                                }
 
                     if self.compression_enabled and _compressor.should_compress(_real_tokens):
                         self._safe_print("  ⟳ compacting context…")

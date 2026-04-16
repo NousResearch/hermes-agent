@@ -1597,13 +1597,8 @@ OPTIONAL_ENV_VARS = {
     },
 
     # ── Agent settings ──
-    "MESSAGING_CWD": {
-        "description": "Working directory for terminal commands via messaging",
-        "prompt": "Messaging working directory (default: home)",
-        "url": None,
-        "password": False,
-        "category": "setting",
-    },
+    # NOTE: MESSAGING_CWD was removed here — use terminal.cwd in config.yaml
+    # instead.  The gateway reads TERMINAL_CWD (bridged from terminal.cwd).
     "SUDO_PASSWORD": {
         "description": "Sudo password for terminal commands requiring root access; set to an explicit empty string to try empty without prompting",
         "prompt": "Sudo password",
@@ -2080,6 +2075,52 @@ def print_config_warnings(config: Optional[Dict[str, Any]] = None) -> None:
         lines.append(f"  {marker} {ci.message}")
     lines.append("  \033[2mRun 'hermes doctor' for fix suggestions.\033[0m")
     sys.stderr.write("\n".join(lines) + "\n\n")
+
+
+def warn_deprecated_cwd_env_vars(config: Optional[Dict[str, Any]] = None) -> None:
+    """Warn if MESSAGING_CWD or TERMINAL_CWD is set in .env instead of config.yaml.
+
+    These env vars are deprecated — the canonical setting is terminal.cwd
+    in config.yaml.  Prints a migration hint to stderr.
+    """
+    import os, sys
+    messaging_cwd = os.environ.get("MESSAGING_CWD")
+    terminal_cwd_env = os.environ.get("TERMINAL_CWD")
+
+    if config is None:
+        try:
+            config = load_config()
+        except Exception:
+            return
+
+    terminal_cfg = config.get("terminal", {})
+    config_cwd = terminal_cfg.get("cwd", ".") if isinstance(terminal_cfg, dict) else "."
+    # Only warn if config.yaml doesn't have an explicit path
+    config_has_explicit_cwd = config_cwd not in (".", "auto", "cwd", "")
+
+    lines: list[str] = []
+    if messaging_cwd:
+        lines.append(
+            f"  \033[33m⚠\033[0m MESSAGING_CWD={messaging_cwd} found in .env — "
+            f"this is deprecated."
+        )
+    if terminal_cwd_env and not config_has_explicit_cwd:
+        # TERMINAL_CWD in env but not from config bridge — likely from .env
+        lines.append(
+            f"  \033[33m⚠\033[0m TERMINAL_CWD={terminal_cwd_env} found in .env — "
+            f"this is deprecated."
+        )
+    if lines:
+        hint_path = os.environ.get("HERMES_HOME", "~/.hermes")
+        lines.insert(0, "\033[33m⚠ Deprecated .env settings detected:\033[0m")
+        lines.append(
+            f"  \033[2mMove to config.yaml instead:  "
+            f"terminal:\\n    cwd: /your/project/path\033[0m"
+        )
+        lines.append(
+            f"  \033[2mThen remove the old entries from {hint_path}/.env\033[0m"
+        )
+        sys.stderr.write("\n".join(lines) + "\n\n")
 
 
 def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, Any]:

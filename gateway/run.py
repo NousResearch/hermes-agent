@@ -1989,8 +1989,11 @@ class GatewayRunner:
             )
         asyncio.create_task(self._platform_reconnect_watcher())
 
+        # Start Feishu WS watchdog — exits the process on WS ping timeout / unrecoverable drop
+        asyncio.create_task(self._feishu_ws_watchdog())
+
         logger.info("Press Ctrl+C to stop")
-        
+
         return True
     
     async def _session_expiry_watcher(self, interval: int = 300):
@@ -2238,6 +2241,30 @@ class GatewayRunner:
                 if not self._running:
                     return
                 await asyncio.sleep(1)
+
+    async def _feishu_ws_watchdog(self) -> None:
+        """Watch for Feishu WS client loop termination (ping timeout / unrecoverable drop).
+
+        When the lark-oapi WS client's message loop exits, it sets
+        adapter._ws_stopped = True.  This watchdog detects that condition and
+        raises SystemExit(1) so systemd (or the process supervisor) can restart
+        the gateway.  An exit code of 1 signals an abnormal/unrecoverable exit.
+        """
+        from gateway.config import Platform
+        await asyncio.sleep(15)  # initial delay — let startup finish
+        while self._running:
+            feishu_adapter = self.adapters.get(Platform.FEISHU)
+            if feishu_adapter is not None and getattr(feishu_adapter, "_ws_stopped", False):
+                logger.error(
+                    "[Feishu] WS client loop has stopped (likely ping timeout); "
+                    "exiting so systemd can restart the process (exit code 1)",
+                )
+                # Schedule the exit on the running loop so we don't raise in this task
+                asyncio.get_running_loop().call_soon(
+                    lambda: SystemExit(1),
+                )
+                return
+            await asyncio.sleep(5)
 
     async def stop(
         self,

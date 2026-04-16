@@ -8,7 +8,7 @@ import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 try:
     import lark_oapi
@@ -2536,6 +2536,155 @@ class TestAdapterBehavior(unittest.TestCase):
         )
 
 
+    @patch.dict(os.environ, {}, clear=True)
+    def test_should_send_as_card_detects_markdown_tables(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        table_content = "| col1 | col2 |\n| --- | --- |\n| a | b |"
+        self.assertTrue(adapter._should_send_as_card(table_content))
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_should_send_as_card_detects_code_heavy_content(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        # Three or more code blocks trigger card format
+        code_heavy = "```python\nprint('hi')\n```\n```js\nconsole.log('hi')\n```\n```bash\necho hi\n```"
+        self.assertTrue(adapter._should_send_as_card(code_heavy))
+        # Two code blocks should NOT trigger card format
+        code_light = "```python\nprint('hi')\n```\n```js\nconsole.log('hi')\n```"
+        self.assertFalse(adapter._should_send_as_card(code_light))
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_should_send_as_card_returns_false_for_inline_markdown(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        inline_md = "可以用 **粗体** 和 *斜体*。"
+        self.assertFalse(adapter._should_send_as_card(inline_md))
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_build_outbound_payload_routes_tables_to_card(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        table_content = "| col1 | col2 |\n| --- | --- |\n| a | b |"
+        msg_type, payload = adapter._build_outbound_payload(table_content)
+        self.assertEqual(msg_type, "interactive")
+        payload_data = json.loads(payload)
+        self.assertEqual(payload_data["config"]["wide_screen_mode"], True)
+        self.assertEqual(payload_data["elements"][0]["tag"], "markdown")
+        self.assertEqual(payload_data["elements"][0]["content"], table_content)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_build_outbound_payload_routes_code_heavy_to_card(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        code_heavy = "```python\nprint('hi')\n```\n```js\nconsole.log('hi')\n```\n```bash\necho hi\n```"
+        msg_type, payload = adapter._build_outbound_payload(code_heavy)
+        self.assertEqual(msg_type, "interactive")
+        payload_data = json.loads(payload)
+        self.assertEqual(payload_data["elements"][0]["tag"], "markdown")
+        self.assertEqual(payload_data["elements"][0]["content"], code_heavy)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_build_outbound_payload_routes_inline_markdown_to_post(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        inline_md = "可以用 **粗体** 和 *斜体*。"
+        msg_type, payload = adapter._build_outbound_payload(inline_md)
+        self.assertEqual(msg_type, "post")
+        payload_data = json.loads(payload)
+        self.assertEqual(payload_data["zh_cn"]["content"][0][0]["tag"], "md")
+        self.assertEqual(payload_data["zh_cn"]["content"][0][0]["text"], inline_md)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_send_uses_card_for_table_markdown(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {}
+
+        class _MessageAPI:
+            def create(self, request):
+                captured["request"] = request
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_table"),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    message=_MessageAPI(),
+                )
+            )
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        table_content = "| col1 | col2 |\n| --- | --- |\n| a | b |"
+        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(adapter.send(chat_id="oc_chat", content=table_content))
+
+        self.assertTrue(result.success)
+        self.assertEqual(captured["request"].request_body.msg_type, "interactive")
+        payload = json.loads(captured["request"].request_body.content)
+        self.assertEqual(payload["elements"][0]["tag"], "markdown")
+        self.assertEqual(payload["elements"][0]["content"], table_content)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_card_markdown_renders_bold_italic_code(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {}
+
+        class _MessageAPI:
+            def create(self, request):
+                captured["request"] = request
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_card_md"),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    message=_MessageAPI(),
+                )
+            )
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        # Tables trigger card format, and the card markdown should contain raw markdown
+        card_content = "| 功能 | 描述 |\n| --- | --- |\n| **粗体** | `code` |"
+        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(adapter.send(chat_id="oc_chat", content=card_content))
+
+        self.assertTrue(result.success)
+        self.assertEqual(captured["request"].request_body.msg_type, "interactive")
+        payload = json.loads(captured["request"].request_body.content)
+        self.assertEqual(payload["elements"][0]["tag"], "markdown")
+        # Content should be raw markdown without escaping
+        self.assertEqual(payload["elements"][0]["content"], card_content)
+
+
+
 @unittest.skipUnless(_HAS_LARK_OAPI, "lark-oapi not installed")
 class TestWebhookSecurity(unittest.TestCase):
     """Tests for webhook signature verification, rate limiting, and body size limits."""
@@ -2855,3 +3004,148 @@ class TestSenderNameResolution(unittest.TestCase):
             result = asyncio.run(adapter._resolve_sender_name_from_api("ou_broken"))
 
         self.assertIsNone(result)
+
+
+# ===========================================================================
+# WebSocket watchdog (_ws_stopped flag) and PATCH card update tests
+# ===========================================================================
+
+class TestFeishuWsWatchdogFlag(unittest.TestCase):
+    """Tests for _ws_stopped flag that signals WS client loop termination."""
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_ws_stopped_flag_initialized_false(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        self.assertFalse(adapter._ws_stopped)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_ws_stopped_flag_can_be_set_true(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._ws_stopped = True
+        self.assertTrue(adapter._ws_stopped)
+
+
+class TestFeishuRunOfficialWsClientWatchdog(unittest.TestCase):
+    """Tests for _run_official_feishu_ws_client setting _ws_stopped on exit."""
+
+    def test_sets_ws_stopped_when_start_raises(self):
+        """When ws_client.start() raises, _ws_stopped must be set so the watchdog exits."""
+        import sys
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+        from gateway.platforms import feishu as feishu_mod
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._ws_stopped = False
+
+        mock_ws_client = MagicMock()
+        mock_ws_client.start.side_effect = RuntimeError("connection refused")
+
+        # Provide a fake lark_oapi.ws.client module so the import inside
+        # _run_official_feishu_ws_client doesn't fail.
+        fake_ws_mod = MagicMock()
+        fake_ws_mod.loop = None
+        fake_ws_mod.websockets = MagicMock()
+        fake_ws_mod.websockets.connect = AsyncMock()
+
+        with patch.dict(sys.modules, {"lark_oapi.ws.client": fake_ws_mod}):
+            feishu_mod._run_official_feishu_ws_client(mock_ws_client, adapter)
+
+        self.assertTrue(adapter._ws_stopped)
+
+    def test_sets_ws_stopped_when_start_returns(self):
+        """When ws_client.start() returns normally (e.g., ping timeout), _ws_stopped is set."""
+        import sys
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+        from gateway.platforms import feishu as feishu_mod
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._ws_stopped = False
+
+        mock_ws_client = MagicMock()
+        mock_ws_client.start.return_value = None  # Normal exit (ping timeout)
+
+        fake_ws_mod = MagicMock()
+        fake_ws_mod.loop = None
+        fake_ws_mod.websockets = MagicMock()
+        fake_ws_mod.websockets.connect = AsyncMock()
+
+        with patch.dict(sys.modules, {"lark_oapi.ws.client": fake_ws_mod}):
+            feishu_mod._run_official_feishu_ws_client(mock_ws_client, adapter)
+
+        self.assertTrue(adapter._ws_stopped)
+
+
+class TestPatchApprovalCard(unittest.TestCase):
+    """Tests for _patch_approval_card using PATCH /im/v1/messages/{id}."""
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_calls_patch_api_with_message_id(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        mock_client = MagicMock()
+        adapter._client = mock_client
+
+        async def check_patch_call():
+            await adapter._patch_approval_card(
+                approval_id=5,
+                state={"message_id": "msg_patch_123", "chat_id": "oc_chat", "session_key": "sk"},
+                choice="once",
+                user_name="Alice",
+            )
+
+        asyncio.run(check_patch_call())
+
+        # Verify im.v1.message.patch was called (not update)
+        patch_called = mock_client.im.v1.message.patch.called
+        update_called = mock_client.im.v1.message.update.called
+        self.assertTrue(patch_called, "im.v1.message.patch should be called")
+        self.assertFalse(update_called, "im.v1.message.update should NOT be called for card patch")
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_no_client_returns_early(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._client = None
+
+        async def check_no_call():
+            await adapter._patch_approval_card(
+                approval_id=1,
+                state={"message_id": "msg_123", "chat_id": "oc_c", "session_key": "sk"},
+                choice="deny",
+                user_name="Bob",
+            )
+
+        asyncio.run(check_no_call())  # Should not raise
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_no_message_id_returns_early(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        mock_client = MagicMock()
+        adapter._client = mock_client
+
+        async def check_no_call():
+            await adapter._patch_approval_card(
+                approval_id=1,
+                state={"chat_id": "oc_c", "session_key": "sk"},  # no message_id
+                choice="deny",
+                user_name="Bob",
+            )
+
+        asyncio.run(check_no_call())
+        self.assertFalse(mock_client.im.v1.message.patch.called)
+

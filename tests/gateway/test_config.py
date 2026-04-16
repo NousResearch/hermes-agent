@@ -52,6 +52,21 @@ class TestPlatformConfigRoundtrip:
         assert restored.enabled is False
         assert restored.token is None
 
+    def test_invalid_nested_values_are_ignored(self):
+        restored = PlatformConfig.from_dict(
+            {
+                "enabled": True,
+                "token": "tok_123",
+                "home_channel": "not-a-mapping",
+                "extra": "not-a-mapping",
+            }
+        )
+
+        assert restored.enabled is True
+        assert restored.token == "tok_123"
+        assert restored.home_channel is None
+        assert restored.extra == {}
+
 
 class TestGetConnectedPlatforms:
     def test_returns_enabled_with_token(self):
@@ -136,6 +151,19 @@ class TestGatewayConfigRoundtrip:
 
         assert restored.unauthorized_dm_behavior == "ignore"
         assert restored.platforms[Platform.WHATSAPP].extra["unauthorized_dm_behavior"] == "pair"
+
+    def test_from_dict_skips_invalid_platform_blocks_and_keeps_valid_ones(self):
+        restored = GatewayConfig.from_dict(
+            {
+                "platforms": {
+                    "telegram": "not-a-mapping",
+                    "discord": {"enabled": True, "token": "discord-token"},
+                }
+            }
+        )
+
+        assert Platform.TELEGRAM not in restored.platforms
+        assert restored.platforms[Platform.DISCORD].token == "discord-token"
 
 
 class TestLoadGatewayConfig:
@@ -283,6 +311,22 @@ class TestLoadGatewayConfig:
 
         assert config.unauthorized_dm_behavior == "ignore"
         assert config.platforms[Platform.WHATSAPP].extra["unauthorized_dm_behavior"] == "pair"
+
+    def test_load_gateway_config_skips_invalid_legacy_platform_blocks(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        gateway_json_path = hermes_home / "gateway.json"
+        gateway_json_path.write_text(
+            '{"platforms":{"telegram":"broken","discord":{"enabled":true,"token":"discord-token"}}}',
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert Platform.TELEGRAM not in config.platforms
+        assert config.platforms[Platform.DISCORD].token == "discord-token"
 
     def test_bridges_telegram_disable_link_previews_from_config_yaml(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"

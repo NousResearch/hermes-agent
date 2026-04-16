@@ -173,17 +173,38 @@ class PlatformConfig:
     
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "PlatformConfig":
+        if not isinstance(data, dict):
+            raise ValueError(
+                f"platform config must be a mapping, got {type(data).__name__}"
+            )
+
         home_channel = None
         if "home_channel" in data:
-            home_channel = HomeChannel.from_dict(data["home_channel"])
-        
+            if isinstance(data["home_channel"], dict):
+                home_channel = HomeChannel.from_dict(data["home_channel"])
+            else:
+                logger.warning(
+                    "Ignoring invalid home_channel in platform config "
+                    "(expected mapping, got %s)",
+                    type(data["home_channel"]).__name__,
+                )
+
+        extra = data.get("extra", {})
+        if not isinstance(extra, dict):
+            logger.warning(
+                "Ignoring invalid platform extra config "
+                "(expected mapping, got %s)",
+                type(extra).__name__,
+            )
+            extra = {}
+
         return cls(
             enabled=data.get("enabled", False),
             token=data.get("token"),
             api_key=data.get("api_key"),
             home_channel=home_channel,
             reply_to_mode=data.get("reply_to_mode", "first"),
-            extra=data.get("extra", {}),
+            extra=extra,
         )
 
 

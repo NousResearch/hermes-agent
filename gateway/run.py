@@ -4409,15 +4409,28 @@ class GatewayRunner:
         return "\n".join(lines)
 
     async def _handle_status_command(self, event: MessageEvent) -> str:
-        """Handle /status command."""
+        """Handle /status command — rich session panel matching CLI view."""
         source = event.source
         session_entry = self.session_store.get_or_create_session(source)
 
         connected_platforms = [p.value for p in self.adapters.keys()]
 
-        # Check if there's an active agent
         session_key = session_entry.session_key
         is_running = session_key in self._running_agents
+
+        # Try to get the live agent for richer stats
+        agent = self._running_agents.get(session_key)
+        if agent is _AGENT_PENDING_SENTINEL:
+            agent = None
+        if agent is None:
+            # Check the completed-agent cache
+            try:
+                _cache = getattr(self, "_recent_agents", {})
+                cached = _cache.get(session_key)
+                if cached:
+                    agent = cached[0]
+            except Exception:
+                pass
 
         title = None
         if self._session_db:
@@ -4426,21 +4439,98 @@ class GatewayRunner:
             except Exception:
                 title = None
 
-        lines = [
-            "📊 **Hermes Gateway Status**",
-            "",
-            f"**Session ID:** `{session_entry.session_id}`",
-        ]
+        lines = ["📊 **Session Status**", ""]
+
+        # Session identity
+        lines.append(f"**Session ID:** `{session_entry.session_id}`")
         if title:
             lines.append(f"**Title:** {title}")
-        lines.extend([
-            f"**Created:** {session_entry.created_at.strftime('%Y-%m-%d %H:%M')}",
-            f"**Last Activity:** {session_entry.updated_at.strftime('%Y-%m-%d %H:%M')}",
-            f"**Tokens:** {session_entry.total_tokens:,}",
-            f"**Agent Running:** {'Yes ⚡' if is_running else 'No'}",
-            "",
-            f"**Connected Platforms:** {', '.join(connected_platforms)}",
-        ])
+
+        # Model / provider
+        if agent:
+            provider = getattr(agent, "provider", None) or "unknown"
+            model = getattr(agent, "model", None) or "unknown"
+            lines.append(f"**Provider / Model:** {provider}  ·  {model}")
+
+        lines.append("")
+
+        # Timing
+        created = session_entry.created_at.strftime("%Y-%m-%d %H:%M")
+        updated = session_entry.updated_at.strftime("%Y-%m-%d %H:%M")
+        lines.append(f"**Created:** {created}")
+        lines.append(f"**Last Activity:** {updated}")
+
+        if agent:
+            session_start = getattr(agent, "session_start", None)
+            if session_start:
+                from datetime import datetime as _dt
+                elapsed = _dt.now() - session_start
+                total_sec = int(elapsed.total_seconds())
+                hours, rem = divmod(total_sec, 3600)
+                mins = rem // 60
+                if hours:
+                    dur = f"{hours}h {mins}m" if mins else f"{hours}h"
+                elif mins:
+                    dur = f"{mins}m"
+                else:
+                    dur = f"{total_sec}s"
+                lines.append(f"**Duration:** {dur}")
+            api_calls = getattr(agent, "session_api_calls", 0)
+            lines.append(f"**API Calls:** {api_calls}")
+            compressions = getattr(agent.context_compressor, "compression_count", 0) if hasattr(agent, "context_compressor") else 0
+            if compressions:
+                lines.append(f"**Compressions:** {compressions}")
+
+        lines.append("")
+
+        # Token breakdown
+        if agent and hasattr(agent, "session_total_tokens"):
+            inp = getattr(agent, "session_input_tokens", 0) or 0
+            out = getattr(agent, "session_output_tokens", 0) or 0
+            total = getattr(agent, "session_total_tokens", 0) or 0
+            cache_read = getattr(agent, "session_cache_read_tokens", 0) or 0
+            cache_write = getattr(agent, "session_cache_write_tokens", 0) or 0
+            lines.append(f"**Tokens in / out:** {inp:,}  /  {out:,}  (total {total:,})")
+            if cache_read or cache_write:
+                lines.append(f"**Cache read / write:** {cache_read:,}  /  {cache_write:,}")
+
+            # Context window bar
+            ctx_len = getattr(agent.context_compressor, "context_length", 0) if hasattr(agent, "context_compressor") else 0
+            if ctx_len:
+                ctx_tokens = inp + cache_read
+                pct = min(100, round(ctx_tokens / ctx_len * 100))
+                bar_width = 20
+                filled = round(bar_width * pct / 100)
+                bar = "█" * filled + "░" * (bar_width - filled)
+                lines.append(f"**Context window:** {ctx_tokens:,} / {ctx_len:,}  [{bar}] {pct}%")
+
+            # Cost estimate
+            try:
+                from agent.usage_pricing import CanonicalUsage, estimate_usage_cost
+                cost_result = estimate_usage_cost(
+                    agent.model,
+                    CanonicalUsage(
+                        input_tokens=inp,
+                        output_tokens=out,
+                        cache_read_tokens=cache_read,
+                        cache_write_tokens=cache_write,
+                    ),
+                    provider=getattr(agent, "provider", None),
+                    base_url=getattr(agent, "base_url", None),
+                )
+                if cost_result.amount_usd is not None:
+                    prefix = "~" if cost_result.status == "estimated" else ""
+                    lines.append(f"**Cost:** {prefix}${float(cost_result.amount_usd):.4f}")
+                elif cost_result.status == "included":
+                    lines.append("**Cost:** included")
+            except Exception:
+                pass
+        else:
+            lines.append(f"**Tokens:** {session_entry.total_tokens:,}")
+
+        lines.append("")
+        lines.append(f"**Agent Running:** {'Yes ⚡' if is_running else 'No'}")
+        lines.append(f"**Connected Platforms:** {', '.join(connected_platforms)}")
 
         return "\n".join(lines)
     

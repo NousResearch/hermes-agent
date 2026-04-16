@@ -287,6 +287,25 @@ If the Feishu API rejects the post payload (e.g., due to unsupported markdown co
 
 Plain text messages (no markdown detected) are sent as the simple `text` message type.
 
+## Streaming Cards (Typewriter Effect)
+
+When streaming is enabled in `config.yaml`, the Feishu adapter uses **CardKit streaming cards** to deliver a native typewriter effect. Instead of repeatedly editing a message, the adapter:
+
+```yaml
+streaming:
+  enabled: true
+```
+
+1. Creates a streaming card via the CardKit API with `streaming_mode: true`
+2. Appends content progressively via the CardKit element content API
+3. Finalizes the card by disabling streaming mode when the response completes
+
+This provides a smooth, real-time typing animation with a native loading indicator — no cursor character (`▉`) is needed. The chat list preview shows `[生成中...]` while the response is being generated.
+
+:::tip
+Streaming is strongly recommended for Feishu. Other platforms (Telegram, Discord, etc.) use progressive message edits with a cursor character, but Feishu's CardKit provides a much smoother native experience.
+:::
+
 ## ACK Emoji Reactions
 
 When the adapter receives an inbound message, it immediately adds an ✅ (OK) emoji reaction to signal that the message was received and is being processed. This provides visual feedback before the agent completes its response.
@@ -440,6 +459,7 @@ WebSocket and per-group ACL settings are configured via `config.yaml` under `pla
 | `Webhook rejected: invalid verification token` | Ensure `FEISHU_VERIFICATION_TOKEN` matches the token in your Feishu app's Event Subscriptions config |
 | `Webhook rejected: invalid signature` | Ensure `FEISHU_ENCRYPT_KEY` matches the encrypt key in your Feishu app config |
 | Post messages show as plain text | The Feishu API rejected the post payload; this is normal fallback behavior. Check logs for details. |
+| Streaming cards not working | Ensure `streaming.enabled: true` in `config.yaml` and that `lark_oapi` is installed with CardKit support. |
 | Images/files not received by bot | Grant `im:message` and `im:resource` permission scopes to your Feishu app |
 | Bot identity not auto-detected | Grant `admin:app.info:readonly` scope, or set `FEISHU_BOT_OPEN_ID` / `FEISHU_BOT_NAME` manually |
 | Error 200340 when clicking approval buttons | Enable **Interactive Card** capability and configure **Card Request URL** in the Feishu Developer Console. See [Required Feishu App Configuration](#required-feishu-app-configuration) above. |

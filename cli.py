@@ -3666,57 +3666,67 @@ class HermesCLI:
         )
 
     def _show_session_status(self):
-        """Show gateway-style status for the current CLI session."""
+        """Show rich session status panel for the current CLI session."""
+        from rich.panel import Panel
+        from rich.text import Text
+
+        snap = self._get_status_bar_snapshot()
+
         session_meta = {}
         if self._session_db:
             try:
                 session_meta = self._session_db.get_session(self.session_id) or {}
             except Exception:
-                session_meta = {}
-
-        title = (session_meta.get("title") or "").strip()
-
-        created_at = self.session_start
-        started_at = session_meta.get("started_at")
-        if started_at:
-            try:
-                created_at = datetime.fromtimestamp(float(started_at))
-            except Exception:
-                created_at = self.session_start
-
-        updated_at = created_at
-        for field in ("updated_at", "last_updated_at", "last_activity_at"):
-            value = session_meta.get(field)
-            if not value:
-                continue
-            try:
-                updated_at = datetime.fromtimestamp(float(value))
-                break
-            except Exception:
                 pass
 
-        agent = getattr(self, "agent", None)
-        total_tokens = getattr(agent, "session_total_tokens", 0) or 0
+        title = (session_meta.get("title") or "").strip()
         provider = getattr(self, "provider", None) or "unknown"
-        model = getattr(self, "model", None) or "(unknown)"
-        is_running = bool(getattr(self, "_agent_running", False))
 
-        lines = [
-            "Hermes CLI Status",
-            "",
-            f"Session ID: {self.session_id}",
-            f"Path: {display_hermes_home()}",
-        ]
+        # Build context window bar (20 chars wide)
+        ctx_tokens = snap["context_tokens"]
+        ctx_length = snap["context_length"]
+        ctx_pct = snap["context_percent"]
+        if ctx_length:
+            bar_width = 20
+            filled = round(bar_width * (ctx_pct or 0) / 100)
+            bar = "█" * filled + "░" * (bar_width - filled)
+            ctx_str = f"{ctx_tokens:,} / {ctx_length:,}  [{bar}] {ctx_pct}%"
+        else:
+            ctx_str = f"{ctx_tokens:,} (limit unknown)"
+
+        t = Text()
+
+        def row(label: str, value: str, label_style: str = "bold cyan", value_style: str = "") -> None:
+            t.append(f"  {label:<18}", style=label_style)
+            t.append(f"{value}\n", style=value_style)
+
         if title:
-            lines.append(f"Title: {title}")
-        lines.extend([
-            f"Model: {model} ({provider})",
-            f"Created: {created_at.strftime('%Y-%m-%d %H:%M')}",
-            f"Last Activity: {updated_at.strftime('%Y-%m-%d %H:%M')}",
-            f"Tokens: {total_tokens:,}",
-            f"Agent Running: {'Yes' if is_running else 'No'}",
-        ])
-        self.console.print("\n".join(lines), highlight=False, markup=False)
+            t.append(f"  {title}\n", style="bold white")
+            t.append("\n")
+
+        row("Session ID", self.session_id, value_style="dim")
+        row("Provider / Model", f"{provider}  ·  {snap['model_short']}")
+        t.append("\n")
+
+        row("Duration", snap["duration"])
+        row("API Calls", str(snap["session_api_calls"]))
+        row("Compressions", str(snap["compressions"]))
+        t.append("\n")
+
+        inp = snap["session_input_tokens"]
+        out = snap["session_output_tokens"]
+        total = snap["session_total_tokens"]
+        row("Tokens  in/out", f"{inp:,}  /  {out:,}  (total {total:,})")
+        row("Context window", ctx_str)
+
+        self.console.print(Panel(
+            t,
+            title="[bold cyan]Session Status[/]",
+            title_align="left",
+            border_style="cyan",
+            box=rich_box.HORIZONTALS,
+            padding=(0, 1),
+        ))
     
     def _fast_command_available(self) -> bool:
         try:

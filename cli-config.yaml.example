@@ -429,6 +429,8 @@ group_sessions_per_user: true
 # Stream tokens to messaging platforms in real-time. The bot sends a message
 # on first token, then progressively edits it as more tokens arrive.
 # Disabled by default — enable to try the streaming UX on Telegram/Discord/Slack.
+# Strongly recommended for Feishu/Lark — enables native CardKit streaming cards
+# with typewriter effect instead of progressive message edits.
 streaming:
   enabled: false
   # transport: edit           # "edit" = progressive editMessageText

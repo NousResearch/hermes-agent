@@ -460,28 +460,28 @@ def _generate_server(
             continue
         except requests.exceptions.RequestException as exc:
             response_text = getattr(getattr(exc, "response", None), "text", None)
-            logger.info(
+            logger.debug(
                 "/tts endpoint failed: %s — trying Gradio. Server response: %s", exc, response_text
             )
 
         # --- Fallback: Gradio predict endpoint ---
-        # gradio_payload = {
-        #     "data": [
-        #         chunk,
-        #         ref_audio or None,
-        #         exaggeration,
-        #         cfg_weight,
-        #         temperature,
-        #     ],
-        # }
-        # try:
-        #     resp = requests.post(
-        #         f"{url}/api/predict",
-        #         json=gradio_payload,
-        #         timeout=120,
-        #     )
-        #     resp.raise_for_status()
-        # except requests.exceptions.RequestException as exc:
+        gradio_payload = {
+            "data": [
+                chunk,
+                ref_audio or None,
+                exaggeration,
+                cfg_weight,
+                temperature,
+            ],
+        }
+        try:
+            resp = requests.post(
+                f"{url}/api/predict",
+                json=gradio_payload,
+                timeout=120,
+            )
+            resp.raise_for_status()
+        except requests.exceptions.RequestException as exc:
             raise RuntimeError(
                 f"Chatterbox server unreachable at {url}: {exc}"
             ) from exc

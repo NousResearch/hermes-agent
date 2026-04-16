@@ -452,6 +452,38 @@ class SlackAdapter(BasePlatformAdapter):
         # 2) Protect inline code (`...`)
         text = re.sub(r'(`[^`]+`)', lambda m: _ph(m.group(0)), text)
 
+        # 2b) Convert markdown tables → monospace code blocks.
+        # Slack has no native table support; wrapping in ``` gives clean fixed-width rendering.
+        def _convert_table(m: re.Match) -> str:
+            raw = m.group(0)
+            lines = raw.splitlines()
+            # Filter out separator rows (---|---|---) to keep the block compact
+            visible = [l for l in lines if not re.match(r'^\s*\|?[\s:]*-+[\s:|-]*\|?\s*$', l)]
+            if not visible:
+                return _ph(f'```\n{raw}\n```')
+            # Determine column widths for alignment
+            def _cells(row: str):
+                return [c.strip() for c in row.strip().strip('|').split('|')]
+            rows = [_cells(l) for l in visible]
+            col_widths = [max(len(r[i]) if i < len(r) else 0 for r in rows)
+                          for i in range(max(len(r) for r in rows))]
+            formatted_lines = []
+            for i, row in enumerate(rows):
+                padded = '  '.join(c.ljust(col_widths[j]) if j < len(row) else ' ' * col_widths[j]
+                                   for j, c in enumerate(row))
+                formatted_lines.append(padded.rstrip())
+                if i == 0:
+                    formatted_lines.append('-' * sum(col_widths) + '-' * (2 * (len(col_widths) - 1)))
+            return _ph(f'```\n' + '\n'.join(formatted_lines).rstrip() + '\n```\n')
+
+        # Match a block of lines that look like a markdown table
+        # (at least a header row + separator row, optional data rows)
+        text = re.sub(
+            r'(?m)^(\|.+\|\s*\n)(\|[\s:|-]+\|\s*\n)(\|.+\|\s*\n?)*',
+            _convert_table,
+            text,
+        )
+
         # 3) Convert markdown links [text](url) → <url|text>
         def _convert_markdown_link(m):
             label = m.group(1)

@@ -1021,9 +1021,26 @@ class AIAgent:
                             f"was found. Set the {_env_hint} environment "
                             f"variable, or switch to a different provider with `hermes model`."
                         )
-                    # Final fallback: try raw OpenRouter key
+                    # No provider configured and no credentials found via
+                    # auto-detection.  Fail with a clear message instead of
+                    # silently falling back to OpenRouter from env vars.
+                    # Provider must be explicitly set in config.yaml (#10314).
+                    _or_key = os.getenv("OPENROUTER_API_KEY", "")
+                    if not _or_key:
+                        raise RuntimeError(
+                            "No LLM provider configured. Run `hermes setup` to "
+                            "choose a provider and set your API key, or set "
+                            "model.provider in config.yaml."
+                        )
+                    # Legacy compat: bare OPENROUTER_API_KEY without config.
+                    # Warn but allow it so existing setups don't break.
+                    logger.warning(
+                        "No provider set in config.yaml — falling back to "
+                        "OPENROUTER_API_KEY from environment. Run `hermes setup` "
+                        "to configure your provider explicitly."
+                    )
                     client_kwargs = {
-                        "api_key": os.getenv("OPENROUTER_API_KEY", ""),
+                        "api_key": _or_key,
                         "base_url": OPENROUTER_BASE_URL,
                         "default_headers": {
                             "HTTP-Referer": "https://hermes-agent.nousresearch.com",

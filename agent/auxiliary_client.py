@@ -2391,10 +2391,10 @@ def call_llm(
 
     if task == "vision":
         effective_provider, client, final_model = resolve_vision_provider_client(
-            provider=provider,
-            model=model,
-            base_url=base_url,
-            api_key=api_key,
+            provider=resolved_provider if resolved_provider != "auto" else provider,
+            model=resolved_model or model,
+            base_url=resolved_base_url or base_url,
+            api_key=resolved_api_key or api_key,
             async_mode=False,
         )
         if client is None and resolved_provider != "auto" and not resolved_base_url:
@@ -2599,10 +2599,10 @@ async def async_call_llm(
 
     if task == "vision":
         effective_provider, client, final_model = resolve_vision_provider_client(
-            provider=provider,
-            model=model,
-            base_url=base_url,
-            api_key=api_key,
+            provider=resolved_provider if resolved_provider != "auto" else provider,
+            model=resolved_model or model,
+            base_url=resolved_base_url or base_url,
+            api_key=resolved_api_key or api_key,
             async_mode=True,
         )
         if client is None and resolved_provider != "auto" and not resolved_base_url:

@@ -1128,8 +1128,10 @@ def execute_code(
         stderr_reader.start()
 
         status = "success"
-        _last_activity_touch = time.monotonic()
-        _ACTIVITY_INTERVAL = 10.0
+        _activity_state = {
+            "last_touch": time.monotonic(),
+            "start": exec_start,
+        }
         while proc.poll() is None:
             if _is_interrupted():
                 _kill_process_group(proc)
@@ -1141,17 +1143,11 @@ def execute_code(
                 break
             # Periodic activity touch so the gateway's inactivity timeout
             # doesn't kill the agent during long code execution (#10807).
-            _now = time.monotonic()
-            if _now - _last_activity_touch >= _ACTIVITY_INTERVAL:
-                _last_activity_touch = _now
-                try:
-                    from tools.environments.base import _get_activity_callback
-                    _cb = _get_activity_callback()
-                    if _cb:
-                        _elapsed = int(_now - exec_start)
-                        _cb(f"execute_code running ({_elapsed}s elapsed)")
-                except Exception:
-                    pass
+            try:
+                from tools.environments.base import touch_activity_if_due
+                touch_activity_if_due(_activity_state, "execute_code running")
+            except Exception:
+                pass
             time.sleep(0.2)
 
         # Wait for readers to finish draining

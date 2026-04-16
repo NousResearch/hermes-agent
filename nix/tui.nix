@@ -4,7 +4,7 @@ let
   src = ../ui-tui;
   npmDeps = pkgs.fetchNpmDeps {
     inherit src;
-    hash = "sha256-+EhRRuvXi5hJupseHblF+MGxs84ijRMIH4qt5+2yYi8=";
+    hash = "sha256-zsUPmbC6oMUO10EhS3ptvDjwlfpCSEmrkjyeORw7fac=";
   };
 
   packageJson = builtins.fromJSON (builtins.readFile (src + "/package.json"));
@@ -17,6 +17,11 @@ pkgs.buildNpmPackage {
   inherit src npmDeps version;
 
   doCheck = false;
+
+  postPatch = ''
+    # fetchNpmDeps strips the trailing newline; match it so the diff passes
+    sed -i -z 's/\n$//' package-lock.json
+  '';
 
   installPhase = ''
     runHook preInstall

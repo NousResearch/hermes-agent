@@ -5628,6 +5628,8 @@ class AIAgent:
         self._fallback_index += 1
         fb_provider = (fb.get("provider") or "").strip().lower()
         fb_model = (fb.get("model") or "").strip()
+        if fb_provider == self.provider and fb_model == self.model:
+            return self._try_activate_fallback()  # skip same model, try next
         if not fb_provider or not fb_model:
             return self._try_activate_fallback()  # skip invalid, try next
 
@@ -6404,6 +6406,10 @@ class AIAgent:
             "messages": sanitized_messages,
             "timeout": float(os.getenv("HERMES_API_TIMEOUT", 1800.0)),
         }
+
+        # Kimi Code Plan: the canonical API only accepts "kimi-for-coding"
+        if self.provider in {"kimi-coding", "kimi-coding-cn"} and api_kwargs.get("model") != "kimi-for-coding":
+            api_kwargs["model"] = "kimi-for-coding"
         if self._is_qwen_portal():
             api_kwargs["metadata"] = {
                 "sessionId": self.session_id or "hermes",
@@ -8053,6 +8059,14 @@ class AIAgent:
         messages.append(user_msg)
         current_turn_user_idx = len(messages) - 1
         self._persist_user_message_idx = current_turn_user_idx
+
+        # Persist user message to external memory immediately so it survives
+        # crashes or interruptions before the assistant reply is generated.
+        if self._memory_manager and original_user_message:
+            try:
+                self._memory_manager.sync_all(original_user_message, "")
+            except Exception:
+                pass
         
         if not self.quiet_mode:
             self._safe_print(f"💬 Starting conversation: '{user_message[:60]}{'...' if len(user_message) > 60 else ''}'")

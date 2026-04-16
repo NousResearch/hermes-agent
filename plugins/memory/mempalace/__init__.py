@@ -29,6 +29,7 @@ import subprocess
 import threading
 import os
 import sys
+import time
 import zlib
 import re
 from collections import OrderedDict
@@ -42,12 +43,253 @@ from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# WAL Batcher — zero-latency episodic memory durability
+# ---------------------------------------------------------------------------
+#
+# Episodic writes are first appended to an NDJSON WAL file (O_APPEND,
+# atomic, <1ms). A singleton background thread periodically flushes
+# buffered episodes to ChromaDB in batches. On startup any un-flushed
+# WAL entries are replayed automatically.
+#
+# This removes ChromaDB + ONNX embedding latency from the critical path
+# and guarantees at-least-once persistence even if the process crashes.
+# ---------------------------------------------------------------------------
+
+MAX_WORKING_MEMORY_TURNS = 50
+
+# Default palace path — Hermes has its OWN independent palace
+_DEFAULT_PALACE_PATH = Path.home() / ".mempalace_hermes"
+_IDENTITY_PATH = Path.home() / ".mempalace_hermes" / "identity.txt"
+
+# Global singleton batcher state (shared across all provider instances)
+_WAL_LOCK = threading.Lock()
+_WAL_BATCHER: Optional[threading.Thread] = None
+_WAL_BATCHER_STOP = threading.Event()
+
+
+def _wal_path() -> Path:
+    """Return the path to the episodic WAL file."""
+    return Path.home() / ".mempalace_hermes" / "episodes.wal.ndjson"
+
+
+def _health_path() -> Path:
+    """Return the path to the health status JSON file."""
+    return Path.home() / ".mempalace_hermes" / "health.json"
+
+
+def _ensure_mempalace_dirs() -> None:
+    """Create palace / logs directories if missing."""
+    (Path.home() / ".mempalace_hermes" / "logs").mkdir(parents=True, exist_ok=True)
+
+
+def _append_episode_wal(entry: Dict[str, Any]) -> None:
+    """Append a single episode entry to the WAL file (thread-safe)."""
+    _ensure_mempalace_dirs()
+    path = _wal_path()
+    line = json.dumps(entry, ensure_ascii=False, default=str) + "\n"
+    with _WAL_LOCK:
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(line)
+    _update_health(last_wal_append_at=datetime.now().isoformat())
+
+
+def _read_wal() -> List[Dict[str, Any]]:
+    """Read all un-flushed episodes from the WAL file."""
+    path = _wal_path()
+    if not path.exists():
+        return []
+    entries: List[Dict[str, Any]] = []
+    with _WAL_LOCK:
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        entries.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        logger.warning("Corrupt WAL line skipped: %s", line[:200])
+        except Exception as e:
+            logger.warning("Failed to read WAL: %s", e)
+    return entries
+
+
+def _truncate_wal() -> None:
+    """Clear the WAL file after successful flush."""
+    path = _wal_path()
+    with _WAL_LOCK:
+        try:
+            if path.exists():
+                path.write_text("")
+        except Exception as e:
+            logger.warning("Failed to truncate WAL: %s", e)
+
+
+def _update_health(**kwargs) -> None:
+    """Atomic update of health.json with the given key/value pairs."""
+    path = _health_path()
+    _ensure_mempalace_dirs()
+    with _WAL_LOCK:
+        try:
+            data: Dict[str, Any] = {}
+            if path.exists():
+                try:
+                    data = json.loads(path.read_text(encoding="utf-8"))
+                except Exception:
+                    pass
+            data.update(kwargs)
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+            tmp.replace(path)
+        except Exception as e:
+            logger.debug("Health update failed: %s", e)
+
+
+def _bulk_add_episodes_to_chromadb(entries: List[Dict[str, Any]]) -> bool:
+    """Flush a batch of episode entries to ChromaDB via subprocess."""
+    if not entries:
+        return True
+
+    palace_path = _HERMES_PALACE
+    script = (
+        "import chromadb, json, uuid\n"
+        "entries = REPLACEME_ENTRIES\n"
+        "client = chromadb.PersistentClient(path=REPLACEME_PALACE)\n"
+        "try:\n"
+        "    col = client.get_collection('episodes')\n"
+        "except Exception:\n"
+        "    col = client.create_collection('episodes')\n"
+        "ids = []\n"
+        "docs = []\n"
+        "metas = []\n"
+        "for e in entries:\n"
+        "    ids.append(str(uuid.uuid4()))\n"
+        "    docs.append(e['content'][:4000])\n"
+        "    metas.append({\n"
+        "        'speaker': e.get('speaker', ''),\n"
+        "        'role': e.get('role', ''),\n"
+        "        'timestamp': e.get('timestamp', ''),\n"
+        "        'topic': e.get('topic', 'general'),\n"
+        "        'language': e.get('language', 'unknown'),\n"
+        "        'importance': 0.5,\n"
+        "        'source': 'hermes-sync',\n"
+        "        'session_id': e.get('session_id', 'global')\n"
+        "    })\n"
+        "col.add(ids=ids, documents=docs, metadatas=metas)\n"
+        "print('ok:' + str(len(entries)))\n"
+    ).replace("REPLACEME_PALACE", repr(palace_path)).replace(
+        "REPLACEME_ENTRIES", repr(entries)
+    )
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True, text=True, timeout=60
+        )
+        if result.returncode == 0 and result.stdout.strip().startswith("ok:"):
+            return True
+        logger.warning("ChromaDB bulk add failed: %s", result.stderr or result.stdout)
+    except Exception as e:
+        logger.warning("ChromaDB bulk add exception: %s", e)
+    return False
+
+
+class _WALBatcher(threading.Thread):
+    """
+    Singleton background thread that periodically flushes the episodic WAL
+    to ChromaDB in batches.  Runs for the lifetime of the Python process.
+    """
+
+    _FLUSH_INTERVAL = 30.0   # seconds
+    _MAX_BATCH = 100         # episodes per batch
+
+    def __init__(self):
+        super().__init__(daemon=True, name="mempalace-wal-batcher")
+        # CRITICAL FIX: Do NOT name this _stop — Python 3.9 threading.Thread
+        # has an internal _stop() method used by join(). Overwriting it with
+        # an Event object causes TypeError on join().
+        self._stop_event = threading.Event()
+
+    def request_stop(self):
+        self._stop_event.set()
+
+    def run(self):
+        logger.info("WAL batcher started (flush interval=%ss)", self._FLUSH_INTERVAL)
+        while not self._stop_event.is_set():
+            # Wait in small slices so we react quickly to stop()
+            for _ in range(int(self._FLUSH_INTERVAL)):
+                if self._stop_event.is_set():
+                    break
+                time.sleep(1.0)
+
+            entries = _read_wal()
+            if not entries:
+                continue
+
+            # Cap batch size and preserve ordering
+            batch = entries[:self._MAX_BATCH]
+            batch_len = len(batch)
+            success = _bulk_add_episodes_to_chromadb(batch)
+            if success:
+                # CRITICAL FIX: Under lock, re-read WAL to capture any new appends
+                # during flush, then truncate and rewrite only un-flushed entries.
+                # This prevents race condition where new entries are lost.
+                _ensure_mempalace_dirs()
+                with _WAL_LOCK:
+                    try:
+                        current_entries = _read_wal()
+                        # Keep entries that weren't in our batch (including new ones)
+                        to_keep = current_entries[batch_len:]
+                        # Atomic truncate and rewrite
+                        _truncate_wal()
+                        if to_keep:
+                            with open(_wal_path(), "a", encoding="utf-8") as f:
+                                for e in to_keep:
+                                    f.write(json.dumps(e, ensure_ascii=False, default=str) + "\n")
+                    except Exception as e:
+                        logger.warning("WAL batcher truncate/rewrite failed: %s", e)
+
+                _update_health(
+                    last_chromadb_flush_at=datetime.now().isoformat(),
+                    pending_episodes=len(to_keep) if success else len(entries),
+                    chromadb_ok=True,
+                )
+            else:
+                _update_health(
+                    last_chromadb_flush_error=datetime.now().isoformat(),
+                    pending_episodes=len(entries),
+                    chromadb_ok=False,
+                )
+        logger.info("WAL batcher stopped")
+
+
+def _start_wal_batcher() -> None:
+    """Start the singleton WAL batcher thread if it isn't already running."""
+    global _WAL_BATCHER
+    with _WAL_LOCK:
+        if _WAL_BATCHER is None or not _WAL_BATCHER.is_alive():
+            _WAL_BATCHER = _WALBatcher()
+            _WAL_BATCHER.start()
+
+
+def _stop_wal_batcher(timeout: float = 5.0) -> None:
+    """Signal the WAL batcher to stop and wait for clean shutdown."""
+    global _WAL_BATCHER
+    batcher = None
+    with _WAL_LOCK:
+        if _WAL_BATCHER and _WAL_BATCHER.is_alive():
+            batcher = _WAL_BATCHER
+            batcher.request_stop()
+    # CRITICAL FIX: join() must happen OUTSIDE the lock to avoid deadlock
+    # with the batcher thread which acquires _WAL_LOCK during its run cycle.
+    if batcher:
+        batcher.join(timeout=timeout)
+
 
 # ---------------------------------------------------------------------------
 # Working Memory — in-process LRU cache of recent conversation turns
 # ---------------------------------------------------------------------------
-
-MAX_WORKING_MEMORY_TURNS = 50
 
 
 @dataclass
@@ -1413,6 +1655,7 @@ class MemPalaceMemoryProvider(MemoryProvider):
         self._prefetch_thread: Optional[threading.Thread] = None
         self._sync_thread: Optional[threading.Thread] = None
         self._wing_for_convos: str = "convos"
+        self._last_synced_user_hash: Optional[str] = None
 
     @property
     def name(self) -> str:
@@ -1490,6 +1733,12 @@ class MemPalaceMemoryProvider(MemoryProvider):
         # This ensures long-term context is available even in a fresh session
         self._restore_episodes(session_id)
 
+        # WAL: Replay any un-flushed episodes to ChromaDB (crash recovery)
+        self._replay_pending_wal()
+
+        # Start the WAL batcher for this process (singleton, idempotent)
+        _start_wal_batcher()
+
         # Quick check that the CLI works
         code, _, stderr = _run_cli(["status"])
         if code != 0:
@@ -1526,6 +1775,50 @@ class MemPalaceMemoryProvider(MemoryProvider):
                 )
         except Exception as e:
             logger.warning("L3 episode restore failed: %s", e)
+
+    def _replay_pending_wal(self) -> None:
+        """
+        Replay any un-flushed WAL entries to ChromaDB in batches.
+        Called during initialize() for crash recovery.
+        """
+        try:
+            entries = _read_wal()
+            if not entries:
+                return
+            logger.info("Replaying %d pending episodes from WAL", len(entries))
+
+            # CRITICAL FIX: Batch replay to avoid timeout on large backlogs.
+            batch_size = 100
+            all_success = True
+            total_flushed = 0
+            for i in range(0, len(entries), batch_size):
+                batch = entries[i:i + batch_size]
+                success = _bulk_add_episodes_to_chromadb(batch)
+                if success:
+                    total_flushed += len(batch)
+                else:
+                    all_success = False
+                    logger.warning("WAL replay batch %d failed, stopping replay", i // batch_size)
+                    break
+
+            if all_success:
+                _truncate_wal()
+                _update_health(
+                    last_chromadb_flush_at=datetime.now().isoformat(),
+                    pending_episodes=0,
+                    chromadb_ok=True,
+                )
+                logger.info("WAL replay complete: %d episodes flushed", total_flushed)
+            else:
+                logger.warning("WAL replay partial failure, %d/%d episodes remain pending",
+                               len(entries) - total_flushed, len(entries))
+                _update_health(
+                    last_chromadb_flush_error=datetime.now().isoformat(),
+                    pending_episodes=len(entries) - total_flushed,
+                    chromadb_ok=False,
+                )
+        except Exception as e:
+            logger.warning("WAL replay failed: %s", e)
 
     def system_prompt_block(self) -> str:
         return (
@@ -1573,54 +1866,57 @@ class MemPalaceMemoryProvider(MemoryProvider):
         """Auto-file conversation turn to Working Memory (L-WM) and Episodic Memory (L3).
 
         - Working Memory: in-process LRU cache, zero latency, last 50 turns
-        - Episodic Memory: ChromaDB collection 'episodes', full-text indexed, searchable
+        - Episodic Memory: WAL (fast append) + ChromaDB (async batch flush)
         """
+        import hashlib
 
-        def _sync():
-            try:
-                today = datetime.now().isoformat()
+        # Ensure WAL batcher is running for this process
+        _start_wal_batcher()
 
-                # --- Working Memory (L-WM) — zero latency ---
-                speaker_map = {"user": "mars", "assistant": "hermes"}
-                user_turn_id = _working_memory.add_turn(
-                    role="user",
-                    content=user_content,
-                    speaker="mars",
-                    importance=0.5,
-                )
-                asst_turn_id = _working_memory.add_turn(
-                    role="assistant",
-                    content=assistant_content,
-                    speaker="hermes",
-                    importance=0.5,
-                )
+        today = datetime.now().isoformat()
 
-                # --- Episodic Memory (L3) — ChromaDB ---
-                _store_episodic_turn(
-                    speaker="mars",
-                    role="user",
-                    content=user_content,
-                    timestamp=today,
-                    session_id=session_id or _working_memory._session_id or "global",
-                )
-                _store_episodic_turn(
-                    speaker="hermes",
-                    role="assistant",
-                    content=assistant_content,
-                    timestamp=today,
-                    session_id=session_id or _working_memory._session_id or "global",
-                )
-
-            except Exception as e:
-                logger.warning("MemPalace sync_turn failed: %s", e)
-
-        if self._sync_thread and self._sync_thread.is_alive():
-            self._sync_thread.join(timeout=5.0)
-
-        self._sync_thread = threading.Thread(
-            target=_sync, daemon=True, name="mempalace-sync"
+        # --- Working Memory (L-WM) — zero latency ---
+        user_turn_id = _working_memory.add_turn(
+            role="user",
+            content=user_content,
+            speaker="mars",
+            importance=0.5,
         )
-        self._sync_thread.start()
+
+        # --- Episodic Memory (L3) — WAL append (<1ms) ---
+        # CRITICAL FIX: Deduplicate user-side WAL writes. run_agent.py calls
+        # sync_all(user_msg, "") immediately after user input, then calls
+        # sync_all(user_msg, assistant_reply) after generation. Without
+        # deduplication the user message would be written to WAL twice.
+        user_hash = hashlib.sha256(user_content.encode()).hexdigest()[:16] if user_content else None
+        if user_content and user_hash != self._last_synced_user_hash:
+            _append_episode_wal({
+                "speaker": "mars",
+                "role": "user",
+                "content": user_content,
+                "timestamp": today,
+                "session_id": session_id or _working_memory._session_id or "global",
+                "topic": WorkingMemory._detect_topic(user_content),
+                "language": _detect_language(user_content),
+            })
+            self._last_synced_user_hash = user_hash
+
+        if assistant_content:
+            asst_turn_id = _working_memory.add_turn(
+                role="assistant",
+                content=assistant_content,
+                speaker="hermes",
+                importance=0.5,
+            )
+            _append_episode_wal({
+                "speaker": "hermes",
+                "role": "assistant",
+                "content": assistant_content,
+                "timestamp": today,
+                "session_id": session_id or _working_memory._session_id or "global",
+                "topic": WorkingMemory._detect_topic(assistant_content),
+                "language": _detect_language(assistant_content),
+            })
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         return [
@@ -3690,6 +3986,10 @@ class MemPalaceMemoryProvider(MemoryProvider):
             return json.dumps({"result": result, "entity": entity, "source": "OpenClaw KG (READ-ONLY)"})
 
     def shutdown(self) -> None:
+        # CRITICAL FIX: Gracefully stop the WAL batcher so any in-flight flush
+        # can complete before the process exits. Prevents zombie subprocesses
+        # and un-flushed WAL data.
+        _stop_wal_batcher(timeout=10.0)
         for t in (self._prefetch_thread, self._sync_thread):
             if t and t.is_alive():
                 t.join(timeout=5.0)

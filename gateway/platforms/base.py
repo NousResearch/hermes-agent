@@ -1291,7 +1291,7 @@ class BasePlatformAdapter(ABC):
                 path = path[1:-1].strip()
             path = path.lstrip("`\"'").rstrip("`\"',.;:)}]")
             if path:
-                media.append((path, has_voice_tag))
+                media.append((os.path.expanduser(path), has_voice_tag))
 
         # Remove MEDIA tags from content (including surrounding quote/backtick wrappers)
         if media:

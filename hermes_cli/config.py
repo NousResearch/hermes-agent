@@ -2716,6 +2716,7 @@ _FALLBACK_COMMENT = """
 #   kimi-coding-cn (KIMI_CN_API_KEY)   — Kimi / Moonshot (China)
 #   minimax      (MINIMAX_API_KEY)     — MiniMax
 #   minimax-cn   (MINIMAX_CN_API_KEY)  — MiniMax (China)
+#   bedrock      (AWS IAM / boto3)     — AWS Bedrock (Converse API)
 #
 # For custom OpenAI-compatible endpoints, add base_url and api_key_env.
 #
@@ -2760,6 +2761,7 @@ _COMMENTED_SECTIONS = """
 #   kimi-coding-cn (KIMI_CN_API_KEY)   — Kimi / Moonshot (China)
 #   minimax      (MINIMAX_API_KEY)     — MiniMax
 #   minimax-cn   (MINIMAX_CN_API_KEY)  — MiniMax (China)
+#   bedrock      (AWS IAM / boto3)     — AWS Bedrock (Converse API)
 #
 # For custom OpenAI-compatible endpoints, add base_url and api_key_env.
 #

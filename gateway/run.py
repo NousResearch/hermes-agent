@@ -2565,12 +2565,11 @@ class GatewayRunner:
         """
         Check if a user is authorized to use the bot.
         
-        Checks in order:
-        1. Per-platform allow-all flag (e.g., DISCORD_ALLOW_ALL_USERS=true)
-        2. Environment variable allowlists (TELEGRAM_ALLOWED_USERS, etc.)
-        3. DM pairing approved list
-        4. Global allow-all (GATEWAY_ALLOW_ALL_USERS=true)
-        5. Default: deny
+        Group chats: always allowed (require_mention in telegram.py
+        controls whether @mention is needed).
+        
+        DMs: only the owner (from approvals.approvers list) can DM.
+        Other platforms (HA, webhook): always allowed.
         """
         # Home Assistant events are system-generated (state changes), not
         # user-initiated messages.  The HASS_TOKEN already authenticates the
@@ -2584,6 +2583,17 @@ class GatewayRunner:
         if not user_id:
             return False
 
+        # Group/channel/thread: allow everyone (require_mention gating
+        # is handled separately in platform adapters)
+        if source.chat_type in ("group", "channel", "thread"):
+            return True
+
+        # DM: only allow owner (approvals.approvers in config)
+        approvers = getattr(self.config, "approvers", None) or []
+        if approvers and str(user_id) in [str(a) for a in approvers]:
+            return True
+
+        # Also check per-platform allow-all and pairing for DMs
         platform_env_map = {
             Platform.TELEGRAM: "TELEGRAM_ALLOWED_USERS",
             Platform.DISCORD: "DISCORD_ALLOWED_USERS",
@@ -2621,54 +2631,15 @@ class GatewayRunner:
             Platform.QQBOT: "QQ_ALLOW_ALL_USERS",
         }
 
-        # Per-platform allow-all flag (e.g., DISCORD_ALLOW_ALL_USERS=true)
         platform_allow_all_var = platform_allow_all_map.get(source.platform, "")
         if platform_allow_all_var and os.getenv(platform_allow_all_var, "").lower() in ("true", "1", "yes"):
             return True
 
-        # Check pairing store (always checked, regardless of allowlists)
         platform_name = source.platform.value if source.platform else ""
         if self.pairing_store.is_approved(platform_name, user_id):
             return True
 
-        # Check platform-specific and global allowlists
-        platform_allowlist = os.getenv(platform_env_map.get(source.platform, ""), "").strip()
-        global_allowlist = os.getenv("GATEWAY_ALLOWED_USERS", "").strip()
-
-        if not platform_allowlist and not global_allowlist:
-            # No allowlists configured -- check global allow-all flag
-            return os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in ("true", "1", "yes")
-
-        # Check if user is in any allowlist
-        allowed_ids = set()
-        if platform_allowlist:
-            allowed_ids.update(uid.strip() for uid in platform_allowlist.split(",") if uid.strip())
-        if global_allowlist:
-            allowed_ids.update(uid.strip() for uid in global_allowlist.split(",") if uid.strip())
-
-        # "*" in any allowlist means allow everyone (consistent with
-        # SIGNAL_GROUP_ALLOWED_USERS precedent)
-        if "*" in allowed_ids:
-            return True
-
-        check_ids = {user_id}
-        if "@" in user_id:
-            check_ids.add(user_id.split("@")[0])
-
-        # WhatsApp: resolve phone↔LID aliases from bridge session mapping files
-        if source.platform == Platform.WHATSAPP:
-            normalized_allowed_ids = set()
-            for allowed_id in allowed_ids:
-                normalized_allowed_ids.update(_expand_whatsapp_auth_aliases(allowed_id))
-            if normalized_allowed_ids:
-                allowed_ids = normalized_allowed_ids
-
-            check_ids.update(_expand_whatsapp_auth_aliases(user_id))
-            normalized_user_id = _normalize_whatsapp_identifier(user_id)
-            if normalized_user_id:
-                check_ids.add(normalized_user_id)
-
-        return bool(check_ids & allowed_ids)
+        return False
 
     def _get_unauthorized_dm_behavior(self, platform: Optional[Platform]) -> str:
         """Return how unauthorized DMs should be handled for a platform."""
@@ -5111,6 +5082,10 @@ class GatewayRunner:
     
     async def _handle_set_home_command(self, event: MessageEvent) -> str:
         """Handle /sethome command -- set the current chat as the platform's home channel."""
+        # Restrict to approved approvers only
+        approvers = getattr(self.config, "approvers", None) or []
+        if approvers and str(event.source.user_id) not in [str(a) for a in approvers]:
+            return "⛔ You are not authorized to set home channels."
         source = event.source
         platform_name = source.platform.value if source.platform else "unknown"
         chat_id = source.chat_id
@@ -5561,6 +5536,10 @@ class GatewayRunner:
 
     async def _handle_rollback_command(self, event: MessageEvent) -> str:
         """Handle /rollback command — list or restore filesystem checkpoints."""
+        # Restrict to approved approvers only
+        approvers = getattr(self.config, "approvers", None) or []
+        if approvers and str(event.source.user_id) not in [str(a) for a in approvers]:
+            return "⛔ You are not authorized to perform rollbacks."
         from tools.checkpoint_manager import CheckpointManager, format_checkpoint_list
 
         # Read checkpoint config from config.yaml
@@ -6097,6 +6076,10 @@ class GatewayRunner:
 
     async def _handle_yolo_command(self, event: MessageEvent) -> str:
         """Handle /yolo — toggle dangerous command approval bypass for this session only."""
+        # Restrict to approved approvers only
+        approvers = getattr(self.config, "approvers", None) or []
+        if approvers and str(event.source.user_id) not in [str(a) for a in approvers]:
+            return "⛔ You are not authorized to toggle YOLO mode."
         from tools.approval import (
             disable_session_yolo,
             enable_session_yolo,
@@ -6637,6 +6620,10 @@ class GatewayRunner:
 
     async def _handle_reload_mcp_command(self, event: MessageEvent) -> str:
         """Handle /reload-mcp command -- disconnect and reconnect all MCP servers."""
+        # Restrict to approved approvers only
+        approvers = getattr(self.config, "approvers", None) or []
+        if approvers and str(event.source.user_id) not in [str(a) for a in approvers]:
+            return "⛔ You are not authorized to reload MCP servers."
         loop = asyncio.get_event_loop()
         try:
             from tools.mcp_tool import shutdown_mcp_servers, discover_mcp_tools, _servers, _lock
@@ -6731,6 +6718,11 @@ class GatewayRunner:
         source = event.source
         session_key = self._session_key_for_source(source)
 
+        # Check approvers whitelist — if configured, only approved users can approve
+        approvers = getattr(self.config, "approvers", None) or []
+        if approvers and str(source.user_id) not in [str(a) for a in approvers]:
+            return "⛔ You are not authorized to approve commands."
+
         from tools.approval import (
             resolve_gateway_approval, has_blocking_approval,
         )
@@ -6779,6 +6771,11 @@ class GatewayRunner:
         """
         source = event.source
         session_key = self._session_key_for_source(source)
+
+        # Check approvers whitelist — if configured, only approved users can deny
+        approvers = getattr(self.config, "approvers", None) or []
+        if approvers and str(source.user_id) not in [str(a) for a in approvers]:
+            return "⛔ You are not authorized to deny commands."
 
         from tools.approval import (
             resolve_gateway_approval, has_blocking_approval,
@@ -6866,6 +6863,11 @@ class GatewayRunner:
         files are written so either the current gateway process or the next one
         can notify the user when the update finishes.
         """
+        # Restrict to approved approvers only
+        approvers = getattr(self.config, "approvers", None) or []
+        if approvers and str(event.source.user_id) not in [str(a) for a in approvers]:
+            return "⛔ You are not authorized to update Hermes."
+
         import json
         import shutil
         import subprocess
@@ -8407,7 +8409,10 @@ class GatewayRunner:
             # read *and* reassign the outer `_run_agent` parameter without
             # triggering an UnboundLocalError on the earlier read at
             # `_resolve_turn_agent_config(message, …)`.
-            nonlocal message
+            # Same for `enabled_toolsets` — it is conditionally reassigned
+            # below (for non-owner group chat tool restrictions), so it
+            # must be declared nonlocal to avoid UnboundLocalError.
+            nonlocal message, enabled_toolsets
 
             # session_key is now set via contextvars in _set_session_env()
             # (concurrency-safe). Keep os.environ as fallback for CLI/cron.
@@ -8566,6 +8571,24 @@ class GatewayRunner:
                         agent._last_activity_desc = "starting new turn (cached)"
                         agent._api_call_count = 0
                         logger.debug("Reusing cached agent for session %s", session_key)
+
+            # Restrict sensitive tools for non-owner users in group chats.
+            # Owner is defined by approvals.approvers config.
+            _owner_id = None
+            _approvers = getattr(self.config, "approvers", None) or []
+            if _approvers:
+                _owner_id = str(_approvers[0]) if _approvers else None
+            if (
+                source.chat_type in ("group", "channel", "thread")
+                and _owner_id
+                and str(source.user_id) != _owner_id
+            ):
+                _sensitive_toolsets = {"terminal", "file", "browser", "execute_code", "delegate_task"}
+                enabled_toolsets = sorted(set(enabled_toolsets) - _sensitive_toolsets)
+                logger.info(
+                    "Restricted sensitive tools for non-owner user %s in %s (allowed: %s)",
+                    source.user_id, source.chat_type, enabled_toolsets,
+                )
 
             if agent is None:
                 # Config changed or first message — create fresh agent

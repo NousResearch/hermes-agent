@@ -28,6 +28,7 @@ try:
         CallbackQueryHandler,
         MessageHandler as TelegramMessageHandler,
         ContextTypes,
+        TypeHandler,
         filters,
     )
     from telegram.constants import ParseMode, ChatType
@@ -45,6 +46,7 @@ except ImportError:
     CommandHandler = Any
     CallbackQueryHandler = Any
     TelegramMessageHandler = Any
+    TypeHandler = Any
     HTTPXRequest = Any
     filters = None
     ParseMode = None
@@ -168,6 +170,8 @@ class TelegramAdapter(BasePlatformAdapter):
         self._model_picker_state: Dict[str, dict] = {}
         # Approval button state: message_id → session_key
         self._approval_state: Dict[int, str] = {}
+        # Reaction task references to prevent GC of fire-and-forget tasks
+        self._reaction_tasks: set = set()
 
     @staticmethod
     def _is_callback_user_authorized(user_id: str) -> bool:
@@ -635,6 +639,13 @@ class TelegramAdapter(BasePlatformAdapter):
             ))
             # Handle inline keyboard button callbacks (update prompts)
             self._app.add_handler(CallbackQueryHandler(self._handle_callback_query))
+            
+            # Handle user reaction events (MessageReactionUpdated)
+            if MessageReactionUpdated is not None:
+                self._app.add_handler(TypeHandler(
+                    MessageReactionUpdated,
+                    self._handle_reaction_update,
+                ))
             
             # Start polling — retry initialize() for transient TLS resets
             try:
@@ -2835,10 +2846,32 @@ class TelegramAdapter(BasePlatformAdapter):
 
     def _reactions_enabled(self) -> bool:
         """Check if message reactions are enabled via config/env."""
-        return os.getenv("TELEGRAM_REACTIONS", "false").lower() not in ("false", "0", "no")
+        return os.getenv("TELEGRAM_REACTIONS", "true").lower() not in ("false", "0", "no")
 
-    async def _set_reaction(self, chat_id: str, message_id: str, emoji: str) -> bool:
-        """Set a single emoji reaction on a Telegram message."""
+    async def set_message_reaction(
+        self,
+        chat_id,
+        message_id,
+        emoji: str,
+        is_big: bool = False,
+    ) -> bool:
+        """Set a reaction emoji on a Telegram message.
+
+        Wraps the Bot API ``setMessageReaction`` call with full error handling
+        so that a failed reaction never breaks the main message flow.
+
+        Args:
+            chat_id: Target chat (int or str).
+            message_id: Message to react to (int or str).
+            emoji: A single emoji string, e.g. ``"👍"``. Must be from Telegram's
+                default reaction set: 👍 ❤️ 🔥 🥰 👏 😁 😍 🤩 😘 🤔 😱 🤯
+                😢 😡 🎉 🤮 💩 🙏 👎 😐 😊 🥱 😴 🤡 🤣 😎 🤗 🫣 😏 👌 🤝
+                ✌️ 🫶 👀 💀 🙈
+            is_big: Whether to show the reaction as a big animation.
+
+        Returns:
+            True if the reaction was set successfully.
+        """
         if not self._bot:
             return False
         try:
@@ -2846,34 +2879,286 @@ class TelegramAdapter(BasePlatformAdapter):
                 chat_id=int(chat_id),
                 message_id=int(message_id),
                 reaction=emoji,
+                is_big=is_big,
             )
             return True
         except Exception as e:
-            logger.debug("[%s] set_message_reaction failed (%s): %s", self.name, emoji, e)
+            logger.warning("[%s] set_message_reaction failed (%s): %s %s", self.name, emoji, type(e).__name__, e)
             return False
 
+    # ── Smart reaction selection ──────────────────────────────────────────
+
+    @staticmethod
+    def _pick_reaction_emoji(text: str) -> str:
+        """Choose an emoji reaction based on response content *text*.
+
+        The function applies a priority-ordered list of keyword / regex rules.
+        First matching category wins.  Falls back to ``"👍"`` for generic replies.
+
+        Note: All emojis are chosen from Telegram's default reaction set to ensure
+        compatibility across all chats (groups, channels, private).
+        Reference: https://core.telegram.org/bots/api#messagereactionupdated
+        """
+        if not text:
+            return "👍"
+
+        lower = text.lower()
+
+        # --- Error / failure ---
+        _ERROR_PATTERNS = [
+            "error", "failed", "failure", "unfortunately", "sorry",
+            "couldn't", "can't", "unable to", "i'm unable", "not available",
+            "doesn't work", "does not work", "something went wrong",
+            "try again", "timeout", "timed out", "out of memory",
+            "错误", "失败", "抱歉", "无法", "不行", "出问题", "出了点问题",
+            "重试", "超时", "内存不足", "不支持",
+        ]
+        if any(p in lower for p in _ERROR_PATTERNS):
+            return "😢"
+
+        # --- Success / completion ---
+        _SUCCESS_PATTERNS = [
+            "success", "done", "completed", "finished", "ready",
+            "here you go", "here it is", "enjoy", "congratulations",
+            "great job", "well done", "task completed",
+            "完成", "成功", "搞定", "好了", "就绪", "祝贺", "恭喜",
+            "已部署", "已更新", "已创建", "已修复", "已解决",
+        ]
+        if any(p in lower for p in _SUCCESS_PATTERNS):
+            return "👍"
+
+        # --- Warning ---
+        _WARN_PATTERNS = ["warning", "caution", "be careful", "note that", "keep in mind", "警告", "注意", "小心", "谨慎", "提醒"]
+        if any(p in lower for p in _WARN_PATTERNS):
+            return "😮"
+
+        # --- Code / technical ---
+        if re.search(r"```[\s\S]*?```|`[^`]+`", text):
+            return "🤔"
+        _CODE_PATTERNS = [
+            "function", "class ", "def ", "import ", "pip install",
+            "npm install", "git clone", "api endpoint", "http://", "https://",
+            "json", "yaml", "xml", "html", "css", "javascript", "python",
+            "typescript", "rust", "go lang", "sql", "docker", "kubernetes",
+            "algorithm", "data structure", "compilation", "debug",
+            "代码", "函数", "接口", "部署", "配置", "服务器", "数据库", "脚本",
+            "前端", "后端", "测试", "编译", "运行", "安装", "依赖",
+        ]
+        if any(p in lower for p in _CODE_PATTERNS):
+            return "🤔"
+
+        # --- News / information ---
+        _NEWS_PATTERNS = [
+            "news", "headline", "breaking", "according to", "reported",
+            "article", "published", "journal", "press release",
+            "新闻", "头条", "快讯", "据报道", "发布", "资讯", "报道", "消息",
+            "早报", "晚报", "开盘", "收盘",
+        ]
+        if any(p in lower for p in _NEWS_PATTERNS):
+            return "🤩"
+
+        # --- Weather ---
+        _WEATHER_KEYWORDS = ["weather", "temperature", "forecast", "°c", "°f", "rain", "snow", "sunny", "cloudy", "humid", "天气", "温度", "预报", "℃", "°c", "°f", "下雨", "雪", "晴", "阴", "湿度", "℃", "度"]
+        if any(p in lower for p in _WEATHER_KEYWORDS):
+            if any(bad in lower for bad in ("rain", "snow", "storm", "cloudy", "overcast", "下雨", "雪", "阴", "多云")):
+                return "😢"
+            return "🔥"
+
+        # --- Humor / jokes ---
+        _HUMOR_PATTERNS = [
+            "joke", "funny", "lol", "haha", "😂", "😄", "lmao",
+            "pun", "riddle", "knock knock",
+            "哈哈", "笑话", "搞笑", "😂", "😄", "笑死", "乐", "逗", "幽默", "hh",
+        ]
+        if any(p in lower for p in _HUMOR_PATTERNS):
+            return "😂"
+
+        # --- Location / maps ---
+        _LOCATION_PATTERNS = ["location", "address", "map", "distance", "direction", "route", "navigation", "位置", "地址", "地图", "距离", "方向", "路线", "导航", "在哪里", "在哪"]
+        if any(p in lower for p in _LOCATION_PATTERNS):
+            return "🤔"
+
+        # --- Image / photo ---
+        _IMAGE_PATTERNS = ["image", "photo", "picture", "screenshot", "diagram", "chart"]
+        if any(p in lower for p in _IMAGE_PATTERNS):
+            return "🤩"
+
+        # --- Math ---
+        if re.search(r'\d+\s*[+\-*/×÷=]\s*\d+|\bequation\b|\bformula\b|\bcalculate\b', lower):
+            return "🤔"
+
+        # --- Music ---
+        _MUSIC_PATTERNS = ["song", "music", "lyrics", "album", "playlist", "melody", "chord"]
+        if any(p in lower for p in _MUSIC_PATTERNS):
+            return "😍"
+
+        # --- Book / learning ---
+        _BOOK_PATTERNS = ["book", "chapter", "read", "study", "learn", "course", "tutorial", "lecture"]
+        if any(p in lower for p in _BOOK_PATTERNS):
+            return "🤔"
+
+        # --- Heart / love / appreciation ---
+        _HEART_PATTERNS = ["love", "beautiful", "amazing", "wonderful", "thank you", "appreciate", "great"]
+        if any(p in lower for p in _HEART_PATTERNS):
+            return "❤\ufe0f"
+
+        # --- Question / thinking ---
+        if text.endswith("?") and len(text) < 100:
+            return "🤔"
+
+        # Default
+        return "👍"
+
+    # ── Processing lifecycle hooks ────────────────────────────────────────
+
     async def on_processing_start(self, event: MessageEvent) -> None:
-        """Add an in-progress reaction when message processing begins."""
+        """Add an in-progress reaction (👀) when message processing begins."""
         if not self._reactions_enabled():
             return
         chat_id = getattr(event.source, "chat_id", None)
         message_id = getattr(event, "message_id", None)
         if chat_id and message_id:
-            await self._set_reaction(chat_id, message_id, "\U0001f440")
+            # Use create_task with a stored reference to prevent GC
+            task = asyncio.create_task(
+                self._do_reaction(chat_id, message_id, "👀", "start")
+            )
+            self._reaction_tasks.add(task)
+            task.add_done_callback(self._reaction_tasks.discard)
 
-    async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
-        """Swap the in-progress reaction for a final success/failure reaction.
-
-        Unlike Discord (additive reactions), Telegram's set_message_reaction
-        replaces all existing reactions in one call — no remove step needed.
-        """
+    async def on_processing_complete(
+        self, event: MessageEvent, outcome: ProcessingOutcome,
+        response_text: str = "",
+    ) -> None:
+        """Swap the in-progress reaction for a final emoji."""
         if not self._reactions_enabled():
             return
         chat_id = getattr(event.source, "chat_id", None)
         message_id = getattr(event, "message_id", None)
-        if chat_id and message_id and outcome != ProcessingOutcome.CANCELLED:
-            await self._set_reaction(
-                chat_id,
-                message_id,
-                "\U0001f44d" if outcome == ProcessingOutcome.SUCCESS else "\U0001f44e",
+        if not (chat_id and message_id):
+            return
+        if outcome == ProcessingOutcome.CANCELLED:
+            return
+        if outcome == ProcessingOutcome.FAILURE:
+            emoji = "😢"
+        else:
+            emoji = self._pick_reaction_emoji(response_text)
+        task = asyncio.create_task(
+            self._do_reaction(chat_id, message_id, emoji, "complete")
+        )
+        self._reaction_tasks.add(task)
+        task.add_done_callback(self._reaction_tasks.discard)
+
+    async def _do_reaction(
+        self, chat_id, message_id, emoji: str, stage: str
+    ) -> None:
+        """Execute a reaction API call with logging."""
+        try:
+            logger.info(
+                "[%s] Setting reaction %s on msg %s in chat %s (stage=%s)",
+                self.name, emoji, message_id, chat_id, stage,
             )
+            ok = await self.set_message_reaction(
+                chat_id, message_id, emoji,
+            )
+            if not ok:
+                logger.warning(
+                    "[%s] Reaction %s FAILED (stage=%s)", self.name, emoji, stage,
+                )
+            else:
+                logger.info(
+                    "[%s] Reaction %s OK (stage=%s)", self.name, emoji, stage,
+                )
+        except Exception as e:
+            logger.error(
+                "[%s] Reaction exception (%s): %s", self.name, stage, e, exc_info=True,
+            )
+
+    # ── Incoming reaction events (user reacts to bot messages) ────────────
+
+    async def _handle_reaction_update(self, update: "Update", context: "ContextTypes.DEFAULT_TYPE") -> None:
+        """Handle ``MessageReactionUpdated`` events.
+
+        When a user reacts to *one of the bot's own messages*, this converts
+        the reaction into a synthetic :class:`MessageEvent` and feeds it
+        through the normal agent processing pipeline so the agent can respond
+        contextually.
+
+        Notes:
+        * Only reactions **added** (not removed) are forwarded.
+        * Reactions on the bot's own messages are processed; reactions on
+          other users' messages are silently ignored (the bot cannot reliably
+          determine the original message content).
+        * The synthetic event carries ``message_type=TEXT`` and the text
+          encodes the emoji, source chat, and reacted-to message ID so the
+          agent has enough context.
+        """
+        reaction_update = update.message_reaction
+        if not reaction_update:
+            return
+
+        # Only react to new (added) reactions — skip removals
+        new_reactions = reaction_update.new_reaction
+        if not new_reactions:
+            return
+
+        # Determine the reacting user
+        user = reaction_update.user
+        actor_chat = reaction_update.actor_chat
+        if not user and not actor_chat:
+            return
+
+        # Extract the first emoji from the new reactions
+        emoji = ""
+        for r in new_reactions:
+            emoji = getattr(r, "emoji", None) or getattr(r, "type", None) or ""
+            if emoji:
+                break
+        if not emoji:
+            return
+
+        chat = reaction_update.chat
+        chat_id = str(chat.id) if chat else None
+        message_id = str(reaction_update.message_id) if reaction_update.message_id else None
+        if not chat_id:
+            return
+
+        # Identify the user for session keying
+        user_id = str(user.id) if user else None
+        user_name = None
+        if user:
+            user_name = (
+                user.full_name
+                if hasattr(user, "full_name")
+                else (user.username or user.first_name or user_name)
+            )
+        if actor_chat and not user:
+            user_id = str(actor_chat.id)
+            user_name = actor_chat.title or actor_chat.type or None
+
+        source = self.build_source(
+            chat_id=chat_id,
+            chat_name=chat.title if chat else None,
+            chat_type=chat.type if chat else ("dm" if not chat or chat.type == "private" else "group"),
+            user_id=user_id,
+            user_name=user_name,
+        )
+
+        event = MessageEvent(
+            text=f"[Reaction: {emoji}]",
+            message_type=MessageType.TEXT,
+            source=source,
+            raw_message=reaction_update,
+            message_id=message_id,
+            internal=False,
+            reply_to_message_id=message_id,
+        )
+
+        logger.info(
+            "[%s] Incoming reaction %s from %s in %s (msg %s)",
+            self.name, emoji, user_name or user_id, chat_id, message_id,
+        )
+
+        try:
+            await self.handle_message(event)
+        except Exception as e:
+            logger.error("[%s] Failed to handle reaction event: %s", self.name, e, exc_info=True)

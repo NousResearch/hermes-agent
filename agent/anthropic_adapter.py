@@ -41,6 +41,8 @@ ADAPTIVE_EFFORT_MAP = {
 # max_tokens as a mandatory field.  Previously we hardcoded 16384, which
 # starves thinking-enabled models (thinking tokens count toward the limit).
 _ANTHROPIC_OUTPUT_LIMITS = {
+    # Claude 4.7
+    "claude-opus-4-7":   128_000,
     # Claude 4.6
     "claude-opus-4-6":   128_000,
     "claude-sonnet-4-6":  64_000,
@@ -91,8 +93,8 @@ def _get_anthropic_max_output(model: str) -> int:
 
 
 def _supports_adaptive_thinking(model: str) -> bool:
-    """Return True for Claude 4.6 models that support adaptive thinking."""
-    return any(v in model for v in ("4-6", "4.6"))
+    """Return True for Claude 4.6+ models that support adaptive thinking."""
+    return any(v in model for v in ("4-6", "4.6", "4-7", "4.7"))
 
 
 # Beta headers for enhanced features (sent with ALL auth types)

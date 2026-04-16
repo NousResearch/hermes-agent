@@ -311,6 +311,7 @@ class FeishuAdapterSettings:
     admins: frozenset[str] = frozenset()
     default_group_policy: str = ""
     group_rules: Dict[str, FeishuGroupRule] = field(default_factory=dict)
+    require_mention: bool = True
 
 
 @dataclass
@@ -422,6 +423,22 @@ def _coerce_int(value: Any, default: Optional[int] = None, min_value: int = 0) -
 def _coerce_required_int(value: Any, default: int, min_value: int = 0) -> int:
     parsed = _coerce_int(value, default=default, min_value=min_value)
     return default if parsed is None else parsed
+
+
+def _parse_require_mention(configured: Any) -> bool:
+    """Parse require_mention config value, defaulting to True.
+
+    Explicit-false values (false, 0, no, off) return False.
+    All other values, including None, return True.
+    """
+    if configured is not None:
+        if isinstance(configured, str):
+            return configured.lower() not in ("false", "0", "no", "off")
+        return bool(configured)
+    env_value = os.getenv("FEISHU_REQUIRE_MENTION", "")
+    if env_value:
+        return env_value.lower() not in ("false", "0", "no", "off")
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -1169,6 +1186,7 @@ class FeishuAdapter(BasePlatformAdapter):
             admins=admins,
             default_group_policy=default_group_policy,
             group_rules=group_rules,
+            require_mention=_parse_require_mention(extra.get("require_mention")),
         )
 
     def _apply_settings(self, settings: FeishuAdapterSettings) -> None:
@@ -1199,6 +1217,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._ws_reconnect_interval = settings.ws_reconnect_interval
         self._ws_ping_interval = settings.ws_ping_interval
         self._ws_ping_timeout = settings.ws_ping_timeout
+        self._require_mention = settings.require_mention
 
     def _build_event_handler(self) -> Any:
         if EventDispatcherHandler is None:
@@ -3064,6 +3083,9 @@ class FeishuAdapter(BasePlatformAdapter):
         """Require an explicit @mention before group messages enter the agent."""
         if not self._allow_group_message(sender_id, chat_id):
             return False
+        # If require_mention is disabled, accept all group messages that pass policy.
+        if not self._feishu_require_mention():
+            return True
         # @_all is Feishu's @everyone placeholder — always route to the bot.
         raw_content = getattr(message, "content", "") or ""
         if "@_all" in raw_content:
@@ -3078,6 +3100,16 @@ class FeishuAdapter(BasePlatformAdapter):
         if normalized.mentioned_ids:
             return self._post_mentions_bot(normalized.mentioned_ids)
         return False
+
+    def _feishu_require_mention(self) -> bool:
+        """Return whether group messages require an explicit bot mention.
+
+        Uses explicit-false parsing so that the safe default (True) gates on
+        mention checking. This matches the pattern used by Slack and Discord.
+        """
+        if not getattr(self, "_require_mention", True):
+            return False
+        return True
 
     def _message_mentions_bot(self, mentions: List[Any]) -> bool:
         """Check whether any mention targets the configured or inferred bot identity."""

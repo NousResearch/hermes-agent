@@ -1007,6 +1007,9 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         feishu_verification_token = os.getenv("FEISHU_VERIFICATION_TOKEN", "")
         if feishu_verification_token:
             config.platforms[Platform.FEISHU].extra["verification_token"] = feishu_verification_token
+        feishu_require_mention = os.getenv("FEISHU_REQUIRE_MENTION", "")
+        if feishu_require_mention:
+            config.platforms[Platform.FEISHU].extra["require_mention"] = feishu_require_mention
         feishu_home = os.getenv("FEISHU_HOME_CHANNEL")
         if feishu_home:
             config.platforms[Platform.FEISHU].home_channel = HomeChannel(

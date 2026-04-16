@@ -81,6 +81,23 @@ class TestConfigEnvOverrides(unittest.TestCase):
 
         self.assertIn(Platform.FEISHU, config.get_connected_platforms())
 
+    @patch.dict(os.environ, {
+        "FEISHU_APP_ID": "cli_xxx",
+        "FEISHU_APP_SECRET": "secret_xxx",
+        "FEISHU_REQUIRE_MENTION": "false",
+    }, clear=False)
+    def test_feishu_require_mention_loaded_from_env(self):
+        from gateway.config import GatewayConfig, Platform, _apply_env_overrides
+
+        config = GatewayConfig()
+        _apply_env_overrides(config)
+
+        self.assertIn(Platform.FEISHU, config.platforms)
+        self.assertEqual(
+            config.platforms[Platform.FEISHU].extra.get("require_mention"),
+            "false",
+        )
+
 
 class TestGatewayIntegration(unittest.TestCase):
     def test_feishu_in_adapter_factory(self):
@@ -2749,6 +2766,110 @@ class TestGroupMentionAtAll(unittest.TestCase):
         # Allowlisted user — should pass.
         allowed_sender = SimpleNamespace(open_id="ou_allowed", user_id=None)
         self.assertTrue(adapter._should_accept_group_message(message, allowed_sender, ""))
+
+
+class TestFeishuRequireMention(unittest.TestCase):
+    """Tests for FEISHU_REQUIRE_MENTION toggle."""
+
+    def test_parse_require_mention_defaults_true(self):
+        from gateway.platforms.feishu import _parse_require_mention
+
+        self.assertTrue(_parse_require_mention(None))
+        self.assertTrue(_parse_require_mention(""))
+
+    def test_parse_require_mention_explicit_false(self):
+        from gateway.platforms.feishu import _parse_require_mention
+
+        for val in ("false", "False", "FALSE", "0", "no", "off"):
+            self.assertFalse(_parse_require_mention(val), f"Expected False for {val!r}")
+
+    def test_parse_require_mention_explicit_true(self):
+        from gateway.platforms.feishu import _parse_require_mention
+
+        for val in ("true", "True", "1", "yes", "on", "anything"):
+            self.assertTrue(_parse_require_mention(val), f"Expected True for {val!r}")
+
+    def test_parse_require_mention_bool_values(self):
+        from gateway.platforms.feishu import _parse_require_mention
+
+        self.assertFalse(_parse_require_mention(False))
+        self.assertTrue(_parse_require_mention(True))
+
+    @patch.dict(os.environ, {"FEISHU_REQUIRE_MENTION": "false"}, clear=True)
+    def test_parse_require_mention_from_env(self):
+        from gateway.platforms.feishu import _parse_require_mention
+
+        self.assertFalse(_parse_require_mention(None))
+
+    @patch.dict(os.environ, {"FEISHU_REQUIRE_MENTION": "true"}, clear=True)
+    def test_parse_require_mention_env_true(self):
+        from gateway.platforms.feishu import _parse_require_mention
+
+        self.assertTrue(_parse_require_mention(None))
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_require_mention_setting_defaults_true(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        self.assertTrue(adapter._feishu_require_mention())
+
+    @patch.dict(os.environ, {"FEISHU_REQUIRE_MENTION": "false", "FEISHU_GROUP_POLICY": "open"}, clear=True)
+    def test_require_mention_false_accepts_all_group_messages(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        # No mention at all - should be accepted with require_mention=False
+        message = SimpleNamespace(content='{"text":"hello"}', mentions=[])
+        sender_id = SimpleNamespace(open_id="ou_any", user_id=None)
+        self.assertTrue(adapter._should_accept_group_message(message, sender_id, ""))
+
+    @patch.dict(os.environ, {"FEISHU_REQUIRE_MENTION": "false", "FEISHU_GROUP_POLICY": "open"}, clear=True)
+    def test_require_mention_false_accepts_file_audio_image_messages(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        # File message without any mention
+        file_message = SimpleNamespace(
+            content='{"file_key":"file_xxx","file_name":"doc.pdf"}',
+            message_type="file",
+            mentions=[],
+        )
+        sender_id = SimpleNamespace(open_id="ou_any", user_id=None)
+        self.assertTrue(adapter._should_accept_group_message(file_message, sender_id, ""))
+
+        # Audio message without any mention
+        audio_message = SimpleNamespace(
+            content='{"file_key":"audio_xxx","file_name":"voice.ogg"}',
+            message_type="audio",
+            mentions=[],
+        )
+        self.assertTrue(adapter._should_accept_group_message(audio_message, sender_id, ""))
+
+    @patch.dict(os.environ, {"FEISHU_REQUIRE_MENTION": "false"}, clear=True)
+    def test_require_mention_false_still_requires_policy_gate(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        message = SimpleNamespace(content='{"text":"hello"}', mentions=[])
+        # Blocked user even with require_mention=False
+        blocked_sender = SimpleNamespace(open_id="ou_blocked", user_id=None)
+        self.assertFalse(adapter._should_accept_group_message(message, blocked_sender, ""))
+
+    @patch.dict(os.environ, {"FEISHU_GROUP_POLICY": "open"}, clear=True)
+    def test_require_mention_true_rejects_without_mention(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        message = SimpleNamespace(content='{"text":"hello"}', mentions=[])
+        sender_id = SimpleNamespace(open_id="ou_any", user_id=None)
+        # With require_mention=True (default), no mention means rejection
+        self.assertFalse(adapter._should_accept_group_message(message, sender_id, ""))
 
 
 @unittest.skipUnless(_HAS_LARK_OAPI, "lark-oapi not installed")

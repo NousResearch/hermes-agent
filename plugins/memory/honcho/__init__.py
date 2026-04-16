@@ -171,10 +171,7 @@ CONCLUDE_SCHEMA = {
                 "description": "Peer to query. Built-in aliases: 'user' (default), 'ai'. Or pass any peer ID from this workspace.",
             },
         },
-        "anyOf": [
-            {"required": ["conclusion"]},
-            {"required": ["delete_id"]},
-        ],
+        "required": [],
     },
 }
 

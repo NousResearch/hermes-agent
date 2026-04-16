@@ -10,7 +10,6 @@ vi.mock("@/lib/api", () => ({
       provider: "",
       provider_label: "built-in only",
       directory: "/tmp/memories",
-      note: "Saved immediately. Changes apply to future sessions; current sessions keep their existing snapshot.",
       stores: {
         user: { path: "/tmp/memories/USER.md", entry_count: 0, char_count: 0, char_limit: 1375, updated_at: null, entries: [] },
         memory: { path: "/tmp/memories/MEMORY.md", entry_count: 0, char_count: 0, char_limit: 2200, updated_at: null, entries: [] },
@@ -45,6 +44,9 @@ vi.mock("@/lib/api", () => ({
     getSkills: vi.fn().mockResolvedValue([]),
     toggleSkill: vi.fn(),
     getToolsets: vi.fn().mockResolvedValue([]),
+    getThemes: vi.fn().mockResolvedValue({ themes: [], active: "default" }),
+    setTheme: vi.fn().mockResolvedValue({ ok: true, theme: "default" }),
+    getPlugins: vi.fn().mockResolvedValue([]),
     searchSessions: vi.fn().mockResolvedValue({ results: [] }),
     getOAuthProviders: vi.fn(),
     disconnectOAuthProvider: vi.fn(),
@@ -56,10 +58,15 @@ vi.mock("@/lib/api", () => ({
 }));
 
 describe("App", () => {
-  it("shows Memory in the header nav", () => {
+  it("shows Memory to the right of Sessions in the header nav", () => {
     renderWithAppProviders(<App />);
 
-    expect(screen.getByRole("link", { name: /memory/i })).toBeInTheDocument();
+    const links = screen.getAllByRole("link");
+    const labels = links.map((link) => link.textContent?.trim()).filter(Boolean);
+
+    expect(labels).toContain("Sessions");
+    expect(labels).toContain("Memory");
+    expect(labels.indexOf("Sessions")).toBeLessThan(labels.indexOf("Memory"));
   });
 
   it("renders the Memory page when routed to /memory", async () => {

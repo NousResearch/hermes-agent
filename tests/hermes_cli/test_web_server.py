@@ -4678,7 +4678,7 @@ class TestWebServerMemoryEndpoints:
         assert data["stores"]["user"]["entry_count"] == 1
         assert data["stores"]["memory"]["entry_count"] == 1
         assert data["stores"]["user"]["entries"][0]["content"] == "User likes concise replies"
-        assert "future sessions" in data["note"].lower()
+        assert "note" not in data
 
     def test_get_memory_reflects_configured_provider(self, tmp_path, monkeypatch):
         from hermes_cli.config import save_config

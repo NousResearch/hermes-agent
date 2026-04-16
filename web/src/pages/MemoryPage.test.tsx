@@ -21,7 +21,6 @@ const baseResponse: MemoryResponse = {
   provider: "",
   provider_label: "built-in only",
   directory: "/tmp/memories",
-  note: "Saved immediately. Changes apply to future sessions; current sessions keep their existing snapshot.",
   stores: {
     user: {
       path: "/tmp/memories/USER.md",
@@ -121,19 +120,19 @@ describe("MemoryPage", () => {
     expect(screen.getByRole("button", { name: /edit/i })).toBeInTheDocument();
   });
 
-  it("adds a new entry and clears the composer", async () => {
+  it("adds a new entry from the top form using the selected target", async () => {
     const user = userEvent.setup();
     const addResponse: MemoryResponse = {
       ...baseResponse,
       stores: {
         ...baseResponse.stores,
-        user: {
-          ...baseResponse.stores.user,
+        memory: {
+          ...baseResponse.stores.memory,
           entry_count: 2,
           char_count: 40,
           entries: [
-            ...baseResponse.stores.user.entries,
-            { id: "user:1", index: 1, content: "New user fact" },
+            ...baseResponse.stores.memory.entries,
+            { id: "memory:1", index: 1, content: "New memory fact" },
           ],
         },
       },
@@ -143,13 +142,18 @@ describe("MemoryPage", () => {
     renderWithAppProviders(<MemoryPage />);
 
     await screen.findAllByRole("heading", { name: /memory/i });
-    const userStores = screen.getAllByTestId("memory-store-user");
-    const userStore = userStores[userStores.length - 1];
-    const composer = within(userStore).getByRole("textbox", { name: /user profile add entry/i });
-    await user.type(composer, "New user fact");
-    await user.click(within(userStore).getByRole("button", { name: /add entry/i }));
+    const topComposer = screen.getByRole("textbox", { name: /memory add entry/i });
+    await user.type(topComposer, "New memory fact");
 
-    await waitFor(() => expect(mockApi.addMemoryEntry).toHaveBeenCalledWith("user", "New user fact"));
-    expect(screen.getAllByDisplayValue("").length).toBeGreaterThan(0);
+    const targetSelect = screen.getByRole("combobox", { name: /memory target/i });
+    await user.click(targetSelect);
+    await user.click(screen.getByRole("option", { name: /memory notes/i }));
+
+    await user.click(screen.getByRole("button", { name: /add entry/i }));
+
+    await waitFor(() => expect(mockApi.addMemoryEntry).toHaveBeenCalledWith("memory", "New memory fact"));
+    expect(screen.getByRole("textbox", { name: /memory add entry/i })).toHaveValue("");
+    expect(screen.queryByRole("textbox", { name: /user profile add entry/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: /memory notes add entry/i })).not.toBeInTheDocument();
   });
 });

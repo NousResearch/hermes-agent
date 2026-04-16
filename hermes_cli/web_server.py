@@ -3745,7 +3745,6 @@ def _build_memory_response() -> dict:
         "provider": provider,
         "provider_label": provider_label,
         "directory": str(get_memory_dir()),
-        "note": "Saved immediately. Changes apply to future sessions; current sessions keep their existing snapshot.",
         "stores": {
             "user": _build_memory_store_payload("user"),
             "memory": _build_memory_store_payload("memory"),

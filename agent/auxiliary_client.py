@@ -54,6 +54,23 @@ logger = logging.getLogger(__name__)
 # Module-level flag: only warn once per process about stale OPENAI_BASE_URL.
 _stale_base_url_warned = False
 
+# Runtime model/provider override set by /model command — takes precedence over config.yaml.
+_runtime_model_override: str = ""
+_runtime_provider_override: str = ""
+_runtime_base_url_override: str = ""
+
+
+def set_runtime_model(model: str, provider: str = "", base_url: str = "") -> None:
+    """Override the model used by all auxiliary tasks (title gen, compression, etc).
+
+    Called by the /model command handler so auxiliary tasks use the same model
+    as the main agent instead of re-reading the default from config.yaml.
+    """
+    global _runtime_model_override, _runtime_provider_override, _runtime_base_url_override
+    _runtime_model_override = model or ""
+    _runtime_provider_override = provider or ""
+    _runtime_base_url_override = base_url or ""
+
 _PROVIDER_ALIASES = {
     "google": "gemini",
     "google-gemini": "gemini",
@@ -807,9 +824,11 @@ def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
 def _read_main_model() -> str:
     """Read the user's configured main model from config.yaml.
 
-    config.yaml model.default is the single source of truth for the active
-    model. Environment variables are no longer consulted.
+    Checks runtime override (set by /model) first so all auxiliary tasks
+    (title generation, compression, etc.) use the same model as the main agent.
     """
+    if _runtime_model_override:
+        return _runtime_model_override
     try:
         from hermes_cli.config import load_config
         cfg = load_config()

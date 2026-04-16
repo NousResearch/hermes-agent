@@ -30,6 +30,14 @@ _DEFAULT_TIMEOUT_SECONDS = 900.0
 _TOOL_CALL_BLOCK_RE = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)
 _TOOL_CALL_JSON_RE = re.compile(r"\{\s*\"id\"\s*:\s*\"[^\"]+\"\s*,\s*\"type\"\s*:\s*\"function\"\s*,\s*\"function\"\s*:\s*\{.*?\}\s*\}", re.DOTALL)
 
+# Patterns that indicate the gh-copilot CLI extension has been deprecated.
+_DEPRECATION_PATTERNS = (
+    "has been deprecated",
+    "no commands will be executed",
+    "deprecation",
+    "copilot-cli",
+)
+
 
 def _resolve_command() -> str:
     return (
@@ -506,6 +514,18 @@ class CopilotACPClient:
 
             stderr_text = "\n".join(stderr_tail).strip()
             if proc.poll() is not None and stderr_text:
+                stderr_lower = stderr_text.lower()
+                if any(pat in stderr_lower for pat in _DEPRECATION_PATTERNS):
+                    raise RuntimeError(
+                        "The gh-copilot CLI extension has been deprecated by GitHub and "
+                        "can no longer be used for ACP mode.\n\n"
+                        "Alternatives:\n"
+                        "  1. Use the GitHub Copilot provider instead of ACP mode:\n"
+                        "     hermes setup  →  select 'GitHub Copilot' (uses Copilot Chat API)\n"
+                        "  2. Set HERMES_COPILOT_ACP_COMMAND to point to a compatible ACP server\n"
+                        "  3. Use a different provider (e.g. OpenAI, Anthropic, Nous)\n\n"
+                        f"Original error:\n{stderr_text}"
+                    )
                 raise RuntimeError(f"Copilot ACP process exited early: {stderr_text}")
             raise TimeoutError(f"Timed out waiting for Copilot ACP response to {method}.")
 

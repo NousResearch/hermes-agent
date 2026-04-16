@@ -404,11 +404,28 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             last_result = result
         return last_result
 
+    # --- Matrix: use the native adapter helper for text + media ---
+    if platform == Platform.MATRIX:
+        last_result = None
+        for i, chunk in enumerate(chunks):
+            is_last = (i == len(chunks) - 1)
+            result = await _send_matrix_via_adapter(
+                pconfig,
+                chat_id,
+                chunk,
+                media_files=media_files if is_last else [],
+                thread_id=thread_id,
+            )
+            if isinstance(result, dict) and result.get("error"):
+                return result
+            last_result = result
+        return last_result
+
     # --- Non-Telegram/Discord platforms ---
     if media_files and not message.strip():
         return {
             "error": (
-                f"send_message MEDIA delivery is currently only supported for telegram, discord, and weixin; "
+                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, and weixin; "
                 f"target {platform.value} had only media attachments"
             )
         }
@@ -416,7 +433,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if media_files:
         warning = (
             f"MEDIA attachments were omitted for {platform.value}; "
-            "native send_message media delivery is currently only supported for telegram, discord, and weixin"
+            "native send_message media delivery is currently only supported for telegram, discord, matrix, and weixin"
         )
 
     last_result = None
@@ -905,6 +922,66 @@ async def _send_matrix(token, extra, chat_id, message):
         return {"success": True, "platform": "matrix", "chat_id": chat_id, "message_id": data.get("event_id")}
     except Exception as e:
         return _error(f"Matrix send failed: {e}")
+
+
+async def _send_matrix_via_adapter(pconfig, chat_id, message, media_files=None, thread_id=None):
+    """Send via the Matrix adapter so native Matrix media uploads are preserved."""
+    try:
+        from gateway.platforms.matrix import MatrixAdapter
+    except ImportError:
+        return {"error": "Matrix dependencies not installed. Run: pip install 'mautrix[encryption]'"}
+
+    media_files = media_files or []
+
+    try:
+        adapter = MatrixAdapter(pconfig)
+        connected = await adapter.connect()
+        if not connected:
+            return _error("Matrix connect failed")
+
+        metadata = {"thread_id": thread_id} if thread_id else None
+        last_result = None
+
+        if message.strip():
+            last_result = await adapter.send(chat_id, message, metadata=metadata)
+            if not last_result.success:
+                return _error(f"Matrix send failed: {last_result.error}")
+
+        for media_path, is_voice in media_files:
+            if not os.path.exists(media_path):
+                return _error(f"Media file not found: {media_path}")
+
+            ext = os.path.splitext(media_path)[1].lower()
+            if ext in _IMAGE_EXTS:
+                last_result = await adapter.send_image_file(chat_id, media_path, metadata=metadata)
+            elif ext in _VIDEO_EXTS:
+                last_result = await adapter.send_video(chat_id, media_path, metadata=metadata)
+            elif ext in _VOICE_EXTS and is_voice:
+                last_result = await adapter.send_voice(chat_id, media_path, metadata=metadata)
+            elif ext in _AUDIO_EXTS:
+                last_result = await adapter.send_voice(chat_id, media_path, metadata=metadata)
+            else:
+                last_result = await adapter.send_document(chat_id, media_path, metadata=metadata)
+
+            if not last_result.success:
+                return _error(f"Matrix media send failed: {last_result.error}")
+
+        if last_result is None:
+            return {"error": "No deliverable text or media remained after processing MEDIA tags"}
+
+        return {
+            "success": True,
+            "platform": "matrix",
+            "chat_id": chat_id,
+            "message_id": last_result.message_id,
+        }
+    except Exception as e:
+        return _error(f"Matrix send failed: {e}")
+    finally:
+        try:
+            await adapter.disconnect()
+        except Exception:
+            pass
 
 
 async def _send_homeassistant(token, extra, chat_id, message):

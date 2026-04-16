@@ -6986,7 +6986,7 @@ class GatewayRunner:
             except Exception as exc:
                 return f"✗ Failed to upload debug report: {exc}"
 
-            # Schedule auto-deletion after 1 hour
+            # Schedule auto-deletion after 6 hours
             _schedule_auto_delete(list(urls.values()))
 
             lines = [_GATEWAY_PRIVACY_NOTICE, "", "**Debug report uploaded:**", ""]
@@ -6995,7 +6995,7 @@ class GatewayRunner:
                 lines.append(f"`{label:<{label_width}}`  {url}")
 
             lines.append("")
-            lines.append("⏱ Pastes will auto-delete in 1 hour.")
+            lines.append("⏱ Pastes will auto-delete in 6 hours.")
             lines.append("For full log uploads, use `hermes debug share` from the CLI.")
             lines.append("Share these links with the Hermes team for support.")
             return "\n".join(lines)
@@ -8079,12 +8079,15 @@ class GatewayRunner:
                 if _adapter:
                     _adapter_supports_edit = getattr(_adapter, "SUPPORTS_MESSAGE_EDITING", True)
                     _effective_cursor = _scfg.cursor if _adapter_supports_edit else ""
+                    _buffer_only = False
                     if source.platform == Platform.MATRIX:
                         _effective_cursor = ""
+                        _buffer_only = True
                     _consumer_cfg = StreamConsumerConfig(
                         edit_interval=_scfg.edit_interval,
                         buffer_threshold=_scfg.buffer_threshold,
                         cursor=_effective_cursor,
+                        buffer_only=_buffer_only,
                     )
                     _stream_consumer = GatewayStreamConsumer(
                         adapter=_adapter,
@@ -8650,12 +8653,15 @@ class GatewayRunner:
                         # Some Matrix clients render the streaming cursor
                         # as a visible tofu/white-box artifact.  Keep
                         # streaming text on Matrix, but suppress the cursor.
+                        _buffer_only = False
                         if source.platform == Platform.MATRIX:
                             _effective_cursor = ""
+                            _buffer_only = True
                         _consumer_cfg = StreamConsumerConfig(
                             edit_interval=_scfg.edit_interval,
                             buffer_threshold=_scfg.buffer_threshold,
                             cursor=_effective_cursor,
+                            buffer_only=_buffer_only,
                         )
                         _stream_consumer = GatewayStreamConsumer(
                             adapter=_adapter,

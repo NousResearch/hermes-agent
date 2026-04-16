@@ -108,12 +108,23 @@ def _make_fake_mautrix():
         def add_event_handler(self, event_type, handler):
             self._event_handlers.setdefault(event_type, []).append(handler)
 
+        def add_dispatcher(self, dispatcher_type):
+            pass
+
     class InternalEventType:
         INVITE = "internal.invite"
 
     mautrix_client.Client = Client
     mautrix_client.InternalEventType = InternalEventType
     mautrix.client = mautrix_client
+
+    # --- mautrix.client.dispatcher ---
+    mautrix_client_dispatcher = types.ModuleType("mautrix.client.dispatcher")
+
+    class MembershipEventDispatcher:
+        pass
+
+    mautrix_client_dispatcher.MembershipEventDispatcher = MembershipEventDispatcher
 
     # --- mautrix.client.state_store ---
     mautrix_client_state_store = types.ModuleType("mautrix.client.state_store")
@@ -163,6 +174,19 @@ def _make_fake_mautrix():
 
     mautrix_crypto_store.MemoryCryptoStore = MemoryCryptoStore
 
+    # --- mautrix.crypto.attachments ---
+    mautrix_crypto_attachments = types.ModuleType("mautrix.crypto.attachments")
+
+    def encrypt_attachment(data):
+        encrypted_file = MagicMock()
+        encrypted_file.serialize.return_value = {
+            "key": {"k": "testkey"}, "iv": "testiv",
+            "hashes": {"sha256": "testhash"}, "v": "v2",
+        }
+        return (b"ciphertext_" + data, encrypted_file)
+
+    mautrix_crypto_attachments.encrypt_attachment = encrypt_attachment
+
     # --- mautrix.crypto.store.asyncpg ---
     mautrix_crypto_store_asyncpg = types.ModuleType("mautrix.crypto.store.asyncpg")
 
@@ -200,8 +224,10 @@ def _make_fake_mautrix():
         "mautrix.api": mautrix_api,
         "mautrix.types": mautrix_types,
         "mautrix.client": mautrix_client,
+        "mautrix.client.dispatcher": mautrix_client_dispatcher,
         "mautrix.client.state_store": mautrix_client_state_store,
         "mautrix.crypto": mautrix_crypto,
+        "mautrix.crypto.attachments": mautrix_crypto_attachments,
         "mautrix.crypto.store": mautrix_crypto_store,
         "mautrix.crypto.store.asyncpg": mautrix_crypto_store_asyncpg,
         "mautrix.util": mautrix_util,
@@ -356,6 +382,16 @@ class TestMatrixTypingIndicator:
             RoomID("!room:example.org"),
             timeout=0,
         )
+
+    @pytest.mark.asyncio
+    async def test_stop_typing_no_client_is_noop(self):
+        self.adapter._client = None
+        await self.adapter.stop_typing("!room:example.org")  # should not raise
+
+    @pytest.mark.asyncio
+    async def test_stop_typing_suppresses_exceptions(self):
+        self.adapter._client.set_typing = AsyncMock(side_effect=Exception("network"))
+        await self.adapter.stop_typing("!room:example.org")  # should not raise
 
 
 # ---------------------------------------------------------------------------
@@ -835,6 +871,41 @@ class TestMatrixAccessTokenAuth:
         await adapter.disconnect()
 
 
+class TestDeviceKeyReVerification:
+    @pytest.mark.asyncio
+    async def test_verify_fails_when_server_keys_mismatch_after_upload(self):
+        """share_keys() succeeds but server still has old keys -> should return False."""
+        adapter = _make_adapter()
+
+        mock_client = MagicMock()
+        mock_client.mxid = "@bot:example.org"
+        mock_client.device_id = "TESTDEVICE"
+
+        # First query: keys missing -> triggers share_keys
+        # Second query: keys still don't match -> should fail
+        mock_keys_missing = MagicMock()
+        mock_keys_missing.device_keys = {"@bot:example.org": {}}
+
+        mock_keys_mismatch = MagicMock()
+        mock_device = MagicMock()
+        mock_device.keys = {"ed25519:TESTDEVICE": "server_old_key"}
+        mock_keys_mismatch.device_keys = {"@bot:example.org": {"TESTDEVICE": mock_device}}
+
+        mock_client.query_keys = AsyncMock(side_effect=[mock_keys_missing, mock_keys_mismatch])
+
+        mock_olm = MagicMock()
+        mock_olm.account = MagicMock()
+        mock_olm.account.shared = False
+        mock_olm.account.identity_keys = {"ed25519": "local_new_key"}
+        mock_olm.share_keys = AsyncMock()
+
+        from gateway.platforms.matrix import MatrixAdapter
+        result = await adapter._verify_device_keys_on_server(mock_client, mock_olm)
+
+        assert result is False
+        mock_olm.share_keys.assert_awaited_once()
+
+
 class TestMatrixE2EEHardFail:
     """connect() must refuse to start when E2EE is requested but deps are missing."""
 
@@ -1139,6 +1210,56 @@ class TestMatrixSyncLoop:
         mock_sync_store.put_next_batch.assert_awaited_once_with("s1234")
 
 
+class TestMatrixUploadAndSend:
+    @pytest.mark.asyncio
+    async def test_upload_unencrypted_room_uses_plain_url(self):
+        """Unencrypted rooms should use plain 'url' key."""
+        adapter = _make_adapter()
+        adapter._encryption = True
+        mock_client = MagicMock()
+        mock_client.crypto = object()
+        mock_client.state_store = MagicMock()
+        mock_client.state_store.is_encrypted = AsyncMock(return_value=False)
+        mock_client.upload_media = AsyncMock(return_value="mxc://example.org/plain")
+        mock_client.send_message_event = AsyncMock(return_value="$event")
+        adapter._client = mock_client
+
+        result = await adapter._upload_and_send(
+            "!room:example.org", b"hello", "test.txt", "text/plain", "m.file",
+        )
+
+        assert result.success is True
+        sent = mock_client.send_message_event.await_args.args[2]
+        assert sent["url"] == "mxc://example.org/plain"
+        assert "file" not in sent
+
+    @pytest.mark.asyncio
+    async def test_upload_encrypted_room_uses_file_payload(self):
+        """Encrypted rooms should use 'file' key with crypto metadata."""
+        adapter = _make_adapter()
+        adapter._encryption = True
+        mock_client = MagicMock()
+        mock_client.crypto = object()
+        mock_client.state_store = MagicMock()
+        mock_client.state_store.is_encrypted = AsyncMock(return_value=True)
+        mock_client.upload_media = AsyncMock(return_value="mxc://example.org/enc")
+        mock_client.send_message_event = AsyncMock(return_value="$event")
+        adapter._client = mock_client
+
+        result = await adapter._upload_and_send(
+            "!room:example.org", b"secret", "secret.txt", "text/plain", "m.file",
+        )
+
+        assert result.success is True
+        # Should have uploaded ciphertext, not plaintext
+        uploaded_data = mock_client.upload_media.await_args.args[0]
+        assert uploaded_data != b"secret"
+        sent = mock_client.send_message_event.await_args.args[2]
+        assert "url" not in sent
+        assert "file" in sent
+        assert sent["file"]["url"] == "mxc://example.org/enc"
+
+
 class TestMatrixEncryptedSendFallback:
     @pytest.mark.asyncio
     async def test_send_retries_after_e2ee_error(self):
@@ -1165,128 +1286,24 @@ class TestMatrixEncryptedSendFallback:
 
 
 # ---------------------------------------------------------------------------
-# E2EE: MegolmEvent key request + buffering via _on_encrypted_event
+# E2EE: _joined_rooms reference preservation for CryptoStateStore
 # ---------------------------------------------------------------------------
 
-class TestMatrixMegolmEventHandling:
-    @pytest.mark.asyncio
-    async def test_encrypted_event_buffers_for_retry(self):
-        """_on_encrypted_event should buffer undecrypted events for retry."""
-        adapter = _make_adapter()
-        adapter._user_id = "@bot:example.org"
-        adapter._startup_ts = 0.0
-        adapter._dm_rooms = {}
+class TestJoinedRoomsReference:
+    def test_joined_rooms_reference_preserved_after_reassignment(self):
+        """_CryptoStateStore must see updates after initial sync populates rooms."""
+        from gateway.platforms.matrix import _CryptoStateStore
 
-        fake_event = MagicMock()
-        fake_event.room_id = "!room:example.org"
-        fake_event.event_id = "$encrypted_event"
-        fake_event.sender = "@alice:example.org"
+        joined = set()
+        store = _CryptoStateStore(MagicMock(), joined)
 
-        await adapter._on_encrypted_event(fake_event)
+        # Simulate what connect() should do: mutate in place, not reassign.
+        joined.clear()
+        joined.update(["!room1:example.org", "!room2:example.org"])
 
-        # Should have buffered the event
-        assert len(adapter._pending_megolm) == 1
-        room_id, event, ts = adapter._pending_megolm[0]
-        assert room_id == "!room:example.org"
-        assert event is fake_event
-
-    @pytest.mark.asyncio
-    async def test_encrypted_event_buffer_capped(self):
-        """Buffer should not grow past _MAX_PENDING_EVENTS."""
-        adapter = _make_adapter()
-        adapter._user_id = "@bot:example.org"
-        adapter._startup_ts = 0.0
-        adapter._dm_rooms = {}
-
-        from gateway.platforms.matrix import _MAX_PENDING_EVENTS
-
-        for i in range(_MAX_PENDING_EVENTS + 10):
-            evt = MagicMock()
-            evt.room_id = "!room:example.org"
-            evt.event_id = f"$event_{i}"
-            evt.sender = "@alice:example.org"
-            await adapter._on_encrypted_event(evt)
-
-        assert len(adapter._pending_megolm) == _MAX_PENDING_EVENTS
-
-
-# ---------------------------------------------------------------------------
-# E2EE: Retry pending decryptions
-# ---------------------------------------------------------------------------
-
-class TestMatrixRetryPendingDecryptions:
-    @pytest.mark.asyncio
-    async def test_successful_decryption_routes_to_handler(self):
-        adapter = _make_adapter()
-        adapter._user_id = "@bot:example.org"
-        adapter._startup_ts = 0.0
-        adapter._dm_rooms = {}
-
-        fake_encrypted = MagicMock()
-        fake_encrypted.event_id = "$encrypted"
-
-        decrypted_event = MagicMock()
-
-        mock_crypto = MagicMock()
-        mock_crypto.decrypt_megolm_event = AsyncMock(return_value=decrypted_event)
-
-        fake_client = MagicMock()
-        fake_client.crypto = mock_crypto
-        adapter._client = fake_client
-
-        now = time.time()
-        adapter._pending_megolm = [("!room:ex.org", fake_encrypted, now)]
-
-        with patch.object(adapter, "_on_room_message", AsyncMock()) as mock_handler:
-            await adapter._retry_pending_decryptions()
-            mock_handler.assert_awaited_once_with(decrypted_event)
-
-        # Buffer should be empty now
-        assert len(adapter._pending_megolm) == 0
-
-    @pytest.mark.asyncio
-    async def test_still_undecryptable_stays_in_buffer(self):
-        adapter = _make_adapter()
-
-        fake_encrypted = MagicMock()
-        fake_encrypted.event_id = "$still_encrypted"
-
-        mock_crypto = MagicMock()
-        mock_crypto.decrypt_megolm_event = AsyncMock(side_effect=Exception("missing key"))
-
-        fake_client = MagicMock()
-        fake_client.crypto = mock_crypto
-        adapter._client = fake_client
-
-        now = time.time()
-        adapter._pending_megolm = [("!room:ex.org", fake_encrypted, now)]
-
-        await adapter._retry_pending_decryptions()
-
-        assert len(adapter._pending_megolm) == 1
-
-    @pytest.mark.asyncio
-    async def test_expired_events_dropped(self):
-        adapter = _make_adapter()
-
-        from gateway.platforms.matrix import _PENDING_EVENT_TTL
-
-        fake_event = MagicMock()
-        fake_event.event_id = "$old_event"
-
-        mock_crypto = MagicMock()
-        fake_client = MagicMock()
-        fake_client.crypto = mock_crypto
-        adapter._client = fake_client
-
-        # Timestamp well past TTL
-        old_ts = time.time() - _PENDING_EVENT_TTL - 60
-        adapter._pending_megolm = [("!room:ex.org", fake_event, old_ts)]
-
-        await adapter._retry_pending_decryptions()
-
-        # Should have been dropped
-        assert len(adapter._pending_megolm) == 0
+        import asyncio
+        rooms = asyncio.get_event_loop().run_until_complete(store.find_shared_rooms("@user:ex"))
+        assert set(rooms) == {"!room1:example.org", "!room2:example.org"}
 
 
 # ---------------------------------------------------------------------------
@@ -1354,10 +1371,69 @@ class TestMatrixEncryptedEventHandler:
         handler_calls = mock_client.add_event_handler.call_args_list
         registered_types = [call.args[0] for call in handler_calls]
 
-        # Should have registered handlers for ROOM_MESSAGE, REACTION, INVITE, and ROOM_ENCRYPTED
-        assert len(handler_calls) >= 4  # At minimum these four
+        # Should have registered handlers for ROOM_MESSAGE, REACTION, INVITE
+        assert len(handler_calls) >= 3
 
         await adapter.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_connect_fails_on_stale_otk_conflict(self):
+        """connect() must refuse E2EE when OTK upload hits 'already exists'."""
+        from gateway.platforms.matrix import MatrixAdapter
+
+        config = PlatformConfig(
+            enabled=True,
+            token="syt_test_token",
+            extra={
+                "homeserver": "https://matrix.example.org",
+                "user_id": "@bot:example.org",
+                "encryption": True,
+            },
+        )
+        adapter = MatrixAdapter(config)
+
+        fake_mautrix_mods = _make_fake_mautrix()
+
+        mock_client = MagicMock()
+        mock_client.mxid = "@bot:example.org"
+        mock_client.device_id = None
+        mock_client.state_store = MagicMock()
+        mock_client.sync_store = MagicMock()
+        mock_client.crypto = None
+        mock_client.whoami = AsyncMock(return_value=MagicMock(user_id="@bot:example.org", device_id="DEV123"))
+        mock_client.add_event_handler = MagicMock()
+        mock_client.add_dispatcher = MagicMock()
+        mock_client.query_keys = AsyncMock(return_value={
+            "device_keys": {"@bot:example.org": {"DEV123": {
+                "keys": {"ed25519:DEV123": "fake_ed25519_key"},
+            }}},
+        })
+        mock_client.api = MagicMock()
+        mock_client.api.token = "syt_test_token"
+        mock_client.api.session = MagicMock()
+        mock_client.api.session.close = AsyncMock()
+
+        # share_keys succeeds on first call (from _verify_device_keys_on_server),
+        # then raises "already exists" on the proactive OTK flush in connect().
+        mock_olm = MagicMock()
+        mock_olm.load = AsyncMock()
+        mock_olm.share_keys = AsyncMock(
+            side_effect=[None, Exception("One time key signed_curve25519:AAAAAQ already exists")]
+        )
+        mock_olm.share_keys_min_trust = None
+        mock_olm.send_keys_min_trust = None
+        mock_olm.account = MagicMock()
+        mock_olm.account.identity_keys = {"ed25519": "fake_ed25519_key"}
+
+        fake_mautrix_mods["mautrix.client"].Client = MagicMock(return_value=mock_client)
+        fake_mautrix_mods["mautrix.crypto"].OlmMachine = MagicMock(return_value=mock_olm)
+
+        from gateway.platforms import matrix as matrix_mod
+        with patch.object(matrix_mod, "_check_e2ee_deps", return_value=True):
+            with patch.dict("sys.modules", fake_mautrix_mods):
+                result = await adapter.connect()
+
+        assert result is False
 
 
 # ---------------------------------------------------------------------------

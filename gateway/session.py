@@ -363,7 +363,7 @@ class SessionEntry:
     # Set when a session was created because the previous one expired;
     # consumed once by the message handler to inject a notice into context
     was_auto_reset: bool = False
-    auto_reset_reason: Optional[str] = None  # "idle" or "daily"
+    auto_reset_reason: Optional[str] = None  # "idle" | "daily" | "suspended" | "manual"
     reset_had_activity: bool = False  # whether the expired session had any messages
     
     # Set by the background expiry watcher after it successfully flushes
@@ -842,6 +842,15 @@ class SessionStore:
             now = _now()
             session_id = f"{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
 
+            # Mark the fresh entry as an auto-reset so the next inbound message
+            # is still treated as "new session" by downstream handlers — even
+            # after get_or_create_session bumps updated_at.  Without this flag,
+            # topic/channel skill auto-injection silently skips the first
+            # message after /new (the created_at==updated_at check flips to
+            # False as soon as updated_at is refreshed).  reset_reason="manual"
+            # distinguishes this from the idle/daily/suspended paths so the
+            # user-facing notice and context_note aren't re-sent for a reset
+            # the user explicitly requested.
             new_entry = SessionEntry(
                 session_key=session_key,
                 session_id=session_id,
@@ -851,6 +860,9 @@ class SessionStore:
                 display_name=old_entry.display_name,
                 platform=old_entry.platform,
                 chat_type=old_entry.chat_type,
+                was_auto_reset=True,
+                auto_reset_reason="manual",
+                reset_had_activity=old_entry.total_tokens > 0,
             )
 
             self._entries[session_key] = new_entry

@@ -1263,6 +1263,7 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
             "related_skills": related_skills,
             "content": content,
             "path": rel_path,
+            "skill_dir": str(skill_dir) if skill_dir else None,
             "linked_files": linked_files if linked_files else None,
             "usage_hint": "To view linked files, call skill_view(name, file_path) where file_path is e.g. 'references/api.md' or 'assets/config.yaml'"
             if linked_files

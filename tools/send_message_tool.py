@@ -157,6 +157,7 @@ def _handle_send(args):
         "mattermost": Platform.MATTERMOST,
         "homeassistant": Platform.HOMEASSISTANT,
         "dingtalk": Platform.DINGTALK,
+        "msteams": Platform.MSTEAMS,
         "feishu": Platform.FEISHU,
         "wecom": Platform.WECOM,
         "wecom_callback": Platform.WECOM_CALLBACK,
@@ -246,6 +247,8 @@ def _parse_target_ref(platform_name: str, target_ref: str):
         match = _WEIXIN_TARGET_RE.fullmatch(target_ref)
         if match:
             return match.group(1), None, True
+    if platform_name == "msteams" and target_ref and not target_ref.startswith("#"):
+        return target_ref, None, True
     if target_ref.lstrip("-").isdigit():
         return target_ref, None, True
     # Matrix room IDs (start with !) and user IDs (start with @) are explicit
@@ -330,6 +333,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     from gateway.platforms.telegram import TelegramAdapter
     from gateway.platforms.discord import DiscordAdapter
     from gateway.platforms.slack import SlackAdapter
+    from gateway.platforms.msteams import MSTeamsAdapter
 
     # Feishu adapter import is optional (requires lark-oapi)
     try:
@@ -352,6 +356,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         Platform.TELEGRAM: TelegramAdapter.MAX_MESSAGE_LENGTH,
         Platform.DISCORD: DiscordAdapter.MAX_MESSAGE_LENGTH,
         Platform.SLACK: SlackAdapter.MAX_MESSAGE_LENGTH,
+        Platform.MSTEAMS: MSTeamsAdapter.MAX_MESSAGE_LENGTH,
     }
     if _feishu_available:
         _MAX_LENGTHS[Platform.FEISHU] = FeishuAdapter.MAX_MESSAGE_LENGTH
@@ -360,7 +365,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     # For short messages or platforms without a known limit this is a no-op.
     # Telegram measures length in UTF-16 code units, not Unicode codepoints.
     max_len = _MAX_LENGTHS.get(platform)
-    if max_len:
+    if max_len and platform != Platform.MSTEAMS:
         _len_fn = utf16_len if platform == Platform.TELEGRAM else None
         chunks = BasePlatformAdapter.truncate_message(message, max_len, len_fn=_len_fn)
     else:
@@ -404,8 +409,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             last_result = result
         return last_result
 
-    # --- Non-Telegram/Discord platforms ---
-    if media_files and not message.strip():
+    # --- Non-Telegram platforms ---
+    if media_files and not message.strip() and platform not in {Platform.MSTEAMS}:
         return {
             "error": (
                 f"send_message MEDIA delivery is currently only supported for telegram, discord, and weixin; "
@@ -413,7 +418,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             )
         }
     warning = None
-    if media_files:
+    if media_files and platform not in {Platform.MSTEAMS}:
         warning = (
             f"MEDIA attachments were omitted for {platform.value}; "
             "native send_message media delivery is currently only supported for telegram, discord, and weixin"
@@ -439,6 +444,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             result = await _send_homeassistant(pconfig.token, pconfig.extra, chat_id, chunk)
         elif platform == Platform.DINGTALK:
             result = await _send_dingtalk(pconfig.extra, chat_id, chunk)
+        elif platform == Platform.MSTEAMS:
+            result = await _send_msteams(pconfig, chat_id, chunk, media_files=media_files, thread_id=thread_id)
         elif platform == Platform.FEISHU:
             result = await _send_feishu(pconfig, chat_id, chunk, thread_id=thread_id)
         elif platform == Platform.WECOM:
@@ -1034,6 +1041,21 @@ async def _send_bluebubbles(extra, chat_id, message):
             await adapter.disconnect()
     except Exception as e:
         return _error(f"BlueBubbles send failed: {e}")
+
+
+async def _send_msteams(pconfig, chat_id, message, media_files=None, thread_id=None):
+    """Send via Microsoft Teams using the public native adapter proactive-send entrypoint.
+
+    Direct sends require a persisted conversation reference for the target chat.
+    The adapter resolves it from configured extra refs or the durable Teams state file.
+    """
+    try:
+        from gateway.platforms.msteams import MSTeamsAdapter
+    except ImportError as exc:
+        return {"error": f"Microsoft Teams adapter unavailable: {exc}"}
+
+    adapter = MSTeamsAdapter(pconfig)
+    return await adapter.send_standalone(chat_id, message, media_files=media_files or [], thread_id=thread_id)
 
 
 async def _send_feishu(pconfig, chat_id, message, media_files=None, thread_id=None):

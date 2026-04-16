@@ -316,6 +316,11 @@ PLATFORM_HINTS = {
         "attachments, audio as file attachments. You can also include image URLs "
         "in markdown format ![alt](url) and they will be uploaded as attachments."
     ),
+    "msteams": (
+        "You are in Microsoft Teams. Keep responses compact and collaboration-friendly. "
+        "Threading and mentions matter: when coordination is needed, include all relevant people explicitly. "
+        "Use plain text or light markdown-compatible formatting only; do not rely on rich markdown rendering."
+    ),
     "signal": (
         "You are on a text messaging communication platform, Signal. "
         "Please do not use markdown as it does not render. "

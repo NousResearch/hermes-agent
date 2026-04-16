@@ -6,7 +6,7 @@ description: "Chat with Hermes from Telegram, Discord, Slack, WhatsApp, Signal, 
 
 # Messaging Gateway
 
-Chat with Hermes from Telegram, Discord, Slack, WhatsApp, Signal, SMS, Email, Home Assistant, Mattermost, Matrix, DingTalk, Feishu/Lark, WeCom, Weixin, BlueBubbles (iMessage), QQ, or your browser. The gateway is a single background process that connects to all your configured platforms, handles sessions, runs cron jobs, and delivers voice messages.
+Chat with Hermes from Telegram, Discord, Slack, Microsoft Teams, WhatsApp, Signal, SMS, Email, Home Assistant, Mattermost, Matrix, DingTalk, Feishu/Lark, WeCom, Weixin, BlueBubbles (iMessage), QQ, or your browser. The gateway is a single background process that connects to all your configured platforms, handles sessions, runs cron jobs, and delivers voice messages.
 
 For the full voice feature set — including CLI microphone mode, spoken replies in messaging, and Discord voice-channel conversations — see [Voice Mode](/docs/user-guide/features/voice-mode) and [Use Voice Mode with Hermes](/docs/guides/use-voice-mode-with-hermes).
 
@@ -17,6 +17,7 @@ For the full voice feature set — including CLI microphone mode, spoken replies
 | Telegram | ✅ | ✅ | ✅ | ✅ | — | ✅ | ✅ |
 | Discord | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Slack | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Microsoft Teams | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — |
 | WhatsApp | — | ✅ | ✅ | — | — | ✅ | ✅ |
 | Signal | — | ✅ | ✅ | — | — | ✅ | ✅ |
 | SMS | — | — | — | — | — | — | — |
@@ -33,6 +34,22 @@ For the full voice feature set — including CLI microphone mode, spoken replies
 | QQ | ✅ | ✅ | ✅ | — | — | ✅ | — |
 
 **Voice** = TTS audio replies and/or voice message transcription. **Images** = send/receive images. **Files** = send/receive file attachments. **Threads** = threaded conversations. **Reactions** = emoji reactions on messages. **Typing** = typing indicator while processing. **Streaming** = progressive message updates via editing.
+
+
+## Platform Guides
+
+- [Telegram](/docs/user-guide/messaging/telegram)
+- [Discord](/docs/user-guide/messaging/discord)
+- [Slack](/docs/user-guide/messaging/slack)
+- [Microsoft Teams](/docs/user-guide/messaging/msteams)
+- [WhatsApp](/docs/user-guide/messaging/whatsapp)
+- [Signal](/docs/user-guide/messaging/signal)
+- [Mattermost](/docs/user-guide/messaging/mattermost)
+- [Matrix](/docs/user-guide/messaging/matrix)
+- [Feishu/Lark](/docs/user-guide/messaging/feishu)
+- [WeCom](/docs/user-guide/messaging/wecom)
+- [Weixin](/docs/user-guide/messaging/weixin)
+- [BlueBubbles](/docs/user-guide/messaging/bluebubbles)
 
 ## Architecture
 

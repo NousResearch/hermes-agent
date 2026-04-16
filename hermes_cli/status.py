@@ -300,6 +300,7 @@ def show_status(args):
         "Email": ("EMAIL_ADDRESS", "EMAIL_HOME_ADDRESS"),
         "SMS": ("TWILIO_ACCOUNT_SID", "SMS_HOME_CHANNEL"),
         "DingTalk": ("DINGTALK_CLIENT_ID", None),
+        "Microsoft Teams": ("MSTEAMS_APP_ID", "MSTEAMS_HOME_CHANNEL"),
         "Feishu": ("FEISHU_APP_ID", "FEISHU_HOME_CHANNEL"),
         "WeCom": ("WECOM_BOT_ID", "WECOM_HOME_CHANNEL"),
         "WeCom Callback": ("WECOM_CALLBACK_CORP_ID", None),

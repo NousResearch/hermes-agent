@@ -90,6 +90,19 @@ class TestSuspendRecentlyActive:
 class TestCleanShutdownMarker:
     """Test that the marker file controls session suspension on startup."""
 
+    def test_marker_helper_writes_marker(self, tmp_path, monkeypatch):
+        """Signal handlers can mark intentional shutdowns before async stop completes."""
+        monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+
+        from gateway.run import _clean_shutdown_marker_path, _write_clean_shutdown_marker
+
+        marker = _clean_shutdown_marker_path()
+        assert not marker.exists()
+
+        _write_clean_shutdown_marker()
+
+        assert marker.exists(), "marker helper should create .clean_shutdown"
+
     def test_marker_written_on_graceful_stop(self, tmp_path, monkeypatch):
         """stop() should write .clean_shutdown marker."""
         monkeypatch.setattr("gateway.run._hermes_home", tmp_path)

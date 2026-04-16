@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 # in cron delivery targets, preventing env var enumeration via crafted names.
 _KNOWN_DELIVERY_PLATFORMS = frozenset({
     "telegram", "discord", "slack", "whatsapp", "signal",
-    "matrix", "mattermost", "homeassistant", "dingtalk", "feishu",
+    "matrix", "mattermost", "homeassistant", "dingtalk", "msteams", "feishu",
     "wecom", "wecom_callback", "weixin", "sms", "email", "webhook", "bluebubbles",
     "qqbot",
 })
@@ -249,6 +249,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         "mattermost": Platform.MATTERMOST,
         "homeassistant": Platform.HOMEASSISTANT,
         "dingtalk": Platform.DINGTALK,
+        "msteams": Platform.MSTEAMS,
         "feishu": Platform.FEISHU,
         "wecom": Platform.WECOM,
         "wecom_callback": Platform.WECOM_CALLBACK,

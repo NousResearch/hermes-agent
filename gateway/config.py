@@ -45,6 +45,32 @@ def _normalize_unauthorized_dm_behavior(value: Any, default: str = "pair") -> st
     return default
 
 
+def _normalize_csv_list(value: Any) -> List[str]:
+    """Normalize comma-separated env/config values into a list of strings."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [item.strip() for item in value.split(",") if item.strip()]
+    if isinstance(value, (list, tuple, set)):
+        return [str(item).strip() for item in value if str(item).strip()]
+    return []
+
+
+def _maybe_parse_json_object(value: Optional[str]) -> Optional[Dict[str, Any]]:
+    """Parse a JSON object from an env var, returning None on invalid input."""
+    if not value:
+        return None
+    try:
+        parsed = json.loads(value)
+    except Exception:
+        logger.warning("Invalid JSON object in env override; ignoring value")
+        return None
+    if not isinstance(parsed, dict):
+        logger.warning("Expected JSON object in env override; ignoring non-object value")
+        return None
+    return parsed
+
+
 class Platform(Enum):
     """Supported messaging platforms."""
     LOCAL = "local"
@@ -62,6 +88,7 @@ class Platform(Enum):
     API_SERVER = "api_server"
     WEBHOOK = "webhook"
     FEISHU = "feishu"
+    MSTEAMS = "msteams"
     WECOM = "wecom"
     WECOM_CALLBACK = "wecom_callback"
     WEIXIN = "weixin"
@@ -292,6 +319,13 @@ class GatewayConfig:
                 connected.append(platform)
             # Feishu uses extra dict for app credentials
             elif platform == Platform.FEISHU and config.extra.get("app_id"):
+                connected.append(platform)
+            # Microsoft Teams uses extra dict for Azure Bot credentials
+            elif platform == Platform.MSTEAMS and (
+                config.extra.get("app_id")
+                and config.extra.get("app_password")
+                and config.extra.get("tenant_id")
+            ):
                 connected.append(platform)
             # WeCom bot mode uses extra dict for bot credentials
             elif platform == Platform.WECOM and config.extra.get("bot_id"):
@@ -531,6 +565,29 @@ def load_gateway_config() -> GatewayConfig:
                         merged["extra"] = merged_extra
                     platforms_data[plat_name] = merged
                 gw_data["platforms"] = platforms_data
+
+            # Backward compatibility: older /sethome implementations persisted
+            # top-level *_HOME_CHANNEL keys in config.yaml. Bridge those values into
+            # the official GatewayConfig schema under platforms.<platform>.home_channel.
+            for plat in Platform:
+                if plat == Platform.LOCAL:
+                    continue
+                legacy_home = yaml_cfg.get(f"{plat.value.upper()}_HOME_CHANNEL")
+                if legacy_home in (None, ""):
+                    continue
+                plat_data = platforms_data.setdefault(plat.value, {})
+                if not isinstance(plat_data, dict):
+                    plat_data = {}
+                    platforms_data[plat.value] = plat_data
+                if isinstance(plat_data.get("home_channel"), dict):
+                    continue
+                plat_data["home_channel"] = {
+                    "platform": plat.value,
+                    "chat_id": str(legacy_home),
+                    "name": yaml_cfg.get(f"{plat.value.upper()}_HOME_CHANNEL_NAME", "Home"),
+                }
+            gw_data["platforms"] = platforms_data
+
             for plat in Platform:
                 if plat == Platform.LOCAL:
                     continue
@@ -712,6 +769,7 @@ def _validate_gateway_config(config: "GatewayConfig") -> None:
         Platform.TELEGRAM: "TELEGRAM_BOT_TOKEN",
         Platform.DISCORD: "DISCORD_BOT_TOKEN",
         Platform.SLACK: "SLACK_BOT_TOKEN",
+        Platform.MSTEAMS: "MSTEAMS_APP_PASSWORD",
         Platform.MATTERMOST: "MATTERMOST_TOKEN",
         Platform.MATRIX: "MATRIX_ACCESS_TOKEN",
         Platform.WEIXIN: "WEIXIN_TOKEN",
@@ -831,6 +889,128 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             platform=Platform.SLACK,
             chat_id=slack_home,
             name=os.getenv("SLACK_HOME_CHANNEL_NAME", ""),
+        )
+
+    # Microsoft Teams
+    msteams_app_id = os.getenv("MSTEAMS_APP_ID")
+    msteams_app_password = os.getenv("MSTEAMS_APP_PASSWORD")
+    msteams_tenant_id = os.getenv("MSTEAMS_TENANT_ID")
+    if msteams_app_id or msteams_app_password or msteams_tenant_id:
+        if Platform.MSTEAMS not in config.platforms:
+            config.platforms[Platform.MSTEAMS] = PlatformConfig()
+        teams_cfg = config.platforms[Platform.MSTEAMS]
+        teams_cfg.enabled = bool(msteams_app_id and msteams_app_password and msteams_tenant_id)
+        if msteams_app_id:
+            teams_cfg.extra["app_id"] = msteams_app_id
+        if msteams_app_password:
+            teams_cfg.extra["app_password"] = msteams_app_password
+            teams_cfg.token = msteams_app_password
+        if msteams_tenant_id:
+            teams_cfg.extra["tenant_id"] = msteams_tenant_id
+        msteams_port = os.getenv("MSTEAMS_WEBHOOK_PORT")
+        if msteams_port:
+            try:
+                teams_cfg.extra["port"] = int(msteams_port)
+            except ValueError:
+                logger.warning("Invalid MSTEAMS_WEBHOOK_PORT=%r — expected integer", msteams_port)
+        msteams_path = os.getenv("MSTEAMS_WEBHOOK_PATH")
+        if msteams_path:
+            teams_cfg.extra["path"] = msteams_path
+        msteams_host = os.getenv("MSTEAMS_WEBHOOK_HOST")
+        if msteams_host:
+            teams_cfg.extra["host"] = msteams_host
+        msteams_require_mention = os.getenv("MSTEAMS_REQUIRE_MENTION")
+        if msteams_require_mention:
+            teams_cfg.extra["require_mention"] = _coerce_bool(msteams_require_mention, True)
+        msteams_reply_style = os.getenv("MSTEAMS_REPLY_STYLE")
+        if msteams_reply_style:
+            teams_cfg.extra["reply_style"] = msteams_reply_style.strip().lower()
+        msteams_dm_policy = os.getenv("MSTEAMS_DM_POLICY")
+        if msteams_dm_policy:
+            teams_cfg.extra["dm_policy"] = msteams_dm_policy.strip().lower()
+        msteams_group_policy = os.getenv("MSTEAMS_GROUP_POLICY")
+        if msteams_group_policy:
+            teams_cfg.extra["group_policy"] = msteams_group_policy.strip().lower()
+        msteams_chunk_mode = os.getenv("MSTEAMS_CHUNK_MODE")
+        if msteams_chunk_mode:
+            teams_cfg.extra["chunk_mode"] = msteams_chunk_mode.strip().lower()
+        msteams_text_chunk_limit = os.getenv("MSTEAMS_TEXT_CHUNK_LIMIT")
+        if msteams_text_chunk_limit:
+            try:
+                teams_cfg.extra["text_chunk_limit"] = int(msteams_text_chunk_limit)
+            except ValueError:
+                logger.warning("Invalid MSTEAMS_TEXT_CHUNK_LIMIT=%r — expected integer", msteams_text_chunk_limit)
+        msteams_history_limit = os.getenv("MSTEAMS_HISTORY_LIMIT")
+        if msteams_history_limit:
+            try:
+                teams_cfg.extra["history_limit"] = int(msteams_history_limit)
+            except ValueError:
+                logger.warning("Invalid MSTEAMS_HISTORY_LIMIT=%r — expected integer", msteams_history_limit)
+        msteams_dm_history_limit = os.getenv("MSTEAMS_DM_HISTORY_LIMIT")
+        if msteams_dm_history_limit:
+            try:
+                teams_cfg.extra["dm_history_limit"] = int(msteams_dm_history_limit)
+            except ValueError:
+                logger.warning("Invalid MSTEAMS_DM_HISTORY_LIMIT=%r — expected integer", msteams_dm_history_limit)
+        msteams_max_body_bytes = os.getenv("MSTEAMS_MAX_BODY_BYTES")
+        if msteams_max_body_bytes:
+            try:
+                teams_cfg.extra["max_body_bytes"] = int(msteams_max_body_bytes)
+            except ValueError:
+                logger.warning("Invalid MSTEAMS_MAX_BODY_BYTES=%r — expected integer", msteams_max_body_bytes)
+        msteams_idempotency_ttl = os.getenv("MSTEAMS_IDEMPOTENCY_TTL_SECONDS")
+        if msteams_idempotency_ttl:
+            try:
+                teams_cfg.extra["idempotency_ttl_seconds"] = int(msteams_idempotency_ttl)
+            except ValueError:
+                logger.warning("Invalid MSTEAMS_IDEMPOTENCY_TTL_SECONDS=%r — expected integer", msteams_idempotency_ttl)
+        msteams_auth_cache_ttl = os.getenv("MSTEAMS_AUTH_CACHE_TTL_SECONDS")
+        if msteams_auth_cache_ttl:
+            try:
+                teams_cfg.extra["auth_cache_ttl_seconds"] = int(msteams_auth_cache_ttl)
+            except ValueError:
+                logger.warning("Invalid MSTEAMS_AUTH_CACHE_TTL_SECONDS=%r — expected integer", msteams_auth_cache_ttl)
+        msteams_pending_upload_ttl = os.getenv("MSTEAMS_PENDING_UPLOAD_TTL_SECONDS")
+        if msteams_pending_upload_ttl:
+            try:
+                teams_cfg.extra["pending_upload_ttl_seconds"] = int(msteams_pending_upload_ttl)
+            except ValueError:
+                logger.warning("Invalid MSTEAMS_PENDING_UPLOAD_TTL_SECONDS=%r — expected integer", msteams_pending_upload_ttl)
+        msteams_state_path = os.getenv("MSTEAMS_STATE_PATH")
+        if msteams_state_path:
+            teams_cfg.extra["state_path"] = msteams_state_path
+        msteams_sharepoint_site_id = os.getenv("MSTEAMS_SHAREPOINT_SITE_ID")
+        if msteams_sharepoint_site_id:
+            teams_cfg.extra["share_point_site_id"] = msteams_sharepoint_site_id.strip()
+        msteams_media_allow_hosts = _normalize_csv_list(os.getenv("MSTEAMS_MEDIA_ALLOW_HOSTS"))
+        if msteams_media_allow_hosts:
+            teams_cfg.extra["media_allow_hosts"] = msteams_media_allow_hosts
+        msteams_media_auth_allow_hosts = _normalize_csv_list(os.getenv("MSTEAMS_MEDIA_AUTH_ALLOW_HOSTS"))
+        if msteams_media_auth_allow_hosts:
+            teams_cfg.extra["media_auth_allow_hosts"] = msteams_media_auth_allow_hosts
+        msteams_allow_from = _normalize_csv_list(os.getenv("MSTEAMS_ALLOW_FROM"))
+        legacy_msteams_allowed_users = _normalize_csv_list(os.getenv("MSTEAMS_ALLOWED_USERS"))
+        if not msteams_allow_from and legacy_msteams_allowed_users:
+            msteams_allow_from = legacy_msteams_allowed_users
+        if msteams_allow_from:
+            teams_cfg.extra["allow_from"] = msteams_allow_from
+        msteams_group_allow_from = _normalize_csv_list(os.getenv("MSTEAMS_GROUP_ALLOW_FROM"))
+        if not msteams_group_allow_from and legacy_msteams_allowed_users:
+            msteams_group_allow_from = legacy_msteams_allowed_users
+        if msteams_group_allow_from:
+            teams_cfg.extra["group_allow_from"] = msteams_group_allow_from
+        msteams_dangerous_name_matching = os.getenv("MSTEAMS_DANGEROUSLY_ALLOW_NAME_MATCHING")
+        if msteams_dangerous_name_matching:
+            teams_cfg.extra["dangerously_allow_name_matching"] = _coerce_bool(msteams_dangerous_name_matching, False)
+        msteams_teams_json = _maybe_parse_json_object(os.getenv("MSTEAMS_TEAMS_JSON"))
+        if msteams_teams_json:
+            teams_cfg.extra["teams"] = msteams_teams_json
+    msteams_home = os.getenv("MSTEAMS_HOME_CHANNEL")
+    if msteams_home and Platform.MSTEAMS in config.platforms:
+        config.platforms[Platform.MSTEAMS].home_channel = HomeChannel(
+            platform=Platform.MSTEAMS,
+            chat_id=msteams_home,
+            name=os.getenv("MSTEAMS_HOME_CHANNEL_NAME", "Home"),
         )
     
     # Signal

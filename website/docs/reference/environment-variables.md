@@ -185,6 +185,31 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `SLACK_ALLOWED_USERS` | Comma-separated Slack user IDs |
 | `SLACK_HOME_CHANNEL` | Default Slack channel for cron delivery |
 | `SLACK_HOME_CHANNEL_NAME` | Display name for the Slack home channel |
+| `MSTEAMS_APP_ID` | Microsoft Teams / Azure Bot application ID |
+| `MSTEAMS_APP_PASSWORD` | Microsoft Teams bot client secret |
+| `MSTEAMS_TENANT_ID` | Entra tenant ID used for Bot Framework + Graph auth |
+| `MSTEAMS_HOME_CHANNEL` | Default Teams conversation ID for cron delivery |
+| `MSTEAMS_HOME_CHANNEL_NAME` | Display name for the Teams home channel |
+| `MSTEAMS_WEBHOOK_HOST` | Teams webhook bind address (default: `0.0.0.0`) |
+| `MSTEAMS_WEBHOOK_PORT` | Teams webhook port (default: `3978`) |
+| `MSTEAMS_WEBHOOK_PATH` | Teams webhook path (default: `/api/messages`) |
+| `MSTEAMS_REQUIRE_MENTION` | Require @mention in Teams groups/channels by default |
+| `MSTEAMS_REPLY_STYLE` | Reply style: `thread` or `top-level` |
+| `MSTEAMS_DM_POLICY` | Teams DM policy: `pairing`, `allowlist`, `open`, `disabled` |
+| `MSTEAMS_GROUP_POLICY` | Teams group/channel policy: `allowlist`, `open`, `disabled` |
+| `MSTEAMS_ALLOW_FROM` | Comma-separated allowed Teams user AAD object IDs |
+| `MSTEAMS_GROUP_ALLOW_FROM` | Comma-separated allowed Teams group/channel sender IDs |
+| `MSTEAMS_DANGEROUSLY_ALLOW_NAME_MATCHING` | Allow mutable display-name matching for Teams allowlists |
+| `MSTEAMS_TEAMS_JSON` | JSON object for per-team / per-channel overrides |
+| `MSTEAMS_TEXT_CHUNK_LIMIT` | Override Teams outbound chunk size (max 4000) |
+| `MSTEAMS_MAX_BODY_BYTES` | Max accepted inbound webhook payload size |
+| `MSTEAMS_IDEMPOTENCY_TTL_SECONDS` | TTL for duplicate activity suppression |
+| `MSTEAMS_AUTH_CACHE_TTL_SECONDS` | Cache lifetime for Bot Framework OpenID/JWKS metadata |
+| `MSTEAMS_PENDING_UPLOAD_TTL_SECONDS` | TTL for pending DM FileConsentCard uploads |
+| `MSTEAMS_STATE_PATH` | Override persisted Teams conversation-state file path |
+| `MSTEAMS_SHAREPOINT_SITE_ID` | SharePoint site ID used for Teams group/channel file uploads |
+| `MSTEAMS_MEDIA_ALLOW_HOSTS` | Comma-separated allowlist for Teams inbound media download hosts |
+| `MSTEAMS_MEDIA_AUTH_ALLOW_HOSTS` | Comma-separated allowlist for attaching bearer auth on Teams media retries |
 | `WHATSAPP_ENABLED` | Enable the WhatsApp bridge (`true`/`false`) |
 | `WHATSAPP_MODE` | `bot` (separate number) or `self-chat` (message yourself) |
 | `WHATSAPP_ALLOWED_USERS` | Comma-separated phone numbers (with country code, no `+`), or `*` to allow all senders |

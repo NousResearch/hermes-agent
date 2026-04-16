@@ -30,6 +30,16 @@ from typing import List, Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
 
+
+def _safe_getcwd() -> str:
+    """Return the current working directory, falling back to the home directory
+    if the CWD has been deleted (which makes os.getcwd() raise FileNotFoundError)."""
+    try:
+        return os.getcwd()
+    except FileNotFoundError:
+        return os.path.expanduser("~")
+
+
 # Suppress startup messages for clean CLI experience
 os.environ["HERMES_QUIET"] = "1"  # Our own modules
 
@@ -404,7 +414,7 @@ def load_cli_config() -> Dict[str, Any]:
     if terminal_config.get("cwd") in (".", "auto", "cwd"):
         effective_backend = terminal_config.get("env_type", "local")
         if effective_backend == "local":
-            terminal_config["cwd"] = os.getcwd()
+            terminal_config["cwd"] = _safe_getcwd()
             defaults["terminal"]["cwd"] = terminal_config["cwd"]
         else:
             # Remove so TERMINAL_CWD stays unset → tool picks backend default
@@ -2961,7 +2971,7 @@ class HermesCLI:
             tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets, quiet_mode=True)
             
             # Get terminal working directory (where commands will execute)
-            cwd = os.getenv("TERMINAL_CWD", os.getcwd())
+            cwd = os.getenv("TERMINAL_CWD", _safe_getcwd())
             
             # Build and display the banner
             build_welcome_banner(
@@ -3296,7 +3306,7 @@ class HermesCLI:
             print("  Or in config.yaml: checkpoints: { enabled: true }")
             return
 
-        cwd = os.getenv("TERMINAL_CWD", os.getcwd())
+        cwd = os.getenv("TERMINAL_CWD", _safe_getcwd())
         parts = command.split()
         args = parts[1:] if len(parts) > 1 else []
 
@@ -3912,7 +3922,7 @@ class HermesCLI:
         """Display current configuration with kawaii ASCII art."""
         # Get terminal config from environment (which was set from cli-config.yaml)
         terminal_env = os.getenv("TERMINAL_ENV", "local")
-        terminal_cwd = os.getenv("TERMINAL_CWD", os.getcwd())
+        terminal_cwd = os.getenv("TERMINAL_CWD", _safe_getcwd())
         terminal_timeout = os.getenv("TERMINAL_TIMEOUT", "60")
         
         user_config_path = _hermes_home / 'config.yaml'
@@ -5309,7 +5319,7 @@ class HermesCLI:
                     cc.print(_build_compact_banner())
                 else:
                     tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets, quiet_mode=True)
-                    cwd = os.getenv("TERMINAL_CWD", os.getcwd())
+                    cwd = os.getenv("TERMINAL_CWD", _safe_getcwd())
                     ctx_len = None
                     if hasattr(self, 'agent') and self.agent and hasattr(self.agent, 'context_compressor'):
                         ctx_len = self.agent.context_compressor.context_length
@@ -7564,7 +7574,7 @@ class HermesCLI:
                 _ctx_len = get_model_context_length(
                     self.model, base_url=self.base_url or "", api_key=self.api_key or "")
                 _ctx_result = preprocess_context_references(
-                    message, cwd=os.getcwd(), context_length=_ctx_len)
+                    message, cwd=_safe_getcwd(), context_length=_ctx_len)
                 if _ctx_result.expanded or _ctx_result.blocked:
                     if _ctx_result.references:
                         _cprint(

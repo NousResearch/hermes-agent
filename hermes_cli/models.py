@@ -1061,7 +1061,8 @@ def detect_provider_for_model(
             break
 
     if direct_match:
-        # Check if we have credentials for this provider
+        # Check if we have credentials for this provider — env vars,
+        # credential pool, or auth store entries.
         has_creds = False
         try:
             from hermes_cli.auth import PROVIDER_REGISTRY
@@ -1074,16 +1075,28 @@ def detect_provider_for_model(
                         break
         except Exception:
             pass
+        # Also check credential pool and auth store — covers OAuth,
+        # Claude Code tokens, and other non-env-var credentials (#10300).
+        if not has_creds:
+            try:
+                from agent.credential_pool import load_pool
+                pool = load_pool(direct_match)
+                if pool.has_credentials():
+                    has_creds = True
+            except Exception:
+                pass
+        if not has_creds:
+            try:
+                from hermes_cli.auth import _load_auth_store
+                store = _load_auth_store()
+                if direct_match in store.get("providers", {}) or direct_match in store.get("credential_pool", {}):
+                    has_creds = True
+            except Exception:
+                pass
 
-        if has_creds:
-            return (direct_match, name)
-
-        # No direct creds — try to find this model on OpenRouter instead
-        or_slug = _find_openrouter_slug(name)
-        if or_slug:
-            return ("openrouter", or_slug)
-        # Still return the direct provider — credential resolution will
-        # give a clear error rather than silently using the wrong provider
+        # Always return the direct provider match.  If credentials are
+        # missing, the client init will give a clear error rather than
+        # silently routing through the wrong provider (#10300).
         return (direct_match, name)
 
     # --- Step 2: check OpenRouter catalog ---

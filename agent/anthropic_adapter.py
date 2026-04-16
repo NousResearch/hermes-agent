@@ -1064,6 +1064,8 @@ def run_hermes_oauth_login_pure() -> Optional[Dict[str, Any]]:
     import webbrowser
 
     verifier, challenge = _generate_pkce()
+    import secrets as _secrets
+    oauth_state = _secrets.token_urlsafe(32)
 
     params = {
         "code": "true",
@@ -1073,7 +1075,7 @@ def run_hermes_oauth_login_pure() -> Optional[Dict[str, Any]]:
         "scope": _OAUTH_SCOPES,
         "code_challenge": challenge,
         "code_challenge_method": "S256",
-        "state": verifier,
+        "state": oauth_state,
     }
     from urllib.parse import urlencode
 
@@ -1110,7 +1112,12 @@ def run_hermes_oauth_login_pure() -> Optional[Dict[str, Any]]:
 
     splits = auth_code.split("#")
     code = splits[0]
-    state = splits[1] if len(splits) > 1 else ""
+    received_state = splits[1] if len(splits) > 1 else ""
+
+    # Validate state to prevent CSRF (RFC 6749 §10.12)
+    if received_state != oauth_state:
+        logger.warning("OAuth state mismatch — possible CSRF, aborting")
+        return None
 
     try:
         import urllib.request
@@ -1119,7 +1126,7 @@ def run_hermes_oauth_login_pure() -> Optional[Dict[str, Any]]:
             "grant_type": "authorization_code",
             "client_id": _OAUTH_CLIENT_ID,
             "code": code,
-            "state": state,
+            "state": received_state,
             "redirect_uri": _OAUTH_REDIRECT_URI,
             "code_verifier": verifier,
         }).encode()

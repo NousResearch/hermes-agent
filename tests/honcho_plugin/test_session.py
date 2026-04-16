@@ -8,7 +8,7 @@ from plugins.memory.honcho.session import (
     HonchoSession,
     HonchoSessionManager,
 )
-from plugins.memory.honcho import HonchoMemoryProvider
+from plugins.memory.honcho import CONCLUDE_SCHEMA, HonchoMemoryProvider
 
 
 # ---------------------------------------------------------------------------
@@ -366,6 +366,17 @@ class TestPeerLookupHelpers:
 
 
 class TestConcludeToolDispatch:
+    def test_honcho_conclude_schema_is_provider_compatible(self):
+        params = CONCLUDE_SCHEMA["parameters"]
+
+        assert params["type"] == "object"
+        assert "conclusion" in params["properties"]
+        assert "delete_id" in params["properties"]
+        assert "anyOf" not in params
+        assert "oneOf" not in params
+        assert "allOf" not in params
+        assert "not" not in params
+
     def test_honcho_conclude_defaults_to_user_peer(self):
         provider = HonchoMemoryProvider()
         provider._session_initialized = True

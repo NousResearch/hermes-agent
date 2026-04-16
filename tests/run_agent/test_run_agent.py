@@ -985,6 +985,68 @@ class TestBuildApiKwargs:
         kwargs = agent._build_api_kwargs(messages)
         assert kwargs["max_tokens"] == 65536
 
+    def test_custom_selfhosted_default_max_tokens(self, agent):
+        """Custom/self-hosted endpoints (mlx_vlm.server, llama.cpp, vLLM etc.)
+        should receive a generous max_tokens default when the user hasn't
+        configured one.  mlx_vlm.server hardcodes DEFAULT_MAX_TOKENS=256,
+        which silently truncates long responses mid-sentence with
+        finish_reason='stop'.  16384 is the pragmatic sweet spot for
+        single-response output without triggering context-length errors
+        on smaller models."""
+        agent.provider = "custom"
+        agent.base_url = "https://my-mac-mini.example.net/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.max_tokens = None
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        assert kwargs["max_tokens"] == 16384
+
+    def test_custom_selfhosted_respects_explicit_max_tokens(self, agent):
+        """When the user explicitly sets max_tokens, self-hosted endpoints
+        should honour that value rather than the 16384 fallback."""
+        agent.provider = "custom"
+        agent.base_url = "http://localhost:8000/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.max_tokens = 2048
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        assert kwargs["max_tokens"] == 2048
+
+    def test_openrouter_not_treated_as_selfhosted(self, agent):
+        """OpenRouter has its own max_tokens handling (per-model Anthropic
+        limits).  It must NOT fall through to the 16384 self-hosted default."""
+        agent.base_url = "https://openrouter.ai/api/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.model = "openai/gpt-5.4"  # non-Claude, skips the Claude branch too
+        agent.max_tokens = None
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        assert "max_tokens" not in kwargs
+
+    def test_openai_not_treated_as_selfhosted(self, agent):
+        """api.openai.com is a known managed provider and must not trigger
+        the self-hosted max_tokens default."""
+        agent.base_url = "https://api.openai.com/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.model = "gpt-4o-mini"
+        agent.max_tokens = None
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        assert "max_tokens" not in kwargs
+
+    def test_empty_base_url_not_treated_as_selfhosted(self, agent):
+        """Empty base_url (provider default) must not be classified as
+        self-hosted, since there's no URL to distinguish it from the
+        provider's own API."""
+        agent.base_url = ""
+        agent._base_url_lower = ""
+        agent.provider = "openrouter"
+        agent.model = "openai/gpt-5.4"
+        agent.max_tokens = None
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        assert "max_tokens" not in kwargs
+
     def test_ollama_think_false_on_effort_none(self, agent):
         """Custom (Ollama) provider with effort=none should inject think=false."""
         agent.provider = "custom"

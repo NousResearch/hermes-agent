@@ -2014,6 +2014,38 @@ class AIAgent:
         """Return True when the base URL targets OpenRouter."""
         return "openrouter" in self._base_url_lower
 
+    def _is_custom_selfhosted_endpoint(self) -> bool:
+        """Return True when the base URL looks like a custom/self-hosted
+        OpenAI-compatible server (mlx_vlm.server, llama.cpp, vLLM, etc.)
+        rather than a known managed provider.
+
+        Used to apply conservative defaults (e.g. max_tokens) for endpoints
+        that historically ship with very small default output caps.  A URL
+        is considered "custom" when it is configured AND does not match any
+        recognised managed provider.
+        """
+        url = self._base_url_lower
+        if not url:
+            return False
+        KNOWN_HOSTS = (
+            "api.openai.com",
+            "openrouter.ai",
+            "api.anthropic.com",
+            "nousresearch.com",
+            "api.deepseek.com",
+            "api.mistral.ai",
+            "api.together.xyz",
+            "api.groq.com",
+            "api.fireworks.ai",
+            "api.cerebras.ai",
+            "api.x.ai",
+            "generativelanguage.googleapis.com",
+            "models.github.ai",
+            "api.githubcopilot.com",
+            "dashscope",  # Qwen Portal (dashscope-intl / dashscope.aliyuncs.com)
+        )
+        return not any(h in url for h in KNOWN_HOSTS)
+
     @staticmethod
     def _model_requires_responses_api(model: str) -> bool:
         """Return True for models that require the Responses API path.
@@ -6662,6 +6694,16 @@ class AIAgent:
                 api_kwargs["max_tokens"] = _model_output_limit
             except Exception:
                 pass  # fail open — let the proxy pick its default
+        elif self._is_custom_selfhosted_endpoint():
+            # Custom / self-hosted OpenAI-compatible endpoints (mlx_vlm.server,
+            # llama.cpp server, vLLM on a private IP, etc.) frequently ship
+            # very low default max_tokens values.  mlx_vlm.server in particular
+            # hardcodes DEFAULT_MAX_TOKENS=256, which truncates any non-trivial
+            # response (long diary entries, multi-file write_file tool calls,
+            # code review output) mid-sentence with finish_reason="stop".
+            # When the user hasn't set model.max_tokens explicitly, send a
+            # generous default so self-hosted servers don't silently cap output.
+            api_kwargs.update(self._max_tokens_param(16384))
 
         extra_body = {}
 

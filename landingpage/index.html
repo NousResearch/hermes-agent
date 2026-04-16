@@ -1,0 +1,665 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Hermes Agent — An Agent That Grows With You</title>
+    <meta
+      name="description"
+      content="An open-source agent that grows with you — learns your projects, builds its own skills, and reaches you wherever you are. By Nous Research."
+    />
+    <meta name="theme-color" content="#0A0E1A" />
+
+    <meta property="og:title" content="Hermes Agent — AI Agent Framework" />
+    <meta
+      property="og:description"
+      content="An open-source agent that grows with you. Install it, give it your messaging accounts, and it becomes a persistent personal agent — learning your projects, building its own skills, and reaching you wherever you are."
+    />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://hermes-agent.nousresearch.com" />
+    <meta
+      property="og:image"
+      content="https://hermes-agent.nousresearch.com/hermes-agent-banner.png"
+    />
+
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+
+    <script
+      src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"
+      defer
+    ></script>
+    <link rel="stylesheet" href="style.css" />
+    <link rel="icon" type="image/x-icon" href="favicon.ico" />
+    <link rel="icon" type="image/png" sizes="32x32" href="favicon-32x32.png" />
+    <link rel="icon" type="image/png" sizes="16x16" href="favicon-16x16.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png" />
+  </head>
+  <body>
+    <canvas id="noise-overlay"></canvas>
+
+    <div class="ambient-glow glow-1"></div>
+    <div class="ambient-glow glow-2"></div>
+
+    <nav class="nav">
+      <div class="nav-inner">
+        <a href="#" class="nav-logo">
+          <img src="nous-logo.png" alt="Nous Research" class="nav-nous-logo" />
+          <span class="nav-brand"
+            >Hermes Agent <span class="nav-by">by Nous Research</span></span
+          >
+        </a>
+        <div class="nav-links">
+          <a href="#install">Install</a>
+          <a href="#features">Features</a>
+          <a href="/docs/">Docs</a>
+          <a
+            href="https://github.com/NousResearch/hermes-agent"
+            target="_blank"
+            rel="noopener"
+            >GitHub</a
+          >
+          <a
+            href="https://discord.gg/NousResearch"
+            target="_blank"
+            rel="noopener"
+            >Discord</a
+          >
+        </div>
+        <button
+          class="nav-hamburger"
+          id="nav-hamburger"
+          onclick="toggleMobileNav()"
+          aria-label="Toggle menu"
+        >
+          <span class="hamburger-bar"></span>
+          <span class="hamburger-bar"></span>
+          <span class="hamburger-bar"></span>
+        </button>
+        <div class="nav-mobile" id="nav-mobile">
+          <a href="#install" onclick="toggleMobileNav()">Install</a>
+          <a href="#features" onclick="toggleMobileNav()">Features</a>
+          <a href="/docs/">Docs</a>
+          <a
+            href="https://github.com/NousResearch/hermes-agent"
+            target="_blank"
+            rel="noopener"
+            >GitHub</a
+          >
+          <a
+            href="https://discord.gg/NousResearch"
+            target="_blank"
+            rel="noopener"
+            >Discord</a
+          >
+        </div>
+      </div>
+    </nav>
+
+    <section class="hero">
+      <div class="hero-content">
+        <div class="hero-badge">
+          <span class="badge-dot"></span>
+          Open Source &bull; MIT License
+        </div>
+
+        <!-- prettier-ignore -->
+        <pre class="hero-ascii" aria-hidden="true" style="font-family: monospace; line-height: 1.1">
+██╗  ██╗███████╗██████╗ ███╗   ███╗███████╗███████╗     █████╗  ██████╗ ███████╗███╗   ██╗████████╗
+██║  ██║██╔════╝██╔══██╗████╗ ████║██╔════╝██╔════╝    ██╔══██╗██╔════╝ ██╔════╝████╗  ██║╚══██╔══╝
+███████║█████╗  ██████╔╝██╔████╔██║█████╗  ███████╗    ███████║██║  ███╗█████╗  ██╔██╗ ██║   ██║   
+██╔══██║██╔══╝  ██╔══██╗██║╚██╔╝██║██╔══╝  ╚════██║    ██╔══██║██║   ██║██╔══╝  ██║╚██╗██║   ██║   
+██║  ██║███████╗██║  ██║██║ ╚═╝ ██║███████╗███████║    ██║  ██║╚██████╔╝███████╗██║ ╚████║   ██║   
+╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝╚═╝     ╚═╝╚══════╝╚══════╝    ╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═══╝   ╚═╝   
+</pre>
+
+        <h1 class="hero-title">
+          An agent that<br />
+          <span class="hero-gradient">grows with you.</span>
+        </h1>
+
+        <p class="hero-subtitle">
+          It's not a coding copilot tethered to an IDE or a chatbot wrapper
+          around a single API. It's an <strong>autonomous agent</strong> that
+          lives on your server, remembers what it learns, and gets more capable
+          the longer it runs.
+        </p>
+
+        <div class="hero-install">
+          <div class="install-widget">
+            <div class="install-widget-header">
+              <div class="install-dots">
+                <span class="dot dot-red"></span>
+                <span class="dot dot-yellow"></span>
+                <span class="dot dot-green"></span>
+              </div>
+              <div class="install-tabs">
+                <button
+                  class="install-tab active"
+                  data-platform="linux"
+                  onclick="switchPlatform('linux')"
+                >
+                  Linux / macOS / WSL
+                </button>
+              </div>
+            </div>
+            <div class="install-widget-body">
+              <span class="install-prompt" id="install-prompt">$</span>
+              <code id="install-command"
+                >curl -fsSL
+                https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh
+                | bash</code
+              >
+              <button
+                class="copy-btn"
+                onclick="copyInstall()"
+                title="Copy to clipboard"
+              >
+                <svg
+                  width="16"
+                  height="16"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                  <path
+                    d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"
+                  />
+                </svg>
+                <span class="copy-text">Copy</span>
+              </button>
+            </div>
+          </div>
+          <p class="install-note" id="install-note">
+            Works on Linux, macOS & WSL2 · No prerequisites · Installs
+            everything automatically
+          </p>
+        </div>
+
+        <div class="hero-links">
+          <a
+            href="https://portal.nousresearch.com"
+            class="btn btn-primary"
+            target="_blank"
+            rel="noopener"
+          >
+            <svg
+              width="20"
+              height="20"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4" />
+              <polyline points="10 17 15 12 10 7" />
+              <line x1="15" y1="12" x2="3" y2="12" />
+            </svg>
+            Sign Up on Nous Portal
+          </a>
+        </div>
+      </div>
+    </section>
+
+    <section class="section section-install" id="install">
+      <div class="container">
+        <div class="section-header">
+          <h2>Get started in 60 seconds</h2>
+        </div>
+
+        <div class="install-steps">
+          <div class="install-step">
+            <div class="step-number">1</div>
+            <div class="step-content">
+              <h4>Install</h4>
+              <div class="code-block">
+                <div class="code-header">
+                  <div class="code-tabs">
+                    <button
+                      class="code-tab active"
+                      data-platform="linux"
+                      onclick="switchStepPlatform('linux')"
+                    >
+                      Linux / macOS / WSL
+                    </button>
+                  </div>
+                  <button
+                    class="copy-btn"
+                    id="step1-copy"
+                    onclick="copyText(this)"
+                    data-text="curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash"
+                  >
+                    Copy
+                  </button>
+                </div>
+                <pre><code id="step1-command">curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash</code></pre>
+              </div>
+              <p class="step-note" id="step1-note">
+                Installs uv, Python 3.11, clones the repo, sets up everything.
+                No sudo needed.
+              </p>
+            </div>
+          </div>
+
+          <div class="install-step">
+            <div class="step-number">2</div>
+            <div class="step-content">
+              <h4>Configure</h4>
+              <div class="code-block">
+                <div class="code-header">
+                  <span>bash</span>
+                  <button
+                    class="copy-btn"
+                    onclick="copyText(this)"
+                    data-text="hermes setup"
+                  >
+                    Copy
+                  </button>
+                </div>
+                <pre><code><span class="code-comment"># Interactive setup wizard</span>
+hermes setup
+
+<span class="code-comment"># Or choose your model</span>
+hermes model</code></pre>
+              </div>
+              <p class="step-note">
+                Connect to Nous Portal (OAuth), OpenRouter (API key), or your
+                own endpoint.
+              </p>
+            </div>
+          </div>
+
+          <div class="install-step">
+            <div class="step-number">3</div>
+            <div class="step-content">
+              <h4>Start chatting</h4>
+              <div class="code-block">
+                <div class="code-header">
+                  <span>bash</span>
+                  <button
+                    class="copy-btn"
+                    onclick="copyText(this)"
+                    data-text="hermes"
+                  >
+                    Copy
+                  </button>
+                </div>
+                <pre><code>hermes</code></pre>
+              </div>
+              <p class="step-note">
+                That's it. Full interactive CLI with tools, memory, and skills.
+              </p>
+            </div>
+          </div>
+
+          <div class="install-step">
+            <div class="step-number">4</div>
+            <div class="step-content">
+              <h4>
+                Go multi-platform <span class="step-optional">(optional)</span>
+              </h4>
+              <div class="code-block">
+                <div class="code-header">
+                  <span>bash</span>
+                  <button
+                    class="copy-btn"
+                    onclick="copyText(this)"
+                    data-text="hermes gateway setup"
+                  >
+                    Copy
+                  </button>
+                </div>
+                <pre><code><span class="code-comment"># Interactive gateway setup wizard</span>
+hermes gateway setup
+
+<span class="code-comment"># Start the messaging gateway</span>
+hermes gateway
+
+<span class="code-comment"># Install as a system service</span>
+hermes gateway install</code></pre>
+              </div>
+              <p class="step-note">
+                Walk through connecting Telegram, Discord, Slack, or WhatsApp.
+                Runs as a systemd service.
+              </p>
+            </div>
+          </div>
+
+          <div class="install-step">
+            <div class="step-number">5</div>
+            <div class="step-content">
+              <h4>Keep it up to date</h4>
+              <div class="code-block">
+                <div class="code-header">
+                  <span>bash</span>
+                  <button
+                    class="copy-btn"
+                    onclick="copyText(this)"
+                    data-text="hermes update"
+                  >
+                    Copy
+                  </button>
+                </div>
+                <pre><code>hermes update</code></pre>
+              </div>
+              <p class="step-note">
+                Pulls the latest changes and reinstalls dependencies. Run
+                anytime to get new features and fixes.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div class="install-windows">
+          <p>
+            Native Windows support is extremely experimental and unsupported.
+            Please install
+            <a
+              href="https://learn.microsoft.com/en-us/windows/wsl/install"
+              target="_blank"
+              rel="noopener"
+              >WSL2</a
+            >
+            and run Hermes Agent from there.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Terminal Demo -->
+    <section class="section section-demo" id="demo">
+      <div class="container">
+        <div class="section-header">
+          <h2>See it in action</h2>
+        </div>
+
+        <div class="terminal-window">
+          <div class="terminal-header">
+            <div class="terminal-dots">
+              <span class="dot dot-red"></span>
+              <span class="dot dot-yellow"></span>
+              <span class="dot dot-green"></span>
+            </div>
+            <span class="terminal-title">hermes</span>
+          </div>
+          <div class="terminal-body" id="terminal-demo"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Features + Specs -->
+    <section class="section" id="features">
+      <div class="container">
+        <div class="section-header">
+          <h2>Features</h2>
+        </div>
+
+        <div class="features-grid">
+          <div class="feature-card">
+            <div class="feature-header">
+              <div class="feature-icon">
+                <svg
+                  width="20"
+                  height="20"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.5"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <path
+                    d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"
+                  />
+                </svg>
+              </div>
+              <h3>Lives Where You Do</h3>
+            </div>
+            <p>
+              Telegram, Discord, Slack, WhatsApp, and CLI from a single gateway
+              — start on one, pick up on another.
+            </p>
+          </div>
+
+          <div class="feature-card">
+            <div class="feature-header">
+              <div class="feature-icon">
+                <svg
+                  width="20"
+                  height="20"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.5"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <polyline points="22 7 13.5 15.5 8.5 10.5 2 17" />
+                  <polyline points="16 7 22 7 22 13" />
+                </svg>
+              </div>
+              <h3>Grows the Longer It Runs</h3>
+            </div>
+            <p>
+              Persistent memory and auto-generated skills — it learns your
+              projects and never forgets how it solved a problem.
+            </p>
+          </div>
+
+          <div class="feature-card">
+            <div class="feature-header">
+              <div class="feature-icon">
+                <svg
+                  width="20"
+                  height="20"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.5"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <circle cx="12" cy="12" r="10" />
+                  <polyline points="12 6 12 12 16 14" />
+                </svg>
+              </div>
+              <h3>Scheduled Automations</h3>
+            </div>
+            <p>
+              Natural language cron scheduling for reports, backups, and
+              briefings — running unattended through the gateway.
+            </p>
+          </div>
+
+          <div class="feature-card">
+            <div class="feature-header">
+              <div class="feature-icon">
+                <svg
+                  width="20"
+                  height="20"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.5"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <circle cx="18" cy="18" r="3" />
+                  <circle cx="6" cy="6" r="3" />
+                  <path d="M6 21V9a9 9 0 0 0 9 9" />
+                  <path d="M18 3v12a9 9 0 0 1-9-9" />
+                </svg>
+              </div>
+              <h3>Delegates & Parallelizes</h3>
+            </div>
+            <p>
+              Isolated subagents with their own conversations, terminals, and
+              Python RPC scripts for zero-context-cost pipelines.
+            </p>
+          </div>
+
+          <div class="feature-card">
+            <div class="feature-header">
+              <div class="feature-icon">
+                <svg
+                  width="20"
+                  height="20"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.5"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                  <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                </svg>
+              </div>
+              <h3>Real Sandboxing</h3>
+            </div>
+            <p>
+              Five backends — local, Docker, SSH, Singularity, Modal — with
+              container hardening and namespace isolation.
+            </p>
+          </div>
+
+          <div class="feature-card">
+            <div class="feature-header">
+              <div class="feature-icon">
+                <svg
+                  width="20"
+                  height="20"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.5"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <circle cx="12" cy="12" r="10" />
+                  <line x1="2" y1="12" x2="22" y2="12" />
+                  <path
+                    d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"
+                  />
+                </svg>
+              </div>
+              <h3>Full Web & Browser Control</h3>
+            </div>
+            <p>
+              Web search, browser automation, vision, image generation,
+              text-to-speech, and multi-model reasoning.
+            </p>
+          </div>
+        </div>
+
+        <div class="features-more">
+          <button class="more-toggle" onclick="toggleSpecs()" id="specs-toggle">
+            <span class="toggle-label">More details</span>
+            <svg
+              class="more-chevron"
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <polyline points="6 9 12 15 18 9" />
+            </svg>
+          </button>
+        </div>
+
+        <div class="specs-wrapper" id="specs-wrapper">
+          <div class="specs-list">
+            <div class="spec-row">
+              <h3 class="spec-label">Tools</h3>
+              <p class="spec-value">
+                40+ built-in — web search, terminal, file system, browser
+                automation, vision, image generation, text-to-speech, code
+                execution, subagent delegation, memory, task planning, cron
+                scheduling, multi-model reasoning, and more.
+              </p>
+            </div>
+
+            <div class="spec-row">
+              <h3 class="spec-label">Platforms</h3>
+              <p class="spec-value">
+                Telegram, Discord, Slack, WhatsApp, Signal, Email, and CLI — all
+                from a single gateway. Connect to
+                <a
+                  href="https://portal.nousresearch.com"
+                  target="_blank"
+                  rel="noopener"
+                  >Nous Portal</a
+                >, OpenRouter, or any OpenAI-compatible API.
+              </p>
+            </div>
+
+            <div class="spec-row">
+              <h3 class="spec-label">Environments</h3>
+              <p class="spec-value">
+                Run locally, in Docker, over SSH, on Modal, Daytona, or
+                Singularity. Container hardening with read-only root, dropped
+                capabilities, and namespace isolation.
+              </p>
+            </div>
+
+            <div class="spec-row">
+              <h3 class="spec-label">Skills</h3>
+              <p class="spec-value">
+                40+ bundled skills covering MLOps, GitHub workflows, research,
+                and more. The agent creates new skills on the fly and shares
+                them via the open
+                <a href="https://agentskills.io" target="_blank" rel="noopener"
+                  >agentskills.io</a
+                >
+                format. Install community skills from
+                <a href="https://clawhub.ai" target="_blank" rel="noopener"
+                  >ClawHub</a
+                >,
+                <a href="https://lobehub.com" target="_blank" rel="noopener"
+                  >LobeHub</a
+                >, and GitHub.
+              </p>
+            </div>
+
+            <div class="spec-row">
+              <h3 class="spec-label">Research</h3>
+              <p class="spec-value">
+                Batch trajectory generation with parallel workers and
+                checkpointing. Atropos integration for RL training. Export to
+                ShareGPT for fine-tuning with trajectory compression.
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <footer class="footer">
+      <div class="container">
+        <p class="footer-copy">
+          Built by
+          <a href="https://nousresearch.com" target="_blank" rel="noopener"
+            >Nous Research</a
+          >
+          &middot; MIT License &middot; 2026
+        </p>
+      </div>
+    </footer>
+
+    <script src="script.js"></script>
+  </body>
+</html>

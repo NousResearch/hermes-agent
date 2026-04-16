@@ -1,12 +1,11 @@
 name: Deploy Site
 
 on:
-  release:
-    types: [published]
   push:
     branches: [main]
     paths:
       - 'website/**'
+      - 'landingpage/**'
       - 'skills/**'
       - 'optional-skills/**'
       - '.github/workflows/deploy-site.yml'
@@ -21,14 +20,8 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  deploy-vercel:
-    if: github.event_name == 'release'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Trigger Vercel Deploy
-        run: curl -X POST "${{ secrets.VERCEL_DEPLOY_HOOK }}"
-
-  deploy-docs:
+  build-and-deploy:
+    # Only run on the upstream repository, not on forks
     if: github.repository == 'NousResearch/hermes-agent'
     runs-on: ubuntu-latest
     environment:
@@ -69,10 +62,20 @@ jobs:
         run: npm run build
         working-directory: website
 
+      - name: Stage deployment
+        run: |
+          mkdir -p _site/docs
+          # Landing page at root
+          cp -r landingpage/* _site/
+          # Docusaurus at /docs/
+          cp -r website/build/* _site/docs/
+          # CNAME so GitHub Pages keeps the custom domain between deploys
+          echo "hermes-agent.nousresearch.com" > _site/CNAME
+
       - name: Upload artifact
         uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa  # v3
         with:
-          path: website/build
+          path: _site
 
       - name: Deploy to GitHub Pages
         id: deploy

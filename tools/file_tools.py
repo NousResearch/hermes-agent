@@ -127,6 +127,43 @@ def _is_expected_write_exception(exc: Exception) -> bool:
     return False
 
 
+# Well-known Hermes config files that should resolve to HERMES_HOME
+# when provided as bare filenames (no directory separator)
+_HERMES_CONFIG_FILES = frozenset({
+    "SOUL.md",
+    "config.yaml",
+    ".env",
+    "agents.md",
+    "AGENTS.md",
+})
+
+
+def _resolve_hermes_config_path(path: str) -> str:
+    """Resolve well-known Hermes config files to HERMES_HOME.
+
+    When a bare filename (no directory separator) matches a well-known
+    Hermes config file, resolve it relative to HERMES_HOME instead of
+    the current working directory.
+
+    Args:
+        path: The input path string
+
+    Returns:
+        The resolved path (may be unchanged if not a config file)
+    """
+    # Only handle bare filenames (no directory separator)
+    if not path or os.path.sep in path or "/" in path:
+        return path
+
+    # Check if it's a well-known Hermes config file
+    if path in _HERMES_CONFIG_FILES:
+        from hermes_constants import get_hermes_home
+        hermes_home = get_hermes_home()
+        return str(hermes_home / path)
+
+    return path
+
+
 _file_ops_lock = threading.Lock()
 _file_ops_cache: dict = {}
 
@@ -540,6 +577,8 @@ def _check_file_staleness(filepath: str, task_id: str) -> str | None:
 
 def write_file_tool(path: str, content: str, task_id: str = "default") -> str:
     """Write content to a file."""
+    # Resolve well-known Hermes config files to HERMES_HOME
+    path = _resolve_hermes_config_path(path)
     sensitive_err = _check_sensitive_path(path)
     if sensitive_err:
         return tool_error(sensitive_err)
@@ -566,6 +605,9 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                new_string: str = None, replace_all: bool = False, patch: str = None,
                task_id: str = "default") -> str:
     """Patch a file using replace mode or V4A patch format."""
+    # Resolve well-known Hermes config files to HERMES_HOME
+    if path:
+        path = _resolve_hermes_config_path(path)
     # Check sensitive paths for both replace (explicit path) and V4A patch (extract paths)
     _paths_to_check = []
     if path:

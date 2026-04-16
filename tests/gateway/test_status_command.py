@@ -209,3 +209,28 @@ async def test_status_command_bypasses_active_session_guard():
     assert "Agent Running" in sent[0]
     assert not interrupt_event.is_set(), "/status incorrectly triggered an agent interrupt"
     assert session_key not in adapter._pending_messages, "/status was incorrectly queued"
+
+
+@pytest.mark.asyncio
+async def test_profile_command_reports_custom_root_profile(monkeypatch, tmp_path):
+    """Gateway /profile detects custom-root profiles (not under ~/.hermes)."""
+    from pathlib import Path
+
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+    )
+    runner = _make_runner(session_entry)
+    profile_home = tmp_path / "profiles" / "coder"
+
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "unrelated-home")
+
+    result = await runner._handle_profile_command(_make_event("/profile"))
+
+    assert "**Profile:** `coder`" in result
+    assert f"**Home:** `{profile_home}`" in result

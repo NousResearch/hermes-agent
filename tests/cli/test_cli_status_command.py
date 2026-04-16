@@ -1,5 +1,6 @@
 """Tests for CLI /status command behavior."""
 from datetime import datetime
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -83,3 +84,18 @@ def test_show_session_status_prints_gateway_style_summary():
     _, kwargs = cli_obj.console.print.call_args
     assert kwargs.get("highlight") is False
     assert kwargs.get("markup") is False
+
+
+def test_profile_command_reports_custom_root_profile(monkeypatch, tmp_path, capsys):
+    """Profile detection works for custom-root deployments (not under ~/.hermes)."""
+    cli_obj = _make_cli()
+    profile_home = tmp_path / "profiles" / "coder"
+
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "unrelated-home")
+
+    cli_obj._handle_profile_command()
+
+    out = capsys.readouterr().out
+    assert "Profile: coder" in out
+    assert f"Home:    {profile_home}" in out

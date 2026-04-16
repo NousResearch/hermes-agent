@@ -4393,31 +4393,16 @@ class GatewayRunner:
     
     async def _handle_profile_command(self, event: MessageEvent) -> str:
         """Handle /profile — show active profile name and home directory."""
-        from hermes_constants import get_hermes_home, display_hermes_home
-        from pathlib import Path
+        from hermes_constants import display_hermes_home
+        from hermes_cli.profiles import get_active_profile_name
 
-        home = get_hermes_home()
         display = display_hermes_home()
+        profile_name = get_active_profile_name()
 
-        # Detect profile name from HERMES_HOME path
-        # Profile paths look like: ~/.hermes/profiles/<name>
-        profiles_parent = Path.home() / ".hermes" / "profiles"
-        try:
-            rel = home.relative_to(profiles_parent)
-            profile_name = str(rel).split("/")[0]
-        except ValueError:
-            profile_name = None
-
-        if profile_name:
-            lines = [
-                f"👤 **Profile:** `{profile_name}`",
-                f"📂 **Home:** `{display}`",
-            ]
-        else:
-            lines = [
-                "👤 **Profile:** default",
-                f"📂 **Home:** `{display}`",
-            ]
+        lines = [
+            f"👤 **Profile:** `{profile_name}`",
+            f"📂 **Home:** `{display}`",
+        ]
 
         return "\n".join(lines)
 

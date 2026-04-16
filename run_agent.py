@@ -965,11 +965,20 @@ class AIAgent:
             if api_key and base_url:
                 # Explicit credentials from CLI/gateway — construct directly.
                 # The runtime provider resolver already handled auth for us.
-                client_kwargs = {"api_key": api_key, "base_url": base_url}
+                
+                # Ensure custom OpenAI-compatible base URLs correctly target the /v1 path
+                # Required for providers like xAI, vLLM, or Ollama that expect /v1/chat/completions
+                normalized_base_url = base_url
+                if normalized_base_url and self.api_mode == "chat_completions" and self.provider not in ("copilot-acp", "openrouter"):
+                    stripped_url = normalized_base_url.rstrip("/")
+                    if not stripped_url.endswith("/v1"):
+                        normalized_base_url = f"{stripped_url}/v1/"
+                
+                client_kwargs = {"api_key": api_key, "base_url": normalized_base_url}
                 if self.provider == "copilot-acp":
                     client_kwargs["command"] = self.acp_command
                     client_kwargs["args"] = self.acp_args
-                effective_base = base_url
+                effective_base = normalized_base_url
                 if "openrouter" in effective_base.lower():
                     client_kwargs["default_headers"] = {
                         "HTTP-Referer": "https://hermes-agent.nousresearch.com",

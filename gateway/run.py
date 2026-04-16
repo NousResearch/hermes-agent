@@ -9390,7 +9390,7 @@ class GatewayRunner:
         # tool progress and token streaming. Users can keep tool_progress quiet
         # in chat platforms while opting into concise mid-turn updates.
         interim_assistant_messages_enabled = (
-            source.platform != Platform.WEBHOOK
+            source.platform not in (Platform.WEBHOOK, Platform.HUB)
             and is_truthy_value(
                 display_config.get("interim_assistant_messages"),
                 default=True,
@@ -9895,7 +9895,13 @@ class GatewayRunner:
             agent.step_callback = _step_callback_sync if _hooks_ref.loaded_hooks else None
             agent.stream_delta_callback = _stream_delta_cb
             agent.interim_assistant_callback = _interim_assistant_cb if _want_interim_messages else None
-            agent.status_callback = _status_callback_sync
+            # Hub carries agent-to-agent traffic — lifecycle/status messages
+            # (rate-limit notices, retries, fallbacks) have no value to the
+            # partner agent and amplify into a feedback loop when each status
+            # ping triggers a fresh LLM call on the receiving side.
+            agent.status_callback = (
+                None if source.platform == Platform.HUB else _status_callback_sync
+            )
             agent.reasoning_config = reasoning_config
             agent.service_tier = self._service_tier
             agent.request_overrides = turn_route.get("request_overrides")

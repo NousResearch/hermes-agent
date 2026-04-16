@@ -28,6 +28,17 @@ MAX_RECONNECT_DELAY = 300.0
 RECONNECT_BACKOFF_MULT = 2.0
 PING_INTERVAL = 20.0
 
+# Gateway-internal strings that must never be forwarded to a partner agent.
+# Each is produced by run_agent.py when an LLM call fails or is interrupted;
+# forwarding them over Hub causes the partner to treat the failure as a
+# conversational turn and reply, which triggers another LLM call on the
+# originating side, which fails the same way. That's an unbounded
+# amplification loop between paired agents and must not reach the wire.
+_SUPPRESSED_INTERNAL_PREFIXES = (
+    "Operation interrupted:",
+    "API call failed after",
+)
+
 
 def check_hub_requirements() -> bool:
     """Check if Hub platform dependencies are available."""
@@ -41,6 +52,13 @@ def check_hub_requirements() -> bool:
 
 class HubAdapter(BasePlatformAdapter):
     """Hub platform adapter using outbound WebSocket connection."""
+
+    # Hub's REST API does not expose an edit endpoint. Without this flag the
+    # gateway stream consumer sends a partial first message, discovers edit
+    # is unsupported on the first update, and falls back to a continuation
+    # send — yielding two messages per turn instead of one and doubling the
+    # inbound-trigger surface on the partner.
+    SUPPORTS_MESSAGE_EDITING = False
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.HUB)
@@ -125,6 +143,13 @@ class HubAdapter(BasePlatformAdapter):
 
         chat_id format: "hub:{recipient_id}" or just "{recipient_id}"
         """
+        if content and content.startswith(_SUPPRESSED_INTERNAL_PREFIXES):
+            logger.info(
+                "[Hub] Suppressing internal error/interrupt message to %s (%d chars)",
+                chat_id, len(content),
+            )
+            return SendResult(success=True, message_id="")
+
         recipient = chat_id[4:] if chat_id.startswith("hub:") else chat_id
 
         try:

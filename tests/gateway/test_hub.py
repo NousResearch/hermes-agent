@@ -199,6 +199,64 @@ async def test_send_without_hub_prefix():
     assert "brain/message" in mock_client.post.call_args[0][0]
 
 
+def test_hub_does_not_support_message_editing():
+    # Hub's REST API has no edit endpoint; declaring this flag prevents the
+    # gateway stream consumer from sending a partial + continuation pair.
+    assert HubAdapter.SUPPORTS_MESSAGE_EDITING is False
+
+
+@pytest.mark.asyncio
+async def test_send_suppresses_operation_interrupted():
+    adapter = _make_adapter()
+    mock_client = AsyncMock()
+    mock_client.post = AsyncMock()
+    mock_client.aclose = AsyncMock()
+    adapter._http_client = mock_client
+
+    result = await adapter.send(
+        "hub:brain",
+        "Operation interrupted: waiting for model response (12.3s elapsed).",
+    )
+    assert result.success is True
+    assert result.message_id == ""
+    mock_client.post.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_send_suppresses_api_call_failed():
+    adapter = _make_adapter()
+    mock_client = AsyncMock()
+    mock_client.post = AsyncMock()
+    mock_client.aclose = AsyncMock()
+    adapter._http_client = mock_client
+
+    result = await adapter.send(
+        "hub:brain",
+        "API call failed after 3 retries: HTTP 429 Too Many Requests",
+    )
+    assert result.success is True
+    mock_client.post.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_send_forwards_normal_content():
+    # Regression: the suppression filter must not swallow normal agent replies
+    # that happen to begin similarly.
+    adapter = _make_adapter()
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {"message_id": "msg-789"}
+    mock_client = AsyncMock()
+    mock_client.post.return_value = mock_response
+    mock_client.aclose = AsyncMock()
+    adapter._http_client = mock_client
+
+    result = await adapter.send("hub:brain", "API call failed on your side? Try again.")
+    # This does NOT start with "API call failed after" — must pass through.
+    assert result.success is True
+    mock_client.post.assert_called_once()
+
+
 @pytest.mark.asyncio
 async def test_send_http_error():
     adapter = _make_adapter()

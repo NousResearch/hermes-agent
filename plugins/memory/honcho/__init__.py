@@ -76,7 +76,7 @@ SEARCH_SCHEMA = {
             },
             "peer": {
                 "type": "string",
-                "description": "Peer to query. Built-in aliases: 'user' (default), 'ai'. Or pass any peer ID from this workspace.",
+                "description": "Peer whose conclusion is being written or deleted. Built-in aliases: 'user' (default), 'ai'. Or pass any peer ID from this workspace.",
             },
         },
         "required": ["query"],
@@ -171,10 +171,7 @@ CONCLUDE_SCHEMA = {
                 "description": "Peer to query. Built-in aliases: 'user' (default), 'ai'. Or pass any peer ID from this workspace.",
             },
         },
-        "anyOf": [
-            {"required": ["conclusion"]},
-            {"required": ["delete_id"]},
-        ],
+        "required": [],
     },
 }
 
@@ -1011,16 +1008,24 @@ class HonchoMemoryProvider(MemoryProvider):
                 return json.dumps({"result": "\n\n".join(parts) or "No context available."})
 
             elif tool_name == "honcho_conclude":
+                delete_id_provided = "delete_id" in args
+                conclusion_provided = "conclusion" in args
                 delete_id = args.get("delete_id")
+                conclusion = args.get("conclusion")
                 peer = args.get("peer", "user")
-                if delete_id:
+                if delete_id_provided == conclusion_provided:
+                    return tool_error("Must pass exactly one of: conclusion or delete_id")
+                if delete_id_provided:
+                    if not isinstance(delete_id, str) or not delete_id.strip():
+                        return tool_error("delete_id must be a non-empty string")
+                    delete_id = delete_id.strip()
                     ok = self._manager.delete_conclusion(self._session_key, delete_id, peer=peer)
                     if ok:
                         return json.dumps({"result": f"Conclusion {delete_id} deleted."})
                     return tool_error(f"Failed to delete conclusion {delete_id}.")
-                conclusion = args.get("conclusion", "")
-                if not conclusion:
-                    return tool_error("Missing required parameter: conclusion or delete_id")
+                if not isinstance(conclusion, str) or not conclusion.strip():
+                    return tool_error("conclusion must be a non-empty string")
+                conclusion = conclusion.strip()
                 ok = self._manager.create_conclusion(self._session_key, conclusion, peer=peer)
                 if ok:
                     return json.dumps({"result": f"Conclusion saved for {peer}: {conclusion}"})

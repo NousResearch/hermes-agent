@@ -1,5 +1,6 @@
 """Tests for plugins/memory/honcho/session.py — HonchoSession and helpers."""
 
+import json
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -8,7 +9,7 @@ from plugins.memory.honcho.session import (
     HonchoSession,
     HonchoSessionManager,
 )
-from plugins.memory.honcho import HonchoMemoryProvider
+from plugins.memory.honcho import CONCLUDE_SCHEMA, HonchoMemoryProvider
 
 
 # ---------------------------------------------------------------------------
@@ -366,6 +367,12 @@ class TestPeerLookupHelpers:
 
 
 class TestConcludeToolDispatch:
+    def test_honcho_conclude_schema_uses_plain_object_parameters(self):
+        forbidden_top_level_keys = {"anyOf", "oneOf", "allOf", "enum", "not"}
+
+        assert CONCLUDE_SCHEMA["parameters"]["type"] == "object"
+        assert forbidden_top_level_keys.isdisjoint(CONCLUDE_SCHEMA["parameters"])
+
     def test_honcho_conclude_defaults_to_user_peer(self):
         provider = HonchoMemoryProvider()
         provider._session_initialized = True
@@ -459,9 +466,113 @@ class TestConcludeToolDispatch:
             peer="hermes",
         )
 
+    def test_honcho_conclude_rejects_both_params(self):
+        provider = HonchoMemoryProvider()
+        provider._session_initialized = True
+        provider._session_key = "telegram:123"
+        provider._manager = MagicMock()
+
+        result = provider.handle_tool_call(
+            "honcho_conclude",
+            {"conclusion": "User prefers dark mode", "delete_id": "conc-123"},
+        )
+
+        parsed = json.loads(result)
+        assert "error" in parsed
+        assert "exactly one" in parsed["error"]
+        provider._manager.create_conclusion.assert_not_called()
+        provider._manager.delete_conclusion.assert_not_called()
+
+    def test_honcho_conclude_delete_id_succeeds(self):
+        provider = HonchoMemoryProvider()
+        provider._session_initialized = True
+        provider._session_key = "telegram:123"
+        provider._manager = MagicMock()
+        provider._manager.delete_conclusion.return_value = True
+
+        result = provider.handle_tool_call(
+            "honcho_conclude",
+            {"delete_id": "conc-123"},
+        )
+
+        assert "Conclusion conc-123 deleted." in result
+        provider._manager.delete_conclusion.assert_called_once_with(
+            "telegram:123",
+            "conc-123",
+            peer="user",
+        )
+        provider._manager.create_conclusion.assert_not_called()
+
+    def test_honcho_conclude_rejects_conclusion_with_empty_delete_id(self):
+        provider = HonchoMemoryProvider()
+        provider._session_initialized = True
+        provider._session_key = "telegram:123"
+        provider._manager = MagicMock()
+
+        result = provider.handle_tool_call(
+            "honcho_conclude",
+            {"conclusion": "User prefers dark mode", "delete_id": ""},
+        )
+
+        parsed = json.loads(result)
+        assert "error" in parsed
+        assert "exactly one" in parsed["error"]
+        provider._manager.create_conclusion.assert_not_called()
+        provider._manager.delete_conclusion.assert_not_called()
+
+    def test_honcho_conclude_rejects_delete_id_with_empty_conclusion(self):
+        provider = HonchoMemoryProvider()
+        provider._session_initialized = True
+        provider._session_key = "telegram:123"
+        provider._manager = MagicMock()
+
+        result = provider.handle_tool_call(
+            "honcho_conclude",
+            {"delete_id": "conc-123", "conclusion": ""},
+        )
+
+        parsed = json.loads(result)
+        assert "error" in parsed
+        assert "exactly one" in parsed["error"]
+        provider._manager.create_conclusion.assert_not_called()
+        provider._manager.delete_conclusion.assert_not_called()
+
+    def test_honcho_conclude_rejects_empty_delete_id(self):
+        provider = HonchoMemoryProvider()
+        provider._session_initialized = True
+        provider._session_key = "telegram:123"
+        provider._manager = MagicMock()
+
+        result = provider.handle_tool_call(
+            "honcho_conclude",
+            {"delete_id": ""},
+        )
+
+        parsed = json.loads(result)
+        assert "error" in parsed
+        assert "non-empty string" in parsed["error"]
+        provider._manager.create_conclusion.assert_not_called()
+        provider._manager.delete_conclusion.assert_not_called()
+
+    def test_honcho_conclude_rejects_blank_conclusion(self):
+        provider = HonchoMemoryProvider()
+        provider._session_initialized = True
+        provider._session_key = "telegram:123"
+        provider._manager = MagicMock()
+
+        result = provider.handle_tool_call(
+            "honcho_conclude",
+            {"conclusion": "   "},
+        )
+
+        parsed = json.loads(result)
+        assert "error" in parsed
+        assert "non-empty string" in parsed["error"]
+        provider._manager.create_conclusion.assert_not_called()
+        provider._manager.delete_conclusion.assert_not_called()
+
     def test_honcho_conclude_missing_both_params_returns_error(self):
         """Calling honcho_conclude with neither conclusion nor delete_id returns a tool error."""
-        import json
         provider = HonchoMemoryProvider()
         provider._session_initialized = True
         provider._session_key = "telegram:123"

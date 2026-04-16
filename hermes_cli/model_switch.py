@@ -792,7 +792,7 @@ def list_authenticated_providers(
 
     results: List[dict] = []
     seen_slugs: set = set()  # lowercase-normalized to catch case variants (#9545)
-    seen_mdev_ids: set = set()  # prevent duplicate entries for aliases (e.g. kimi-coding + kimi-coding-cn)
+    seen_display_names: set = set()  # track display names for disambiguation (#10526)
 
     data = fetch_models_dev()
 
@@ -805,11 +805,6 @@ def list_authenticated_providers(
 
     # --- 1. Check Hermes-mapped providers ---
     for hermes_id, mdev_id in PROVIDER_TO_MODELS_DEV.items():
-        # Skip aliases that map to the same models.dev provider (e.g.
-        # kimi-coding and kimi-coding-cn both → kimi-for-coding).
-        # The first one with valid credentials wins (#10526).
-        if mdev_id in seen_mdev_ids:
-            continue
         pdata = data.get(mdev_id)
         if not isinstance(pdata, dict):
             continue
@@ -839,6 +834,19 @@ def list_authenticated_providers(
         pinfo = _mdev_pinfo(mdev_id)
         display_name = pinfo.name if pinfo else mdev_id
 
+        # Disambiguate duplicate display names (#10526)
+        # When multiple Hermes IDs map to the same external ID (e.g.
+        # kimi-coding and kimi-coding-cn both → kimi-for-coding),
+        # append a suffix to distinguish them.
+        if display_name in seen_display_names:
+            if hermes_id.endswith("-cn"):
+                display_name = f"{display_name} (China)"
+            elif "-" in hermes_id:
+                suffix = hermes_id.split("-")[-1].upper()
+                display_name = f"{display_name} ({suffix})"
+            else:
+                display_name = f"{display_name} ({hermes_id})"
+
         results.append({
             "slug": slug,
             "name": display_name,
@@ -849,7 +857,7 @@ def list_authenticated_providers(
             "source": "built-in",
         })
         seen_slugs.add(slug.lower())
-        seen_mdev_ids.add(mdev_id)
+        seen_display_names.add(pinfo.name if pinfo else mdev_id)
 
     # --- 2. Check Hermes-only providers (nous, openai-codex, copilot, opencode-go) ---
     from hermes_cli.providers import HERMES_OVERLAYS
@@ -938,9 +946,21 @@ def list_authenticated_providers(
         total = len(model_ids)
         top = model_ids[:max_models]
 
+        display_name = get_label(hermes_slug)
+
+        # Disambiguate duplicate display names (#10526)
+        if display_name in seen_display_names:
+            if hermes_slug.endswith("-cn"):
+                display_name = f"{display_name} (China)"
+            elif "-" in hermes_slug:
+                suffix = hermes_slug.split("-")[-1].upper()
+                display_name = f"{display_name} ({suffix})"
+            else:
+                display_name = f"{display_name} ({hermes_slug})"
+
         results.append({
             "slug": hermes_slug,
-            "name": get_label(hermes_slug),
+            "name": display_name,
             "is_current": hermes_slug == current_provider or pid == current_provider,
             "is_user_defined": False,
             "models": top,
@@ -949,6 +969,7 @@ def list_authenticated_providers(
         })
         seen_slugs.add(pid.lower())
         seen_slugs.add(hermes_slug.lower())
+        seen_display_names.add(get_label(hermes_slug))
 
     # --- 2b. Cross-check canonical provider list ---
     # Catches providers that are in CANONICAL_PROVIDERS but weren't found
@@ -998,9 +1019,21 @@ def list_authenticated_providers(
         _cp_total = len(_cp_model_ids)
         _cp_top = _cp_model_ids[:max_models]
 
+        _cp_display_name = _cp.label
+
+        # Disambiguate duplicate display names (#10526)
+        if _cp_display_name in seen_display_names:
+            if _cp.slug.endswith("-cn"):
+                _cp_display_name = f"{_cp_display_name} (China)"
+            elif "-" in _cp.slug:
+                suffix = _cp.slug.split("-")[-1].upper()
+                _cp_display_name = f"{_cp_display_name} ({suffix})"
+            else:
+                _cp_display_name = f"{_cp_display_name} ({_cp.slug})"
+
         results.append({
             "slug": _cp.slug,
-            "name": _cp.label,
+            "name": _cp_display_name,
             "is_current": _cp.slug == current_provider,
             "is_user_defined": False,
             "models": _cp_top,
@@ -1008,6 +1041,7 @@ def list_authenticated_providers(
             "source": "canonical",
         })
         seen_slugs.add(_cp.slug.lower())
+        seen_display_names.add(_cp.label)
 
     # --- 3. User-defined endpoints from config ---
     if user_providers and isinstance(user_providers, dict):

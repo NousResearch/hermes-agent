@@ -586,18 +586,34 @@ class KawaiiSpinner:
     KAWAII_WAITING = [
         "(｡◕‿◕｡)", "(◕‿◕✿)", "٩(◕‿◕｡)۶", "(✿◠‿◠)", "( ˘▽˘)っ",
         "♪(´ε` )", "(◕ᴗ◕✿)", "ヾ(＾∇＾)", "(≧◡≦)", "(★ω★)",
+        # Expanded: warm, friendly, curious
+        "(｡♥‿♥｡)", "(*^‿^*)", "(づ｡◕‿‿◕｡)づ", "(*¯︶¯*)", "(o^▽^o)",
+        "ヽ(・∀・)ﾉ", "(*≧ω≦*)", "(^人^)", "(っ˘ω˘ς )", "(ღ˘⌣˘ღ)",
+        "(๑˃ᴗ˂)ﻭ", "(♡°▽°♡)", "(つ✧ω✧)つ", "(ﾉ>ω<)ﾉ", "ヾ(☆▽☆)",
     ]
 
+    # Thinking / processing — curious, pensive, clever
     KAWAII_THINKING = [
         "(｡•́︿•̀｡)", "(◔_◔)", "(¬‿¬)", "( •_•)>⌐■-■", "(⌐■_■)",
         "(´･_･`)", "◉_◉", "(°ロ°)", "( ˘⌣˘)♡", "ヽ(>∀<☆)☆",
         "٩(๑❛ᴗ❛๑)۶", "(⊙_⊙)", "(¬_¬)", "( ͡° ͜ʖ ͡°)", "ಠ_ಠ",
+        # Expanded: more variety for reasoning moments
+        "( •̀_\•́ )", "(￣～￣;)", "( •́ .̫ •̀ )", "( ˘•ω•˘ )", "(๑•́ - •̀๑)",
+        "(・_・;)", "( ˙-˙ )", "(⊙﹏⊙)", "(•ิ_•ิ)?",
+        "('・_・')", "( ・◇・)?", '(¬_¬")', "(눈‸눈)",
+        "( •̀ ω •́ )✧",
     ]
 
     THINKING_VERBS = [
         "pondering", "contemplating", "musing", "cogitating", "ruminating",
         "deliberating", "mulling", "reflecting", "processing", "reasoning",
         "analyzing", "computing", "synthesizing", "formulating", "brainstorming",
+        # Expanded: curated vocabulary for the thinking spinner
+        "cerebrating", "orchestrating", "crystallizing", "deciphering", "manifesting",
+        "reticulating", "osmosing", "percolating", "calculating", "composing",
+        "architecting", "distilling", "harmonizing", "calibrating", "reconciling",
+        "interconnecting", "mustering", "concocting", "unraveling", "choreographing",
+        "tempering", "transmuting", "catalyzing", "perusing", "scheming",
     ]
 
     def __init__(self, message: str = "", spinner_type: str = 'dots', print_fn=None):

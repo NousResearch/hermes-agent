@@ -75,7 +75,7 @@ from tools.browser_tool import cleanup_browser
 from hermes_constants import OPENROUTER_BASE_URL
 
 # Agent internals extracted to agent/ package for modularity
-from agent.memory_manager import build_memory_context_block
+from agent.memory_manager import build_memory_context_block, sanitize_context
 from agent.retry_utils import jittered_backoff
 from agent.error_classifier import classify_api_error, FailoverReason
 from agent.prompt_builder import (
@@ -602,6 +602,7 @@ class AIAgent:
         prefill_messages: List[Dict[str, Any]] = None,
         platform: str = None,
         user_id: str = None,
+        gateway_session_key: str = None,
         skip_context_files: bool = False,
         skip_memory: bool = False,
         session_db=None,
@@ -667,6 +668,7 @@ class AIAgent:
         self.ephemeral_system_prompt = ephemeral_system_prompt
         self.platform = platform  # "cli", "telegram", "discord", "whatsapp", etc.
         self._user_id = user_id  # Platform user identifier (gateway sessions)
+        self._gateway_session_key = gateway_session_key  # Stable per-chat key (e.g. agent:main:telegram:dm:123)
         # Pluggable print function — CLI replaces this with _cprint so that
         # raw ANSI status lines are routed through prompt_toolkit's renderer
         # instead of going directly to stdout where patch_stdout's StdoutProxy
@@ -689,9 +691,14 @@ class AIAgent:
             self.api_mode = api_mode
         elif self.provider == "openai-codex":
             self.api_mode = "codex_responses"
+        elif self.provider == "xai":
+            self.api_mode = "codex_responses"
         elif (provider_name is None) and "chatgpt.com/backend-api/codex" in self._base_url_lower:
             self.api_mode = "codex_responses"
             self.provider = "openai-codex"
+        elif (provider_name is None) and "api.x.ai" in self._base_url_lower:
+            self.api_mode = "codex_responses"
+            self.provider = "xai"
         elif self.provider == "anthropic" or (provider_name is None and "api.anthropic.com" in self._base_url_lower):
             self.api_mode = "anthropic_messages"
             self.provider = "anthropic"
@@ -1019,16 +1026,12 @@ class AIAgent:
                             f"was found. Set the {_env_hint} environment "
                             f"variable, or switch to a different provider with `hermes model`."
                         )
-                    # Final fallback: try raw OpenRouter key
-                    client_kwargs = {
-                        "api_key": os.getenv("OPENROUTER_API_KEY", ""),
-                        "base_url": OPENROUTER_BASE_URL,
-                        "default_headers": {
-                            "HTTP-Referer": "https://hermes-agent.nousresearch.com",
-                            "X-OpenRouter-Title": "Hermes Agent",
-                            "X-OpenRouter-Categories": "productivity,cli-agent",
-                        },
-                    }
+                    # No provider configured — reject with a clear message.
+                    raise RuntimeError(
+                        "No LLM provider configured. Run `hermes model` to "
+                        "select a provider, or run `hermes setup` for first-time "
+                        "configuration."
+                    )
             
             self._client_kwargs = client_kwargs  # stored for rebuilding after interrupt
 
@@ -1292,6 +1295,9 @@ class AIAgent:
                         # Thread gateway user identity for per-user memory scoping
                         if self._user_id:
                             _init_kwargs["user_id"] = self._user_id
+                        # Thread gateway session key for stable per-chat Honcho session isolation
+                        if self._gateway_session_key:
+                            _init_kwargs["gateway_session_key"] = self._gateway_session_key
                         # Profile identity for per-profile provider scoping
                         try:
                             from hermes_cli.profiles import get_active_profile_name
@@ -2101,6 +2107,59 @@ class AIAgent:
         content = re.sub(r'<thought>.*?</thought>', '', content, flags=re.DOTALL | re.IGNORECASE)
         content = re.sub(r'</?(?:think|thinking|reasoning|thought|REASONING_SCRATCHPAD)>\s*', '', content, flags=re.IGNORECASE)
         return content
+
+    @staticmethod
+    def _has_natural_response_ending(content: str) -> bool:
+        """Heuristic: does visible assistant text look intentionally finished?"""
+        if not content:
+            return False
+        stripped = content.rstrip()
+        if not stripped:
+            return False
+        if stripped.endswith("```"):
+            return True
+        return stripped[-1] in '.!?:)"\']}。！？：）】」』》'
+
+    def _is_ollama_glm_backend(self) -> bool:
+        """Detect the narrow backend family affected by Ollama/GLM stop misreports."""
+        model_lower = (self.model or "").lower()
+        provider_lower = (self.provider or "").lower()
+        if "glm" not in model_lower and provider_lower != "zai":
+            return False
+        if "ollama" in self._base_url_lower or ":11434" in self._base_url_lower:
+            return True
+        return bool(self.base_url and is_local_endpoint(self.base_url))
+
+    def _should_treat_stop_as_truncated(
+        self,
+        finish_reason: str,
+        assistant_message,
+        messages: Optional[list] = None,
+    ) -> bool:
+        """Detect conservative stop->length misreports for Ollama-hosted GLM models."""
+        if finish_reason != "stop" or self.api_mode != "chat_completions":
+            return False
+        if not self._is_ollama_glm_backend():
+            return False
+        if not any(
+            isinstance(msg, dict) and msg.get("role") == "tool"
+            for msg in (messages or [])
+        ):
+            return False
+        if assistant_message is None or getattr(assistant_message, "tool_calls", None):
+            return False
+
+        content = getattr(assistant_message, "content", None)
+        if not isinstance(content, str):
+            return False
+
+        visible_text = self._strip_think_blocks(content).strip()
+        if not visible_text:
+            return False
+        if len(visible_text) < 20 or not re.search(r"\s", visible_text):
+            return False
+
+        return not self._has_natural_response_ending(visible_text)
 
     def _looks_like_codex_intermediate_ack(
         self,
@@ -3978,6 +4037,7 @@ class AIAgent:
             "model", "instructions", "input", "tools", "store",
             "reasoning", "include", "max_output_tokens", "temperature",
             "tool_choice", "parallel_tool_calls", "prompt_cache_key", "service_tier",
+            "extra_headers",
         }
         normalized: Dict[str, Any] = {
             "model": model,
@@ -4012,6 +4072,20 @@ class AIAgent:
             val = api_kwargs.get(passthrough_key)
             if val is not None:
                 normalized[passthrough_key] = val
+
+        extra_headers = api_kwargs.get("extra_headers")
+        if extra_headers is not None:
+            if not isinstance(extra_headers, dict):
+                raise ValueError("Codex Responses request 'extra_headers' must be an object.")
+            normalized_headers: Dict[str, str] = {}
+            for key, value in extra_headers.items():
+                if not isinstance(key, str) or not key.strip():
+                    raise ValueError("Codex Responses request 'extra_headers' keys must be non-empty strings.")
+                if value is None:
+                    continue
+                normalized_headers[key.strip()] = str(value)
+            if normalized_headers:
+                normalized["extra_headers"] = normalized_headers
 
         if allow_stream:
             stream = api_kwargs.get("stream")
@@ -6451,7 +6525,12 @@ class AIAgent:
             if not is_github_responses:
                 kwargs["prompt_cache_key"] = self.session_id
 
-            if reasoning_enabled:
+            is_xai_responses = self.provider == "xai" or "api.x.ai" in (self.base_url or "").lower()
+
+            if reasoning_enabled and is_xai_responses:
+                # xAI reasons automatically — no effort param, just include encrypted content
+                kwargs["include"] = ["reasoning.encrypted_content"]
+            elif reasoning_enabled:
                 if is_github_responses:
                     # Copilot's Responses route advertises reasoning-effort support,
                     # but not OpenAI-specific prompt cache or encrypted reasoning
@@ -6462,7 +6541,7 @@ class AIAgent:
                 else:
                     kwargs["reasoning"] = {"effort": reasoning_effort, "summary": "auto"}
                     kwargs["include"] = ["reasoning.encrypted_content"]
-            elif not is_github_responses:
+            elif not is_github_responses and not is_xai_responses:
                 kwargs["include"] = []
 
             if self.request_overrides:
@@ -6470,6 +6549,9 @@ class AIAgent:
 
             if self.max_tokens is not None and not is_codex_backend:
                 kwargs["max_output_tokens"] = self.max_tokens
+
+            if is_xai_responses and getattr(self, "session_id", None):
+                kwargs["extra_headers"] = {"x-grok-conv-id": self.session_id}
 
             return kwargs
 
@@ -6635,17 +6717,23 @@ class AIAgent:
             options["num_ctx"] = self._ollama_num_ctx
             extra_body["options"] = options
 
+        # Ollama / custom provider: pass think=false when reasoning is disabled.
+        # Ollama does not recognise the OpenRouter-style `reasoning` extra_body
+        # field, so we use its native `think` parameter instead.
+        # This prevents thinking-capable models (Qwen3, etc.) from generating
+        # <think> blocks and producing empty-response errors when the user has
+        # set reasoning_effort: none.
+        if self.provider == "custom" and self.reasoning_config and isinstance(self.reasoning_config, dict):
+            _effort = (self.reasoning_config.get("effort") or "").strip().lower()
+            _enabled = self.reasoning_config.get("enabled", True)
+            if _effort == "none" or _enabled is False:
+                extra_body["think"] = False
+
         if self._is_qwen_portal():
             extra_body["vl_high_resolution_images"] = True
 
         if extra_body:
             api_kwargs["extra_body"] = extra_body
-
-        # xAI prompt caching: send x-grok-conv-id header to route requests
-        # to the same server, maximizing automatic cache hits.
-        # https://docs.x.ai/developers/advanced-api-usage/prompt-caching
-        if "x.ai" in self._base_url_lower and hasattr(self, "session_id") and self.session_id:
-            api_kwargs["extra_headers"] = {"x-grok-conv-id": self.session_id}
 
         # Priority Processing / generic request overrides (e.g. service_tier).
         # Applied last so overrides win over any defaults set above.
@@ -6757,9 +6845,16 @@ class AIAgent:
                 except Exception:
                     pass
 
+        # Sanitize surrogates from API response — some models (e.g. Kimi/GLM via Ollama)
+        # can return invalid surrogate code points that crash json.dumps() on persist.
+        _raw_content = assistant_message.content or ""
+        _san_content = _sanitize_surrogates(_raw_content)
+        if reasoning_text:
+            reasoning_text = _sanitize_surrogates(reasoning_text)
+
         msg = {
             "role": "assistant",
-            "content": assistant_message.content or "",
+            "content": _san_content,
             "reasoning": reasoning_text,
             "finish_reason": finish_reason,
         }
@@ -7418,7 +7513,7 @@ class AIAgent:
         # Start spinner for CLI mode (skip when TUI handles tool progress)
         spinner = None
         if self._should_emit_quiet_tool_messages() and self._should_start_quiet_spinner():
-            face = random.choice(KawaiiSpinner.KAWAII_WAITING)
+            face = random.choice(KawaiiSpinner.get_waiting_faces())
             spinner = KawaiiSpinner(f"{face} ⚡ running {num_tools} tools concurrently", spinner_type='dots', print_fn=self._print_fn)
             spinner.start()
 
@@ -7432,24 +7527,50 @@ class AIAgent:
 
                 # Wait for all to complete with periodic heartbeats so the
                 # gateway's inactivity monitor doesn't kill us during long
-                # concurrent tool batches.
+                # concurrent tool batches.  Also check for user interrupts
+                # so we don't block indefinitely when the user sends /stop
+                # or a new message during concurrent tool execution.
                 _conc_start = time.time()
+                _interrupt_logged = False
                 while True:
                     done, not_done = concurrent.futures.wait(
-                        futures, timeout=30.0,
+                        futures, timeout=5.0,
                     )
                     if not not_done:
                         break
+
+                    # Check for interrupt — the per-thread interrupt signal
+                    # already causes individual tools (terminal, execute_code)
+                    # to abort, but tools without interrupt checks (web_search,
+                    # read_file) will run to completion.  Cancel any futures
+                    # that haven't started yet so we don't block on them.
+                    if self._interrupt_requested:
+                        if not _interrupt_logged:
+                            _interrupt_logged = True
+                            self._vprint(
+                                f"{self.log_prefix}⚡ Interrupt: cancelling "
+                                f"{len(not_done)} pending concurrent tool(s)",
+                                force=True,
+                            )
+                        for f in not_done:
+                            f.cancel()
+                        # Give already-running tools a moment to notice the
+                        # per-thread interrupt signal and exit gracefully.
+                        concurrent.futures.wait(not_done, timeout=3.0)
+                        break
+
                     _conc_elapsed = int(time.time() - _conc_start)
-                    _still_running = [
-                        parsed_calls[futures.index(f)][1]
-                        for f in not_done
-                        if f in futures
-                    ]
-                    self._touch_activity(
-                        f"concurrent tools running ({_conc_elapsed}s, "
-                        f"{len(not_done)} remaining: {', '.join(_still_running[:3])})"
-                    )
+                    # Heartbeat every ~30s (6 × 5s poll intervals)
+                    if _conc_elapsed > 0 and _conc_elapsed % 30 < 6:
+                        _still_running = [
+                            parsed_calls[futures.index(f)][1]
+                            for f in not_done
+                            if f in futures
+                        ]
+                        self._touch_activity(
+                            f"concurrent tools running ({_conc_elapsed}s, "
+                            f"{len(not_done)} remaining: {', '.join(_still_running[:3])})"
+                        )
         finally:
             if spinner:
                 # Build a summary message for the spinner stop
@@ -7461,8 +7582,11 @@ class AIAgent:
         for i, (tc, name, args) in enumerate(parsed_calls):
             r = results[i]
             if r is None:
-                # Shouldn't happen, but safety fallback
-                function_result = f"Error executing tool '{name}': thread did not return a result"
+                # Tool was cancelled (interrupt) or thread didn't return
+                if self._interrupt_requested:
+                    function_result = f"[Tool execution cancelled — {name} was skipped due to user interrupt]"
+                else:
+                    function_result = f"Error executing tool '{name}': thread did not return a result"
                 tool_duration = 0.0
             else:
                 function_name, function_args, function_result, tool_duration, is_error = r
@@ -7714,7 +7838,7 @@ class AIAgent:
                     spinner_label = f"🔀 {goal_preview}" if goal_preview else "🔀 delegating"
                 spinner = None
                 if self._should_emit_quiet_tool_messages() and self._should_start_quiet_spinner():
-                    face = random.choice(KawaiiSpinner.KAWAII_WAITING)
+                    face = random.choice(KawaiiSpinner.get_waiting_faces())
                     spinner = KawaiiSpinner(f"{face} {spinner_label}", spinner_type='dots', print_fn=self._print_fn)
                     spinner.start()
                 self._delegate_spinner = spinner
@@ -7741,7 +7865,7 @@ class AIAgent:
                 # Context engine tools (lcm_grep, lcm_describe, lcm_expand, etc.)
                 spinner = None
                 if self.quiet_mode and not self.tool_progress_callback:
-                    face = random.choice(KawaiiSpinner.KAWAII_WAITING)
+                    face = random.choice(KawaiiSpinner.get_waiting_faces())
                     emoji = _get_tool_emoji(function_name)
                     preview = _build_tool_preview(function_name, function_args) or function_name
                     spinner = KawaiiSpinner(f"{face} {emoji} {preview}", spinner_type='dots', print_fn=self._print_fn)
@@ -7765,7 +7889,7 @@ class AIAgent:
                 # These are not in the tool registry — route through MemoryManager.
                 spinner = None
                 if self._should_emit_quiet_tool_messages() and self._should_start_quiet_spinner():
-                    face = random.choice(KawaiiSpinner.KAWAII_WAITING)
+                    face = random.choice(KawaiiSpinner.get_waiting_faces())
                     emoji = _get_tool_emoji(function_name)
                     preview = _build_tool_preview(function_name, function_args) or function_name
                     spinner = KawaiiSpinner(f"{face} {emoji} {preview}", spinner_type='dots', print_fn=self._print_fn)
@@ -7787,7 +7911,7 @@ class AIAgent:
             elif self.quiet_mode:
                 spinner = None
                 if self._should_emit_quiet_tool_messages() and self._should_start_quiet_spinner():
-                    face = random.choice(KawaiiSpinner.KAWAII_WAITING)
+                    face = random.choice(KawaiiSpinner.get_waiting_faces())
                     emoji = _get_tool_emoji(function_name)
                     preview = _build_tool_preview(function_name, function_args) or function_name
                     spinner = KawaiiSpinner(f"{face} {emoji} {preview}", spinner_type='dots', print_fn=self._print_fn)
@@ -8150,6 +8274,16 @@ class AIAgent:
         if isinstance(persist_user_message, str):
             persist_user_message = _sanitize_surrogates(persist_user_message)
 
+        # Strip leaked <memory-context> blocks from user input.  When Honcho's
+        # saveMessages persists a turn that included injected context, the block
+        # can reappear in the next turn's user message via message history.
+        # Stripping here prevents stale memory tags from leaking into the
+        # conversation and being visible to the user or the model as user text.
+        if isinstance(user_message, str):
+            user_message = sanitize_context(user_message)
+        if isinstance(persist_user_message, str):
+            persist_user_message = sanitize_context(persist_user_message)
+
         # Store stream callback for _interruptible_api_call to pick up
         self._stream_callback = stream_callback
         self._persist_user_message_idx = None
@@ -8429,6 +8563,16 @@ class AIAgent:
             self._interrupt_message = None
             self._interrupt_thread_signal_pending = False
 
+        # Notify memory providers of the new turn so cadence tracking works.
+        # Must happen BEFORE prefetch_all() so providers know which turn it is
+        # and can gate context/dialectic refresh via contextCadence/dialecticCadence.
+        if self._memory_manager:
+            try:
+                _turn_msg = original_user_message if isinstance(original_user_message, str) else ""
+                self._memory_manager.on_turn_start(self._user_turn_count, _turn_msg)
+            except Exception:
+                pass
+
         # External memory provider: prefetch once before the tool loop.
         # Reuse the cached result on every iteration to avoid re-calling
         # prefetch_all() on each tool call (10 tool calls = 10x latency + cost).
@@ -8620,6 +8764,12 @@ class AIAgent:
                     new_tcs.append(tc)
                 am["tool_calls"] = new_tcs
 
+            # Proactively strip any surrogate characters before the API call.
+            # Models served via Ollama (Kimi K2.5, GLM-5, Qwen) can return
+            # lone surrogates (U+D800-U+DFFF) that crash json.dumps() inside
+            # the OpenAI SDK. Sanitizing here prevents the 3-retry cycle.
+            _sanitize_messages_surrogates(api_messages)
+
             # Calculate approximate request size for logging
             total_chars = sum(len(str(msg)) for msg in api_messages)
             approx_tokens = estimate_messages_tokens_rough(api_messages)
@@ -8633,8 +8783,8 @@ class AIAgent:
                 self._vprint(f"{self.log_prefix}   🔧 Available tools: {len(self.tools) if self.tools else 0}")
             else:
                 # Animated thinking spinner in quiet mode
-                face = random.choice(KawaiiSpinner.KAWAII_THINKING)
-                verb = random.choice(KawaiiSpinner.THINKING_VERBS)
+                face = random.choice(KawaiiSpinner.get_thinking_faces())
+                verb = random.choice(KawaiiSpinner.get_thinking_verbs())
                 if self.thinking_callback:
                     # CLI TUI mode: use prompt_toolkit widget instead of raw spinner
                     # (works in both streaming and non-streaming modes)
@@ -9018,6 +9168,17 @@ class AIAgent:
                         finish_reason = stop_reason_map.get(response.stop_reason, "stop")
                     else:
                         finish_reason = response.choices[0].finish_reason
+                        assistant_message = response.choices[0].message
+                        if self._should_treat_stop_as_truncated(
+                            finish_reason,
+                            assistant_message,
+                            messages,
+                        ):
+                            self._vprint(
+                                f"{self.log_prefix}⚠️  Treating suspicious Ollama/GLM stop response as truncated",
+                                force=True,
+                            )
+                            finish_reason = "length"
 
                     if finish_reason == "length":
                         self._vprint(f"{self.log_prefix}⚠️  Response truncated (finish_reason='length') - model hit max output tokens", force=True)
@@ -10792,8 +10953,9 @@ class AIAgent:
                             #   tool(result) → assistant("(empty)") → user(nudge)
                             # Without this, we'd have tool → user which most
                             # APIs reject as an invalid sequence.
-                            assistant_msg["content"] = "(empty)"
-                            messages.append(assistant_msg)
+                            _nudge_msg = self._build_assistant_message(assistant_message, finish_reason)
+                            _nudge_msg["content"] = "(empty)"
+                            messages.append(_nudge_msg)
                             messages.append({
                                 "role": "user",
                                 "content": (

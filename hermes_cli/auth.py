@@ -70,6 +70,7 @@ DEFAULT_CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
 DEFAULT_QWEN_BASE_URL = "https://portal.qwen.ai/v1"
 DEFAULT_GITHUB_MODELS_BASE_URL = "https://api.githubcopilot.com"
 DEFAULT_COPILOT_ACP_BASE_URL = "acp://copilot"
+DEFAULT_OLLAMA_CLOUD_BASE_URL = "https://ollama.com/v1"
 CODEX_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 CODEX_OAUTH_TOKEN_URL = "https://auth.openai.com/oauth/token"
 CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120
@@ -273,6 +274,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         inference_base_url="https://api.xiaomimimo.com/v1",
         api_key_env_vars=("XIAOMI_API_KEY",),
         base_url_env_var="XIAOMI_BASE_URL",
+    ),
+    "ollama-cloud": ProviderConfig(
+        id="ollama-cloud",
+        name="Ollama Cloud",
+        auth_type="api_key",
+        inference_base_url=DEFAULT_OLLAMA_CLOUD_BASE_URL,
+        api_key_env_vars=("OLLAMA_API_KEY",),
+        base_url_env_var="OLLAMA_BASE_URL",
     ),
     "bedrock": ProviderConfig(
         id="bedrock",
@@ -919,6 +928,7 @@ def resolve_provider(
     _PROVIDER_ALIASES = {
         "glm": "zai", "z-ai": "zai", "z.ai": "zai", "zhipu": "zai",
         "google": "gemini", "google-gemini": "gemini", "google-ai-studio": "gemini",
+        "x-ai": "xai", "x.ai": "xai", "grok": "xai",
         "kimi": "kimi-coding", "kimi-for-coding": "kimi-coding", "moonshot": "kimi-coding",
         "kimi-cn": "kimi-coding-cn", "moonshot-cn": "kimi-coding-cn",
         "arcee-ai": "arcee", "arceeai": "arcee",
@@ -937,7 +947,8 @@ def resolve_provider(
         "kilo": "kilocode", "kilo-code": "kilocode", "kilo-gateway": "kilocode",
         # Local server aliases — route through the generic custom provider
         "lmstudio": "custom", "lm-studio": "custom", "lm_studio": "custom",
-        "ollama": "custom", "vllm": "custom", "llamacpp": "custom",
+        "ollama": "custom", "ollama_cloud": "ollama-cloud",
+        "vllm": "custom", "llamacpp": "custom",
         "llama.cpp": "custom", "llama-cpp": "custom",
     }
     normalized = _PROVIDER_ALIASES.get(normalized, normalized)

@@ -64,7 +64,9 @@ AUTHOR_MAP = {
     "259807879+Bartok9@users.noreply.github.com": "Bartok9",
     "241404605+MestreY0d4-Uninter@users.noreply.github.com": "MestreY0d4-Uninter",
     "268667990+Roy-oss1@users.noreply.github.com": "Roy-oss1",
+    "27917469+nosleepcassette@users.noreply.github.com": "nosleepcassette",
     "241404605+MestreY0d4-Uninter@users.noreply.github.com": "MestreY0d4-Uninter",
+    "109555139+davetist@users.noreply.github.com": "davetist",
     # contributors (manual mapping from git names)
     "dmayhem93@gmail.com": "dmahan93",
     "samherring99@gmail.com": "samherring99",
@@ -83,6 +85,7 @@ AUTHOR_MAP = {
     "4317663+helix4u@users.noreply.github.com": "helix4u",
     "331214+counterposition@users.noreply.github.com": "counterposition",
     "blspear@gmail.com": "BrennerSpear",
+    "239876380+handsdiff@users.noreply.github.com": "handsdiff",
     "gpickett00@gmail.com": "gpickett00",
     "mcosma@gmail.com": "wakamex",
     "clawdia.nash@proton.me": "clawdia-nash",
@@ -124,6 +127,7 @@ AUTHOR_MAP = {
     "balyan.sid@gmail.com": "balyansid",
     "oluwadareab12@gmail.com": "bennytimz",
     "simon@simonmarcus.org": "simon-marcus",
+    "xowiekk@gmail.com": "Xowiek",
     "1243352777@qq.com": "zons-zhaozhy",
     # ── bulk addition: 75 emails resolved via API, PR salvage bodies, noreply
     #    crossref, and GH contributor list matching (April 2026 audit) ──
@@ -175,6 +179,7 @@ AUTHOR_MAP = {
     "limars874@gmail.com": "limars874",
     "lisicheng168@gmail.com": "lesterli",
     "mingjwan@microsoft.com": "MagicRay1217",
+    "orangeko@gmail.com": "GenKoKo",
     "niyant@spicefi.xyz": "spniyant",
     "olafthiele@gmail.com": "olafthiele",
     "oncuevtv@gmail.com": "sprmn24",

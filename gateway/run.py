@@ -24,6 +24,7 @@ import signal
 import tempfile
 import threading
 import time
+from contextvars import copy_context
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, Optional, Any, List
@@ -834,7 +835,7 @@ class GatewayRunner:
         session_key: Optional[str] = None,
     ):
         """Run the sync memory flush in a thread pool so it won't block the event loop."""
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         await loop.run_in_executor(
             None,
             self._flush_memories_for_session,
@@ -2925,6 +2926,32 @@ class GatewayRunner:
                     merge_pending_message_event(adapter._pending_messages, _quick_key, event)
                 return None
 
+            _telegram_followup_grace = float(
+                os.getenv("HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS", "3.0")
+            )
+            _started_at = self._running_agents_ts.get(_quick_key, 0)
+            if (
+                source.platform == Platform.TELEGRAM
+                and event.message_type == MessageType.TEXT
+                and _telegram_followup_grace > 0
+                and _started_at
+                and (time.time() - _started_at) <= _telegram_followup_grace
+            ):
+                logger.debug(
+                    "Telegram follow-up arrived %.2fs after run start for %s — queueing without interrupt",
+                    time.time() - _started_at,
+                    _quick_key[:20],
+                )
+                adapter = self.adapters.get(source.platform)
+                if adapter:
+                    merge_pending_message_event(
+                        adapter._pending_messages,
+                        _quick_key,
+                        event,
+                        merge_text=True,
+                    )
+                return None
+
             running_agent = self._running_agents.get(_quick_key)
             if running_agent is _AGENT_PENDING_SENTINEL:
                 # Agent is being set up but not ready yet.
@@ -2938,7 +2965,12 @@ class GatewayRunner:
                 # agent starts.
                 adapter = self.adapters.get(source.platform)
                 if adapter:
-                    adapter._pending_messages[_quick_key] = event
+                    merge_pending_message_event(
+                        adapter._pending_messages,
+                        _quick_key,
+                        event,
+                        merge_text=True,
+                    )
                 return None
             if self._draining:
                 if self._queue_during_drain_enabled():
@@ -3746,12 +3778,13 @@ class GatewayRunner:
                                     model=_hyg_model,
                                     max_iterations=4,
                                     quiet_mode=True,
+                                    skip_memory=True,
                                     enabled_toolsets=["memory"],
                                     session_id=session_entry.session_id,
                                 )
                                 _hyg_agent._print_fn = lambda *a, **kw: None
 
-                                loop = asyncio.get_event_loop()
+                                loop = asyncio.get_running_loop()
                                 _compressed, _ = await loop.run_in_executor(
                                     None,
                                     lambda: _hyg_agent._compress_context(
@@ -4400,31 +4433,16 @@ class GatewayRunner:
     
     async def _handle_profile_command(self, event: MessageEvent) -> str:
         """Handle /profile — show active profile name and home directory."""
-        from hermes_constants import get_hermes_home, display_hermes_home
-        from pathlib import Path
+        from hermes_constants import display_hermes_home
+        from hermes_cli.profiles import get_active_profile_name
 
-        home = get_hermes_home()
         display = display_hermes_home()
+        profile_name = get_active_profile_name()
 
-        # Detect profile name from HERMES_HOME path
-        # Profile paths look like: ~/.hermes/profiles/<name>
-        profiles_parent = Path.home() / ".hermes" / "profiles"
-        try:
-            rel = home.relative_to(profiles_parent)
-            profile_name = str(rel).split("/")[0]
-        except ValueError:
-            profile_name = None
-
-        if profile_name:
-            lines = [
-                f"👤 **Profile:** `{profile_name}`",
-                f"📂 **Home:** `{display}`",
-            ]
-        else:
-            lines = [
-                "👤 **Profile:** default",
-                f"📂 **Home:** `{display}`",
-            ]
+        lines = [
+            f"👤 **Profile:** `{profile_name}`",
+            f"📂 **Home:** `{display}`",
+        ]
 
         return "\n".join(lines)
 
@@ -5087,6 +5105,7 @@ class GatewayRunner:
     async def _handle_personality_command(self, event: MessageEvent) -> str:
         """Handle /personality command - list or set a personality."""
         import yaml
+        from hermes_constants import display_hermes_home
 
         args = event.get_command_args().strip().lower()
         config_path = _hermes_home / 'config.yaml'
@@ -5104,7 +5123,7 @@ class GatewayRunner:
             personalities = {}
 
         if not personalities:
-            return "No personalities configured in `~/.hermes/config.yaml`"
+            return f"No personalities configured in `{display_hermes_home()}/config.yaml`"
 
         if not args:
             lines = ["🎭 **Available Personalities**\n"]
@@ -5825,8 +5844,7 @@ class GatewayRunner:
                     task_id=task_id,
                 )
 
-            loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(None, run_sync)
+            result = await self._run_in_executor_with_context(run_sync)
 
             response = result.get("final_response", "") if result else ""
             if not response and result and result.get("error"):
@@ -6008,8 +6026,7 @@ class GatewayRunner:
                     task_id=task_id,
                 )
 
-            loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(None, run_sync)
+            result = await self._run_in_executor_with_context(run_sync)
 
             response = (result.get("final_response") or "") if result else ""
             if not response and result and result.get("error"):
@@ -6332,6 +6349,7 @@ class GatewayRunner:
                 model=model,
                 max_iterations=4,
                 quiet_mode=True,
+                skip_memory=True,
                 enabled_toolsets=["memory"],
                 session_id=session_entry.session_id,
             )
@@ -6344,7 +6362,7 @@ class GatewayRunner:
             if compress_start >= compress_end:
                 return "Nothing to compress yet (the transcript is still all protected context)."
 
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             compressed, _ = await loop.run_in_executor(
                 None,
                 lambda: tmp_agent._compress_context(msgs, "", approx_tokens=approx_tokens, focus_topic=focus_topic)
@@ -6697,6 +6715,11 @@ class GatewayRunner:
         import asyncio as _asyncio
 
         args = event.get_command_args().strip()
+
+        # Normalize Unicode dashes (Telegram/iOS auto-converts -- to em/en dash)
+        import re as _re
+        args = _re.sub(r'[\u2012\u2013\u2014\u2015](days|source)', r'--\1', args)
+
         days = 30
         source = None
 
@@ -6724,7 +6747,7 @@ class GatewayRunner:
             from hermes_state import SessionDB
             from agent.insights import InsightsEngine
 
-            loop = _asyncio.get_event_loop()
+            loop = _asyncio.get_running_loop()
 
             def _run_insights():
                 db = SessionDB()
@@ -6741,7 +6764,7 @@ class GatewayRunner:
 
     async def _handle_reload_mcp_command(self, event: MessageEvent) -> str:
         """Handle /reload-mcp command -- disconnect and reconnect all MCP servers."""
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         try:
             from tools.mcp_tool import shutdown_mcp_servers, discover_mcp_tools, _servers, _lock
 
@@ -7422,7 +7445,13 @@ class GatewayRunner:
         """Restore session context variables to their pre-handler values."""
         from gateway.session_context import clear_session_vars
         clear_session_vars(tokens)
-    
+
+    async def _run_in_executor_with_context(self, func, *args):
+        """Run blocking work in the thread pool while preserving session contextvars."""
+        loop = asyncio.get_running_loop()
+        ctx = copy_context()
+        return await loop.run_in_executor(None, ctx.run, func, *args)
+
     async def _enrich_message_with_vision(
         self,
         user_text: str,
@@ -8456,7 +8485,7 @@ class GatewayRunner:
         stream_consumer_holder = [None]  # Mutable container for stream consumer
         
         # Bridge sync step_callback → async hooks.emit for agent:step events
-        _loop_for_step = asyncio.get_event_loop()
+        _loop_for_step = asyncio.get_running_loop()
         _hooks_ref = self.hooks
 
         def _step_callback_sync(iteration: int, prev_tools: list) -> None:
@@ -8694,6 +8723,7 @@ class GatewayRunner:
                     session_id=session_id,
                     platform=platform_key,
                     user_id=source.user_id,
+                    gateway_session_key=session_key,
                     session_db=self._session_db,
                     fallback_model=self._fallback_model,
                 )
@@ -8713,8 +8743,11 @@ class GatewayRunner:
             agent.service_tier = self._service_tier
             agent.request_overrides = turn_route.get("request_overrides")
 
-            # Background review delivery — send "💾 Memory updated" etc. to user
-            def _bg_review_send(message: str) -> None:
+            _bg_review_release = threading.Event()
+            _bg_review_pending: list[str] = []
+            _bg_review_pending_lock = threading.Lock()
+
+            def _deliver_bg_review_message(message: str) -> None:
                 if not _status_adapter:
                     return
                 try:
@@ -8729,7 +8762,32 @@ class GatewayRunner:
                 except Exception as _e:
                     logger.debug("background_review_callback error: %s", _e)
 
+            def _release_bg_review_messages() -> None:
+                _bg_review_release.set()
+                with _bg_review_pending_lock:
+                    pending = list(_bg_review_pending)
+                    _bg_review_pending.clear()
+                for queued in pending:
+                    _deliver_bg_review_message(queued)
+
+            # Background review delivery — send "💾 Memory updated" etc. to user
+            def _bg_review_send(message: str) -> None:
+                if not _status_adapter:
+                    return
+                if not _bg_review_release.is_set():
+                    with _bg_review_pending_lock:
+                        if not _bg_review_release.is_set():
+                            _bg_review_pending.append(message)
+                            return
+                _deliver_bg_review_message(message)
+
             agent.background_review_callback = _bg_review_send
+            # Register the release hook on the adapter so base.py's finally
+            # block can fire it after delivering the main response.
+            if _status_adapter and session_key:
+                _pdc = getattr(_status_adapter, "_post_delivery_callbacks", None)
+                if _pdc is not None:
+                    _pdc[session_key] = _release_bg_review_messages
 
             # Store agent reference for interrupt support
             agent_holder[0] = agent
@@ -8925,7 +8983,7 @@ class GatewayRunner:
             _resolved_model = getattr(_agent, "model", None) if _agent else None
 
             if not final_response:
-                error_msg = f"⚠️ {result['error']}" if result.get("error") else "(No response generated)"
+                error_msg = f"⚠️ {result['error']}" if result.get("error") else ""
                 return {
                     "final_response": error_msg,
                     "messages": result.get("messages", []),
@@ -9169,9 +9227,8 @@ class GatewayRunner:
             _agent_warning_raw = float(os.getenv("HERMES_AGENT_TIMEOUT_WARNING", 900))
             _agent_warning = _agent_warning_raw if _agent_warning_raw > 0 else None
             _warning_fired = False
-            loop = asyncio.get_event_loop()
             _executor_task = asyncio.ensure_future(
-                loop.run_in_executor(None, run_sync)
+                self._run_in_executor_with_context(run_sync)
             )
 
             _inactivity_timeout = False
@@ -9436,16 +9493,18 @@ class GatewayRunner:
                                 pass
                         except Exception as e:
                             logger.debug("Stream consumer wait before queued message failed: %s", e)
+                    _previewed = bool(result.get("response_previewed"))
                     _already_streamed = bool(
-                        _sc
-                        and (
-                            getattr(_sc, "final_response_sent", False)
-                            or getattr(_sc, "already_sent", False)
-                        )
+                        (_sc and getattr(_sc, "final_response_sent", False))
+                        or _previewed
                     )
                     first_response = result.get("final_response", "")
                     if first_response and not _already_streamed:
                         try:
+                            logger.info(
+                                "Queued follow-up for session %s: final stream delivery not confirmed; sending first response before continuing.",
+                                session_key[:20] if session_key else "?",
+                            )
                             await adapter.send(
                                 source.chat_id,
                                 first_response,
@@ -9453,6 +9512,22 @@ class GatewayRunner:
                             )
                         except Exception as e:
                             logger.warning("Failed to send first response before queued message: %s", e)
+                    elif first_response:
+                        logger.info(
+                            "Queued follow-up for session %s: skipping resend because final streamed delivery was confirmed.",
+                            session_key[:20] if session_key else "?",
+                        )
+                    # Release deferred bg-review notifications now that the
+                    # first response has been delivered.  Pop from the
+                    # adapter's callback dict (prevents double-fire in
+                    # base.py's finally block) and call it.
+                    if adapter and hasattr(adapter, "_post_delivery_callbacks"):
+                        _bg_cb = adapter._post_delivery_callbacks.pop(session_key, None)
+                        if callable(_bg_cb):
+                            try:
+                                _bg_cb()
+                            except Exception:
+                                pass
                 # else: interrupted — discard the interrupted response ("Operation
                 # interrupted." is just noise; the user already knows they sent a
                 # new message).
@@ -9471,6 +9546,19 @@ class GatewayRunner:
                     if next_message is None:
                         return result
                     next_message_id = getattr(pending_event, "message_id", None)
+
+                # Restart typing indicator so the user sees activity while
+                # the follow-up turn runs.  The outer _process_message_background
+                # typing task is still alive but may be stale.
+                _followup_adapter = self.adapters.get(source.platform)
+                if _followup_adapter:
+                    try:
+                        await _followup_adapter.send_typing(
+                            source.chat_id,
+                            metadata=_status_thread_metadata,
+                        )
+                    except Exception:
+                        pass
 
                 return await self._run_agent(
                     message=next_message,
@@ -9532,13 +9620,22 @@ class GatewayRunner:
         # final answer.  Suppressing delivery here leaves the user staring
         # at silence.  (#10xxx — "agent stops after web search")
         _sc = stream_consumer_holder[0]
-        if _sc and isinstance(response, dict) and not response.get("failed"):
+        if isinstance(response, dict) and not response.get("failed"):
             _final = response.get("final_response") or ""
             _is_empty_sentinel = not _final or _final == "(empty)"
-            if not _is_empty_sentinel and (
-                getattr(_sc, "final_response_sent", False)
-                or getattr(_sc, "already_sent", False)
-            ):
+            _streamed = bool(
+                _sc and getattr(_sc, "final_response_sent", False)
+            )
+            # response_previewed means the interim_assistant_callback already
+            # sent the final text via the adapter (non-streaming path).
+            _previewed = bool(response.get("response_previewed"))
+            if not _is_empty_sentinel and (_streamed or _previewed):
+                logger.info(
+                    "Suppressing normal final send for session %s: final delivery already confirmed (streamed=%s previewed=%s).",
+                    session_key[:20] if session_key else "?",
+                    _streamed,
+                    _previewed,
+                )
                 response["already_sent"] = True
         
         return response
@@ -9752,7 +9849,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     def restart_signal_handler():
         runner.request_restart(detached=False, via_service=True)
     
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     if threading.current_thread() is threading.main_thread():
         for sig in (signal.SIGINT, signal.SIGTERM):
             try:

@@ -18,6 +18,8 @@ from hermes_cli.plugins import (
     PluginManager,
     PluginManifest,
     get_plugin_manager,
+    get_plugin_command_handler,
+    get_plugin_commands,
     get_pre_tool_call_block_message,
     discover_plugins,
     invoke_hook,
@@ -605,7 +607,292 @@ class TestPreLlmCallTargetRouting:
         assert "plain text C" in _plugin_user_context
 
 
-# NOTE: TestPluginCommands removed – register_command() was never implemented
-# in PluginContext (hermes_cli/plugins.py).  The tests referenced _plugin_commands,
-# commands_registered, get_plugin_command_handler, and GATEWAY_KNOWN_COMMANDS
-# integration — all of which are unimplemented features.
+# ── TestPluginCommands ────────────────────────────────────────────────────
+
+
+class TestPluginCommands:
+    """Tests for plugin slash command registration via register_command()."""
+
+    def test_register_command_basic(self):
+        """register_command() stores handler, description, and plugin name."""
+        mgr = PluginManager()
+        manifest = PluginManifest(name="test-plugin", source="user")
+        ctx = PluginContext(manifest, mgr)
+
+        handler = lambda args: f"echo {args}"
+        ctx.register_command("mycmd", handler, description="My custom command")
+
+        assert "mycmd" in mgr._plugin_commands
+        entry = mgr._plugin_commands["mycmd"]
+        assert entry["handler"] is handler
+        assert entry["description"] == "My custom command"
+        assert entry["plugin"] == "test-plugin"
+
+    def test_register_command_normalizes_name(self):
+        """Names are lowercased, stripped, and leading slashes removed."""
+        mgr = PluginManager()
+        manifest = PluginManifest(name="test-plugin", source="user")
+        ctx = PluginContext(manifest, mgr)
+
+        ctx.register_command("/MyCmd ", lambda a: a, description="test")
+        assert "mycmd" in mgr._plugin_commands
+        assert "/MyCmd " not in mgr._plugin_commands
+
+    def test_register_command_empty_name_rejected(self, caplog):
+        """Empty name after normalization is rejected with a warning."""
+        mgr = PluginManager()
+        manifest = PluginManifest(name="test-plugin", source="user")
+        ctx = PluginContext(manifest, mgr)
+
+        with caplog.at_level(logging.WARNING):
+            ctx.register_command("", lambda a: a)
+        assert len(mgr._plugin_commands) == 0
+        assert "empty name" in caplog.text
+
+    def test_register_command_builtin_conflict_rejected(self, caplog):
+        """Commands that conflict with built-in names are rejected."""
+        mgr = PluginManager()
+        manifest = PluginManifest(name="test-plugin", source="user")
+        ctx = PluginContext(manifest, mgr)
+
+        with caplog.at_level(logging.WARNING):
+            ctx.register_command("help", lambda a: a)
+        assert "help" not in mgr._plugin_commands
+        assert "conflicts" in caplog.text.lower()
+
+    def test_register_command_default_description(self):
+        """Missing description defaults to 'Plugin command'."""
+        mgr = PluginManager()
+        manifest = PluginManifest(name="test-plugin", source="user")
+        ctx = PluginContext(manifest, mgr)
+
+        ctx.register_command("status-cmd", lambda a: a)
+        assert mgr._plugin_commands["status-cmd"]["description"] == "Plugin command"
+
+    def test_get_plugin_command_handler_found(self):
+        """get_plugin_command_handler() returns the handler for a registered command."""
+        mgr = PluginManager()
+        manifest = PluginManifest(name="test-plugin", source="user")
+        ctx = PluginContext(manifest, mgr)
+
+        handler = lambda args: f"result: {args}"
+        ctx.register_command("mycmd", handler, description="test")
+
+        with patch("hermes_cli.plugins._plugin_manager", mgr):
+            result = get_plugin_command_handler("mycmd")
+            assert result is handler
+
+    def test_get_plugin_command_handler_not_found(self):
+        """get_plugin_command_handler() returns None for unregistered commands."""
+        mgr = PluginManager()
+        with patch("hermes_cli.plugins._plugin_manager", mgr):
+            assert get_plugin_command_handler("nonexistent") is None
+
+    def test_get_plugin_commands_returns_dict(self):
+        """get_plugin_commands() returns the full commands dict."""
+        mgr = PluginManager()
+        manifest = PluginManifest(name="test-plugin", source="user")
+        ctx = PluginContext(manifest, mgr)
+        ctx.register_command("cmd-a", lambda a: a, description="A")
+        ctx.register_command("cmd-b", lambda a: a, description="B")
+
+        with patch("hermes_cli.plugins._plugin_manager", mgr):
+            cmds = get_plugin_commands()
+            assert "cmd-a" in cmds
+            assert "cmd-b" in cmds
+            assert cmds["cmd-a"]["description"] == "A"
+
+    def test_commands_tracked_on_loaded_plugin(self, tmp_path, monkeypatch):
+        """Commands registered during discover_and_load() are tracked on LoadedPlugin."""
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(
+            plugins_dir, "cmd-plugin",
+            register_body=(
+                'ctx.register_command("mycmd", lambda a: "ok", description="Test")'
+            ),
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        loaded = mgr._plugins["cmd-plugin"]
+        assert loaded.enabled
+        assert "mycmd" in loaded.commands_registered
+
+    def test_commands_in_list_plugins_output(self, tmp_path, monkeypatch):
+        """list_plugins() includes command count."""
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(
+            plugins_dir, "cmd-plugin",
+            register_body=(
+                'ctx.register_command("mycmd", lambda a: "ok", description="Test")'
+            ),
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        info = mgr.list_plugins()
+        assert len(info) == 1
+        assert info[0]["commands"] == 1
+
+    def test_handler_receives_raw_args(self):
+        """The handler is called with the raw argument string."""
+        mgr = PluginManager()
+        manifest = PluginManifest(name="test-plugin", source="user")
+        ctx = PluginContext(manifest, mgr)
+
+        received = []
+        ctx.register_command("echo", lambda args: received.append(args) or "ok")
+
+        handler = mgr._plugin_commands["echo"]["handler"]
+        handler("hello world")
+        assert received == ["hello world"]
+
+    def test_multiple_plugins_register_different_commands(self):
+        """Multiple plugins can each register their own commands."""
+        mgr = PluginManager()
+
+        for plugin_name, cmd_name in [("plugin-a", "cmd-a"), ("plugin-b", "cmd-b")]:
+            manifest = PluginManifest(name=plugin_name, source="user")
+            ctx = PluginContext(manifest, mgr)
+            ctx.register_command(cmd_name, lambda a: a, description=f"From {plugin_name}")
+
+        assert "cmd-a" in mgr._plugin_commands
+        assert "cmd-b" in mgr._plugin_commands
+        assert mgr._plugin_commands["cmd-a"]["plugin"] == "plugin-a"
+        assert mgr._plugin_commands["cmd-b"]["plugin"] == "plugin-b"
+
+
+# ── TestPluginDispatchTool ────────────────────────────────────────────────
+
+
+class TestPluginDispatchTool:
+    """Tests for PluginContext.dispatch_tool() — tool dispatch with agent context."""
+
+    def test_dispatch_tool_calls_registry(self):
+        """dispatch_tool() delegates to registry.dispatch()."""
+        mgr = PluginManager()
+        manifest = PluginManifest(name="test-plugin", source="user")
+        ctx = PluginContext(manifest, mgr)
+
+        mock_registry = MagicMock()
+        mock_registry.dispatch.return_value = '{"result": "ok"}'
+
+        with patch("hermes_cli.plugins.PluginContext.dispatch_tool.__module__", "hermes_cli.plugins"):
+            with patch.dict("sys.modules", {}):
+                with patch("tools.registry.registry", mock_registry):
+                    result = ctx.dispatch_tool("web_search", {"query": "test"})
+
+        assert result == '{"result": "ok"}'
+
+    def test_dispatch_tool_injects_parent_agent_from_cli_ref(self):
+        """When _cli_ref has an agent, it's passed as parent_agent."""
+        mgr = PluginManager()
+        manifest = PluginManifest(name="test-plugin", source="user")
+        ctx = PluginContext(manifest, mgr)
+
+        mock_agent = MagicMock()
+        mock_cli = MagicMock()
+        mock_cli.agent = mock_agent
+        mgr._cli_ref = mock_cli
+
+        mock_registry = MagicMock()
+        mock_registry.dispatch.return_value = '{"ok": true}'
+
+        with patch("tools.registry.registry", mock_registry):
+            ctx.dispatch_tool("delegate_task", {"goal": "test"})
+
+        mock_registry.dispatch.assert_called_once()
+        call_kwargs = mock_registry.dispatch.call_args
+        assert call_kwargs[1].get("parent_agent") is mock_agent
+
+    def test_dispatch_tool_no_parent_agent_when_no_cli_ref(self):
+        """When _cli_ref is None (gateway mode), no parent_agent is injected."""
+        mgr = PluginManager()
+        manifest = PluginManifest(name="test-plugin", source="user")
+        ctx = PluginContext(manifest, mgr)
+        mgr._cli_ref = None
+
+        mock_registry = MagicMock()
+        mock_registry.dispatch.return_value = '{"ok": true}'
+
+        with patch("tools.registry.registry", mock_registry):
+            ctx.dispatch_tool("delegate_task", {"goal": "test"})
+
+        call_kwargs = mock_registry.dispatch.call_args
+        assert "parent_agent" not in call_kwargs[1]
+
+    def test_dispatch_tool_no_parent_agent_when_agent_is_none(self):
+        """When cli_ref exists but agent is None (not yet initialized), skip parent_agent."""
+        mgr = PluginManager()
+        manifest = PluginManifest(name="test-plugin", source="user")
+        ctx = PluginContext(manifest, mgr)
+
+        mock_cli = MagicMock()
+        mock_cli.agent = None
+        mgr._cli_ref = mock_cli
+
+        mock_registry = MagicMock()
+        mock_registry.dispatch.return_value = '{"ok": true}'
+
+        with patch("tools.registry.registry", mock_registry):
+            ctx.dispatch_tool("delegate_task", {"goal": "test"})
+
+        call_kwargs = mock_registry.dispatch.call_args
+        assert "parent_agent" not in call_kwargs[1]
+
+    def test_dispatch_tool_respects_explicit_parent_agent(self):
+        """Explicit parent_agent kwarg is not overwritten by _cli_ref.agent."""
+        mgr = PluginManager()
+        manifest = PluginManifest(name="test-plugin", source="user")
+        ctx = PluginContext(manifest, mgr)
+
+        cli_agent = MagicMock(name="cli_agent")
+        mock_cli = MagicMock()
+        mock_cli.agent = cli_agent
+        mgr._cli_ref = mock_cli
+
+        explicit_agent = MagicMock(name="explicit_agent")
+
+        mock_registry = MagicMock()
+        mock_registry.dispatch.return_value = '{"ok": true}'
+
+        with patch("tools.registry.registry", mock_registry):
+            ctx.dispatch_tool("delegate_task", {"goal": "test"}, parent_agent=explicit_agent)
+
+        call_kwargs = mock_registry.dispatch.call_args
+        assert call_kwargs[1]["parent_agent"] is explicit_agent
+
+    def test_dispatch_tool_forwards_extra_kwargs(self):
+        """Extra kwargs are forwarded to registry.dispatch()."""
+        mgr = PluginManager()
+        manifest = PluginManifest(name="test-plugin", source="user")
+        ctx = PluginContext(manifest, mgr)
+        mgr._cli_ref = None
+
+        mock_registry = MagicMock()
+        mock_registry.dispatch.return_value = '{"ok": true}'
+
+        with patch("tools.registry.registry", mock_registry):
+            ctx.dispatch_tool("some_tool", {"x": 1}, task_id="test-123")
+
+        call_kwargs = mock_registry.dispatch.call_args
+        assert call_kwargs[1]["task_id"] == "test-123"
+
+    def test_dispatch_tool_returns_json_string(self):
+        """dispatch_tool() returns the raw JSON string from the registry."""
+        mgr = PluginManager()
+        manifest = PluginManifest(name="test-plugin", source="user")
+        ctx = PluginContext(manifest, mgr)
+        mgr._cli_ref = None
+
+        mock_registry = MagicMock()
+        mock_registry.dispatch.return_value = '{"error": "Unknown tool: fake"}'
+
+        with patch("tools.registry.registry", mock_registry):
+            result = ctx.dispatch_tool("fake", {})
+
+        assert '"error"' in result

@@ -5,6 +5,7 @@ Sends a message to a user or channel on any connected messaging platform
 human-friendly channel names to IDs. Works in both CLI and gateway contexts.
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -46,6 +47,49 @@ def _sanitize_error_text(text) -> str:
 def _error(message: str) -> dict:
     """Build a standardized error payload with redacted content."""
     return {"error": _sanitize_error_text(message)}
+
+
+def _telegram_retry_delay(exc: Exception, attempt: int) -> float | None:
+    retry_after = getattr(exc, "retry_after", None)
+    if retry_after is not None:
+        try:
+            return max(float(retry_after), 0.0)
+        except (TypeError, ValueError):
+            return 1.0
+
+    text = str(exc).lower()
+    if "timed out" in text or "timeout" in text:
+        return None
+    if (
+        "bad gateway" in text
+        or "502" in text
+        or "too many requests" in text
+        or "429" in text
+        or "service unavailable" in text
+        or "503" in text
+        or "gateway timeout" in text
+        or "504" in text
+    ):
+        return float(2 ** attempt)
+    return None
+
+
+async def _send_telegram_message_with_retry(bot, *, attempts: int = 3, **kwargs):
+    for attempt in range(attempts):
+        try:
+            return await bot.send_message(**kwargs)
+        except Exception as exc:
+            delay = _telegram_retry_delay(exc, attempt)
+            if delay is None or attempt >= attempts - 1:
+                raise
+            logger.warning(
+                "Transient Telegram send failure (attempt %d/%d), retrying in %.1fs: %s",
+                attempt + 1,
+                attempts,
+                delay,
+                _sanitize_error_text(exc),
+            )
+            await asyncio.sleep(delay)
 
 
 SEND_MESSAGE_SCHEMA = {
@@ -327,9 +371,15 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     """
     from gateway.config import Platform
     from gateway.platforms.base import BasePlatformAdapter, utf16_len
-    from gateway.platforms.telegram import TelegramAdapter
     from gateway.platforms.discord import DiscordAdapter
     from gateway.platforms.slack import SlackAdapter
+
+    # Telegram adapter import is optional (requires python-telegram-bot)
+    try:
+        from gateway.platforms.telegram import TelegramAdapter
+        _telegram_available = True
+    except ImportError:
+        _telegram_available = False
 
     # Feishu adapter import is optional (requires lark-oapi)
     try:
@@ -349,7 +399,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
 
     # Platform message length limits (from adapter class attributes)
     _MAX_LENGTHS = {
-        Platform.TELEGRAM: TelegramAdapter.MAX_MESSAGE_LENGTH,
+        Platform.TELEGRAM: TelegramAdapter.MAX_MESSAGE_LENGTH if _telegram_available else 4096,
         Platform.DISCORD: DiscordAdapter.MAX_MESSAGE_LENGTH,
         Platform.SLACK: SlackAdapter.MAX_MESSAGE_LENGTH,
     }
@@ -369,6 +419,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     # --- Telegram: special handling for media attachments ---
     if platform == Platform.TELEGRAM:
         last_result = None
+        disable_link_previews = bool(getattr(pconfig, "extra", {}) and pconfig.extra.get("disable_link_previews"))
         for i, chunk in enumerate(chunks):
             is_last = (i == len(chunks) - 1)
             result = await _send_telegram(
@@ -377,6 +428,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
                 chunk,
                 media_files=media_files if is_last else [],
                 thread_id=thread_id,
+                disable_link_previews=disable_link_previews,
             )
             if isinstance(result, dict) and result.get("error"):
                 return result
@@ -404,11 +456,28 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             last_result = result
         return last_result
 
+    # --- Matrix: use the native adapter helper when media is present ---
+    if platform == Platform.MATRIX and media_files:
+        last_result = None
+        for i, chunk in enumerate(chunks):
+            is_last = (i == len(chunks) - 1)
+            result = await _send_matrix_via_adapter(
+                pconfig,
+                chat_id,
+                chunk,
+                media_files=media_files if is_last else [],
+                thread_id=thread_id,
+            )
+            if isinstance(result, dict) and result.get("error"):
+                return result
+            last_result = result
+        return last_result
+
     # --- Non-Telegram/Discord platforms ---
     if media_files and not message.strip():
         return {
             "error": (
-                f"send_message MEDIA delivery is currently only supported for telegram, discord, and weixin; "
+                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, and weixin; "
                 f"target {platform.value} had only media attachments"
             )
         }
@@ -416,7 +485,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if media_files:
         warning = (
             f"MEDIA attachments were omitted for {platform.value}; "
-            "native send_message media delivery is currently only supported for telegram, discord, and weixin"
+            "native send_message media delivery is currently only supported for telegram, discord, matrix, and weixin"
         )
 
     last_result = None
@@ -461,7 +530,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     return last_result
 
 
-async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None):
+async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False):
     """Send via Telegram Bot API (one-shot, no polling needed).
 
     Applies markdown→MarkdownV2 formatting (same as the gateway adapter)
@@ -497,13 +566,16 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         thread_kwargs = {}
         if thread_id is not None:
             thread_kwargs["message_thread_id"] = int(thread_id)
+        if disable_link_previews:
+            thread_kwargs["disable_web_page_preview"] = True
 
         last_msg = None
         warnings = []
 
         if formatted.strip():
             try:
-                last_msg = await bot.send_message(
+                last_msg = await _send_telegram_message_with_retry(
+                    bot,
                     chat_id=int_chat_id, text=formatted,
                     parse_mode=send_parse_mode, **thread_kwargs
                 )
@@ -523,7 +595,8 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                             plain = message
                     else:
                         plain = message
-                    last_msg = await bot.send_message(
+                    last_msg = await _send_telegram_message_with_retry(
+                        bot,
                         chat_id=int_chat_id, text=plain,
                         parse_mode=None, **thread_kwargs
                     )
@@ -905,6 +978,66 @@ async def _send_matrix(token, extra, chat_id, message):
         return {"success": True, "platform": "matrix", "chat_id": chat_id, "message_id": data.get("event_id")}
     except Exception as e:
         return _error(f"Matrix send failed: {e}")
+
+
+async def _send_matrix_via_adapter(pconfig, chat_id, message, media_files=None, thread_id=None):
+    """Send via the Matrix adapter so native Matrix media uploads are preserved."""
+    try:
+        from gateway.platforms.matrix import MatrixAdapter
+    except ImportError:
+        return {"error": "Matrix dependencies not installed. Run: pip install 'mautrix[encryption]'"}
+
+    media_files = media_files or []
+
+    try:
+        adapter = MatrixAdapter(pconfig)
+        connected = await adapter.connect()
+        if not connected:
+            return _error("Matrix connect failed")
+
+        metadata = {"thread_id": thread_id} if thread_id else None
+        last_result = None
+
+        if message.strip():
+            last_result = await adapter.send(chat_id, message, metadata=metadata)
+            if not last_result.success:
+                return _error(f"Matrix send failed: {last_result.error}")
+
+        for media_path, is_voice in media_files:
+            if not os.path.exists(media_path):
+                return _error(f"Media file not found: {media_path}")
+
+            ext = os.path.splitext(media_path)[1].lower()
+            if ext in _IMAGE_EXTS:
+                last_result = await adapter.send_image_file(chat_id, media_path, metadata=metadata)
+            elif ext in _VIDEO_EXTS:
+                last_result = await adapter.send_video(chat_id, media_path, metadata=metadata)
+            elif ext in _VOICE_EXTS and is_voice:
+                last_result = await adapter.send_voice(chat_id, media_path, metadata=metadata)
+            elif ext in _AUDIO_EXTS:
+                last_result = await adapter.send_voice(chat_id, media_path, metadata=metadata)
+            else:
+                last_result = await adapter.send_document(chat_id, media_path, metadata=metadata)
+
+            if not last_result.success:
+                return _error(f"Matrix media send failed: {last_result.error}")
+
+        if last_result is None:
+            return {"error": "No deliverable text or media remained after processing MEDIA tags"}
+
+        return {
+            "success": True,
+            "platform": "matrix",
+            "chat_id": chat_id,
+            "message_id": last_result.message_id,
+        }
+    except Exception as e:
+        return _error(f"Matrix send failed: {e}")
+    finally:
+        try:
+            await adapter.disconnect()
+        except Exception:
+            pass
 
 
 async def _send_homeassistant(token, extra, chat_id, message):

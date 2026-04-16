@@ -172,6 +172,27 @@ fly deploy
 
 The gateway log should show: `[telegram] Connected to Telegram (webhook mode)`.
 
+## Proxy Support
+
+If Telegram's API is blocked or you need to route traffic through a proxy, set a Telegram-specific proxy URL. This takes priority over the generic `HTTPS_PROXY` / `HTTP_PROXY` env vars.
+
+**Option 1: config.yaml (recommended)**
+
+```yaml
+telegram:
+  proxy_url: "socks5://127.0.0.1:1080"
+```
+
+**Option 2: environment variable**
+
+```bash
+TELEGRAM_PROXY=socks5://127.0.0.1:1080
+```
+
+Supported schemes: `http://`, `https://`, `socks5://`.
+
+The proxy applies to both the main Telegram connection and the fallback IP transport. If no Telegram-specific proxy is set, the gateway falls back to `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY` (or macOS system proxy auto-detection).
+
 ## Home Channel
 
 Use the `/sethome` command in any Telegram chat (DM or group) to designate it as the **home channel**. Scheduled tasks (cron jobs) deliver their results to this channel.
@@ -228,6 +249,7 @@ Hermes Agent works in Telegram group chats with a few considerations:
   - replies to one of the bot's messages
   - `@botusername` mentions
   - matches for one of your configured regex wake words in `telegram.mention_patterns`
+- Use `telegram.ignored_threads` to keep Hermes silent in specific Telegram forum topics, even when the group would otherwise allow free responses or mention-triggered replies
 - If `telegram.require_mention` is left unset or false, Hermes keeps the previous open-group behavior and responds to normal group messages it can see
 
 ### Example group trigger configuration
@@ -239,9 +261,13 @@ telegram:
   require_mention: true
   mention_patterns:
     - "^\\s*chompy\\b"
+  ignored_threads:
+    - 31
+    - "42"
 ```
 
 This example allows all the usual direct triggers plus messages that begin with `chompy`, even if they do not use an `@mention`.
+Messages in Telegram topics `31` and `42` are always ignored before the mention and free-response checks run.
 
 ### Notes on `mention_patterns`
 

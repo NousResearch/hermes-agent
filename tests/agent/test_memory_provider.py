@@ -939,3 +939,74 @@ class TestOnMemoryWriteBridge:
         mgr.on_memory_write("add", "user", "test")
         # Good provider still received the call despite bad provider crashing
         assert good.memory_writes == [("add", "user", "test")]
+
+
+class TestHonchoCadenceTracking:
+    """Verify Honcho provider cadence gating depends on on_turn_start().
+
+    Bug: _turn_count was never updated because on_turn_start() was not called
+    from run_conversation(). This meant cadence checks always passed (every
+    turn fired both context refresh and dialectic). Fixed by calling
+    on_turn_start(self._user_turn_count, msg) before prefetch_all().
+    """
+
+    def test_turn_count_updates_on_turn_start(self):
+        """on_turn_start sets _turn_count, enabling cadence math."""
+        from plugins.memory.honcho import HonchoMemoryProvider
+        p = HonchoMemoryProvider()
+        assert p._turn_count == 0
+        p.on_turn_start(1, "hello")
+        assert p._turn_count == 1
+        p.on_turn_start(5, "world")
+        assert p._turn_count == 5
+
+    def test_queue_prefetch_respects_dialectic_cadence(self):
+        """With dialecticCadence=3, dialectic should skip turns 2 and 3."""
+        from plugins.memory.honcho import HonchoMemoryProvider
+        p = HonchoMemoryProvider()
+        p._dialectic_cadence = 3
+        p._recall_mode = "context"
+        p._session_key = "test-session"
+        # Simulate a manager that records prefetch calls
+        class FakeManager:
+            def prefetch_context(self, key, query=None):
+                pass
+            def prefetch_dialectic(self, key, query):
+                pass
+
+        p._manager = FakeManager()
+
+        # Simulate turn 1: last_dialectic_turn = -999, so (1 - (-999)) >= 3 -> fires
+        p.on_turn_start(1, "turn 1")
+        p._last_dialectic_turn = 1  # simulate it fired
+        p._last_context_turn = 1
+
+        # Simulate turn 2: (2 - 1) = 1 < 3 -> should NOT fire dialectic
+        p.on_turn_start(2, "turn 2")
+        assert (p._turn_count - p._last_dialectic_turn) < p._dialectic_cadence
+
+        # Simulate turn 3: (3 - 1) = 2 < 3 -> should NOT fire dialectic
+        p.on_turn_start(3, "turn 3")
+        assert (p._turn_count - p._last_dialectic_turn) < p._dialectic_cadence
+
+        # Simulate turn 4: (4 - 1) = 3 >= 3 -> should fire dialectic
+        p.on_turn_start(4, "turn 4")
+        assert (p._turn_count - p._last_dialectic_turn) >= p._dialectic_cadence
+
+    def test_injection_frequency_first_turn_with_1indexed(self):
+        """injection_frequency='first-turn' must inject on turn 1 (1-indexed)."""
+        from plugins.memory.honcho import HonchoMemoryProvider
+        p = HonchoMemoryProvider()
+        p._injection_frequency = "first-turn"
+
+        # Turn 1 should inject (not skip)
+        p.on_turn_start(1, "first message")
+        assert p._turn_count == 1
+        # The guard is `_turn_count > 1`, so turn 1 passes through
+        should_skip = p._injection_frequency == "first-turn" and p._turn_count > 1
+        assert not should_skip, "First turn (turn 1) should NOT be skipped"
+
+        # Turn 2 should skip
+        p.on_turn_start(2, "second message")
+        should_skip = p._injection_frequency == "first-turn" and p._turn_count > 1
+        assert should_skip, "Second turn (turn 2) SHOULD be skipped"

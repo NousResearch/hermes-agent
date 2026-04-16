@@ -45,6 +45,7 @@ from hermes_constants import display_hermes_home
 logger = logging.getLogger(__name__)
 from tools.managed_tool_gateway import resolve_managed_tool_gateway
 from tools.tool_backend_helpers import managed_nous_tools_enabled, resolve_openai_audio_api_key
+from tools.xai_http import hermes_xai_user_agent
 
 # ---------------------------------------------------------------------------
 # Lazy imports -- providers are imported only when actually used to avoid
@@ -93,6 +94,11 @@ DEFAULT_MINIMAX_VOICE_ID = "English_Graceful_Lady"
 DEFAULT_MINIMAX_BASE_URL = "https://api.minimax.io/v1/t2a_v2"
 DEFAULT_MISTRAL_TTS_MODEL = "voxtral-mini-tts-2603"
 DEFAULT_MISTRAL_TTS_VOICE_ID = "c69964a6-ab8b-4f8a-9465-ec0925096ec8"  # Paul - Neutral
+DEFAULT_XAI_VOICE_ID = "eve"
+DEFAULT_XAI_LANGUAGE = "en"
+DEFAULT_XAI_SAMPLE_RATE = 24000
+DEFAULT_XAI_BIT_RATE = 128000
+DEFAULT_XAI_BASE_URL = "https://api.x.ai/v1"
 
 def _get_default_output_dir() -> str:
     from hermes_constants import get_hermes_dir
@@ -297,6 +303,71 @@ def _generate_openai_tts(text: str, output_path: str, tts_config: Dict[str, Any]
         close = getattr(client, "close", None)
         if callable(close):
             close()
+
+
+# ===========================================================================
+# Provider: xAI TTS
+# ===========================================================================
+def _generate_xai_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+    """
+    Generate audio using xAI TTS.
+
+    xAI exposes a dedicated /v1/tts endpoint instead of the OpenAI audio.speech
+    API shape, so this is implemented as a separate backend.
+    """
+    import requests
+
+    api_key = os.getenv("XAI_API_KEY", "").strip()
+    if not api_key:
+        raise ValueError("XAI_API_KEY not set. Get one at https://console.x.ai/")
+
+    xai_config = tts_config.get("xai", {})
+    voice_id = str(xai_config.get("voice_id", DEFAULT_XAI_VOICE_ID)).strip() or DEFAULT_XAI_VOICE_ID
+    language = str(xai_config.get("language", DEFAULT_XAI_LANGUAGE)).strip() or DEFAULT_XAI_LANGUAGE
+    sample_rate = int(xai_config.get("sample_rate", DEFAULT_XAI_SAMPLE_RATE))
+    bit_rate = int(xai_config.get("bit_rate", DEFAULT_XAI_BIT_RATE))
+    base_url = str(
+        xai_config.get("base_url")
+        or os.getenv("XAI_BASE_URL")
+        or DEFAULT_XAI_BASE_URL
+    ).strip().rstrip("/")
+
+    # Match the documented minimal POST /v1/tts shape by default. Only send
+    # output_format when Hermes actually needs a non-default format/override.
+    codec = "wav" if output_path.endswith(".wav") else "mp3"
+    payload: Dict[str, Any] = {
+        "text": text,
+        "voice_id": voice_id,
+        "language": language,
+    }
+    if (
+        codec != "mp3"
+        or sample_rate != DEFAULT_XAI_SAMPLE_RATE
+        or (codec == "mp3" and bit_rate != DEFAULT_XAI_BIT_RATE)
+    ):
+        output_format: Dict[str, Any] = {"codec": codec}
+        if sample_rate:
+            output_format["sample_rate"] = sample_rate
+        if codec == "mp3" and bit_rate:
+            output_format["bit_rate"] = bit_rate
+        payload["output_format"] = output_format
+
+    response = requests.post(
+        f"{base_url}/tts",
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "User-Agent": hermes_xai_user_agent(),
+        },
+        json=payload,
+        timeout=60,
+    )
+    response.raise_for_status()
+
+    with open(output_path, "wb") as f:
+        f.write(response.content)
+
+    return output_path
 
 
 # ===========================================================================
@@ -600,6 +671,10 @@ def text_to_speech_tool(
             logger.info("Generating speech with MiniMax TTS...")
             _generate_minimax_tts(text, file_str, tts_config)
 
+        elif provider == "xai":
+            logger.info("Generating speech with xAI TTS...")
+            _generate_xai_tts(text, file_str, tts_config)
+
         elif provider == "mistral":
             try:
                 _import_mistral_client()
@@ -661,7 +736,7 @@ def text_to_speech_tool(
         # Try Opus conversion for Telegram compatibility
         # Edge TTS outputs MP3, NeuTTS outputs WAV — both need ffmpeg conversion
         voice_compatible = False
-        if provider in ("edge", "neutts", "minimax") and not file_str.endswith(".ogg"):
+        if provider in ("edge", "neutts", "minimax", "xai") and not file_str.endswith(".ogg"):
             opus_path = _convert_to_opus(file_str)
             if opus_path:
                 file_str = opus_path
@@ -733,6 +808,8 @@ def check_tts_requirements() -> bool:
     except ImportError:
         pass
     if os.getenv("MINIMAX_API_KEY"):
+        return True
+    if os.getenv("XAI_API_KEY"):
         return True
     try:
         _import_mistral_client()

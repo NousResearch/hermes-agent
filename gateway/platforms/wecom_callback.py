@@ -258,6 +258,20 @@ class WecomCallbackAdapter(BasePlatformAdapter):
                 )
                 event = self._build_event(app, decrypted)
                 if event is not None:
+                    # Deduplicate: WeCom retries callbacks on timeout,
+                    # producing duplicate inbound messages (#10305).
+                    if event.message_id:
+                        now = time.time()
+                        if event.message_id in self._seen_messages:
+                            if now - self._seen_messages[event.message_id] < MESSAGE_DEDUP_TTL_SECONDS:
+                                logger.debug("[WecomCallback] Duplicate MsgId %s, skipping", event.message_id)
+                                return web.Response(text="success", content_type="text/plain")
+                            del self._seen_messages[event.message_id]
+                        self._seen_messages[event.message_id] = now
+                        # Prune expired entries when cache grows large
+                        if len(self._seen_messages) > 2000:
+                            cutoff = now - MESSAGE_DEDUP_TTL_SECONDS
+                            self._seen_messages = {k: v for k, v in self._seen_messages.items() if v > cutoff}
                     # Record which app this user belongs to.
                     if event.source and event.source.user_id:
                         map_key = self._user_app_key(

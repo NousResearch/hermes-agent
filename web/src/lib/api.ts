@@ -9,7 +9,7 @@ declare global {
 }
 let _sessionToken: string | null = null;
 
-async function fetchJSON<T>(url: string, init?: RequestInit): Promise<T> {
+export async function fetchJSON<T>(url: string, init?: RequestInit): Promise<T> {
   // Inject the session token into all /api/ requests.
   const headers = new Headers(init?.headers);
   const token = window.__HERMES_SESSION_TOKEN__;
@@ -182,6 +182,22 @@ export const api = {
       },
     );
   },
+
+  // Dashboard themes
+  getThemes: () =>
+    fetchJSON<ThemeListResponse>("/api/dashboard/themes"),
+  setTheme: (name: string) =>
+    fetchJSON<{ ok: boolean; theme: string }>("/api/dashboard/theme", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    }),
+
+  // Dashboard plugins
+  getPlugins: () =>
+    fetchJSON<PluginManifestResponse[]>("/api/dashboard/plugins"),
+  rescanPlugins: () =>
+    fetchJSON<{ ok: boolean; count: number }>("/api/dashboard/plugins/rescan"),
 };
 
 export interface PlatformStatus {
@@ -414,4 +430,26 @@ export interface OAuthPollResponse {
   status: "pending" | "approved" | "denied" | "expired" | "error";
   error_message?: string | null;
   expires_at?: number | null;
+}
+
+// ── Dashboard theme types ──────────────────────────────────────────────
+
+export interface ThemeListResponse {
+  themes: Array<{ name: string; label: string; description: string }>;
+  active: string;
+}
+
+// ── Dashboard plugin types ─────────────────────────────────────────────
+
+export interface PluginManifestResponse {
+  name: string;
+  label: string;
+  description: string;
+  icon: string;
+  version: string;
+  tab: { path: string; position: string };
+  entry: string;
+  css?: string | null;
+  has_api: boolean;
+  source: string;
 }

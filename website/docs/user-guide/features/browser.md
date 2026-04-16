@@ -116,11 +116,7 @@ browser:
     managed_persistence: true
 ```
 
-When enabled, Hermes sends a stable profile-scoped identity to Camofox. The Camofox server maps this identity to a persistent browser profile directory, so cookies, logins, and localStorage survive across restarts. Different Hermes profiles get different browser profiles (profile isolation).
-
-:::note
-The Camofox server must also be configured with `CAMOFOX_PROFILE_DIR` on the server side for persistence to work.
-:::
+When enabled, Hermes sends a stable profile-scoped `userId` to Camofox. The Camofox server automatically maps each `userId` to a dedicated persistent Firefox profile, so cookies, logins, and localStorage survive across restarts. Different Hermes profiles get different browser profiles (profile isolation).
 
 #### VNC live view
 

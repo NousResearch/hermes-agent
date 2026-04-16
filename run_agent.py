@@ -1283,6 +1283,7 @@ class AIAgent:
             self.acp_prompt_timeout_seconds = _acp_prompt_timeout if _acp_prompt_timeout and _acp_prompt_timeout > 0 else None
         except (TypeError, ValueError):
             self.acp_prompt_timeout_seconds = None
+        self.acp_stream_stale_timeout_seconds = self.acp_prompt_timeout_seconds
         self.home_id = str(home_id).strip() if isinstance(home_id, str) and str(home_id).strip() else None
         inferred_profile = None if self.home_id in {None, "", "default", "custom"} else self.home_id
         self.profile_name = (
@@ -8576,10 +8577,13 @@ class AIAgent:
                     self._close_request_openai_client(request_client, reason="stream_request_complete")
 
         _stream_stale_timeout_base = float(os.getenv("HERMES_STREAM_STALE_TIMEOUT", 180.0))
+        override_stale_timeout = getattr(self, "acp_stream_stale_timeout_seconds", None)
+        if override_stale_timeout is not None:
+            _stream_stale_timeout = float(override_stale_timeout)
         # Local providers (Ollama, oMLX, llama-cpp) can take 300+ seconds
         # for prefill on large contexts.  Disable the stale detector unless
         # the user explicitly set HERMES_STREAM_STALE_TIMEOUT.
-        if _stream_stale_timeout_base == 180.0 and self.base_url and is_local_endpoint(self.base_url):
+        elif _stream_stale_timeout_base == 180.0 and self.base_url and is_local_endpoint(self.base_url):
             _stream_stale_timeout = float("inf")
             logger.debug("Local provider detected (%s) — stale stream timeout disabled", self.base_url)
         else:

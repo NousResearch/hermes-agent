@@ -984,7 +984,7 @@ class TestBuildApiKwargs:
         messages = [{"role": "system", "content": "sys"}, {"role": "user", "content": "hi"}]
         kwargs = agent._build_api_kwargs(messages)
         assert kwargs["max_tokens"] == 65536
-=======
+
     def test_ollama_think_false_on_effort_none(self, agent):
         """Custom (Ollama) provider with effort=none should inject think=false."""
         agent.provider = "custom"

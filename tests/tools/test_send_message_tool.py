@@ -12,6 +12,7 @@ from gateway.config import Platform
 from tools.send_message_tool import (
     _parse_target_ref,
     _send_discord,
+    _send_matrix_via_adapter,
     _send_telegram,
     _send_to_platform,
     send_message_tool,
@@ -576,7 +577,7 @@ class TestSendToPlatformChunking:
 
         sent_calls = []
 
-        async def fake_send(token, chat_id, message, media_files=None, thread_id=None):
+        async def fake_send(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False):
             sent_calls.append(media_files or [])
             return {"success": True, "platform": "telegram", "chat_id": chat_id, "message_id": str(len(sent_calls))}
 
@@ -593,6 +594,103 @@ class TestSendToPlatformChunking:
         assert len(sent_calls) >= 3
         assert all(call == [] for call in sent_calls[:-1])
         assert sent_calls[-1] == media
+
+    def test_matrix_media_uses_native_adapter_helper(self):
+
+        doc_path = Path("/tmp/test-send-message-matrix.pdf")
+        doc_path.write_bytes(b"%PDF-1.4 test")
+
+        try:
+            helper = AsyncMock(return_value={"success": True, "platform": "matrix", "chat_id": "!room:example.com", "message_id": "$evt"})
+            with patch("tools.send_message_tool._send_matrix_via_adapter", helper):
+                result = asyncio.run(
+                    _send_to_platform(
+                        Platform.MATRIX,
+                        SimpleNamespace(enabled=True, token="tok", extra={"homeserver": "https://matrix.example.com"}),
+                        "!room:example.com",
+                        "here you go",
+                        media_files=[(str(doc_path), False)],
+                    )
+                )
+
+            assert result["success"] is True
+            helper.assert_awaited_once()
+            call = helper.await_args
+            assert call.args[1] == "!room:example.com"
+            assert call.args[2] == "here you go"
+            assert call.kwargs["media_files"] == [(str(doc_path), False)]
+        finally:
+            doc_path.unlink(missing_ok=True)
+
+    def test_matrix_text_only_uses_lightweight_path(self):
+        """Text-only Matrix sends should NOT go through the heavy adapter path."""
+        helper = AsyncMock()
+        lightweight = AsyncMock(return_value={"success": True, "platform": "matrix", "chat_id": "!room:ex.com", "message_id": "$txt"})
+        with patch("tools.send_message_tool._send_matrix_via_adapter", helper), \
+             patch("tools.send_message_tool._send_matrix", lightweight):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.MATRIX,
+                    SimpleNamespace(enabled=True, token="tok", extra={"homeserver": "https://matrix.example.com"}),
+                    "!room:ex.com",
+                    "just text, no files",
+                )
+            )
+
+        assert result["success"] is True
+        helper.assert_not_awaited()
+        lightweight.assert_awaited_once()
+
+    def test_send_matrix_via_adapter_sends_document(self, tmp_path):
+        file_path = tmp_path / "report.pdf"
+        file_path.write_bytes(b"%PDF-1.4 test")
+
+        calls = []
+
+        class FakeAdapter:
+            def __init__(self, _config):
+                self.connected = False
+
+            async def connect(self):
+                self.connected = True
+                calls.append(("connect",))
+                return True
+
+            async def send(self, chat_id, message, metadata=None):
+                calls.append(("send", chat_id, message, metadata))
+                return SimpleNamespace(success=True, message_id="$text")
+
+            async def send_document(self, chat_id, file_path, metadata=None):
+                calls.append(("send_document", chat_id, file_path, metadata))
+                return SimpleNamespace(success=True, message_id="$file")
+
+            async def disconnect(self):
+                calls.append(("disconnect",))
+
+        fake_module = SimpleNamespace(MatrixAdapter=FakeAdapter)
+
+        with patch.dict(sys.modules, {"gateway.platforms.matrix": fake_module}):
+            result = asyncio.run(
+                _send_matrix_via_adapter(
+                    SimpleNamespace(enabled=True, token="tok", extra={"homeserver": "https://matrix.example.com"}),
+                    "!room:example.com",
+                    "report attached",
+                    media_files=[(str(file_path), False)],
+                )
+            )
+
+        assert result == {
+            "success": True,
+            "platform": "matrix",
+            "chat_id": "!room:example.com",
+            "message_id": "$file",
+        }
+        assert calls == [
+            ("connect",),
+            ("send", "!room:example.com", "report attached", None),
+            ("send_document", "!room:example.com", str(file_path), None),
+            ("disconnect",),
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -657,6 +755,17 @@ class TestSendTelegramHtmlDetection:
         bot.send_message.assert_awaited_once()
         kwargs = bot.send_message.await_args.kwargs
         assert kwargs["parse_mode"] == "MarkdownV2"
+
+    def test_disable_link_previews_sets_disable_web_page_preview(self, monkeypatch):
+        bot = self._make_bot()
+        _install_telegram_mock(monkeypatch, bot)
+
+        asyncio.run(
+            _send_telegram("tok", "123", "https://example.com", disable_link_previews=True)
+        )
+
+        kwargs = bot.send_message.await_args.kwargs
+        assert kwargs["disable_web_page_preview"] is True
 
     def test_html_with_code_and_pre_tags(self, monkeypatch):
         bot = self._make_bot()

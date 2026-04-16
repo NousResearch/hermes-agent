@@ -63,10 +63,12 @@ homeassistant = ["aiohttp>=3.9.0,<4"]
 sms = ["aiohttp>=3.9.0,<4"]
 acp = ["agent-client-protocol>=0.9.0,<1.0"]
 mistral = ["mistralai>=2.3.0,<3"]
+bedrock = ["boto3>=1.35.0,<2"]
 termux = [
   # Tested Android / Termux path: keeps the core CLI feature-rich while
   # avoiding extras that currently depend on non-Android wheels (notably
   # faster-whisper -> ctranslate2 via the voice extra).
+  "python-telegram-bot[webhooks]>=22.6,<23",
   "hermes-agent[cron]",
   "hermes-agent[cli]",
   "hermes-agent[pty]",
@@ -108,6 +110,7 @@ all = [
   "hermes-agent[dingtalk]",
   "hermes-agent[feishu]",
   "hermes-agent[mistral]",
+  "hermes-agent[bedrock]",
   "hermes-agent[web]",
 ]
 

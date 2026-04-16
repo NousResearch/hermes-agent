@@ -1162,6 +1162,7 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
             if token:
                 source_name = "gh_cli" if "gh" in source.lower() else f"env:{source}"
                 active_sources.add(source_name)
+                pconfig = PROVIDER_REGISTRY.get(provider)
                 changed |= _upsert_entry(
                     entries,
                     provider,
@@ -1170,6 +1171,7 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
                         "source": source_name,
                         "auth_type": AUTH_TYPE_API_KEY,
                         "access_token": token,
+                        "base_url": pconfig.inference_base_url if pconfig else "",
                         "label": source,
                     },
                 )

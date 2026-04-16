@@ -815,7 +815,8 @@ def run_doctor(args):
         ("Vercel AI Gateway",       ("AI_GATEWAY_API_KEY",),                          "https://ai-gateway.vercel.sh/v1/models", "AI_GATEWAY_BASE_URL", True),
         ("Kilo Code",        ("KILOCODE_API_KEY",),                            "https://api.kilo.ai/api/gateway/models",  "KILOCODE_BASE_URL", True),
         ("OpenCode Zen",     ("OPENCODE_ZEN_API_KEY",),                        "https://opencode.ai/zen/v1/models",  "OPENCODE_ZEN_BASE_URL", True),
-        ("OpenCode Go",      ("OPENCODE_GO_API_KEY",),                         "https://opencode.ai/zen/go/v1/models", "OPENCODE_GO_BASE_URL", True),
+        # OpenCode Go has no shared /models endpoint; skip the health check.
+        ("OpenCode Go",      ("OPENCODE_GO_API_KEY",),                         None,                                  "OPENCODE_GO_BASE_URL", False),
     ]
     for _pname, _env_vars, _default_url, _base_env, _supports_health_check in _apikey_providers:
         _key = ""
@@ -862,6 +863,31 @@ def run_doctor(args):
                     print(f"\r  {color('⚠', Colors.YELLOW)} {_label} {color(f'(HTTP {_resp.status_code})', Colors.DIM)}           ")
             except Exception as _e:
                 print(f"\r  {color('⚠', Colors.YELLOW)} {_label} {color(f'({_e})', Colors.DIM)}           ")
+
+    # -- AWS Bedrock --
+    # Bedrock uses the AWS SDK credential chain, not API keys.
+    try:
+        from agent.bedrock_adapter import has_aws_credentials, resolve_aws_auth_env_var, resolve_bedrock_region
+        if has_aws_credentials():
+            _auth_var = resolve_aws_auth_env_var()
+            _region = resolve_bedrock_region()
+            _label = "AWS Bedrock".ljust(20)
+            print(f"  Checking AWS Bedrock...", end="", flush=True)
+            try:
+                import boto3
+                _br_client = boto3.client("bedrock", region_name=_region)
+                _br_resp = _br_client.list_foundation_models()
+                _model_count = len(_br_resp.get("modelSummaries", []))
+                print(f"\r  {color('✓', Colors.GREEN)} {_label} {color(f'({_auth_var}, {_region}, {_model_count} models)', Colors.DIM)}           ")
+            except ImportError:
+                print(f"\r  {color('⚠', Colors.YELLOW)} {_label} {color('(boto3 not installed — pip install hermes-agent[bedrock])', Colors.DIM)}           ")
+                issues.append("Install boto3 for Bedrock: pip install hermes-agent[bedrock]")
+            except Exception as _e:
+                _err_name = type(_e).__name__
+                print(f"\r  {color('⚠', Colors.YELLOW)} {_label} {color(f'({_err_name}: {_e})', Colors.DIM)}           ")
+                issues.append(f"AWS Bedrock: {_err_name} — check IAM permissions for bedrock:ListFoundationModels")
+    except ImportError:
+        pass  # bedrock_adapter not available — skip silently
 
     # =========================================================================
     # Check: Submodules

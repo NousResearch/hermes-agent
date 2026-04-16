@@ -169,6 +169,7 @@ PROVIDER_TO_MODELS_DEV: Dict[str, str] = {
     "togetherai": "togetherai",
     "perplexity": "perplexity",
     "cohere": "cohere",
+    "ollama-cloud": "ollama-cloud",
 }
 
 # Reverse mapping: models.dev → Hermes (built lazily)

@@ -164,7 +164,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
 
     # Exit
     CommandDef("quit", "Exit the CLI", "Exit",
-               cli_only=True, aliases=("exit", "q")),
+               cli_only=True, aliases=("exit",)),
 ]
 
 
@@ -450,7 +450,7 @@ def _collect_gateway_skill_entries(
             name = sanitize_name(cmd_name) if sanitize_name else cmd_name
             if not name:
                 continue
-            desc = "Plugin command"
+            desc = plugin_cmds[cmd_name].get("description", "Plugin command")
             if len(desc) > desc_limit:
                 desc = desc[:desc_limit - 3] + "..."
             plugin_pairs.append((name, desc))
@@ -1138,6 +1138,22 @@ class SlashCommandCompleter(Completer):
                     display=cmd,
                     display_meta=f"⚡ {short_desc}",
                 )
+
+        # Plugin-registered slash commands
+        try:
+            from hermes_cli.plugins import get_plugin_commands
+            for cmd_name, cmd_info in get_plugin_commands().items():
+                if cmd_name.startswith(word):
+                    desc = str(cmd_info.get("description", "Plugin command"))
+                    short_desc = desc[:50] + ("..." if len(desc) > 50 else "")
+                    yield Completion(
+                        self._completion_text(cmd_name, word),
+                        start_position=-len(word),
+                        display=f"/{cmd_name}",
+                        display_meta=f"🔌 {short_desc}",
+                    )
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------

@@ -88,3 +88,18 @@ def test_cached_sudo_password_is_used_when_env_is_unset(monkeypatch):
 
     assert transformed == "echo ok && sudo -S -p '' whoami"
     assert sudo_stdin == "cached-pass\n"
+
+
+def test_validate_workdir_allows_windows_drive_paths():
+    assert terminal_tool._validate_workdir(r"C:\Users\Alice\project") is None
+    assert terminal_tool._validate_workdir("C:/Users/Alice/project") is None
+
+
+def test_validate_workdir_allows_windows_unc_paths():
+    assert terminal_tool._validate_workdir(r"\\server\share\project") is None
+
+
+def test_validate_workdir_blocks_shell_metacharacters_in_windows_paths():
+    assert terminal_tool._validate_workdir(r"C:\Users\Alice\project; rm -rf /")
+    assert terminal_tool._validate_workdir(r"C:\Users\Alice\project$(whoami)")
+    assert terminal_tool._validate_workdir("C:\\Users\\Alice\\project\nwhoami")

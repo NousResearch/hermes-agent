@@ -128,7 +128,7 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         base_url_env_var="HF_BASE_URL",
     ),
     "xai": HermesOverlay(
-        transport="openai_chat",
+        transport="codex_responses",
         base_url_override="https://api.x.ai/v1",
         base_url_env_var="XAI_BASE_URL",
     ),
@@ -140,6 +140,10 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         transport="openai_chat",
         base_url_override="https://api.arcee.ai/api/v1",
         base_url_env_var="ARCEE_BASE_URL",
+    ),
+    "ollama-cloud": HermesOverlay(
+        transport="openai_chat",
+        base_url_env_var="OLLAMA_BASE_URL",
     ),
 }
 
@@ -180,6 +184,7 @@ ALIASES: Dict[str, str] = {
     # xai
     "x-ai": "xai",
     "x.ai": "xai",
+    "grok": "xai",
 
     # kimi-for-coding (models.dev ID)
     "kimi": "kimi-for-coding",
@@ -236,6 +241,12 @@ ALIASES: Dict[str, str] = {
     "mimo": "xiaomi",
     "xiaomi-mimo": "xiaomi",
 
+    # bedrock
+    "aws": "bedrock",
+    "aws-bedrock": "bedrock",
+    "amazon-bedrock": "bedrock",
+    "amazon": "bedrock",
+
     # arcee
     "arcee-ai": "arcee",
     "arceeai": "arcee",
@@ -244,7 +255,7 @@ ALIASES: Dict[str, str] = {
     "lmstudio": "lmstudio",
     "lm-studio": "lmstudio",
     "lm_studio": "lmstudio",
-    "ollama": "ollama-cloud",
+    "ollama": "custom",  # bare "ollama" = local; use "ollama-cloud" for cloud
     "vllm": "local",
     "llamacpp": "local",
     "llama.cpp": "local",
@@ -262,6 +273,8 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "copilot-acp": "GitHub Copilot ACP",
     "xiaomi": "Xiaomi MiMo",
     "local": "Local endpoint",
+    "bedrock": "AWS Bedrock",
+    "ollama-cloud": "Ollama Cloud",
 }
 
 
@@ -271,6 +284,7 @@ TRANSPORT_TO_API_MODE: Dict[str, str] = {
     "openai_chat": "chat_completions",
     "anthropic_messages": "anthropic_messages",
     "codex_responses": "codex_responses",
+    "bedrock_converse": "bedrock_converse",
 }
 
 
@@ -388,6 +402,10 @@ def determine_api_mode(provider: str, base_url: str = "") -> str:
     if pdef is not None:
         return TRANSPORT_TO_API_MODE.get(pdef.transport, "chat_completions")
 
+    # Direct provider checks for providers not in HERMES_OVERLAYS
+    if provider == "bedrock":
+        return "bedrock_converse"
+
     # URL-based heuristics for custom / unknown providers
     if base_url:
         url_lower = base_url.rstrip("/").lower()
@@ -395,6 +413,8 @@ def determine_api_mode(provider: str, base_url: str = "") -> str:
             return "anthropic_messages"
         if "api.openai.com" in url_lower:
             return "codex_responses"
+        if "bedrock-runtime" in url_lower and "amazonaws.com" in url_lower:
+            return "bedrock_converse"
 
     return "chat_completions"
 

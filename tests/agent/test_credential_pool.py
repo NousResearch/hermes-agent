@@ -252,6 +252,11 @@ def test_exhausted_402_entry_resets_after_one_hour(tmp_path, monkeypatch):
 
 def test_explicit_reset_timestamp_overrides_default_429_ttl(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    # Prevent auto-seeding from Codex CLI tokens on the host
+    monkeypatch.setattr(
+        "hermes_cli.auth._import_codex_cli_tokens",
+        lambda: None,
+    )
     _write_auth_store(
         tmp_path,
         {
@@ -1091,6 +1096,7 @@ def test_load_pool_seeds_copilot_via_gh_auth_token(tmp_path, monkeypatch):
     assert len(entries) == 1
     assert entries[0].source == "gh_cli"
     assert entries[0].access_token == "gho_fake_token_abc123"
+    assert entries[0].base_url == "https://api.githubcopilot.com"
 
 
 def test_load_pool_does_not_seed_copilot_when_no_token(tmp_path, monkeypatch):

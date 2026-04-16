@@ -9,6 +9,8 @@ def _build_agent(model_cfg, custom_providers=None, model="anthropic/claude-opus-
     if custom_providers is not None:
         cfg["custom_providers"] = custom_providers
 
+    base_url = model_cfg.get("base_url", "")
+
     with (
         patch("hermes_cli.config.load_config", return_value=cfg),
         patch("agent.model_metadata.get_model_context_length", return_value=128_000),
@@ -21,6 +23,7 @@ def _build_agent(model_cfg, custom_providers=None, model="anthropic/claude-opus-
         agent = AIAgent(
             model=model,
             api_key="test-key-1234567890",
+            base_url=base_url,
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,

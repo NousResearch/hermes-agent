@@ -62,7 +62,10 @@ AUTHOR_MAP = {
     "258577966+voidborne-d@users.noreply.github.com": "voidborne-d",
     "70424851+insecurejezza@users.noreply.github.com": "insecurejezza",
     "259807879+Bartok9@users.noreply.github.com": "Bartok9",
+    "241404605+MestreY0d4-Uninter@users.noreply.github.com": "MestreY0d4-Uninter",
     "268667990+Roy-oss1@users.noreply.github.com": "Roy-oss1",
+    "27917469+nosleepcassette@users.noreply.github.com": "nosleepcassette",
+    "241404605+MestreY0d4-Uninter@users.noreply.github.com": "MestreY0d4-Uninter",
     # contributors (manual mapping from git names)
     "dmayhem93@gmail.com": "dmahan93",
     "samherring99@gmail.com": "samherring99",
@@ -75,8 +78,13 @@ AUTHOR_MAP = {
     "abdullahfarukozden@gmail.com": "Farukest",
     "lovre.pesut@gmail.com": "rovle",
     "hakanerten02@hotmail.com": "teyrebaz33",
+    "ruzzgarcn@gmail.com": "Ruzzgar",
     "alireza78.crypto@gmail.com": "alireza78a",
     "brooklyn.bb.nicholson@gmail.com": "brooklynnicholson",
+    "4317663+helix4u@users.noreply.github.com": "helix4u",
+    "331214+counterposition@users.noreply.github.com": "counterposition",
+    "blspear@gmail.com": "BrennerSpear",
+    "239876380+handsdiff@users.noreply.github.com": "handsdiff",
     "gpickett00@gmail.com": "gpickett00",
     "mcosma@gmail.com": "wakamex",
     "clawdia.nash@proton.me": "clawdia-nash",
@@ -118,6 +126,7 @@ AUTHOR_MAP = {
     "balyan.sid@gmail.com": "balyansid",
     "oluwadareab12@gmail.com": "bennytimz",
     "simon@simonmarcus.org": "simon-marcus",
+    "xowiekk@gmail.com": "Xowiek",
     "1243352777@qq.com": "zons-zhaozhy",
     # ── bulk addition: 75 emails resolved via API, PR salvage bodies, noreply
     #    crossref, and GH contributor list matching (April 2026 audit) ──
@@ -191,12 +200,14 @@ AUTHOR_MAP = {
     "yangzhi.see@gmail.com": "SeeYangZhi",
     "yongtenglei@gmail.com": "yongtenglei",
     "young@YoungdeMacBook-Pro.local": "YoungYang963",
-    "ysfalweshcan@gmail.com": "Awsh1",
+    "ysfalweshcan@gmail.com": "Junass1",
     "ysfwaxlycan@gmail.com": "WAXLYY",
     "yusufalweshdemir@gmail.com": "Dusk1e",
     "zhouboli@gmail.com": "zhouboli",
     "zqiao@microsoft.com": "tomqiaozc",
     "zzn+pa@zzn.im": "xinbenlv",
+    "zaynjarvis@gmail.com": "ZaynJarvis",
+    "zhiheng.liu@bytedance.com": "ZaynJarvis",
 }
 
 

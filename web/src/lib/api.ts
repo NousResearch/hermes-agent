@@ -182,6 +182,16 @@ export const api = {
       },
     );
   },
+
+  // Dashboard themes
+  getThemes: () =>
+    fetchJSON<ThemeListResponse>("/api/dashboard/themes"),
+  setTheme: (name: string) =>
+    fetchJSON<{ ok: boolean; theme: string }>("/api/dashboard/theme", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    }),
 };
 
 export interface PlatformStatus {
@@ -414,4 +424,11 @@ export interface OAuthPollResponse {
   status: "pending" | "approved" | "denied" | "expired" | "error";
   error_message?: string | null;
   expires_at?: number | null;
+}
+
+// ── Dashboard theme types ──────────────────────────────────────────────
+
+export interface ThemeListResponse {
+  themes: Array<{ name: string; label: string; description: string }>;
+  active: string;
 }

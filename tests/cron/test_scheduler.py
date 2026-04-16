@@ -8,6 +8,8 @@ from unittest.mock import AsyncMock, patch, MagicMock
 import pytest
 
 from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, run_job, SILENT_MARKER, _build_job_prompt
+from tools.env_passthrough import clear_env_passthrough
+from tools.credential_files import clear_credential_files
 
 
 class TestResolveOrigin:
@@ -877,6 +879,117 @@ class TestRunJobPerJobOverrides:
 
 
 class TestRunJobSkillBacked:
+    def test_run_job_preserves_skill_env_passthrough_into_worker_thread(self, tmp_path):
+        job = {
+            "id": "skill-env-job",
+            "name": "skill env test",
+            "prompt": "Use the skill.",
+            "skill": "notion",
+        }
+
+        fake_db = MagicMock()
+
+        def _skill_view(name):
+            assert name == "notion"
+            from tools.env_passthrough import register_env_passthrough
+
+            register_env_passthrough(["NOTION_API_KEY"])
+            return json.dumps({"success": True, "content": "# notion\nUse Notion."})
+
+        def _run_conversation(prompt):
+            from tools.env_passthrough import get_all_passthrough
+
+            assert "NOTION_API_KEY" in get_all_passthrough()
+            return {"final_response": "ok"}
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "***",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("tools.skills_tool.skill_view", side_effect=_skill_view), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.side_effect = _run_conversation
+            mock_agent_cls.return_value = mock_agent
+
+            try:
+                success, output, final_response, error = run_job(job)
+            finally:
+                clear_env_passthrough()
+
+        assert success is True
+        assert error is None
+        assert final_response == "ok"
+
+    def test_run_job_preserves_credential_file_passthrough_into_worker_thread(self, tmp_path):
+        """copy_context() also propagates credential_files ContextVar."""
+        job = {
+            "id": "cred-env-job",
+            "name": "cred file test",
+            "prompt": "Use the skill.",
+            "skill": "google-workspace",
+        }
+
+        fake_db = MagicMock()
+
+        # Create a credential file so register_credential_file succeeds
+        cred_dir = tmp_path / "credentials"
+        cred_dir.mkdir()
+        (cred_dir / "google_token.json").write_text('{"token": "t"}')
+
+        def _skill_view(name):
+            assert name == "google-workspace"
+            from tools.credential_files import register_credential_file
+
+            register_credential_file("credentials/google_token.json")
+            return json.dumps({"success": True, "content": "# google-workspace\nUse Google."})
+
+        def _run_conversation(prompt):
+            from tools.credential_files import _get_registered
+
+            registered = _get_registered()
+            assert registered, "credential files must be visible in worker thread"
+            assert any("google_token.json" in v for v in registered.values())
+            return {"final_response": "ok"}
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("tools.credential_files._resolve_hermes_home", return_value=tmp_path), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "***",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("tools.skills_tool.skill_view", side_effect=_skill_view), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.side_effect = _run_conversation
+            mock_agent_cls.return_value = mock_agent
+
+            try:
+                success, output, final_response, error = run_job(job)
+            finally:
+                clear_credential_files()
+
+        assert success is True
+        assert error is None
+        assert final_response == "ok"
+
     def test_run_job_loads_skill_and_disables_recursive_cron_tools(self, tmp_path):
         job = {
             "id": "skill-job",

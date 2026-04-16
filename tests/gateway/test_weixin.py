@@ -520,3 +520,63 @@ class TestWeixinMediaBuilder:
         adapter = _make_adapter()
         media_type, builder = adapter._outbound_media_builder("recording.silk")
         assert media_type == weixin.MEDIA_VOICE
+
+
+class TestWeixinSendImageFileParameterName:
+    """Regression test for send_image_file parameter name mismatch.
+
+    The gateway calls send_image_file(chat_id=..., image_path=...) but the
+    WeixinAdapter previously used 'path' as the parameter name, causing
+    image sending to fail. This test ensures the interface stays correct.
+    """
+
+    @patch.object(WeixinAdapter, "send_document", new_callable=AsyncMock)
+    def test_send_image_file_uses_image_path_parameter(self, send_document_mock):
+        """Verify send_image_file accepts image_path and forwards to send_document."""
+        adapter = _make_adapter()
+        adapter._session = object()
+        adapter._token = "test-token"
+
+        send_document_mock.return_value = weixin.SendResult(success=True, message_id="test-id")
+
+        # This is the call pattern used by gateway/run.py extract_media
+        result = asyncio.run(
+            adapter.send_image_file(
+                chat_id="wxid_test123",
+                image_path="/tmp/test_image.png",
+                caption="Test caption",
+                metadata={"thread_id": "thread-123"},
+            )
+        )
+
+        assert result.success is True
+        send_document_mock.assert_awaited_once_with(
+            "wxid_test123",
+            file_path="/tmp/test_image.png",
+            caption="Test caption",
+            metadata={"thread_id": "thread-123"},
+        )
+
+    @patch.object(WeixinAdapter, "send_document", new_callable=AsyncMock)
+    def test_send_image_file_works_without_optional_params(self, send_document_mock):
+        """Verify send_image_file works with minimal required params."""
+        adapter = _make_adapter()
+        adapter._session = object()
+        adapter._token = "test-token"
+
+        send_document_mock.return_value = weixin.SendResult(success=True, message_id="test-id")
+
+        result = asyncio.run(
+            adapter.send_image_file(
+                chat_id="wxid_test123",
+                image_path="/tmp/test_image.jpg",
+            )
+        )
+
+        assert result.success is True
+        send_document_mock.assert_awaited_once_with(
+            "wxid_test123",
+            file_path="/tmp/test_image.jpg",
+            caption="",
+            metadata=None,
+        )

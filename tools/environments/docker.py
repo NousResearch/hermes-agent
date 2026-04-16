@@ -30,6 +30,7 @@ _DOCKER_SEARCH_PATHS = [
 ]
 
 _docker_executable: Optional[str] = None  # resolved once, cached
+_runtime_is_podman: Optional[bool] = None  # resolved once, cached
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
@@ -143,6 +144,21 @@ def find_docker() -> Optional[str]:
     return None
 
 
+def is_podman() -> bool:
+    """Return True if the resolved container runtime is Podman, not Docker."""
+    global _runtime_is_podman
+    if _runtime_is_podman is not None:
+        return _runtime_is_podman
+    exe = find_docker()
+    _runtime_is_podman = exe is not None and "podman" in os.path.basename(exe)
+    return _runtime_is_podman
+
+
+def runtime_name() -> str:
+    """Return a user-facing name for the resolved container runtime."""
+    return "Podman" if is_podman() else "Docker"
+
+
 # Security flags applied to every container.
 # The container itself is the security boundary (isolated from host).
 # We drop all capabilities then add back the minimum needed:
@@ -175,13 +191,12 @@ def _ensure_docker_available() -> None:
     docker_exe = find_docker()
     if not docker_exe:
         logger.error(
-            "Docker backend selected but no docker executable was found in PATH "
-            "or known install locations. Install Docker Desktop and ensure the "
-            "CLI is available."
+            "Container backend selected but no docker or podman executable was "
+            "found in PATH or known install locations."
         )
         raise RuntimeError(
-            "Docker executable not found in PATH or known install locations. "
-            "Install Docker and ensure the 'docker' command is available."
+            "No container runtime found (docker or podman). "
+            "Install Docker or Podman and ensure the CLI is available."
         )
 
     try:
@@ -193,23 +208,25 @@ def _ensure_docker_available() -> None:
         )
     except FileNotFoundError:
         logger.error(
-            "Docker backend selected but the resolved docker executable '%s' could "
+            "Container backend selected but the resolved executable '%s' could "
             "not be executed.",
             docker_exe,
             exc_info=True,
         )
         raise RuntimeError(
-            "Docker executable could not be executed. Check your Docker installation."
+            f"{runtime_name()} executable could not be executed. "
+            f"Check your {runtime_name()} installation."
         )
     except subprocess.TimeoutExpired:
+        _rt = runtime_name()
         logger.error(
-            "Docker backend selected but '%s version' timed out. "
-            "The Docker daemon may not be running.",
-            docker_exe,
+            "Container backend selected but '%s version' timed out. "
+            "The %s daemon may not be running.",
+            docker_exe, _rt,
             exc_info=True,
         )
         raise RuntimeError(
-            "Docker daemon is not responding. Ensure Docker is running and try again."
+            f"{_rt} daemon is not responding. Ensure {_rt} is running and try again."
         )
     except Exception:
         logger.error(
@@ -219,16 +236,17 @@ def _ensure_docker_available() -> None:
         raise
     else:
         if result.returncode != 0:
+            _rt = runtime_name()
             logger.error(
-                "Docker backend selected but '%s version' failed "
+                "Container backend selected but '%s version' failed "
                 "(exit code %d, stderr=%s)",
                 docker_exe,
                 result.returncode,
                 result.stderr.strip(),
             )
             raise RuntimeError(
-                "Docker command is available but 'docker version' failed. "
-                "Check your Docker installation."
+                f"{_rt} command is available but '{_rt.lower()} version' failed. "
+                f"Check your {_rt} installation."
             )
 
 
@@ -510,14 +528,19 @@ class DockerEnvironment(BaseEnvironment):
 
     @staticmethod
     def _storage_opt_supported() -> bool:
-        """Check if Docker's storage driver supports --storage-opt size=.
-        
-        Only overlay2 on XFS with pquota supports per-container disk quotas.
+        """Check if the container runtime supports --storage-opt size=.
+
+        Only Docker's overlay2 on XFS with pquota supports per-container disk
+        quotas.  Podman does not support --storage-opt on containers at all.
         Ubuntu (and most distros) default to ext4, where this flag errors out.
         """
         global _storage_opt_ok
         if _storage_opt_ok is not None:
             return _storage_opt_ok
+        # Podman does not support per-container --storage-opt size=
+        if is_podman():
+            _storage_opt_ok = False
+            return False
         try:
             docker = find_docker() or "docker"
             result = subprocess.run(

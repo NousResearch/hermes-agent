@@ -614,31 +614,38 @@ def run_doctor(args):
         check_warn("ripgrep (rg) not found", "(file search uses grep fallback)")
         check_info(f"Install for faster search: {_system_package_install_cmd('ripgrep')}")
     
-    # Docker (optional)
+    # Container runtime: Docker or Podman (optional)
     terminal_env = os.getenv("TERMINAL_ENV", "local")
+    try:
+        from tools.environments.docker import find_docker, runtime_name
+        container_exe = find_docker()
+        _rt_name = runtime_name().lower()  # "docker" or "podman"
+    except ImportError:
+        container_exe = shutil.which("docker") or shutil.which("podman")
+        _rt_name = "podman" if (container_exe and "podman" in container_exe) else "docker"
     if terminal_env == "docker":
-        if shutil.which("docker"):
-            # Check if docker daemon is running
+        if container_exe:
+            # Check if daemon is running
             try:
-                result = subprocess.run(["docker", "info"], capture_output=True, timeout=10)
+                result = subprocess.run([container_exe, "info"], capture_output=True, timeout=10)
             except subprocess.TimeoutExpired:
                 result = None
             if result is not None and result.returncode == 0:
-                check_ok("docker", "(daemon running)")
+                check_ok(_rt_name, "(daemon running)")
             else:
-                check_fail("docker daemon not running")
-                issues.append("Start Docker daemon")
+                check_fail(f"{_rt_name} daemon not running")
+                issues.append(f"Start {_rt_name} daemon")
         else:
-            check_fail("docker not found", "(required for TERMINAL_ENV=docker)")
-            issues.append("Install Docker or change TERMINAL_ENV")
+            check_fail("docker/podman not found", "(required for TERMINAL_ENV=docker)")
+            issues.append("Install Docker or Podman, or change TERMINAL_ENV")
     else:
-        if shutil.which("docker"):
-            check_ok("docker", "(optional)")
+        if container_exe:
+            check_ok(_rt_name, "(optional)")
         else:
             if _is_termux():
-                check_info("Docker backend is not available inside Termux (expected on Android)")
+                check_info("Container backend is not available inside Termux (expected on Android)")
             else:
-                check_warn("docker not found", "(optional)")
+                check_warn("docker/podman not found", "(optional)")
     
     # SSH (if using ssh backend)
     if terminal_env == "ssh":

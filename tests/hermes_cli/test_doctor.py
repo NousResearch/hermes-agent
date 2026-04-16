@@ -237,15 +237,23 @@ def test_run_doctor_termux_treats_docker_and_browser_warnings_as_expected(monkey
     real_which = doctor_mod.shutil.which
 
     def fake_which(cmd):
-        if cmd in {"docker", "node", "npm"}:
+        if cmd in {"docker", "podman", "node", "npm"}:
             return None
         return real_which(cmd)
 
     monkeypatch.setattr(doctor_mod.shutil, "which", fake_which)
+    # Also ensure find_docker() doesn't find a real podman binary
+    try:
+        from tools.environments import docker as _docker_mod
+        monkeypatch.setattr(_docker_mod, "_docker_executable", None)
+        monkeypatch.setattr(_docker_mod, "_runtime_is_podman", None)
+        monkeypatch.setattr(_docker_mod.shutil, "which", fake_which)
+    except ImportError:
+        pass
 
     out = helper._run_doctor_and_capture(monkeypatch, tmp_path, provider="")
 
-    assert "Docker backend is not available inside Termux" in out
+    assert "Container backend is not available inside Termux" in out
     assert "Node.js not found (browser tools are optional in the tested Termux path)" in out
     assert "Install Node.js on Termux with: pkg install nodejs" in out
     assert "Termux browser setup:" in out

@@ -9,6 +9,14 @@ import pytest
 from tools.environments import docker as docker_env
 
 
+@pytest.fixture(autouse=True)
+def _reset_runtime_cache():
+    """Clear the Podman detection cache between tests."""
+    docker_env._runtime_is_podman = None
+    yield
+    docker_env._runtime_is_podman = None
+
+
 def _mock_subprocess_run(monkeypatch):
     """Mock subprocess.run to intercept docker run -d and docker version calls.
 
@@ -62,10 +70,9 @@ def test_ensure_docker_available_logs_and_raises_when_not_found(monkeypatch, cap
         with pytest.raises(RuntimeError) as excinfo:
             _make_dummy_env()
 
-    assert "Docker executable not found in PATH or known install locations" in str(excinfo.value)
+    assert "No container runtime found" in str(excinfo.value)
     assert any(
-        "no docker executable was found in PATH or known install locations"
-        in record.getMessage()
+        "no docker or podman executable" in record.getMessage()
         for record in caplog.records
     )
 

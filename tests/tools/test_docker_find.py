@@ -12,8 +12,10 @@ from tools.environments import docker as docker_mod
 def _reset_cache():
     """Clear the module-level docker executable cache between tests."""
     docker_mod._docker_executable = None
+    docker_mod._runtime_is_podman = None
     yield
     docker_mod._docker_executable = None
+    docker_mod._runtime_is_podman = None
 
 
 class TestFindDocker:
@@ -102,3 +104,68 @@ class TestFindDocker:
         with patch("tools.environments.docker.shutil.which", side_effect=which_side_effect):
             result = docker_mod.find_docker()
         assert result == "/usr/bin/docker"
+
+
+class TestIsPodman:
+    """Tests for is_podman() and runtime_name() helpers."""
+
+    def test_docker_is_not_podman(self):
+        with patch("tools.environments.docker.shutil.which", return_value="/usr/bin/docker"):
+            docker_mod.find_docker()
+        assert docker_mod.is_podman() is False
+        assert docker_mod.runtime_name() == "Docker"
+
+    def test_podman_is_podman(self):
+        def which_side_effect(name):
+            if name == "podman":
+                return "/usr/bin/podman"
+            return None
+
+        with patch("tools.environments.docker.shutil.which", side_effect=which_side_effect), \
+             patch("tools.environments.docker._DOCKER_SEARCH_PATHS", []):
+            docker_mod.find_docker()
+        assert docker_mod.is_podman() is True
+        assert docker_mod.runtime_name() == "Podman"
+
+    def test_env_override_podman(self, tmp_path):
+        fake = tmp_path / "podman"
+        fake.write_text("#!/bin/sh\n")
+        fake.chmod(0o755)
+
+        with patch.dict(os.environ, {"HERMES_DOCKER_BINARY": str(fake)}):
+            docker_mod.find_docker()
+        assert docker_mod.is_podman() is True
+
+    def test_no_runtime_is_not_podman(self):
+        with patch("tools.environments.docker.shutil.which", return_value=None), \
+             patch("tools.environments.docker._DOCKER_SEARCH_PATHS", []):
+            docker_mod.find_docker()
+            assert docker_mod.is_podman() is False
+
+    def test_is_podman_cached(self):
+        """Second call uses cache."""
+        with patch("tools.environments.docker.shutil.which", return_value="/usr/bin/docker"):
+            docker_mod.find_docker()
+            first = docker_mod.is_podman()
+        # Patch find_docker to return podman — should still return cached False
+        docker_mod._docker_executable = "/usr/bin/podman"
+        second = docker_mod.is_podman()
+        assert first is False
+        assert second is False  # cached
+
+
+class TestStorageOptPodman:
+    """_storage_opt_supported() should return False for Podman."""
+
+    def test_podman_skips_storage_opt(self):
+        def which_side_effect(name):
+            if name == "podman":
+                return "/usr/bin/podman"
+            return None
+
+        with patch("tools.environments.docker.shutil.which", side_effect=which_side_effect), \
+             patch("tools.environments.docker._DOCKER_SEARCH_PATHS", []):
+            docker_mod.find_docker()
+        # Reset storage opt cache
+        docker_mod._storage_opt_ok = None
+        assert docker_mod.DockerEnvironment._storage_opt_supported() is False

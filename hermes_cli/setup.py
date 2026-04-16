@@ -1134,15 +1134,22 @@ def setup_terminal_backend(config: dict):
                     print_success("Sudo password saved")
 
     elif selected_backend == "docker":
-        print_success("Terminal backend: Docker")
+        print_success("Terminal backend: Docker/Podman")
 
-        # Check if Docker is available
-        docker_bin = shutil.which("docker")
+        # Check if a container runtime is available
+        try:
+            from tools.environments.docker import find_docker, runtime_name
+            docker_bin = find_docker()
+            _rt = runtime_name()
+        except ImportError:
+            docker_bin = shutil.which("docker") or shutil.which("podman")
+            _rt = "Podman" if (docker_bin and "podman" in docker_bin) else "Docker"
         if not docker_bin:
-            print_warning("Docker not found in PATH!")
+            print_warning("Docker/Podman not found in PATH!")
             print_info("Install Docker: https://docs.docker.com/get-docker/")
+            print_info("  or Podman: https://podman.io/getting-started/installation")
         else:
-            print_info(f"Docker found: {docker_bin}")
+            print_info(f"{_rt} found: {docker_bin}")
 
         # Docker image
         current_image = config.get("terminal", {}).get(

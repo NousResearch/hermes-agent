@@ -1286,6 +1286,10 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         live = _fetch_ai_gateway_models()
         if live:
             return live
+    if normalized == "ollama-cloud":
+        live = fetch_ollama_cloud_models(force_refresh=force_refresh)
+        if live:
+            return live
     if normalized == "custom":
         base_url = _get_custom_base_url()
         if base_url:

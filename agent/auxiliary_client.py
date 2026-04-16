@@ -34,6 +34,7 @@ Payment / credit exhaustion fallback:
   their OpenRouter balance but has Codex OAuth or another provider available.
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -53,6 +54,81 @@ logger = logging.getLogger(__name__)
 
 # Module-level flag: only warn once per process about stale OPENAI_BASE_URL.
 _stale_base_url_warned = False
+
+# ── Provider concurrency gate ────────────────────────────────────────────
+# Some providers enforce per-model concurrency limits (max in-flight requests).
+# Without gating, the gateway's parallel sessions and auxiliary tasks
+# (compression, title gen, memory flush, cron, subagents) fire multiple
+# simultaneous requests, triggering 429s.
+#
+# This gate serialises all API calls to a given model so only N requests
+# are in-flight at once (where N = the provider's concurrency limit).
+#
+# Limits are configured entirely via config.yaml — no hardcoded defaults:
+#
+#   concurrency_limits:
+#     glm-5-turbo: 1
+#     glm-4.5: 10
+#     my-custom-model: 3
+#
+_concurrency_semaphores: Dict[str, threading.Semaphore] = {}
+_concurrency_lock = threading.Lock()
+_concurrency_limits_loaded: Optional[Dict[str, int]] = None
+
+
+def _load_concurrency_limits() -> Dict[str, int]:
+    """Load per-model concurrency limits from config.yaml."""
+    global _concurrency_limits_loaded
+    if _concurrency_limits_loaded is not None:
+        return _concurrency_limits_loaded
+    limits: Dict[str, int] = {}
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config() or {}
+        user_limits = cfg.get("concurrency_limits") or {}
+        if isinstance(user_limits, dict):
+            for model_name, limit in user_limits.items():
+                if isinstance(limit, int) and limit > 0:
+                    limits[model_name.strip().lower()] = limit
+    except Exception:
+        pass
+    _concurrency_limits_loaded = limits
+    return limits
+
+
+def _get_model_semaphore(model: Optional[str]) -> Optional[threading.Semaphore]:
+    """Return a threading.Semaphore for the given model, or None if no limit.
+
+    Concurrency limits are read from the ``concurrency_limits`` section
+    of config.yaml.  Models not listed are ungated (no overhead).
+    """
+    if not model:
+        return None
+    key = model.strip().lower()
+    if not key:
+        return None
+    limits = _load_concurrency_limits()
+    limit = limits.get(key)
+    if limit is None:
+        return None
+    with _concurrency_lock:
+        if key not in _concurrency_semaphores:
+            _concurrency_semaphores[key] = threading.Semaphore(limit)
+        return _concurrency_semaphores[key]
+
+
+def reset_concurrency_state() -> None:
+    """Reset concurrency gate state.  Intended for tests."""
+    global _concurrency_limits_loaded
+    with _concurrency_lock:
+        _concurrency_semaphores.clear()
+    _concurrency_limits_loaded = None
+
+
+async def _async_acquire_semaphore(sem: threading.Semaphore) -> None:
+    """Acquire a threading.Semaphore without blocking the async event loop."""
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, sem.acquire)
 
 _PROVIDER_ALIASES = {
     "google": "gemini",
@@ -112,7 +188,7 @@ _API_KEY_PROVIDER_AUX_MODELS: Dict[str, str] = {
 # "exotic provider" branch checks this before falling back to the main model.
 _PROVIDER_VISION_MODELS: Dict[str, str] = {
     "xiaomi": "mimo-v2-omni",
-    "zai": "glm-5v-turbo",
+    "zai": "glm-4.6v-flash",
 }
 
 # OpenRouter app attribution headers
@@ -775,21 +851,6 @@ def _try_openrouter() -> Tuple[Optional[OpenAI], Optional[str]]:
 
 
 def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
-    # Check cross-session rate limit guard before attempting Nous —
-    # if another session already recorded a 429, skip Nous entirely
-    # to avoid piling more requests onto the tapped RPH bucket.
-    try:
-        from agent.nous_rate_guard import nous_rate_limit_remaining
-        _remaining = nous_rate_limit_remaining()
-        if _remaining is not None and _remaining > 0:
-            logger.debug(
-                "Auxiliary: skipping Nous Portal (rate-limited, resets in %.0fs)",
-                _remaining,
-            )
-            return None, None
-    except Exception:
-        pass
-
     nous = _read_nous_auth()
     if not nous:
         return None, None
@@ -912,51 +973,6 @@ def _resolve_custom_runtime() -> Tuple[Optional[str], Optional[str], Optional[st
 def _current_custom_base_url() -> str:
     custom_base, _, _ = _resolve_custom_runtime()
     return custom_base or ""
-
-
-def _validate_proxy_env_urls() -> None:
-    """Fail fast with a clear error when proxy env vars have malformed URLs.
-
-    Common cause: shell config (e.g. .zshrc) with a typo like
-    ``export HTTP_PROXY=http://127.0.0.1:6153export NEXT_VAR=...``
-    which concatenates 'export' into the port number.  Without this
-    check the OpenAI/httpx client raises a cryptic ``Invalid port``
-    error that doesn't name the offending env var.
-    """
-    from urllib.parse import urlparse
-
-    for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
-                "https_proxy", "http_proxy", "all_proxy"):
-        value = str(os.environ.get(key) or "").strip()
-        if not value:
-            continue
-        try:
-            parsed = urlparse(value)
-            if parsed.scheme:
-                _ = parsed.port          # raises ValueError for e.g. '6153export'
-        except ValueError as exc:
-            raise RuntimeError(
-                f"Malformed proxy environment variable {key}={value!r}. "
-                "Fix or unset your proxy settings and try again."
-            ) from exc
-
-
-def _validate_base_url(base_url: str) -> None:
-    """Reject obviously broken custom endpoint URLs before they reach httpx."""
-    from urllib.parse import urlparse
-
-    candidate = str(base_url or "").strip()
-    if not candidate or candidate.startswith("acp://"):
-        return
-    try:
-        parsed = urlparse(candidate)
-        if parsed.scheme in {"http", "https"}:
-            _ = parsed.port              # raises ValueError for malformed ports
-    except ValueError as exc:
-        raise RuntimeError(
-            f"Malformed custom endpoint URL: {candidate!r}. "
-            "Run `hermes setup` or `hermes model` and enter a valid http(s) base URL."
-        ) from exc
 
 
 def _try_custom_endpoint() -> Tuple[Optional[OpenAI], Optional[str]]:
@@ -1284,12 +1300,6 @@ def _to_async_client(sync_client, model: str):
         return AsyncCodexAuxiliaryClient(sync_client), model
     if isinstance(sync_client, AnthropicAuxiliaryClient):
         return AsyncAnthropicAuxiliaryClient(sync_client), model
-    try:
-        from agent.copilot_acp_client import CopilotACPClient
-        if isinstance(sync_client, CopilotACPClient):
-            return sync_client, model
-    except ImportError:
-        pass
 
     async_kwargs = {
         "api_key": sync_client.api_key,
@@ -1359,7 +1369,6 @@ def resolve_provider_client(
     Returns:
         (client, resolved_model) or (None, None) if auth is unavailable.
     """
-    _validate_proxy_env_urls()
     # Normalise aliases
     provider = _normalize_aux_provider(provider)
 
@@ -1535,11 +1544,7 @@ def resolve_provider_client(
 
     # ── API-key providers from PROVIDER_REGISTRY ─────────────────────
     try:
-        from hermes_cli.auth import (
-            PROVIDER_REGISTRY,
-            resolve_api_key_provider_credentials,
-            resolve_external_process_provider_credentials,
-        )
+        from hermes_cli.auth import PROVIDER_REGISTRY, resolve_api_key_provider_credentials
     except ImportError:
         logger.debug("hermes_cli.auth not available for provider %s", provider)
         return None, None
@@ -1612,41 +1617,6 @@ def resolve_provider_client(
         logger.debug("resolve_provider_client: %s (%s)", provider, final_model)
         return (_to_async_client(client, final_model) if async_mode
                 else (client, final_model))
-
-    if pconfig.auth_type == "external_process":
-        creds = resolve_external_process_provider_credentials(provider)
-        final_model = _normalize_resolved_model(model or _read_main_model(), provider)
-        if provider == "copilot-acp":
-            api_key = str(creds.get("api_key", "")).strip()
-            base_url = str(creds.get("base_url", "")).strip()
-            command = str(creds.get("command", "")).strip() or None
-            args = list(creds.get("args") or [])
-            if not final_model:
-                logger.warning(
-                    "resolve_provider_client: copilot-acp requested but no model "
-                    "was provided or configured"
-                )
-                return None, None
-            if not api_key or not base_url:
-                logger.warning(
-                    "resolve_provider_client: copilot-acp requested but external "
-                    "process credentials are incomplete"
-                )
-                return None, None
-            from agent.copilot_acp_client import CopilotACPClient
-
-            client = CopilotACPClient(
-                api_key=api_key,
-                base_url=base_url,
-                command=command,
-                args=args,
-            )
-            logger.debug("resolve_provider_client: %s (%s)", provider, final_model)
-            return (_to_async_client(client, final_model) if async_mode
-                    else (client, final_model))
-        logger.warning("resolve_provider_client: external-process provider %s not "
-                       "directly supported", provider)
-        return None, None
 
     elif pconfig.auth_type in ("oauth_device_code", "oauth_external"):
         # OAuth providers — route through their specific try functions
@@ -1896,15 +1866,9 @@ def auxiliary_max_tokens_param(value: int) -> dict:
 # Every auxiliary LLM consumer should use these instead of manually
 # constructing clients and calling .chat.completions.create().
 
-# Client cache: (provider, async_mode, base_url, api_key, api_mode, runtime_key) -> (client, default_model, loop)
-# NOTE: loop identity is NOT part of the key.  On async cache hits we check
-# whether the cached loop is the *current* loop; if not, the stale entry is
-# replaced in-place.  This bounds cache growth to one entry per unique
-# provider config rather than one per (config × event-loop), which previously
-# caused unbounded fd accumulation in long-running gateway processes (#10200).
+# Client cache: (provider, async_mode, base_url, api_key) -> (client, default_model)
 _client_cache: Dict[tuple, tuple] = {}
 _client_cache_lock = threading.Lock()
-_CLIENT_CACHE_MAX_SIZE = 64  # safety belt — evict oldest when exceeded
 
 
 def neuter_async_httpx_del() -> None:
@@ -2037,49 +2001,39 @@ def _get_cached_client(
     Async clients (AsyncOpenAI) use httpx.AsyncClient internally, which
     binds to the event loop that was current when the client was created.
     Using such a client on a *different* loop causes deadlocks or
-    RuntimeError.  To prevent cross-loop issues, the cache validates on
-    every async hit that the cached loop is the *current, open* loop.
-    If the loop changed (e.g. a new gateway worker-thread loop), the stale
-    entry is replaced in-place rather than creating an additional entry.
-
-    This keeps cache size bounded to one entry per unique provider config,
-    preventing the fd-exhaustion that previously occurred in long-running
-    gateways where recycled worker threads created unbounded entries (#10200).
+    RuntimeError.  To prevent cross-loop issues (especially in gateway
+    mode where _run_async() may spawn fresh loops in worker threads), the
+    cache key for async clients includes the current event loop's identity
+    so each loop gets its own client instance.
     """
-    # Resolve the current event loop for async clients so we can validate
-    # cached entries.  Loop identity is NOT in the cache key — instead we
-    # check at hit time whether the cached loop is still current and open.
-    # This prevents unbounded cache growth from recycled worker-thread loops
-    # while still guaranteeing we never reuse a client on the wrong loop
-    # (which causes deadlocks, see #2681).
+    # Include loop identity for async clients to prevent cross-loop reuse.
+    # httpx.AsyncClient (inside AsyncOpenAI) is bound to the loop where it
+    # was created — reusing it on a different loop causes deadlocks (#2681).
+    loop_id = 0
     current_loop = None
     if async_mode:
         try:
             import asyncio as _aio
             current_loop = _aio.get_event_loop()
+            loop_id = id(current_loop)
         except RuntimeError:
             pass
     runtime = _normalize_main_runtime(main_runtime)
     runtime_key = tuple(runtime.get(field, "") for field in _MAIN_RUNTIME_FIELDS) if provider == "auto" else ()
-    cache_key = (provider, async_mode, base_url or "", api_key or "", api_mode or "", runtime_key)
+    cache_key = (provider, async_mode, base_url or "", api_key or "", api_mode or "", loop_id, runtime_key)
     with _client_cache_lock:
         if cache_key in _client_cache:
             cached_client, cached_default, cached_loop = _client_cache[cache_key]
             if async_mode:
-                # Validate: the cached client must be bound to the CURRENT,
-                # OPEN loop.  If the loop changed or was closed, the httpx
-                # transport inside is dead — force-close and replace.
-                loop_ok = (
-                    cached_loop is not None
-                    and cached_loop is current_loop
-                    and not cached_loop.is_closed()
-                )
-                if loop_ok:
+                # A cached async client whose loop has been closed will raise
+                # "Event loop is closed" when httpx tries to clean up its
+                # transport.  Discard the stale client and create a fresh one.
+                if cached_loop is not None and cached_loop.is_closed():
+                    _force_close_async_httpx(cached_client)
+                    del _client_cache[cache_key]
+                else:
                     effective = _compat_model(cached_client, model, cached_default)
                     return cached_client, effective
-                # Stale — evict and fall through to create a new client.
-                _force_close_async_httpx(cached_client)
-                del _client_cache[cache_key]
             else:
                 effective = _compat_model(cached_client, model, cached_default)
                 return cached_client, effective
@@ -2099,12 +2053,6 @@ def _get_cached_client(
         bound_loop = current_loop
         with _client_cache_lock:
             if cache_key not in _client_cache:
-                # Safety belt: if the cache has grown beyond the max, evict
-                # the oldest entries (FIFO — dict preserves insertion order).
-                while len(_client_cache) >= _CLIENT_CACHE_MAX_SIZE:
-                    evict_key, evict_entry = next(iter(_client_cache.items()))
-                    _force_close_async_httpx(evict_entry[0])
-                    del _client_cache[evict_key]
                 _client_cache[cache_key] = (client, default_model, bound_loop)
             else:
                 client, default_model, _ = _client_cache[cache_key]
@@ -2464,56 +2412,64 @@ def call_llm(
         kwargs["messages"] = _convert_openai_images_to_anthropic(kwargs["messages"])
 
     # Handle max_tokens vs max_completion_tokens retry, then payment fallback.
+    # Acquire the per-model concurrency semaphore to respect provider limits.
+    _sem = _get_model_semaphore(final_model)
+    if _sem is not None:
+        _sem.acquire()
     try:
-        return _validate_llm_response(
-            client.chat.completions.create(**kwargs), task)
-    except Exception as first_err:
-        err_str = str(first_err)
-        if "max_tokens" in err_str or "unsupported_parameter" in err_str:
-            kwargs.pop("max_tokens", None)
-            kwargs["max_completion_tokens"] = max_tokens
-            try:
-                return _validate_llm_response(
-                    client.chat.completions.create(**kwargs), task)
-            except Exception as retry_err:
-                # If the max_tokens retry also hits a payment or connection
-                # error, fall through to the fallback chain below.
-                if not (_is_payment_error(retry_err) or _is_connection_error(retry_err)):
-                    raise
-                first_err = retry_err
+        try:
+            return _validate_llm_response(
+                client.chat.completions.create(**kwargs), task)
+        except Exception as first_err:
+            err_str = str(first_err)
+            if "max_tokens" in err_str or "unsupported_parameter" in err_str:
+                kwargs.pop("max_tokens", None)
+                kwargs["max_completion_tokens"] = max_tokens
+                try:
+                    return _validate_llm_response(
+                        client.chat.completions.create(**kwargs), task)
+                except Exception as retry_err:
+                    # If the max_tokens retry also hits a payment or connection
+                    # error, fall through to the fallback chain below.
+                    if not (_is_payment_error(retry_err) or _is_connection_error(retry_err)):
+                        raise
+                    first_err = retry_err
 
-        # ── Payment / credit exhaustion fallback ──────────────────────
-        # When the resolved provider returns 402 or a credit-related error,
-        # try alternative providers instead of giving up.  This handles the
-        # common case where a user runs out of OpenRouter credits but has
-        # Codex OAuth or another provider available.
-        #
-        # ── Connection error fallback ────────────────────────────────
-        # When a provider endpoint is unreachable (DNS failure, connection
-        # refused, timeout), try alternative providers.  This handles stale
-        # Codex/OAuth tokens that authenticate but whose endpoint is down,
-        # and providers the user never configured that got picked up by
-        # the auto-detection chain.
-        should_fallback = _is_payment_error(first_err) or _is_connection_error(first_err)
-        # Only try alternative providers when the user didn't explicitly
-        # configure this task's provider.  Explicit provider = hard constraint;
-        # auto (the default) = best-effort fallback chain.  (#7559)
-        is_auto = resolved_provider in ("auto", "", None)
-        if should_fallback and is_auto:
-            reason = "payment error" if _is_payment_error(first_err) else "connection error"
-            logger.info("Auxiliary %s: %s on %s (%s), trying fallback",
-                        task or "call", reason, resolved_provider, first_err)
-            fb_client, fb_model, fb_label = _try_payment_fallback(
-                resolved_provider, task, reason=reason)
-            if fb_client is not None:
-                fb_kwargs = _build_call_kwargs(
-                    fb_label, fb_model, messages,
-                    temperature=temperature, max_tokens=max_tokens,
-                    tools=tools, timeout=effective_timeout,
-                    extra_body=extra_body)
-                return _validate_llm_response(
-                    fb_client.chat.completions.create(**fb_kwargs), task)
-        raise
+            # ── Payment / credit exhaustion fallback ──────────────────────
+            # When the resolved provider returns 402 or a credit-related error,
+            # try alternative providers instead of giving up.  This handles the
+            # common case where a user runs out of OpenRouter credits but has
+            # Codex OAuth or another provider available.
+            #
+            # ── Connection error fallback ────────────────────────────────
+            # When a provider endpoint is unreachable (DNS failure, connection
+            # refused, timeout), try alternative providers.  This handles stale
+            # Codex/OAuth tokens that authenticate but whose endpoint is down,
+            # and providers the user never configured that got picked up by
+            # the auto-detection chain.
+            should_fallback = _is_payment_error(first_err) or _is_connection_error(first_err)
+            # Only try alternative providers when the user didn't explicitly
+            # configure this task's provider.  Explicit provider = hard constraint;
+            # auto (the default) = best-effort fallback chain.  (#7559)
+            is_auto = resolved_provider in ("auto", "", None)
+            if should_fallback and is_auto:
+                reason = "payment error" if _is_payment_error(first_err) else "connection error"
+                logger.info("Auxiliary %s: %s on %s (%s), trying fallback",
+                            task or "call", reason, resolved_provider, first_err)
+                fb_client, fb_model, fb_label = _try_payment_fallback(
+                    resolved_provider, task, reason=reason)
+                if fb_client is not None:
+                    fb_kwargs = _build_call_kwargs(
+                        fb_label, fb_model, messages,
+                        temperature=temperature, max_tokens=max_tokens,
+                        tools=tools, timeout=effective_timeout,
+                        extra_body=extra_body)
+                    return _validate_llm_response(
+                        fb_client.chat.completions.create(**fb_kwargs), task)
+            raise
+    finally:
+        if _sem is not None:
+            _sem.release()
 
 
 def extract_content_or_reasoning(response) -> str:
@@ -2656,43 +2612,51 @@ async def async_call_llm(
     if _is_anthropic_compat_endpoint(resolved_provider, _client_base):
         kwargs["messages"] = _convert_openai_images_to_anthropic(kwargs["messages"])
 
+    # Acquire the per-model concurrency semaphore to respect provider limits.
+    _sem = _get_model_semaphore(final_model)
+    if _sem is not None:
+        await _async_acquire_semaphore(_sem)
     try:
-        return _validate_llm_response(
-            await client.chat.completions.create(**kwargs), task)
-    except Exception as first_err:
-        err_str = str(first_err)
-        if "max_tokens" in err_str or "unsupported_parameter" in err_str:
-            kwargs.pop("max_tokens", None)
-            kwargs["max_completion_tokens"] = max_tokens
-            try:
-                return _validate_llm_response(
-                    await client.chat.completions.create(**kwargs), task)
-            except Exception as retry_err:
-                # If the max_tokens retry also hits a payment or connection
-                # error, fall through to the fallback chain below.
-                if not (_is_payment_error(retry_err) or _is_connection_error(retry_err)):
-                    raise
-                first_err = retry_err
+        try:
+            return _validate_llm_response(
+                await client.chat.completions.create(**kwargs), task)
+        except Exception as first_err:
+            err_str = str(first_err)
+            if "max_tokens" in err_str or "unsupported_parameter" in err_str:
+                kwargs.pop("max_tokens", None)
+                kwargs["max_completion_tokens"] = max_tokens
+                try:
+                    return _validate_llm_response(
+                        await client.chat.completions.create(**kwargs), task)
+                except Exception as retry_err:
+                    # If the max_tokens retry also hits a payment or connection
+                    # error, fall through to the fallback chain below.
+                    if not (_is_payment_error(retry_err) or _is_connection_error(retry_err)):
+                        raise
+                    first_err = retry_err
 
-        # ── Payment / connection fallback (mirrors sync call_llm) ─────
-        should_fallback = _is_payment_error(first_err) or _is_connection_error(first_err)
-        is_auto = resolved_provider in ("auto", "", None)
-        if should_fallback and is_auto:
-            reason = "payment error" if _is_payment_error(first_err) else "connection error"
-            logger.info("Auxiliary %s (async): %s on %s (%s), trying fallback",
-                        task or "call", reason, resolved_provider, first_err)
-            fb_client, fb_model, fb_label = _try_payment_fallback(
-                resolved_provider, task, reason=reason)
-            if fb_client is not None:
-                fb_kwargs = _build_call_kwargs(
-                    fb_label, fb_model, messages,
-                    temperature=temperature, max_tokens=max_tokens,
-                    tools=tools, timeout=effective_timeout,
-                    extra_body=extra_body)
-                # Convert sync fallback client to async
-                async_fb, async_fb_model = _to_async_client(fb_client, fb_model or "")
-                if async_fb_model and async_fb_model != fb_kwargs.get("model"):
-                    fb_kwargs["model"] = async_fb_model
-                return _validate_llm_response(
-                    await async_fb.chat.completions.create(**fb_kwargs), task)
-        raise
+            # ── Payment / connection fallback (mirrors sync call_llm) ─────
+            should_fallback = _is_payment_error(first_err) or _is_connection_error(first_err)
+            is_auto = resolved_provider in ("auto", "", None)
+            if should_fallback and is_auto:
+                reason = "payment error" if _is_payment_error(first_err) else "connection error"
+                logger.info("Auxiliary %s (async): %s on %s (%s), trying fallback",
+                            task or "call", reason, resolved_provider, first_err)
+                fb_client, fb_model, fb_label = _try_payment_fallback(
+                    resolved_provider, task, reason=reason)
+                if fb_client is not None:
+                    fb_kwargs = _build_call_kwargs(
+                        fb_label, fb_model, messages,
+                        temperature=temperature, max_tokens=max_tokens,
+                        tools=tools, timeout=effective_timeout,
+                        extra_body=extra_body)
+                    # Convert sync fallback client to async
+                    async_fb, async_fb_model = _to_async_client(fb_client, fb_model or "")
+                    if async_fb_model and async_fb_model != fb_kwargs.get("model"):
+                        fb_kwargs["model"] = async_fb_model
+                    return _validate_llm_response(
+                        await async_fb.chat.completions.create(**fb_kwargs), task)
+            raise
+    finally:
+        if _sem is not None:
+            _sem.release()

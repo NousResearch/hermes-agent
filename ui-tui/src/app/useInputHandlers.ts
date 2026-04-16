@@ -1,17 +1,27 @@
 import { useInput } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
 
+import type {
+  ApprovalRespondResponse,
+  SecretRespondResponse,
+  SudoRespondResponse,
+  VoiceRecordResponse
+} from '../gatewayTypes.js'
+
 import type { InputHandlerContext, InputHandlerResult } from './interfaces.js'
 import { $isBlocked, $overlayState, patchOverlayState } from './overlayStore.js'
+import { turnController } from './turnController.js'
 import { getUiState, patchUiState } from './uiStore.js'
 
+const isCtrl = (key: { ctrl: boolean }, ch: string, target: string) => key.ctrl && ch.toLowerCase() === target
+
 export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
-  const { actions, composer, gateway, terminal, turn, voice, wheelStep } = ctx
+  const { actions, composer, gateway, terminal, voice, wheelStep } = ctx
+  const { actions: cActions, refs: cRefs, state: cState } = composer
+
   const overlay = useStore($overlayState)
   const isBlocked = useStore($isBlocked)
   const pagerPageSize = Math.max(5, (terminal.stdout?.rows ?? 24) - 6)
-
-  const ctrl = (key: { ctrl: boolean }, ch: string, target: string) => key.ctrl && ch.toLowerCase() === target
 
   const copySelection = () => {
     if (terminal.selection.copySelection()) {
@@ -19,59 +29,150 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
     }
   }
 
+  const cancelOverlayFromCtrlC = (live: ReturnType<typeof getUiState>) => {
+    if (overlay.clarify) {
+      return actions.answerClarify('')
+    }
+
+    if (overlay.approval) {
+      return gateway
+        .rpc<ApprovalRespondResponse>('approval.respond', { choice: 'deny', session_id: live.sid })
+        .then(r => r && (patchOverlayState({ approval: null }), actions.sys('denied')))
+    }
+
+    if (overlay.sudo) {
+      return gateway
+        .rpc<SudoRespondResponse>('sudo.respond', { password: '', request_id: overlay.sudo.requestId })
+        .then(r => r && (patchOverlayState({ sudo: null }), actions.sys('sudo cancelled')))
+    }
+
+    if (overlay.secret) {
+      return gateway
+        .rpc<SecretRespondResponse>('secret.respond', { request_id: overlay.secret.requestId, value: '' })
+        .then(r => r && (patchOverlayState({ secret: null }), actions.sys('secret entry cancelled')))
+    }
+
+    if (overlay.modelPicker) {
+      return patchOverlayState({ modelPicker: false })
+    }
+
+    if (overlay.picker) {
+      return patchOverlayState({ picker: false })
+    }
+  }
+
+  const cycleQueue = (dir: 1 | -1) => {
+    const len = cRefs.queueRef.current.length
+
+    if (!len) {
+      return false
+    }
+
+    const index = cState.queueEditIdx === null ? (dir > 0 ? 0 : len - 1) : (cState.queueEditIdx + dir + len) % len
+
+    cActions.setQueueEdit(index)
+    cActions.setHistoryIdx(null)
+    cActions.setInput(cRefs.queueRef.current[index] ?? '')
+
+    return true
+  }
+
+  const cycleHistory = (dir: 1 | -1) => {
+    const h = cRefs.historyRef.current
+    const cur = cState.historyIdx
+
+    if (dir < 0) {
+      if (!h.length) {
+        return
+      }
+
+      if (cur === null) {
+        cRefs.historyDraftRef.current = cState.input
+      }
+
+      const index = cur === null ? h.length - 1 : Math.max(0, cur - 1)
+
+      cActions.setHistoryIdx(index)
+      cActions.setQueueEdit(null)
+      cActions.setInput(h[index] ?? '')
+
+      return
+    }
+
+    if (cur === null) {
+      return
+    }
+
+    const next = cur + 1
+
+    if (next >= h.length) {
+      cActions.setHistoryIdx(null)
+      cActions.setInput(cRefs.historyDraftRef.current)
+    } else {
+      cActions.setHistoryIdx(next)
+      cActions.setInput(h[next] ?? '')
+    }
+  }
+
+  const voiceStop = () => {
+    voice.setRecording(false)
+    voice.setProcessing(true)
+
+    gateway
+      .rpc<VoiceRecordResponse>('voice.record', { action: 'stop' })
+      .then(r => {
+        if (!r) {
+          return
+        }
+
+        const transcript = String(r.text || '').trim()
+
+        if (!transcript) {
+          return actions.sys('voice: no speech detected')
+        }
+
+        cActions.setInput(prev => (prev ? `${prev}${/\s$/.test(prev) ? '' : ' '}${transcript}` : transcript))
+      })
+      .catch((e: Error) => actions.sys(`voice error: ${e.message}`))
+      .finally(() => {
+        voice.setProcessing(false)
+        patchUiState({ status: 'ready' })
+      })
+  }
+
+  const voiceStart = () =>
+    gateway
+      .rpc<VoiceRecordResponse>('voice.record', { action: 'start' })
+      .then(r => {
+        if (!r) {
+          return
+        }
+
+        voice.setRecording(true)
+        patchUiState({ status: 'recording…' })
+      })
+      .catch((e: Error) => actions.sys(`voice error: ${e.message}`))
+
   useInput((ch, key) => {
     const live = getUiState()
 
     if (isBlocked) {
       if (overlay.pager) {
         if (key.return || ch === ' ') {
-          const next = overlay.pager.offset + pagerPageSize
+          const nextOffset = overlay.pager.offset + pagerPageSize
 
           patchOverlayState({
-            pager: next >= overlay.pager.lines.length ? null : { ...overlay.pager, offset: next }
+            pager: nextOffset >= overlay.pager.lines.length ? null : { ...overlay.pager, offset: nextOffset }
           })
-        } else if (key.escape || ctrl(key, ch, 'c') || ch === 'q') {
+        } else if (key.escape || isCtrl(key, ch, 'c') || ch === 'q') {
           patchOverlayState({ pager: null })
         }
 
         return
       }
 
-      if (ctrl(key, ch, 'c')) {
-        if (overlay.clarify) {
-          actions.answerClarify('')
-        } else if (overlay.approval) {
-          gateway.rpc('approval.respond', { choice: 'deny', session_id: live.sid }).then(r => {
-            if (!r) {
-              return
-            }
-
-            patchOverlayState({ approval: null })
-            actions.sys('denied')
-          })
-        } else if (overlay.sudo) {
-          gateway.rpc('sudo.respond', { password: '', request_id: overlay.sudo.requestId }).then(r => {
-            if (!r) {
-              return
-            }
-
-            patchOverlayState({ sudo: null })
-            actions.sys('sudo cancelled')
-          })
-        } else if (overlay.secret) {
-          gateway.rpc('secret.respond', { request_id: overlay.secret.requestId, value: '' }).then(r => {
-            if (!r) {
-              return
-            }
-
-            patchOverlayState({ secret: null })
-            actions.sys('secret entry cancelled')
-          })
-        } else if (overlay.modelPicker) {
-          patchOverlayState({ modelPicker: false })
-        } else if (overlay.picker) {
-          patchOverlayState({ picker: false })
-        }
+      if (isCtrl(key, ch, 'c')) {
+        cancelOverlayFromCtrlC(live)
       } else if (key.escape && overlay.picker) {
         patchOverlayState({ picker: false })
       }
@@ -79,215 +180,116 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       return
     }
 
-    if (
-      composer.state.completions.length &&
-      composer.state.input &&
-      composer.state.historyIdx === null &&
-      (key.upArrow || key.downArrow)
-    ) {
-      composer.actions.setCompIdx(index =>
-        key.upArrow
-          ? (index - 1 + composer.state.completions.length) % composer.state.completions.length
-          : (index + 1) % composer.state.completions.length
-      )
+    if (cState.completions.length && cState.input && cState.historyIdx === null && (key.upArrow || key.downArrow)) {
+      const len = cState.completions.length
+
+      cActions.setCompIdx(i => (key.upArrow ? (i - 1 + len) % len : (i + 1) % len))
 
       return
     }
 
     if (key.wheelUp) {
-      terminal.scrollWithSelection(-wheelStep)
-
-      return
+      return terminal.scrollWithSelection(-wheelStep)
     }
 
     if (key.wheelDown) {
-      terminal.scrollWithSelection(wheelStep)
-
-      return
+      return terminal.scrollWithSelection(wheelStep)
     }
 
     if (key.shift && key.upArrow) {
-      terminal.scrollWithSelection(-1)
-
-      return
+      return terminal.scrollWithSelection(-1)
     }
 
     if (key.shift && key.downArrow) {
-      terminal.scrollWithSelection(1)
-
-      return
+      return terminal.scrollWithSelection(1)
     }
 
     if (key.pageUp || key.pageDown) {
       const viewport = terminal.scrollRef.current?.getViewportHeight() ?? Math.max(6, (terminal.stdout?.rows ?? 24) - 8)
       const step = Math.max(4, viewport - 2)
 
-      terminal.scrollWithSelection(key.pageUp ? -step : step)
-
-      return
+      return terminal.scrollWithSelection(key.pageUp ? -step : step)
     }
 
     if (key.ctrl && key.shift && ch.toLowerCase() === 'c') {
-      copySelection()
+      return copySelection()
+    }
+
+    if (key.upArrow && !cState.inputBuf.length) {
+      cycleQueue(1) || cycleHistory(-1)
 
       return
     }
 
-    if (key.upArrow && !composer.state.inputBuf.length) {
-      if (composer.refs.queueRef.current.length) {
-        const index =
-          composer.state.queueEditIdx === null
-            ? 0
-            : (composer.state.queueEditIdx + 1) % composer.refs.queueRef.current.length
-
-        composer.actions.setQueueEdit(index)
-        composer.actions.setHistoryIdx(null)
-        composer.actions.setInput(composer.refs.queueRef.current[index] ?? '')
-      } else if (composer.refs.historyRef.current.length) {
-        const index =
-          composer.state.historyIdx === null
-            ? composer.refs.historyRef.current.length - 1
-            : Math.max(0, composer.state.historyIdx - 1)
-
-        if (composer.state.historyIdx === null) {
-          composer.refs.historyDraftRef.current = composer.state.input
-        }
-
-        composer.actions.setHistoryIdx(index)
-        composer.actions.setQueueEdit(null)
-        composer.actions.setInput(composer.refs.historyRef.current[index] ?? '')
-      }
+    if (key.downArrow && !cState.inputBuf.length) {
+      cycleQueue(-1) || cycleHistory(1)
 
       return
     }
 
-    if (key.downArrow && !composer.state.inputBuf.length) {
-      if (composer.refs.queueRef.current.length) {
-        const index =
-          composer.state.queueEditIdx === null
-            ? composer.refs.queueRef.current.length - 1
-            : (composer.state.queueEditIdx - 1 + composer.refs.queueRef.current.length) %
-              composer.refs.queueRef.current.length
-
-        composer.actions.setQueueEdit(index)
-        composer.actions.setHistoryIdx(null)
-        composer.actions.setInput(composer.refs.queueRef.current[index] ?? '')
-      } else if (composer.state.historyIdx !== null) {
-        const next = composer.state.historyIdx + 1
-
-        if (next >= composer.refs.historyRef.current.length) {
-          composer.actions.setHistoryIdx(null)
-          composer.actions.setInput(composer.refs.historyDraftRef.current)
-        } else {
-          composer.actions.setHistoryIdx(next)
-          composer.actions.setInput(composer.refs.historyRef.current[next] ?? '')
-        }
-      }
-
-      return
-    }
-
-    if (ctrl(key, ch, 'c')) {
+    if (isCtrl(key, ch, 'c')) {
       if (terminal.hasSelection) {
-        copySelection()
-      } else if (live.busy && live.sid) {
-        turn.actions.interruptTurn({
+        return copySelection()
+      }
+
+      if (live.busy && live.sid) {
+        return turnController.interruptTurn({
           appendMessage: actions.appendMessage,
           gw: gateway.gw,
           sid: live.sid,
           sys: actions.sys
         })
-      } else if (composer.state.input || composer.state.inputBuf.length) {
-        composer.actions.clearIn()
-      } else {
-        return actions.die()
       }
 
-      return
-    }
+      if (cState.input || cState.inputBuf.length) {
+        return cActions.clearIn()
+      }
 
-    if (ctrl(key, ch, 'd')) {
       return actions.die()
     }
 
-    if (ctrl(key, ch, 'l')) {
+    if (isCtrl(key, ch, 'd')) {
+      return actions.die()
+    }
+
+    if (isCtrl(key, ch, 'l')) {
       if (actions.guardBusySessionSwitch()) {
         return
       }
 
       patchUiState({ status: 'forging session…' })
-      actions.newSession()
 
-      return
+      return actions.newSession()
     }
 
-    if (ctrl(key, ch, 'b')) {
-      if (voice.recording) {
-        voice.setRecording(false)
-        voice.setProcessing(true)
-        gateway
-          .rpc('voice.record', { action: 'stop' })
-          .then((r: any) => {
-            if (!r) {
-              return
-            }
-
-            const transcript = String(r?.text || '').trim()
-
-            if (transcript) {
-              composer.actions.setInput(prev =>
-                prev ? `${prev}${/\s$/.test(prev) ? '' : ' '}${transcript}` : transcript
-              )
-            } else {
-              actions.sys('voice: no speech detected')
-            }
-          })
-          .catch((e: Error) => actions.sys(`voice error: ${e.message}`))
-          .finally(() => {
-            voice.setProcessing(false)
-            patchUiState({ status: 'ready' })
-          })
-      } else {
-        gateway
-          .rpc('voice.record', { action: 'start' })
-          .then((r: any) => {
-            if (!r) {
-              return
-            }
-
-            voice.setRecording(true)
-            patchUiState({ status: 'recording…' })
-          })
-          .catch((e: Error) => actions.sys(`voice error: ${e.message}`))
-      }
-
-      return
+    if (isCtrl(key, ch, 'b')) {
+      return voice.recording ? voiceStop() : voiceStart()
     }
 
-    if (ctrl(key, ch, 'g')) {
-      return composer.actions.openEditor()
+    if (isCtrl(key, ch, 'g')) {
+      return cActions.openEditor()
     }
 
-    if (key.tab && composer.state.completions.length) {
-      const row = composer.state.completions[composer.state.compIdx]
+    if (key.tab && cState.completions.length) {
+      const row = cState.completions[cState.compIdx]
 
       if (row?.text) {
         const text =
-          composer.state.input.startsWith('/') && row.text.startsWith('/') && composer.state.compReplace > 0
+          cState.input.startsWith('/') && row.text.startsWith('/') && cState.compReplace > 0
             ? row.text.slice(1)
             : row.text
 
-        composer.actions.setInput(composer.state.input.slice(0, composer.state.compReplace) + text)
+        cActions.setInput(cState.input.slice(0, cState.compReplace) + text)
       }
 
       return
     }
 
-    if (ctrl(key, ch, 'k') && composer.refs.queueRef.current.length && live.sid) {
-      const next = composer.actions.dequeue()
+    if (isCtrl(key, ch, 'k') && cRefs.queueRef.current.length && live.sid) {
+      const next = cActions.dequeue()
 
       if (next) {
-        composer.actions.setQueueEdit(null)
+        cActions.setQueueEdit(null)
         actions.dispatchSubmission(next)
       }
     }

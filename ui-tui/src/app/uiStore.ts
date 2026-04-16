@@ -1,6 +1,6 @@
 import { atom } from 'nanostores'
 
-import { ZERO } from '../constants.js'
+import { ZERO } from '../domain/usage.js'
 import { DEFAULT_THEME } from '../theme.js'
 
 import type { UiState } from './interfaces.js'

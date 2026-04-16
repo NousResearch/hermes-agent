@@ -1,20 +1,42 @@
-import type { CommandsCatalogResponse, GatewayEvent, SessionResumeResponse } from '../gatewayTypes.js'
+import { STREAM_BATCH_MS } from '../config/timing.js'
+import { introMsg, toTranscriptMessages } from '../domain/messages.js'
+import type { CommandsCatalogResponse, GatewayEvent, GatewaySkin, SessionResumeResponse } from '../gatewayTypes.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
-import {
-  buildToolTrailLine,
-  estimateTokensRough,
-  formatToolCall,
-  isToolTrailResultLine,
-  sameToolTrailGroup,
-  toolTrailLabel
-} from '../lib/text.js'
+import { formatToolCall } from '../lib/text.js'
 import { fromSkin } from '../theme.js'
+import type { SubagentProgress } from '../types.js'
 
-import { STREAM_BATCH_MS } from './constants.js'
-import { introMsg, toTranscriptMessages } from './helpers.js'
 import type { GatewayEventHandlerContext } from './interfaces.js'
 import { patchOverlayState } from './overlayStore.js'
+import { turnController } from './turnController.js'
 import { getUiState, patchUiState } from './uiStore.js'
+
+const ERRLIKE_RE = /\b(error|traceback|exception|failed|spawn)\b/i
+
+const statusFromBusy = () => (getUiState().busy ? 'running…' : 'ready')
+
+const applySkin = (s: GatewaySkin) =>
+  patchUiState({ theme: fromSkin(s.colors ?? {}, s.branding ?? {}, s.banner_logo ?? '', s.banner_hero ?? '') })
+
+const dropBgTask = (taskId: string) =>
+  patchUiState(state => {
+    const next = new Set(state.bgTasks)
+    next.delete(taskId)
+
+    return { ...state, bgTasks: next }
+  })
+
+const statusToneFrom = (kind: string): 'error' | 'info' | 'warn' =>
+  kind === 'error' ? 'error' : kind === 'warn' || kind === 'approval' ? 'warn' : 'info'
+
+const pushUnique =
+  (max: number) =>
+  <T>(xs: T[], x: T): T[] =>
+    xs.at(-1) === x ? xs : [...xs, x].slice(-max)
+
+const pushThinking = pushUnique(6)
+const pushNote = pushUnique(6)
+const pushTool = pushUnique(8)
 
 export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev: GatewayEvent) => void {
   const { dequeue, queueEditRef, sendQueued } = ctx.composer
@@ -23,53 +45,17 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
   const { bellOnComplete, stdout, sys } = ctx.system
   const { appendMessage, setHistoryItems } = ctx.transcript
 
-  const {
-    clearReasoning,
-    endReasoningPhase,
-    idle,
-    pruneTransient,
-    pulseReasoningStreaming,
-    pushActivity,
-    pushTrail,
-    scheduleReasoning,
-    scheduleStreaming,
-    setActivity,
-    setStreaming,
-    setSubagents,
-    setToolTokens,
-    setTools,
-    setTurnTrail
-  } = ctx.turn.actions
-
-  const {
-    activeToolsRef,
-    bufRef,
-    interruptedRef,
-    lastStatusNoteRef,
-    persistedToolLabelsRef,
-    protocolWarnedRef,
-    reasoningRef,
-    statusTimerRef,
-    toolTokenAccRef,
-    toolCompleteRibbonRef,
-    turnToolsRef
-  } = ctx.turn.refs
-
   let pendingThinkingStatus = ''
-  let thinkingStatusTimer: ReturnType<typeof setTimeout> | null = null
-  let toolProgressTimer: ReturnType<typeof setTimeout> | null = null
+  let thinkingStatusTimer: null | ReturnType<typeof setTimeout> = null
 
-  const cancelThinkingStatus = () => {
+  const setStatus = (status: string) => {
     pendingThinkingStatus = ''
 
     if (thinkingStatusTimer) {
       clearTimeout(thinkingStatusTimer)
       thinkingStatusTimer = null
     }
-  }
 
-  const setStatus = (status: string) => {
-    cancelThinkingStatus()
     patchUiState({ status })
   }
 
@@ -82,79 +68,77 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
     thinkingStatusTimer = setTimeout(() => {
       thinkingStatusTimer = null
-      patchUiState({ status: pendingThinkingStatus || (getUiState().busy ? 'running…' : 'ready') })
+      patchUiState({ status: pendingThinkingStatus || statusFromBusy() })
     }, STREAM_BATCH_MS)
   }
 
-  const scheduleToolProgress = () => {
-    if (toolProgressTimer) {
+  const restoreStatusAfter = (ms: number) => {
+    turnController.clearStatusTimer()
+    turnController.statusTimer = setTimeout(() => {
+      turnController.statusTimer = null
+      patchUiState({ status: statusFromBusy() })
+    }, ms)
+  }
+
+  const keepCompletedElseRunning = (s: SubagentProgress['status']) => (s === 'completed' ? s : 'running')
+
+  const handleReady = (skin?: GatewaySkin) => {
+    if (skin) {
+      applySkin(skin)
+    }
+
+    rpc<CommandsCatalogResponse>('commands.catalog', {})
+      .then(r => {
+        if (!r?.pairs) {
+          return
+        }
+
+        setCatalog({
+          canon: (r.canon ?? {}) as Record<string, string>,
+          categories: r.categories ?? [],
+          pairs: r.pairs as [string, string][],
+          skillCount: (r.skill_count ?? 0) as number,
+          sub: (r.sub ?? {}) as Record<string, string[]>
+        })
+
+        if (r.warning) {
+          turnController.pushActivity(String(r.warning), 'warn')
+        }
+      })
+      .catch((e: unknown) => turnController.pushActivity(`command catalog unavailable: ${rpcErrorMessage(e)}`, 'warn'))
+
+    if (!STARTUP_RESUME_ID) {
+      patchUiState({ status: 'forging session…' })
+      newSession()
+
       return
     }
 
-    toolProgressTimer = setTimeout(() => {
-      toolProgressTimer = null
-      setTools([...activeToolsRef.current])
-    }, STREAM_BATCH_MS)
-  }
+    patchUiState({ status: 'resuming…' })
+    gw.request<SessionResumeResponse>('session.resume', { cols: colsRef.current, session_id: STARTUP_RESUME_ID })
+      .then(raw => {
+        const r = asRpcResult<SessionResumeResponse>(raw)
 
-  const upsertSubagent = (
-    taskIndex: number,
-    taskCount: number,
-    goal: string,
-    update: (current: {
-      durationSeconds?: number
-      goal: string
-      id: string
-      index: number
-      notes: string[]
-      status: 'completed' | 'failed' | 'interrupted' | 'running'
-      summary?: string
-      taskCount: number
-      thinking: string[]
-      tools: string[]
-    }) => {
-      durationSeconds?: number
-      goal: string
-      id: string
-      index: number
-      notes: string[]
-      status: 'completed' | 'failed' | 'interrupted' | 'running'
-      summary?: string
-      taskCount: number
-      thinking: string[]
-      tools: string[]
-    }
-  ) => {
-    const id = `sa:${taskIndex}:${goal || 'subagent'}`
+        if (!r) {
+          throw new Error('invalid response: session.resume')
+        }
 
-    setSubagents(prev => {
-      const index = prev.findIndex(item => item.id === id)
-
-      const base =
-        index >= 0
-          ? prev[index]!
-          : {
-              id,
-              index: taskIndex,
-              taskCount,
-              goal,
-              notes: [],
-              status: 'running' as const,
-              thinking: [],
-              tools: []
-            }
-
-      const nextItem = update(base)
-
-      if (index < 0) {
-        return [...prev, nextItem].sort((a, b) => a.index - b.index)
-      }
-
-      const next = [...prev]
-      next[index] = nextItem
-
-      return next
-    })
+        resetSession()
+        patchUiState({
+          info: r.info ?? null,
+          sid: r.session_id,
+          status: 'ready',
+          usage: r.info?.usage ?? getUiState().usage
+        })
+        setHistoryItems(
+          r.info ? [introMsg(r.info), ...toTranscriptMessages(r.messages)] : toTranscriptMessages(r.messages)
+        )
+      })
+      .catch((e: unknown) => {
+        sys(`resume failed: ${rpcErrorMessage(e)}`)
+        patchUiState({ status: 'forging session…' })
+        newSession('started a new session')
+      })
   }
 
   return (ev: GatewayEvent) => {
@@ -165,483 +149,240 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
     }
 
     switch (ev.type) {
-      case 'gateway.ready': {
-        const p = ev.payload
+      case 'gateway.ready':
+        handleReady(ev.payload?.skin)
 
-        if (p?.skin) {
-          patchUiState({
-            theme: fromSkin(
-              p.skin.colors ?? {},
-              p.skin.branding ?? {},
-              p.skin.banner_logo ?? '',
-              p.skin.banner_hero ?? ''
-            )
-          })
+        return
+
+      case 'skin.changed':
+        if (ev.payload) {
+          applySkin(ev.payload)
         }
 
-        rpc<CommandsCatalogResponse>('commands.catalog', {})
-          .then(r => {
-            if (!r?.pairs) {
-              return
-            }
+        return
 
-            setCatalog({
-              canon: (r.canon ?? {}) as Record<string, string>,
-              categories: r.categories ?? [],
-              pairs: r.pairs as [string, string][],
-              skillCount: (r.skill_count ?? 0) as number,
-              sub: (r.sub ?? {}) as Record<string, string[]>
-            })
-
-            if (r.warning) {
-              pushActivity(String(r.warning), 'warn')
-            }
-          })
-          .catch((e: unknown) => pushActivity(`command catalog unavailable: ${rpcErrorMessage(e)}`, 'warn'))
-
-        if (STARTUP_RESUME_ID) {
-          patchUiState({ status: 'resuming…' })
-          gw.request<SessionResumeResponse>('session.resume', { cols: colsRef.current, session_id: STARTUP_RESUME_ID })
-            .then(raw => {
-              const r = asRpcResult<SessionResumeResponse>(raw)
-
-              if (!r) {
-                throw new Error('invalid response: session.resume')
-              }
-
-              resetSession()
-              const resumed = toTranscriptMessages(r.messages)
-
-              patchUiState({
-                info: r.info ?? null,
-                sid: r.session_id,
-                status: 'ready',
-                usage: r.info?.usage ?? getUiState().usage
-              })
-              setHistoryItems(r.info ? [introMsg(r.info), ...resumed] : resumed)
-            })
-            .catch((e: unknown) => {
-              sys(`resume failed: ${rpcErrorMessage(e)}`)
-              patchUiState({ status: 'forging session…' })
-              newSession('started a new session')
-            })
-        } else {
-          patchUiState({ status: 'forging session…' })
-          newSession()
-        }
-
-        break
-      }
-
-      case 'skin.changed': {
-        const p = ev.payload
-
-        if (p) {
-          patchUiState({
-            theme: fromSkin(p.colors ?? {}, p.branding ?? {}, p.banner_logo ?? '', p.banner_hero ?? '')
-          })
-        }
-
-        break
-      }
-
-      case 'session.info': {
-        const p = ev.payload
-
+      case 'session.info':
         patchUiState(state => ({
           ...state,
-          info: p,
-          usage: p.usage ? { ...state.usage, ...p.usage } : state.usage
+          info: ev.payload,
+          usage: ev.payload.usage ? { ...state.usage, ...ev.payload.usage } : state.usage
         }))
 
-        break
-      }
-
+        return
       case 'thinking.delta': {
-        const p = ev.payload
+        const text = ev.payload?.text
 
-        if (p && Object.prototype.hasOwnProperty.call(p, 'text')) {
-          scheduleThinkingStatus(p.text ? String(p.text) : getUiState().busy ? 'running…' : 'ready')
+        if (text !== undefined) {
+          scheduleThinkingStatus(text ? String(text) : statusFromBusy())
         }
 
-        break
+        return
       }
 
       case 'message.start':
-        patchUiState({ busy: true })
-        endReasoningPhase()
-        clearReasoning()
-        setActivity([])
-        setSubagents([])
-        setTurnTrail([])
-        activeToolsRef.current = []
-        setTools([])
-        turnToolsRef.current = []
-        persistedToolLabelsRef.current.clear()
-        toolTokenAccRef.current = 0
-        setToolTokens(0)
+        turnController.startMessage()
 
-        break
+        return
       case 'status.update': {
         const p = ev.payload
 
-        if (p?.text) {
-          setStatus(p.text)
-
-          if (p.kind && p.kind !== 'status') {
-            if (lastStatusNoteRef.current !== p.text) {
-              lastStatusNoteRef.current = p.text
-              pushActivity(
-                p.text,
-                p.kind === 'error' ? 'error' : p.kind === 'warn' || p.kind === 'approval' ? 'warn' : 'info'
-              )
-            }
-
-            if (statusTimerRef.current) {
-              clearTimeout(statusTimerRef.current)
-            }
-
-            statusTimerRef.current = setTimeout(() => {
-              statusTimerRef.current = null
-              patchUiState({ status: getUiState().busy ? 'running…' : 'ready' })
-            }, 4000)
-          }
+        if (!p?.text) {
+          return
         }
 
-        break
+        setStatus(p.text)
+
+        if (!p.kind || p.kind === 'status') {
+          return
+        }
+
+        if (turnController.lastStatusNote !== p.text) {
+          turnController.lastStatusNote = p.text
+          turnController.pushActivity(p.text, statusToneFrom(p.kind))
+        }
+
+        restoreStatusAfter(4000)
+
+        return
       }
 
       case 'gateway.stderr': {
-        const p = ev.payload
+        const line = String(ev.payload.line).slice(0, 120)
 
-        if (p?.line) {
-          const line = String(p.line).slice(0, 120)
-          const tone = /\b(error|traceback|exception|failed|spawn)\b/i.test(line) ? 'error' : 'warn'
+        turnController.pushActivity(line, ERRLIKE_RE.test(line) ? 'error' : 'warn')
 
-          pushActivity(line, tone)
-        }
-
-        break
+        return
       }
 
       case 'gateway.start_timeout': {
-        const p = ev.payload
+        const { cwd, python } = ev.payload ?? {}
+        const trace = python || cwd ? ` · ${String(python || '')} ${String(cwd || '')}`.trim() : ''
 
         setStatus('gateway startup timeout')
-        pushActivity(
-          `gateway startup timed out${p?.python || p?.cwd ? ` · ${String(p?.python || '')} ${String(p?.cwd || '')}`.trim() : ''} · /logs to inspect`,
-          'error'
-        )
+        turnController.pushActivity(`gateway startup timed out${trace} · /logs to inspect`, 'error')
 
-        break
+        return
       }
 
-      case 'gateway.protocol_error': {
-        const p = ev.payload
-
+      case 'gateway.protocol_error':
         setStatus('protocol warning')
+        restoreStatusAfter(4000)
 
-        if (statusTimerRef.current) {
-          clearTimeout(statusTimerRef.current)
+        if (!turnController.protocolWarned) {
+          turnController.protocolWarned = true
+          turnController.pushActivity('protocol noise detected · /logs to inspect', 'warn')
         }
 
-        statusTimerRef.current = setTimeout(() => {
-          statusTimerRef.current = null
-          patchUiState({ status: getUiState().busy ? 'running…' : 'ready' })
-        }, 4000)
-
-        if (!protocolWarnedRef.current) {
-          protocolWarnedRef.current = true
-          pushActivity('protocol noise detected · /logs to inspect', 'warn')
+        if (ev.payload?.preview) {
+          turnController.pushActivity(`protocol noise: ${String(ev.payload.preview).slice(0, 120)}`, 'warn')
         }
 
-        if (p?.preview) {
-          pushActivity(`protocol noise: ${String(p.preview).slice(0, 120)}`, 'warn')
+        return
+
+      case 'reasoning.delta':
+        if (ev.payload?.text) {
+          turnController.recordReasoningDelta(ev.payload.text)
         }
 
-        break
-      }
+        return
 
-      case 'reasoning.delta': {
-        const p = ev.payload
+      case 'reasoning.available':
+        turnController.recordReasoningAvailable(String(ev.payload?.text ?? ''))
 
-        if (p?.text) {
-          reasoningRef.current += p.text
-          scheduleReasoning()
-          pulseReasoningStreaming()
+        return
+
+      case 'tool.progress':
+        if (ev.payload?.preview && ev.payload.name) {
+          turnController.recordToolProgress(ev.payload.name, ev.payload.preview)
         }
 
-        break
-      }
+        return
 
-      case 'reasoning.available': {
-        const p = ev.payload
-        const incoming = String(p?.text ?? '').trim()
-
-        if (!incoming) {
-          break
+      case 'tool.generating':
+        if (ev.payload?.name) {
+          turnController.pushTrail(`drafting ${ev.payload.name}…`)
         }
 
-        const current = reasoningRef.current.trim()
+        return
 
-        // `reasoning.available` is a backend fallback preview that can arrive after
-        // streamed reasoning. Preserve the live-visible reasoning/counts if we
-        // already saw deltas; only hydrate from this event when streaming gave us
-        // nothing.
-        if (!current) {
-          reasoningRef.current = incoming
-          scheduleReasoning()
-          pulseReasoningStreaming()
+      case 'tool.start':
+        turnController.recordToolStart(ev.payload.tool_id, ev.payload.name ?? 'tool', ev.payload.context ?? '')
+
+        return
+
+      case 'tool.complete':
+        turnController.recordToolComplete(ev.payload.tool_id, ev.payload.name, ev.payload.error, ev.payload.summary)
+
+        if (ev.payload.inline_diff) {
+          sys(ev.payload.inline_diff)
         }
 
-        break
-      }
+        return
 
-      case 'tool.progress': {
-        const p = ev.payload
-
-        if (p?.preview) {
-          const index = activeToolsRef.current.findIndex(tool => tool.name === p.name)
-
-          if (index >= 0) {
-            const next = [...activeToolsRef.current]
-
-            next[index] = { ...next[index]!, context: p.preview as string }
-            activeToolsRef.current = next
-            scheduleToolProgress()
-          }
-        }
-
-        break
-      }
-
-      case 'tool.generating': {
-        const p = ev.payload
-
-        if (p?.name) {
-          pushTrail(`drafting ${p.name}…`)
-        }
-
-        break
-      }
-
-      case 'tool.start': {
-        const p = ev.payload
-        pruneTransient()
-        endReasoningPhase()
-        const name = p.name ?? 'tool'
-        const ctx = p.context ?? ''
-        const sample = `${String(p.name ?? '')} ${ctx}`.trim()
-        toolTokenAccRef.current += sample ? estimateTokensRough(sample) : 0
-        setToolTokens(toolTokenAccRef.current)
-        activeToolsRef.current = [
-          ...activeToolsRef.current,
-          { id: p.tool_id, name, context: ctx, startedAt: Date.now() }
-        ]
-        setTools(activeToolsRef.current)
-
-        break
-      }
-
-      case 'tool.complete': {
-        const p = ev.payload
-        toolCompleteRibbonRef.current = null
-        const done = activeToolsRef.current.find(tool => tool.id === p.tool_id)
-        const name = done?.name ?? p.name ?? 'tool'
-        const label = toolTrailLabel(name)
-
-        const line = buildToolTrailLine(name, done?.context || '', !!p.error, p.error || p.summary || '')
-
-        const next = [...turnToolsRef.current.filter(item => !sameToolTrailGroup(label, item)), line]
-
-        activeToolsRef.current = activeToolsRef.current.filter(tool => tool.id !== p.tool_id)
-        setTools(activeToolsRef.current)
-        toolCompleteRibbonRef.current = { label, line }
-
-        if (!activeToolsRef.current.length) {
-          next.push('analyzing tool output…')
-        }
-
-        turnToolsRef.current = next.slice(-8)
-        setTurnTrail(turnToolsRef.current)
-
-        if (p?.inline_diff) {
-          sys(p.inline_diff)
-        }
-
-        break
-      }
-
-      case 'clarify.request': {
-        const p = ev.payload
-        patchOverlayState({ clarify: { choices: p.choices, question: p.question, requestId: p.request_id } })
+      case 'clarify.request':
+        patchOverlayState({
+          clarify: { choices: ev.payload.choices, question: ev.payload.question, requestId: ev.payload.request_id }
+        })
         setStatus('waiting for input…')
 
-        break
-      }
+        return
 
-      case 'approval.request': {
-        const p = ev.payload
-        patchOverlayState({ approval: { command: p.command, description: p.description } })
+      case 'approval.request':
+        patchOverlayState({ approval: { command: ev.payload.command, description: ev.payload.description } })
         setStatus('approval needed')
 
-        break
-      }
+        return
 
-      case 'sudo.request': {
-        const p = ev.payload
-        patchOverlayState({ sudo: { requestId: p.request_id } })
+      case 'sudo.request':
+        patchOverlayState({ sudo: { requestId: ev.payload.request_id } })
         setStatus('sudo password needed')
 
-        break
-      }
+        return
 
-      case 'secret.request': {
-        const p = ev.payload
-        patchOverlayState({ secret: { envVar: p.env_var, prompt: p.prompt, requestId: p.request_id } })
+      case 'secret.request':
+        patchOverlayState({
+          secret: { envVar: ev.payload.env_var, prompt: ev.payload.prompt, requestId: ev.payload.request_id }
+        })
         setStatus('secret input needed')
 
-        break
-      }
+        return
 
-      case 'background.complete': {
-        const p = ev.payload
-        patchUiState(state => {
-          const next = new Set(state.bgTasks)
+      case 'background.complete':
+        dropBgTask(ev.payload.task_id)
+        sys(`[bg ${ev.payload.task_id}] ${ev.payload.text}`)
 
-          next.delete(p.task_id)
+        return
 
-          return { ...state, bgTasks: next }
-        })
-        sys(`[bg ${p.task_id}] ${p.text}`)
+      case 'btw.complete':
+        dropBgTask('btw:x')
+        sys(`[btw] ${ev.payload.text}`)
 
-        break
-      }
+        return
 
-      case 'btw.complete': {
-        const p = ev.payload
-        patchUiState(state => {
-          const next = new Set(state.bgTasks)
+      case 'subagent.start':
+        turnController.upsertSubagent(ev.payload, () => ({ status: 'running' }))
 
-          next.delete('btw:x')
-
-          return { ...state, bgTasks: next }
-        })
-        sys(`[btw] ${p.text}`)
-
-        break
-      }
-
-      case 'subagent.start': {
-        const p = ev.payload
-
-        upsertSubagent(p.task_index, p.task_count ?? 1, p.goal, current => ({
-          ...current,
-          goal: p.goal || current.goal,
-          status: 'running',
-          taskCount: p.task_count ?? current.taskCount
-        }))
-
-        break
-      }
-
+        return
       case 'subagent.thinking': {
-        const p = ev.payload
-        const text = String(p.text ?? '').trim()
+        const text = String(ev.payload.text ?? '').trim()
 
         if (!text) {
-          break
+          return
         }
 
-        upsertSubagent(p.task_index, p.task_count ?? 1, p.goal, current => ({
-          ...current,
-          goal: p.goal || current.goal,
-          status: current.status === 'completed' ? current.status : 'running',
-          taskCount: p.task_count ?? current.taskCount,
-          thinking: current.thinking.at(-1) === text ? current.thinking : [...current.thinking, text].slice(-6)
+        turnController.upsertSubagent(ev.payload, c => ({
+          status: keepCompletedElseRunning(c.status),
+          thinking: pushThinking(c.thinking, text)
         }))
 
-        break
+        return
       }
 
       case 'subagent.tool': {
-        const p = ev.payload
-        const line = formatToolCall(p.tool_name ?? 'delegate_task', p.tool_preview ?? p.text ?? '')
+        const line = formatToolCall(
+          ev.payload.tool_name ?? 'delegate_task',
+          ev.payload.tool_preview ?? ev.payload.text ?? ''
+        )
 
-        upsertSubagent(p.task_index, p.task_count ?? 1, p.goal, current => ({
-          ...current,
-          goal: p.goal || current.goal,
-          status: current.status === 'completed' ? current.status : 'running',
-          taskCount: p.task_count ?? current.taskCount,
-          tools: current.tools.at(-1) === line ? current.tools : [...current.tools, line].slice(-8)
+        turnController.upsertSubagent(ev.payload, c => ({
+          status: keepCompletedElseRunning(c.status),
+          tools: pushTool(c.tools, line)
         }))
 
-        break
+        return
       }
 
       case 'subagent.progress': {
-        const p = ev.payload
-        const text = String(p.text ?? '').trim()
+        const text = String(ev.payload.text ?? '').trim()
 
         if (!text) {
-          break
+          return
         }
 
-        upsertSubagent(p.task_index, p.task_count ?? 1, p.goal, current => ({
-          ...current,
-          goal: p.goal || current.goal,
-          status: current.status === 'completed' ? current.status : 'running',
-          taskCount: p.task_count ?? current.taskCount,
-          notes: current.notes.at(-1) === text ? current.notes : [...current.notes, text].slice(-6)
+        turnController.upsertSubagent(ev.payload, c => ({
+          notes: pushNote(c.notes, text),
+          status: keepCompletedElseRunning(c.status)
         }))
 
-        break
+        return
       }
 
-      case 'subagent.complete': {
-        const p = ev.payload
-        const status = p.status ?? 'completed'
-
-        upsertSubagent(p.task_index, p.task_count ?? 1, p.goal, current => ({
-          ...current,
-          durationSeconds: p.duration_seconds ?? current.durationSeconds,
-          goal: p.goal || current.goal,
-          status,
-          summary: p.summary || p.text || current.summary,
-          taskCount: p.task_count ?? current.taskCount
+      case 'subagent.complete':
+        turnController.upsertSubagent(ev.payload, c => ({
+          durationSeconds: ev.payload.duration_seconds ?? c.durationSeconds,
+          status: ev.payload.status ?? 'completed',
+          summary: ev.payload.summary || ev.payload.text || c.summary
         }))
 
-        break
-      }
+        return
 
-      case 'message.delta': {
-        const p = ev.payload
-        pruneTransient()
-        endReasoningPhase()
+      case 'message.delta':
+        turnController.recordMessageDelta(ev.payload ?? {})
 
-        if (p?.text && !interruptedRef.current) {
-          bufRef.current = p.rendered ?? bufRef.current + p.text
-          scheduleStreaming()
-        }
-
-        break
-      }
-
+        return
       case 'message.complete': {
-        const p = ev.payload
-        const finalText = (p?.rendered ?? p?.text ?? bufRef.current).trimStart()
-        const persisted = persistedToolLabelsRef.current
-        const streamedReasoning = reasoningRef.current.trim()
-        const payloadReasoning = String(p?.reasoning ?? '').trim()
-        const savedReasoning = streamedReasoning || payloadReasoning
-        const savedReasoningTokens = savedReasoning ? estimateTokensRough(savedReasoning) : 0
-        const savedToolTokens = toolTokenAccRef.current
-
-        const savedTools = turnToolsRef.current.filter(
-          line => isToolTrailResultLine(line) && ![...persisted].some(item => sameToolTrailGroup(item, line))
-        )
-
-        const wasInterrupted = interruptedRef.current
+        const { finalText, savedReasoning, savedReasoningTokens, savedTools, savedToolTokens, wasInterrupted } =
+          turnController.recordMessageComplete(ev.payload ?? {})
 
         if (!wasInterrupted) {
           appendMessage({
@@ -658,21 +399,14 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           }
         }
 
-        idle()
-        clearReasoning()
-
-        turnToolsRef.current = []
-        persistedToolLabelsRef.current.clear()
-        setActivity([])
-        bufRef.current = ''
         setStatus('ready')
 
-        if (p?.usage) {
-          patchUiState(state => ({ ...state, usage: { ...state.usage, ...p.usage } }))
+        if (ev.payload?.usage) {
+          patchUiState(state => ({ ...state, usage: { ...state.usage, ...ev.payload!.usage } }))
         }
 
         if (queueEditRef.current !== null) {
-          break
+          return
         }
 
         const next = dequeue()
@@ -681,27 +415,14 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           sendQueued(next)
         }
 
-        break
+        return
       }
 
-      case 'error': {
-        const p = ev.payload
-        idle()
-        clearReasoning()
-        turnToolsRef.current = []
-        persistedToolLabelsRef.current.clear()
-
-        if (statusTimerRef.current) {
-          clearTimeout(statusTimerRef.current)
-          statusTimerRef.current = null
-        }
-
-        pushActivity(String(p?.message || 'unknown error'), 'error')
-        sys(`error: ${p?.message}`)
+      case 'error':
+        turnController.recordError()
+        turnController.pushActivity(String(ev.payload?.message || 'unknown error'), 'error')
+        sys(`error: ${ev.payload?.message}`)
         setStatus('ready')
-
-        break
-      }
     }
   }
 }

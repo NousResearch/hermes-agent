@@ -20,6 +20,8 @@ export interface GatewayTranscriptMessage {
   text?: string
 }
 
+// ── Commands / completion ────────────────────────────────────────────
+
 export interface CommandsCatalogResponse {
   canon?: Record<string, string>
   categories?: SlashCategory[]
@@ -34,6 +36,18 @@ export interface CompletionResponse {
   replace_from?: number
 }
 
+export interface SlashExecResponse {
+  output?: string
+  warning?: string
+}
+
+export type CommandDispatchResponse =
+  | { output?: string; type: 'exec' | 'plugin' }
+  | { target: string; type: 'alias' }
+  | { message?: string; name: string; type: 'skill' }
+
+// ── Config ───────────────────────────────────────────────────────────
+
 export interface ConfigDisplayConfig {
   bell_on_complete?: boolean
   details_mode?: string
@@ -43,18 +57,28 @@ export interface ConfigDisplayConfig {
 }
 
 export interface ConfigFullResponse {
-  config?: {
-    display?: ConfigDisplayConfig
-  }
+  config?: { display?: ConfigDisplayConfig }
 }
 
 export interface ConfigMtimeResponse {
   mtime?: number
 }
 
-export interface BackgroundStartResponse {
-  task_id?: string
+export interface ConfigGetValueResponse {
+  display?: string
+  home?: string
+  value?: string
 }
+
+export interface ConfigSetResponse {
+  credential_warning?: string
+  history_reset?: boolean
+  info?: SessionInfo
+  value?: string
+  warning?: string
+}
+
+// ── Session lifecycle ────────────────────────────────────────────────
 
 export interface SessionCreateResponse {
   info?: SessionInfo & { credential_warning?: string }
@@ -91,20 +115,132 @@ export interface SessionHistoryResponse {
   messages?: GatewayTranscriptMessage[]
 }
 
-export interface ModelOptionProvider {
-  is_current?: boolean
-  models?: string[]
-  name: string
-  slug: string
-  total_models?: number
-  warning?: string
+export interface SessionCompressResponse {
+  info?: SessionInfo
+  messages?: GatewayTranscriptMessage[]
+  removed?: number
+  usage?: Usage
 }
 
-export interface ModelOptionsResponse {
-  model?: string
-  provider?: string
-  providers?: ModelOptionProvider[]
+export interface SessionBranchResponse {
+  session_id?: string
+  title?: string
 }
+
+export interface SessionTitleResponse {
+  title?: string
+}
+
+export interface SessionSaveResponse {
+  file?: string
+}
+
+export interface SessionUsageResponse {
+  cache_read?: number
+  cache_write?: number
+  calls?: number
+  compressions?: number
+  context_max?: number
+  context_percent?: number
+  context_used?: number
+  cost_status?: 'estimated' | 'exact'
+  cost_usd?: number
+  input?: number
+  model?: string
+  output?: number
+  total?: number
+}
+
+export interface SessionCloseResponse {
+  ok?: boolean
+}
+
+export interface SessionInterruptResponse {
+  ok?: boolean
+}
+
+// ── Prompt / submission ──────────────────────────────────────────────
+
+export interface PromptSubmitResponse {
+  ok?: boolean
+}
+
+export interface BackgroundStartResponse {
+  task_id?: string
+}
+
+export interface BtwStartResponse {
+  ok?: boolean
+}
+
+export interface ClarifyRespondResponse {
+  ok?: boolean
+}
+
+export interface ApprovalRespondResponse {
+  ok?: boolean
+}
+
+export interface SudoRespondResponse {
+  ok?: boolean
+}
+
+export interface SecretRespondResponse {
+  ok?: boolean
+}
+
+// ── Shell / clipboard / input ────────────────────────────────────────
+
+export interface ShellExecResponse {
+  code: number
+  stderr?: string
+  stdout?: string
+}
+
+export interface ClipboardPasteResponse {
+  attached?: boolean
+  count?: number
+  height?: number
+  message?: string
+  token_estimate?: number
+  width?: number
+}
+
+export interface InputDetectDropResponse {
+  height?: number
+  is_image?: boolean
+  matched?: boolean
+  name?: string
+  text?: string
+  token_estimate?: number
+  width?: number
+}
+
+export interface TerminalResizeResponse {
+  ok?: boolean
+}
+
+// ── Image attach ─────────────────────────────────────────────────────
+
+export interface ImageAttachResponse {
+  height?: number
+  name?: string
+  remainder?: string
+  token_estimate?: number
+  width?: number
+}
+
+// ── Voice ────────────────────────────────────────────────────────────
+
+export interface VoiceToggleResponse {
+  enabled?: boolean
+}
+
+export interface VoiceRecordResponse {
+  text?: string
+}
+
+// ── Tools / toolsets ─────────────────────────────────────────────────
 
 export interface ToolsetDetails {
   description: string
@@ -142,15 +278,121 @@ export interface ToolsConfigureResponse {
   unknown?: string[]
 }
 
-export interface SlashExecResponse {
-  output?: string
+export interface ToolsetsListResponse {
+  toolsets?: {
+    description: string
+    enabled: boolean
+    name: string
+    tool_count: number
+  }[]
+}
+
+// ── Ops: rollback / browser / plugins / skills / agents / cron ───────
+
+export interface RollbackCheckpoint {
+  hash?: string
+  message?: string
+}
+
+export interface RollbackListResponse {
+  checkpoints?: RollbackCheckpoint[]
+}
+
+export interface RollbackActionResponse {
+  diff?: string
+  message?: string
+  rendered?: string
+}
+
+export interface BrowserManageResponse {
+  connected?: boolean
+  url?: string
+}
+
+export interface PluginInfo {
+  enabled?: boolean
+  name?: string
+  version?: string
+}
+
+export interface PluginsListResponse {
+  plugins?: PluginInfo[]
+}
+
+export interface SkillsListResponse {
+  skills?: Record<string, string[]>
+}
+
+export interface SkillsBrowseItem {
+  description?: string
+  name?: string
+}
+
+export interface SkillsBrowseResponse {
+  items?: SkillsBrowseItem[]
+  page?: number
+  total?: number
+  total_pages?: number
+}
+
+export interface AgentProcess {
+  command?: string
+  session_id: string
+  status?: 'finished' | 'running'
+}
+
+export interface AgentsListResponse {
+  processes?: AgentProcess[]
+}
+
+export interface CronJob {
+  job_id?: string
+  name?: string
+  schedule?: string
+  state?: string
+}
+
+export interface CronListResponse {
+  jobs?: CronJob[]
+}
+
+export interface ConfigShowSection {
+  rows?: [string, string][]
+  title?: string
+}
+
+export interface ConfigShowResponse {
+  sections?: ConfigShowSection[]
+}
+
+// ── Insights / MCP ───────────────────────────────────────────────────
+
+export interface InsightsResponse {
+  days?: number
+  messages?: number
+  sessions?: number
+}
+
+export interface ReloadMcpResponse {
+  ok?: boolean
+}
+
+export interface ModelOptionProvider {
+  is_current?: boolean
+  models?: string[]
+  name: string
+  slug: string
+  total_models?: number
   warning?: string
 }
 
-export type CommandDispatchResponse =
-  | { output?: string; type: 'exec' | 'plugin' }
-  | { target: string; type: 'alias' }
-  | { message?: string; name: string; type: 'skill' }
+export interface ModelOptionsResponse {
+  model?: string
+  provider?: string
+  providers?: ModelOptionProvider[]
+}
+
+// ── Subagent events ──────────────────────────────────────────────────
 
 export interface SubagentEventPayload {
   duration_seconds?: number

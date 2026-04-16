@@ -36,7 +36,7 @@ export interface CompletionItem {
 }
 
 export interface GatewayRpc {
-  <T extends RpcResult = RpcResult>(method: string, params?: Record<string, unknown>): Promise<T | null>
+  <T extends RpcResult = RpcResult>(method: string, params?: Record<string, unknown>): Promise<null | T>
 }
 
 export interface GatewayServices {
@@ -53,21 +53,16 @@ export interface OverlayState {
   approval: ApprovalReq | null
   clarify: ClarifyReq | null
   modelPicker: boolean
-  pager: PagerState | null
+  pager: null | PagerState
   picker: boolean
-  secret: SecretReq | null
-  sudo: SudoReq | null
+  secret: null | SecretReq
+  sudo: null | SudoReq
 }
 
 export interface PagerState {
   lines: string[]
   offset: number
   title?: string
-}
-
-export interface ToolCompleteRibbon {
-  label: string
-  line: string
 }
 
 export interface TranscriptRow {
@@ -81,8 +76,8 @@ export interface UiState {
   busy: boolean
   compact: boolean
   detailsMode: DetailsMode
-  info: SessionInfo | null
-  sid: string | null
+  info: null | SessionInfo
+  sid: null | string
   status: string
   statusBar: boolean
   theme: Theme
@@ -112,18 +107,18 @@ export interface ComposerActions {
   pushHistory: (text: string) => void
   replaceQueue: (index: number, text: string) => void
   setCompIdx: StateSetter<number>
-  setHistoryIdx: StateSetter<number | null>
+  setHistoryIdx: StateSetter<null | number>
   setInput: StateSetter<string>
   setInputBuf: StateSetter<string[]>
   setPasteSnips: StateSetter<PasteSnippet[]>
-  setQueueEdit: (index: number | null) => void
+  setQueueEdit: (index: null | number) => void
   syncQueue: () => void
 }
 
 export interface ComposerRefs {
   historyDraftRef: MutableRefObject<string>
   historyRef: MutableRefObject<string[]>
-  queueEditRef: MutableRefObject<number | null>
+  queueEditRef: MutableRefObject<null | number>
   queueRef: MutableRefObject<string[]>
   submitRef: MutableRefObject<(value: string) => void>
 }
@@ -132,11 +127,11 @@ export interface ComposerState {
   compIdx: number
   compReplace: number
   completions: CompletionItem[]
-  historyIdx: number | null
+  historyIdx: null | number
   input: string
   inputBuf: string[]
   pasteSnips: PasteSnippet[]
-  queueEditIdx: number | null
+  queueEditIdx: null | number
   queuedDisplay: string[]
 }
 
@@ -150,72 +145,6 @@ export interface UseComposerStateResult {
   actions: ComposerActions
   refs: ComposerRefs
   state: ComposerState
-}
-
-export interface InterruptTurnOptions {
-  appendMessage: (msg: Msg) => void
-  gw: { request: (method: string, params?: Record<string, unknown>) => Promise<unknown> }
-  sid: string
-  sys: (text: string) => void
-}
-
-export interface TurnActions {
-  clearReasoning: () => void
-  endReasoningPhase: () => void
-  idle: () => void
-  interruptTurn: (options: InterruptTurnOptions) => void
-  pruneTransient: () => void
-  pulseReasoningStreaming: () => void
-  pushActivity: (text: string, tone?: ActivityItem['tone'], replaceLabel?: string) => void
-  pushTrail: (line: string) => void
-  scheduleReasoning: () => void
-  scheduleStreaming: () => void
-  setActivity: StateSetter<ActivityItem[]>
-  setReasoning: StateSetter<string>
-  setReasoningTokens: StateSetter<number>
-  setReasoningActive: StateSetter<boolean>
-  setToolTokens: StateSetter<number>
-  setReasoningStreaming: StateSetter<boolean>
-  setStreaming: StateSetter<string>
-  setSubagents: StateSetter<SubagentProgress[]>
-  setTools: StateSetter<ActiveTool[]>
-  setTurnTrail: StateSetter<string[]>
-}
-
-export interface TurnRefs {
-  activeToolsRef: MutableRefObject<ActiveTool[]>
-  bufRef: MutableRefObject<string>
-  interruptedRef: MutableRefObject<boolean>
-  lastStatusNoteRef: MutableRefObject<string>
-  persistedToolLabelsRef: MutableRefObject<Set<string>>
-  protocolWarnedRef: MutableRefObject<boolean>
-  reasoningRef: MutableRefObject<string>
-  reasoningStreamingTimerRef: MutableRefObject<ReturnType<typeof setTimeout> | null>
-  reasoningTimerRef: MutableRefObject<ReturnType<typeof setTimeout> | null>
-  statusTimerRef: MutableRefObject<ReturnType<typeof setTimeout> | null>
-  streamTimerRef: MutableRefObject<ReturnType<typeof setTimeout> | null>
-  toolTokenAccRef: MutableRefObject<number>
-  toolCompleteRibbonRef: MutableRefObject<ToolCompleteRibbon | null>
-  turnToolsRef: MutableRefObject<string[]>
-}
-
-export interface TurnState {
-  activity: ActivityItem[]
-  reasoning: string
-  reasoningTokens: number
-  reasoningActive: boolean
-  reasoningStreaming: boolean
-  streaming: string
-  subagents: SubagentProgress[]
-  toolTokens: number
-  tools: ActiveTool[]
-  turnTrail: string[]
-}
-
-export interface UseTurnStateResult {
-  actions: TurnActions
-  refs: TurnRefs
-  state: TurnState
 }
 
 export interface InputHandlerActions {
@@ -238,14 +167,10 @@ export interface InputHandlerContext {
   gateway: GatewayServices
   terminal: {
     hasSelection: boolean
-    scrollRef: RefObject<ScrollBoxHandle | null>
+    scrollRef: RefObject<null | ScrollBoxHandle>
     scrollWithSelection: (delta: number) => void
     selection: SelectionApi
     stdout?: NodeJS.WriteStream
-  }
-  turn: {
-    actions: TurnActions
-    refs: TurnRefs
   }
   voice: {
     recording: boolean
@@ -262,7 +187,7 @@ export interface InputHandlerResult {
 export interface GatewayEventHandlerContext {
   composer: {
     dequeue: () => string | undefined
-    queueEditRef: MutableRefObject<number | null>
+    queueEditRef: MutableRefObject<null | number>
     sendQueued: (text: string) => void
   }
   gateway: GatewayServices
@@ -271,7 +196,7 @@ export interface GatewayEventHandlerContext {
     colsRef: MutableRefObject<number>
     newSession: (msg?: string) => void
     resetSession: () => void
-    setCatalog: StateSetter<SlashCatalog | null>
+    setCatalog: StateSetter<null | SlashCatalog>
   }
   system: {
     bellOnComplete: boolean
@@ -282,45 +207,9 @@ export interface GatewayEventHandlerContext {
     appendMessage: (msg: Msg) => void
     setHistoryItems: StateSetter<Msg[]>
   }
-  turn: {
-    actions: Pick<
-      TurnActions,
-      | 'clearReasoning'
-      | 'endReasoningPhase'
-      | 'idle'
-      | 'pruneTransient'
-      | 'pulseReasoningStreaming'
-      | 'pushActivity'
-      | 'pushTrail'
-      | 'scheduleReasoning'
-      | 'scheduleStreaming'
-      | 'setActivity'
-      | 'setReasoningTokens'
-      | 'setStreaming'
-      | 'setSubagents'
-      | 'setToolTokens'
-      | 'setTools'
-      | 'setTurnTrail'
-    >
-    refs: Pick<
-      TurnRefs,
-      | 'activeToolsRef'
-      | 'bufRef'
-      | 'interruptedRef'
-      | 'lastStatusNoteRef'
-      | 'persistedToolLabelsRef'
-      | 'protocolWarnedRef'
-      | 'reasoningRef'
-      | 'statusTimerRef'
-      | 'toolTokenAccRef'
-      | 'toolCompleteRibbonRef'
-      | 'turnToolsRef'
-    >
-  }
 }
 
 export interface SlashHandlerContext {
-  slashFlightRef: MutableRefObject<number>
   composer: {
     enqueue: (text: string) => void
     hasSelection: boolean
@@ -331,20 +220,21 @@ export interface SlashHandlerContext {
   }
   gateway: GatewayServices
   local: {
-    catalog: SlashCatalog | null
+    catalog: null | SlashCatalog
     getHistoryItems: () => Msg[]
     getLastUserMsg: () => string
-    maybeWarn: (value: any) => void
+    maybeWarn: (value: unknown) => void
   }
   session: {
-    closeSession: (targetSid?: string | null) => Promise<unknown>
+    closeSession: (targetSid?: null | string) => Promise<unknown>
     die: () => void
     guardBusySessionSwitch: (what?: string) => boolean
     newSession: (msg?: string) => void
-    resetVisibleHistory: (info?: SessionInfo | null) => void
+    resetVisibleHistory: (info?: null | SessionInfo) => void
     resumeById: (id: string) => void
     setSessionStartedAt: StateSetter<number>
   }
+  slashFlightRef: MutableRefObject<number>
   transcript: {
     page: (text: string, title?: string) => void
     panel: (title: string, sections: PanelSection[]) => void
@@ -377,7 +267,7 @@ export interface AppLayoutComposerProps {
   input: string
   inputBuf: string[]
   pagerPageSize: number
-  queueEditIdx: number | null
+  queueEditIdx: null | number
   queuedDisplay: string[]
   submit: (value: string) => void
   updateInput: StateSetter<string>
@@ -386,9 +276,9 @@ export interface AppLayoutComposerProps {
 export interface AppLayoutProgressProps {
   activity: ActivityItem[]
   reasoning: string
-  reasoningTokens: number
   reasoningActive: boolean
   reasoningStreaming: boolean
+  reasoningTokens: number
   showProgressArea: boolean
   showStreamingArea: boolean
   streaming: string
@@ -401,7 +291,7 @@ export interface AppLayoutProgressProps {
 export interface AppLayoutStatusProps {
   cwdLabel: string
   goodVibesTick: number
-  sessionStartedAt: number | null
+  sessionStartedAt: null | number
   showStickyPrompt: boolean
   statusColor: string
   stickyPrompt: string
@@ -410,7 +300,7 @@ export interface AppLayoutStatusProps {
 
 export interface AppLayoutTranscriptProps {
   historyItems: Msg[]
-  scrollRef: RefObject<ScrollBoxHandle | null>
+  scrollRef: RefObject<null | ScrollBoxHandle>
   virtualHistory: VirtualHistoryState
   virtualRows: TranscriptRow[]
 }

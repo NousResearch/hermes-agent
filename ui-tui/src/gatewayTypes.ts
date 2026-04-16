@@ -110,6 +110,22 @@ export interface SessionUndoResponse {
   removed?: number
 }
 
+export interface SessionUsageResponse {
+  cache_read?: number
+  cache_write?: number
+  calls?: number
+  compressions?: number
+  context_max?: number
+  context_percent?: number
+  context_used?: number
+  cost_status?: 'estimated' | 'exact'
+  cost_usd?: number
+  input?: number
+  model?: string
+  output?: number
+  total?: number
+}
+
 export interface SessionCompressResponse {
   info?: SessionInfo
   messages?: GatewayTranscriptMessage[]

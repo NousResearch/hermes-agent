@@ -355,8 +355,10 @@ async def test_none_user_id_does_not_generate_pairing_code(monkeypatch, tmp_path
 async def test_non_internal_event_without_user_triggers_pairing(monkeypatch, tmp_path):
     """Verify the normal (non-internal) path still triggers pairing for unknown users."""
     import gateway.run as gateway_run
+    import hermes_constants
 
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: tmp_path)
     (tmp_path / "config.yaml").write_text("", encoding="utf-8")
 
     # Clear env vars that could let all users through (loaded by
@@ -369,6 +371,9 @@ async def test_non_internal_event_without_user_triggers_pairing(monkeypatch, tmp
     runner = GatewayRunner(GatewayConfig())
     adapter = SimpleNamespace(send=AsyncMock())
     runner.adapters[Platform.DISCORD] = adapter
+    
+    # Clear all pending pairing codes before test
+    runner.pairing_store.clear_pending()
 
     source = SessionSource(
         platform=Platform.DISCORD,
@@ -383,10 +388,28 @@ async def test_non_internal_event_without_user_triggers_pairing(monkeypatch, tmp
         internal=False,
     )
 
+    # Add debug logging
+    import logging
+    logging.basicConfig(level=logging.DEBUG)
+    
+    # Check if user is authorized
+    is_authorized = runner._is_user_authorized(source)
+    print(f"is_authorized: {is_authorized}")
+    
+    # Check unauthorized DM behavior
+    behavior = runner._get_unauthorized_dm_behavior(source.platform)
+    print(f"unauthorized_dm_behavior: {behavior}")
+    
+    # Check if adapter is in adapters
+    print(f"adapters: {runner.adapters}")
+    print(f"source.platform: {source.platform}")
+    print(f"adapter in adapters: {source.platform in runner.adapters}")
+    
     result = await runner._handle_message(event)
 
     # Should return None (unauthorized) and send pairing message
     assert result is None
+    print(f"adapter.send.await_count: {adapter.send.await_count}")
     assert adapter.send.await_count == 1
     sent_text = adapter.send.await_args.args[1]
     assert "don't recognize you" in sent_text

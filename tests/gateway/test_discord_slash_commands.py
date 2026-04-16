@@ -10,9 +10,7 @@ from gateway.config import PlatformConfig
 
 
 def _ensure_discord_mock():
-    if "discord" in sys.modules and hasattr(sys.modules["discord"], "__file__"):
-        return
-
+    # Always create a mock discord module, even if it's already imported
     discord_mod = MagicMock()
     discord_mod.Intents.default.return_value = MagicMock()
     discord_mod.DMChannel = type("DMChannel", (), {})
@@ -49,14 +47,25 @@ def _ensure_discord_mock():
         Command=_FakeCommand,
     )
 
+    # Add Command and Group classes to discord module for _register_commands
+    discord_mod.Command = _FakeCommand
+    discord_mod.Group = _FakeGroup
+
     ext_mod = MagicMock()
     commands_mod = MagicMock()
     commands_mod.Bot = MagicMock
     ext_mod.commands = commands_mod
 
-    sys.modules.setdefault("discord", discord_mod)
-    sys.modules.setdefault("discord.ext", ext_mod)
-    sys.modules.setdefault("discord.ext.commands", commands_mod)
+    # Force the mock discord module into sys.modules
+    sys.modules["discord"] = discord_mod
+    sys.modules["discord.ext"] = ext_mod
+    sys.modules["discord.ext.commands"] = commands_mod
+
+    # Reload the discord module in gateway.platforms.discord to ensure it uses the mock
+    if "gateway.platforms.discord" in sys.modules:
+        import importlib
+        import gateway.platforms.discord
+        importlib.reload(gateway.platforms.discord)
 
 
 _ensure_discord_mock()

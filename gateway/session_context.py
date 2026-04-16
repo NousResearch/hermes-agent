@@ -101,12 +101,11 @@ def clear_session_vars(tokens: list) -> None:
 
     Sets all variables to ``""`` so that ``get_session_env`` returns an empty
     string instead of falling back to (potentially stale) ``os.environ``
-    values.  The *tokens* argument is accepted for API compatibility with
-    callers that saved the return value of ``set_session_vars``, but the
-    actual clearing uses ``var.set("")`` rather than ``var.reset(token)``
-    to ensure the "explicitly cleared" state is distinguishable from
-    "never set" (which holds the ``_UNSET`` sentinel).
+    values. The *tokens* argument is accepted for API compatibility with
+    callers that saved the return value of ``set_session_vars``.
     """
+    if tokens is None:
+        return
     for var in (
         _SESSION_PLATFORM,
         _SESSION_CHAT_ID,

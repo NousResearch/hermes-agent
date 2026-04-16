@@ -252,6 +252,8 @@ class PairingStore:
         limits = self._load_json(self._rate_limit_path())
         key = f"{platform}:{user_id}"
         last_request = limits.get(key, 0)
+        if last_request == 0:
+            return False
         return (time.time() - last_request) < RATE_LIMIT_SECONDS
 
     def _record_rate_limit(self, platform: str, user_id: str) -> None:

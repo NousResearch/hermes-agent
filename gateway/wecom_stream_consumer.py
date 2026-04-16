@@ -3,7 +3,7 @@
 Replaces GatewayStreamConsumer for WeCom platform.  WeCom doesn't support
 editing sent messages, so the edit-based streaming used by Telegram/Discord
 doesn't work here.  Instead we use WeCom's native stream message API which
-supports progressive updates and  tag rendering.
+supports progressive updates and <think> tag rendering.
 
 Design follows OpenClaw's WeCom ws-monitor.js implementation.
 """
@@ -23,6 +23,7 @@ logger = logging.getLogger("gateway.wecom_stream_consumer")
 _DONE = object()
 _NEW_SEGMENT = object()
 _COMMENTARY = object()
+_ERROR = object()
 
 # WeCom stream constraints
 MAX_INTERMEDIATE_STREAM_MESSAGES = 85  # SDK queue limit is 100, reserve headroom
@@ -30,42 +31,102 @@ STREAM_MAX_LIFETIME_SECONDS = 5 * 60   # Hard limit is 6 minutes, rotate at 5
 STREAM_KEEPALIVE_INTERVAL_SECONDS = 4 * 60  # Send keepalive every 4 minutes
 WAITING_MODEL_TICK_SECONDS = 1
 
+# WeCom single-message length limit.  When a stream update would produce
+# content longer than this, we rotate the stream *before* sending so each
+# message stays self-contained.  This prevents the SDK from silently splitting
+# a long message across multiple frames, which breaks <think> tag context and
+# causes the client parser to mis-identify backticks as think-block markers.
+STREAM_MAX_CONTENT_LENGTH = 3500
+
+# Tag constants (constructed via chr to avoid self-matching in source)
+_THINK_OPEN = chr(60) + "think" + chr(62)
+_THINK_CLOSE = chr(60) + "/think" + chr(62)
+
+
+def _escape_think_tags(text: str) -> str:
+    """Escape <think> and </think> in text content.
+
+    Prevents nested or premature tag closure from breaking WeCom stream
+    rendering when models emit literal tag text in their output.
+    """
+    text = text.replace(_THINK_OPEN, "&lt;think&gt;")
+    text = text.replace(_THINK_CLOSE, "&lt;/think&gt;")
+    return text
+
+
+def _escape_for_think_block(text: str) -> str:
+    """Escape content destined for inside a <think> block.
+
+    Think tags are escaped.  Backticks are also replaced with \u02cb
+    (modifier letter grave accent) because WeCom's stream parser
+    misidentifies ` as a think-block delimiter even inside a properly
+    closed <think> block.
+    """
+    text = _escape_think_tags(text)
+    # Replace backticks to prevent WeCom parser from breaking think blocks.
+    # \u02cb (modifier letter grave accent) looks like ` but isn't one.
+    text = text.replace("`", "\u02cb")
+    return text
+
+
+def _escape_for_visible(text: str) -> str:
+    """Escape content for the visible (post-think) section of a message.
+
+    Think tags are escaped.  Backticks are left as-is for proper markdown
+    code rendering — they are outside the <think> block so WeCom's parser
+    won't misidentify them.
+    """
+    return _escape_think_tags(text)
+
 
 def build_ws_stream_content(
     reasoning_text: str = "",
     visible_text: str = "",
     finish: bool = False,
+    error_text: str = "",
 ) -> str:
-    """Build WeCom stream content with tags for reasoning.
+    """Build WeCom stream content with <think> tags for reasoning.
 
-    When reasoning_text is non-empty, wraps it in tags so WeCom
+    When reasoning_text is non-empty, wraps it in <think> tags so WeCom
     clients render it as a collapsible thinking block.
-    """
-    nr = (reasoning_text or "").strip()
-    nv = (visible_text or "").strip()
 
-    if not nr:
+    Args:
+        reasoning_text: Internal reasoning from the model.
+        visible_text: The visible response text.
+        finish: Whether to close the think block.
+        error_text: Optional error message appended after think block.
+    """
+    nr = _escape_for_think_block((reasoning_text or "").strip())
+    nv = _escape_for_visible((visible_text or "").strip())
+    err = (error_text or "").strip()
+
+    if not nr and not err:
         return nv
 
-    THINK_OPEN = chr(60) + "think" + chr(62)
-    THINK_CLOSE = chr(60) + "/think" + chr(62)
-
-    should_close = finish or bool(nv)
-    if should_close:
-        think_block = THINK_OPEN + nr + THINK_CLOSE
+    if nr:
+        should_close = finish or bool(nv) or bool(err)
+        if should_close:
+            think_block = _THINK_OPEN + nr + _THINK_CLOSE
+        else:
+            think_block = _THINK_OPEN + "\n" + nr
     else:
-        think_block = THINK_OPEN + "\n" + nr
+        think_block = ""
 
+    parts = []
+    if think_block:
+        parts.append(think_block)
     if nv:
-        return think_block + "\n" + nv
-    return think_block
+        parts.append(nv)
+    if err:
+        parts.append(f"⚠️ {err}")
+    return "\n".join(parts) if parts else ""
 
 
 def build_waiting_model_content(seconds: int) -> str:
     """Build '等待模型响应 Ns' content as a completed think block."""
     seconds = max(1, seconds)
     lines = [f"等待模型响应 {i}s" for i in range(1, seconds + 1)]
-    return chr(60) + "think" + chr(62) + "\n".join(lines) + chr(60) + "/think" + chr(62)
+    return _THINK_OPEN + "\n".join(lines) + _THINK_CLOSE
 
 
 class WeComStreamConsumer:
@@ -76,9 +137,11 @@ class WeComStreamConsumer:
 
     Features:
     - Visible text streaming (逐字输出)
-    - Reasoning token forwarding with tags
+    - Reasoning token forwarding with <think> tags
     - "等待模型响应" waiting indicator before first tokens arrive
-    - Stream lifecycle: keepalive, rotation (5min limit), message count limit
+    - Stream lifecycle: keepalive, rotation (5min limit), message count limit,
+      and content-length limit to prevent SDK message splitting.
+    - Error handling: graceful fallback when API calls fail mid-stream
     """
 
     def __init__(
@@ -119,6 +182,9 @@ class WeComStreamConsumer:
         self._waiting_model_active = True
         self._waiting_model_seconds = 0
 
+        # Error state
+        self._error_text: str = ""
+
     # ------------------------------------------------------------------
     # Public API — thread-safe callbacks from agent worker thread
     # ------------------------------------------------------------------
@@ -144,6 +210,16 @@ class WeComStreamConsumer:
     def on_segment_break(self) -> None:
         """Finalize current segment, start fresh message below tool output."""
         self._queue.put(("segment_break", None))
+
+    def on_error(self, error_msg: str) -> None:
+        """Called when the API call fails (connection error, timeout, etc.).
+
+        Signals the consumer to close the stream with an error hint
+        so the user isn't left staring at a silent think block.
+        """
+        if error_msg:
+            self._error_text = error_msg
+            self._queue.put(("error", error_msg))
 
     def finish(self) -> None:
         """Signal that the agent stream is complete."""
@@ -173,6 +249,11 @@ class WeComStreamConsumer:
             adapter._thinking_cancelled = True
             task.cancel()
             logger.debug("[WeComStream] Cancelled adapter thinking loop")
+
+    def _should_rotate_for_length(self) -> bool:
+        """Check if the next send would exceed the per-message length limit."""
+        content = self._build_stream_content(finish=False)
+        return len(content) >= STREAM_MAX_CONTENT_LENGTH
 
     async def run(self) -> None:
         """Drain the queue and send updates via WeCom stream API."""
@@ -204,6 +285,10 @@ class WeComStreamConsumer:
                         elif kind == "commentary":
                             commentary_text = data
                             break
+                        elif kind == "error":
+                            self._error_text = data
+                            got_done = True
+                            break
                         elif kind == "reasoning":
                             if not thinking_loop_cancelled:
                                 self._cancel_thinking_loop()
@@ -229,6 +314,12 @@ class WeComStreamConsumer:
 
                 # Check message count limit
                 if self._stream_messages_sent >= MAX_INTERMEDIATE_STREAM_MESSAGES:
+                    await self._rotate_stream()
+                    continue
+
+                # Check content length — rotate BEFORE the SDK splits the message.
+                # This is the primary defense against think-block context loss.
+                if self._should_rotate_for_length():
                     await self._rotate_stream()
                     continue
 
@@ -293,6 +384,7 @@ class WeComStreamConsumer:
             reasoning_text=reasoning,
             visible_text=visible,
             finish=finish,
+            error_text=self._error_text,
         )
 
     def _build_waiting_model_content(self) -> str:
@@ -325,15 +417,19 @@ class WeComStreamConsumer:
     async def _send_final(self) -> None:
         """Send final content and close the stream."""
         content = self._build_stream_content(finish=True)
-        await self._send_raw(content, finish=True)
+        if content:
+            await self._send_raw(content, finish=True)
         self._final_response_sent = True
 
     async def _rotate_stream(self) -> None:
-        """Rotate stream before lifetime/message limit is hit.
+        """Rotate stream before lifetime/message/content-length limit is hit.
 
-        Finishes the current stream and starts a new one seamlessly.
+        Finishes the current stream (closes any open <think> block) and starts
+        a new one.  The new stream starts fresh — reasoning is cleared and
+        visible text resets so the continuation message doesn't carry stale
+        think-block context that could confuse the client parser.
         """
-        # Finish old stream
+        # Finish old stream — close the <think> block if reasoning exists
         visible = self._accumulated_visible or "⏳ 处理中…"
         finish_text = build_ws_stream_content(
             reasoning_text=self._reasoning_text,
@@ -351,9 +447,8 @@ class WeComStreamConsumer:
         self._stream_messages_sent = 0
         self._last_send_time = time.monotonic()
 
-        # Reset accumulators — new stream starts fresh, but keep history
-        # so the user doesn't lose context of what was already shown
-        # (the finished message already delivered everything up to now)
+        # Reset accumulators — new stream starts fresh so the next message
+        # is self-contained with its own <think> block (if reasoning resumes).
         self._reasoning_text = ""
         self._accumulated_visible = ""
 

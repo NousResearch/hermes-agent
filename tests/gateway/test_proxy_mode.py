@@ -397,7 +397,52 @@ class TestRunAgentViaProxy:
         assert "Authorization" not in session.captured_headers
 
     @pytest.mark.asyncio
-    async def test_no_system_message_when_context_empty(self, monkeypatch):
+    async def test_wecom_proxy_uses_wecom_stream_consumer(self, monkeypatch):
+        monkeypatch.setenv("GATEWAY_PROXY_URL", "http://host:8642")
+        monkeypatch.delenv("GATEWAY_PROXY_KEY", raising=False)
+        runner = _make_runner()
+        runner.adapters[Platform.WECOM] = MagicMock(
+            SUPPORTS_MESSAGE_EDITING=False,
+            _current_reply_req_id="req-123",
+            _thinking_stream_id="stream-123",
+            send_typing=AsyncMock(),
+        )
+        runner.config.streaming.enabled = True
+        runner.config.streaming.transport = "stream"
+        source = _make_source(platform=Platform.WECOM)
+        source.chat_id = "wecom-chat"
+
+        resp = _FakeSSEResponse(
+            status=200,
+            sse_chunks=[b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n'],
+        )
+        session = _FakeSession(resp)
+
+        with patch("gateway.run._load_gateway_config", return_value={}):
+            with _patch_aiohttp(session):
+                with patch("aiohttp.ClientTimeout"):
+                    with patch("gateway.wecom_stream_consumer.WeComStreamConsumer") as mock_consumer_cls:
+                        mock_consumer = MagicMock()
+                        mock_consumer.run = AsyncMock()
+                        mock_consumer.finish = MagicMock()
+                        mock_consumer.on_delta = MagicMock()
+                        mock_consumer_cls.return_value = mock_consumer
+
+                        result = await runner._run_agent_via_proxy(
+                            message="hi",
+                            context_prompt="",
+                            history=[],
+                            source=source,
+                            session_id="sess-1",
+                        )
+
+        mock_consumer_cls.assert_called_once()
+        kwargs = mock_consumer_cls.call_args.kwargs
+        assert kwargs["reply_req_id"] == "req-123"
+        assert kwargs["stream_id"] == "stream-123"
+        assert result["final_response"] == "ok"
+
+
         monkeypatch.setenv("GATEWAY_PROXY_URL", "http://host:8642")
         monkeypatch.delenv("GATEWAY_PROXY_KEY", raising=False)
         runner = _make_runner()

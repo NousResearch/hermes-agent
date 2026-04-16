@@ -637,7 +637,67 @@ class GatewayRunner:
 
 
 
-    # -- Setup skill availability ----------------------------------------
+    def _build_platform_stream_consumer(
+        self,
+        *,
+        source: SessionSource,
+        adapter: Any,
+        scfg: Any,
+        metadata: Optional[Dict[str, Any]],
+        want_stream_deltas: bool,
+    ) -> tuple[Optional[Any], Optional[Any]]:
+        """Build the appropriate stream consumer for a platform.
+
+        Returns ``(consumer, stream_delta_callback)`` where callback is set only
+        when token deltas should be streamed to the platform.
+        """
+        from gateway.config import Platform
+        from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+
+        stream_consumer = None
+        stream_delta_cb = None
+
+        # WeCom uses native stream API instead of edit-based streaming.
+        if source.platform == Platform.WECOM:
+            _reply_req_id = getattr(adapter, '_current_reply_req_id', None)
+            _stream_id = getattr(adapter, '_thinking_stream_id', None)
+            if _reply_req_id and _stream_id:
+                from gateway.wecom_stream_consumer import WeComStreamConsumer
+                stream_consumer = WeComStreamConsumer(
+                    adapter=adapter,
+                    chat_id=source.chat_id,
+                    reply_req_id=_reply_req_id,
+                    stream_id=_stream_id,
+                    config=None,
+                    metadata=metadata,
+                )
+                if want_stream_deltas:
+                    stream_delta_cb = stream_consumer.on_delta
+                return stream_consumer, stream_delta_cb
+
+        # Other platforms use the generic edit-based consumer. Platforms that
+        # do not support editing get an empty cursor so partial sends do not
+        # leave a permanent cursor visible.
+        _adapter_supports_edit = getattr(adapter, "SUPPORTS_MESSAGE_EDITING", True)
+        _effective_cursor = scfg.cursor if _adapter_supports_edit else ""
+        if source.platform == Platform.MATRIX:
+            _effective_cursor = ""
+        _consumer_cfg = StreamConsumerConfig(
+            edit_interval=scfg.edit_interval,
+            buffer_threshold=scfg.buffer_threshold,
+            cursor=_effective_cursor,
+        )
+        stream_consumer = GatewayStreamConsumer(
+            adapter=adapter,
+            chat_id=source.chat_id,
+            config=_consumer_cfg,
+            metadata=metadata,
+        )
+        if want_stream_deltas:
+            stream_delta_cb = stream_consumer.on_delta
+        return stream_consumer, stream_delta_cb
+
+
 
     def _has_setup_skill(self) -> bool:
         """Check if the hermes-agent-setup skill is installed."""
@@ -7827,42 +7887,15 @@ class GatewayRunner:
 
         if _streaming_enabled:
             try:
-                from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
-                from gateway.config import Platform
                 _adapter = self.adapters.get(source.platform)
                 if _adapter:
-                    # WeCom uses native stream API instead of edit-based streaming.
-                    # Use WeComStreamConsumer which sends via replyStream and
-                    # properly cancels the thinking loop on first content.
-                    if source.platform == Platform.WECOM:
-                        _reply_req_id = getattr(_adapter, "_current_reply_req_id", None)
-                        _stream_id = getattr(_adapter, "_thinking_stream_id", None)
-                        if _reply_req_id and _stream_id:
-                            from gateway.wecom_stream_consumer import WeComStreamConsumer
-                            _stream_consumer = WeComStreamConsumer(
-                                adapter=_adapter,
-                                chat_id=source.chat_id,
-                                reply_req_id=_reply_req_id,
-                                stream_id=_stream_id,
-                                config=None,
-                                metadata=_thread_metadata,
-                            )
-                    if _stream_consumer is None:
-                        _adapter_supports_edit = getattr(_adapter, "SUPPORTS_MESSAGE_EDITING", True)
-                        _effective_cursor = _scfg.cursor if _adapter_supports_edit else ""
-                        if source.platform == Platform.MATRIX:
-                            _effective_cursor = ""
-                        _consumer_cfg = StreamConsumerConfig(
-                            edit_interval=_scfg.edit_interval,
-                            buffer_threshold=_scfg.buffer_threshold,
-                            cursor=_effective_cursor,
-                        )
-                        _stream_consumer = GatewayStreamConsumer(
-                            adapter=_adapter,
-                            chat_id=source.chat_id,
-                            config=_consumer_cfg,
-                            metadata=_thread_metadata,
-                        )
+                    _stream_consumer, _ = self._build_platform_stream_consumer(
+                        source=source,
+                        adapter=_adapter,
+                        scfg=_scfg,
+                        metadata=_thread_metadata,
+                        want_stream_deltas=True,
+                    )
             except Exception as _sc_err:
                 logger.debug("Proxy: could not set up stream consumer: %s", _sc_err)
 
@@ -8401,54 +8434,16 @@ class GatewayRunner:
             _want_interim_consumer = _want_interim_messages
             if _want_stream_deltas or _want_interim_consumer:
                 try:
-                    from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
                     _adapter = self.adapters.get(source.platform)
                     if _adapter:
-                        # WeCom uses native stream API instead of edit-based streaming.
-                        # Use WeComStreamConsumer which sends via replyStream.
-                        if source.platform == Platform.WECOM:
-                            _reply_req_id = getattr(_adapter, '_current_reply_req_id', None)
-                            _stream_id = getattr(_adapter, '_thinking_stream_id', None)
-                            if _reply_req_id and _stream_id:
-                                from gateway.wecom_stream_consumer import WeComStreamConsumer
-                                _stream_consumer = WeComStreamConsumer(
-                                    adapter=_adapter,
-                                    chat_id=source.chat_id,
-                                    reply_req_id=_reply_req_id,
-                                    stream_id=_stream_id,
-                                    config=None,
-                                    metadata={"thread_id": _progress_thread_id} if _progress_thread_id else None,
-                                )
-                                if _want_stream_deltas:
-                                    _stream_delta_cb = _stream_consumer.on_delta
-                                stream_consumer_holder[0] = _stream_consumer
-                        else:
-                            # Platforms that don't support editing sent messages
-                            # (e.g. WeChat) must not show a cursor in intermediate
-                            # sends — the cursor would be permanently visible because
-                            # it can never be edited away.  Use an empty cursor for
-                            # such platforms so streaming still delivers the final
-                            # response, just without the typing indicator.
-                            _adapter_supports_edit = getattr(_adapter, "SUPPORTS_MESSAGE_EDITING", True)
-                            _effective_cursor = _scfg.cursor if _adapter_supports_edit else ""
-                            # Some Matrix clients render the streaming cursor
-                            # as a visible tofu/white-box artifact.  Keep
-                            # streaming text on Matrix, but suppress the cursor.
-                            if source.platform == Platform.MATRIX:
-                                _effective_cursor = ""
-                            _consumer_cfg = StreamConsumerConfig(
-                                edit_interval=_scfg.edit_interval,
-                                buffer_threshold=_scfg.buffer_threshold,
-                                cursor=_effective_cursor,
-                            )
-                            _stream_consumer = GatewayStreamConsumer(
-                                adapter=_adapter,
-                                chat_id=source.chat_id,
-                                config=_consumer_cfg,
-                                metadata={"thread_id": _progress_thread_id} if _progress_thread_id else None,
-                            )
-                            if _want_stream_deltas:
-                                _stream_delta_cb = _stream_consumer.on_delta
+                        _stream_consumer, _stream_delta_cb = self._build_platform_stream_consumer(
+                            source=source,
+                            adapter=_adapter,
+                            scfg=_scfg,
+                            metadata={"thread_id": _progress_thread_id} if _progress_thread_id else None,
+                            want_stream_deltas=_want_stream_deltas,
+                        )
+                        if _stream_consumer is not None:
                             stream_consumer_holder[0] = _stream_consumer
                 except Exception as _sc_err:
                     logger.debug("Could not set up stream consumer: %s", _sc_err)
@@ -8542,9 +8537,12 @@ class GatewayRunner:
             # Wire up reasoning callback for WeCom stream consumer.
             # WeComStreamConsumer.on_reasoning receives reasoning token deltas
             # and forwards them via WeCom stream API with  tags.
+            # Only wire up when show_reasoning is enabled — otherwise the
+            # think block shows only the "等待模型响应" timer.
+            _want_show_reasoning = getattr(self, "_show_reasoning", False)
             try:
                 from gateway.wecom_stream_consumer import WeComStreamConsumer as _WCS
-                if isinstance(_stream_consumer, _WCS):
+                if isinstance(_stream_consumer, _WCS) and _want_show_reasoning:
                     agent.reasoning_callback = _stream_consumer.on_reasoning
             except ImportError:
                 pass
@@ -8740,6 +8738,15 @@ class GatewayRunner:
             register_gateway_notify(_approval_session_key, _approval_notify_sync)
             try:
                 result = agent.run_conversation(message, conversation_history=agent_history, task_id=session_id)
+            except Exception as _agent_exc:
+                # Notify the stream consumer so it can close the think block
+                # with an error hint instead of leaving a silent empty bubble.
+                if _stream_consumer is not None:
+                    try:
+                        _stream_consumer.on_error(f"响应中断: {type(_agent_exc).__name__}")
+                    except Exception:
+                        pass
+                raise
             finally:
                 unregister_gateway_notify(_approval_session_key)
                 reset_current_session_key(_approval_session_token)

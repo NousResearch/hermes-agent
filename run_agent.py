@@ -14184,6 +14184,33 @@ class AIAgent:
                             "interrupted": True,
                         }
                     
+                    # Actionable hint for GitHub Models (Azure) 413 errors.
+                    # The free tier enforces a hard 8K token limit per request,
+                    # which Hermes' system prompt alone can exceed.  Compression
+                    # won't help — surface a clear message so the user doesn't
+                    # wait through three futile compression attempts.
+                    if (
+                        status_code == 413
+                        and isinstance(_base, str)
+                        and "models.inference.ai.azure.com" in _base
+                    ):
+                        self._vprint(
+                            f"{self.log_prefix}   💡 GitHub Models (Azure) enforces a hard per-request token limit (often 8K).",
+                            force=True,
+                        )
+                        self._vprint(
+                            f"{self.log_prefix}      Hermes' system prompt alone may exceed this limit.  This endpoint is not",
+                            force=True,
+                        )
+                        self._vprint(
+                            f"{self.log_prefix}      compatible with Hermes Agent.  Use https://models.github.ai or the GitHub",
+                            force=True,
+                        )
+                        self._vprint(
+                            f"{self.log_prefix}      Copilot provider instead, which have higher token limits.",
+                            force=True,
+                        )
+
                     # Check for 413 payload-too-large BEFORE generic 4xx handler.
                     # A 413 is a payload-size error — the correct response is to
                     # compress history and retry, not abort immediately.

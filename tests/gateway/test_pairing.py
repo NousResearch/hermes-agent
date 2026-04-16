@@ -50,13 +50,17 @@ class TestSecureWrite:
 
         monkeypatch.setattr("gateway.pairing.os.geteuid", lambda: 0)
         monkeypatch.setattr(
-            "gateway.pairing.os.chown",
-            lambda path, uid, gid: chown_calls.append((path, uid, gid)),
+            "gateway.pairing.os.fchown",
+            lambda fd, uid, gid: chown_calls.append((fd, uid, gid)),
+            raising=False,
         )
 
         _secure_write(target, "data")
 
-        assert chown_calls == [(target, parent_stat.st_uid, parent_stat.st_gid)]
+        assert len(chown_calls) == 1
+        fd, uid, gid = chown_calls[0]
+        assert isinstance(fd, int)
+        assert (uid, gid) == (parent_stat.st_uid, parent_stat.st_gid)
 
     def test_non_root_write_skips_owner_fixup(self, tmp_path, monkeypatch):
         target = tmp_path / "secret.json"
@@ -64,8 +68,9 @@ class TestSecureWrite:
 
         monkeypatch.setattr("gateway.pairing.os.geteuid", lambda: 1000)
         monkeypatch.setattr(
-            "gateway.pairing.os.chown",
-            lambda path, uid, gid: chown_calls.append((path, uid, gid)),
+            "gateway.pairing.os.fchown",
+            lambda fd, uid, gid: chown_calls.append((fd, uid, gid)),
+            raising=False,
         )
 
         _secure_write(target, "data")

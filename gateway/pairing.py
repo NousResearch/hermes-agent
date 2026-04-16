@@ -55,21 +55,26 @@ def _secure_write(path: Path, data: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
     try:
+        parent_stat = None
+        if hasattr(os, "fchown") and getattr(os, "geteuid", lambda: -1)() == 0:
+            try:
+                parent_stat = path.parent.stat()
+            except OSError:
+                parent_stat = None
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(data)
             f.flush()
             os.fsync(f.fileno())
+            # In Docker, bot owners often run `docker exec ... hermes pairing approve`
+            # as root while the gateway itself runs as the non-root `hermes` user.
+            # Preserve the pairing directory owner/group on the temp file before
+            # the atomic replace so we avoid path-based chown races as root.
+            if parent_stat is not None:
+                try:
+                    os.fchown(f.fileno(), parent_stat.st_uid, parent_stat.st_gid)
+                except OSError:
+                    pass
         os.replace(tmp_path, str(path))
-        # In Docker, bot owners often run `docker exec ... hermes pairing approve`
-        # as root while the gateway itself runs as the non-root `hermes` user.
-        # Preserve the pairing directory owner/group so root-authored approval
-        # files stay readable without loosening the 0600 permission model.
-        try:
-            if hasattr(os, "chown") and getattr(os, "geteuid", lambda: -1)() == 0:
-                parent_stat = path.parent.stat()
-                os.chown(path, parent_stat.st_uid, parent_stat.st_gid)
-        except OSError:
-            pass
         try:
             os.chmod(path, 0o600)
         except OSError:

@@ -10,7 +10,7 @@ Also covers reply_to_text extraction from incoming messages.
 import os
 import sys
 from datetime import datetime, timezone
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from unittest.mock import MagicMock, AsyncMock, patch
 
 import pytest
@@ -19,46 +19,99 @@ from gateway.config import PlatformConfig, GatewayConfig, Platform, _apply_env_o
 
 
 def _ensure_discord_mock():
-    """Install a mock discord module when discord.py isn't available."""
-    if "discord" in sys.modules and hasattr(sys.modules["discord"], "__file__"):
+    """Install or repair a mock discord module when discord.py isn't available."""
+    existing = sys.modules.get("discord")
+    if existing is not None and hasattr(existing, "__file__"):
         return
 
-    discord_mod = MagicMock()
-    discord_mod.Intents.default.return_value = MagicMock()
+    discord_mod = ModuleType("discord")
+
+    class _FakeIntents:
+        @staticmethod
+        def default():
+            return SimpleNamespace()
+
+    class _FakeDMChannel:
+        pass
+
+    class _FakeThread:
+        pass
+
+    class _FakeForumChannel:
+        pass
+
+    discord_mod.Intents = _FakeIntents
     discord_mod.Client = MagicMock
     discord_mod.File = MagicMock
-    discord_mod.DMChannel = type("DMChannel", (), {})
-    discord_mod.Thread = type("Thread", (), {})
-    discord_mod.ForumChannel = type("ForumChannel", (), {})
+    discord_mod.DMChannel = _FakeDMChannel
+    discord_mod.Thread = _FakeThread
+    discord_mod.ForumChannel = _FakeForumChannel
     discord_mod.ui = SimpleNamespace(View=object, button=lambda *a, **k: (lambda fn: fn), Button=object)
     discord_mod.ButtonStyle = SimpleNamespace(success=1, primary=2, secondary=2, danger=3, green=1, grey=2, blurple=2, red=3)
     discord_mod.Color = SimpleNamespace(orange=lambda: 1, green=lambda: 2, blue=lambda: 3, red=lambda: 4, purple=lambda: 5)
     discord_mod.Interaction = object
     discord_mod.Embed = MagicMock
+    discord_mod.MessageType = SimpleNamespace(
+        default=0,
+        reply=19,
+        channel_name_change=1,
+        pins_add=6,
+        new_member=7,
+        premium_guild_subscription=8,
+        recipient_add=3,
+    )
+    discord_mod.opus = SimpleNamespace(is_loaded=lambda: True, load_opus=lambda *_args, **_kwargs: None)
+    discord_mod.FFmpegPCMAudio = MagicMock
+    discord_mod.PCMVolumeTransformer = MagicMock
+    discord_mod.http = SimpleNamespace(Route=MagicMock)
+
+    class _FakeGroup:
+        def __init__(self, *, name, description, parent=None):
+            self.name = name
+            self.description = description
+            self.parent = parent
+            self._children = {}
+            if parent is not None:
+                parent.add_command(self)
+
+        def add_command(self, cmd):
+            self._children[cmd.name] = cmd
+
+    class _FakeCommand:
+        def __init__(self, *, name, description, callback, parent=None):
+            self.name = name
+            self.description = description
+            self.callback = callback
+            self.parent = parent
+
     discord_mod.app_commands = SimpleNamespace(
         describe=lambda **kwargs: (lambda fn: fn),
         choices=lambda **kwargs: (lambda fn: fn),
         Choice=lambda **kwargs: SimpleNamespace(**kwargs),
+        Group=_FakeGroup,
+        Command=_FakeCommand,
     )
 
-    ext_mod = MagicMock()
-    commands_mod = MagicMock()
+    ext_mod = ModuleType("discord.ext")
+    commands_mod = ModuleType("discord.ext.commands")
     commands_mod.Bot = MagicMock
     ext_mod.commands = commands_mod
 
-    sys.modules.setdefault("discord", discord_mod)
-    sys.modules.setdefault("discord.ext", ext_mod)
-    sys.modules.setdefault("discord.ext.commands", commands_mod)
+    sys.modules["discord"] = discord_mod
+    sys.modules["discord.ext"] = ext_mod
+    sys.modules["discord.ext.commands"] = commands_mod
 
 
 _ensure_discord_mock()
 
+import gateway.platforms.discord as discord_platform  # noqa: E402
 from gateway.platforms.discord import DiscordAdapter  # noqa: E402
 
 
-@pytest.fixture()
+@pytest.fixture
 def adapter_factory():
     """Factory to create DiscordAdapter with custom reply_to_mode."""
+    discord_platform.discord = sys.modules["discord"]
     def create(reply_to_mode: str = "first"):
         config = PlatformConfig(enabled=True, token="test-token", reply_to_mode=reply_to_mode)
         return DiscordAdapter(config)
@@ -309,7 +362,7 @@ def _make_message(*, content: str = "hi", reference=None):
 @pytest.fixture
 def reply_text_adapter(monkeypatch):
     """DiscordAdapter wired for _handle_message → handle_message capture."""
-    import gateway.platforms.discord as discord_platform
+    discord_platform.discord = sys.modules["discord"]
 
     monkeypatch.setattr(discord_platform.discord, "DMChannel", FakeDMChannel, raising=False)
 

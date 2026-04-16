@@ -528,11 +528,49 @@ Warnings are injected into the last tool result's JSON (as a `_budget_warning` f
 ```yaml
 agent:
   max_turns: 90                # Max iterations per conversation turn (default: 90)
+  auto_background:
+    enabled: true             # Gateway default: automatically background likely long-running requests
+    threshold_seconds: 10.0   # Estimated work needed before routing to /background-style execution
+    min_words: 6              # Actionable prompts with at least this many words are eligible
+    min_chars: 120            # Character fallback for languages where word counts are less useful
 ```
 
 Budget pressure is enabled by default. The agent sees warnings naturally as part of tool results, encouraging it to consolidate its work and deliver a response before running out of iterations.
 
 When the iteration budget is fully exhausted, the CLI shows a notification to the user: `⚠ Iteration budget reached (90/90) — response may be incomplete`. If the budget runs out during active work, the agent generates a summary of what was accomplished before stopping.
+
+### Auto-Background Routing (gateway)
+
+On messaging platforms, Hermes can automatically treat a message like `/background` when it looks like a real task that will likely take a while — for example debugging, investigation, or “run the tests and report back” requests. This is **enabled by default**.
+
+```yaml
+agent:
+  auto_background:
+    enabled: true
+    threshold_seconds: 10.0
+    min_words: 6
+    min_chars: 120
+```
+
+How the settings work:
+
+- `enabled`: master switch for automatic background routing.
+- `threshold_seconds`: estimated minimum task duration before Hermes prefers a background session. Set `0` to effectively disable routing even if `enabled` is still true.
+- `min_words`: minimum word count for actionable prompts to qualify.
+- `min_chars`: fallback threshold for prompts where word counting is less informative, especially CJK-heavy messages.
+
+This only affects the **messaging gateway**. The CLI is unchanged, and users can still start background work manually with `/background` even when auto-backgrounding is disabled.
+
+Environment variables override config values:
+
+```bash
+HERMES_AUTO_BACKGROUND_ENABLED=true
+HERMES_AUTO_BACKGROUND_THRESHOLD_SECONDS=10
+HERMES_AUTO_BACKGROUND_MIN_WORDS=6
+HERMES_AUTO_BACKGROUND_MIN_CHARS=120
+```
+
+Set `enabled: false` if you want all messages to stay inline by default.
 
 ### Streaming Timeouts
 

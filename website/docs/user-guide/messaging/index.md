@@ -254,6 +254,19 @@ Hermes confirms immediately:
    Task ID: bg_143022_a1b2c3
 ```
 
+Hermes can also do this automatically for likely long-running requests in messaging. Auto-background routing is **enabled by default** for actionable prompts that look like they will take more than a short inline reply. Configure it in `~/.hermes/config.yaml`:
+
+```yaml
+agent:
+  auto_background:
+    enabled: true
+    threshold_seconds: 10.0
+    min_words: 6
+    min_chars: 120
+```
+
+To force everything to stay inline unless the user explicitly types `/background`, set `agent.auto_background.enabled: false`.
+
 ### How It Works
 
 Each `/background` prompt spawns a **separate agent instance** that runs asynchronously:
@@ -262,6 +275,7 @@ Each `/background` prompt spawns a **separate agent instance** that runs asynchr
 - **Same configuration** — inherits your model, provider, toolsets, reasoning settings, and provider routing from the current gateway setup.
 - **Non-blocking** — your main chat stays fully interactive. Send messages, run other commands, or start more background tasks while it works.
 - **Result delivery** — when the task finishes, the result is sent back to the **same chat or channel** where you issued the command, prefixed with "✅ Background task complete". If it fails, you'll see "❌ Background task failed" with the error.
+- **Automatic routing** — when auto-background is enabled, Hermes may choose this path for you on messages that look like substantial tool-driven work.
 
 ### Background Process Notifications
 

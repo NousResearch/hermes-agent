@@ -51,6 +51,10 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
+import gateway.platforms.discord as discord_platform
+
+discord_platform.discord = sys.modules["discord"]
+
 from gateway.platforms.base import MessageEvent, MessageType, SessionSource
 
 

@@ -103,7 +103,7 @@ class TestHandleBackgroundCommand:
             result = await runner._handle_background_command(event)
 
         assert "🔄" in result
-        assert "Background task started" in result
+        assert "已转到后台处理" in result
         assert "bg_" in result  # task ID starts with bg_
         assert "Summarize the top HN stories" in result
         assert len(created_tasks) == 1  # background task was created
@@ -151,7 +151,56 @@ class TestHandleBackgroundCommand:
                     platform=platform,
                 )
                 result = await runner._handle_background_command(event)
-                assert "Background task started" in result
+                assert "已转到后台处理" in result
+
+
+# ---------------------------------------------------------------------------
+# auto-background heuristics
+# ---------------------------------------------------------------------------
+
+
+class TestAutoBackgroundRouting:
+    """Tests for automatic background routing heuristics."""
+
+    def test_auto_background_enabled_by_default(self):
+        runner = _make_runner()
+        event = _make_event(text="帮我调试一下这个报错并跑测试")
+
+        should_route = runner._should_auto_background_message(
+            "帮我调试一下这个报错并跑测试"
+        )
+
+        assert should_route is True
+
+    def test_auto_background_routes_actionable_task_when_enabled(self):
+        runner = _make_runner()
+        runner._auto_background_config = {
+            "enabled": True,
+            "threshold_seconds": 10.0,
+            "min_words": 6,
+            "min_chars": 120,
+        }
+        event = _make_event(text="帮我调试这个 Python 报错，定位原因并运行相关测试")
+
+        should_route = runner._should_auto_background_message(
+            "帮我调试这个 Python 报错，定位原因并运行相关测试"
+        )
+
+        assert should_route is True
+
+    def test_auto_background_keeps_short_chat_inline(self):
+        runner = _make_runner()
+        runner._auto_background_config = {
+            "enabled": True,
+            "threshold_seconds": 10.0,
+            "min_words": 6,
+            "min_chars": 120,
+        }
+        event = _make_event(text="你好")
+
+        should_route = runner._should_auto_background_message("你好")
+
+        assert should_route is False
 
 
 # ---------------------------------------------------------------------------

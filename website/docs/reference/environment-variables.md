@@ -326,6 +326,10 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `HERMES_EXEC_ASK` | Enable execution approval prompts in gateway mode (`true`/`false`) |
 | `HERMES_ENABLE_PROJECT_PLUGINS` | Enable auto-discovery of repo-local plugins from `./.hermes/plugins/` (`true`/`false`, default: `false`) |
 | `HERMES_BACKGROUND_NOTIFICATIONS` | Background process notification mode in gateway: `all` (default), `result`, `error`, `off` |
+| `HERMES_AUTO_BACKGROUND_ENABLED` | Override gateway auto-background routing (`true`/`false`, default: `true`) |
+| `HERMES_AUTO_BACKGROUND_THRESHOLD_SECONDS` | Estimated minimum task duration before the gateway prefers automatic background routing (default: `10`) |
+| `HERMES_AUTO_BACKGROUND_MIN_WORDS` | Minimum actionable prompt word count for auto-background routing (default: `6`) |
+| `HERMES_AUTO_BACKGROUND_MIN_CHARS` | Character-count fallback threshold for auto-background routing (default: `120`) |
 | `HERMES_EPHEMERAL_SYSTEM_PROMPT` | Ephemeral system prompt injected at API-call time (never persisted to sessions) |
 
 ## Cron Scheduler

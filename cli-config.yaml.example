@@ -466,6 +466,17 @@ agent:
   # Recommended: 20-30 for focused tasks, 50-100 for open exploration
   max_turns: 60
 
+  # Messaging gateway: automatically route likely long-running requests into
+  # a background session instead of blocking the current chat turn.
+  # Default behavior is enabled with the values shown below.
+  # Disable it if you want every message to stay inline unless the user types
+  # /background explicitly.
+  auto_background:
+    enabled: true
+    threshold_seconds: 10.0  # Estimated task duration needed before auto-backgrounding
+    min_words: 6             # Route when the prompt looks actionable and has at least this many words
+    min_chars: 120           # Character-based fallback for languages where word counts are less useful
+
   # Inactivity timeout for gateway agent runs (seconds, 0 = unlimited).
   # The agent can run indefinitely when actively calling tools or receiving
   # API responses.  Only fires after the agent has been idle for this duration.

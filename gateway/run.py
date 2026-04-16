@@ -549,6 +549,12 @@ class GatewayRunner:
     _running_agents_ts: Dict[str, float] = {}
     _busy_input_mode: str = "interrupt"
     _restart_drain_timeout: float = DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
+    _auto_background_config: Dict[str, Any] = {
+        "enabled": True,
+        "threshold_seconds": 10.0,
+        "min_words": 6,
+        "min_chars": 120,
+    }
     _exit_code: Optional[int] = None
     _draining: bool = False
     _restart_requested: bool = False
@@ -574,6 +580,7 @@ class GatewayRunner:
         self._provider_routing = self._load_provider_routing()
         self._fallback_model = self._load_fallback_model()
         self._smart_model_routing = self._load_smart_model_routing()
+        self._auto_background_config = self._load_auto_background_config()
 
         # Wire process registry into session store for reset protection
         from tools.process_registry import process_registry
@@ -1293,6 +1300,138 @@ class GatewayRunner:
             )
             return "all"
         return mode
+
+    @staticmethod
+    def _load_auto_background_config() -> Dict[str, Any]:
+        """Load auto-background routing settings from config.yaml and env vars."""
+        config = {
+            "enabled": True,
+            "threshold_seconds": 10.0,
+            "min_words": 6,
+            "min_chars": 120,
+        }
+        try:
+            import yaml as _y
+            cfg_path = _hermes_home / "config.yaml"
+            if cfg_path.exists():
+                with open(cfg_path, encoding="utf-8") as _f:
+                    cfg = _y.safe_load(_f) or {}
+                raw = ((cfg.get("agent") or {}).get("auto_background") or {})
+                if isinstance(raw, dict):
+                    if "enabled" in raw:
+                        config["enabled"] = bool(raw.get("enabled"))
+                    if raw.get("threshold_seconds") is not None:
+                        config["threshold_seconds"] = float(raw.get("threshold_seconds"))
+                    if raw.get("min_words") is not None:
+                        config["min_words"] = int(raw.get("min_words"))
+                    if raw.get("min_chars") is not None:
+                        config["min_chars"] = int(raw.get("min_chars"))
+        except Exception:
+            pass
+
+        _env_enabled = os.getenv("HERMES_AUTO_BACKGROUND_ENABLED")
+        if _env_enabled is not None:
+            config["enabled"] = is_truthy_value(_env_enabled)
+
+        _env_threshold = os.getenv("HERMES_AUTO_BACKGROUND_THRESHOLD_SECONDS")
+        if _env_threshold:
+            try:
+                config["threshold_seconds"] = float(_env_threshold)
+            except (TypeError, ValueError):
+                logger.warning("Invalid HERMES_AUTO_BACKGROUND_THRESHOLD_SECONDS '%s'", _env_threshold)
+
+        _env_words = os.getenv("HERMES_AUTO_BACKGROUND_MIN_WORDS")
+        if _env_words:
+            try:
+                config["min_words"] = int(_env_words)
+            except (TypeError, ValueError):
+                logger.warning("Invalid HERMES_AUTO_BACKGROUND_MIN_WORDS '%s'", _env_words)
+
+        _env_chars = os.getenv("HERMES_AUTO_BACKGROUND_MIN_CHARS")
+        if _env_chars:
+            try:
+                config["min_chars"] = int(_env_chars)
+            except (TypeError, ValueError):
+                logger.warning("Invalid HERMES_AUTO_BACKGROUND_MIN_CHARS '%s'", _env_chars)
+
+        config["threshold_seconds"] = max(0.0, float(config["threshold_seconds"]))
+        config["min_words"] = max(1, int(config["min_words"]))
+        config["min_chars"] = max(1, int(config["min_chars"]))
+        return config
+
+    def _should_auto_background_message(self, message_text: str) -> bool:
+        """Heuristic: offload actionable tasks likely to exceed the patience budget."""
+        cfg = getattr(self, "_auto_background_config", None) or {}
+        if not cfg.get("enabled"):
+            return False
+        if float(cfg.get("threshold_seconds", 0.0) or 0.0) <= 0:
+            return False
+
+        text = (message_text or "").strip()
+        if not text or text.startswith("/"):
+            return False
+        if len(text) < 4:
+            return False
+
+        _chatty_exact = {
+            "hi", "hello", "hey", "yo", "thanks", "thank you",
+            "你好", "您好", "在吗", "早", "早上好", "晚上好", "谢谢",
+        }
+        if text.lower() in _chatty_exact or text in _chatty_exact:
+            return False
+
+        _action_patterns = [
+            r"\b(debug|fix|investigate|analy[sz]e|research|implement|build|write|summari[sz]e|search|run|test|review|compare|optimi[sz]e|deploy)\b",
+            r"\b(ci|traceback|error|failing test|regression|bug|issue|pull request|pr)\b",
+            r"(帮我|请你|麻烦|调试|修复|排查|定位|分析|研究|实现|开发|编写|整理|总结|搜索|查找|运行|测试|检查|优化|部署|对比|review|评审)",
+        ]
+        actionable = any(re.search(pattern, text, re.IGNORECASE) for pattern in _action_patterns)
+        if not actionable:
+            return False
+
+        word_count = len(re.findall(r"\b\w+\b", text, re.UNICODE))
+        char_count = len(text)
+        if word_count >= int(cfg.get("min_words", 6)):
+            return True
+        if char_count >= int(cfg.get("min_chars", 120)):
+            return True
+
+        # Short but clearly task-oriented messages (especially Chinese, where word
+        # counts are low) should still route when they contain strong action cues.
+        _strong_intent_patterns = [
+            r"\b(run (?:the )?(?:tests?|build|suite)|debug|investigate|implement|fix|research)\b",
+            r"(调试|修复|排查|定位|运行.*测试|相关测试|帮我.*(分析|实现|修复|总结))",
+        ]
+        return any(re.search(pattern, text, re.IGNORECASE) for pattern in _strong_intent_patterns)
+
+    async def _start_background_task(
+        self,
+        prompt: str,
+        source: "SessionSource",
+        *,
+        auto: bool = False,
+    ) -> str:
+        """Spawn a detached background session and return the user-facing ack."""
+        task_id = f"bg_{datetime.now().strftime('%H%M%S')}_{os.urandom(3).hex()}"
+        _task = asyncio.create_task(self._run_background_task(prompt, source, task_id))
+        self._background_tasks.add(_task)
+        _task.add_done_callback(self._background_tasks.discard)
+
+        preview = prompt[:60] + ("..." if len(prompt) > 60 else "")
+        if auto:
+            threshold = float((getattr(self, "_auto_background_config", {}) or {}).get("threshold_seconds", 10.0))
+            return (
+                "⏳ 这个任务看起来一时半会儿答不完，我已经转到后台继续处理。\n"
+                f"预计阈值：>{threshold:.0f} 秒\n"
+                f'内容预览："{preview}"\n'
+                f"Task ID: {task_id}\n"
+                "你可以继续在这里聊天；处理完成后，我会把结果发回当前会话。"
+            )
+        return (
+            f'🔄 已转到后台处理："{preview}"\n'
+            f"Task ID: {task_id}\n"
+            "你可以继续聊天；处理完成后，我会把结果发回当前会话。"
+        )
 
     @staticmethod
     def _load_provider_routing() -> dict:
@@ -3852,6 +3991,9 @@ class GatewayRunner:
         if message_text is None:
             return
 
+        if self._should_auto_background_message(message_text):
+            return await self._start_background_task(message_text, source, auto=True)
+
         try:
             # Emit agent:start hook
             hook_ctx = {
@@ -5636,17 +5778,7 @@ class GatewayRunner:
             )
 
         source = event.source
-        task_id = f"bg_{datetime.now().strftime('%H%M%S')}_{os.urandom(3).hex()}"
-
-        # Fire-and-forget the background task
-        _task = asyncio.create_task(
-            self._run_background_task(prompt, source, task_id)
-        )
-        self._background_tasks.add(_task)
-        _task.add_done_callback(self._background_tasks.discard)
-
-        preview = prompt[:60] + ("..." if len(prompt) > 60 else "")
-        return f'🔄 Background task started: "{preview}"\nTask ID: {task_id}\nYou can keep chatting — results will appear when done.'
+        return await self._start_background_task(prompt, source)
 
     async def _run_background_task(
         self, prompt: str, source: "SessionSource", task_id: str

@@ -90,6 +90,9 @@ class SmsAdapter(BasePlatformAdapter):
         import aiohttp
         from aiohttp import web
 
+        async def _health(_: web.Request) -> web.Response:
+            return web.Response(text="ok")
+
         if not self._from_number:
             logger.error("[sms] TWILIO_PHONE_NUMBER not set — cannot send replies")
             return False
@@ -116,7 +119,7 @@ class SmsAdapter(BasePlatformAdapter):
 
         app = web.Application()
         app.router.add_post("/webhooks/twilio", self._handle_webhook)
-        app.router.add_get("/health", lambda _: web.Response(text="ok"))
+        app.router.add_get("/health", _health)
 
         self._runner = web.AppRunner(app)
         await self._runner.setup()

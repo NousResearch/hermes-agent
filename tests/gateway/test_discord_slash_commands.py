@@ -1,6 +1,6 @@
 """Tests for native Discord slash command fast-paths (thread creation & auto-thread)."""
 
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 import sys
 
@@ -10,15 +10,50 @@ from gateway.config import PlatformConfig
 
 
 def _ensure_discord_mock():
-    if "discord" in sys.modules and hasattr(sys.modules["discord"], "__file__"):
+    existing = sys.modules.get("discord")
+    if existing is not None and hasattr(existing, "__file__"):
         return
 
-    discord_mod = MagicMock()
-    discord_mod.Intents.default.return_value = MagicMock()
-    discord_mod.DMChannel = type("DMChannel", (), {})
-    discord_mod.Thread = type("Thread", (), {})
-    discord_mod.ForumChannel = type("ForumChannel", (), {})
+    discord_mod = ModuleType("discord")
+
+    class _FakeIntents:
+        @staticmethod
+        def default():
+            return SimpleNamespace()
+
+    class _FakeDMChannel:
+        pass
+
+    class _FakeThread:
+        pass
+
+    class _FakeForumChannel:
+        pass
+
+    discord_mod.Intents = _FakeIntents
+    discord_mod.Client = MagicMock
+    discord_mod.File = MagicMock
+    discord_mod.DMChannel = _FakeDMChannel
+    discord_mod.Thread = _FakeThread
+    discord_mod.ForumChannel = _FakeForumChannel
     discord_mod.Interaction = object
+    discord_mod.ui = SimpleNamespace(View=object, button=lambda *a, **k: (lambda fn: fn), Button=object)
+    discord_mod.ButtonStyle = SimpleNamespace(success=1, primary=2, secondary=2, danger=3, green=1, grey=2, blurple=2, red=3)
+    discord_mod.Color = SimpleNamespace(orange=lambda: 1, green=lambda: 2, blue=lambda: 3, red=lambda: 4, purple=lambda: 5)
+    discord_mod.Embed = MagicMock
+    discord_mod.MessageType = SimpleNamespace(
+        default=0,
+        reply=19,
+        channel_name_change=1,
+        pins_add=6,
+        new_member=7,
+        premium_guild_subscription=8,
+        recipient_add=3,
+    )
+    discord_mod.opus = SimpleNamespace(is_loaded=lambda: True, load_opus=lambda *_args, **_kwargs: None)
+    discord_mod.FFmpegPCMAudio = MagicMock
+    discord_mod.PCMVolumeTransformer = MagicMock
+    discord_mod.http = SimpleNamespace(Route=MagicMock)
 
     # Lightweight mock for app_commands.Group and Command used by
     # _register_skill_group.
@@ -49,18 +84,19 @@ def _ensure_discord_mock():
         Command=_FakeCommand,
     )
 
-    ext_mod = MagicMock()
-    commands_mod = MagicMock()
+    ext_mod = ModuleType("discord.ext")
+    commands_mod = ModuleType("discord.ext.commands")
     commands_mod.Bot = MagicMock
     ext_mod.commands = commands_mod
 
-    sys.modules.setdefault("discord", discord_mod)
-    sys.modules.setdefault("discord.ext", ext_mod)
-    sys.modules.setdefault("discord.ext.commands", commands_mod)
+    sys.modules["discord"] = discord_mod
+    sys.modules["discord.ext"] = ext_mod
+    sys.modules["discord.ext.commands"] = commands_mod
 
 
 _ensure_discord_mock()
 
+import gateway.platforms.discord as discord_platform  # noqa: E402
 from gateway.platforms.discord import DiscordAdapter  # noqa: E402
 
 
@@ -84,6 +120,7 @@ class FakeTree:
 
 @pytest.fixture
 def adapter():
+    discord_platform.discord = sys.modules["discord"]
     config = PlatformConfig(enabled=True, token="***")
     adapter = DiscordAdapter(config)
     adapter._client = SimpleNamespace(

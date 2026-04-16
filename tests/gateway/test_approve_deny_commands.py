@@ -75,6 +75,7 @@ def _clear_approval_state():
     mod._session_approved.clear()
     mod._permanent_approved.clear()
     mod._pending.clear()
+    mod._session_yolo.clear()
 
 
 # ------------------------------------------------------------------
@@ -350,6 +351,14 @@ class TestBlockingApprovalE2E:
         os.environ.pop("HERMES_GATEWAY_SESSION", None)
         os.environ.pop("HERMES_EXEC_ASK", None)
         os.environ.pop("HERMES_SESSION_KEY", None)
+        self._tirith_patcher = patch(
+            "tools.tirith_security.check_command_security",
+            return_value={"action": "allow", "findings": [], "summary": ""},
+        )
+        self._tirith_patcher.start()
+
+    def teardown_method(self):
+        self._tirith_patcher.stop()
 
     def test_blocking_approval_approve_once(self):
         """check_all_command_guards blocks until resolve_gateway_approval is called."""

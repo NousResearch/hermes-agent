@@ -347,6 +347,14 @@ DEFAULT_CONFIG = {
     "toolsets": ["hermes-cli"],
     "agent": {
         "max_turns": 90,
+        # Automatically route likely long-running messaging requests into a
+        # background session so the chat stays responsive.
+        "auto_background": {
+            "enabled": True,
+            "threshold_seconds": 10.0,
+            "min_words": 6,
+            "min_chars": 120,
+        },
         # Inactivity timeout for gateway agent execution (seconds).
         # The agent can run indefinitely as long as it's actively calling
         # tools or receiving API responses.  Only fires when the agent has

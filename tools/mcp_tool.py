@@ -70,10 +70,12 @@ Thread safety:
 """
 
 import asyncio
+import base64
 import concurrent.futures
 import inspect
 import json
 import logging
+import mimetypes
 import math
 import os
 import re
@@ -319,6 +321,42 @@ def _resolve_stdio_command(command: str, env: dict) -> tuple[str, dict]:
         resolved_env = _prepend_path(resolved_env, command_dir)
 
     return resolved_command, resolved_env
+
+
+def _image_extension_for_mime_type(mime_type: str) -> str:
+    """Return a reasonable file extension for an MCP image MIME type."""
+    normalized = (mime_type or "").split(";", 1)[0].strip().lower()
+    if normalized in {"image/jpeg", "image/jpg"}:
+        return ".jpg"
+    return mimetypes.guess_extension(normalized) or ".png"
+
+
+def _cache_image_content_block(block) -> str:
+    """Cache an MCP ImageContent block and return a MEDIA tag, or empty string."""
+    data = getattr(block, "data", None)
+    mime_type = getattr(block, "mimeType", None)
+    normalized_mime = str(mime_type or "").split(";", 1)[0].strip().lower()
+    if data is None or not normalized_mime.startswith("image/"):
+        return ""
+
+    try:
+        raw_bytes = base64.b64decode(data)
+    except (TypeError, ValueError) as exc:
+        logger.warning("MCP image block decode failed: %s", exc)
+        return ""
+
+    try:
+        from gateway.platforms.base import cache_image_from_bytes
+
+        image_path = cache_image_from_bytes(
+            raw_bytes,
+            ext=_image_extension_for_mime_type(normalized_mime),
+        )
+    except Exception as exc:
+        logger.warning("MCP image block cache failed: %s", exc)
+        return ""
+
+    return f"MEDIA:{image_path}"
 
 
 def _format_connect_error(exc: BaseException) -> str:
@@ -1391,7 +1429,7 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             if result.isError:
                 error_text = ""
                 for block in (result.content or []):
-                    if hasattr(block, "text"):
+                    if getattr(block, "text", ""):
                         error_text += block.text
                 return json.dumps({
                     "error": _sanitize_error(
@@ -1402,8 +1440,11 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             # Collect text from content blocks
             parts: List[str] = []
             for block in (result.content or []):
-                if hasattr(block, "text"):
+                if getattr(block, "text", ""):
                     parts.append(block.text)
+                media_tag = _cache_image_content_block(block)
+                if media_tag:
+                    parts.append(media_tag)
             text_result = "\n".join(parts) if parts else ""
 
             # Combine content + structuredContent when both are present.

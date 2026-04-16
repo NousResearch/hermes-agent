@@ -4,6 +4,7 @@ All tests use mocks -- no real MCP servers or subprocesses are started.
 """
 
 import asyncio
+import base64
 import json
 import os
 import threading
@@ -224,6 +225,68 @@ class TestToolHandler:
                 result = json.loads(handler({}))
             assert "error" in result
             assert "something went wrong" in result["error"]
+        finally:
+            _servers.pop("test_srv", None)
+
+    def test_image_only_result_is_cached_as_media_tag(self, tmp_path, monkeypatch):
+        from tools.mcp_tool import _make_tool_handler, _servers
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        png_bytes = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
+        img_block = SimpleNamespace(
+            data=base64.b64encode(png_bytes).decode("ascii"),
+            mimeType="image/png",
+        )
+
+        mock_session = MagicMock()
+        mock_session.call_tool = AsyncMock(
+            return_value=SimpleNamespace(content=[img_block], isError=False)
+        )
+        server = _make_mock_server("test_srv", session=mock_session)
+        _servers["test_srv"] = server
+
+        try:
+            handler = _make_tool_handler("test_srv", "take_screenshot", 120)
+            with self._patch_mcp_loop():
+                result = json.loads(handler({}))
+
+            media_line = next(
+                line for line in result["result"].splitlines()
+                if line.startswith("MEDIA:")
+            )
+            image_path = media_line.removeprefix("MEDIA:")
+
+            assert os.path.exists(image_path)
+            assert image_path.startswith(str(tmp_path))
+            assert image_path.endswith(".png")
+        finally:
+            _servers.pop("test_srv", None)
+
+    def test_text_and_image_result_preserves_text_and_media_tag(self, tmp_path, monkeypatch):
+        from tools.mcp_tool import _make_tool_handler, _servers
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        png_bytes = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
+        text_block = SimpleNamespace(text="Screenshot captured")
+        img_block = SimpleNamespace(
+            data=base64.b64encode(png_bytes).decode("ascii"),
+            mimeType="image/png",
+        )
+
+        mock_session = MagicMock()
+        mock_session.call_tool = AsyncMock(
+            return_value=SimpleNamespace(content=[text_block, img_block], isError=False)
+        )
+        server = _make_mock_server("test_srv", session=mock_session)
+        _servers["test_srv"] = server
+
+        try:
+            handler = _make_tool_handler("test_srv", "take_screenshot", 120)
+            with self._patch_mcp_loop():
+                result = json.loads(handler({}))
+
+            assert "Screenshot captured" in result["result"]
+            assert "MEDIA:" in result["result"]
         finally:
             _servers.pop("test_srv", None)
 

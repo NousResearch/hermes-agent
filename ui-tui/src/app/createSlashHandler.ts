@@ -4,15 +4,17 @@ import { asCommandDispatch, rpcErrorMessage } from '../lib/rpc.js'
 
 import type { SlashHandlerContext } from './interfaces.js'
 import { findSlashCommand } from './slash/registry.js'
-import { createSlashShared } from './slash/shared.js'
 import type { SlashRunCtx } from './slash/types.js'
 import { getUiState } from './uiStore.js'
+
+const titleCase = (name: string) => name.charAt(0).toUpperCase() + name.slice(1)
+
+const isLong = (text: string) => text.length > 180 || text.split('\n').filter(Boolean).length > 2
 
 export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => boolean {
   const { gw } = ctx.gateway
   const { catalog } = ctx.local
-  const { send, sys } = ctx.transcript
-  const shared = createSlashShared({ ...ctx.transcript, gw, slashFlightRef: ctx.slashFlightRef })
+  const { page, send, sys } = ctx.transcript
 
   const handler = (cmd: string): boolean => {
     const flight = ++ctx.slashFlightRef.current
@@ -37,7 +39,7 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
       }
     }
 
-    const runCtx: SlashRunCtx = { ...ctx, flight, guarded, guardedErr, shared, sid, stale, ui }
+    const runCtx: SlashRunCtx = { ...ctx, flight, guarded, guardedErr, sid, stale, ui }
 
     const found = findSlashCommand(parsed.name)
 
@@ -75,11 +77,10 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
           return
         }
 
-        sys(
-          r?.warning
-            ? `warning: ${r.warning}\n${r?.output || `/${parsed.name}: no output`}`
-            : r?.output || `/${parsed.name}: no output`
-        )
+        const body = r?.output || `/${parsed.name}: no output`
+        const text = r?.warning ? `warning: ${r.warning}\n${body}` : body
+
+        isLong(text) ? page(text, titleCase(parsed.name)) : sys(text)
       })
       .catch(() => {
         gw.request('command.dispatch', { arg: parsed.arg, name: parsed.name, session_id: sid })

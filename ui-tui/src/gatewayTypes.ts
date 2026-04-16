@@ -110,11 +110,6 @@ export interface SessionUndoResponse {
   removed?: number
 }
 
-export interface SessionHistoryResponse {
-  count?: number
-  messages?: GatewayTranscriptMessage[]
-}
-
 export interface SessionCompressResponse {
   info?: SessionInfo
   messages?: GatewayTranscriptMessage[]
@@ -125,30 +120,6 @@ export interface SessionCompressResponse {
 export interface SessionBranchResponse {
   session_id?: string
   title?: string
-}
-
-export interface SessionTitleResponse {
-  title?: string
-}
-
-export interface SessionSaveResponse {
-  file?: string
-}
-
-export interface SessionUsageResponse {
-  cache_read?: number
-  cache_write?: number
-  calls?: number
-  compressions?: number
-  context_max?: number
-  context_percent?: number
-  context_used?: number
-  cost_status?: 'estimated' | 'exact'
-  cost_usd?: number
-  input?: number
-  model?: string
-  output?: number
-  total?: number
 }
 
 export interface SessionCloseResponse {
@@ -240,34 +211,7 @@ export interface VoiceRecordResponse {
   text?: string
 }
 
-// ── Tools / toolsets ─────────────────────────────────────────────────
-
-export interface ToolsetDetails {
-  description: string
-  enabled: boolean
-  name: string
-  tool_count: number
-  tools: string[]
-}
-
-export interface ToolsListResponse {
-  toolsets?: ToolsetDetails[]
-}
-
-export interface ToolSummary {
-  description: string
-  name: string
-}
-
-export interface ToolsShowSection {
-  name: string
-  tools: ToolSummary[]
-}
-
-export interface ToolsShowResponse {
-  sections?: ToolsShowSection[]
-  total?: number
-}
+// ── Tools (TS keeps configure since it resets local history) ─────────
 
 export interface ToolsConfigureResponse {
   changed?: string[]
@@ -278,104 +222,7 @@ export interface ToolsConfigureResponse {
   unknown?: string[]
 }
 
-export interface ToolsetsListResponse {
-  toolsets?: {
-    description: string
-    enabled: boolean
-    name: string
-    tool_count: number
-  }[]
-}
-
-// ── Ops: rollback / browser / plugins / skills / agents / cron ───────
-
-export interface RollbackCheckpoint {
-  hash?: string
-  message?: string
-}
-
-export interface RollbackListResponse {
-  checkpoints?: RollbackCheckpoint[]
-}
-
-export interface RollbackActionResponse {
-  diff?: string
-  message?: string
-  rendered?: string
-}
-
-export interface BrowserManageResponse {
-  connected?: boolean
-  url?: string
-}
-
-export interface PluginInfo {
-  enabled?: boolean
-  name?: string
-  version?: string
-}
-
-export interface PluginsListResponse {
-  plugins?: PluginInfo[]
-}
-
-export interface SkillsListResponse {
-  skills?: Record<string, string[]>
-}
-
-export interface SkillsBrowseItem {
-  description?: string
-  name?: string
-}
-
-export interface SkillsBrowseResponse {
-  items?: SkillsBrowseItem[]
-  page?: number
-  total?: number
-  total_pages?: number
-}
-
-export interface AgentProcess {
-  command?: string
-  session_id: string
-  status?: 'finished' | 'running'
-}
-
-export interface AgentsListResponse {
-  processes?: AgentProcess[]
-}
-
-export interface CronJob {
-  job_id?: string
-  name?: string
-  schedule?: string
-  state?: string
-}
-
-export interface CronListResponse {
-  jobs?: CronJob[]
-}
-
-export interface ConfigShowSection {
-  rows?: [string, string][]
-  title?: string
-}
-
-export interface ConfigShowResponse {
-  sections?: ConfigShowSection[]
-}
-
-// ── Insights / MCP ───────────────────────────────────────────────────
-
-export interface InsightsResponse {
-  days?: number
-  messages?: number
-  sessions?: number
-}
-
-export interface ReloadMcpResponse {
-  ok?: boolean
-}
+// ── Model picker ─────────────────────────────────────────────────────
 
 export interface ModelOptionProvider {
   is_current?: boolean
@@ -390,6 +237,12 @@ export interface ModelOptionsResponse {
   model?: string
   provider?: string
   providers?: ModelOptionProvider[]
+}
+
+// ── MCP ──────────────────────────────────────────────────────────────
+
+export interface ReloadMcpResponse {
+  ok?: boolean
 }
 
 // ── Subagent events ──────────────────────────────────────────────────

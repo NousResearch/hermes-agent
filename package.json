@@ -16,8 +16,10 @@
   },
   "homepage": "https://github.com/NousResearch/Hermes-Agent#readme",
   "dependencies": {
+    "@askjo/camofox-browser": "^1.5.2",
+    "@lightpanda/browser": "^1.2.0",
     "agent-browser": "^0.13.0",
-    "@askjo/camofox-browser": "^1.5.2"
+    "playwright-core": "^1.59.1"
   },
   "overrides": {
     "lodash": "4.18.1"

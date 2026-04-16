@@ -81,6 +81,7 @@ from tools.browser_providers.base import CloudBrowserProvider
 from tools.browser_providers.browserbase import BrowserbaseProvider
 from tools.browser_providers.browser_use import BrowserUseProvider
 from tools.browser_providers.firecrawl import FirecrawlProvider
+from tools.browser_providers.lightpanda import LightpandaProvider
 from tools.tool_backend_helpers import normalize_browser_cloud_provider
 
 # Camofox local anti-detection browser backend (optional).
@@ -277,6 +278,7 @@ _PROVIDER_REGISTRY: Dict[str, type] = {
     "browserbase": BrowserbaseProvider,
     "browser-use": BrowserUseProvider,
     "firecrawl": FirecrawlProvider,
+    "lightpanda": LightpandaProvider,
 }
 
 _cached_cloud_provider: Optional[CloudBrowserProvider] = None
@@ -319,14 +321,13 @@ def _get_cloud_provider() -> Optional[CloudBrowserProvider]:
 
     if _cached_cloud_provider is None:
         # Prefer Browser Use (managed Nous gateway or direct API key),
-        # fall back to Browserbase (direct credentials only).
-        fallback_provider = BrowserUseProvider()
-        if fallback_provider.is_configured():
-            _cached_cloud_provider = fallback_provider
-        else:
-            fallback_provider = BrowserbaseProvider()
+        # fall back to Browserbase (direct credentials only),
+        # then Lightpanda (local binary — no credentials required).
+        for fallback_cls in (BrowserUseProvider, BrowserbaseProvider, LightpandaProvider):
+            fallback_provider = fallback_cls()
             if fallback_provider.is_configured():
                 _cached_cloud_provider = fallback_provider
+                break
 
     return _cached_cloud_provider
 
@@ -413,6 +414,31 @@ def _socket_safe_tmpdir() -> str:
 # Stores: session_name (always), bb_session_id + cdp_url (cloud mode only)
 _active_sessions: Dict[str, Dict[str, str]] = {}  # task_id -> {session_name, ...}
 _recording_sessions: set = set()  # task_ids with active recordings
+
+# Provider fallback chain — when the primary provider's process dies (e.g.
+# Lightpanda crashes on a bot-protected site), the next session creation for
+# that task advances to the next backend instead of retrying the same one.
+# Levels: 0=configured provider, 1=camofox, 2=local chromium, 3=browserbase.
+_task_fallback_level: Dict[str, int] = {}
+
+
+def _use_camofox_for_task(task_id: Optional[str] = None) -> bool:
+    """Return True when *task_id* should use the Camofox backend.
+
+    True in two cases:
+    1. Global camofox mode (``CAMOFOX_URL`` is set) — always.
+    2. Per-task fallback: the primary provider crashed and the fallback chain
+       advanced to the camofox level for this task.
+    """
+    if _is_camofox_mode():
+        return True
+    if task_id and _task_fallback_level.get(task_id, 0) == 1:
+        try:
+            from tools.browser_camofox import check_camofox_available
+            return check_camofox_available()
+        except Exception:
+            return False
+    return False
 
 # Flag to track if cleanup has been done
 _cleanup_done = False
@@ -835,10 +861,82 @@ def _create_cdp_session(task_id: str, cdp_url: str) -> Dict[str, str]:
     }
 
 
+def _create_session_with_fallback(task_id: str) -> Dict[str, str]:
+    """Create a browser session using the provider fallback chain.
+
+    The chain is::
+
+        configured provider (e.g. Lightpanda)
+          → Camofox (anti-detect, if available)
+          → local Chromium (agent-browser)
+          → Browserbase (cloud, if credentials present)
+
+    Each time a provider's process dies for a given *task_id*,
+    ``_task_fallback_level`` is incremented so the next call advances to the
+    next backend instead of retrying the same one.
+    """
+    level = _task_fallback_level.get(task_id, 0)
+    configured_provider = _get_cloud_provider()
+
+    # Level 0: use whatever cloud_provider is configured (or local if none).
+    if level <= 0:
+        if configured_provider is None:
+            return _create_local_session(task_id)
+        session_info = configured_provider.create_session(task_id)
+        if session_info.get("cdp_url"):
+            session_info = dict(session_info)
+            session_info["cdp_url"] = _resolve_cdp_override(str(session_info["cdp_url"]))
+        return session_info
+
+    # Level 1: Camofox (anti-detect browser, if available).
+    # Camofox dispatches happen per-command in each tool function via
+    # _use_camofox_for_task(), so we just need a sentinel session here.
+    if level == 1:
+        try:
+            from tools.browser_camofox import check_camofox_available
+            if check_camofox_available():
+                logger.info("Fallback level 1: using Camofox for task %s", task_id)
+                # Return a marker session — actual commands are dispatched by
+                # _use_camofox_for_task() in each tool function.
+                return {
+                    "session_name": f"camofox_fallback_{task_id}",
+                    "bb_session_id": None,
+                    "cdp_url": None,
+                    "features": {"camofox_fallback": True},
+                }
+        except Exception as e:
+            logger.debug("Camofox fallback unavailable: %s", e)
+        # Camofox not available — advance to local.
+        _task_fallback_level[task_id] = 2
+        level = 2
+
+    # Level 2: local Chromium via agent-browser.
+    if level == 2:
+        logger.info("Fallback level 2: using local Chromium for task %s", task_id)
+        return _create_local_session(task_id)
+
+    # Level 3+: try Browserbase if credentials are available, else local.
+    try:
+        bb = BrowserbaseProvider()
+        if bb.is_configured():
+            logger.info("Fallback level %d: using Browserbase for task %s", level, task_id)
+            session_info = bb.create_session(task_id)
+            if session_info.get("cdp_url"):
+                session_info = dict(session_info)
+                session_info["cdp_url"] = _resolve_cdp_override(str(session_info["cdp_url"]))
+            return session_info
+    except Exception as e:
+        logger.debug("Browserbase fallback failed: %s", e)
+
+    # Final fallback: local Chromium (always available).
+    logger.info("Fallback level %d: no further providers, using local Chromium for task %s", level, task_id)
+    return _create_local_session(task_id)
+
+
 def _get_session_info(task_id: Optional[str] = None) -> Dict[str, str]:
     """
     Get or create session info for the given task.
-    
+
     In cloud mode, creates a Browserbase session with proxies enabled.
     In local mode, generates a session name for agent-browser --session.
     Also starts the inactivity cleanup thread and updates activity tracking.
@@ -862,23 +960,41 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, str]:
     with _cleanup_lock:
         # Check if we already have a session for this task
         if task_id in _active_sessions:
-            return _active_sessions[task_id]
-    
+            existing = _active_sessions[task_id]
+            # For Lightpanda sessions, verify the CDP server process is still
+            # alive.  Lightpanda can crash on certain pages (e.g. sites that
+            # return aggressive error responses), leaving a stale session that
+            # will ECONNREFUSED on every subsequent command.
+            if existing.get("features", {}).get("lightpanda"):
+                provider = _get_cloud_provider()
+                sid = existing.get("bb_session_id")
+                if provider and hasattr(provider, 'is_session_alive') and sid:
+                    if not provider.is_session_alive(sid):
+                        logger.warning(
+                            "Lightpanda process for session %s died, "
+                            "advancing fallback chain",
+                            sid,
+                        )
+                        provider.close_session(sid)
+                        del _active_sessions[task_id]
+                        # Advance the fallback chain so the next session
+                        # creation uses a different backend (e.g. local
+                        # Chromium) instead of respawning Lightpanda.
+                        _task_fallback_level[task_id] = _task_fallback_level.get(task_id, 0) + 1
+                        # Fall through to create a new session below
+                    else:
+                        return existing
+                else:
+                    return existing
+            else:
+                return existing
+
     # Create session outside the lock (network call in cloud mode)
     cdp_override = _get_cdp_override()
     if cdp_override:
         session_info = _create_cdp_session(task_id, cdp_override)
     else:
-        provider = _get_cloud_provider()
-        if provider is None:
-            session_info = _create_local_session(task_id)
-        else:
-            session_info = provider.create_session(task_id)
-            if session_info.get("cdp_url"):
-                # Some cloud providers (including Browser-Use v3) return an HTTP
-                # CDP discovery URL instead of a raw websocket endpoint.
-                session_info = dict(session_info)
-                session_info["cdp_url"] = _resolve_cdp_override(str(session_info["cdp_url"]))
+        session_info = _create_session_with_fallback(task_id)
     
     with _cleanup_lock:
         # Double-check: another thread may have created a session while we
@@ -964,6 +1080,23 @@ def _find_agent_browser() -> str:
     )
 
 
+def _find_lightpanda_adapter() -> str:
+    """Return the absolute path to lightpanda_adapter.js.
+
+    The adapter lives in the same ``tools/`` directory as this module.
+
+    Raises:
+        FileNotFoundError: If the adapter script is not found.
+    """
+    candidate = Path(__file__).parent / "lightpanda_adapter.js"
+    if candidate.exists():
+        return str(candidate)
+    raise FileNotFoundError(
+        f"lightpanda_adapter.js not found at {candidate}. "
+        "Re-clone the hermes-agent repository to restore it."
+    )
+
+
 def _extract_screenshot_path_from_text(text: str) -> Optional[str]:
     """Extract a screenshot file path from agent-browser human-readable output."""
     if not text:
@@ -1008,50 +1141,67 @@ def _run_browser_command(
         timeout = _get_command_timeout()
     args = args or []
     
-    # Build the command
-    try:
-        browser_cmd = _find_agent_browser()
-    except FileNotFoundError as e:
-        logger.warning("agent-browser CLI not found: %s", e)
-        return {"success": False, "error": str(e)}
-
-    if _requires_real_termux_browser_install(browser_cmd):
-        error = _termux_browser_install_error()
-        logger.warning("browser command blocked on Termux: %s", error)
-        return {"success": False, "error": error}
-    
     from tools.interrupt import is_interrupted
     if is_interrupted():
         return {"success": False, "error": "Interrupted"}
 
-    # Get session info (creates Browserbase session with proxies if needed)
+    # Get session info (creates browser session if needed)
     try:
         session_info = _get_session_info(task_id)
     except Exception as e:
         logger.warning("Failed to create browser session for task=%s: %s", task_id, e)
         return {"success": False, "error": f"Failed to create browser session: {str(e)}"}
-    
-    # Build the command with the appropriate backend flag.
-    # Cloud mode: --cdp <websocket_url> connects to Browserbase.
-    # Local mode: --session <name> launches a local headless Chromium.
-    # The rest of the command (--json, command, args) is identical.
-    if session_info.get("cdp_url"):
-        # Cloud mode — connect to remote Browserbase browser via CDP
-        # IMPORTANT: Do NOT use --session with --cdp. In agent-browser >=0.13,
-        # --session creates a local browser instance and silently ignores --cdp.
-        backend_args = ["--cdp", session_info["cdp_url"]]
+
+    # ── Lightpanda sessions use lightpanda_adapter.js ──────────────────────
+    # Lightpanda requires a custom CDP init sequence (createBrowserContext →
+    # createTarget → attachToTarget) that agent-browser does not perform.
+    # The adapter speaks the same --json protocol but talks to Lightpanda correctly.
+    if session_info.get("features", {}).get("lightpanda"):
+        try:
+            adapter_path = _find_lightpanda_adapter()
+        except FileNotFoundError as e:
+            logger.warning("lightpanda_adapter.js not found: %s", e)
+            return {"success": False, "error": str(e)}
+
+        # Use bare "node" — the subprocess env's PATH (built below) includes
+        # the Hermes-managed Node bin dir, which is Node 22+ on this machine.
+        backend_args = [
+            "--cdp", session_info["cdp_url"],
+            "--session", session_info["session_name"],
+        ]
+        cmd_parts = ["node", adapter_path] + backend_args + ["--json", command] + args
+        logger.debug("lightpanda cmd=%s task=%s", command, task_id)
+
+        # Fall through to the subprocess execution block below.
+        # We still use the same task_socket_dir for AGENT_BROWSER_SOCKET_DIR so
+        # the adapter's daemon socket lands in a per-task directory.
+        browser_cmd = f"node {adapter_path}"  # for logging only
     else:
-        # Local mode — launch a headless Chromium instance
-        backend_args = ["--session", session_info["session_name"]]
+        # ── Standard agent-browser path ────────────────────────────────────
+        try:
+            browser_cmd = _find_agent_browser()
+        except FileNotFoundError as e:
+            logger.warning("agent-browser CLI not found: %s", e)
+            return {"success": False, "error": str(e)}
 
-    # Keep concrete executable paths intact, even when they contain spaces.
-    # Only the synthetic npx fallback needs to expand into multiple argv items.
-    cmd_prefix = ["npx", "agent-browser"] if browser_cmd == "npx agent-browser" else [browser_cmd]
+        if _requires_real_termux_browser_install(browser_cmd):
+            error = _termux_browser_install_error()
+            logger.warning("browser command blocked on Termux: %s", error)
+            return {"success": False, "error": error}
 
-    cmd_parts = cmd_prefix + backend_args + [
-        "--json",
-        command
-    ] + args
+        # Build the command with the appropriate backend flag.
+        # Cloud mode: --cdp <websocket_url> connects to Browserbase.
+        # Local mode: --session <name> launches a local headless Chromium.
+        if session_info.get("cdp_url"):
+            # IMPORTANT: Do NOT use --session with --cdp. In agent-browser >=0.13,
+            # --session creates a local browser instance and silently ignores --cdp.
+            backend_args = ["--cdp", session_info["cdp_url"]]
+        else:
+            backend_args = ["--session", session_info["session_name"]]
+
+        # Keep concrete executable paths intact; only the npx fallback splits.
+        cmd_prefix = ["npx", "agent-browser"] if browser_cmd == "npx agent-browser" else [browser_cmd]
+        cmd_parts = cmd_prefix + backend_args + ["--json", command] + args
     
     try:
         # Give each task its own socket directory to prevent concurrency conflicts.
@@ -1320,7 +1470,7 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
         })
 
     # Camofox backend — delegate after safety checks pass
-    if _is_camofox_mode():
+    if _use_camofox_for_task(task_id):
         from tools.browser_camofox import camofox_navigate
         return camofox_navigate(url, task_id)
 
@@ -1429,7 +1579,7 @@ def browser_snapshot(
     Returns:
         JSON string with page snapshot
     """
-    if _is_camofox_mode():
+    if _use_camofox_for_task(task_id):
         from tools.browser_camofox import camofox_snapshot
         return camofox_snapshot(full, task_id, user_task)
 
@@ -1478,7 +1628,7 @@ def browser_click(ref: str, task_id: Optional[str] = None) -> str:
     Returns:
         JSON string with click result
     """
-    if _is_camofox_mode():
+    if _use_camofox_for_task(task_id):
         from tools.browser_camofox import camofox_click
         return camofox_click(ref, task_id)
 
@@ -1514,7 +1664,7 @@ def browser_type(ref: str, text: str, task_id: Optional[str] = None) -> str:
     Returns:
         JSON string with type result
     """
-    if _is_camofox_mode():
+    if _use_camofox_for_task(task_id):
         from tools.browser_camofox import camofox_type
         return camofox_type(ref, text, task_id)
 
@@ -1563,7 +1713,7 @@ def browser_scroll(direction: str, task_id: Optional[str] = None) -> str:
     # ~500px is roughly half a viewport of travel.
     _SCROLL_PIXELS = 500
 
-    if _is_camofox_mode():
+    if _use_camofox_for_task(task_id):
         from tools.browser_camofox import camofox_scroll
         # Camofox REST API doesn't support pixel args; use repeated calls
         _SCROLL_REPEATS = 5
@@ -1597,7 +1747,7 @@ def browser_back(task_id: Optional[str] = None) -> str:
     Returns:
         JSON string with navigation result
     """
-    if _is_camofox_mode():
+    if _use_camofox_for_task(task_id):
         from tools.browser_camofox import camofox_back
         return camofox_back(task_id)
 
@@ -1628,7 +1778,7 @@ def browser_press(key: str, task_id: Optional[str] = None) -> str:
     Returns:
         JSON string with key press result
     """
-    if _is_camofox_mode():
+    if _use_camofox_for_task(task_id):
         from tools.browser_camofox import camofox_press
         return camofox_press(key, task_id)
 
@@ -1670,7 +1820,7 @@ def browser_console(clear: bool = False, expression: Optional[str] = None, task_
         return _browser_eval(expression, task_id)
 
     # --- Console output mode (original behaviour) ---
-    if _is_camofox_mode():
+    if _use_camofox_for_task(task_id):
         from tools.browser_camofox import camofox_console
         return camofox_console(clear, task_id)
 
@@ -1710,7 +1860,7 @@ def browser_console(clear: bool = False, expression: Optional[str] = None, task_
 
 def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
     """Evaluate a JavaScript expression in the page context and return the result."""
-    if _is_camofox_mode():
+    if _use_camofox_for_task(task_id):
         return _camofox_eval(expression, task_id)
 
     effective_task_id = task_id or "default"
@@ -1842,7 +1992,7 @@ def browser_get_images(task_id: Optional[str] = None) -> str:
     Returns:
         JSON string with list of images (src and alt)
     """
-    if _is_camofox_mode():
+    if _use_camofox_for_task(task_id):
         from tools.browser_camofox import camofox_get_images
         return camofox_get_images(task_id)
 
@@ -1910,7 +2060,7 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
     Returns:
         JSON string with vision analysis results and screenshot_path
     """
-    if _is_camofox_mode():
+    if _use_camofox_for_task(task_id):
         from tools.browser_camofox import camofox_vision
         return camofox_vision(question, annotate, task_id)
 
@@ -2132,7 +2282,7 @@ def cleanup_browser(task_id: Optional[str] = None) -> None:
     # Skip full close when managed persistence is enabled — the browser
     # profile (and its session cookies) must survive across agent tasks.
     # The inactivity reaper still frees idle resources.
-    if _is_camofox_mode():
+    if _use_camofox_for_task(task_id):
         try:
             from tools.browser_camofox import camofox_close, camofox_soft_cleanup
             if not camofox_soft_cleanup(task_id):
@@ -2166,7 +2316,8 @@ def cleanup_browser(task_id: Optional[str] = None) -> None:
         with _cleanup_lock:
             _active_sessions.pop(task_id, None)
             _session_last_activity.pop(task_id, None)
-        
+            _task_fallback_level.pop(task_id, None)
+
         # Cloud mode: close the cloud browser session via provider API
         if bb_session_id:
             provider = _get_cloud_provider()

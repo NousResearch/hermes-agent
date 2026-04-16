@@ -418,6 +418,10 @@ DEFAULT_CONFIG = {
         "command_timeout": 30,  # Timeout for browser commands in seconds (screenshot, navigate, etc.)
         "record_sessions": False,  # Auto-record browser sessions as WebM videos
         "allow_private_urls": False,  # Allow navigating to private/internal IPs (localhost, 192.168.x.x, etc.)
+        # cloud_provider: explicit backend selection.
+        # Valid values: browserbase | browser-use | firecrawl | lightpanda | local
+        # Omit (or set to null) for auto-detection.
+        # "cloud_provider": "lightpanda",
         "camofox": {
             # When true, Hermes sends a stable profile-scoped userId to Camofox
             # so the server can map it to a persistent browser profile directory.

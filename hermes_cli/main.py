@@ -4466,7 +4466,7 @@ def cmd_profile(args):
         list_profiles, create_profile, delete_profile, seed_profile_skills,
         set_active_profile, get_active_profile_name,
         check_alias_collision, create_wrapper_script, remove_wrapper_script,
-        _is_wrapper_dir_in_path, _get_wrapper_dir,
+        _is_wrapper_dir_in_path, _get_wrapper_dir, sync_profile_to_ssh,
     )
     from hermes_constants import display_hermes_home
 
@@ -4571,6 +4571,7 @@ def cmd_profile(args):
                     print("⚠ Skills could not be seeded. Run `{} update` to retry.".format(name))
 
             # Create wrapper alias
+            wrapper_path = None
             if not no_alias:
                 collision = check_alias_collision(name)
                 if collision:
@@ -4585,6 +4586,19 @@ def cmd_profile(args):
                             print(f"\n⚠ {_get_wrapper_dir()} is not in your PATH.")
                             print(f'  Add to your shell config (~/.bashrc or ~/.zshrc):')
                             print(f'    export PATH="$HOME/.local/bin:$PATH"')
+
+            try:
+                remote_sync = sync_profile_to_ssh(
+                    profile_dir,
+                    name,
+                    create_alias=wrapper_path is not None,
+                )
+                if remote_sync:
+                    print(f"SSH mirror created: {remote_sync['remote_profile_dir']}")
+                    if remote_sync.get("remote_wrapper_path"):
+                        print(f"Remote wrapper created: {remote_sync['remote_wrapper_path']}")
+            except RuntimeError as e:
+                print(f"⚠ SSH profile mirror failed: {e}")
 
             # Profile dir for display
             try:

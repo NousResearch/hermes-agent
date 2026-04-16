@@ -1,9 +1,29 @@
 """Tests for hermes_state.py — SessionDB SQLite CRUD, FTS5 search, export."""
 
+import sqlite3
 import time
 import pytest
 
 from hermes_state import SessionDB
+
+
+class _NoFtsCursor(sqlite3.Cursor):
+    """Simulate a SQLite build without the fts5 module."""
+
+    def execute(self, sql, parameters=()):
+        if sql.strip() == "SELECT * FROM messages_fts LIMIT 0":
+            raise sqlite3.OperationalError("no such table: messages_fts")
+        return super().execute(sql, parameters)
+
+    def executescript(self, sql_script):
+        if "CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5" in sql_script:
+            raise sqlite3.OperationalError("no such module: fts5")
+        return super().executescript(sql_script)
+
+
+class _NoFtsConnection(sqlite3.Connection):
+    def cursor(self, factory=None):
+        return super().cursor(factory or _NoFtsCursor)
 
 
 @pytest.fixture()
@@ -134,6 +154,29 @@ class TestSessionLifecycle:
 
         child = db.get_session("child")
         assert child["parent_session_id"] == "parent"
+
+    def test_db_initializes_without_fts5_module(self, tmp_path, monkeypatch):
+        real_connect = sqlite3.connect
+
+        def connect_without_fts(*args, **kwargs):
+            kwargs["factory"] = _NoFtsConnection
+            return real_connect(*args, **kwargs)
+
+        monkeypatch.setattr("hermes_state.sqlite3.connect", connect_without_fts)
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        try:
+            assert db._fts_enabled is False
+
+            db.create_session(session_id="s1", source="cli")
+            db.append_message("s1", role="user", content="hello from sqlite without fts")
+
+            messages = db.get_messages("s1")
+            assert len(messages) == 1
+            assert messages[0]["content"] == "hello from sqlite without fts"
+            assert db.search_messages("hello") == []
+        finally:
+            db.close()
 
 
 # =========================================================================

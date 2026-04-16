@@ -53,23 +53,17 @@ same API that Google's own `gemini-cli` tool uses. This supports both the
 **Quick start:**
 
 ```bash
-# 1. Install Google's gemini-cli (Hermes reads its OAuth client at login time)
-npm install -g @google/gemini-cli
-# or
-brew install gemini-cli
-
-# 2. Run hermes
 hermes model
 # → pick "Google Gemini (OAuth)"
-# → see upfront warning, confirm
+# → see policy warning, confirm
 # → browser opens to accounts.google.com, sign in
 # → done — Hermes auto-provisions your free tier on first request
 ```
 
-Hermes does not ship Google's OAuth credentials directly. At login time it
-scrapes them from your locally installed `gemini` binary. If you haven't
-installed it, Hermes will show a helpful error. You can override with your own
-client via `HERMES_GEMINI_CLIENT_ID` and `HERMES_GEMINI_CLIENT_SECRET`.
+Hermes ships Google's **public** `gemini-cli` desktop OAuth client by default —
+the same credentials Google includes in their open-source `gemini-cli`. Desktop
+OAuth clients are not confidential (PKCE provides the security). You do not
+need to install `gemini-cli` or register your own GCP OAuth client.
 
 **How auth works:**
 - PKCE Authorization Code flow against `accounts.google.com`
@@ -122,8 +116,8 @@ an upfront warning and requires explicit confirmation before OAuth begins.
 
 **Custom OAuth client (optional):**
 
-If you'd rather register your own Google OAuth client instead of scraping
-from the installed `gemini-cli`, set:
+If you'd rather register your own Google OAuth client — e.g., to keep quota
+and consent scoped to your own GCP project — set:
 
 ```bash
 HERMES_GEMINI_CLIENT_ID=your-client.apps.googleusercontent.com

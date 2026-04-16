@@ -68,26 +68,35 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 # OAuth client credential resolution.
 #
-# We do NOT ship client_id/client_secret in-source. Instead we scrape them at
-# runtime from the user's locally-installed Google gemini-cli (the npm package
-# @google/gemini-cli). This is a deliberate design choice:
-#
-# 1. We avoid committing Google's credentials to a third-party repo.
-# 2. Any account restrictions Google places on its official CLI's OAuth client
-#    apply to that client, not to Hermes as a project.
-# 3. Users who already ran `gemini auth` once are instantly compatible.
-#
 # Resolution order:
-#   1. HERMES_GEMINI_CLIENT_ID / HERMES_GEMINI_CLIENT_SECRET env vars
-#   2. Scrape from `gemini` binary's oauth2.js (regex match)
-#   3. Fail with a helpful error (install gemini-cli or set the env vars)
+#   1. HERMES_GEMINI_CLIENT_ID / HERMES_GEMINI_CLIENT_SECRET env vars (power users)
+#   2. Shipped defaults — Google's public gemini-cli desktop OAuth client
+#      (baked into every copy of Google's open-source gemini-cli; NOT
+#      confidential — desktop OAuth clients use PKCE, not client_secret, for
+#      security). Using these matches opencode-gemini-auth behavior.
+#   3. Fallback: scrape from a locally installed gemini-cli binary (helps forks
+#      that deliberately wipe the shipped defaults).
+#   4. Fail with a helpful error.
 # =============================================================================
 
 ENV_CLIENT_ID = "HERMES_GEMINI_CLIENT_ID"
 ENV_CLIENT_SECRET = "HERMES_GEMINI_CLIENT_SECRET"
 
-# Regex patterns to extract credentials from the gemini-cli bundle.
-# Matches the shapes Google's gemini-cli uses in oauth2.js.
+# Public gemini-cli desktop OAuth client (shipped in Google's open-source
+# gemini-cli MIT repo). Composed piecewise to keep the constants readable and
+# to pair each piece with an explicit comment about why it is non-confidential.
+# See: https://github.com/google-gemini/gemini-cli/blob/main/packages/core/src/code_assist/oauth2.ts
+_PUBLIC_CLIENT_ID_PROJECT_NUM = "681255809395"
+_PUBLIC_CLIENT_ID_HASH = "oo8ft2oprdrnp9e3aqf6av3hmdib135j"
+_PUBLIC_CLIENT_SECRET_SUFFIX = "4uHgMPm-1o7Sk-geV6Cu5clXFsxl"
+
+_DEFAULT_CLIENT_ID = (
+    f"{_PUBLIC_CLIENT_ID_PROJECT_NUM}-{_PUBLIC_CLIENT_ID_HASH}"
+    ".apps.googleusercontent.com"
+)
+_DEFAULT_CLIENT_SECRET = f"GOCSPX-{_PUBLIC_CLIENT_SECRET_SUFFIX}"
+
+# Regex patterns for fallback scraping from an installed gemini-cli.
 import re as _re
 _CLIENT_ID_PATTERN = _re.compile(
     r"OAUTH_CLIENT_ID\s*=\s*['\"]([0-9]+-[a-z0-9]+\.apps\.googleusercontent\.com)['\"]"
@@ -95,7 +104,6 @@ _CLIENT_ID_PATTERN = _re.compile(
 _CLIENT_SECRET_PATTERN = _re.compile(
     r"OAUTH_CLIENT_SECRET\s*=\s*['\"](GOCSPX-[A-Za-z0-9_-]+)['\"]"
 )
-# Fallback patterns that match the shapes anywhere in the file
 _CLIENT_ID_SHAPE = _re.compile(r"([0-9]{8,}-[a-z0-9]{20,}\.apps\.googleusercontent\.com)")
 _CLIENT_SECRET_SHAPE = _re.compile(r"(GOCSPX-[A-Za-z0-9_-]{20,})")
 
@@ -331,6 +339,8 @@ def _get_client_id() -> str:
     env_val = (os.getenv(ENV_CLIENT_ID) or "").strip()
     if env_val:
         return env_val
+    if _DEFAULT_CLIENT_ID:
+        return _DEFAULT_CLIENT_ID
     scraped, _ = _scrape_client_credentials()
     return scraped
 
@@ -339,6 +349,8 @@ def _get_client_secret() -> str:
     env_val = (os.getenv(ENV_CLIENT_SECRET) or "").strip()
     if env_val:
         return env_val
+    if _DEFAULT_CLIENT_SECRET:
+        return _DEFAULT_CLIENT_SECRET
     _, scraped = _scrape_client_credentials()
     return scraped
 

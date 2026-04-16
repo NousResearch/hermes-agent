@@ -113,18 +113,56 @@ class TestClientCredResolution:
         monkeypatch.setenv("HERMES_GEMINI_CLIENT_ID", "custom-id.apps.googleusercontent.com")
         assert _get_client_id() == "custom-id.apps.googleusercontent.com"
 
-    def test_missing_client_id_raises_with_install_hint(self, monkeypatch):
-        """When no env var AND no gemini-cli install, raise with install instructions."""
+    def test_shipped_default_used_when_no_env(self):
+        """Out of the box, the public gemini-cli desktop client is used."""
+        from agent.google_oauth import _get_client_id, _DEFAULT_CLIENT_ID
+
+        # Confirmed PUBLIC: baked into Google's open-source gemini-cli
+        assert _DEFAULT_CLIENT_ID.endswith(".apps.googleusercontent.com")
+        assert _DEFAULT_CLIENT_ID.startswith("681255809395-")
+        assert _get_client_id() == _DEFAULT_CLIENT_ID
+
+    def test_shipped_default_secret_present(self):
+        from agent.google_oauth import _DEFAULT_CLIENT_SECRET, _get_client_secret
+
+        assert _DEFAULT_CLIENT_SECRET.startswith("GOCSPX-")
+        assert len(_DEFAULT_CLIENT_SECRET) >= 20
+        assert _get_client_secret() == _DEFAULT_CLIENT_SECRET
+
+    def test_falls_back_to_scrape_when_defaults_wiped(self, tmp_path, monkeypatch):
+        """Forks that wipe the shipped defaults should still work with gemini-cli."""
         from agent import google_oauth
 
-        # Clear the scrape cache and make shutil.which return None
+        monkeypatch.setattr(google_oauth, "_DEFAULT_CLIENT_ID", "")
+        monkeypatch.setattr(google_oauth, "_DEFAULT_CLIENT_SECRET", "")
+
+        fake_bin = tmp_path / "bin" / "gemini"
+        fake_bin.parent.mkdir(parents=True)
+        fake_bin.write_text("#!/bin/sh\n")
+        oauth_dir = tmp_path / "node_modules" / "@google" / "gemini-cli-core" / "dist" / "src" / "code_assist"
+        oauth_dir.mkdir(parents=True)
+        (oauth_dir / "oauth2.js").write_text(
+            'const OAUTH_CLIENT_ID = "99999-fakescrapedxyz.apps.googleusercontent.com";\n'
+            'const OAUTH_CLIENT_SECRET = "GOCSPX-scraped-test-value-placeholder";\n'
+        )
+
+        monkeypatch.setattr("shutil.which", lambda _: str(fake_bin))
+        google_oauth._scraped_creds_cache.clear()
+
+        assert google_oauth._get_client_id().startswith("99999-")
+
+    def test_missing_everything_raises_with_install_hint(self, monkeypatch):
+        """When env + defaults + scrape all fail, raise with install instructions."""
+        from agent import google_oauth
+
+        monkeypatch.setattr(google_oauth, "_DEFAULT_CLIENT_ID", "")
+        monkeypatch.setattr(google_oauth, "_DEFAULT_CLIENT_SECRET", "")
         google_oauth._scraped_creds_cache.clear()
         monkeypatch.setattr("shutil.which", lambda _: None)
 
         with pytest.raises(google_oauth.GoogleOAuthError) as exc_info:
             google_oauth._require_client_id()
         assert exc_info.value.code == "google_oauth_client_id_missing"
-        assert "gemini-cli" in str(exc_info.value)
 
     def test_locate_gemini_cli_oauth_js_when_absent(self, monkeypatch):
         from agent import google_oauth

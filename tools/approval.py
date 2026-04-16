@@ -14,6 +14,7 @@ import os
 import re
 import sys
 import threading
+import time
 import unicodedata
 from typing import Optional
 
@@ -834,13 +835,43 @@ def check_all_command_guards(command: str, env_type: str,
                     "description": combined_desc,
                 }
 
-            # Block until the user responds or timeout (default 5 min)
+            # Block until the user responds or timeout (default 5 min).
+            # Poll in short slices so we can fire activity heartbeats every
+            # ~10s to the agent's inactivity tracker.  Without this, the
+            # blocking event.wait() never touches activity, and the
+            # gateway's inactivity watchdog (agent.gateway_timeout, default
+            # 1800s) kills the agent while the user is still responding to
+            # the approval prompt.  Mirrors the _wait_for_process() cadence
+            # in tools/environments/base.py.
             timeout = _get_approval_config().get("gateway_timeout", 300)
             try:
                 timeout = int(timeout)
             except (ValueError, TypeError):
                 timeout = 300
-            resolved = entry.event.wait(timeout=timeout)
+
+            try:
+                from tools.environments.base import touch_activity_if_due
+            except Exception:  # pragma: no cover
+                touch_activity_if_due = None
+
+            _now = time.monotonic()
+            _deadline = _now + max(timeout, 0)
+            _activity_state = {"last_touch": _now, "start": _now}
+            resolved = False
+            while True:
+                _remaining = _deadline - time.monotonic()
+                if _remaining <= 0:
+                    break
+                # 1s poll slice — the event is set immediately when the
+                # user responds, so slice length only controls heartbeat
+                # cadence, not user-visible responsiveness.
+                if entry.event.wait(timeout=min(1.0, _remaining)):
+                    resolved = True
+                    break
+                if touch_activity_if_due is not None:
+                    touch_activity_if_due(
+                        _activity_state, "waiting for user approval"
+                    )
 
             # Clean up this entry from the queue
             with _lock:

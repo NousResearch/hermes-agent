@@ -971,6 +971,44 @@ def _unique_lines(lines: List[str]) -> List[str]:
     return unique
 
 
+def _decode_feishu_ws_payload(raw_message: Any) -> Optional[Dict[str, Any]]:
+    if isinstance(raw_message, bytes):
+        try:
+            raw_message = raw_message.decode("utf-8")
+        except UnicodeDecodeError:
+            return None
+    if not isinstance(raw_message, str):
+        return None
+    payload_text = raw_message.strip()
+    if not payload_text:
+        return None
+    try:
+        payload = json.loads(payload_text)
+    except json.JSONDecodeError:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+class _FeishuRawPayloadWebSocketProxy:
+    def __init__(self, websocket: Any, adapter: Any):
+        self._websocket = websocket
+        self._adapter = adapter
+
+    async def recv(self, *args: Any, **kwargs: Any) -> Any:
+        message = await self._websocket.recv(*args, **kwargs)
+        self._adapter._handle_websocket_raw_payload(message)
+        return message
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._websocket, name)
+
+    def __aiter__(self) -> Any:
+        return self
+
+    async def __anext__(self) -> Any:
+        return await self.recv()
+
+
 def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
     """Run the official Lark WS client in its own thread-local event loop."""
     import lark_oapi.ws.client as ws_client_module
@@ -997,7 +1035,8 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
             kwargs["ping_interval"] = adapter._ws_ping_interval
         if adapter._ws_ping_timeout is not None and "ping_timeout" not in kwargs:
             kwargs["ping_timeout"] = adapter._ws_ping_timeout
-        return await original_connect(*args, **kwargs)
+        websocket = await original_connect(*args, **kwargs)
+        return _FeishuRawPayloadWebSocketProxy(websocket, adapter)
 
     def _configure_with_overrides(conf: Any) -> Any:
         if original_configure is None:
@@ -2354,6 +2393,27 @@ class FeishuAdapter(BasePlatformAdapter):
         if isinstance(value, list):
             return [FeishuAdapter._namespace_from_mapping(item) for item in value]
         return value
+
+    def _handle_websocket_raw_payload(self, raw_message: Any) -> None:
+        payload = _decode_feishu_ws_payload(raw_message)
+        if not payload:
+            return
+        event_type = str((payload.get("header") or {}).get("event_type") or "")
+        if event_type != "im.message.receive_v1":
+            return
+        data = self._namespace_from_mapping(payload)
+        event = getattr(data, "event", None)
+        message = getattr(event, "message", None)
+        chat_type = str(getattr(message, "chat_type", "") or "").strip().lower()
+        if not message or chat_type in {"", "p2p"}:
+            return
+        message_id = str(getattr(message, "message_id", "") or "")
+        logger.info(
+            "[Feishu] Fallback captured %s message %s",
+            chat_type,
+            message_id or "unknown",
+        )
+        self._on_message_event(data)
 
     async def _handle_webhook_request(self, request: Any) -> Any:
         remote_ip = (getattr(request, "remote", None) or "unknown")

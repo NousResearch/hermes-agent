@@ -601,6 +601,71 @@ class TestAdapterModule(unittest.TestCase):
         self.assertEqual(fake_client._ping_interval, 4)
 
 
+    def test_runtime_ws_wrapper_forwards_raw_payloads_to_adapter_fallback(self):
+        import sys
+        from types import ModuleType
+
+        class _FakeWebSocket:
+            def __init__(self):
+                self.messages = [json.dumps({"header": {"event_type": "im.message.receive_v1"}})]
+
+            async def recv(self):
+                return self.messages.pop(0)
+
+        class _FakeWSClient:
+            def __init__(self):
+                self._reconnect_nonce = 30
+                self._reconnect_interval = 120
+                self._ping_interval = 120
+
+            def _configure(self, _conf):
+                return None
+
+            def start(self):
+                async def _consume_one():
+                    websocket = await fake_client_module.websockets.connect()
+                    await websocket.recv()
+                    raise RuntimeError("stop test client")
+
+                asyncio.get_event_loop().run_until_complete(_consume_one())
+
+        captured = []
+        fake_client = _FakeWSClient()
+        fake_adapter = SimpleNamespace(
+            _ws_thread_loop=None,
+            _ws_reconnect_nonce=2,
+            _ws_reconnect_interval=3,
+            _ws_ping_interval=4,
+            _ws_ping_timeout=5,
+            _handle_websocket_raw_payload=lambda payload: captured.append(payload),
+        )
+        fake_client_module = ModuleType("lark_oapi.ws.client")
+        fake_client_module.loop = None
+
+        async def _connect(*_args, **_kwargs):
+            return _FakeWebSocket()
+
+        fake_client_module.websockets = SimpleNamespace(connect=_connect)
+        fake_ws_module = ModuleType("lark_oapi.ws")
+        fake_ws_module.client = fake_client_module
+        fake_root_module = ModuleType("lark_oapi")
+        fake_root_module.ws = fake_ws_module
+
+        original_modules = sys.modules.copy()
+        sys.modules["lark_oapi"] = fake_root_module
+        sys.modules["lark_oapi.ws"] = fake_ws_module
+        sys.modules["lark_oapi.ws.client"] = fake_client_module
+        try:
+            from gateway.platforms.feishu import _run_official_feishu_ws_client
+
+            _run_official_feishu_ws_client(fake_client, fake_adapter)
+        finally:
+            sys.modules.clear()
+            sys.modules.update(original_modules)
+
+        self.assertEqual(captured, [json.dumps({"header": {"event_type": "im.message.receive_v1"}})])
+
+
 class TestAdapterBehavior(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_build_event_handler_registers_reaction_and_card_processors(self):
@@ -667,6 +732,43 @@ class TestAdapterBehavior(unittest.TestCase):
                 "build",
             ],
         )
+
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_websocket_raw_payload_fallback_routes_group_messages_only(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._on_message_event = Mock()
+
+        adapter._handle_websocket_raw_payload(
+            json.dumps(
+                {
+                    "header": {"event_type": "im.message.receive_v1"},
+                    "event": {
+                        "message": {"message_id": "om_group", "chat_type": "group"},
+                    },
+                }
+            )
+        )
+        adapter._handle_websocket_raw_payload(
+            json.dumps(
+                {
+                    "header": {"event_type": "im.message.receive_v1"},
+                    "event": {
+                        "message": {"message_id": "om_p2p", "chat_type": "p2p"},
+                    },
+                }
+            )
+        )
+        adapter._handle_websocket_raw_payload(json.dumps({"header": {"event_type": "im.message.reaction.created_v1"}}))
+        adapter._handle_websocket_raw_payload("not json")
+
+        adapter._on_message_event.assert_called_once()
+        forwarded = adapter._on_message_event.call_args.args[0]
+        self.assertEqual(forwarded.event.message.message_id, "om_group")
+        self.assertEqual(forwarded.event.message.chat_type, "group")
 
     @patch.dict(os.environ, {}, clear=True)
     @unittest.skipUnless(_HAS_LARK_OAPI, "lark-oapi not installed")

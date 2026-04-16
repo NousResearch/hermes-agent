@@ -3046,6 +3046,12 @@ def cmd_webhook(args):
     webhook_command(args)
 
 
+def cmd_gmail_push(args):
+    """Gmail push setup and operations."""
+    from hermes_cli.gmail_push import gmail_push_command
+    gmail_push_command(args)
+
+
 def cmd_doctor(args):
     """Check configuration and dependencies."""
     from hermes_cli.doctor import run_doctor
@@ -4406,7 +4412,7 @@ def _coalesce_session_name_args(argv: list) -> list:
         "mcp", "sessions", "insights", "version", "update", "uninstall",
         "profile", "dashboard",
         "honcho", "claw", "plugins", "acp",
-        "webhook", "memory", "dump", "debug", "backup", "import", "completion", "logs",
+        "webhook", "gmail-push", "memory", "dump", "debug", "backup", "import", "completion", "logs",
     }
     _SESSION_FLAGS = {"-c", "--continue", "-r", "--resume"}
 
@@ -5273,6 +5279,59 @@ For more help on a command:
     wh_test.add_argument("--payload", default="", help="JSON payload to send (default: test payload)")
 
     webhook_parser.set_defaults(func=cmd_webhook)
+
+    # =========================================================================
+    # gmail-push command
+    # =========================================================================
+    gmail_push_parser = subparsers.add_parser(
+        "gmail-push",
+        help="Configure and inspect native Gmail push ingestion",
+        description="Set up Gmail OAuth, inspect watch state, and manage Gmail push watch baselines",
+    )
+    gmail_push_subparsers = gmail_push_parser.add_subparsers(dest="gmail_push_action")
+
+    gp_setup = gmail_push_subparsers.add_parser("setup", help="Configure Gmail push and complete OAuth")
+    gp_setup.add_argument("--account", default="", help="Gmail account to watch")
+    gp_setup.add_argument("--client-secret", default="", help="Path to Google OAuth client_secret.json")
+    gp_setup.add_argument("--auth-code", default="", help="Raw OAuth code or full redirect URL")
+    gp_setup.add_argument("--redirect-uri", default="", help="Override redirect URI from the client secret")
+    gp_setup.add_argument("--topic", default="", help="Pub/Sub topic name (projects/.../topics/...)")
+    gp_setup.add_argument("--subscription", default="", help="Pub/Sub subscription name")
+    gp_setup.add_argument("--public-url", default="", help="Public HTTPS callback URL for Pub/Sub push")
+    gp_setup.add_argument("--audience", default="", help="OIDC audience override (defaults to public URL)")
+    gp_setup.add_argument(
+        "--service-account-email",
+        default="",
+        help="Authenticated Pub/Sub push service account email",
+    )
+    gp_setup.add_argument("--host", default="", help="Local bind host (default: 0.0.0.0)")
+    gp_setup.add_argument("--port", type=int, default=0, help="Local bind port (default: 8645)")
+    gp_setup.add_argument("--path", default="", help="Callback path (default: /gmail-push)")
+    gp_setup.add_argument("--label-ids", default="", help="Comma-separated Gmail label IDs (default: INBOX)")
+    gp_setup.add_argument(
+        "--renew-every-hours",
+        type=int,
+        default=0,
+        help="How often Hermes should renew the watch (default: 24)",
+    )
+    gp_setup.add_argument(
+        "--include-html",
+        action="store_true",
+        help="Store truncated HTML bodies in addition to normalized text",
+    )
+    gp_setup.add_argument(
+        "--max-body-chars",
+        type=int,
+        default=0,
+        help="Maximum normalized body size to keep per message",
+    )
+
+    gmail_push_subparsers.add_parser("status", help="Show Gmail push configuration and state")
+    gmail_push_subparsers.add_parser("renew", help="Force an immediate users.watch refresh")
+    gmail_push_subparsers.add_parser("resync", help="Reset the stored history cursor with a fresh watch")
+    gmail_push_subparsers.add_parser("test", help="Run a local Gmail push health/config check")
+
+    gmail_push_parser.set_defaults(func=cmd_gmail_push)
 
     # =========================================================================
     # doctor command

@@ -1775,7 +1775,17 @@ class GatewayRunner:
                        "BLUEBUBBLES_ALLOW_ALL_USERS",
                        "QQ_ALLOW_ALL_USERS")
         )
-        if not _any_allowlist and not _allow_all:
+        auth_exempt_platforms = {
+            Platform.API_SERVER,
+            Platform.HOMEASSISTANT,
+            Platform.WEBHOOK,
+            Platform.GMAIL_PUSH,
+        }
+        has_user_authenticated_platforms = any(
+            cfg.enabled and platform not in auth_exempt_platforms
+            for platform, cfg in self.config.platforms.items()
+        )
+        if has_user_authenticated_platforms and not _any_allowlist and not _allow_all:
             logger.warning(
                 "No user allowlists configured. All unauthorized users will be denied. "
                 "Set GATEWAY_ALLOW_ALL_USERS=true in ~/.hermes/.env to allow open access, "
@@ -2545,6 +2555,16 @@ class GatewayRunner:
             adapter.gateway_runner = self  # For cross-platform delivery
             return adapter
 
+        elif platform == Platform.GMAIL_PUSH:
+            from gateway.platforms.gmail_push import GmailPushAdapter, check_gmail_push_requirements
+            if not check_gmail_push_requirements():
+                logger.warning(
+                    "Gmail Push: aiohttp or Google API client libraries are not installed. "
+                    "Run: pip install 'hermes-agent[gmail-push]'"
+                )
+                return None
+            return GmailPushAdapter(config)
+
         elif platform == Platform.BLUEBUBBLES:
             from gateway.platforms.bluebubbles import BlueBubblesAdapter, check_bluebubbles_requirements
             if not check_bluebubbles_requirements():
@@ -2577,7 +2597,7 @@ class GatewayRunner:
         # connection, so HA events are always authorized.
         # Webhook events are authenticated via HMAC signature validation in
         # the adapter itself — no user allowlist applies.
-        if source.platform in (Platform.HOMEASSISTANT, Platform.WEBHOOK):
+        if source.platform in (Platform.HOMEASSISTANT, Platform.WEBHOOK, Platform.GMAIL_PUSH):
             return True
 
         user_id = source.user_id

@@ -61,6 +61,12 @@ honcho = ["honcho-ai>=2.0.1,<3"]
 mcp = ["mcp>=1.2.0,<2"]
 homeassistant = ["aiohttp>=3.9.0,<4"]
 sms = ["aiohttp>=3.9.0,<4"]
+gmail-push = [
+  "aiohttp>=3.13.3,<4",
+  "google-api-python-client>=2.0,<3",
+  "google-auth>=2.0,<3",
+  "google-auth-oauthlib>=1.0,<2",
+]
 acp = ["agent-client-protocol>=0.9.0,<1.0"]
 mistral = ["mistralai>=2.3.0,<3"]
 bedrock = ["boto3>=1.35.0,<2"]
@@ -105,6 +111,7 @@ all = [
   "hermes-agent[mcp]",
   "hermes-agent[homeassistant]",
   "hermes-agent[sms]",
+  "hermes-agent[gmail-push]",
   "hermes-agent[acp]",
   "hermes-agent[voice]",
   "hermes-agent[dingtalk]",

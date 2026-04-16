@@ -4263,13 +4263,8 @@ class HermesCLI:
         # Save the current session's state before branching
         parent_session_id = self.session_id
 
-        # End the old session
-        try:
-            self._session_db.end_session(self.session_id, "branched")
-        except Exception:
-            pass
-
-        # Create the new session with parent link
+        # Create the new session with parent link BEFORE ending the old one
+        # (so if creation fails, the original session remains active)
         try:
             self._session_db.create_session(
                 session_id=new_session_id,
@@ -4284,6 +4279,12 @@ class HermesCLI:
         except Exception as e:
             _cprint(f"  Failed to create branch session: {e}")
             return
+
+        # Only end the old session after the new one is successfully created
+        try:
+            self._session_db.end_session(self.session_id, "branched")
+        except Exception:
+            pass
 
         # Copy conversation history to the new session
         for msg in self.conversation_history:

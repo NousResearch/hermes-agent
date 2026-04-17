@@ -8,11 +8,10 @@ export const buildSetupRequiredSections = (): PanelSection[] => [
   },
   {
     rows: [
-      ['1.', 'Exit with Ctrl+C'],
-      ['2.', 'Run `hermes model` to choose a provider + model'],
-      ['3.', 'Or run `hermes setup` for full first-time setup'],
-      ['4.', 'Re-open `hermes --tui` when setup is done']
+      ['/model', 'configure provider + model in-place'],
+      ['/setup', 'run full first-time setup wizard in-place'],
+      ['Ctrl+C', 'exit and run `hermes setup` manually']
     ],
-    title: 'Next Steps'
+    title: 'Actions'
   }
 ]

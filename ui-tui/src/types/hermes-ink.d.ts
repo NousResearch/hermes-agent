@@ -72,6 +72,9 @@ declare module '@hermes/ink' {
   export function render(node: React.ReactNode, options?: NodeJS.WriteStream | RenderOptions): Instance
 
   export function useApp(): { readonly exit: (error?: Error) => void }
+  export type RunExternalProcess = () => Promise<void>
+  export function useExternalProcess(): (run: RunExternalProcess) => Promise<void>
+  export function withInkSuspended(run: RunExternalProcess): Promise<void>
   export function useInput(handler: InputHandler, options?: { readonly isActive?: boolean }): void
   export function useSelection(): {
     readonly copySelection: () => string

@@ -1386,19 +1386,24 @@ class DiscordAdapter(BasePlatformAdapter):
         When author is a Member, checks .roles directly; otherwise falls back
         to scanning the bot's mutual guilds for a Member record.
         """
-        has_users = bool(self._allowed_user_ids)
-        has_roles = bool(self._allowed_role_ids)
+        # ``getattr`` fallbacks here guard against test fixtures that build
+        # an adapter via ``object.__new__(DiscordAdapter)`` and skip __init__
+        # (see AGENTS.md pitfall #17 — same pattern as gateway.run).
+        allowed_users = getattr(self, "_allowed_user_ids", set())
+        allowed_roles = getattr(self, "_allowed_role_ids", set())
+        has_users = bool(allowed_users)
+        has_roles = bool(allowed_roles)
         if not has_users and not has_roles:
             return True
         # Check user ID allowlist
-        if has_users and user_id in self._allowed_user_ids:
+        if has_users and user_id in allowed_users:
             return True
         # Check role allowlist
         if has_roles:
             # Try direct role check from Member object
             direct_roles = getattr(author, "roles", None) if author is not None else None
             if direct_roles:
-                if any(getattr(r, "id", None) in self._allowed_role_ids for r in direct_roles):
+                if any(getattr(r, "id", None) in allowed_roles for r in direct_roles):
                     return True
             # Fallback: scan mutual guilds for member's roles
             if self._client is not None:
@@ -1412,7 +1417,7 @@ class DiscordAdapter(BasePlatformAdapter):
                         if m is None:
                             continue
                         m_roles = getattr(m, "roles", None) or []
-                        if any(getattr(r, "id", None) in self._allowed_role_ids for r in m_roles):
+                        if any(getattr(r, "id", None) in allowed_roles for r in m_roles):
                             return True
         return False
 

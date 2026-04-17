@@ -229,6 +229,10 @@ from gateway.background_delivery_service import (
 from gateway.direct_control_router import DirectControlRouter
 from gateway.direct_shortcuts import run_direct_shortcut_handlers
 from gateway.employee_routes import get_employee_routes
+from gateway.runtime_status_service import (
+    build_runtime_status_summary as shared_build_runtime_status_summary,
+    render_status_command as shared_render_status_command,
+)
 from gateway.group_control_intents import (
     looks_like_group_listen_disable_request,
     looks_like_group_listen_enable_request,
@@ -3231,116 +3235,15 @@ class GatewayRunner:
             "groups": groups[:8],
         }
 
+    @staticmethod
+    def _load_runtime_qq_archive_stats() -> dict[str, Any]:
+        return QqGroupArchiveStore().get_runtime_stats()
+
     def _build_runtime_status_summary(self) -> dict[str, Any]:
-        now_ts = time.time()
-
-        active_sessions: list[dict[str, Any]] = []
-        for session_key, agent_ref in getattr(self, "_running_agents", {}).items():
-            if agent_ref is _AGENT_PENDING_SENTINEL:
-                continue
-            session_meta = self._runtime_session_metadata(session_key)
-            started_at = _safe_float(
-                getattr(self, "_running_agents_ts", {}).get(session_key),
-                now_ts,
-            )
-            age_seconds = max(0, int(now_ts - started_at))
-            activity: dict[str, Any] = {}
-            if hasattr(agent_ref, "get_activity_summary"):
-                try:
-                    raw_activity = agent_ref.get_activity_summary() or {}
-                except Exception:
-                    raw_activity = {}
-                if isinstance(raw_activity, dict):
-                    activity = raw_activity
-            active_sessions.append(
-                {
-                    "session_key": session_key,
-                    "platform": session_meta["platform"],
-                    "chat_type": session_meta["chat_type"],
-                    "chat_id": session_meta["chat_id"],
-                    "age_seconds": age_seconds,
-                    "current_tool": str(activity.get("current_tool") or "").strip(),
-                    "last_activity_desc": str(activity.get("last_activity_desc") or "").strip(),
-                    "api_call_count": int(_safe_float(activity.get("api_call_count"), 0.0)),
-                    "max_iterations": int(_safe_float(activity.get("max_iterations"), 0.0)),
-                }
-            )
-
-        active_sessions.sort(key=lambda item: item.get("age_seconds", 0), reverse=True)
-
-        self._ensure_background_job_state()
-        jobs_by_id: dict[str, dict[str, Any]] = {}
-        for task_id, job in getattr(self, "_managed_background_jobs", {}).items():
-            if isinstance(job, dict):
-                jobs_by_id[str(task_id)] = job
-
-        background_counts: dict[str, int] = {}
-        active_background_jobs: list[dict[str, Any]] = []
-        for job in jobs_by_id.values():
-            status = str(job.get("status") or "").strip().lower() or "unknown"
-            background_counts[status] = background_counts.get(status, 0) + 1
-            if status not in {"queued", "running", "cancelling"}:
-                continue
-            active_background_jobs.append(
-                {
-                    "task_id": str(job.get("task_id") or "").strip(),
-                    "status": status,
-                    "worker_name": str(job.get("worker_name") or "").strip(),
-                    "preview": _truncate_status_preview(job.get("preview") or job.get("prompt") or ""),
-                    "age_seconds": int(
-                        max(
-                            0.0,
-                            now_ts - _safe_float(job.get("created_at"), now_ts),
-                        )
-                    ),
-                }
-            )
-
-        active_background_jobs.sort(key=lambda item: item.get("age_seconds", 0), reverse=True)
-
-        self._ensure_auto_vision_state()
-        self._prune_auto_vision_state()
-        inflight_count = 0
-        for task in getattr(self, "_auto_vision_tasks", {}).values():
-            try:
-                if task and not task.done():
-                    inflight_count += 1
-            except Exception:
-                continue
-        cooldown_seconds, cooldown_reason = self._auto_vision_cooldown_remaining()
-        auto_vision_state = "ready"
-        if cooldown_seconds > 0:
-            auto_vision_state = "cooldown"
-        elif inflight_count > 0:
-            auto_vision_state = "warming"
-
-        try:
-            qq_archive = QqGroupArchiveStore().get_runtime_stats()
-        except Exception as exc:
-            logger.debug("Failed to collect QQ archive runtime stats: %s", exc)
-            qq_archive = {}
-
-        return {
-            "model": self._build_runtime_model_summary(),
-            "approvals": self._build_runtime_approval_summary(),
-            "active_sessions_count": len(active_sessions),
-            "active_sessions": active_sessions[:8],
-            "background_jobs": {
-                "active_count": len(active_background_jobs),
-                "total_count": len(jobs_by_id),
-                "counts": background_counts,
-                "active": active_background_jobs[:8],
-            },
-            "auto_vision": {
-                "state": auto_vision_state,
-                "inflight_count": inflight_count,
-                "cooldown_seconds": int(max(0.0, cooldown_seconds)),
-                "reason": cooldown_reason,
-                "cache_entries": len(getattr(self, "_auto_vision_cache", {})),
-            },
-            "qq_archive": qq_archive,
-            "qq_monitoring": self._build_runtime_qq_monitoring_summary(),
-        }
+        return shared_build_runtime_status_summary(
+            self,
+            pending_sentinel=_AGENT_PENDING_SENTINEL,
+        )
 
     def _write_runtime_status_snapshot(self) -> None:
         try:
@@ -5667,166 +5570,11 @@ class GatewayRunner:
 
     async def _handle_status_command(self, event: MessageEvent) -> str:
         """Handle /status command."""
-        source = event.source
-        session_entry = self.session_store.get_or_create_session(source)
-
-        connected_platforms = [p.value for p in self.adapters.keys()]
-
-        # Check if there's an active agent
-        session_key = session_entry.session_key
-        is_running = session_key in self._running_agents
-
-        title = None
-        if self._session_db:
-            try:
-                title = self._session_db.get_session_title(session_entry.session_id)
-            except Exception:
-                title = None
-
-        lines = [
-            "📊 **Hermes Gateway Status**",
-            "",
-            f"**Session ID:** `{session_entry.session_id}`",
-        ]
-        if title:
-            lines.append(f"**Title:** {title}")
-        lines.extend([
-            f"**Created:** {session_entry.created_at.strftime('%Y-%m-%d %H:%M')}",
-            f"**Last Activity:** {session_entry.updated_at.strftime('%Y-%m-%d %H:%M')}",
-            f"**Tokens:** {session_entry.total_tokens:,}",
-            f"**Agent Running:** {'Yes ⚡' if is_running else 'No'}",
-        ])
-
-        if is_running:
-            running_agent = self._running_agents.get(session_key)
-            if running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
-                activity: dict[str, Any] = {}
-                if hasattr(running_agent, "get_activity_summary"):
-                    try:
-                        raw_activity = running_agent.get_activity_summary() or {}
-                    except Exception:
-                        raw_activity = {}
-                    if isinstance(raw_activity, dict):
-                        activity = raw_activity
-                foreground_bits: list[str] = []
-                api_call_count = int(_safe_float(activity.get("api_call_count"), 0.0))
-                max_iterations = int(_safe_float(activity.get("max_iterations"), 0.0))
-                if api_call_count or max_iterations:
-                    foreground_bits.append(f"{api_call_count}/{max_iterations}")
-                current_tool = str(activity.get("current_tool") or "").strip()
-                if current_tool:
-                    foreground_bits.append(current_tool)
-                else:
-                    last_activity_desc = str(activity.get("last_activity_desc") or "").strip()
-                    if last_activity_desc:
-                        foreground_bits.append(last_activity_desc)
-                started_at = _safe_float(
-                    getattr(self, "_running_agents_ts", {}).get(session_key),
-                    0.0,
-                )
-                if started_at > 0:
-                    foreground_bits.append(f"{max(0, int(time.time() - started_at))}s")
-                lines.append(
-                    f"**Foreground:** {' · '.join(bit for bit in foreground_bits if bit) or 'running'}"
-                )
-
-        lines.extend(
-            [
-                "",
-                f"**Connected Platforms:** {', '.join(connected_platforms)}",
-            ]
+        return shared_render_status_command(
+            self,
+            event,
+            pending_sentinel=_AGENT_PENDING_SENTINEL,
         )
-
-        pending_approval_count = 0
-        try:
-            pending_approval_count = self._get_background_job_store().count_pending_approval_requests(
-                session_key
-            )
-        except Exception:
-            pending_approval_count = 0
-        if session_key in getattr(self, "_pending_approvals", {}):
-            pending_approval_count = max(pending_approval_count, 1)
-        try:
-            from tools.approval import has_blocking_approval
-
-            if has_blocking_approval(session_key):
-                pending_approval_count = max(pending_approval_count, 1)
-        except Exception:
-            pass
-
-        self._ensure_auto_vision_state()
-        self._prune_auto_vision_state()
-        inflight_vision = sum(
-            1
-            for task in getattr(self, "_auto_vision_tasks", {}).values()
-            if task and not task.done()
-        )
-        cooldown_remaining, cooldown_reason = self._auto_vision_cooldown_remaining()
-        auto_vision_bits: list[str] = []
-        if inflight_vision:
-            auto_vision_bits.append(f"warming ({inflight_vision} in flight)")
-        if cooldown_remaining > 0:
-            reason_suffix = f": {cooldown_reason}" if cooldown_reason else ""
-            auto_vision_bits.append(f"cooldown ({int(cooldown_remaining)}s{reason_suffix})")
-        if not auto_vision_bits:
-            auto_vision_bits.append("ready")
-
-        model_summary = self._build_runtime_model_summary()
-        model_label = str(model_summary.get("active_model") or model_summary.get("configured_model") or "").strip()
-        provider_label = str(model_summary.get("active_provider") or "").strip()
-        model_bits = [model_label or "unknown"]
-        if provider_label:
-            model_bits.append(f"via {provider_label}")
-        if bool(model_summary.get("fallback_active")):
-            fallback_label = "fallback pinned" if bool(model_summary.get("fallback_pinned")) else "fallback active"
-            model_bits.append(f"({fallback_label})")
-
-        monitoring_summary = self._build_runtime_qq_monitoring_summary()
-        monitoring_count = int(monitoring_summary.get("active_collect_only_groups") or 0)
-
-        lines.extend(
-            [
-                "",
-                f"**Model:** {' '.join(bit for bit in model_bits if bit).strip()}",
-                f"**Pending Approvals:** {pending_approval_count}",
-                f"**Auto Vision:** {', '.join(auto_vision_bits)}",
-            ]
-        )
-
-        lines.extend(
-            [
-                "",
-                f"**QQ Monitoring:** {monitoring_count} collect_only group(s)",
-            ]
-        )
-        for group in list(monitoring_summary.get("groups") or [])[:3]:
-            group_label = str(group.get("group_name") or group.get("group_id") or "unknown").strip()
-            if group.get("group_id") and group.get("group_name") and group["group_id"] != group["group_name"]:
-                group_label = f"{group['group_name']} ({group['group_id']})"
-            worker_names = ", ".join(group.get("worker_names") or []) or "无人值守"
-            report_label = "日报开" if bool(group.get("daily_report_enabled")) else "日报关"
-            lines.append(f"- {group_label} · collect_only · {worker_names} · {report_label}")
-
-        jobs = self._background_jobs_for_source(source)
-        if jobs:
-            status_labels = {
-                "queued": "queued",
-                "running": "running",
-                "cancelling": "stopping",
-                "completed": "done",
-                "failed": "failed",
-                "cancelled": "stopped",
-            }
-            lines.extend(["", "**Background Jobs:**"])
-            for job in jobs[-5:]:
-                label = status_labels.get(job.get("status"), str(job.get("status") or "unknown"))
-                worker_name = str(job.get("worker_name") or "").strip()
-                worker_suffix = f" · {worker_name}" if worker_name else ""
-                lines.append(
-                    f"- `{job['task_id']}` — {label}{worker_suffix} ({self._format_background_job_age(job)})"
-                )
-
-        return "\n".join(lines)
     
     async def _handle_stop_command(self, event: MessageEvent) -> str:
         """Handle /stop command - interrupt a running agent.

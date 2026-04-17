@@ -549,6 +549,7 @@ DEFAULT_CONFIG = {
         "streaming": False,
         "inline_diffs": True,     # Show inline diff previews for write actions (write_file, patch, skill_manage)
         "show_cost": False,       # Show $ cost in the status bar (off by default)
+        "token_usage_footer": False,  # Append compact token count after each gateway response
         "skin": "default",
         "interim_assistant_messages": True,  # Gateway: show natural mid-turn assistant status messages
         "tool_progress_command": False,  # Enable /verbose command in messaging gateway

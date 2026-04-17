@@ -5,6 +5,8 @@ from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 import tools.skills_tool as skills_tool_module
 from agent.skill_commands import (
     build_plan_path,
@@ -12,6 +14,11 @@ from agent.skill_commands import (
     build_skill_invocation_message,
     resolve_skill_command_key,
     scan_skill_commands,
+)
+from agent.skill_utils import (
+    extract_skill_runtime_defaults,
+    is_safe_skill_name,
+    parse_frontmatter,
 )
 
 
@@ -405,3 +412,171 @@ class TestPlanSkillHelpers:
         assert "Add a /plan command" in msg
         assert ".hermes/plans/plan.md" in msg
         assert "Runtime note:" in msg
+
+
+class TestExtractSkillRuntimeDefaults:
+    """Tests for agent/skill_utils.extract_skill_runtime_defaults.
+
+    Gates on ``agent.skill_runtime_defaults_enabled`` flag.  Flag is read
+    per-call from the config.yaml file, so we patch the reader directly.
+    """
+
+    @pytest.fixture
+    def flag_on(self):
+        with patch(
+            "agent.skill_utils._runtime_defaults_flag_enabled", return_value=True
+        ):
+            yield
+
+    @pytest.fixture
+    def flag_off(self):
+        with patch(
+            "agent.skill_utils._runtime_defaults_flag_enabled", return_value=False
+        ):
+            yield
+
+    def _fm(self, yaml_block: str) -> dict:
+        """Parse the frontmatter of a SKILL.md-shaped string."""
+        fm, _ = parse_frontmatter(yaml_block)
+        return fm
+
+    def test_valid_reasoning_effort(self, flag_on):
+        fm = self._fm(
+            "---\nname: t\nmetadata:\n  hermes:\n    runtime_defaults:\n"
+            "      reasoning_effort: low\n---\n"
+        )
+        result = extract_skill_runtime_defaults(fm)
+        assert result["reasoning_effort"] == "low"
+        assert result["reasoning_config"] == {"enabled": True, "effort": "low"}
+        assert result["required"] == []
+
+    def test_required_list_valid(self, flag_on):
+        fm = self._fm(
+            "---\nname: t\nmetadata:\n  hermes:\n    runtime_defaults:\n"
+            "      reasoning_effort: low\n      required:\n        - reasoning_effort\n---\n"
+        )
+        result = extract_skill_runtime_defaults(fm)
+        assert result["required"] == ["reasoning_effort"]
+
+    def test_model_v2_field(self, flag_on):
+        fm = self._fm(
+            "---\nname: t\nmetadata:\n  hermes:\n    runtime_defaults:\n"
+            "      model: gpt-5.4-mini\n---\n"
+        )
+        result = extract_skill_runtime_defaults(fm)
+        assert result["model"] == "gpt-5.4-mini"
+        assert result["required"] == []
+
+    def test_missing_metadata_returns_empty(self, flag_on):
+        fm = self._fm("---\nname: t\n---\n")
+        assert extract_skill_runtime_defaults(fm) == {}
+
+    def test_metadata_is_string_returns_empty(self, flag_on):
+        fm = {"metadata": "not a dict"}
+        assert extract_skill_runtime_defaults(fm) == {}
+
+    def test_missing_hermes_namespace_returns_empty(self, flag_on):
+        fm = self._fm("---\nname: t\nmetadata:\n  other: stuff\n---\n")
+        assert extract_skill_runtime_defaults(fm) == {}
+
+    def test_missing_runtime_defaults_returns_empty(self, flag_on):
+        fm = self._fm(
+            "---\nname: t\nmetadata:\n  hermes:\n    tags: [a]\n---\n"
+        )
+        assert extract_skill_runtime_defaults(fm) == {}
+
+    def test_invalid_reasoning_effort_ignored(self, flag_on, caplog):
+        fm = self._fm(
+            "---\nname: t\nmetadata:\n  hermes:\n    runtime_defaults:\n"
+            "      reasoning_effort: bogus\n---\n"
+        )
+        import logging
+        with caplog.at_level(logging.WARNING):
+            result = extract_skill_runtime_defaults(fm)
+        assert result == {}
+        assert any("reasoning_effort" in rec.message for rec in caplog.records)
+
+    def test_unknown_sibling_keys_silently_dropped(self, flag_on):
+        fm = self._fm(
+            "---\nname: t\nmetadata:\n  hermes:\n    runtime_defaults:\n"
+            "      reasoning_effort: low\n      provider: foo\n      base_url: bar\n---\n"
+        )
+        result = extract_skill_runtime_defaults(fm)
+        assert "provider" not in result
+        assert "base_url" not in result
+        assert result["reasoning_effort"] == "low"
+
+    def test_required_string_coerced_to_empty_list(self, flag_on):
+        fm = self._fm(
+            "---\nname: t\nmetadata:\n  hermes:\n    runtime_defaults:\n"
+            "      reasoning_effort: low\n      required: reasoning_effort\n---\n"
+        )
+        result = extract_skill_runtime_defaults(fm)
+        assert result["required"] == []
+
+    def test_required_unknown_field_dropped(self, flag_on):
+        fm = self._fm(
+            "---\nname: t\nmetadata:\n  hermes:\n    runtime_defaults:\n"
+            "      reasoning_effort: low\n      required:\n        - not_a_field\n---\n"
+        )
+        result = extract_skill_runtime_defaults(fm)
+        assert result["required"] == []
+
+    def test_flag_off_returns_empty_even_for_valid_input(self, flag_off):
+        fm = self._fm(
+            "---\nname: t\nmetadata:\n  hermes:\n    runtime_defaults:\n"
+            "      reasoning_effort: low\n---\n"
+        )
+        assert extract_skill_runtime_defaults(fm) == {}
+
+    def test_flag_live_flip_between_calls(self, tmp_path, monkeypatch):
+        """Flag is read per-call; flipping it between calls changes behavior.
+
+        Verifies no module-level caching (Design Rule 7 rationale).
+        """
+        fm = self._fm(
+            "---\nname: t\nmetadata:\n  hermes:\n    runtime_defaults:\n"
+            "      reasoning_effort: low\n---\n"
+        )
+        flag_state = {"on": False}
+
+        def fake_flag():
+            return flag_state["on"]
+
+        monkeypatch.setattr(
+            "agent.skill_utils._runtime_defaults_flag_enabled", fake_flag
+        )
+        assert extract_skill_runtime_defaults(fm) == {}
+        flag_state["on"] = True
+        result = extract_skill_runtime_defaults(fm)
+        assert result["reasoning_effort"] == "low"
+        flag_state["on"] = False
+        assert extract_skill_runtime_defaults(fm) == {}
+
+    def test_invalid_model_ignored(self, flag_on, caplog):
+        fm = {"metadata": {"hermes": {"runtime_defaults": {"model": 42}}}}
+        import logging
+        with caplog.at_level(logging.WARNING):
+            result = extract_skill_runtime_defaults(fm)
+        assert result == {}
+        assert any("model" in rec.message for rec in caplog.records)
+
+    def test_non_dict_runtime_defaults_returns_empty(self, flag_on):
+        fm = {"metadata": {"hermes": {"runtime_defaults": "not a dict"}}}
+        assert extract_skill_runtime_defaults(fm) == {}
+
+
+class TestIsSafeSkillName:
+    def test_accepts_alphanumeric_dash_underscore(self):
+        assert is_safe_skill_name("my-skill_v2")
+        assert is_safe_skill_name("plan")
+        assert is_safe_skill_name("skill123")
+
+    def test_rejects_newlines_and_control_chars(self):
+        assert not is_safe_skill_name("my\nskill")
+        assert not is_safe_skill_name("sk ill")
+        assert not is_safe_skill_name("sk:ill")
+
+    def test_rejects_empty_or_non_string(self):
+        assert not is_safe_skill_name("")
+        assert not is_safe_skill_name(None)  # type: ignore[arg-type]

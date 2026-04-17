@@ -2864,6 +2864,31 @@ def _platform_config_key(platform: Platform) -> str:
     return "cli" if platform == Platform.LOCAL else platform.value
 
 
+def _get_platform_model_overrides(
+    config: dict | None,
+    platform: "Platform | None" = None,
+) -> dict:
+    """Read per-platform model/provider overrides from ``platforms.<key>.extra``.
+
+    Returns a dict with any of: model, provider, api_key, base_url, api_mode.
+    Fail-safe: returns ``{}`` if config is missing or the section is absent.
+    """
+    if not config or not platform:
+        return {}
+    try:
+        platform_key = _platform_config_key(platform)
+        platforms_cfg = config.get("platforms") or {}
+        platform_cfg = platforms_cfg.get(platform_key) or {}
+        extra = platform_cfg.get("extra") or {}
+        if not isinstance(extra, dict):
+            return {}
+        # Only return recognized keys
+        allowed = ("model", "provider", "api_key", "base_url", "api_mode")
+        return {k: v for k, v in extra.items() if k in allowed and v}
+    except Exception:
+        return {}
+
+
 def _teams_pipeline_plugin_enabled() -> bool:
     """Return True when the standalone Teams pipeline plugin is enabled."""
     enabled = cfg_get(_load_gateway_config(), "plugins", "enabled", default=[])
@@ -2894,15 +2919,24 @@ def _load_gateway_config(config_path: Path | None = None) -> dict:
 from gateway.session_worker_construct import checkpoint_agent_kwargs as _checkpoint_agent_kwargs
 
 
-def _resolve_gateway_model(config: dict | None = None) -> str:
+def _resolve_gateway_model(config: dict | None = None, platform: "Platform | None" = None) -> str:
     """The profile's model when nothing else names one: config.yaml (single source of truth), else the
     claimed welcome trial's. Temporary AIAgents (e.g. /compress) otherwise use the hardcoded default,
-    which fails under openai-codex."""
+    which fails under openai-codex.
+
+    Optional ``platform`` applies ``platforms.<key>.extra.model`` over the global default.
+    """
     from hermes_cli.anon_auth import trial_model
-    model_cfg = (config if config is not None else _load_gateway_config()).get("model", {})
-    if isinstance(model_cfg, dict):
-        model_cfg = model_cfg.get("default") or model_cfg.get("model")
-    return (model_cfg if isinstance(model_cfg, str) else "") or trial_model()
+    cfg = config if config is not None else _load_gateway_config()
+    model_cfg = cfg.get("model", {})
+    if isinstance(model_cfg, str):
+        global_model = model_cfg
+    elif isinstance(model_cfg, dict):
+        global_model = model_cfg.get("default") or model_cfg.get("model") or ""
+    else:
+        global_model = ""
+    platform_override = _get_platform_model_overrides(cfg, platform=platform)
+    return platform_override.get("model") or global_model or trial_model()
 
 
 def _channel_override_lookup_keys(

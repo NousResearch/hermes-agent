@@ -4551,7 +4551,8 @@ def cmd_profile(args):
                 print(f"Gateway:        {'running' if p.gateway_running else 'stopped'}")
                 print(f"Skills:         {p.skill_count} installed")
                 if p.alias_path:
-                    print(f"Alias:          {p.name} → hermes -p {p.name}")
+                    alias_display = p.alias_name or p.name
+                    print(f"Alias:          {alias_display} → hermes -p {p.name}")
                 break
         print()
         return
@@ -4573,7 +4574,7 @@ def cmd_profile(args):
             name = p.name
             model = (p.model or "—")[:26]
             gw = "running" if p.gateway_running else "stopped"
-            alias = p.name if p.alias_path else "—"
+            alias = p.alias_name if p.alias_name else (p.name if p.alias_path else "—")
             if p.is_default:
                 alias = "—"
             print(f"{marker}{name:<15} {model:<28} {gw:<12} {alias}")
@@ -4703,8 +4704,10 @@ def cmd_profile(args):
         print(f"Skills:  {skills}")
         print(f".env:    {'exists' if (profile_dir / '.env').exists() else 'not configured'}")
         print(f"SOUL.md: {'exists' if (profile_dir / 'SOUL.md').exists() else 'not configured'}")
-        if wrapper.exists():
-            print(f"Alias:   {wrapper}")
+        from hermes_cli.profiles import _find_alias_name, _get_wrapper_dir
+        alias_name = _find_alias_name(name, _get_wrapper_dir())
+        if alias_name:
+            print(f"Alias:   {alias_name}")
         print()
 
     elif action == "alias":

@@ -277,6 +277,7 @@ class ProfileInfo:
     has_env: bool = False
     skill_count: int = 0
     alias_path: Optional[Path] = None
+    alias_name: Optional[str] = None
 
 
 def _read_config_model(profile_dir: Path) -> tuple:
@@ -332,6 +333,27 @@ def _count_skills(profile_dir: Path) -> int:
 # CRUD operations
 # ---------------------------------------------------------------------------
 
+def _find_alias_name(profile_name: str, wrapper_dir: Path) -> Optional[str]:
+    """Scan wrapper_dir for a script that invokes hermes -p <profile_name>."""
+    if not wrapper_dir.is_dir():
+        return None
+    custom = None
+    default = None
+    for entry in wrapper_dir.iterdir():
+        if not entry.is_file():
+            continue
+        try:
+            content = entry.read_text()
+        except Exception:
+            continue
+        if f'hermes -p {profile_name}' in content or f'hermes --profile={profile_name}' in content:
+            if entry.name == profile_name:
+                default = entry.name
+            elif custom is None:
+                custom = entry.name
+    return custom if custom is not None else default
+
+
 def list_profiles() -> List[ProfileInfo]:
     """Return info for all profiles, including the default."""
     profiles = []
@@ -362,7 +384,8 @@ def list_profiles() -> List[ProfileInfo]:
             if not _PROFILE_ID_RE.match(name):
                 continue
             model, provider = _read_config_model(entry)
-            alias_path = wrapper_dir / name
+            alias_name = _find_alias_name(name, wrapper_dir)
+            alias_path = wrapper_dir / alias_name if alias_name else (wrapper_dir / name if (wrapper_dir / name).exists() else None)
             profiles.append(ProfileInfo(
                 name=name,
                 path=entry,
@@ -372,7 +395,8 @@ def list_profiles() -> List[ProfileInfo]:
                 provider=provider,
                 has_env=(entry / ".env").exists(),
                 skill_count=_count_skills(entry),
-                alias_path=alias_path if alias_path.exists() else None,
+                alias_path=alias_path,
+                alias_name=alias_name,
             ))
 
     return profiles

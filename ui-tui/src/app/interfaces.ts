@@ -285,6 +285,8 @@ export interface AppLayoutProgressProps {
   reasoningTokens: number
   showProgressArea: boolean
   showStreamingArea: boolean
+  streamPendingTools: string[]
+  streamSegments: Msg[]
   streaming: string
   subagents: SubagentProgress[]
   toolTokens: number

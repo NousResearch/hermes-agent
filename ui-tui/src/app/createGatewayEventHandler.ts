@@ -4,7 +4,7 @@ import type { CommandsCatalogResponse, GatewayEvent, GatewaySkin } from '../gate
 import { rpcErrorMessage } from '../lib/rpc.js'
 import { formatToolCall } from '../lib/text.js'
 import { fromSkin } from '../theme.js'
-import type { SubagentProgress } from '../types.js'
+import type { Msg, SubagentProgress } from '../types.js'
 
 import type { GatewayEventHandlerContext } from './interfaces.js'
 import { patchOverlayState } from './overlayStore.js'
@@ -377,18 +377,11 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         return
       case 'message.complete': {
-        const { finalText, savedReasoning, savedReasoningTokens, savedTools, savedToolTokens, wasInterrupted } =
-          turnController.recordMessageComplete(ev.payload ?? {})
+        const { finalMessages, finalText, wasInterrupted } = turnController.recordMessageComplete(ev.payload ?? {})
 
         if (!wasInterrupted) {
-          appendMessage({
-            role: 'assistant',
-            text: finalText,
-            thinking: savedReasoning || undefined,
-            thinkingTokens: savedReasoning ? savedReasoningTokens : undefined,
-            toolTokens: savedTools.length ? savedToolTokens : undefined,
-            tools: savedTools.length ? savedTools : undefined
-          })
+          const msgs: Msg[] = finalMessages.length ? finalMessages : [{ role: 'assistant', text: finalText }]
+          msgs.forEach(appendMessage)
 
           if (bellOnComplete && stdout?.isTTY) {
             stdout.write('\x07')

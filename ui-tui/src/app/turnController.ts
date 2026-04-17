@@ -3,7 +3,6 @@ import type { SessionInterruptResponse, SubagentEventPayload } from '../gatewayT
 import {
   buildToolTrailLine,
   estimateTokensRough,
-  isToolTrailResultLine,
   isTransientTrailLine,
   sameToolTrailGroup,
   toolTrailLabel
@@ -42,6 +41,8 @@ class TurnController {
   persistedToolLabels = new Set<string>()
   protocolWarned = false
   reasoningText = ''
+  segmentMessages: Msg[] = []
+  pendingSegmentTools: string[] = []
   statusTimer: Timer = null
   toolTokenAcc = 0
   turnTools: string[] = []
@@ -74,8 +75,17 @@ class TurnController {
     this.activeTools = []
     this.streamTimer = clear(this.streamTimer)
     this.bufRef = ''
+    this.pendingSegmentTools = []
+    this.segmentMessages = []
 
-    patchTurnState({ streaming: '', subagents: [], tools: [], turnTrail: [] })
+    patchTurnState({
+      streamPendingTools: [],
+      streamSegments: [],
+      streaming: '',
+      subagents: [],
+      tools: [],
+      turnTrail: []
+    })
     patchUiState({ busy: false })
     resetOverlayState()
   }
@@ -108,6 +118,22 @@ class TurnController {
 
       return next.length === state.turnTrail.length ? state : { ...state, turnTrail: next }
     })
+  }
+
+  flushStreamingSegment() {
+    const text = this.bufRef.trimStart()
+
+    if (!text) {
+      return
+    }
+
+    const tools = this.pendingSegmentTools
+
+    this.streamTimer = clear(this.streamTimer)
+    this.segmentMessages = [...this.segmentMessages, { role: 'assistant', text, ...(tools.length && { tools }) }]
+    this.bufRef = ''
+    this.pendingSegmentTools = []
+    patchTurnState({ streamPendingTools: [], streamSegments: this.segmentMessages, streaming: '' })
   }
 
   pulseReasoningStreaming() {
@@ -154,6 +180,8 @@ class TurnController {
     this.idle()
     this.clearReasoning()
     this.clearStatusTimer()
+    this.pendingSegmentTools = []
+    this.segmentMessages = []
     this.turnTools = []
     this.persistedToolLabels.clear()
   }
@@ -163,11 +191,19 @@ class TurnController {
     const savedReasoning = this.reasoningText.trim() || String(payload.reasoning ?? '').trim()
     const savedReasoningTokens = savedReasoning ? estimateTokensRough(savedReasoning) : 0
     const savedToolTokens = this.toolTokenAcc
-    const persisted = [...this.persistedToolLabels]
+    const tools = this.pendingSegmentTools
+    const finalMessages = [...this.segmentMessages]
 
-    const savedTools = this.turnTools.filter(
-      line => isToolTrailResultLine(line) && !persisted.some(label => sameToolTrailGroup(label, line))
-    )
+    if (finalText) {
+      finalMessages.push({
+        role: 'assistant',
+        text: finalText,
+        thinking: savedReasoning || undefined,
+        thinkingTokens: savedReasoning ? savedReasoningTokens : undefined,
+        toolTokens: savedToolTokens || undefined,
+        ...(tools.length && { tools })
+      })
+    }
 
     const wasInterrupted = this.interrupted
 
@@ -178,7 +214,7 @@ class TurnController {
     this.bufRef = ''
     patchTurnState({ activity: [], outcome: '' })
 
-    return { finalText, savedReasoning, savedReasoningTokens, savedTools, savedToolTokens, wasInterrupted }
+    return { finalMessages, finalText, wasInterrupted }
   }
 
   recordMessageDelta({ rendered, text }: { rendered?: string; text?: string }) {
@@ -218,15 +254,20 @@ class TurnController {
     const line = buildToolTrailLine(name, done?.context || '', Boolean(error), error || summary || '')
 
     this.activeTools = this.activeTools.filter(tool => tool.id !== toolId)
+    this.pendingSegmentTools = [...this.pendingSegmentTools, line]
 
-    const next = [...this.turnTools.filter(item => !sameToolTrailGroup(label, item)), line]
+    const next = this.turnTools.filter(item => !sameToolTrailGroup(label, item))
 
     if (!this.activeTools.length) {
       next.push('analyzing tool output…')
     }
 
     this.turnTools = next.slice(-TRAIL_LIMIT)
-    patchTurnState({ tools: this.activeTools, turnTrail: this.turnTools })
+    patchTurnState({
+      streamPendingTools: this.pendingSegmentTools,
+      tools: this.activeTools,
+      turnTrail: this.turnTools
+    })
   }
 
   recordToolProgress(toolName: string, preview: string) {
@@ -249,6 +290,7 @@ class TurnController {
   }
 
   recordToolStart(toolId: string, name: string, context: string) {
+    this.flushStreamingSegment()
     this.pruneTransient()
     this.endReasoningPhase()
 
@@ -267,7 +309,9 @@ class TurnController {
     this.bufRef = ''
     this.interrupted = false
     this.lastStatusNote = ''
+    this.pendingSegmentTools = []
     this.protocolWarned = false
+    this.segmentMessages = []
     this.turnTools = []
     this.toolTokenAcc = 0
     this.persistedToolLabels.clear()

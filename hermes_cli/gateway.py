@@ -487,25 +487,44 @@ def _wsl_systemd_operational() -> bool:
     WSL2 with ``systemd=true`` in wsl.conf has working systemd.
     WSL2 without it (or WSL1) does not — systemctl commands fail.
     """
+    return _systemd_operational(system=True)
+
+
+def _systemd_operational(system: bool = False) -> bool:
+    """Return True when the requested systemd scope is usable."""
     try:
-        result = subprocess.run(
-            ["systemctl", "is-system-running"],
-            capture_output=True, text=True, timeout=5,
+        result = _run_systemctl(
+            ["is-system-running"],
+            system=system,
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         # "running", "degraded", "starting" all mean systemd is PID 1
         status = result.stdout.strip().lower()
         return status in ("running", "degraded", "starting", "initializing")
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+    except (RuntimeError, subprocess.TimeoutExpired, OSError):
         return False
 
 
+def _container_systemd_operational() -> bool:
+    """Return True when a container exposes working user or system systemd."""
+    if _systemd_operational(system=False):
+        return True
+    if _systemd_operational(system=True):
+        return True
+    return False
+
+
 def supports_systemd_services() -> bool:
-    if not is_linux() or is_termux() or is_container():
+    if not is_linux() or is_termux():
         return False
     if shutil.which("systemctl") is None:
         return False
     if is_wsl():
         return _wsl_systemd_operational()
+    if is_container():
+        return _container_systemd_operational()
     return True
 
 

@@ -60,7 +60,7 @@ _RECALL_SCHEMA = {
         "properties": {
             "query": {"type": "string", "description": "Search query — keywords, phrases, or natural language."},
             "project": {"type": "string", "description": "Project ID for scoping (e.g. codex-memory-pro)."},
-            "scope": {"type": "string", "description": "Scope filter: global or project:xxx (e.g. project:codex-memory-pro)."},
+            "scope": {"type": "string", "description": "Scope filter: global or project:xxx (e.g. project:codex-memory-pro). If both scope and project are provided, scope takes priority."},
             "limit": {"type": "integer", "description": "Max results (default 8)."},
         },
         "required": ["query"],
@@ -79,7 +79,7 @@ _SEARCH_SCHEMA = {
         "properties": {
             "query": {"type": "string", "description": "Search query."},
             "project": {"type": "string", "description": "Project ID for scoping."},
-            "scope": {"type": "string", "description": "Scope filter: global or project:xxx (e.g. project:codex-memory-pro)."},
+            "scope": {"type": "string", "description": "Scope filter: global or project:xxx (e.g. project:codex-memory-pro). If both scope and project are provided, scope takes priority."},
             "mode": {
                 "type": "string",
                 "enum": ["auto", "memories", "documents", "hybrid"],
@@ -104,7 +104,7 @@ _REMEMBER_SCHEMA = {
             "text": {"type": "string", "description": "Content to remember."},
             "category": {"type": "string", "description": "Category: preference, workflow, fact, etc."},
             "project": {"type": "string", "description": "Project ID for scoping."},
-            "scope": {"type": "string", "description": "Scope: global or project:xxx."},
+            "scope": {"type": "string", "description": "Scope: global or project:xxx. If both scope and project are provided, scope takes priority."},
         },
         "required": ["text"],
     },
@@ -122,7 +122,7 @@ _PROFILE_SCHEMA = {
         "properties": {
             "query": {"type": "string", "description": "Optional focus query to filter profile."},
             "project": {"type": "string", "description": "Project ID for scoping."},
-            "scope": {"type": "string", "description": "Scope filter."},
+            "scope": {"type": "string", "description": "Scope filter. Use global or project:xxx. If both scope and project are provided, scope takes priority."},
             "format": {"type": "string", "enum": ["text", "json"], "description": "Output format. Default: text."},
         },
         "required": [],
@@ -269,6 +269,17 @@ _FACT_PATTERNS = [
     re.compile(r"(?:规则|规范|约定|convention|workflow)"),
     re.compile(r"(?:地址|路径|端口|URL|host|endpoint)[是为：:]"),
 ]
+
+_SKIP_CAPTURE_PATTERNS = [
+    re.compile(r"(?:记住|remember|偏好|preference|规则|rule|约定|workflow)", re.IGNORECASE),
+    re.compile(r"(?:bug|错误|报错|失败|修复|原因|根因|配置|路径|scope|project)", re.IGNORECASE),
+]
+
+_SKIP_MEMORY_WRITE_PATTERNS = [
+    re.compile(r"(?:测试|test|临时|temporary|todo|稍后|回头)", re.IGNORECASE),
+]
+
+_VALID_SCOPE_RE = re.compile(r"^(?:global|project:[^\s]+)$")
 
 
 # ---------------------------------------------------------------------------
@@ -565,17 +576,13 @@ class CodexMemoryProvider(MemoryProvider):
     def system_prompt_block(self) -> str:
         """Return static system prompt text about the active memory system.
 
-        Prompt-cache friendly — does NOT include dynamic context.
-        Dynamic context (governance rules, relevant memories) is injected
-        via prefetch() which refreshes per turn.
+        Prompt-cache friendly — dynamic governance/memory context is injected
+        via prefetch(), not embedded into the system prompt.
         """
         if self._cron_skipped or not self._initialized:
             return ""
 
-        with self._context_cache_lock:
-            cache = self._context_cache
-
-        header = (
+        return (
             "# codex-memory-pro Memory\n"
             "Active. Context (governance rules, relevant memories) is automatically "
             "injected before each turn via prefetch. Manual tools: cmp_recall, "
@@ -583,11 +590,6 @@ class CodexMemoryProvider(MemoryProvider):
             "cmp_task_status, cmp_task_create, cmp_task_update, "
             "cmp_task_complete, cmp_task_quick."
         )
-
-        if cache:
-            return f"{header}\n\n## Cached Context\n{cache}"
-
-        return header
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         """Auto-inject relevant context before each API call.
@@ -647,11 +649,13 @@ class CodexMemoryProvider(MemoryProvider):
         self._last_user = user_content
         self._last_assistant = assistant_content
 
-        # Truncate very long content to avoid MCP payload issues
-        user_brief = user_content[:2000] if len(user_content) > 2000 else user_content
-        asst_brief = assistant_content[:2000] if len(assistant_content) > 2000 else assistant_content
+        user_brief = self._truncate_capture_text(user_content)
+        asst_brief = self._truncate_capture_text(assistant_content)
 
         if not user_brief.strip() and not asst_brief.strip():
+            return
+
+        if self._should_skip_sync_turn(user_brief, asst_brief):
             return
 
         args: dict[str, Any] = {
@@ -688,10 +692,14 @@ class CodexMemoryProvider(MemoryProvider):
             self._sync_thread.join(timeout=10.0)
 
         # Final capture if we have a last turn
-        if self._last_user.strip() or self._last_assistant.strip():
+        last_user = self._truncate_capture_text(self._last_user)
+        last_assistant = self._truncate_capture_text(self._last_assistant)
+        if last_user.strip() or last_assistant.strip():
+            if self._should_skip_sync_turn(last_user, last_assistant):
+                return
             args: dict[str, Any] = {
-                "userText": self._last_user[:2000],
-                "assistantText": self._last_assistant[:2000],
+                "userText": last_user,
+                "assistantText": last_assistant,
             }  # No project — let CLI infer
             try:
                 self._call_tool("memory_capture", args, timeout=10.0)
@@ -710,7 +718,7 @@ class CodexMemoryProvider(MemoryProvider):
 
         facts: list[str] = []
 
-        for msg in messages[-20:]:  # Only check recent messages
+        for msg in messages[-50:]:
             role = msg.get("role", "")
             content = ""
             if isinstance(msg.get("content"), str):
@@ -740,7 +748,7 @@ class CodexMemoryProvider(MemoryProvider):
                             facts.append(sent.strip())
                     break  # One match per message is enough
 
-            if len(facts) >= 5:
+            if len(facts) >= 8:
                 break  # Cap to avoid bloating compression prompt
 
         if not facts:
@@ -763,6 +771,8 @@ class CodexMemoryProvider(MemoryProvider):
         if action == "remove":
             return  # Don't mirror deletions (might cause orphaned memories)
         if not content or not content.strip():
+            return
+        if self._should_skip_memory_write(content):
             return
 
         args: dict[str, Any] = {"text": content}
@@ -834,6 +844,41 @@ class CodexMemoryProvider(MemoryProvider):
             self._last_cache_turn = self._turn_count
             logger.debug("codex-memory-pro context cache refreshed (turn %d)", self._turn_count)
 
+    def _truncate_capture_text(self, text: str, *, limit: int = 2000) -> str:
+        if not text or len(text) <= limit:
+            return text
+        half = max((limit - 7) // 2, 1)
+        return f"{text[:half]}\n...\n{text[-half:]}"
+
+    def _should_skip_sync_turn(self, user_text: str, assistant_text: str) -> bool:
+        user = (user_text or "").strip()
+        assistant = (assistant_text or "").strip()
+        if len(user) >= 10:
+            return False
+        if any(pattern.search(user) for pattern in _SKIP_CAPTURE_PATTERNS):
+            return False
+        if any(pattern.search(assistant) for pattern in _SKIP_CAPTURE_PATTERNS):
+            return False
+        return True
+
+    def _should_skip_memory_write(self, content: str) -> bool:
+        text = (content or "").strip()
+        if not text:
+            return True
+        if len(text) >= 20:
+            return False
+        return any(pattern.search(text) for pattern in _SKIP_MEMORY_WRITE_PATTERNS)
+
+    def _sanitize_tool_args(self, args: dict | None) -> dict:
+        clean = dict(args or {})
+        scope = clean.get("scope")
+        if isinstance(scope, str) and scope and not _VALID_SCOPE_RE.match(scope):
+            logger.warning("codex-memory-pro: invalid scope=%s, dropping", scope)
+            clean.pop("scope", None)
+        if clean.get("scope") and clean.get("project"):
+            clean.pop("project", None)
+        return clean
+
     # =========================================================================
     # Tool interface
     # =========================================================================
@@ -863,7 +908,7 @@ class CodexMemoryProvider(MemoryProvider):
         if not mcp_name:
             return tool_error(f"Unknown codex-memory-pro tool: {tool_name}")
 
-        return self._call_tool(mcp_name, args)
+        return self._call_tool(mcp_name, self._sanitize_tool_args(args))
 
     # =========================================================================
     # Shutdown

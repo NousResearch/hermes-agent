@@ -53,6 +53,7 @@ environments/benchmarks/evals/
 
 # Web UI build output
 hermes_cli/web_dist/
+web/.vite/
 
 # Release script temp files
 .release_notes.md

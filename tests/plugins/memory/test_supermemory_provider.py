@@ -3,6 +3,7 @@ import threading
 
 import pytest
 
+from plugins.memory.codex_memory_pro import CodexMemoryProvider
 from plugins.memory.supermemory import (
     SupermemoryMemoryProvider,
     _clean_text_for_capture,
@@ -214,6 +215,107 @@ def test_shutdown_joins_and_clears_threads(provider, monkeypatch):
     assert provider._write_thread is None
     assert provider._prefetch_thread is None
     assert len(provider._client.add_calls) == 2
+
+
+def test_store_tool_returns_saved_payload(provider):
+    result = json.loads(provider.handle_tool_call("supermemory_store", {"content": "Jordan likes concise docs"}))
+
+
+def _cmp_provider() -> CodexMemoryProvider:
+    provider = CodexMemoryProvider()
+    provider._initialized = True
+    provider._cron_skipped = False
+    provider._call_tool = lambda *args, **kwargs: json.dumps({"ok": True})
+    return provider
+
+
+def test_cmp_system_prompt_block_is_static_header_only():
+    provider = _cmp_provider()
+    provider._context_cache = "should not be injected"
+    block = provider.system_prompt_block()
+    assert "# codex-memory-pro Memory" in block
+    assert "Cached Context" not in block
+    assert "should not be injected" not in block
+
+
+def test_cmp_sync_turn_skips_low_value_short_turn():
+    provider = _cmp_provider()
+    calls = []
+    provider._call_tool = lambda name, args=None, timeout=15.0: calls.append((name, args, timeout)) or json.dumps({"ok": True})
+    provider.sync_turn("ok", "好的", session_id="session-1")
+    assert calls == []
+
+
+def test_cmp_sync_turn_keeps_short_but_meaningful_turn():
+    provider = _cmp_provider()
+    calls = []
+    provider._call_tool = lambda name, args=None, timeout=15.0: calls.append((name, args, timeout)) or json.dumps({"ok": True})
+    provider.sync_turn("记住", "收到", session_id="session-1")
+    provider._sync_thread.join(timeout=1)
+    assert len(calls) == 1
+    assert calls[0][0] == "memory_capture"
+
+
+def test_cmp_truncate_capture_text_keeps_head_and_tail():
+    provider = _cmp_provider()
+    text = "A" * 1500 + "MID" + "B" * 1500
+    truncated = provider._truncate_capture_text(text, limit=2000)
+    assert len(truncated) <= 2000
+    assert truncated.startswith("A" * 900)
+    assert truncated.endswith("B" * 900)
+    assert "\n...\n" in truncated
+
+
+def test_cmp_on_pre_compress_looks_back_further():
+    provider = _cmp_provider()
+    messages = [{"role": "user", "content": f"普通消息{i}"} for i in range(45)]
+    messages.append({"role": "user", "content": "以后全部用中文回答"})
+    result = provider.on_pre_compress(messages)
+    assert "以后全部用中文回答" in result
+
+
+def test_cmp_on_memory_write_skips_short_temporary_note():
+    provider = _cmp_provider()
+    calls = []
+    provider._call_tool = lambda name, args=None, timeout=15.0: calls.append((name, args, timeout)) or json.dumps({"ok": True})
+    provider.on_memory_write("add", "memory", "临时测试")
+    assert calls == []
+
+
+def test_cmp_handle_tool_call_drops_invalid_scope_and_project_conflict():
+    provider = _cmp_provider()
+    captured = {}
+
+    def fake_call(name, args=None, timeout=15.0):
+        captured["name"] = name
+        captured["args"] = args
+        return json.dumps({"ok": True})
+
+    provider._call_tool = fake_call
+    provider.handle_tool_call(
+        "cmp_recall",
+        {"query": "scope test", "scope": "session:bad", "project": "codex-memory-pro"},
+    )
+    assert captured["name"] == "memory_recall"
+    assert "scope" not in captured["args"]
+    assert captured["args"]["project"] == "codex-memory-pro"
+
+
+def test_cmp_handle_tool_call_scope_wins_over_project():
+    provider = _cmp_provider()
+    captured = {}
+
+    def fake_call(name, args=None, timeout=15.0):
+        captured["args"] = args
+        return json.dumps({"ok": True})
+
+    provider._call_tool = fake_call
+    provider.handle_tool_call(
+        "cmp_search",
+        {"query": "scope test", "scope": "project:codex-memory-pro", "project": "other-project"},
+    )
+    assert captured["args"]["scope"] == "project:codex-memory-pro"
+    assert "project" not in captured["args"]
 
 
 def test_store_tool_returns_saved_payload(provider):

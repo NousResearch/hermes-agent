@@ -783,6 +783,23 @@ def _try_openrouter() -> Tuple[Optional[OpenAI], Optional[str]]:
                    default_headers=_OR_HEADERS), _OPENROUTER_MODEL
 
 
+def _try_minimax() -> Tuple[Optional[OpenAI], Optional[str]]:
+    """Try to create a MiniMax vision client.
+
+    MiniMax has multimodal endpoints (e.g. MiniMax-VL) separate from their
+    text-only chat models. This enables vision_analyze to use MiniMax
+    as a backend when AUXILIARY_VISION_PROVIDER=minimax.
+    """
+    api_key = os.getenv("MINIMAX_API_KEY")
+    if not api_key:
+        return None, None
+    # MiniMax vision endpoint - OpenAI-compatible API
+    base_url = "https://api.minimax.io/v1"
+    model = "MiniMax-VL"
+    logger.debug("Auxiliary client: MiniMax vision")
+    return OpenAI(api_key=api_key, base_url=base_url), model
+
+
 def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
     # Check cross-session rate limit guard before attempting Nous —
     # if another session already recorded a 429, skip Nous entirely
@@ -1741,6 +1758,8 @@ def _resolve_strict_vision_backend(provider: str) -> Tuple[Optional[Any], Option
         return _try_anthropic()
     if provider == "custom":
         return _try_custom_endpoint()
+    if provider == "minimax":
+        return _try_minimax()
     return None, None
 
 

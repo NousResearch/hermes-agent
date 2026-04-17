@@ -64,6 +64,7 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     SendResult,
+    _ssrf_redirect_guard,
     cache_document_from_bytes,
     cache_image_from_bytes,
 )
@@ -226,7 +227,11 @@ class QQAdapter(BasePlatformAdapter):
             return False
 
         try:
-            self._http_client = httpx.AsyncClient(timeout=30.0, follow_redirects=True)
+            self._http_client = httpx.AsyncClient(
+                timeout=30.0,
+                follow_redirects=True,
+                event_hooks={"response": [_ssrf_redirect_guard]},
+            )
 
             # 1. Get access token
             await self._ensure_token()
@@ -1100,6 +1105,11 @@ class QQAdapter(BasePlatformAdapter):
             download_url = voice_wav_url
             is_pre_wav = True
             logger.info("[QQ] STT: using voice_wav_url (pre-converted WAV)")
+
+        from tools.url_safety import is_safe_url
+        if not is_safe_url(download_url):
+            logger.warning("[QQ] STT blocked unsafe URL: %s", download_url[:80])
+            return None
 
         try:
             # 2. Download audio (QQ CDN requires Authorization header)

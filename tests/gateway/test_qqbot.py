@@ -1,5 +1,6 @@
 """Tests for the QQ Bot platform adapter."""
 
+import asyncio
 import json
 import os
 import sys
@@ -148,6 +149,47 @@ class TestIsVoiceContentType:
     def test_audio_extension_amr(self):
         assert self._fn("", "recording.amr") is True
 
+
+# ---------------------------------------------------------------------------
+# Voice attachment SSRF protection
+# ---------------------------------------------------------------------------
+
+class TestVoiceAttachmentSSRFProtection:
+    def _make_adapter(self, **extra):
+        from gateway.platforms.qqbot import QQAdapter
+        return QQAdapter(_make_config(**extra))
+
+    def test_stt_blocks_unsafe_download_url(self):
+        adapter = self._make_adapter(app_id="a", client_secret="b")
+        adapter._http_client = mock.AsyncMock()
+
+        with mock.patch("tools.url_safety.is_safe_url", return_value=False):
+            transcript = asyncio.run(
+                adapter._stt_voice_attachment(
+                    "http://127.0.0.1/voice.silk",
+                    "audio/silk",
+                    "voice.silk",
+                )
+            )
+
+        assert transcript is None
+        adapter._http_client.get.assert_not_called()
+
+    def test_connect_uses_redirect_guard_hook(self):
+        from gateway.platforms.qqbot import QQAdapter, _ssrf_redirect_guard
+
+        client = mock.AsyncMock()
+        with mock.patch("gateway.platforms.qqbot.httpx.AsyncClient", return_value=client) as async_client_cls:
+            adapter = QQAdapter(_make_config(app_id="a", client_secret="b"))
+            adapter._ensure_token = mock.AsyncMock(side_effect=RuntimeError("stop after client creation"))
+
+            connected = asyncio.run(adapter.connect())
+
+        assert connected is False
+        assert async_client_cls.call_count == 1
+        kwargs = async_client_cls.call_args.kwargs
+        assert kwargs.get("follow_redirects") is True
+        assert kwargs.get("event_hooks", {}).get("response") == [_ssrf_redirect_guard]
 
 # ---------------------------------------------------------------------------
 # _strip_at_mention

@@ -1200,6 +1200,7 @@ LEGACY_AUTHOR_MAP = {
     "contact@jomar.fr": "joshmartinelle",
     "camilo@tekelala.com": "tekelala",
     "vincentcharlebois@gmail.com": "vincentcharlebois",
+    "caibing.001@bytedance.com": "Lubrsy706",
     "aryan@synvoid.com": "aryansingh",
     "johnsonblake1@gmail.com": "voteblake",
     "hcn518@gmail.com": "pedh",

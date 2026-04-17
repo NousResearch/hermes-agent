@@ -226,6 +226,9 @@ from gateway.background_delivery_service import (
     recover_stale_background_jobs_once as shared_recover_stale_background_jobs_once,
     sanitize_background_visible_text as shared_sanitize_background_visible_text,
 )
+from gateway.background_job_start_service import (
+    start_background_job as shared_start_background_job,
+)
 from gateway.auto_background_runtime_service import (
     format_auto_background_ack as shared_format_auto_background_ack,
     history_suggests_auto_background_work as shared_history_suggests_auto_background_work,
@@ -3136,33 +3139,23 @@ class GatewayRunner:
         admin_user_ids: Optional[List[str]] = None,
         is_admin_user: Optional[bool] = None,
     ) -> str:
-        """Register and launch a durable managed background agent job."""
-        self._ensure_background_job_state()
-        task_id = f"bg_{datetime.now().strftime('%H%M%S')}_{os.urandom(3).hex()}"
-        store = self._get_background_job_store()
-        record = store.create_job(
-            task_id=task_id,
+        return shared_start_background_job(
+            ensure_background_job_state=self._ensure_background_job_state,
+            store=self._get_background_job_store(),
+            refresh_cache=self._refresh_managed_background_job_cache,
+            launch_worker=self._launch_background_worker,
             prompt=prompt,
             source=source,
+            conversation_history=conversation_history,
+            context_prompt=context_prompt,
             session_key=session_key,
             job_kind=job_kind,
             worker_name=worker_name,
             preloaded_skills=list(preloaded_skills or []),
-            conversation_history=list(conversation_history or []),
-            context_prompt=context_prompt,
             admin_user_ids=list(admin_user_ids or []),
             is_admin_user=is_admin_user,
+            logger=logger,
         )
-        self._refresh_managed_background_job_cache(record)
-        try:
-            metadata = self._launch_background_worker(task_id)
-            record = store.update_job_launcher(task_id, metadata) or record
-            self._refresh_managed_background_job_cache(record)
-        except Exception as exc:
-            logger.exception("Failed to launch background worker for %s", task_id)
-            record = store.mark_job_failed(task_id, error=str(exc)) or record
-            self._refresh_managed_background_job_cache(record)
-        return task_id
 
     def _resolve_background_job_for_stop(
         self,

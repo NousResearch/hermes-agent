@@ -51,10 +51,12 @@ class GatewayTurnMixin:
     ) -> tuple[str, dict]:
         """Resolve model/runtime for a session.
 
-        Priority (highest first): session ``/model`` → ``channel_overrides`` → global config/env
+        Priority (highest first): session ``/model`` → ``channel_overrides`` →
+        platform ``extra`` → global config/env
         (``_resolve_gateway_model(user_config)`` and default provider resolution)."""
         from gateway.run import (
-            _credential_pool_for_provider, _get_channel_override, _resolve_gateway_model,
+            _credential_pool_for_provider, _get_channel_override,
+            _get_platform_model_overrides, _load_gateway_config, _resolve_gateway_model,
             _resolve_runtime_agent_kwargs, _resolve_runtime_agent_kwargs_for_provider,
         )
         skey = self._resolve_session_key_or_none(source, session_key)
@@ -101,6 +103,30 @@ class GatewayTurnMixin:
         if runtime_model:
             logger.info("Runtime provider supplied explicit model override: %s -> %s", model, runtime_model)
             model = runtime_model
+
+        # Platform extra (below channel and session overrides). Fail-open if
+        # provider resolution for the platform provider fails.
+        plat_cfg = user_config if isinstance(user_config, dict) else _load_gateway_config()
+        plat = _get_platform_model_overrides(
+            plat_cfg, platform=source.platform if source is not None else None,
+        )
+        if plat:
+            if plat.get("model"):
+                model = plat["model"]
+            if plat.get("provider"):
+                try:
+                    runtime_kwargs = _resolve_runtime_agent_kwargs_for_provider(plat["provider"])
+                    plat_runtime_model = runtime_kwargs.pop("model", None)
+                    if plat_runtime_model and not plat.get("model"):
+                        model = plat_runtime_model
+                except Exception:
+                    logger.debug(
+                        "Platform provider override failed for %s; keeping global runtime",
+                        plat.get("provider"), exc_info=True,
+                    )
+            for _k in ("api_key", "base_url", "api_mode"):
+                if plat.get(_k):
+                    runtime_kwargs[_k] = plat[_k]
 
         cfg = getattr(self, "config", None)  # getattr: bare object.__new__ test runners
         if cfg and source is not None:

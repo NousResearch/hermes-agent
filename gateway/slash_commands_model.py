@@ -117,7 +117,7 @@ class _ModelSwitchContext:
 
     def read_config(self) -> None:
         """Fill the current route from ``config_path``; fail-open to the defaults."""
-        from gateway.run import _load_gateway_config
+        from gateway.run import _get_platform_model_overrides, _load_gateway_config
         try:
             cfg = _load_gateway_config(config_path=self.config_path)
             if not cfg:
@@ -136,6 +136,18 @@ class _ModelSwitchContext:
             excl = cfg.get("model_catalog", {}).get("excluded_providers")
             if isinstance(excl, list):
                 self.excluded_provs = excl
+            # Platform extra (session /model override still wins — applied after this).
+            platform_override = _get_platform_model_overrides(
+                cfg, platform=getattr(self.source, "platform", None),
+            )
+            if platform_override.get("model"):
+                self.current_model = platform_override["model"]
+            if platform_override.get("provider"):
+                self.current_provider = platform_override["provider"]
+            if platform_override.get("base_url"):
+                self.current_base_url = platform_override["base_url"]
+            if platform_override.get("api_key"):
+                self.current_api_key = platform_override["api_key"]
         except Exception:
             pass
 

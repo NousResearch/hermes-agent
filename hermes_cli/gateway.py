@@ -2738,7 +2738,7 @@ def _qqbot_render_qr(url: str) -> bool:
     """Try to render a QR code in the terminal. Returns True if successful."""
     try:
         import qrcode as _qr
-        qr = _qr.QRCode()
+        qr = _qr.QRCode(border=1,error_correction=_qr.constants.ERROR_CORRECT_L)
         qr.add_data(url)
         qr.make(fit=True)
         qr.print_ascii(invert=True)

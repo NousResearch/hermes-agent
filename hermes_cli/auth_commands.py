@@ -233,6 +233,9 @@ def auth_add_command(args) -> None:
         return
 
     if provider == "openai-codex":
+        # Clear any existing suppression marker so a re-link after `hermes auth
+        # remove openai-codex` works without the new tokens being skipped.
+        auth_mod.unsuppress_credential_source(provider, "device_code")
         creds = auth_mod._codex_device_code_login()
         label = (getattr(args, "label", None) or "").strip() or label_from_token(
             creds["tokens"]["access_token"],
@@ -352,7 +355,34 @@ def auth_remove_command(args) -> None:
     # If this was a singleton-seeded credential (OAuth device_code, hermes_pkce),
     # clear the underlying auth store / credential file so it doesn't get
     # re-seeded on the next load_pool() call.
-    elif removed.source == "device_code" and provider in ("openai-codex", "nous"):
+    elif provider == "openai-codex" and (
+        removed.source == "device_code" or removed.source.endswith(":device_code")
+    ):
+        # Codex tokens live in TWO places: the Hermes auth store and
+        # ~/.codex/auth.json (the Codex CLI shared file).  On every refresh,
+        # refresh_codex_oauth_pure() writes to both.  So clearing only the
+        # Hermes auth store is not enough — _seed_from_singletons() will
+        # auto-import from ~/.codex/auth.json on the next load_pool() and
+        # the removal is instantly undone.  Mark the source as suppressed
+        # so auto-import is skipped; leave ~/.codex/auth.json untouched so
+        # the Codex CLI itself keeps working.
+        from hermes_cli.auth import (
+            _load_auth_store, _save_auth_store, _auth_store_lock,
+            suppress_credential_source,
+        )
+        with _auth_store_lock():
+            auth_store = _load_auth_store()
+            providers_dict = auth_store.get("providers")
+            if isinstance(providers_dict, dict) and provider in providers_dict:
+                del providers_dict[provider]
+                _save_auth_store(auth_store)
+                print(f"Cleared {provider} OAuth tokens from auth store")
+        suppress_credential_source(provider, "device_code")
+        print("Suppressed openai-codex device_code source — it will not be re-seeded.")
+        print("Note: Codex CLI credentials still live in ~/.codex/auth.json")
+        print("Run `hermes auth add openai-codex` to re-enable if needed.")
+
+    elif removed.source == "device_code" and provider == "nous":
         from hermes_cli.auth import (
             _load_auth_store, _save_auth_store, _auth_store_lock,
         )

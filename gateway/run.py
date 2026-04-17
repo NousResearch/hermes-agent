@@ -299,6 +299,10 @@ from gateway.message_preprocessing_runtime_service import (
     prepend_reply_context_if_missing as shared_prepend_reply_context_if_missing,
     prepend_shared_thread_sender as shared_prepend_shared_thread_sender,
 )
+from gateway.agent_prelude_runtime_service import (
+    append_discord_voice_channel_context as shared_append_discord_voice_channel_context,
+    build_agent_start_hook_context as shared_build_agent_start_hook_context,
+)
 from gateway.onboarding_runtime_service import (
     append_first_message_onboarding_note as shared_append_first_message_onboarding_note,
     build_home_channel_prompt as shared_build_home_channel_prompt,
@@ -590,6 +594,35 @@ def _should_prompt_for_home_channel(
         history=history,
         platform=platform,
         home_channel_configured=configured,
+    )
+
+
+def _append_discord_voice_channel_context(
+    context_prompt: str,
+    *,
+    source: SessionSource,
+    guild_id: Optional[int],
+    adapter: Any,
+) -> str:
+    return shared_append_discord_voice_channel_context(
+        context_prompt,
+        platform=source.platform,
+        guild_id=guild_id,
+        adapter=adapter,
+    )
+
+
+def _build_agent_start_hook_context(
+    *,
+    source: SessionSource,
+    session_id: str,
+    message_text: str,
+) -> Dict[str, Any]:
+    return shared_build_agent_start_hook_context(
+        platform=source.platform,
+        user_id=source.user_id,
+        session_id=session_id,
+        message_text=message_text,
     )
 
 
@@ -4229,10 +4262,12 @@ class GatewayRunner:
         if source.platform == Platform.DISCORD:
             adapter = self.adapters.get(Platform.DISCORD)
             guild_id = self._get_guild_id(event)
-            if guild_id and adapter and hasattr(adapter, "get_voice_channel_context"):
-                vc_context = adapter.get_voice_channel_context(guild_id)
-                if vc_context:
-                    context_prompt += f"\n\n{vc_context}"
+            context_prompt = _append_discord_voice_channel_context(
+                context_prompt,
+                source=source,
+                guild_id=guild_id,
+                adapter=adapter,
+            )
 
         # -----------------------------------------------------------------
         # Auto-analyze images sent by the user
@@ -4350,12 +4385,11 @@ class GatewayRunner:
 
         try:
             # Emit agent:start hook
-            hook_ctx = {
-                "platform": source.platform.value if source.platform else "",
-                "user_id": source.user_id,
-                "session_id": session_entry.session_id,
-                "message": message_text[:500],
-            }
+            hook_ctx = _build_agent_start_hook_context(
+                source=source,
+                session_id=session_entry.session_id,
+                message_text=message_text,
+            )
             await self.hooks.emit("agent:start", hook_ctx)
 
             # Expand @ context references (@file:, @folder:, @diff, etc.)

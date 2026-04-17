@@ -1,6 +1,6 @@
 ---
 name: architecture-diagram
-description: Generate professional dark-themed system architecture diagrams as standalone HTML/SVG files. Self-contained output with no external dependencies. Based on Cocoon AI's architecture-diagram-generator (MIT).
+description: Generate professional dark-themed SVG diagrams of software systems and cloud infrastructure — frontend, backend, database, cloud services, security groups, message buses, regions. Semantic color categories map component types to colors (cyan=frontend, emerald=backend, violet=database, amber=AWS/cloud, rose=security, orange=message bus). Single self-contained HTML file with JetBrains Mono font and grid background. Use this for software architecture, infrastructure topology, service maps, deployment diagrams, and anything that would fit in a cloud-provider architecture deck. For educational or non-software visuals (physics, chemistry, math, physical objects like aircraft/turbines, anatomy, floor plans, narrative journeys), use the `concept-diagrams` skill instead. Based on Cocoon AI's architecture-diagram-generator (MIT).
 version: 1.0.0
 author: Cocoon AI (hello@cocoon-ai.com), ported by Hermes Agent
 license: MIT
@@ -8,12 +8,25 @@ dependencies: []
 metadata:
   hermes:
     tags: [architecture, diagrams, SVG, HTML, visualization, infrastructure, cloud]
-    related_skills: [excalidraw]
+    related_skills: [concept-diagrams, excalidraw]
 ---
 
 # Architecture Diagram Skill
 
 Generate professional, dark-themed technical architecture diagrams as standalone HTML files with inline SVG graphics. No external tools, no API keys, no rendering libraries — just write the HTML file and open it in a browser.
+
+**When to use this skill vs `concept-diagrams`:**
+
+| Use `architecture-diagram` for | Use `concept-diagrams` for |
+|--------------------------------|----------------------------|
+| Software system architecture | Physics, chemistry, math, biology |
+| Cloud infrastructure (VPC, regions, services) | Physical objects (aircraft, turbines, watches, phones) |
+| Microservice / service mesh topology | Anatomy, cross-sections, exploded views |
+| Database + API layer diagrams | Floor plans, narrative journeys, lifecycles |
+| Security groups, message buses | Educational / textbook-style visuals |
+| Dark-themed tech/infra aesthetic | Flat, light/dark-adaptive aesthetic |
+
+If in doubt: is the subject software/cloud infra? Use this skill. Anything else — physical, scientific, educational — reach for `concept-diagrams`.
 
 Based on [Cocoon AI's architecture-diagram-generator](https://github.com/Cocoon-AI/architecture-diagram-generator) (MIT).
 

@@ -132,6 +132,11 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         base_url_override="https://api.x.ai/v1",
         base_url_env_var="XAI_BASE_URL",
     ),
+    "nvidia": HermesOverlay(
+        transport="openai_chat",
+        base_url_override="https://integrate.api.nvidia.com/v1",
+        base_url_env_var="NVIDIA_BASE_URL",
+    ),
     "xiaomi": HermesOverlay(
         transport="openai_chat",
         base_url_env_var="XIAOMI_BASE_URL",
@@ -185,6 +190,12 @@ ALIASES: Dict[str, str] = {
     "x-ai": "xai",
     "x.ai": "xai",
     "grok": "xai",
+
+    # nvidia
+    "nim": "nvidia",
+    "nvidia-nim": "nvidia",
+    "build-nvidia": "nvidia",
+    "nemotron": "nvidia",
 
     # kimi-for-coding (models.dev ID)
     "kimi": "kimi-for-coding",

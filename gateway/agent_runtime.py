@@ -8,7 +8,7 @@ import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from hermes_constants import get_hermes_home, parse_reasoning_effort
 
@@ -37,6 +37,15 @@ class GatewayAgentRuntimeSpec:
     max_iterations: int
 
 
+@dataclass(frozen=True)
+class GatewayPreparedSyncTurnRuntime:
+    """Resolved sync-turn runtime inputs shared by gateway foreground runs."""
+
+    runtime_spec: GatewayAgentRuntimeSpec
+    reasoning_config: dict[str, Any] | None
+    max_iterations: int
+
+
 def load_gateway_user_config() -> dict[str, Any]:
     """Load ~/.hermes/config.yaml, returning {} on failure."""
     try:
@@ -49,6 +58,21 @@ def load_gateway_user_config() -> dict[str, Any]:
     except Exception:
         logger.debug("Could not load gateway config from %s", _hermes_home / "config.yaml")
     return {}
+
+
+def reload_gateway_dotenv(
+    env_path: Path,
+    *,
+    load_dotenv_fn: Callable[..., Any],
+) -> None:
+    """Reload the gateway .env file, tolerating legacy encodings."""
+
+    try:
+        load_dotenv_fn(env_path, override=True, encoding="utf-8")
+    except UnicodeDecodeError:
+        load_dotenv_fn(env_path, override=True, encoding="latin-1")
+    except Exception:
+        pass
 
 
 def resolve_gateway_model(config: dict[str, Any] | None = None) -> str:
@@ -309,6 +333,49 @@ def build_gateway_agent_runtime(
         combined_ephemeral=combined_ephemeral,
         loaded_skills=loaded_skills,
         missing_skills=missing_skills,
+        max_iterations=int(os.getenv("HERMES_MAX_ITERATIONS", "90")),
+    )
+
+
+def prepare_gateway_sync_turn_runtime(
+    *,
+    env_path: Path,
+    load_dotenv_fn: Callable[..., Any],
+    resolve_runtime_agent_kwargs_fn: Callable[[], dict[str, Any]],
+    load_reasoning_config_fn: Callable[[], dict[str, Any] | None],
+    source: Any,
+    user_message: str,
+    context_prompt: str = "",
+    gateway_ephemeral_system_prompt: str = "",
+    provider_routing: dict[str, Any] | None = None,
+    fallback_model: list[Any] | dict[str, Any] | None = None,
+    smart_model_routing: dict[str, Any] | None = None,
+    user_config: dict[str, Any] | None = None,
+    model: str | None = None,
+    enabled_toolsets: list[str] | None = None,
+) -> GatewayPreparedSyncTurnRuntime:
+    """Reload env/config and build the shared sync-turn runtime payload."""
+
+    reload_gateway_dotenv(env_path, load_dotenv_fn=load_dotenv_fn)
+    runtime_kwargs = resolve_runtime_agent_kwargs_fn()
+    reasoning_config = load_reasoning_config_fn()
+    runtime_spec = build_gateway_agent_runtime(
+        source=source,
+        user_message=user_message,
+        context_prompt=context_prompt,
+        gateway_ephemeral_system_prompt=gateway_ephemeral_system_prompt,
+        provider_routing=provider_routing,
+        fallback_model=fallback_model,
+        smart_model_routing=smart_model_routing,
+        reasoning_config=reasoning_config,
+        user_config=user_config,
+        model=model,
+        runtime_kwargs=runtime_kwargs,
+        enabled_toolsets=enabled_toolsets,
+    )
+    return GatewayPreparedSyncTurnRuntime(
+        runtime_spec=runtime_spec,
+        reasoning_config=reasoning_config,
         max_iterations=int(os.getenv("HERMES_MAX_ITERATIONS", "90")),
     )
 

@@ -233,6 +233,7 @@ from gateway.agent_runtime import (
     load_show_reasoning as shared_load_show_reasoning,
     load_smart_model_routing as shared_load_smart_model_routing,
     platform_config_key as shared_platform_config_key,
+    prepare_gateway_sync_turn_runtime as shared_prepare_gateway_sync_turn_runtime,
     resolve_gateway_model as shared_resolve_gateway_model,
     resolve_runtime_agent_kwargs as shared_resolve_runtime_agent_kwargs,
     resolve_turn_agent_config as shared_resolve_turn_agent_config,
@@ -8396,32 +8397,12 @@ class GatewayRunner:
             # processes can be mapped back to this gateway session
             os.environ["HERMES_SESSION_KEY"] = session_key or ""
 
-            # Read from env var or use default (same as CLI)
-            max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
-
-            # Re-read .env and config for fresh credentials (gateway is long-lived,
-            # keys may change without restart).
             try:
-                load_dotenv(_env_path, override=True, encoding="utf-8")
-            except UnicodeDecodeError:
-                load_dotenv(_env_path, override=True, encoding="latin-1")
-            except Exception:
-                pass
-
-            try:
-                runtime_kwargs = _resolve_runtime_agent_kwargs()
-            except Exception as exc:
-                return {
-                    "final_response": f"⚠️ Provider authentication failed: {exc}",
-                    "messages": [],
-                    "api_calls": 0,
-                    "tools": [],
-                }
-
-            reasoning_config = self._load_reasoning_config()
-            self._reasoning_config = reasoning_config
-            try:
-                runtime_spec = build_gateway_agent_runtime(
+                prepared_runtime = shared_prepare_gateway_sync_turn_runtime(
+                    env_path=_env_path,
+                    load_dotenv_fn=load_dotenv,
+                    resolve_runtime_agent_kwargs_fn=_resolve_runtime_agent_kwargs,
+                    load_reasoning_config_fn=self._load_reasoning_config,
                     source=source,
                     user_message=message,
                     context_prompt=context_prompt,
@@ -8429,10 +8410,8 @@ class GatewayRunner:
                     provider_routing=getattr(self, "_provider_routing", {}),
                     fallback_model=getattr(self, "_fallback_model", None),
                     smart_model_routing=getattr(self, "_smart_model_routing", {}),
-                    reasoning_config=reasoning_config,
                     user_config=user_config,
                     model=_resolve_gateway_model(user_config),
-                    runtime_kwargs=runtime_kwargs,
                     enabled_toolsets=enabled_toolsets,
                 )
             except Exception as exc:
@@ -8442,6 +8421,11 @@ class GatewayRunner:
                     "api_calls": 0,
                     "tools": [],
                 }
+
+            runtime_spec = prepared_runtime.runtime_spec
+            reasoning_config = prepared_runtime.reasoning_config
+            max_iterations = prepared_runtime.max_iterations
+            self._reasoning_config = reasoning_config
 
             _stream_consumer, _stream_delta_cb = shared_setup_gateway_stream_consumer(
                 streaming_config=getattr(getattr(self, "config", None), "streaming", None),

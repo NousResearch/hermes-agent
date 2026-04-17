@@ -23,6 +23,7 @@ Or via $HERMES_HOME/hindsight/config.json (profile-scoped), falling back to
 from __future__ import annotations
 
 import asyncio
+import importlib
 import json
 import logging
 import os
@@ -52,6 +53,22 @@ _PROVIDER_DEFAULT_MODELS = {
     "lmstudio": "local-model",
     "openai_compatible": "your-model-name",
 }
+
+
+def _check_local_runtime() -> tuple[bool, str | None]:
+    """Return whether local embedded Hindsight imports cleanly.
+
+    On older CPUs, importing the local Hindsight stack can raise a runtime
+    error from NumPy before the daemon starts. Treat that as "unavailable"
+    so Hermes can degrade gracefully instead of repeatedly trying to start
+    a broken local memory backend.
+    """
+    try:
+        importlib.import_module("hindsight")
+        importlib.import_module("hindsight_embed.daemon_embed_manager")
+        return True, None
+    except Exception as exc:
+        return False, str(exc)
 
 
 # ---------------------------------------------------------------------------
@@ -368,7 +385,10 @@ class HindsightMemoryProvider(MemoryProvider):
         try:
             cfg = _load_config()
             mode = cfg.get("mode", "cloud")
-            if mode in ("local", "local_embedded", "local_external"):
+            if mode in ("local", "local_embedded"):
+                available, _ = _check_local_runtime()
+                return available
+            if mode == "local_external":
                 return True
             has_key = bool(
                 cfg.get("apiKey")
@@ -604,6 +624,12 @@ class HindsightMemoryProvider(MemoryProvider):
         """Return the cached Hindsight client (created once, reused)."""
         if self._client is None:
             if self._mode == "local_embedded":
+                available, reason = _check_local_runtime()
+                if not available:
+                    raise RuntimeError(
+                        "Hindsight local runtime is unavailable"
+                        + (f": {reason}" if reason else "")
+                    )
                 from hindsight import HindsightEmbedded
                 HindsightEmbedded.__del__ = lambda self: None
                 llm_provider = self._config.get("llm_provider", "")
@@ -676,6 +702,15 @@ class HindsightMemoryProvider(MemoryProvider):
         # "local" is a legacy alias for "local_embedded"
         if self._mode == "local":
             self._mode = "local_embedded"
+        if self._mode == "local_embedded":
+            available, reason = _check_local_runtime()
+            if not available:
+                logger.warning(
+                    "Hindsight local mode disabled because its runtime could not be imported: %s",
+                    reason,
+                )
+                self._mode = "disabled"
+                return
         self._api_key = self._config.get("apiKey") or self._config.get("api_key") or os.environ.get("HINDSIGHT_API_KEY", "")
         default_url = _DEFAULT_LOCAL_URL if self._mode in ("local_embedded", "local_external") else _DEFAULT_API_URL
         self._api_url = self._config.get("api_url") or os.environ.get("HINDSIGHT_API_URL", default_url)

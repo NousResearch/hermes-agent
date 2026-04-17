@@ -708,7 +708,10 @@ class TestRegistryDispatchStoreResolution:
             encoding="utf-8",
         )
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: hermes_home)
+        # Match production layout: MEMORY.md lives under HERMES_HOME/memories/.
+        memories_dir = hermes_home / "memories"
+        memories_dir.mkdir()
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: memories_dir)
 
         subagent = type("SubAgent", (), {"_memory_store": None})()
 
@@ -734,7 +737,9 @@ class TestRegistryDispatchStoreResolution:
             encoding="utf-8",
         )
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: hermes_home)
+        memories_dir = hermes_home / "memories"
+        memories_dir.mkdir()
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: memories_dir)
 
         resolved = _resolve_memory_store_from_kwargs({})
         assert resolved is not None
@@ -756,7 +761,9 @@ class TestRegistryDispatchStoreResolution:
             encoding="utf-8",
         )
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: hermes_home)
+        memories_dir = hermes_home / "memories"
+        memories_dir.mkdir()
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: memories_dir)
 
         resolved = _resolve_memory_store_from_kwargs({})
         assert resolved is not None
@@ -778,10 +785,19 @@ class TestRegistryDispatchStoreResolution:
             encoding="utf-8",
         )
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: hermes_home)
+        # Do NOT pre-create hermes_home/memories: when memory is disabled,
+        # the resolver must short-circuit before touching the filesystem.
+        monkeypatch.setattr(
+            "tools.memory_tool.get_memory_dir", lambda: hermes_home / "memories",
+        )
 
         resolved = _resolve_memory_store_from_kwargs({})
         assert resolved is None
+        # Defensive assertion: resolving a disabled config must NOT have
+        # created the memories/ subdir as a side effect (Copilot review).
+        assert not (hermes_home / "memories").exists(), (
+            "resolver with memory disabled should have no filesystem side effects"
+        )
 
     def test_default_store_is_singleton(self, tmp_path, monkeypatch):
         """The default store is cached — two resolutions return the same
@@ -798,7 +814,9 @@ class TestRegistryDispatchStoreResolution:
             encoding="utf-8",
         )
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: hermes_home)
+        memories_dir = hermes_home / "memories"
+        memories_dir.mkdir()
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: memories_dir)
 
         first = _resolve_memory_store_from_kwargs({})
         second = _resolve_memory_store_from_kwargs({})
@@ -828,7 +846,10 @@ class TestRegistryDispatchStoreResolution:
             encoding="utf-8",
         )
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: hermes_home)
+        # Match production layout: get_memory_dir() -> HERMES_HOME/memories.
+        memories_dir = hermes_home / "memories"
+        memories_dir.mkdir()
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: memories_dir)
 
         # Dispatch via the registry with NO store kwarg and NO parent_agent
         # — mirrors handle_function_call's path.
@@ -840,7 +861,10 @@ class TestRegistryDispatchStoreResolution:
         # On unpatched code this fails with "Memory is not available".
         assert result.get("success") is True, f"dispatch returned: {result}"
 
-        # The entry should have been persisted under the tmp HERMES_HOME.
-        memory_md = hermes_home / "MEMORY.md"
-        assert memory_md.exists(), "dispatch did not persist to config-driven hermes_home"
+        # The entry should be persisted at the production path:
+        # HERMES_HOME/memories/MEMORY.md — not HERMES_HOME/MEMORY.md.
+        memory_md = memories_dir / "MEMORY.md"
+        assert memory_md.exists(), (
+            f"dispatch did not persist to {memory_md} (production layout)"
+        )
         assert "routed via registry dispatch" in memory_md.read_text(encoding="utf-8")

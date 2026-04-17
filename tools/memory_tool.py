@@ -754,14 +754,22 @@ def _resolve_memory_store_from_kwargs(kw: dict) -> Optional["MemoryStore"]:
         if _default_store is not None:
             return _default_store
         try:
-            from hermes_cli.config import load_config
-            cfg = load_config() or {}
-            mem_cfg = cfg.get("memory", {}) or {}
+            # Use read_raw_config() rather than load_config(): the latter
+            # calls ensure_hermes_home(), which creates ~/.hermes subdirs
+            # and seeds SOUL.md.  A registry dispatch must not have
+            # filesystem side effects when memory is ultimately disabled —
+            # only touch disk once we know memory is actually active.
+            from hermes_cli.config import read_raw_config, DEFAULT_CONFIG
+            raw = read_raw_config() or {}
+            raw_mem = raw.get("memory") if isinstance(raw.get("memory"), dict) else {}
+            default_mem = DEFAULT_CONFIG.get("memory", {})
+            mem_cfg = {**default_mem, **raw_mem}
             if not (
                 mem_cfg.get("memory_enabled", False)
                 or mem_cfg.get("user_profile_enabled", False)
             ):
                 return None
+            # Memory is enabled; now it's safe to allocate + load from disk.
             store = MemoryStore(
                 memory_char_limit=int(mem_cfg.get("memory_char_limit", 2200)),
                 user_char_limit=int(mem_cfg.get("user_char_limit", 1375)),

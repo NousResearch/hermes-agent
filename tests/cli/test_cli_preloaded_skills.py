@@ -125,3 +125,69 @@ def test_show_banner_does_not_print_skills():
     startup_lines = [line for line in print_calls if "Activated skills:" in line]
     assert len(startup_lines) == 0
     assert mock_banner.call_count == 1
+
+
+# ── Task 11: preloaded-skills fence (Design Rule 6 + Rule 2) ─────────────
+#
+# `build_preloaded_skills_prompt` is allowed to render a skill's *content* into
+# the session system prompt, but it must NEVER carry runtime defaults (no
+# model swap, no reasoning_effort change) for preloaded skills.  A preloaded
+# skill whose frontmatter declares `runtime_defaults` should be treated as if
+# the field was absent.
+
+
+def test_preloaded_skills_prompt_tuple_shape_unchanged(tmp_path):
+    """build_preloaded_skills_prompt must keep its 3-element tuple contract."""
+    from agent.skill_commands import build_preloaded_skills_prompt
+
+    with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        skill_dir = tmp_path / "my-skill"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: my-skill\ndescription: test\n---\n\nBody.\n"
+        )
+        result = build_preloaded_skills_prompt(["my-skill"])
+
+    # Tuple shape: (prompt_text, loaded_names, missing)
+    assert isinstance(result, tuple)
+    assert len(result) == 3
+    prompt, loaded, missing = result
+    assert isinstance(prompt, str)
+    assert isinstance(loaded, list)
+    assert isinstance(missing, list)
+    assert "my-skill" in loaded
+    assert missing == []
+
+
+def test_preloaded_skill_with_runtime_defaults_stays_prompt_only(tmp_path):
+    """A preloaded skill declaring runtime_defaults must NOT leak structured
+    runtime state through build_preloaded_skills_prompt.  The function's
+    return contract remains 3-tuple prompt-only — Design Rules 2 and 6."""
+    from agent.skill_commands import build_preloaded_skills_prompt
+
+    with (
+        patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+        patch(
+            "agent.skill_utils._runtime_defaults_flag_enabled",
+            return_value=True,
+        ),
+    ):
+        skill_dir = tmp_path / "brainstorm"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text(
+            "---\n"
+            "name: brainstorm\n"
+            "description: test\n"
+            "metadata:\n"
+            "  hermes:\n"
+            "    runtime_defaults:\n"
+            "      reasoning_effort: low\n"
+            "---\n"
+            "\nBody.\n"
+        )
+        result = build_preloaded_skills_prompt(["brainstorm"])
+
+    # Contract stays 3-tuple.  No 4th element carrying runtime defaults.
+    assert len(result) == 3
+    prompt, loaded, missing = result
+    assert "brainstorm" in loaded

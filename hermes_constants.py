@@ -8,13 +8,22 @@ import os
 from pathlib import Path
 
 
+def _expand_hermes_home(value: str | os.PathLike | None = None) -> Path:
+    """Return a HERMES_HOME path with ``~`` expanded."""
+    if value is None:
+        value = os.getenv("HERMES_HOME")
+    if value is None or str(value).strip() == "":
+        return Path.home() / ".hermes"
+    return Path(value).expanduser()
+
+
 def get_hermes_home() -> Path:
     """Return the Hermes home directory (default: ~/.hermes).
 
     Reads HERMES_HOME env var, falls back to ~/.hermes.
     This is the single source of truth — all other copies should import this.
     """
-    return Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+    return _expand_hermes_home()
 
 
 def get_default_hermes_root() -> Path:
@@ -37,7 +46,7 @@ def get_default_hermes_root() -> Path:
     env_home = os.environ.get("HERMES_HOME", "")
     if not env_home:
         return native_home
-    env_path = Path(env_home)
+    env_path = _expand_hermes_home(env_home)
     try:
         env_path.resolve().relative_to(native_home.resolve())
         # HERMES_HOME is under ~/.hermes (normal or profile mode)
@@ -131,9 +140,9 @@ def get_subprocess_home() -> str | None:
     hermes_home = os.getenv("HERMES_HOME")
     if not hermes_home:
         return None
-    profile_home = os.path.join(hermes_home, "home")
-    if os.path.isdir(profile_home):
-        return profile_home
+    profile_home = get_hermes_home() / "home"
+    if profile_home.is_dir():
+        return str(profile_home)
     return None
 
 

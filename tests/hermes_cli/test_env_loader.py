@@ -68,3 +68,21 @@ def test_main_import_applies_user_env_over_shell_values(tmp_path, monkeypatch):
 
     assert os.getenv("OPENAI_BASE_URL") == "https://new.example/v1"
     assert os.getenv("HERMES_INFERENCE_PROVIDER") == "custom"
+
+
+def test_tilde_hermes_home_loads_user_env(tmp_path, monkeypatch):
+    fake_home = tmp_path / "fake-home"
+    hermes_home = fake_home / ".hermes-test"
+    hermes_home.mkdir(parents=True)
+    env_file = hermes_home / ".env"
+    env_file.write_text("OPENAI_API_KEY=tilde-key\n", encoding="utf-8")
+
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
+    monkeypatch.setenv("HERMES_HOME", "~/.hermes-test")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    loaded = load_hermes_dotenv()
+
+    assert loaded == [env_file]
+    assert os.getenv("OPENAI_API_KEY") == "tilde-key"

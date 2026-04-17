@@ -35,6 +35,18 @@ class TestGetHermesHome:
             home = get_hermes_home()
             assert home == Path("/custom/path")
 
+    def test_env_override_expands_tilde(self, tmp_path):
+        with patch.dict(
+            os.environ,
+            {
+                "HERMES_HOME": "~/.hermes-test",
+                "HOME": str(tmp_path),
+                "USERPROFILE": str(tmp_path),
+            },
+        ):
+            home = get_hermes_home()
+            assert home == tmp_path / ".hermes-test"
+
 
 class TestEnsureHermesHome:
     def test_creates_subdirs(self, tmp_path):

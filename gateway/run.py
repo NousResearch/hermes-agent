@@ -6878,38 +6878,91 @@ class GatewayRunner:
         name = event.get_command_args().strip()
 
         if not name:
-            # List recent titled sessions for this user/platform
+            # List recent sessions with >= 3 messages for user selection
             try:
                 user_source = source.platform.value if source.platform else None
+                current_entry = self.session_store.get_or_create_session(source)
+                current_sid = current_entry.session_id
+
                 sessions = self._session_db.list_sessions_rich(
-                    source=user_source, limit=10
+                    source=user_source, limit=30, include_children=True
                 )
-                titled = [s for s in sessions if s.get("title")]
-                if not titled:
+                # Filter: not current session, message_count >= 3, dedup compression leaves
+                candidates = []
+                seen_ids = set()
+                for s in sessions:
+                    sid = s.get("id")
+                    if not sid or sid == current_sid:
+                        continue
+                    if sid in seen_ids:
+                        continue
+                    if (s.get("message_count") or 0) < 3:
+                        continue
+
+                    # If this session was split by compression, resolve to the latest leaf
+                    end_reason = s.get("end_reason")
+                    display_session = s
+                    if end_reason == "compression":
+                        leaf = self._session_db._find_latest_leaf(sid)
+                        if leaf and leaf.get("id") != sid:
+                            leaf_id = leaf.get("id")
+                            if leaf_id == current_sid or leaf_id in seen_ids:
+                                continue
+                            # _find_latest_leaf returns raw DB rows without the
+                            # computed 'preview' field; carry it from the parent.
+                            if not leaf.get("preview"):
+                                leaf["preview"] = s.get("preview", "")
+                            display_session = leaf
+                            seen_ids.add(leaf_id)
+
+                    seen_ids.add(sid)
+                    candidates.append(display_session)
+                    if len(candidates) >= 10:
+                        break
+
+                if not candidates:
                     return (
-                        "No named sessions found.\n"
+                        "No resumable sessions found (need ≥ 3 messages).\n"
                         "Use `/title My Session` to name your current session, "
                         "then `/resume My Session` to return to it later."
                     )
-                lines = ["📋 **Named Sessions**\n"]
-                for s in titled[:10]:
-                    title = s["title"]
+
+                lines = ["📋 **Recent Sessions**\n"]
+                for i, s in enumerate(candidates, 1):
+                    title = s.get("title") or "untitled"
+                    msg_count = s.get("message_count", 0)
                     preview = s.get("preview", "")[:40]
                     preview_part = f" — _{preview}_" if preview else ""
-                    lines.append(f"• **{title}**{preview_part}")
-                lines.append("\nUsage: `/resume <session name>`")
+                    lines.append(f"`{i}`. **{title}** ({msg_count} msgs){preview_part}")
+                lines.append("\nUsage: `/resume <number or session name>`")
+
+                # Store candidates for numeric lookup
+                self._resume_candidates = candidates
                 return "\n".join(lines)
+
             except Exception as e:
-                logger.debug("Failed to list titled sessions: %s", e)
+                logger.debug("Failed to list sessions for resume: %s", e)
                 return f"Could not list sessions: {e}"
 
-        # Resolve the name to a session ID
-        target_id = self._session_db.resolve_session_by_title(name)
+        # Resolve the name to a session ID — support numeric index from list
+        target_id = None
+        if name.isdigit():
+            idx = int(name)
+            candidates = getattr(self, "_resume_candidates", None)
+            if candidates and 1 <= idx <= len(candidates):
+                target_id = candidates[idx - 1].get("id")
+        if not target_id:
+            target_id = self._session_db.resolve_session_by_title(name)
         if not target_id:
             return (
                 f"No session found matching '**{name}**'.\n"
                 "Use `/resume` with no arguments to see available sessions."
             )
+
+        # If the target session was split by compression, resolve to the latest leaf
+        leaf = self._session_db._find_latest_leaf(target_id)
+        if leaf and leaf.get("id") != target_id:
+            target_id = leaf["id"]
 
         # Check if already on that session
         current_entry = self.session_store.get_or_create_session(source)
@@ -6937,9 +6990,15 @@ class GatewayRunner:
         # Get the title for confirmation
         title = self._session_db.get_session_title(target_id) or name
 
-        # Count messages for context
-        history = self.session_store.load_transcript(target_id)
-        msg_count = len([m for m in history if m.get("role") == "user"]) if history else 0
+        # Get message count from session record for consistency with list display
+        # (avoids loading the full transcript and uses the same count shown in the list)
+        msg_count = 0
+        try:
+            leaf = self._session_db._find_latest_leaf(target_id)
+            if leaf:
+                msg_count = leaf.get("message_count", 0)
+        except Exception as e:
+            logger.debug("Failed to get message count from session: %s", e)
         msg_part = f" ({msg_count} message{'s' if msg_count != 1 else ''})" if msg_count else ""
 
         return f"↻ Resumed session **{title}**{msg_part}. Conversation restored."

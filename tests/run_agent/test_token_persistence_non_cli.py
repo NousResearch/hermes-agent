@@ -22,6 +22,7 @@ def _make_agent(session_db, *, platform: str):
     ):
         agent = AIAgent(
             api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,

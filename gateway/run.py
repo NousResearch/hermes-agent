@@ -2978,6 +2978,31 @@ def _platform_config_key(platform: "Platform") -> str:
     return "cli" if platform == Platform.LOCAL else platform.value
 
 
+def _get_platform_model_overrides(
+    config: dict | None,
+    platform: "Platform | None" = None,
+) -> dict:
+    """Read per-platform model/provider overrides from ``platforms.<key>.extra``.
+
+    Returns a dict with any of: model, provider, api_key, base_url, api_mode.
+    Fail-safe: returns ``{}`` if config is missing or the section is absent.
+    """
+    if not config or not platform:
+        return {}
+    try:
+        platform_key = _platform_config_key(platform)
+        platforms_cfg = config.get("platforms") or {}
+        platform_cfg = platforms_cfg.get(platform_key) or {}
+        extra = platform_cfg.get("extra") or {}
+        if not isinstance(extra, dict):
+            return {}
+        # Only return recognized keys
+        allowed = ("model", "provider", "api_key", "base_url", "api_mode")
+        return {k: v for k, v in extra.items() if k in allowed and v}
+    except Exception:
+        return {}
+
+
 def _teams_pipeline_plugin_enabled() -> bool:
     """Return True when the standalone Teams pipeline plugin is enabled."""
     config = _load_gateway_config()

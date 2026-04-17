@@ -302,6 +302,7 @@ from gateway.message_preprocessing_runtime_service import (
 from gateway.agent_prelude_runtime_service import (
     append_discord_voice_channel_context as shared_append_discord_voice_channel_context,
     build_agent_start_hook_context as shared_build_agent_start_hook_context,
+    run_gateway_agent_prelude as shared_run_gateway_agent_prelude,
 )
 from gateway.agent_completion_runtime_service import (
     prepare_gateway_agent_completion as shared_prepare_gateway_agent_completion,
@@ -4427,30 +4428,31 @@ class GatewayRunner:
         )
 
         try:
-            # Emit agent:start hook
             hook_ctx = _build_agent_start_hook_context(
                 source=source,
                 session_id=session_entry.session_id,
                 message_text=message_text,
             )
-            await self.hooks.emit("agent:start", hook_ctx)
-
-            # Expand @ context references (@file:, @folder:, @diff, etc.)
-            if "@" in message_text:
-                _ctx_outcome = await _expand_gateway_context_references(
+            _adapter = self.adapters.get(source.platform)
+            prelude = await shared_run_gateway_agent_prelude(
+                hooks=self.hooks,
+                hook_ctx=hook_ctx,
+                message_text=message_text,
+                should_expand_context_references="@" in message_text,
+                expand_context_references=lambda: _expand_gateway_context_references(
                     message_text,
                     runner=self,
                     logger=logger,
-                )
-                if _ctx_outcome.blocked_warning:
-                    _adapter = self.adapters.get(source.platform)
-                    if _adapter:
-                        await _adapter.send(
-                            source.chat_id,
-                            _ctx_outcome.blocked_warning,
-                        )
-                    return
-                message_text = _ctx_outcome.message_text
+                ),
+                send_blocked_warning=(
+                    (lambda warning: _adapter.send(source.chat_id, warning))
+                    if _adapter
+                    else None
+                ),
+            )
+            if prelude.blocked:
+                return
+            message_text = prelude.message_text
 
             # Run the agent
             agent_result = await self._run_agent(

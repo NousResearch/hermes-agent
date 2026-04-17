@@ -4520,16 +4520,18 @@ class HermesCLI:
         scroll_offset: int,
         n: int,
         term_rows: int,
-        chrome_reserve: int = 14,
+        reserved_below: int = 6,
+        panel_chrome: int = 6,
+        min_visible: int = 3,
     ) -> tuple[int, int]:
-        """Resolve (scroll_offset, visible_count) for the /model picker panel.
+        """Resolve (scroll_offset, visible) for the /model picker viewport.
 
-        ``term_rows - chrome_reserve`` caps how many rows the panel may use for
-        items; when the list overflows we slide the offset to keep ``selected``
-        on screen. The position counter sits in the bottom border, so no extra
-        row is reserved for it.
+        ``reserved_below`` matches the approval / clarify panels — input area,
+        status bar, and separators below the panel. ``panel_chrome`` covers
+        this panel's own borders + blanks + hint row. The remaining rows hold
+        the scrollable list, with the offset slid to keep ``selected`` on screen.
         """
-        max_visible = max(3, term_rows - chrome_reserve)
+        max_visible = max(min_visible, term_rows - reserved_below - panel_chrome)
         if n <= max_visible:
             return 0, n
         visible = max_visible
@@ -9537,7 +9539,7 @@ class HermesCLI:
                 from prompt_toolkit.application import get_app
                 term_rows = get_app().output.get_size().rows
             except Exception:
-                term_rows = shutil.get_terminal_size((80, 24)).lines
+                term_rows = shutil.get_terminal_size((100, 24)).lines
             scroll_offset, visible = HermesCLI._compute_model_picker_viewport(
                 selected, state.get("_scroll_offset", 0), len(choices), term_rows,
             )

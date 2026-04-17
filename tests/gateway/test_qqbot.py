@@ -179,7 +179,7 @@ class TestVoiceAttachmentSSRFProtection:
         from gateway.platforms.qqbot import QQAdapter, _ssrf_redirect_guard
 
         client = mock.AsyncMock()
-        with mock.patch("gateway.platforms.qqbot.httpx.AsyncClient", return_value=client) as async_client_cls:
+        with mock.patch("gateway.platforms.qqbot.adapter.httpx.AsyncClient", return_value=client) as async_client_cls:
             adapter = QQAdapter(_make_config(app_id="a", client_secret="b"))
             adapter._ensure_token = mock.AsyncMock(side_effect=RuntimeError("stop after client creation"))
 
@@ -316,7 +316,8 @@ class TestResolveSTTConfig:
 class TestDetectMessageType:
     def _fn(self, media_urls, media_types):
         from gateway.platforms.qqbot import QQAdapter
-        return QQAdapter._detect_message_type(media_urls, media_types)
+        adapter = QQAdapter(_make_config(app_id="a", client_secret="b"))
+        return adapter._detect_message_type(media_urls, media_types)
 
     def test_no_media(self):
         from gateway.platforms.base import MessageType

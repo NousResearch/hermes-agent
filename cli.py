@@ -8881,72 +8881,76 @@ class HermesCLI:
         # Voice push-to-talk key: configurable via config.yaml (voice.record_key)
         # Default: Ctrl+B (avoids conflict with Ctrl+R readline reverse-search)
         # Config uses "ctrl+b" format; prompt_toolkit expects "c-b" format.
-        # Only register the key binding if voice mode is enabled
-        if self._voice_mode:
-            try:
-                from hermes_cli.config import load_config
-                _raw_key = load_config().get("voice", {}).get("record_key", "ctrl+b")
-                _voice_key = _raw_key.lower().replace("ctrl+", "c-").replace("alt+", "a-")
-            except Exception:
-                _voice_key = "c-b"
+        # Always register a handler to prevent default behavior, but only
+        # activate voice recording when voice mode is enabled.
+        try:
+            from hermes_cli.config import load_config
+            _raw_key = load_config().get("voice", {}).get("record_key", "ctrl+b")
+            _voice_key = _raw_key.lower().replace("ctrl+", "c-").replace("alt+", "a-")
+        except Exception:
+            _voice_key = "c-b"
 
-            @kb.add(_voice_key)
-            def handle_voice_record(event):
-                """Toggle voice recording when voice mode is active.
+        @kb.add(_voice_key)
+        def handle_voice_record(event):
+            """Toggle voice recording when voice mode is active.
 
-                IMPORTANT: This handler runs in prompt_toolkit's event-loop thread.
-                Any blocking call here (locks, sd.wait, disk I/O) freezes the
-                entire UI.  All heavy work is dispatched to daemon threads.
-                """
-                # Always allow STOPPING a recording (even when agent is running)
-                if cli_ref._voice_recording:
-                    # Manual stop via push-to-talk key: stop continuous mode
-                    with cli_ref._voice_lock:
-                        cli_ref._voice_continuous = False
-                    # Flag clearing is handled atomically inside _voice_stop_and_transcribe
-                    event.app.invalidate()
-                    threading.Thread(
-                        target=cli_ref._voice_stop_and_transcribe,
-                        daemon=True,
-                    ).start()
-                else:
-                    # Guard: don't START recording during agent run or interactive prompts
-                    if cli_ref._agent_running:
-                        return
-                    if cli_ref._clarify_state or cli_ref._sudo_state or cli_ref._approval_state:
-                        return
-                    # Guard: don't start while a previous stop/transcribe cycle is
-                    # still running — recorder.stop() holds AudioRecorder._lock and
-                    # start() would block the event-loop thread waiting for it.
-                    if cli_ref._voice_processing:
-                        return
+            IMPORTANT: This handler runs in prompt_toolkit's event-loop thread.
+            Any blocking call here (locks, sd.wait, disk I/O) freezes the
+            entire UI.  All heavy work is dispatched to daemon threads.
+            """
+            # If voice mode is not enabled, silently consume the key
+            # to prevent any default behavior (e.g., terminal bell, exit)
+            if not cli_ref._voice_mode:
+                return
+            # Always allow STOPPING a recording (even when agent is running)
+            if cli_ref._voice_recording:
+                # Manual stop via push-to-talk key: stop continuous mode
+                with cli_ref._voice_lock:
+                    cli_ref._voice_continuous = False
+                # Flag clearing is handled atomically inside _voice_stop_and_transcribe
+                event.app.invalidate()
+                threading.Thread(
+                    target=cli_ref._voice_stop_and_transcribe,
+                    daemon=True,
+                ).start()
+            else:
+                # Guard: don't START recording during agent run or interactive prompts
+                if cli_ref._agent_running:
+                    return
+                if cli_ref._clarify_state or cli_ref._sudo_state or cli_ref._approval_state:
+                    return
+                # Guard: don't start while a previous stop/transcribe cycle is
+                # still running — recorder.stop() holds AudioRecorder._lock and
+                # start() would block the event-loop thread waiting for it.
+                if cli_ref._voice_processing:
+                    return
 
-                    # Interrupt TTS if playing, so user can start talking.
-                    # stop_playback() is fast (just terminates a subprocess).
-                    if not cli_ref._voice_tts_done.is_set():
-                        try:
-                            from tools.voice_mode import stop_playback
-                            stop_playback()
-                            cli_ref._voice_tts_done.set()
-                        except Exception:
-                            pass
+                # Interrupt TTS if playing, so user can start talking.
+                # stop_playback() is fast (just terminates a subprocess).
+                if not cli_ref._voice_tts_done.is_set():
+                    try:
+                        from tools.voice_mode import stop_playback
+                        stop_playback()
+                        cli_ref._voice_tts_done.set()
+                    except Exception:
+                        pass
 
-                    with cli_ref._voice_lock:
-                        cli_ref._voice_continuous = True
+                with cli_ref._voice_lock:
+                    cli_ref._voice_continuous = True
 
-                    # Dispatch to a daemon thread so play_beep(sd.wait),
-                    # AudioRecorder.start(lock acquire), and config I/O
-                    # never block the prompt_toolkit event loop.
-                    def _start_recording():
-                        try:
-                            cli_ref._voice_start_recording()
-                            if hasattr(cli_ref, '_app') and cli_ref._app:
-                                cli_ref._app.invalidate()
-                        except Exception as e:
-                            _cprint(f"\n{_DIM}Voice recording failed: {e}{_RST}")
+                # Dispatch to a daemon thread so play_beep(sd.wait),
+                # AudioRecorder.start(lock acquire), and config I/O
+                # never block the prompt_toolkit event loop.
+                def _start_recording():
+                    try:
+                        cli_ref._voice_start_recording()
+                        if hasattr(cli_ref, '_app') and cli_ref._app:
+                            cli_ref._app.invalidate()
+                    except Exception as e:
+                        _cprint(f"\n{_DIM}Voice recording failed: {e}{_RST}")
 
-                    threading.Thread(target=_start_recording, daemon=True).start()
-                    event.app.invalidate()
+                threading.Thread(target=_start_recording, daemon=True).start()
+                event.app.invalidate()
         from prompt_toolkit.keys import Keys
 
         @kb.add(Keys.BracketedPaste, eager=True)

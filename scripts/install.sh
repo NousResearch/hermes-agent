@@ -122,6 +122,43 @@ log_error() {
     echo -e "${RED}✗${NC} $1"
 }
 
+prompt_yes_no() {
+    local question="$1"
+    local default="${2:-yes}"
+    local prompt_suffix
+    local answer=""
+
+    # Use case patterns (not ${var,,}) so this works on bash 3.2 (macOS /bin/bash).
+    case "$default" in
+        [yY]|[yY][eE][sS]|[tT][rR][uU][eE]|1) prompt_suffix="[Y/n]" ;;
+        *) prompt_suffix="[y/N]" ;;
+    esac
+
+    if [ "$IS_INTERACTIVE" = true ]; then
+        read -r -p "$question $prompt_suffix " answer || answer=""
+    elif [ -r /dev/tty ] && [ -w /dev/tty ]; then
+        printf "%s %s " "$question" "$prompt_suffix" > /dev/tty
+        IFS= read -r answer < /dev/tty || answer=""
+    else
+        answer=""
+    fi
+
+    answer="${answer#"${answer%%[![:space:]]*}"}"
+    answer="${answer%"${answer##*[![:space:]]}"}"
+
+    if [ -z "$answer" ]; then
+        case "$default" in
+            [yY]|[yY][eE][sS]|[tT][rR][uU][eE]|1) return 0 ;;
+            *) return 1 ;;
+        esac
+    fi
+
+    case "$answer" in
+        [yY]|[yY][eE][sS]) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 is_termux() {
     [ -n "${TERMUX_VERSION:-}" ] || [[ "${PREFIX:-}" == *"com.termux/files/usr"* ]]
 }
@@ -606,9 +643,7 @@ install_system_packages() {
                 echo ""
                 log_info "sudo is needed ONLY to install optional system packages (${pkgs[*]}) via your package manager."
                 log_info "Hermes Agent itself does not require or retain root access."
-                read -p "Install ${description}? (requires sudo) [y/N] " -n 1 -r
-                echo
-                if [[ $REPLY =~ ^[Yy]$ ]]; then
+                if prompt_yes_no "Install ${description}? (requires sudo)" "no"; then
                     if sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a $install_cmd; then
                         [ "$need_ripgrep" = true ] && HAS_RIPGREP=true && log_success "ripgrep installed"
                         [ "$need_ffmpeg" = true ]  && HAS_FFMPEG=true  && log_success "ffmpeg installed"
@@ -621,9 +656,7 @@ install_system_packages() {
                 echo ""
                 log_info "sudo is needed ONLY to install optional system packages (${pkgs[*]}) via your package manager."
                 log_info "Hermes Agent itself does not require or retain root access."
-                read -p "Install ${description}? [Y/n] " -n 1 -r < /dev/tty
-                echo
-                if [[ $REPLY =~ ^[Yy]$ ]] || [[ -z $REPLY ]]; then
+                if prompt_yes_no "Install ${description}?" "yes"; then
                     if sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a $install_cmd < /dev/tty; then
                         [ "$need_ripgrep" = true ] && HAS_RIPGREP=true && log_success "ripgrep installed"
                         [ "$need_ffmpeg" = true ]  && HAS_FFMPEG=true  && log_success "ffmpeg installed"
@@ -863,9 +896,7 @@ install_deps() {
                 else
                     log_info "sudo is needed ONLY to install build tools (build-essential, python3-dev, libffi-dev) via apt."
                     log_info "Hermes Agent itself does not require or retain root access."
-                    read -p "Install build tools? [Y/n] " -n 1 -r < /dev/tty
-                    echo
-                    if [[ $REPLY =~ ^[Yy]$ ]] || [[ -z $REPLY ]]; then
+                    if prompt_yes_no "Install build tools?" "yes"; then
                         sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get install -y -qq build-essential python3-dev libffi-dev >/dev/null 2>&1 || true
                         log_success "Build tools installed"
                     fi
@@ -1246,9 +1277,7 @@ maybe_start_gateway() {
             log_info "WhatsApp is enabled but not yet paired."
             log_info "Running 'hermes whatsapp' to pair via QR code..."
             echo ""
-            read -p "Pair WhatsApp now? [Y/n] " -n 1 -r
-            echo
-            if [[ $REPLY =~ ^[Yy]$ ]] || [[ -z $REPLY ]]; then
+            if prompt_yes_no "Pair WhatsApp now?" "yes"; then
                 HERMES_CMD="$(get_hermes_command_path)"
                 $HERMES_CMD whatsapp || true
             fi
@@ -1263,14 +1292,18 @@ maybe_start_gateway() {
     fi
 
     echo ""
+    local should_install_gateway=false
     if [ "$DISTRO" = "termux" ]; then
-        read -p "Would you like to start the gateway in the background? [Y/n] " -n 1 -r < /dev/tty
+        if prompt_yes_no "Would you like to start the gateway in the background?" "yes"; then
+            should_install_gateway=true
+        fi
     else
-        read -p "Would you like to install the gateway as a background service? [Y/n] " -n 1 -r < /dev/tty
+        if prompt_yes_no "Would you like to install the gateway as a background service?" "yes"; then
+            should_install_gateway=true
+        fi
     fi
-    echo
 
-    if [[ $REPLY =~ ^[Yy]$ ]] || [[ -z $REPLY ]]; then
+    if [ "$should_install_gateway" = true ]; then
         HERMES_CMD="$(get_hermes_command_path)"
 
         if [ "$DISTRO" != "termux" ] && command -v systemctl &> /dev/null; then

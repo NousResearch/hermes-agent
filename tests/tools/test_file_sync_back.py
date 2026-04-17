@@ -57,19 +57,36 @@ def _make_manager(
     tmp_path: Path,
     file_mapping: list[tuple[str, str]] | None = None,
     bulk_download_fn=None,
+    seed_pushed_state: bool = True,
 ) -> FileSyncManager:
     """Create a FileSyncManager wired for testing.
 
     *file_mapping* is a list of (host_path, remote_path) tuples that
     ``get_files_fn`` returns.  If *None* an empty list is used.
+
+    When *seed_pushed_state* is True (default), populate ``_pushed_hashes``
+    from the mapping so sync_back doesn't early-return on the "nothing
+    previously pushed" guard. Set False to test the noop path.
     """
     mapping = file_mapping or []
-    return FileSyncManager(
+    mgr = FileSyncManager(
         get_files_fn=lambda: mapping,
         upload_fn=MagicMock(),
         delete_fn=MagicMock(),
         bulk_download_fn=bulk_download_fn,
     )
+    if seed_pushed_state:
+        # Seed _pushed_hashes so sync_back's "nothing previously pushed"
+        # guard does not early-return. Populate from the mapping when we
+        # can; otherwise drop a sentinel entry.
+        for host_path, remote_path in mapping:
+            if os.path.exists(host_path):
+                mgr._pushed_hashes[remote_path] = _sha256_file(host_path)
+            else:
+                mgr._pushed_hashes[remote_path] = "0" * 64
+        if not mgr._pushed_hashes:
+            mgr._pushed_hashes["/_sentinel"] = "0" * 64
+    return mgr
 
 
 # ---------------------------------------------------------------------------
@@ -410,3 +427,47 @@ class TestSyncBackSIGINT:
         assert not exc, f"sync_back raised: {exc}"
         # signal.signal should NOT have been called from the worker thread
         assert len(signal_called) == 0
+
+
+class TestSyncBackSizeCap:
+    """The size cap refuses to extract tars above the configured limit."""
+
+    def test_sync_back_refuses_oversized_tar(self, tmp_path, caplog):
+        """A tar larger than _SYNC_BACK_MAX_BYTES should be skipped with a warning."""
+        # Build a download_fn that writes a small tar, but patch the cap
+        # so the test doesn't need to produce a 2 GiB file.
+        skill_host = _write_file(tmp_path / "host_skill.md", b"original")
+        files = {"root/.hermes/skill.md": b"remote_version"}
+        download_fn = _make_download_fn(files)
+
+        mgr = _make_manager(
+            tmp_path,
+            file_mapping=[(skill_host, "/root/.hermes/skill.md")],
+            bulk_download_fn=download_fn,
+        )
+
+        # Cap at 1 byte so any non-empty tar exceeds it
+        with caplog.at_level(logging.WARNING, logger="tools.environments.file_sync"):
+            with patch("tools.environments.file_sync._SYNC_BACK_MAX_BYTES", 1):
+                mgr.sync_back(hermes_home=tmp_path / ".hermes")
+
+        # Host file should be untouched because extraction was skipped
+        assert Path(skill_host).read_bytes() == b"original"
+        # Warning should mention the cap
+        assert any("cap" in r.message for r in caplog.records)
+
+    def test_sync_back_applies_when_under_cap(self, tmp_path):
+        """A tar under the cap should extract normally (sanity check)."""
+        host_file = _write_file(tmp_path / "host_skill.md", b"original")
+        files = {"root/.hermes/skill.md": b"remote_version"}
+        download_fn = _make_download_fn(files)
+
+        mgr = _make_manager(
+            tmp_path,
+            file_mapping=[(host_file, "/root/.hermes/skill.md")],
+            bulk_download_fn=download_fn,
+        )
+
+        # Default cap (2 GiB) is far above our tiny tar; extraction should proceed
+        mgr.sync_back(hermes_home=tmp_path / ".hermes")
+        assert Path(host_file).read_bytes() == b"remote_version"

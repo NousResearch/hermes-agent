@@ -7,6 +7,7 @@ and resumed on next creation, preserving the filesystem across sessions.
 
 import logging
 import math
+import os
 import shlex
 import threading
 from pathlib import Path
@@ -170,13 +171,16 @@ class DaytonaEnvironment(BaseEnvironment):
     def _daytona_bulk_download(self, dest: Path) -> None:
         """Download remote .hermes/ as a tar archive."""
         rel_base = f"{self._remote_home}/.hermes".lstrip("/")
+        # PID-suffixed remote temp path avoids collisions if sync_back fires
+        # concurrently for the same sandbox (e.g. retry after partial failure).
+        remote_tar = f"/tmp/.hermes_sync.{os.getpid()}.tar"
         self._sandbox.process.exec(
-            f"tar cf /tmp/.hermes_sync.tar -C / {shlex.quote(rel_base)}"
+            f"tar cf {shlex.quote(remote_tar)} -C / {shlex.quote(rel_base)}"
         )
-        self._sandbox.fs.download_file("/tmp/.hermes_sync.tar", str(dest))
+        self._sandbox.fs.download_file(remote_tar, str(dest))
         # Clean up remote temp file
         try:
-            self._sandbox.process.exec("rm -f /tmp/.hermes_sync.tar")
+            self._sandbox.process.exec(f"rm -f {shlex.quote(remote_tar)}")
         except Exception:
             pass  # best-effort cleanup
 
@@ -227,13 +231,21 @@ class DaytonaEnvironment(BaseEnvironment):
         return _ThreadedProcessHandle(exec_fn, cancel_fn=cancel)
 
     def cleanup(self):
-        if self._sync_manager:
-            logger.info("Daytona: syncing files from sandbox...")
-            self._sync_manager.sync_back()
-
         with self._lock:
             if self._sandbox is None:
                 return
+
+            # Sync remote changes back to host before teardown. Running
+            # inside the lock (and after the _sandbox is None guard) avoids
+            # firing sync_back on an already-cleaned-up env, which would
+            # trigger a 3-attempt retry storm against a nil sandbox.
+            if self._sync_manager:
+                logger.info("Daytona: syncing files from sandbox...")
+                try:
+                    self._sync_manager.sync_back()
+                except Exception as e:
+                    logger.warning("Daytona: sync_back failed: %s", e)
+
             try:
                 if self._persistent:
                     self._sandbox.stop()

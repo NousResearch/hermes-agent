@@ -12,7 +12,10 @@ from gateway.qq_intents import (
     _QQ_GROUP_MODERATION_REASON_RE,
     _QQ_GROUP_MODERATION_USER_PATTERNS,
 )
-from gateway.group_control_intents import strip_current_group_reference_terms
+from gateway.group_control_intents import (
+    looks_like_group_listen_disable_request,
+    strip_current_group_reference_terms,
+)
 
 
 def extract_qq_oral_moderation_duration_seconds(message_text: str) -> int | None:
@@ -92,6 +95,8 @@ def match_qq_group_moderation_request(
 ) -> tuple[dict[str, object] | None, str | None]:
     normalized_body = str(body or "").strip()
     if not normalized_body:
+        return None, None
+    if looks_like_group_listen_disable_request(normalized_body):
         return None, None
 
     action = str(action_matcher(normalized_body) or "").strip()

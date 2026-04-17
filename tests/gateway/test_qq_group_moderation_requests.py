@@ -63,3 +63,23 @@ def test_match_qq_group_moderation_request_rejects_non_admin():
 
     assert tool_args is None
     assert error == "admin only"
+
+
+def test_match_qq_group_moderation_request_ignores_group_cleanup_phrase():
+    source = _make_source(chat_type="dm")
+
+    tool_args, error = match_qq_group_moderation_request(
+        source=source,
+        body="726109087群你已经被踢出了 去掉",
+        admin_ids_configured=True,
+        is_admin_user=True,
+        admin_only_message="admin only",
+        action_matcher=lambda body: "kick_user",
+        target_extractor=lambda current_source, body: "group:726109087",
+        user_query_extractor=lambda body: "你",
+        reason_extractor=lambda body: "",
+        duration_extractor=lambda body: None,
+    )
+
+    assert tool_args is None
+    assert error is None

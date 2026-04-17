@@ -498,6 +498,37 @@ async def test_admin_dm_stop_monitoring_request_does_not_misparse_bot_pronoun_as
 
 
 @pytest.mark.asyncio
+async def test_admin_dm_can_remove_group_from_monitoring_after_bot_was_kicked():
+    runner = _make_runner(auto_background_work=True)
+    runner.config.platforms[Platform.QQ_NAPCAT].extra["admin_users"] = ["179033731"]
+    event = _make_event("726109087群你已经被踢出了 去掉")
+
+    with patch(
+        "tools.qq_control_tool.qq_control_tool",
+        return_value=json.dumps(
+            {
+                "success": True,
+                "policy": {
+                    "group_id": "726109087",
+                    "mode": "default",
+                    "archive_enabled": False,
+                    "daily_report_enabled": False,
+                },
+            },
+            ensure_ascii=False,
+        ),
+    ) as control_mock:
+        result = await runner._handle_message(event)
+
+    runner._run_agent.assert_not_awaited()
+    assert "726109087" in result
+    assert "已停止" in result
+    args = control_mock.call_args.args[0]
+    assert args["action"] == "disable_group"
+    assert args["target"] == "group:726109087"
+
+
+@pytest.mark.asyncio
 async def test_admin_dm_can_orally_send_message_to_explicit_group_same_turn():
     runner = _make_runner(auto_background_work=True)
     runner.config.platforms[Platform.QQ_NAPCAT].extra["admin_users"] = ["179033731"]

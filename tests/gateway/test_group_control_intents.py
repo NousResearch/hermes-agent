@@ -23,6 +23,7 @@ def test_has_current_group_reference_matches_shared_current_group_terms():
 def test_listen_disable_request_supports_resume_chat_wording():
     assert looks_like_group_listen_disable_request("停止QQ 群 192903718 的监听采集,允许开始聊天")
     assert looks_like_group_listen_disable_request("这个群恢复聊天，不要监听采集了")
+    assert looks_like_group_listen_disable_request("726109087群你已经被踢出了 去掉")
     assert not looks_like_group_listen_disable_request("这个群只监听，不要走大模型")
 
 

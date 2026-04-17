@@ -1,6 +1,6 @@
 import type { DetailsMode } from '../types.js'
 
-const DETAILS_MODES: DetailsMode[] = ['hidden', 'collapsed', 'expanded']
+const MODES = ['hidden', 'collapsed', 'expanded'] as const
 
 const THINKING_FALLBACK: Record<string, DetailsMode> = {
   collapsed: 'collapsed',
@@ -11,12 +11,10 @@ const THINKING_FALLBACK: Record<string, DetailsMode> = {
 export const parseDetailsMode = (v: unknown): DetailsMode | null => {
   const s = typeof v === 'string' ? v.trim().toLowerCase() : ''
 
-  return DETAILS_MODES.includes(s as DetailsMode) ? (s as DetailsMode) : null
+  return MODES.find(m => m === s) ?? null
 }
 
-export const resolveDetailsMode = (
-  d: { details_mode?: unknown; thinking_mode?: unknown } | null | undefined
-): DetailsMode =>
+export const resolveDetailsMode = (d?: { details_mode?: unknown; thinking_mode?: unknown } | null): DetailsMode =>
   parseDetailsMode(d?.details_mode) ??
   THINKING_FALLBACK[
     String(d?.thinking_mode ?? '')
@@ -25,5 +23,4 @@ export const resolveDetailsMode = (
   ] ??
   'collapsed'
 
-export const nextDetailsMode = (m: DetailsMode): DetailsMode =>
-  DETAILS_MODES[(DETAILS_MODES.indexOf(m) + 1) % DETAILS_MODES.length]!
+export const nextDetailsMode = (m: DetailsMode): DetailsMode => MODES[(MODES.indexOf(m) + 1) % MODES.length]!

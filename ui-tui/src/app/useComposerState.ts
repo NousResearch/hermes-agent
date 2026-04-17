@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -97,11 +97,7 @@ export function useComposerState({ gw, onClipboardPaste, submitRef }: UseCompose
       }
     }
 
-    try {
-      unlinkSync(file)
-    } catch {
-      /* noop */
-    }
+    rmSync(file, { force: true })
   }, [input, inputBuf, submitRef])
 
   const actions = useMemo(

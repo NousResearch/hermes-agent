@@ -7,10 +7,6 @@ import { findSlashCommand } from './slash/registry.js'
 import type { SlashRunCtx } from './slash/types.js'
 import { getUiState } from './uiStore.js'
 
-const titleCase = (name: string) => name.charAt(0).toUpperCase() + name.slice(1)
-
-const isLong = (text: string) => text.length > 180 || text.split('\n').filter(Boolean).length > 2
-
 export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => boolean {
   const { gw } = ctx.gateway
   const { catalog } = ctx.local
@@ -79,8 +75,9 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
 
         const body = r?.output || `/${parsed.name}: no output`
         const text = r?.warning ? `warning: ${r.warning}\n${body}` : body
+        const long = text.length > 180 || text.split('\n').filter(Boolean).length > 2
 
-        isLong(text) ? page(text, titleCase(parsed.name)) : sys(text)
+        long ? page(text, parsed.name[0]!.toUpperCase() + parsed.name.slice(1)) : sys(text)
       })
       .catch(() => {
         gw.request('command.dispatch', { arg: parsed.arg, name: parsed.name, session_id: sid })

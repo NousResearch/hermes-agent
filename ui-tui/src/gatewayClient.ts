@@ -12,49 +12,34 @@ const STARTUP_TIMEOUT_MS = Math.max(5000, parseInt(process.env.HERMES_TUI_STARTU
 const REQUEST_TIMEOUT_MS = Math.max(30000, parseInt(process.env.HERMES_TUI_RPC_TIMEOUT_MS ?? '120000', 10) || 120000)
 
 const resolvePython = (root: string) => {
-  const configured = process.env.HERMES_PYTHON?.trim()
+  const configured = process.env.HERMES_PYTHON?.trim() || process.env.PYTHON?.trim()
 
   if (configured) {
     return configured
   }
 
-  const envPython = process.env.PYTHON?.trim()
-
-  if (envPython) {
-    return envPython
-  }
-
   const venv = process.env.VIRTUAL_ENV?.trim()
 
-  const candidates = [
-    venv ? resolve(venv, 'bin/python') : '',
-    venv ? resolve(venv, 'Scripts/python.exe') : '',
+  const hit = [
+    venv && resolve(venv, 'bin/python'),
+    venv && resolve(venv, 'Scripts/python.exe'),
     resolve(root, '.venv/bin/python'),
     resolve(root, '.venv/bin/python3'),
     resolve(root, 'venv/bin/python'),
     resolve(root, 'venv/bin/python3')
-  ].filter(Boolean)
+  ].find(p => p && existsSync(p))
 
-  const hit = candidates.find(path => existsSync(path))
-
-  if (hit) {
-    return hit
-  }
-
-  return process.platform === 'win32' ? 'python' : 'python3'
+  return hit || (process.platform === 'win32' ? 'python' : 'python3')
 }
 
-const asGatewayEvent = (value: unknown): GatewayEvent | null => {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    return null
-  }
-
-  return typeof (value as { type?: unknown }).type === 'string' ? (value as GatewayEvent) : null
-}
+const asGatewayEvent = (value: unknown): GatewayEvent | null =>
+  value && typeof value === 'object' && !Array.isArray(value) && typeof (value as { type?: unknown }).type === 'string'
+    ? (value as GatewayEvent)
+    : null
 
 interface Pending {
-  resolve: (v: unknown) => void
   reject: (e: Error) => void
+  resolve: (v: unknown) => void
 }
 
 export class GatewayClient extends EventEmitter {
@@ -81,9 +66,7 @@ export class GatewayClient extends EventEmitter {
     }
 
     if (this.subscribed) {
-      this.emit('event', ev)
-
-      return
+      return void this.emit('event', ev)
     }
 
     this.bufferedEvents.push(ev)
@@ -94,8 +77,9 @@ export class GatewayClient extends EventEmitter {
     const python = resolvePython(root)
     const cwd = process.env.HERMES_CWD || root
     const env = { ...process.env }
-    const pyPath = (env.PYTHONPATH ?? '').trim()
+    const pyPath = env.PYTHONPATH?.trim()
     env.PYTHONPATH = pyPath ? `${root}${delimiter}${pyPath}` : root
+
     this.ready = false
     this.bufferedEvents = []
     this.pendingExit = undefined
@@ -121,11 +105,7 @@ export class GatewayClient extends EventEmitter {
       this.publish({ type: 'gateway.start_timeout', payload: { cwd, python } })
     }, STARTUP_TIMEOUT_MS)
 
-    this.proc = spawn(python, ['-m', 'tui_gateway.entry'], {
-      cwd,
-      env,
-      stdio: ['pipe', 'pipe', 'pipe']
-    })
+    this.proc = spawn(python, ['-m', 'tui_gateway.entry'], { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] })
 
     this.stdoutRl = createInterface({ input: this.proc.stdout! })
     this.stdoutRl.on('line', raw => {
@@ -133,8 +113,9 @@ export class GatewayClient extends EventEmitter {
         this.dispatch(JSON.parse(raw))
       } catch {
         const preview = raw.trim().slice(0, MAX_LOG_PREVIEW) || '(empty line)'
+
         this.pushLog(`[protocol] malformed stdout: ${preview}`)
-        this.publish({ type: 'gateway.protocol_error', payload: { preview } } satisfies GatewayEvent)
+        this.publish({ type: 'gateway.protocol_error', payload: { preview } })
       }
     })
 
@@ -147,13 +128,13 @@ export class GatewayClient extends EventEmitter {
       }
 
       this.pushLog(line)
-      this.publish({ type: 'gateway.stderr', payload: { line } } satisfies GatewayEvent)
+      this.publish({ type: 'gateway.stderr', payload: { line } })
     })
 
     this.proc.on('error', err => {
       this.pushLog(`[spawn] ${err.message}`)
       this.rejectPending(new Error(`gateway error: ${err.message}`))
-      this.publish({ type: 'gateway.stderr', payload: { line: `[spawn] ${err.message}` } } satisfies GatewayEvent)
+      this.publish({ type: 'gateway.stderr', payload: { line: `[spawn] ${err.message}` } })
     })
 
     this.proc.on('exit', code => {
@@ -181,6 +162,7 @@ export class GatewayClient extends EventEmitter {
 
       if (msg.error) {
         const err = msg.error as { message?: unknown } | null | undefined
+
         p.reject(new Error(typeof err?.message === 'string' ? err.message : 'request failed'))
       } else {
         p.resolve(msg.result)
@@ -199,30 +181,29 @@ export class GatewayClient extends EventEmitter {
   }
 
   private pushLog(line: string) {
-    this.logs.push(line)
-
-    if (this.logs.length > MAX_GATEWAY_LOG_LINES) {
+    if (this.logs.push(line) > MAX_GATEWAY_LOG_LINES) {
       this.logs.splice(0, this.logs.length - MAX_GATEWAY_LOG_LINES)
     }
   }
 
   private rejectPending(err: Error) {
-    for (const [id, pending] of this.pending) {
-      this.pending.delete(id)
-      pending.reject(err)
+    for (const p of this.pending.values()) {
+      p.reject(err)
     }
+
+    this.pending.clear()
   }
 
   drain() {
     this.subscribed = true
-    const pending = this.bufferedEvents.splice(0)
 
-    for (const ev of pending) {
+    for (const ev of this.bufferedEvents.splice(0)) {
       this.emit('event', ev)
     }
 
     if (this.pendingExit !== undefined) {
       const code = this.pendingExit
+
       this.pendingExit = undefined
       this.emit('exit', code)
     }

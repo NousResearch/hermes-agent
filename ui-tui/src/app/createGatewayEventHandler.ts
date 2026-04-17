@@ -35,9 +35,6 @@ const dropBgTask = (taskId: string) =>
     return { ...state, bgTasks: next }
   })
 
-const statusToneFrom = (kind: string): 'error' | 'info' | 'warn' =>
-  kind === 'error' ? 'error' : kind === 'warn' || kind === 'approval' ? 'warn' : 'info'
-
 const pushUnique =
   (max: number) =>
   <T>(xs: T[], x: T): T[] =>
@@ -213,7 +210,10 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         if (turnController.lastStatusNote !== p.text) {
           turnController.lastStatusNote = p.text
-          turnController.pushActivity(p.text, statusToneFrom(p.kind))
+          turnController.pushActivity(
+            p.text,
+            p.kind === 'error' ? 'error' : p.kind === 'warn' || p.kind === 'approval' ? 'warn' : 'info'
+          )
         }
 
         restoreStatusAfter(4000)

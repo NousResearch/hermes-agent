@@ -11,8 +11,6 @@ type InkExt = typeof Ink & {
 const ink = Ink as unknown as InkExt
 const { Box, Text, useStdin, useInput, stringWidth, useDeclaredCursor, useTerminalFocus } = ink
 
-// ── ANSI escapes ─────────────────────────────────────────────────────
-
 const ESC = '\x1b'
 const INV = `${ESC}[7m`
 const INV_OFF = `${ESC}[27m`
@@ -24,8 +22,6 @@ const BRACKET_PASTE = new RegExp(`${ESC}?\\[20[01]~`, 'g')
 
 const invert = (s: string) => INV + s + INV_OFF
 const dim = (s: string) => DIM + s + DIM_OFF
-
-// ── Grapheme segmenter (lazy singleton) ──────────────────────────────
 
 let _seg: Intl.Segmenter | null = null
 const seg = () => (_seg ??= new Intl.Segmenter(undefined, { granularity: 'grapheme' }))
@@ -106,8 +102,6 @@ function nextPos(s: string, p: number) {
   return s.length
 }
 
-// ── Word movement ────────────────────────────────────────────────────
-
 function wordLeft(s: string, p: number) {
   let i = snapPos(s, p) - 1
 
@@ -135,8 +129,6 @@ function wordRight(s: string, p: number) {
 
   return i
 }
-
-// ── Cursor layout (line/column from offset + terminal width) ─────────
 
 function cursorLayout(value: string, cursor: number, cols: number) {
   const pos = Math.max(0, Math.min(cursor, value.length))
@@ -226,8 +218,6 @@ function offsetFromPosition(value: string, row: number, col: number, cols: numbe
   return lastOffset
 }
 
-// ── Render value with inverse-video cursor ───────────────────────────
-
 function renderWithCursor(value: string, cursor: number) {
   const pos = Math.max(0, Math.min(cursor, value.length))
 
@@ -249,8 +239,6 @@ function renderWithCursor(value: string, cursor: number) {
 
   return done ? out : out + invert(' ')
 }
-
-// ── Forward-delete detection hook ────────────────────────────────────
 
 function useFwdDelete(active: boolean) {
   const ref = useRef(false)
@@ -275,29 +263,6 @@ function useFwdDelete(active: boolean) {
   return ref
 }
 
-// ── Types ────────────────────────────────────────────────────────────
-
-export interface PasteEvent {
-  bracketed?: boolean
-  cursor: number
-  hotkey?: boolean
-  text: string
-  value: string
-}
-
-interface Props {
-  columns?: number
-  value: string
-  onChange: (v: string) => void
-  onSubmit?: (v: string) => void
-  onPaste?: (e: PasteEvent) => { cursor: number; value: string } | null
-  mask?: string
-  placeholder?: string
-  focus?: boolean
-}
-
-// ── Component ────────────────────────────────────────────────────────
-
 export function TextInput({
   columns = 80,
   value,
@@ -307,7 +272,7 @@ export function TextInput({
   mask,
   placeholder = '',
   focus = true
-}: Props) {
+}: TextInputProps) {
   const [cur, setCur] = useState(value.length)
   const fwdDel = useFwdDelete(focus)
   const termFocus = useTerminalFocus()
@@ -331,8 +296,6 @@ export function TextInput({
   const raw = self.current ? vRef.current : value
   const display = mask ? raw.replace(/[^\n]/g, mask[0] ?? '*') : raw
 
-  // ── Cursor declaration ───────────────────────────────────────────
-
   const layout = useMemo(() => cursorLayout(display, cur, columns), [columns, cur, display])
 
   const boxRef = useDeclaredCursor({
@@ -352,18 +315,6 @@ export function TextInput({
 
     return renderWithCursor(display, cur)
   }, [cur, display, focus, placeholder])
-
-  const clickCursor = (e: { localRow?: number; localCol?: number }) => {
-    if (!focus) {
-      return
-    }
-
-    const next = offsetFromPosition(display, e.localRow ?? 0, e.localCol ?? 0, columns)
-    setCur(next)
-    curRef.current = next
-  }
-
-  // ── Sync external value changes ──────────────────────────────────
 
   useEffect(() => {
     if (self.current) {
@@ -385,8 +336,6 @@ export function TextInput({
     },
     []
   )
-
-  // ── Buffer ops (synchronous, ref-based) ──────────────────────────
 
   const commit = (next: string, nextCur: number, track = true) => {
     const prev = vRef.current
@@ -450,18 +399,14 @@ export function TextInput({
 
   const ins = (v: string, c: number, s: string) => v.slice(0, c) + s + v.slice(c)
 
-  // ── Input handler ────────────────────────────────────────────────
-
   useInput(
     (inp: string, k: Key, event: InputEvent) => {
-      const raw = event.keypress.raw
-      const metaPaste = raw === '\x1bv' || raw === '\x1bV'
+      const eventRaw = event.keypress.raw
 
-      if (metaPaste) {
+      if (eventRaw === '\x1bv' || eventRaw === '\x1bV') {
         return void emitPaste({ cursor: curRef.current, hotkey: true, text: '', value: vRef.current })
       }
 
-      // Delegated to App
       if (
         k.upArrow ||
         k.downArrow ||
@@ -487,7 +432,6 @@ export function TextInput({
       let v = vRef.current
       const mod = k.ctrl || k.meta
 
-      // Undo / redo
       if (k.ctrl && inp === 'z') {
         return swap(undo, redo)
       }
@@ -496,7 +440,6 @@ export function TextInput({
         return swap(redo, undo)
       }
 
-      // Navigation
       if (k.home || (k.ctrl && inp === 'a')) {
         c = 0
       } else if (k.end || (k.ctrl && inp === 'e')) {
@@ -509,10 +452,7 @@ export function TextInput({
         c = wordLeft(v, c)
       } else if (k.meta && inp === 'f') {
         c = wordRight(v, c)
-      }
-
-      // Deletion
-      else if ((k.backspace || k.delete) && !fwdDel.current && c > 0) {
+      } else if ((k.backspace || k.delete) && !fwdDel.current && c > 0) {
         if (mod) {
           const t = wordLeft(v, c)
           v = v.slice(0, t) + v.slice(c)
@@ -538,31 +478,28 @@ export function TextInput({
         c = 0
       } else if (k.ctrl && inp === 'k') {
         v = v.slice(0, c)
-      }
-
-      // Text insertion / paste buffering
-      else if (inp.length > 0) {
+      } else if (inp.length > 0) {
         const bracketed = inp.includes('[200~')
-        const raw = inp.replace(BRACKET_PASTE, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+        const text = inp.replace(BRACKET_PASTE, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n')
 
-        if (bracketed && emitPaste({ bracketed: true, cursor: c, text: raw, value: v })) {
+        if (bracketed && emitPaste({ bracketed: true, cursor: c, text, value: v })) {
           return
         }
 
-        if (!raw) {
+        if (!text) {
           return
         }
 
-        if (raw === '\n') {
+        if (text === '\n') {
           return commit(ins(v, c, '\n'), c + 1)
         }
 
-        if (raw.length > 1 || raw.includes('\n')) {
+        if (text.length > 1 || text.includes('\n')) {
           if (!pasteBuf.current) {
             pastePos.current = c
           }
 
-          pasteBuf.current += raw
+          pasteBuf.current += text
 
           if (pasteTimer.current) {
             clearTimeout(pasteTimer.current)
@@ -573,9 +510,9 @@ export function TextInput({
           return
         }
 
-        if (PRINTABLE.test(raw)) {
-          v = v.slice(0, c) + raw + v.slice(c)
-          c += raw.length
+        if (PRINTABLE.test(text)) {
+          v = v.slice(0, c) + text + v.slice(c)
+          c += text.length
         } else {
           return
         }
@@ -588,11 +525,39 @@ export function TextInput({
     { isActive: focus }
   )
 
-  // ── Render ───────────────────────────────────────────────────────
-
   return (
-    <Box onClick={clickCursor} ref={boxRef}>
+    <Box
+      onClick={(e: { localRow?: number; localCol?: number }) => {
+        if (!focus) {
+          return
+        }
+
+        const next = offsetFromPosition(display, e.localRow ?? 0, e.localCol ?? 0, columns)
+        setCur(next)
+        curRef.current = next
+      }}
+      ref={boxRef}
+    >
       <Text wrap="wrap">{rendered}</Text>
     </Box>
   )
+}
+
+export interface PasteEvent {
+  bracketed?: boolean
+  cursor: number
+  hotkey?: boolean
+  text: string
+  value: string
+}
+
+interface TextInputProps {
+  columns?: number
+  focus?: boolean
+  mask?: string
+  onChange: (v: string) => void
+  onPaste?: (e: PasteEvent) => { cursor: number; value: string } | null
+  onSubmit?: (v: string) => void
+  placeholder?: string
+  value: string
 }

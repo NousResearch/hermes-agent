@@ -9,11 +9,11 @@ import { patchUiState } from '../../uiStore.js'
 import type { SlashCommand } from '../types.js'
 
 const flagFromArg = (arg: string, current: boolean): boolean | null => {
-  const mode = arg.trim().toLowerCase()
-
   if (!arg) {
     return !current
   }
+
+  const mode = arg.trim().toLowerCase()
 
   if (mode === 'on') {
     return true
@@ -46,14 +46,16 @@ export const coreCommands: SlashCommand[] = [
         sections.push({ text: `${ctx.local.catalog.skillCount} skill commands available — /skills to browse` })
       }
 
-      sections.push({
-        rows: [
-          ['/details [hidden|collapsed|expanded|cycle]', 'set agent detail visibility mode'],
-          ['/fortune [random|daily]', 'show a random or daily local fortune']
-        ],
-        title: 'TUI'
-      })
-      sections.push({ rows: HOTKEYS, title: 'Hotkeys' })
+      sections.push(
+        {
+          rows: [
+            ['/details [hidden|collapsed|expanded|cycle]', 'set agent detail visibility mode'],
+            ['/fortune [random|daily]', 'show a random or daily local fortune']
+          ],
+          title: 'TUI'
+        },
+        { rows: HOTKEYS, title: 'Hotkeys' }
+      )
 
       ctx.transcript.panel(ctx.ui.theme.brand.helpHeader, sections)
     }

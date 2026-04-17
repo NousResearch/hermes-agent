@@ -6,9 +6,7 @@ export function useQueue() {
   const queueEditRef = useRef<number | null>(null)
   const [queueEditIdx, setQueueEditIdx] = useState<number | null>(null)
 
-  const syncQueue = useCallback(() => {
-    setQueuedDisplay([...queueRef.current])
-  }, [])
+  const syncQueue = useCallback(() => setQueuedDisplay([...queueRef.current]), [])
 
   const setQueueEdit = useCallback((idx: number | null) => {
     queueEditRef.current = idx
@@ -39,12 +37,12 @@ export function useQueue() {
   )
 
   return {
-    queueRef,
-    queueEditRef,
-    queuedDisplay,
-    queueEditIdx,
-    enqueue,
     dequeue,
+    enqueue,
+    queueEditIdx,
+    queueEditRef,
+    queueRef,
+    queuedDisplay,
     replaceQ,
     setQueueEdit,
     syncQueue

@@ -29,14 +29,14 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
     }
   }
 
-  const cancelOverlayFromCtrlC = (live: ReturnType<typeof getUiState>) => {
+  const cancelOverlayFromCtrlC = () => {
     if (overlay.clarify) {
       return actions.answerClarify('')
     }
 
     if (overlay.approval) {
       return gateway
-        .rpc<ApprovalRespondResponse>('approval.respond', { choice: 'deny', session_id: live.sid })
+        .rpc<ApprovalRespondResponse>('approval.respond', { choice: 'deny', session_id: getUiState().sid })
         .then(r => r && (patchOverlayState({ approval: null }), actions.sys('denied')))
     }
 
@@ -172,7 +172,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       }
 
       if (isCtrl(key, ch, 'c')) {
-        cancelOverlayFromCtrlC(live)
+        cancelOverlayFromCtrlC()
       } else if (key.escape && overlay.picker) {
         patchOverlayState({ picker: false })
       }

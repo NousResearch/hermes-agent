@@ -10,19 +10,13 @@ const VISIBLE = 12
 
 const pageOffset = (count: number, sel: number) => Math.max(0, Math.min(sel - Math.floor(VISIBLE / 2), count - VISIBLE))
 
-export function ModelPicker({
-  gw,
-  onCancel,
-  onSelect,
-  sessionId,
-  t
-}: {
-  gw: GatewayClient
-  onCancel: () => void
-  onSelect: (value: string) => void
-  sessionId: string | null
-  t: Theme
-}) {
+const visibleItems = (items: string[], sel: number) => {
+  const off = pageOffset(items.length, sel)
+
+  return { items: items.slice(off, off + VISIBLE), off }
+}
+
+export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPickerProps) {
   const [providers, setProviders] = useState<ModelOptionProvider[]>([])
   const [currentModel, setCurrentModel] = useState('')
   const [err, setErr] = useState('')
@@ -65,12 +59,6 @@ export function ModelPicker({
 
   const provider = providers[providerIdx]
   const models = provider?.models ?? []
-
-  const visibleItems = (items: string[], sel: number) => {
-    const off = pageOffset(items.length, sel)
-
-    return { items: items.slice(off, off + VISIBLE), off }
-  }
 
   useInput((ch, key) => {
     if (key.escape) {
@@ -182,9 +170,11 @@ export function ModelPicker({
         <Text bold color={t.color.amber}>
           Select Provider
         </Text>
+
         <Text color={t.color.dim}>Current model: {currentModel || '(unknown)'}</Text>
         {provider?.warning ? <Text color={t.color.label}>warning: {provider.warning}</Text> : null}
         {off > 0 && <Text color={t.color.dim}> ↑ {off} more</Text>}
+
         {items.map((row, i) => {
           const idx = off + i
 
@@ -195,6 +185,7 @@ export function ModelPicker({
             </Text>
           )
         })}
+
         {off + VISIBLE < rows.length && <Text color={t.color.dim}> ↓ {rows.length - off - VISIBLE} more</Text>}
         <Text color={t.color.dim}>persist: {persistGlobal ? 'global' : 'session'} · g toggle</Text>
         <Text color={t.color.dim}>↑/↓ select · Enter choose · 1-9,0 quick · Esc cancel</Text>
@@ -209,10 +200,12 @@ export function ModelPicker({
       <Text bold color={t.color.amber}>
         Select Model
       </Text>
+
       <Text color={t.color.dim}>{provider?.name || '(unknown provider)'}</Text>
       {!models.length ? <Text color={t.color.dim}>no models listed for this provider</Text> : null}
       {provider?.warning ? <Text color={t.color.label}>warning: {provider.warning}</Text> : null}
       {off > 0 && <Text color={t.color.dim}> ↑ {off} more</Text>}
+
       {items.map((row, i) => {
         const idx = off + i
 
@@ -223,6 +216,7 @@ export function ModelPicker({
           </Text>
         )
       })}
+
       {off + VISIBLE < models.length && <Text color={t.color.dim}> ↓ {models.length - off - VISIBLE} more</Text>}
       <Text color={t.color.dim}>persist: {persistGlobal ? 'global' : 'session'} · g toggle</Text>
       <Text color={t.color.dim}>
@@ -230,4 +224,12 @@ export function ModelPicker({
       </Text>
     </Box>
   )
+}
+
+interface ModelPickerProps {
+  gw: GatewayClient
+  onCancel: () => void
+  onSelect: (value: string) => void
+  sessionId: string | null
+  t: Theme
 }

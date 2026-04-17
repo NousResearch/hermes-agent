@@ -5,14 +5,8 @@ import type { SlashCommand } from './types.js'
 
 export const SLASH_COMMANDS: SlashCommand[] = [...coreCommands, ...sessionCommands, ...opsCommands]
 
-const byName = new Map<string, SlashCommand>()
+const byName = new Map<string, SlashCommand>(
+  SLASH_COMMANDS.flatMap(cmd => [cmd.name, ...(cmd.aliases ?? [])].map(name => [name, cmd] as const))
+)
 
-for (const cmd of SLASH_COMMANDS) {
-  byName.set(cmd.name, cmd)
-
-  for (const alias of cmd.aliases ?? []) {
-    byName.set(alias, cmd)
-  }
-}
-
-export const findSlashCommand = (name: string): SlashCommand | undefined => byName.get(name.toLowerCase())
+export const findSlashCommand = (name: string) => byName.get(name.toLowerCase())

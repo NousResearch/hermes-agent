@@ -3,12 +3,12 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 
 const MAX = 1000
-const dir = join(process.env.HERMES_HOME ?? join(homedir(), '.hermes'))
+const dir = process.env.HERMES_HOME ?? join(homedir(), '.hermes')
 const file = join(dir, '.hermes_history')
 
 let cache: string[] | null = null
 
-export function load(): string[] {
+export function load() {
   if (cache) {
     return cache
   }
@@ -20,11 +20,10 @@ export function load(): string[] {
       return cache
     }
 
-    const lines = readFileSync(file, 'utf8').split('\n')
     const entries: string[] = []
     let current: string[] = []
 
-    for (const line of lines) {
+    for (const line of readFileSync(file, 'utf8').split('\n')) {
       if (line.startsWith('+')) {
         current.push(line.slice(1))
       } else if (current.length) {
@@ -45,7 +44,7 @@ export function load(): string[] {
   return cache
 }
 
-export function append(line: string): void {
+export function append(line: string) {
   const trimmed = line.trim()
 
   if (!trimmed) {
@@ -73,11 +72,11 @@ export function append(line: string): void {
 
     const encoded = trimmed
       .split('\n')
-      .map(l => '+' + l)
+      .map(l => `+${l}`)
       .join('\n')
 
     appendFileSync(file, `\n# ${ts}\n${encoded}\n`)
   } catch {
-    /* ignore */
+    void 0
   }
 }

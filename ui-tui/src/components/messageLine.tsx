@@ -18,14 +18,7 @@ export const MessageLine = memo(function MessageLine({
   isStreaming = false,
   msg,
   t
-}: {
-  cols: number
-  compact?: boolean
-  detailsMode?: DetailsMode
-  isStreaming?: boolean
-  msg: Msg
-  t: Theme
-}) {
+}: MessageLineProps) {
   if (msg.kind === 'trail' && msg.tools?.length) {
     return detailsMode === 'hidden' ? null : (
       <Box flexDirection="column" marginTop={1}>
@@ -110,3 +103,12 @@ export const MessageLine = memo(function MessageLine({
     </Box>
   )
 })
+
+interface MessageLineProps {
+  cols: number
+  compact?: boolean
+  detailsMode?: DetailsMode
+  isStreaming?: boolean
+  msg: Msg
+  t: Theme
+}

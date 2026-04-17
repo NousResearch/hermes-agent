@@ -170,18 +170,16 @@ export function useMainApp(gw: GatewayClient) {
       }
 
       const sel = selection.getState() as null | SelectionSnap
+      const top = s.getViewportTop()
+      const bottom = top + s.getViewportHeight() - 1
 
-      const focusOutside = (top: number, bottom: number) =>
+      if (
         !sel?.anchor ||
         !sel.focus ||
         sel.anchor.row < top ||
         sel.anchor.row > bottom ||
         (!sel.isDragging && (sel.focus.row < top || sel.focus.row > bottom))
-
-      const top = s.getViewportTop()
-      const bottom = top + s.getViewportHeight() - 1
-
-      if (focusOutside(top, bottom)) {
+      ) {
         return s.scrollBy(delta)
       }
 
@@ -197,12 +195,11 @@ export function useMainApp(gw: GatewayClient) {
 
       if (actual > 0) {
         selection.captureScrolledRows(top, top + actual - 1, 'above')
-        shift(-actual, top, bottom)
       } else {
         selection.captureScrolledRows(bottom + actual + 1, bottom, 'below')
-        shift(-actual, top, bottom)
       }
 
+      shift(-actual, top, bottom)
       s.scrollBy(delta)
     },
     [selection]

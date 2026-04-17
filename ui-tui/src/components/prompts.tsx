@@ -6,10 +6,11 @@ import type { ApprovalReq, ClarifyReq } from '../types.js'
 
 import { TextInput } from './textInput.js'
 
-export function ApprovalPrompt({ onChoice, req, t }: { onChoice: (s: string) => void; req: ApprovalReq; t: Theme }) {
+const OPTS = ['once', 'session', 'always', 'deny'] as const
+const LABELS = { always: 'Always allow', deny: 'Deny', once: 'Allow once', session: 'Allow this session' } as const
+
+export function ApprovalPrompt({ onChoice, req, t }: ApprovalPromptProps) {
   const [sel, setSel] = useState(3)
-  const opts = ['once', 'session', 'always', 'deny'] as const
-  const labels = { always: 'Always allow', deny: 'Deny', once: 'Allow once', session: 'Allow this session' } as const
 
   useInput((ch, key) => {
     if (key.upArrow && sel > 0) {
@@ -21,7 +22,7 @@ export function ApprovalPrompt({ onChoice, req, t }: { onChoice: (s: string) => 
     }
 
     if (key.return) {
-      onChoice(opts[sel]!)
+      onChoice(OPTS[sel]!)
     }
 
     if (ch === 'o') {
@@ -46,34 +47,25 @@ export function ApprovalPrompt({ onChoice, req, t }: { onChoice: (s: string) => 
       <Text bold color={t.color.warn}>
         ! DANGEROUS COMMAND: {req.description}
       </Text>
+
       <Text color={t.color.dim}> {req.command}</Text>
       <Text />
-      {opts.map((o, i) => (
+
+      {OPTS.map((o, i) => (
         <Text key={o}>
           <Text color={sel === i ? t.color.warn : t.color.dim}>{sel === i ? '▸ ' : '  '}</Text>
           <Text color={sel === i ? t.color.cornsilk : t.color.dim}>
-            [{o[0]}] {labels[o]}
+            [{o[0]}] {LABELS[o]}
           </Text>
         </Text>
       ))}
+
       <Text color={t.color.dim}>↑/↓ select · Enter confirm · o/s/a/d quick pick</Text>
     </Box>
   )
 }
 
-export function ClarifyPrompt({
-  cols = 80,
-  onAnswer,
-  onCancel,
-  req,
-  t
-}: {
-  cols?: number
-  onAnswer: (s: string) => void
-  onCancel: () => void
-  req: ClarifyReq
-  t: Theme
-}) {
+export function ClarifyPrompt({ cols = 80, onAnswer, onCancel, req, t }: ClarifyPromptProps) {
   const [sel, setSel] = useState(0)
   const [custom, setCustom] = useState('')
   const [typing, setTyping] = useState(false)
@@ -117,8 +109,6 @@ export function ClarifyPrompt({
   })
 
   if (typing || !choices.length) {
-    const hint = choices.length ? 'Enter send · Esc back · Ctrl+C cancel' : 'Enter send · Esc cancel · Ctrl+C cancel'
-
     return (
       <Box flexDirection="column">
         {heading}
@@ -128,7 +118,7 @@ export function ClarifyPrompt({
           <TextInput columns={Math.max(20, cols - 6)} onChange={setCustom} onSubmit={onAnswer} value={custom} />
         </Box>
 
-        <Text color={t.color.dim}>{hint}</Text>
+        <Text color={t.color.dim}>Enter send · Esc {choices.length ? 'back' : 'cancel'} · Ctrl+C cancel</Text>
       </Box>
     )
   }
@@ -149,4 +139,18 @@ export function ClarifyPrompt({
       <Text color={t.color.dim}>↑/↓ select · Enter confirm · 1-{choices.length} quick pick · Esc/Ctrl+C cancel</Text>
     </Box>
   )
+}
+
+interface ApprovalPromptProps {
+  onChoice: (s: string) => void
+  req: ApprovalReq
+  t: Theme
+}
+
+interface ClarifyPromptProps {
+  cols?: number
+  onAnswer: (s: string) => void
+  onCancel: () => void
+  req: ClarifyReq
+  t: Theme
 }

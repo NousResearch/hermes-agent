@@ -10,6 +10,7 @@ import type { Theme } from '../theme.js'
 import type { Msg, Usage } from '../types.js'
 
 const FACE_TICK_MS = 2500
+const HEART_COLORS = ['#ff5fa2', '#ff4d6d']
 
 function FaceTicker({ color }: { color: string }) {
   const [tick, setTick] = useState(() => Math.floor(Math.random() * 1000))
@@ -76,10 +77,8 @@ export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
       return
     }
 
-    const options = ['#ff5fa2', '#ff4d6d', t.color.amber]
-    const picked = options[Math.floor(Math.random() * options.length)]!
-
-    setColor(picked)
+    const palette = [...HEART_COLORS, t.color.amber]
+    setColor(palette[Math.floor(Math.random() * palette.length)]!)
     setActive(true)
 
     const id = setTimeout(() => setActive(false), 650)
@@ -102,19 +101,7 @@ export function StatusRule({
   sessionStartedAt,
   voiceLabel,
   t
-}: {
-  cwdLabel: string
-  cols: number
-  busy: boolean
-  status: string
-  statusColor: string
-  model: string
-  usage: Usage
-  bgCount: number
-  sessionStartedAt?: number | null
-  voiceLabel?: string
-  t: Theme
-}) {
+}: StatusRuleProps) {
   const pct = usage.context_percent
   const barColor = ctxBarColor(pct, t)
 
@@ -124,7 +111,6 @@ export function StatusRule({
       ? `${fmtK(usage.total)} tok`
       : ''
 
-  const pctLabel = pct != null ? `${pct}%` : ''
   const bar = usage.context_max ? ctxBar(pct) : ''
   const leftWidth = Math.max(12, cols - cwdLabel.length - 3)
 
@@ -139,7 +125,7 @@ export function StatusRule({
           {bar ? (
             <Text color={t.color.dim}>
               {' │ '}
-              <Text color={barColor}>[{bar}]</Text> <Text color={barColor}>{pctLabel}</Text>
+              <Text color={barColor}>[{bar}]</Text> <Text color={barColor}>{pct != null ? `${pct}%` : ''}</Text>
             </Text>
           ) : null}
           {sessionStartedAt ? (
@@ -152,6 +138,7 @@ export function StatusRule({
           {bgCount > 0 ? <Text color={t.color.dim}> │ {bgCount} bg</Text> : null}
         </Text>
       </Box>
+
       <Text color={t.color.bronze}> ─ </Text>
       <Text color={t.color.label}>{cwdLabel}</Text>
     </Box>
@@ -174,17 +161,7 @@ export function FloatBox({ children, color }: { children: ReactNode; color: stri
   )
 }
 
-export function StickyPromptTracker({
-  messages,
-  offsets,
-  scrollRef,
-  onChange
-}: {
-  messages: readonly Msg[]
-  offsets: ArrayLike<number>
-  scrollRef: RefObject<ScrollBoxHandle | null>
-  onChange: (text: string) => void
-}) {
+export function StickyPromptTracker({ messages, offsets, scrollRef, onChange }: StickyPromptTrackerProps) {
   useSyncExternalStore(
     useCallback((cb: () => void) => scrollRef.current?.subscribe(cb) ?? (() => {}), [scrollRef]),
     () => {
@@ -210,13 +187,9 @@ export function StickyPromptTracker({
   return null
 }
 
-export function TranscriptScrollbar({ scrollRef, t }: { scrollRef: RefObject<ScrollBoxHandle | null>; t: Theme }) {
+export function TranscriptScrollbar({ scrollRef, t }: TranscriptScrollbarProps) {
   useSyncExternalStore(
     useCallback((cb: () => void) => scrollRef.current?.subscribe(cb) ?? (() => {}), [scrollRef]),
-    // Quantize the scroll snapshot to the values the thumb actually renders
-    // with — thumbTop + thumbSize + viewport height. Streaming drives
-    // scrollHeight up by ~1 row at a time, but the quantized thumb usually
-    // doesn't move, so we skip thousands of render cycles mid-turn.
     () => {
       const s = scrollRef.current
 
@@ -303,4 +276,30 @@ export function TranscriptScrollbar({ scrollRef, t }: { scrollRef: RefObject<Scr
       )}
     </Box>
   )
+}
+
+interface StatusRuleProps {
+  bgCount: number
+  busy: boolean
+  cols: number
+  cwdLabel: string
+  model: string
+  sessionStartedAt?: number | null
+  status: string
+  statusColor: string
+  t: Theme
+  usage: Usage
+  voiceLabel?: string
+}
+
+interface StickyPromptTrackerProps {
+  messages: readonly Msg[]
+  offsets: ArrayLike<number>
+  onChange: (text: string) => void
+  scrollRef: RefObject<ScrollBoxHandle | null>
+}
+
+interface TranscriptScrollbarProps {
+  scrollRef: RefObject<ScrollBoxHandle | null>
+  t: Theme
 }

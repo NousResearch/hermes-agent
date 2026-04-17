@@ -34,13 +34,15 @@ export function useCompletion(input: string, blocked: boolean, gw: GatewayClient
     ref.current = input
 
     const isSlash = input.startsWith('/')
-    const pathWord = !isSlash ? (input.match(TAB_PATH_RE)?.[1] ?? null) : null
+    const pathWord = isSlash ? null : (input.match(TAB_PATH_RE)?.[1] ?? null)
 
     if (!isSlash && !pathWord) {
       clear()
 
       return
     }
+
+    const pathReplace = input.length - (pathWord?.length ?? 0)
 
     const t = setTimeout(() => {
       if (ref.current !== input) {
@@ -53,15 +55,15 @@ export function useCompletion(input: string, blocked: boolean, gw: GatewayClient
 
       req
         .then(raw => {
-          const r = asRpcResult<CompletionResponse>(raw)
-
           if (ref.current !== input) {
             return
           }
 
+          const r = asRpcResult<CompletionResponse>(raw)
+
           setCompletions(r?.items ?? [])
           setCompIdx(0)
-          setCompReplace(isSlash ? (r?.replace_from ?? 1) : input.length - (pathWord?.length ?? 0))
+          setCompReplace(isSlash ? (r?.replace_from ?? 1) : pathReplace)
         })
         .catch((e: unknown) => {
           if (ref.current !== input) {
@@ -76,7 +78,7 @@ export function useCompletion(input: string, blocked: boolean, gw: GatewayClient
             }
           ])
           setCompIdx(0)
-          setCompReplace(isSlash ? 1 : input.length - (pathWord?.length ?? 0))
+          setCompReplace(isSlash ? 1 : pathReplace)
         })
     }, 60)
 

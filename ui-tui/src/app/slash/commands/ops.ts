@@ -9,7 +9,7 @@ export const opsCommands: SlashCommand[] = [
       const [subcommand, ...names] = arg.trim().split(/\s+/).filter(Boolean)
 
       if (subcommand !== 'disable' && subcommand !== 'enable') {
-        return // py prints lists / show / usage
+        return
       }
 
       if (!names.length) {

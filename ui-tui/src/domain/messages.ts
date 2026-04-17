@@ -2,30 +2,17 @@ import { LONG_MSG } from '../config/limits.js'
 import { buildToolTrailLine, fmtK } from '../lib/text.js'
 import type { Msg, SessionInfo } from '../types.js'
 
-interface ImageMeta {
-  height?: number
-  token_estimate?: number
-  width?: number
-}
-
-interface TranscriptRow {
-  context?: string
-  name?: string
-  role?: string
-  text?: string
-}
-
 export const introMsg = (info: SessionInfo): Msg => ({ info, kind: 'intro', role: 'system', text: '' })
 
-export const imageTokenMeta = (info: ImageMeta | null | undefined) =>
-  [
-    info?.width && info.height ? `${info.width}x${info.height}` : '',
-    typeof info?.token_estimate === 'number' && info.token_estimate > 0 ? `~${fmtK(info.token_estimate)} tok` : ''
-  ]
+export const imageTokenMeta = (info?: ImageMeta | null) => {
+  const { width, height, token_estimate: t } = info ?? {}
+
+  return [width && height ? `${width}x${height}` : '', (t ?? 0) > 0 ? `~${fmtK(t!)} tok` : '']
     .filter(Boolean)
     .join(' · ')
+}
 
-export const userDisplay = (text: string): string => {
+export const userDisplay = (text: string) => {
   if (text.length <= LONG_MSG) {
     return text
   }
@@ -42,8 +29,8 @@ export const toTranscriptMessages = (rows: unknown): Msg[] => {
     return []
   }
 
-  const result: Msg[] = []
-  let pendingTools: string[] = []
+  const out: Msg[] = []
+  let pending: string[] = []
 
   for (const row of rows) {
     if (!row || typeof row !== 'object') {
@@ -53,7 +40,7 @@ export const toTranscriptMessages = (rows: unknown): Msg[] => {
     const { context, name, role, text } = row as TranscriptRow
 
     if (role === 'tool') {
-      pendingTools.push(buildToolTrailLine(name ?? 'tool', context ?? ''))
+      pending.push(buildToolTrailLine(name ?? 'tool', context ?? ''))
 
       continue
     }
@@ -63,40 +50,35 @@ export const toTranscriptMessages = (rows: unknown): Msg[] => {
     }
 
     if (role === 'assistant') {
-      const msg: Msg = { role, text }
-
-      if (pendingTools.length) {
-        msg.tools = pendingTools
-        pendingTools = []
-      }
-
-      result.push(msg)
-
-      continue
-    }
-
-    if (role === 'user' || role === 'system') {
-      pendingTools = []
-      result.push({ role, text })
+      out.push({ role, text, ...(pending.length && { tools: pending }) })
+      pending = []
+    } else if (role === 'user' || role === 'system') {
+      out.push({ role, text })
+      pending = []
     }
   }
 
-  return result
+  return out
 }
 
-export function fmtDuration(ms: number) {
-  const total = Math.max(0, Math.floor(ms / 1000))
-  const hours = Math.floor(total / 3600)
-  const mins = Math.floor((total % 3600) / 60)
-  const secs = total % 60
+export const fmtDuration = (ms: number) => {
+  const t = Math.max(0, Math.floor(ms / 1000))
+  const h = Math.floor(t / 3600)
+  const m = Math.floor((t % 3600) / 60)
+  const s = t % 60
 
-  if (hours > 0) {
-    return `${hours}h ${mins}m`
-  }
+  return h > 0 ? `${h}h ${m}m` : m > 0 ? `${m}m ${s}s` : `${s}s`
+}
 
-  if (mins > 0) {
-    return `${mins}m ${secs}s`
-  }
+interface ImageMeta {
+  height?: number
+  token_estimate?: number
+  width?: number
+}
 
-  return `${secs}s`
+interface TranscriptRow {
+  context?: string
+  name?: string
+  role?: string
+  text?: string
 }

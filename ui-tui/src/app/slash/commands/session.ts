@@ -109,7 +109,7 @@ export const sessionCommands: SlashCommand[] = [
     name: 'personality',
     run: (arg, ctx) => {
       if (!arg) {
-        return // py handles listing
+        return
       }
 
       ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'personality', session_id: ctx.sid, value: arg }).then(
@@ -199,11 +199,6 @@ export const sessionCommands: SlashCommand[] = [
       )
     }
   },
-
-  // The four shims below call `config.set` directly because Python's `slash.exec`
-  // worker is a separate subprocess — it writes config but does NOT fire the
-  // live side-effects (`skin.changed` event, agent.reasoning_config,
-  // agent.verbose_logging, per-session yolo flip). Direct RPC does.
 
   {
     help: 'switch theme skin (fires skin.changed)',

@@ -7,6 +7,10 @@ import logging
 from typing import Any, Optional
 
 from gateway.config import Platform
+from gateway.direct_control_event_runtime_service import (
+    build_admin_platform_text_context,
+    extract_platform_text_event_context,
+)
 from gateway.group_control_intents import (
     looks_like_group_runtime_status_query as looks_like_shared_group_runtime_status_query,
     resolve_oral_report_delivery_target,
@@ -78,20 +82,7 @@ class DirectControlRouter:
         *,
         platform: Platform,
     ) -> tuple[SessionSource | None, str]:
-        source = getattr(event, "source", None)
-        if getattr(source, "platform", None) != platform:
-            return None, ""
-        if event.get_command():
-            return None, ""
-        if getattr(event, "message_type", None) != MessageType.TEXT:
-            return None, ""
-        if getattr(event, "media_urls", None):
-            return None, ""
-
-        body = str(getattr(event, "text", "") or "").strip()
-        if not body:
-            return None, ""
-        return source, body
+        return extract_platform_text_event_context(event, platform=platform)
 
     @staticmethod
     def _extract_recent_group_target_from_history(
@@ -126,12 +117,19 @@ class DirectControlRouter:
         direct_target_extractor,
         query_prompt_formatter,
     ) -> tuple[dict[str, Any] | None, str | None]:
-        source, body = self._extract_platform_text_event_body(event, platform=platform)
+        context = build_admin_platform_text_context(
+            event,
+            platform=platform,
+            configured_admin_user_ids_fn=self.owner._configured_admin_user_ids,
+            is_admin_user_fn=self.owner._is_admin_user,
+        )
+        source = context["source"]
+        body = context["body"]
         if source is None:
             return None, None
-        if not self.owner._configured_admin_user_ids(getattr(source, "platform", None)):
+        if not context["admin_ids_configured"]:
             return None, None
-        if not self.owner._is_admin_user(source):
+        if not context["is_admin_user"]:
             return None, None
         return shared_match_admin_platform_send_request(
             source=source,
@@ -269,10 +267,14 @@ class DirectControlRouter:
         self,
         event: MessageEvent,
     ) -> tuple[dict[str, Any] | None, str | None]:
-        source, body = self._extract_platform_text_event_body(
+        context = build_admin_platform_text_context(
             event,
             platform=Platform.QQ_NAPCAT,
+            configured_admin_user_ids_fn=self.owner._configured_admin_user_ids,
+            is_admin_user_fn=self.owner._is_admin_user,
         )
+        source = context["source"]
+        body = context["body"]
         known_worker_names = {
             str(item.get("worker_name") or "").strip()
             for item in list_intel_workers()
@@ -281,8 +283,8 @@ class DirectControlRouter:
         return shared_match_admin_qq_intel_control_request(
             source=source,
             body=body,
-            admin_ids_configured=bool(self.owner._configured_admin_user_ids(getattr(source, "platform", None))),
-            is_admin_user=self.owner._is_admin_user(source),
+            admin_ids_configured=context["admin_ids_configured"],
+            is_admin_user=context["is_admin_user"],
             looks_like_joined_group_list_query=self.owner._looks_like_joined_group_list_query,
             known_worker_names=known_worker_names,
             report_target_resolver=self._resolve_oral_report_delivery_target,
@@ -341,13 +343,18 @@ class DirectControlRouter:
         history_target_extractor,
         status_loader,
     ) -> str | None:
-        source, body = self._extract_platform_text_event_body(event, platform=platform)
+        context = build_admin_platform_text_context(
+            event,
+            platform=platform,
+            configured_admin_user_ids_fn=self.owner._configured_admin_user_ids,
+            is_admin_user_fn=self.owner._is_admin_user,
+        )
         return shared_try_handle_admin_platform_group_runtime_status(
-            source=source,
-            body=body,
+            source=context["source"],
+            body=context["body"],
             conversation_history=conversation_history,
-            admin_ids_configured=bool(self.owner._configured_admin_user_ids(getattr(source, "platform", None))),
-            is_admin_user=self.owner._is_admin_user(source),
+            admin_ids_configured=context["admin_ids_configured"],
+            is_admin_user=context["is_admin_user"],
             looks_like_group_runtime_status_query=looks_like_shared_group_runtime_status_query,
             target_extractor=target_extractor,
             history_target_extractor=history_target_extractor,
@@ -403,15 +410,20 @@ class DirectControlRouter:
         collect_only_action: str,
         unresolved_target_guard=None,
     ) -> tuple[dict[str, Any] | None, str | None]:
-        source, body = self._extract_platform_text_event_body(event, platform=platform)
+        context = build_admin_platform_text_context(
+            event,
+            platform=platform,
+            configured_admin_user_ids_fn=self.owner._configured_admin_user_ids,
+            is_admin_user_fn=self.owner._is_admin_user,
+        )
+        source = context["source"]
+        body = context["body"]
         return match_admin_platform_group_control_request(
             source=source,
             body=body,
             target_extractor=target_extractor,
-            admin_ids_configured=bool(self.owner._configured_admin_user_ids(getattr(source, "platform", None)))
-            if source is not None
-            else False,
-            is_admin_user=self.owner._is_admin_user(source) if source is not None else False,
+            admin_ids_configured=context["admin_ids_configured"],
+            is_admin_user=context["is_admin_user"],
             missing_target_message=missing_target_message,
             admin_only_message=(
                 self.owner._admin_only_message(source, admin_action_label)
@@ -527,16 +539,18 @@ class DirectControlRouter:
         self,
         event: MessageEvent,
     ) -> tuple[dict[str, Any] | None, str | None]:
-        source, body = self._extract_platform_text_event_body(
+        context = build_admin_platform_text_context(
             event,
             platform=Platform.QQ_NAPCAT,
+            configured_admin_user_ids_fn=self.owner._configured_admin_user_ids,
+            is_admin_user_fn=self.owner._is_admin_user,
         )
         return shared_match_admin_qq_group_moderation_request(
-            source=source,
-            body=body,
-            admin_ids_configured=bool(self.owner._configured_admin_user_ids(getattr(source, "platform", None))),
-            is_admin_user=self.owner._is_admin_user(source),
-            admin_only_message=self.owner._admin_only_message(source, "操作 QQ 群禁言/踢人"),
+            source=context["source"],
+            body=context["body"],
+            admin_ids_configured=context["admin_ids_configured"],
+            is_admin_user=context["is_admin_user"],
+            admin_only_message=self.owner._admin_only_message(context["source"], "操作 QQ 群禁言/踢人"),
         )
 
     @staticmethod
@@ -567,16 +581,18 @@ class DirectControlRouter:
         self,
         event: MessageEvent,
     ) -> tuple[dict[str, Any] | None, str | None]:
-        source, body = self._extract_platform_text_event_body(
+        context = build_admin_platform_text_context(
             event,
             platform=Platform.QQ_NAPCAT,
+            configured_admin_user_ids_fn=self.owner._configured_admin_user_ids,
+            is_admin_user_fn=self.owner._is_admin_user,
         )
         return shared_match_admin_qq_social_control_request(
-            source=source,
-            body=body,
-            admin_ids_configured=bool(self.owner._configured_admin_user_ids(getattr(source, "platform", None))),
-            is_admin_user=self.owner._is_admin_user(source),
-            admin_only_message=self.owner._admin_only_message(source, "处理 QQ 社交请求"),
+            source=context["source"],
+            body=context["body"],
+            admin_ids_configured=context["admin_ids_configured"],
+            is_admin_user=context["is_admin_user"],
+            admin_only_message=self.owner._admin_only_message(context["source"], "处理 QQ 社交请求"),
         )
 
     @staticmethod

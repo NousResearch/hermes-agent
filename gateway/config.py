@@ -307,6 +307,14 @@ class GatewayConfig:
             # QQBot uses extra dict for app credentials
             elif platform == Platform.QQBOT and config.extra.get("app_id") and config.extra.get("client_secret"):
                 connected.append(platform)
+            # DingTalk uses client_id/client_secret from config.extra or env vars
+            elif platform == Platform.DINGTALK and (
+                config.extra.get("client_id") or os.getenv("DINGTALK_CLIENT_ID")
+            ) and (
+                config.extra.get("client_secret") or os.getenv("DINGTALK_CLIENT_SECRET")
+            ):                                                                                                                                                                                    
+                connected.append(platform)
+        
         return connected
     
     def get_home_channel(self, platform: Platform) -> Optional[HomeChannel]:

@@ -1,6 +1,6 @@
 # Ink Gateway TUI Migration — Post-mortem
 
-Planned: 2026-04-01 · Delivered: 2026-04 · Status: shipped, PT path still present
+Planned: 2026-04-01 · Delivered: 2026-04 · Status: shipped, classic (prompt_toolkit) CLI still present
 
 ## What Shipped
 
@@ -104,5 +104,5 @@ src/
 
 ## What's Still Open
 
-- **PT path not deleted.** `cli.py` still has ~80 `prompt_toolkit` references; classic REPL is still the default when `--tui` is absent. The original plan's "Cut 4 · PT path removal later" hasn't happened.
+- **Classic CLI not deleted.** `cli.py` still has ~80 `prompt_toolkit` references; classic REPL is still the default when `--tui` is absent. The original plan's "Cut 4 · prompt_toolkit removal later" hasn't happened.
 - **No config-file opt-in.** `HERMES_EXPERIMENTAL_TUI` and `display.experimental_tui` were never built; only the CLI flag exists. Fine for now — if we want "default to TUI", a single line in `main.py` flips it.

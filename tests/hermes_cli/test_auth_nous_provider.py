@@ -456,3 +456,152 @@ class TestLoginNousSkipKeepsCurrent:
         assert "nous" in auth_after.get("providers", {})
 
 
+# =============================================================================
+# persist_nous_credentials: shared helper for CLI + web dashboard login paths
+# =============================================================================
+
+
+def _full_state_fixture() -> dict:
+    """Shape of the dict returned by _nous_device_code_login /
+    refresh_nous_oauth_from_state. Used as helper input."""
+    return {
+        "portal_base_url": "https://portal.example.com",
+        "inference_base_url": "https://inference.example.com/v1",
+        "client_id": "hermes-cli",
+        "scope": "inference:mint_agent_key",
+        "token_type": "Bearer",
+        "access_token": "access-tok",
+        "refresh_token": "refresh-tok",
+        "obtained_at": "2026-04-17T22:00:00+00:00",
+        "expires_at": "2026-04-17T22:15:00+00:00",
+        "expires_in": 900,
+        "agent_key": "agent-key-value",
+        "agent_key_id": "ak-id",
+        "agent_key_expires_at": "2026-04-18T22:00:00+00:00",
+        "agent_key_expires_in": 86400,
+        "agent_key_reused": False,
+        "agent_key_obtained_at": "2026-04-17T22:00:10+00:00",
+        "tls": {"insecure": False, "ca_bundle": None},
+    }
+
+
+def test_persist_nous_credentials_writes_both_pool_and_providers(tmp_path, monkeypatch):
+    """Helper must populate BOTH credential_pool.nous AND providers.nous.
+
+    Regression guard: before this helper existed, `hermes auth add nous`
+    wrote only the pool. After the Nous agent_key's 24h TTL expired, the
+    401-recovery path in run_agent.py called resolve_nous_runtime_credentials
+    which reads providers.nous, found it empty, raised AuthError, and the
+    agent failed with "Non-retryable client error". Both stores must stay
+    in sync at write time.
+    """
+    from hermes_cli.auth import persist_nous_credentials
+
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    (hermes_home / "auth.json").write_text(json.dumps({
+        "version": 1, "providers": {},
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    creds = _full_state_fixture()
+    entry = persist_nous_credentials(
+        creds, label="test-label", source="manual:device_code",
+    )
+
+    assert entry is not None
+    assert entry.provider == "nous"
+
+    payload = json.loads((hermes_home / "auth.json").read_text())
+
+    # providers.nous populated with the full state (new behavior)
+    singleton = payload["providers"]["nous"]
+    assert singleton["access_token"] == "access-tok"
+    assert singleton["refresh_token"] == "refresh-tok"
+    assert singleton["agent_key"] == "agent-key-value"
+    assert singleton["agent_key_expires_at"] == "2026-04-18T22:00:00+00:00"
+
+    # credential_pool.nous populated with the pool entry
+    pool_entries = payload["credential_pool"]["nous"]
+    pool_entry = next(
+        item for item in pool_entries if item["source"] == "manual:device_code"
+    )
+    assert pool_entry["label"] == "test-label"
+    assert pool_entry["agent_key"] == "agent-key-value"
+    assert pool_entry["base_url"] == "https://inference.example.com/v1"
+
+
+def test_persist_nous_credentials_allows_recovery_from_401(tmp_path, monkeypatch):
+    """End-to-end: after persisting via the helper, resolve_nous_runtime_credentials
+    must succeed (not raise "Hermes is not logged into Nous Portal").
+
+    This is the exact path that ran_agent.py's `_try_refresh_nous_client_credentials`
+    calls after a Nous 401 — before the fix it would raise AuthError because
+    providers.nous was empty.
+    """
+    from hermes_cli.auth import persist_nous_credentials, resolve_nous_runtime_credentials
+
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    (hermes_home / "auth.json").write_text(json.dumps({
+        "version": 1, "providers": {},
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    persist_nous_credentials(
+        _full_state_fixture(),
+        label="recovery-test",
+        source="manual:device_code",
+    )
+
+    # Stub the network-touching steps so we don't actually contact the
+    # portal — the point of this test is that state lookup succeeds and
+    # doesn't raise "Hermes is not logged into Nous Portal".
+    def _fake_refresh_access_token(*, client, portal_base_url, client_id, refresh_token):
+        return {
+            "access_token": "access-new",
+            "refresh_token": "refresh-new",
+            "expires_in": 900,
+            "token_type": "Bearer",
+        }
+
+    def _fake_mint_agent_key(*, client, portal_base_url, access_token, min_ttl_seconds):
+        return _mint_payload(api_key="new-agent-key")
+
+    monkeypatch.setattr("hermes_cli.auth._refresh_access_token", _fake_refresh_access_token)
+    monkeypatch.setattr("hermes_cli.auth._mint_agent_key", _fake_mint_agent_key)
+
+    creds = resolve_nous_runtime_credentials(min_key_ttl_seconds=300, force_mint=True)
+    assert creds["api_key"] == "new-agent-key"
+
+
+def test_persist_nous_credentials_preserves_existing_providers_entry(tmp_path, monkeypatch):
+    """Calling persist twice must upsert providers.nous (not duplicate or crash)."""
+    from hermes_cli.auth import persist_nous_credentials
+
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    (hermes_home / "auth.json").write_text(json.dumps({
+        "version": 1, "providers": {},
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    first = _full_state_fixture()
+    persist_nous_credentials(first, label="first", source="manual:device_code")
+
+    second = _full_state_fixture()
+    second["access_token"] = "access-second"
+    second["agent_key"] = "agent-key-second"
+    persist_nous_credentials(second, label="second", source="manual:device_code")
+
+    payload = json.loads((hermes_home / "auth.json").read_text())
+
+    # providers.nous reflects the latest write (singleton semantics)
+    assert payload["providers"]["nous"]["access_token"] == "access-second"
+    assert payload["providers"]["nous"]["agent_key"] == "agent-key-second"
+
+    # credential_pool.nous has both entries (pool = multi-credential)
+    pool_entries = payload["credential_pool"]["nous"]
+    labels = [e.get("label") for e in pool_entries]
+    assert "first" in labels
+    assert "second" in labels

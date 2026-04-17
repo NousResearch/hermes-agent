@@ -94,8 +94,6 @@ export const DEFAULT_THEME: Theme = {
     statusWarn: '#FFD700',
     statusBad: '#FF8C00',
     statusCritical: '#FF6B6B',
-    // muted navy — sits under gold/amber fg without fighting it, swaps
-    // cleanly with SGR-inverse that fragmented per fg color
     selectionBg: '#3a3a55',
 
     diffAdded: 'rgb(220,255,220)',

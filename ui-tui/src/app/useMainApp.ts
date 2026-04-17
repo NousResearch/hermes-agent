@@ -93,9 +93,6 @@ export function useMainApp(gw: GatewayClient) {
     }
   }, [stdout])
 
-  // Seed with an info-less intro so the banner paints on the first frame,
-  // before gateway.ready / session.create resolve. Replaced by
-  // `introMsg(info)` as soon as session.info arrives.
   const [historyItems, setHistoryItems] = useState<Msg[]>(() => [{ kind: 'intro', role: 'system', text: '' }])
   const [lastUserMsg, setLastUserMsg] = useState('')
   const [stickyPrompt, setStickyPrompt] = useState('')
@@ -130,9 +127,6 @@ export function useMainApp(gw: GatewayClient) {
   const hasSelection = useHasSelection()
   const selection = useSelection()
 
-  // Bind a uniform selection bg so drag-to-select shows one solid color
-  // across the whole range instead of SGR-inverse (which swaps each cell's
-  // fg → bg and fragments over amber/gold/dim text). Re-fires on skin swap.
   useEffect(() => {
     selection.setSelectionBgColor(ui.theme.color.selectionBg)
   }, [selection, ui.theme.color.selectionBg])
@@ -379,8 +373,6 @@ export function useMainApp(gw: GatewayClient) {
     sys
   })
 
-  // Flush any pre-session queued input the moment the session lands.
-  // `message.complete` drains the rest; this just kicks off the first send.
   const prevSidRef = useRef<null | string>(null)
   useEffect(() => {
     const prev = prevSidRef.current

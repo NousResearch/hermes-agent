@@ -17,11 +17,6 @@ def _args(**overrides):
 
 @pytest.fixture
 def main_mod(monkeypatch):
-    """cmd_chat entry with the first-run provider-gate stubbed past.
-
-    `cmd_chat` now early-exits when no API key is configured (post-merge);
-    these tests exercise the post-config routing so we fake the check out.
-    """
     import hermes_cli.main as mod
 
     monkeypatch.setattr(mod, "_has_any_provider_configured", lambda: True)

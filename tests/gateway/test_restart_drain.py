@@ -242,3 +242,23 @@ async def test_shutdown_notification_send_failure_does_not_block():
 
     # Should not raise
     await runner._notify_active_sessions_of_shutdown()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_notification_prefers_persisted_origin_over_session_key_parse():
+    """Use SessionStore origin as the canonical routing source when available."""
+    runner, adapter = make_restart_runner()
+    adapter.send = AsyncMock()
+    session_key = "agent:main:telegram:dm:not-a-real-chat"
+    runner._running_agents[session_key] = MagicMock()
+
+    origin = make_restart_source(chat_id="999", chat_type="dm")
+    entry = MagicMock()
+    entry.origin = origin
+    runner.session_store._ensure_loaded = MagicMock()
+    runner.session_store._entries = {session_key: entry}
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    adapter.send.assert_awaited_once()
+    assert adapter.send.await_args.args[0] == "999"

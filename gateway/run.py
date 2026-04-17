@@ -1533,12 +1533,35 @@ class GatewayRunner:
 
         notified: set = set()
         for session_key in active:
-            # Parse platform + chat_id from the session key.
-            _parsed = _parse_session_key(session_key)
-            if not _parsed:
-                continue
-            platform_str = _parsed["platform"]
-            chat_id = _parsed["chat_id"]
+            # Prefer the persisted SessionStore origin so routing stays aligned
+            # with the real message source. Parsing the session key is only a
+            # fallback for partial test fixtures or legacy entries.
+            source = None
+            try:
+                self.session_store._ensure_loaded()
+                entry = self.session_store._entries.get(session_key)
+                candidate = getattr(entry, "origin", None)
+                candidate_chat_id = getattr(candidate, "chat_id", None)
+                candidate_platform = getattr(candidate, "platform", None)
+                if isinstance(candidate_chat_id, str) and candidate_chat_id:
+                    if isinstance(candidate_platform, Platform):
+                        source = candidate
+                    elif isinstance(getattr(candidate_platform, "value", None), str):
+                        source = candidate
+            except Exception:
+                source = None
+
+            if source is not None:
+                platform_str = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
+                chat_id = source.chat_id
+                thread_id = source.thread_id
+            else:
+                _parsed = _parse_session_key(session_key)
+                if not _parsed:
+                    continue
+                platform_str = _parsed["platform"]
+                chat_id = _parsed["chat_id"]
+                thread_id = _parsed.get("thread_id")
 
             # Deduplicate: one notification per chat, even if multiple
             # sessions (different users/threads) share the same chat.
@@ -1554,7 +1577,6 @@ class GatewayRunner:
 
                 # Include thread_id if present so the message lands in the
                 # correct forum topic / thread.
-                thread_id = _parsed.get("thread_id")
                 metadata = {"thread_id": thread_id} if thread_id else None
 
                 await adapter.send(chat_id, msg, metadata=metadata)

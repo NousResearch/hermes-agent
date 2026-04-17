@@ -96,8 +96,6 @@ def _make_runner(*, auto_background_work: bool = True, employee_routes=None):
     runner._background_tasks = set()
     runner._managed_background_jobs = {}
     runner._managed_background_jobs_by_chat = {}
-    runner._managed_background_job_tasks = {}
-    runner._managed_background_job_agents = {}
     runner._session_db = MagicMock()
     runner._session_db.get_session_title.return_value = None
     runner._reasoning_config = None
@@ -126,6 +124,54 @@ def _make_runner(*, auto_background_work: bool = True, employee_routes=None):
         return_value={"launcher_type": "subprocess", "launcher_pid": 4321}
     )
     return runner
+
+
+def _install_background_store(runner, tmp_path):
+    store = BackgroundJobStore(db_path=tmp_path / "background_jobs.db")
+    runner._background_job_store = store
+    return store
+
+
+def _create_durable_background_job(
+    runner,
+    tmp_path,
+    *,
+    task_id: str,
+    source: SessionSource | None = None,
+    prompt: str,
+    status: str = "running",
+    worker_name: str = "",
+    job_kind: str = "auto",
+    session_key: str | None = None,
+):
+    source = source or _make_source()
+    store = getattr(runner, "_background_job_store", None)
+    if store is None:
+        store = _install_background_store(runner, tmp_path)
+    resolved_session_key = session_key or runner._session_key_for_source(source)
+    store.create_job(
+        task_id=task_id,
+        prompt=prompt,
+        source=source,
+        session_key=resolved_session_key,
+        job_kind=job_kind,
+        worker_name=worker_name,
+    )
+    normalized_status = str(status or "queued").strip().lower()
+    if normalized_status == "running":
+        store.mark_job_running(task_id)
+    elif normalized_status == "cancelling":
+        store.mark_job_running(task_id)
+        store.mark_job_cancelling(task_id)
+    elif normalized_status == "completed":
+        store.mark_job_running(task_id)
+        store.mark_job_completed(task_id, raw_response="done")
+    elif normalized_status == "failed":
+        store.mark_job_running(task_id)
+        store.mark_job_failed(task_id, error="failed")
+    elif normalized_status == "cancelled":
+        store.mark_job_cancelled(task_id, reason="cancelled")
+    return store.get_job(task_id)
 
 
 @pytest.mark.asyncio
@@ -1170,27 +1216,18 @@ async def test_admin_group_policy_reply_mentions_manual_report_target():
 
 
 @pytest.mark.asyncio
-async def test_oral_background_status_query_returns_latest_job_state():
+async def test_oral_background_status_query_returns_latest_job_state(tmp_path):
     runner = _make_runner(auto_background_work=True)
     source = _make_source()
-    chat_key = runner._background_job_chat_key(source)
-    session_key = runner._session_key_for_source(source)
-    runner._managed_background_jobs["bg_123"] = {
-        "task_id": "bg_123",
-        "chat_key": chat_key,
-        "scope_key": session_key,
-        "session_key": session_key,
-        "status": "running",
-        "kind": "auto",
-        "preview": "继续把线上部署问题排查并修复",
-        "worker_name": "铁柱",
-        "created_at": time.time() - 30,
-        "updated_at": time.time(),
-        "started_at": time.time() - 20,
-        "finished_at": None,
-        "error": None,
-    }
-    runner._managed_background_jobs_by_chat[chat_key] = ["bg_123"]
+    _create_durable_background_job(
+        runner,
+        tmp_path,
+        task_id="bg_123",
+        source=source,
+        prompt="继续把线上部署问题排查并修复",
+        status="running",
+        worker_name="铁柱",
+    )
 
     result = await runner._handle_message(_make_event("前面那个后台任务还在做吗？"))
 
@@ -1201,29 +1238,21 @@ async def test_oral_background_status_query_returns_latest_job_state():
 
 
 @pytest.mark.asyncio
-async def test_busy_session_still_answers_oral_background_status_query():
+async def test_busy_session_still_answers_oral_background_status_query(tmp_path):
     runner = _make_runner(auto_background_work=True)
     source = _make_source()
     session_key = runner._session_key_for_source(source)
-    chat_key = runner._background_job_chat_key(source)
     runner._running_agents[session_key] = MagicMock()
     runner.adapters[Platform.QQ_NAPCAT]._busy_followup_ack.return_value = "busy ack"
-    runner._managed_background_jobs["bg_busy_1"] = {
-        "task_id": "bg_busy_1",
-        "chat_key": chat_key,
-        "scope_key": session_key,
-        "session_key": session_key,
-        "status": "running",
-        "kind": "auto",
-        "preview": "继续处理线上问题",
-        "worker_name": "铁柱",
-        "created_at": time.time() - 20,
-        "updated_at": time.time(),
-        "started_at": time.time() - 18,
-        "finished_at": None,
-        "error": None,
-    }
-    runner._managed_background_jobs_by_chat[chat_key] = ["bg_busy_1"]
+    _create_durable_background_job(
+        runner,
+        tmp_path,
+        task_id="bg_busy_1",
+        source=source,
+        prompt="继续处理线上问题",
+        status="running",
+        worker_name="铁柱",
+    )
 
     result = await runner._handle_message(_make_event("前面那个后台任务还在做吗？"))
 
@@ -1234,28 +1263,20 @@ async def test_busy_session_still_answers_oral_background_status_query():
 
 
 @pytest.mark.asyncio
-async def test_busy_session_plain_hai_zaima_prefers_background_status_shortcut():
+async def test_busy_session_plain_hai_zaima_prefers_background_status_shortcut(tmp_path):
     runner = _make_runner(auto_background_work=True)
     source = _make_source(chat_type="group", chat_id="726109087")
     session_key = runner._session_key_for_source(source)
-    chat_key = runner._background_job_chat_key(source)
     runner._running_agents[session_key] = MagicMock()
-    runner._managed_background_jobs["bg_busy_2"] = {
-        "task_id": "bg_busy_2",
-        "chat_key": chat_key,
-        "scope_key": session_key,
-        "session_key": session_key,
-        "status": "running",
-        "kind": "auto",
-        "preview": "继续处理线上问题",
-        "worker_name": "铁柱",
-        "created_at": time.time() - 20,
-        "updated_at": time.time(),
-        "started_at": time.time() - 18,
-        "finished_at": None,
-        "error": None,
-    }
-    runner._managed_background_jobs_by_chat[chat_key] = ["bg_busy_2"]
+    _create_durable_background_job(
+        runner,
+        tmp_path,
+        task_id="bg_busy_2",
+        source=source,
+        prompt="继续处理线上问题",
+        status="running",
+        worker_name="铁柱",
+    )
 
     result = await runner._handle_message(
         _make_event("@马嘎 还在吗", chat_type="group", chat_id="726109087")
@@ -1268,28 +1289,20 @@ async def test_busy_session_plain_hai_zaima_prefers_background_status_shortcut()
 
 
 @pytest.mark.asyncio
-async def test_busy_session_plain_background_task_ne_stays_on_shortcut_path():
+async def test_busy_session_plain_background_task_ne_stays_on_shortcut_path(tmp_path):
     runner = _make_runner(auto_background_work=True)
     source = _make_source(chat_type="group", chat_id="726109087")
     session_key = runner._session_key_for_source(source)
-    chat_key = runner._background_job_chat_key(source)
     runner._running_agents[session_key] = MagicMock()
-    runner._managed_background_jobs["bg_busy_3"] = {
-        "task_id": "bg_busy_3",
-        "chat_key": chat_key,
-        "scope_key": session_key,
-        "session_key": session_key,
-        "status": "running",
-        "kind": "auto",
-        "preview": "继续处理线上问题",
-        "worker_name": "铁柱",
-        "created_at": time.time() - 20,
-        "updated_at": time.time(),
-        "started_at": time.time() - 18,
-        "finished_at": None,
-        "error": None,
-    }
-    runner._managed_background_jobs_by_chat[chat_key] = ["bg_busy_3"]
+    _create_durable_background_job(
+        runner,
+        tmp_path,
+        task_id="bg_busy_3",
+        source=source,
+        prompt="继续处理线上问题",
+        status="running",
+        worker_name="铁柱",
+    )
 
     result = await runner._handle_message(
         _make_event("@马嘎 前面那个后台任务呢", chat_type="group", chat_id="726109087")
@@ -1557,26 +1570,18 @@ async def test_group_explicit_maga_assignment_stays_foreground_without_configure
 
 
 @pytest.mark.asyncio
-async def test_status_command_includes_background_jobs():
+async def test_status_command_includes_background_jobs(tmp_path):
     runner = _make_runner(auto_background_work=True)
     source = _make_source()
-    chat_key = runner._background_job_chat_key(source)
-    session_key = runner._session_key_for_source(source)
-    runner._managed_background_jobs["bg_123"] = {
-        "task_id": "bg_123",
-        "chat_key": chat_key,
-        "scope_key": session_key,
-        "session_key": session_key,
-        "status": "running",
-        "kind": "auto",
-        "created_at": time.time() - 30,
-        "updated_at": time.time(),
-        "started_at": time.time() - 25,
-        "finished_at": None,
-        "error": None,
-        "worker_name": "铁柱",
-    }
-    runner._managed_background_jobs_by_chat[chat_key] = ["bg_123"]
+    _create_durable_background_job(
+        runner,
+        tmp_path,
+        task_id="bg_123",
+        source=source,
+        prompt="继续处理线上问题",
+        status="running",
+        worker_name="铁柱",
+    )
 
     result = await runner._handle_status_command(_make_event("/status"))
 
@@ -1634,22 +1639,16 @@ async def test_status_command_includes_runtime_model_and_collect_only_monitoring
     runner._fallback_model = [{"provider": "openrouter", "model": "gpt-5.4-mini"}]
     source = _make_source(chat_type="group", chat_id="726109087")
     session_key = runner._session_key_for_source(source)
-    runner._managed_background_jobs["bg_model_1"] = {
-        "task_id": "bg_model_1",
-        "chat_key": runner._background_job_chat_key(source),
-        "scope_key": session_key,
-        "session_key": session_key,
-        "status": "running",
-        "kind": "auto",
-        "created_at": time.time() - 12,
-        "updated_at": time.time(),
-        "started_at": time.time() - 10,
-        "finished_at": None,
-        "error": None,
-        "worker_name": "铁柱",
-        "preview": "继续处理线上问题",
-    }
-    runner._managed_background_jobs_by_chat[runner._background_job_chat_key(source)] = ["bg_model_1"]
+    _create_durable_background_job(
+        runner,
+        tmp_path,
+        task_id="bg_model_1",
+        source=source,
+        prompt="继续处理线上问题",
+        status="running",
+        worker_name="铁柱",
+        session_key=session_key,
+    )
     runner._background_job_store.create_approval_request(
         task_id="bg_model_1",
         session_key=session_key,
@@ -1719,8 +1718,9 @@ async def test_status_command_includes_foreground_activity_detail():
     assert "4/60" in result
 
 
-def test_runtime_status_summary_includes_foreground_background_vision_and_archive():
+def test_runtime_status_summary_includes_foreground_background_vision_and_archive(tmp_path):
     runner = _make_runner(auto_background_work=True)
+    runner._background_job_store = BackgroundJobStore(db_path=tmp_path / "background_jobs.db")
     source = _make_source(chat_type="group", chat_id="726109087")
     session_key = runner._session_key_for_source(source)
     runner._effective_model = "gpt-5.4-fallback"
@@ -1736,36 +1736,25 @@ def test_runtime_status_summary_includes_foreground_background_vision_and_archiv
     }
     runner._running_agents[session_key] = running_agent
     runner._running_agents_ts[session_key] = time.time() - 12
-    runner._managed_background_jobs["bg_runtime_1"] = {
-        "task_id": "bg_runtime_1",
-        "chat_key": runner._background_job_chat_key(source),
-        "scope_key": session_key,
-        "session_key": session_key,
-        "status": "running",
-        "kind": "auto",
-        "created_at": time.time() - 30,
-        "updated_at": time.time(),
-        "started_at": time.time() - 20,
-        "finished_at": None,
-        "error": None,
-        "worker_name": "铁柱",
-        "preview": "继续处理线上问题",
-    }
-    runner._managed_background_jobs["bg_runtime_2"] = {
-        "task_id": "bg_runtime_2",
-        "chat_key": runner._background_job_chat_key(source),
-        "scope_key": session_key,
-        "session_key": session_key,
-        "status": "queued",
-        "kind": "auto",
-        "created_at": time.time() - 10,
-        "updated_at": time.time(),
-        "started_at": None,
-        "finished_at": None,
-        "error": None,
-        "worker_name": "",
-        "preview": "整理群监听日报",
-    }
+    _create_durable_background_job(
+        runner,
+        tmp_path,
+        task_id="bg_runtime_1",
+        source=source,
+        prompt="继续处理线上问题",
+        status="running",
+        worker_name="铁柱",
+        session_key=session_key,
+    )
+    _create_durable_background_job(
+        runner,
+        tmp_path,
+        task_id="bg_runtime_2",
+        source=source,
+        prompt="整理群监听日报",
+        status="queued",
+        session_key=session_key,
+    )
     pending_task = MagicMock()
     pending_task.done.return_value = False
     runner._auto_vision_tasks = {"vision:1": pending_task}
@@ -1835,24 +1824,20 @@ def test_runtime_status_summary_includes_model_fallback_approvals_and_collect_on
     runner._effective_model = "gpt-5.4-mini"
     runner._effective_provider = "openrouter"
     runner._fallback_model = [{"provider": "openrouter", "model": "gpt-5.4-mini"}]
-    runner._managed_background_jobs["bg_runtime_extra"] = {
-        "task_id": "bg_runtime_extra",
-        "chat_key": runner._background_job_chat_key(source),
-        "scope_key": session_key,
-        "session_key": session_key,
-        "status": "running",
-        "kind": "auto",
-        "created_at": time.time() - 12,
-        "updated_at": time.time(),
-        "started_at": time.time() - 10,
-        "finished_at": None,
-        "error": None,
-        "worker_name": "铁柱",
-        "preview": "继续处理线上问题",
-        "launcher_type": "subprocess",
-        "launcher_pid": 4321,
-    }
-    runner._managed_background_jobs_by_chat[runner._background_job_chat_key(source)] = ["bg_runtime_extra"]
+    _create_durable_background_job(
+        runner,
+        tmp_path,
+        task_id="bg_runtime_extra",
+        source=source,
+        prompt="继续处理线上问题",
+        status="running",
+        worker_name="铁柱",
+        session_key=session_key,
+    )
+    runner._background_job_store.update_job_launcher(
+        "bg_runtime_extra",
+        {"launcher_type": "subprocess", "launcher_pid": 4321},
+    )
     runner._background_job_store.create_approval_request(
         task_id="bg_runtime_extra",
         session_key=session_key,
@@ -1963,56 +1948,45 @@ async def test_watchdog_recovers_stale_subprocess_job(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_stop_command_interrupts_background_job():
+async def test_stop_command_requests_external_background_job_stop(tmp_path):
     runner = _make_runner(auto_background_work=True)
     source = _make_source()
-    chat_key = runner._background_job_chat_key(source)
     session_key = runner._session_key_for_source(source)
-    agent = MagicMock()
-    runner._managed_background_jobs["bg_123"] = {
-        "task_id": "bg_123",
-        "chat_key": chat_key,
-        "scope_key": session_key,
-        "session_key": session_key,
-        "status": "running",
-        "kind": "auto",
-        "created_at": time.time() - 10,
-        "updated_at": time.time(),
-        "started_at": time.time() - 8,
-        "finished_at": None,
-        "error": None,
-    }
-    runner._managed_background_jobs_by_chat[chat_key] = ["bg_123"]
-    runner._managed_background_job_agents["bg_123"] = agent
+    _create_durable_background_job(
+        runner,
+        tmp_path,
+        task_id="bg_123",
+        source=source,
+        prompt="继续排查线上问题",
+        status="running",
+        session_key=session_key,
+    )
+    runner._stop_background_worker = MagicMock(return_value=True)
 
     result = await runner._handle_stop_command(_make_event("/stop bg_123"))
 
-    agent.interrupt.assert_called_once_with("Stop requested")
+    runner._stop_background_worker.assert_called_once()
     assert "bg_123" in result
-    assert runner._managed_background_jobs["bg_123"]["status"] == "cancelling"
+    job = runner._background_job_store.get_job("bg_123")
+    assert job is not None
+    assert job["status"] == "cancelled"
 
 
-def test_background_jobs_are_scoped_to_session_not_entire_group_chat():
+def test_background_jobs_are_scoped_to_session_not_entire_group_chat(tmp_path):
     runner = _make_runner(auto_background_work=True)
     source_a = _make_source(chat_type="group", user_id="179033731", chat_id="999")
     source_b = _make_source(chat_type="group", user_id="888888", chat_id="999")
 
     session_key_a = runner._session_key_for_source(source_a)
-    chat_key = runner._background_job_chat_key(source_a)
-    runner._managed_background_jobs["bg_a"] = {
-        "task_id": "bg_a",
-        "chat_key": chat_key,
-        "scope_key": session_key_a,
-        "session_key": session_key_a,
-        "status": "running",
-        "kind": "auto",
-        "created_at": time.time() - 15,
-        "updated_at": time.time(),
-        "started_at": time.time() - 12,
-        "finished_at": None,
-        "error": None,
-    }
-    runner._managed_background_jobs_by_chat[chat_key] = ["bg_a"]
+    _create_durable_background_job(
+        runner,
+        tmp_path,
+        task_id="bg_a",
+        source=source_a,
+        prompt="继续处理线上问题",
+        status="running",
+        session_key=session_key_a,
+    )
 
     jobs_a = runner._background_jobs_for_source(source_a)
     jobs_b = runner._background_jobs_for_source(source_b)

@@ -79,6 +79,29 @@ def test_create_and_list_jobs_by_scope(tmp_path):
     ) == []
 
 
+def test_list_jobs_without_scope_returns_all_jobs(tmp_path):
+    store = _make_store(tmp_path)
+    source_a = _make_source(chat_id="726109087", user_id="179033731")
+    source_b = _make_source(chat_id="726109087", user_id="888888")
+
+    store.create_job(
+        task_id="bg_scope_a",
+        prompt="任务A",
+        source=source_a,
+        session_key="qq_napcat:group:726109087:179033731",
+    )
+    store.create_job(
+        task_id="bg_scope_b",
+        prompt="任务B",
+        source=source_b,
+        session_key="qq_napcat:group:726109087:888888",
+    )
+
+    jobs = store.list_jobs()
+
+    assert [job["task_id"] for job in jobs] == ["bg_scope_a", "bg_scope_b"]
+
+
 def test_delivery_claim_release_and_complete(tmp_path):
     store = _make_store(tmp_path)
     source = _make_source(chat_type="dm", chat_id="179033731")

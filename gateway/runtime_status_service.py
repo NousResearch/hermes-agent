@@ -74,9 +74,17 @@ def _collect_background_jobs(
 ) -> tuple[dict[str, int], list[dict[str, Any]], dict[str, dict[str, Any]]]:
     runner._ensure_background_job_state()
     jobs_by_id: dict[str, dict[str, Any]] = {}
-    for task_id, job in getattr(runner, "_managed_background_jobs", {}).items():
-        if isinstance(job, dict):
-            jobs_by_id[str(task_id)] = job
+    try:
+        store = runner._get_background_job_store()
+        all_jobs = store.list_jobs()
+    except Exception:
+        all_jobs = list(getattr(runner, "_managed_background_jobs", {}).values())
+    for job in all_jobs:
+        if not isinstance(job, dict):
+            continue
+        task_id = str(job.get("task_id") or "").strip()
+        if task_id:
+            jobs_by_id[task_id] = job
 
     background_counts: dict[str, int] = {}
     active_background_jobs: list[dict[str, Any]] = []

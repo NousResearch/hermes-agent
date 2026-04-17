@@ -461,19 +461,27 @@ class BackgroundJobStore:
     def list_jobs(
         self,
         *,
-        chat_key: str,
-        scope_key: str,
+        chat_key: str | None = None,
+        scope_key: str | None = None,
         active_only: bool = False,
         limit: int | None = None,
     ) -> list[dict[str, Any]]:
-        params: list[Any] = [chat_key, scope_key]
-        sql = [
-            "SELECT * FROM background_jobs WHERE chat_key = ? AND scope_key = ?",
-        ]
+        normalized_chat_key = str(chat_key or "").strip()
+        normalized_scope_key = str(scope_key or "").strip()
+        if bool(normalized_chat_key) != bool(normalized_scope_key):
+            raise ValueError("chat_key and scope_key must be provided together")
+
+        params: list[Any] = []
+        where_clauses: list[str] = []
+        if normalized_chat_key and normalized_scope_key:
+            where_clauses.extend(["chat_key = ?", "scope_key = ?"])
+            params.extend([normalized_chat_key, normalized_scope_key])
         if active_only:
-            sql.append(
-                "AND status IN ('queued', 'running', 'cancelling')"
-            )
+            where_clauses.append("status IN ('queued', 'running', 'cancelling')")
+
+        sql = ["SELECT * FROM background_jobs"]
+        if where_clauses:
+            sql.append("WHERE " + " AND ".join(where_clauses))
         sql.append("ORDER BY created_at ASC")
         if isinstance(limit, int) and limit > 0:
             sql.append("LIMIT ?")

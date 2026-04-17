@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from gateway.config import Platform
+from gateway.background_jobs import BackgroundJobStore
 from gateway.session import SessionEntry, SessionSource, build_session_key
 
 
@@ -19,11 +20,21 @@ def _make_source(*, chat_type: str = "dm", chat_id: str = "179033731") -> Sessio
     )
 
 
-def test_build_runtime_status_summary_collects_live_runtime_snapshot():
+def test_build_runtime_status_summary_collects_live_runtime_snapshot(tmp_path):
     from gateway.runtime_status_service import build_runtime_status_summary
 
     source = _make_source(chat_type="group", chat_id="726109087")
     session_key = build_session_key(source)
+    store = BackgroundJobStore(db_path=tmp_path / "background_jobs.db")
+    store.create_job(
+        task_id="bg_1",
+        prompt="继续处理线上问题",
+        source=source,
+        session_key=session_key,
+        worker_name="铁柱",
+        job_kind="auto",
+    )
+    store.mark_job_running("bg_1")
     running_agent = MagicMock()
     running_agent.get_activity_summary.return_value = {
         "api_call_count": 3,
@@ -38,15 +49,6 @@ def test_build_runtime_status_summary_collects_live_runtime_snapshot():
     runner = SimpleNamespace(
         _running_agents={session_key: running_agent},
         _running_agents_ts={session_key: 100.0},
-        _managed_background_jobs={
-            "bg_1": {
-                "task_id": "bg_1",
-                "status": "running",
-                "preview": "继续处理线上问题",
-                "created_at": 120.0,
-                "worker_name": "铁柱",
-            }
-        },
         _auto_vision_tasks={"vision:1": pending_task},
         _auto_vision_cache={"cache:1": {"status": "success"}},
         _runtime_session_metadata=lambda key: {
@@ -54,6 +56,7 @@ def test_build_runtime_status_summary_collects_live_runtime_snapshot():
             "chat_type": "group",
             "chat_id": "726109087",
         },
+        _get_background_job_store=lambda: store,
         _ensure_background_job_state=lambda: None,
         _ensure_auto_vision_state=lambda: None,
         _prune_auto_vision_state=lambda: None,

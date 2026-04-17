@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig, load_gateway_config
+from gateway.background_jobs import BackgroundJobStore
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
 from gateway.platforms.qq_napcat import QqNapCatAdapter
 from gateway.run import GatewayRunner, _build_long_running_status_detail
@@ -210,8 +211,6 @@ def _make_runner(*, busy_input_mode: str):
     runner._background_tasks = set()
     runner._managed_background_jobs = {}
     runner._managed_background_jobs_by_chat = {}
-    runner._managed_background_job_tasks = {}
-    runner._managed_background_job_agents = {}
     runner._failed_platforms = {}
     runner._update_prompt_pending = {}
     runner._session_model_overrides = {}
@@ -412,30 +411,23 @@ class TestGatewayRunnerBusyInputMode:
             running_agent.interrupt.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_busy_qq_followup_while_background_job_runs_uses_shortcut_for_plain_hai_zaima(self):
+    async def test_busy_qq_followup_while_background_job_runs_uses_shortcut_for_plain_hai_zaima(self, tmp_path):
         runner = _make_runner(busy_input_mode="queue")
         runner.adapters = {Platform.QQ_NAPCAT: _StubQqAdapter(busy_input_mode="queue")}
         event = _make_qq_event("@马嘎 还在吗", chat_type="group", chat_id="685403987")
         session_key = build_session_key(event.source)
-        chat_key = runner._background_job_chat_key(event.source)
         running_agent = MagicMock()
         runner._running_agents[session_key] = running_agent
-        runner._managed_background_jobs["bg_busy_1"] = {
-            "task_id": "bg_busy_1",
-            "chat_key": chat_key,
-            "scope_key": session_key,
-            "session_key": session_key,
-            "status": "running",
-            "kind": "auto",
-            "preview": "继续处理线上问题",
-            "worker_name": "铁柱",
-            "created_at": time.time() - 20,
-            "updated_at": time.time(),
-            "started_at": time.time() - 18,
-            "finished_at": None,
-            "error": None,
-        }
-        runner._managed_background_jobs_by_chat[chat_key] = ["bg_busy_1"]
+        runner._background_job_store = BackgroundJobStore(db_path=tmp_path / "background_jobs.db")
+        runner._background_job_store.create_job(
+            task_id="bg_busy_1",
+            prompt="继续处理线上问题",
+            source=event.source,
+            session_key=session_key,
+            job_kind="auto",
+            worker_name="铁柱",
+        )
+        runner._background_job_store.mark_job_running("bg_busy_1")
 
         result = await runner._handle_message(event)
 

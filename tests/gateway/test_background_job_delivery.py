@@ -68,8 +68,6 @@ def _make_runner(tmp_path: Path):
     runner._background_tasks = set()
     runner._managed_background_jobs = {}
     runner._managed_background_jobs_by_chat = {}
-    runner._managed_background_job_tasks = {}
-    runner._managed_background_job_agents = {}
     runner._session_db = None
     runner._reasoning_config = None
     runner._provider_routing = {}

@@ -4,25 +4,14 @@ Tests the _handle_background_command handler (run a prompt in a separate
 background session) across gateway messenger platforms.
 """
 
-import asyncio
 import os
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent
 from gateway.session import SessionSource
-
-
-class _InlineExecutorLoop:
-    @staticmethod
-    def run_in_executor(_executor, func):
-        fut = asyncio.get_running_loop().create_future()
-        fut.set_result(func())
-        return fut
-
-
 def _make_event(text="/background", platform=Platform.TELEGRAM,
                 user_id="12345", chat_id="67890"):
     """Build a MessageEvent for testing."""
@@ -57,8 +46,6 @@ def _make_runner():
     runner._background_tasks = set()
     runner._managed_background_jobs = {}
     runner._managed_background_jobs_by_chat = {}
-    runner._managed_background_job_tasks = {}
-    runner._managed_background_job_agents = {}
     runner._load_reasoning_config = lambda: None
     runner._launch_background_worker = MagicMock(
         return_value={"launcher_type": "subprocess", "launcher_pid": 4321}
@@ -225,215 +212,6 @@ class TestHandleBackgroundCommand:
         runner._launch_background_worker.assert_called_once()
         jobs = runner._background_jobs_for_source(event.source)
         assert len(jobs) == 1
-
-
-# ---------------------------------------------------------------------------
-# _run_background_task
-# ---------------------------------------------------------------------------
-
-
-class TestRunBackgroundTask:
-    """Tests for GatewayRunner._run_background_task (the actual execution)."""
-
-    @pytest.mark.asyncio
-    async def test_no_adapter_returns_silently(self):
-        """When no adapter is available, the task returns without error."""
-        runner = _make_runner()
-        source = SessionSource(
-            platform=Platform.TELEGRAM,
-            user_id="12345",
-            chat_id="67890",
-            user_name="testuser",
-        )
-        # No adapters set — should not raise
-        await runner._run_background_task("test prompt", source, "bg_test")
-
-    @pytest.mark.asyncio
-    async def test_no_adapter_marks_managed_job_failed(self):
-        """Managed background jobs should fail closed when the adapter is unavailable."""
-        runner = _make_runner()
-        source = SessionSource(
-            platform=Platform.TELEGRAM,
-            user_id="12345",
-            chat_id="67890",
-            user_name="testuser",
-        )
-        runner._managed_background_jobs["bg_test"] = {
-            "task_id": "bg_test",
-            "status": "queued",
-            "created_at": 1.0,
-            "updated_at": 1.0,
-        }
-
-        await runner._run_background_task("test prompt", source, "bg_test")
-
-        job = runner._managed_background_jobs["bg_test"]
-        assert job["status"] == "failed"
-        assert job["error"] == "adapter unavailable"
-        assert "finished_at" in job
-
-    @pytest.mark.asyncio
-    async def test_no_credentials_sends_error(self):
-        """When provider credentials are missing, an error is sent."""
-        runner = _make_runner()
-        mock_adapter = AsyncMock()
-        mock_adapter.send = AsyncMock()
-        runner.adapters[Platform.TELEGRAM] = mock_adapter
-
-        source = SessionSource(
-            platform=Platform.TELEGRAM,
-            user_id="12345",
-            chat_id="67890",
-            user_name="testuser",
-        )
-
-        with patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": None}):
-            await runner._run_background_task("test prompt", source, "bg_test")
-
-        # Should have sent an error message
-        mock_adapter.send.assert_called_once()
-        call_args = mock_adapter.send.call_args
-        assert "failed" in call_args[1].get("content", call_args[0][1] if len(call_args[0]) > 1 else "").lower()
-
-    @pytest.mark.asyncio
-    async def test_successful_task_sends_result(self):
-        """When the agent completes successfully, the result is sent."""
-        runner = _make_runner()
-        mock_adapter = AsyncMock()
-        mock_adapter.send = AsyncMock()
-        mock_adapter.extract_media = MagicMock(return_value=([], "Hello from background!"))
-        mock_adapter.extract_images = MagicMock(return_value=([], "Hello from background!"))
-        runner.adapters[Platform.TELEGRAM] = mock_adapter
-
-        source = SessionSource(
-            platform=Platform.TELEGRAM,
-            user_id="12345",
-            chat_id="67890",
-            user_name="testuser",
-        )
-
-        mock_result = {"final_response": "Hello from background!", "messages": []}
-
-        with patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}), \
-             patch("gateway.run.asyncio.get_event_loop", return_value=_InlineExecutorLoop()), \
-             patch("run_agent.AIAgent") as MockAgent:
-            mock_agent_instance = MagicMock()
-            mock_agent_instance.run_conversation.return_value = mock_result
-            MockAgent.return_value = mock_agent_instance
-
-            await runner._run_background_task("say hello", source, "bg_test")
-
-        # Should have sent the result
-        mock_adapter.send.assert_called_once()
-        call_args = mock_adapter.send.call_args
-        content = call_args[1].get("content", call_args[0][1] if len(call_args[0]) > 1 else "")
-        assert "Background task complete" in content
-        assert "Hello from background!" in content
-
-    @pytest.mark.asyncio
-    async def test_worker_task_preloads_skills_into_background_agent(self):
-        """Worker-routed background tasks should preload their mapped skills."""
-        runner = _make_runner()
-        mock_adapter = AsyncMock()
-        mock_adapter.send = AsyncMock()
-        mock_adapter.extract_media = MagicMock(return_value=([], "Polished."))
-        mock_adapter.extract_images = MagicMock(return_value=([], "Polished."))
-        runner.adapters[Platform.TELEGRAM] = mock_adapter
-
-        source = SessionSource(
-            platform=Platform.TELEGRAM,
-            user_id="12345",
-            chat_id="67890",
-            user_name="testuser",
-        )
-
-        with patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}), \
-             patch("gateway.run._resolve_gateway_model", return_value="gpt-5.4"), \
-             patch("gateway.run.asyncio.get_event_loop", return_value=_InlineExecutorLoop()), \
-             patch("agent.skill_commands.build_preloaded_skills_prompt", return_value=("[SKILL PROMPT]", ["frontend-design-pro"], [])) as mock_build_skills, \
-             patch("gateway.run._platform_config_key", return_value="telegram"), \
-             patch("hermes_cli.tools_config._get_platform_tools", return_value={"core"}), \
-             patch("run_agent.AIAgent") as MockAgent:
-            mock_agent_instance = MagicMock()
-            mock_agent_instance.run_conversation.return_value = {"final_response": "Polished.", "messages": []}
-            MockAgent.return_value = mock_agent_instance
-
-            await runner._run_background_task(
-                "把页面打磨一下",
-                source,
-                "bg_test",
-                context_prompt="[CTX]",
-                job_kind="auto",
-                worker_name="铁柱",
-                preloaded_skills=["frontend-design-pro"],
-            )
-
-        mock_build_skills.assert_called_once_with(["frontend-design-pro"], task_id="bg_test")
-        _, kwargs = MockAgent.call_args
-        assert kwargs["ephemeral_system_prompt"] == "[SKILL PROMPT]\n\n[CTX]"
-        sent_content = mock_adapter.send.call_args.kwargs["content"]
-        assert "铁柱" in sent_content
-        assert "后台任务完成" in sent_content
-
-    @pytest.mark.asyncio
-    async def test_auto_background_task_suppresses_no_reply_completion_message(self):
-        """Auto background jobs should stay silent when the model emits [[NO_REPLY]]."""
-        runner = _make_runner()
-        mock_adapter = AsyncMock()
-        mock_adapter.send = AsyncMock()
-        mock_adapter.extract_media = MagicMock(return_value=([], "[[NO_REPLY]]"))
-        mock_adapter.extract_images = MagicMock(return_value=([], "[[NO_REPLY]]"))
-        runner.adapters[Platform.TELEGRAM] = mock_adapter
-
-        source = SessionSource(
-            platform=Platform.TELEGRAM,
-            user_id="12345",
-            chat_id="67890",
-            user_name="testuser",
-        )
-
-        with patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}), \
-             patch("gateway.run.asyncio.get_event_loop", return_value=_InlineExecutorLoop()), \
-             patch("run_agent.AIAgent") as MockAgent:
-            mock_agent_instance = MagicMock()
-            mock_agent_instance.run_conversation.return_value = {
-                "final_response": "[[NO_REPLY]]",
-                "messages": [],
-            }
-            MockAgent.return_value = mock_agent_instance
-
-            await runner._run_background_task(
-                "casual group discussion",
-                source,
-                "bg_test",
-                job_kind="auto",
-            )
-
-        mock_adapter.send.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_exception_sends_error_message(self):
-        """When the agent raises an exception, an error message is sent."""
-        runner = _make_runner()
-        mock_adapter = AsyncMock()
-        mock_adapter.send = AsyncMock()
-        runner.adapters[Platform.TELEGRAM] = mock_adapter
-
-        source = SessionSource(
-            platform=Platform.TELEGRAM,
-            user_id="12345",
-            chat_id="67890",
-            user_name="testuser",
-        )
-
-        with patch("gateway.run._resolve_runtime_agent_kwargs", side_effect=RuntimeError("boom")):
-            await runner._run_background_task("test prompt", source, "bg_test")
-
-        mock_adapter.send.assert_called_once()
-        call_args = mock_adapter.send.call_args
-        content = call_args[1].get("content", call_args[0][1] if len(call_args[0]) > 1 else "")
-        assert "failed" in content.lower()
-
 
 # ---------------------------------------------------------------------------
 # /background in help and known_commands

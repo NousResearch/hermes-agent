@@ -197,7 +197,6 @@ from gateway.config import (
 from gateway.agent_execution_service import (
     create_gateway_agent,
     execute_gateway_sync_turn as shared_execute_gateway_sync_turn,
-    run_gateway_background_conversation as shared_run_gateway_background_conversation,
 )
 from gateway.agent_followup_runtime_service import (
     process_gateway_pending_followup as shared_process_gateway_pending_followup,
@@ -1311,8 +1310,6 @@ class GatewayRunner:
         self._background_tasks: set = set()
         self._managed_background_jobs: Dict[str, Dict[str, Any]] = {}
         self._managed_background_jobs_by_chat: Dict[str, List[str]] = {}
-        self._managed_background_job_tasks: Dict[str, asyncio.Task] = {}
-        self._managed_background_job_agents: Dict[str, Any] = {}
         self._background_job_store = BackgroundJobStore()
         self._direct_control_router = DirectControlRouter(self)
         self._auto_vision_cache: Dict[str, Dict[str, Any]] = {}
@@ -2670,10 +2667,6 @@ class GatewayRunner:
             self._managed_background_jobs = {}
         if not hasattr(self, "_managed_background_jobs_by_chat"):
             self._managed_background_jobs_by_chat = {}
-        if not hasattr(self, "_managed_background_job_tasks"):
-            self._managed_background_job_tasks = {}
-        if not hasattr(self, "_managed_background_job_agents"):
-            self._managed_background_job_agents = {}
         if not hasattr(self, "_background_tasks"):
             self._background_tasks = set()
         if not hasattr(self, "_background_job_store") or self._background_job_store is None:
@@ -2712,7 +2705,6 @@ class GatewayRunner:
         self._ensure_background_job_state()
         chat_key = self._background_job_chat_key(source)
         scope_key = self._background_job_scope_key(source)
-        jobs_by_id: Dict[str, Dict[str, Any]] = {}
         try:
             durable_jobs = self._get_background_job_store().list_jobs(
                 chat_key=chat_key,
@@ -2721,22 +2713,8 @@ class GatewayRunner:
             )
         except Exception:
             durable_jobs = []
-        for job in durable_jobs:
-            task_id = str(job.get("task_id") or "").strip()
-            if task_id:
-                jobs_by_id[task_id] = job
-        for task_id in self._managed_background_jobs_by_chat.get(chat_key, []):
-            job = self._managed_background_jobs.get(task_id)
-            if not job:
-                continue
-            job_scope_key = str(job.get("scope_key") or job.get("session_key") or job.get("chat_key") or "")
-            if job_scope_key != scope_key:
-                continue
-            if active_only and job.get("status") not in {"queued", "running", "cancelling"}:
-                continue
-            jobs_by_id.setdefault(task_id, job)
         return sorted(
-            jobs_by_id.values(),
+            durable_jobs,
             key=lambda item: _safe_float(item.get("created_at"), 0.0),
         )
 
@@ -4895,28 +4873,15 @@ class GatewayRunner:
             return f"Multiple background jobs are running here. Use `/stop <task_id>`: {active_ids}"
         if job:
             task_id = str(job.get("task_id") or "")
-            managed_agent = self._managed_background_job_agents.get(task_id)
-            managed_task = self._managed_background_job_tasks.get(task_id)
-            if managed_agent and hasattr(managed_agent, "interrupt"):
-                try:
-                    managed_agent.interrupt("Stop requested")
-                except Exception:
-                    pass
-                job["status"] = "cancelling"
-            elif managed_task and not managed_task.done():
-                managed_task.cancel()
-                job["status"] = "cancelled"
-                job["finished_at"] = time.time()
-            else:
-                try:
-                    self._stop_background_worker(job)
-                    job = self._get_background_job_store().mark_job_cancelled(
-                        task_id,
-                        reason="stop requested",
-                    ) or job
-                except Exception as exc:
-                    logger.warning("Failed to stop external background job %s: %s", task_id, exc)
-                    job = self._get_background_job_store().mark_job_cancelling(task_id) or job
+            try:
+                self._stop_background_worker(job)
+                job = self._get_background_job_store().mark_job_cancelled(
+                    task_id,
+                    reason="stop requested",
+                ) or job
+            except Exception as exc:
+                logger.warning("Failed to stop external background job %s: %s", task_id, exc)
+                job = self._get_background_job_store().mark_job_cancelling(task_id) or job
             job["updated_at"] = time.time()
             self._refresh_managed_background_job_cache(job)
             return f"⏹️ Requested stop for background job `{task_id}`."
@@ -6039,197 +6004,6 @@ class GatewayRunner:
                 "你可以继续聊天，结果回来我会发到这里。"
             )
         return f'🔄 Background task started: "{preview}"\nTask ID: {task_id}\nYou can keep chatting — results will appear when done.'
-
-    async def _run_background_task(
-        self,
-        prompt: str,
-        source: "SessionSource",
-        task_id: str,
-        *,
-        conversation_history: Optional[List[Dict[str, Any]]] = None,
-        context_prompt: str = "",
-        session_key: str = "",
-        job_kind: str = "manual",
-        worker_name: str = "",
-        preloaded_skills: Optional[List[str]] = None,
-        admin_user_ids: Optional[List[str]] = None,
-        is_admin_user: Optional[bool] = None,
-    ) -> None:
-        """Execute a background agent task and deliver the result to the chat."""
-
-        self._ensure_background_job_state()
-        job = self._managed_background_jobs.get(task_id)
-        adapter = self.adapters.get(source.platform)
-        if not adapter:
-            logger.warning("No adapter for platform %s in background task %s", source.platform, task_id)
-            if job:
-                job["status"] = "failed"
-                job["error"] = "adapter unavailable"
-                job["finished_at"] = time.time()
-                job["updated_at"] = time.time()
-            return
-
-        if job:
-            job["status"] = "running"
-            job["started_at"] = time.time()
-            job["updated_at"] = time.time()
-
-        _thread_metadata = {"thread_id": source.thread_id} if source.thread_id else None
-
-        try:
-            user_config = _load_gateway_config()
-            bg_history = list(conversation_history or [])
-            event_loop = asyncio.get_event_loop()
-            prepared_runtime = shared_prepare_gateway_sync_turn_runtime(
-                env_path=_env_path,
-                load_dotenv_fn=load_dotenv,
-                resolve_runtime_agent_kwargs_fn=_resolve_runtime_agent_kwargs,
-                load_reasoning_config_fn=self._load_reasoning_config,
-                source=source,
-                user_message=prompt,
-                context_prompt=str(context_prompt or "").strip(),
-                gateway_ephemeral_system_prompt=getattr(self, "_ephemeral_system_prompt", ""),
-                provider_routing=getattr(self, "_provider_routing", {}),
-                fallback_model=getattr(self, "_fallback_model", None),
-                smart_model_routing=getattr(self, "_smart_model_routing", {}),
-                user_config=user_config,
-                model=_resolve_gateway_model(user_config),
-                preloaded_skills=list(preloaded_skills or []),
-                skill_task_id=task_id,
-            )
-            runtime_spec = prepared_runtime.runtime_spec
-            self._reasoning_config = prepared_runtime.reasoning_config
-            if job:
-                job["loaded_skills"] = list(runtime_spec.loaded_skills)
-                job["missing_skills"] = list(runtime_spec.missing_skills)
-                job["updated_at"] = time.time()
-
-            def run_sync():
-                return shared_run_gateway_background_conversation(
-                    runtime_spec=runtime_spec,
-                    session_id=task_id,
-                    source=source,
-                    message=prompt,
-                    conversation_history=bg_history or None,
-                    session_key=session_key or task_id,
-                    admin_user_ids=list(admin_user_ids or []),
-                    is_admin_user=is_admin_user,
-                    status_adapter=adapter,
-                    status_chat_id=source.chat_id,
-                    status_thread_metadata=_thread_metadata,
-                    loop_for_step=event_loop,
-                    logger=logger,
-                    admin_only_message_builder=lambda action: self._admin_only_message(
-                        source,
-                        action,
-                    ),
-                    session_db=self._session_db,
-                    on_agent_created=lambda agent: self._managed_background_job_agents.__setitem__(
-                        task_id,
-                        agent,
-                    ),
-                )
-
-            loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(None, run_sync)
-
-            response = result.get("final_response", "") if result else ""
-            if not response and result and result.get("error"):
-                response = f"Error: {result['error']}"
-
-            # Extract media files from the response
-            if response:
-                media_files, response = adapter.extract_media(response)
-                images, text_content = adapter.extract_images(response)
-                text_content = self._sanitize_background_visible_text(text_content)
-
-                preview = prompt[:60] + ("..." if len(prompt) > 60 else "")
-                if job_kind == "auto" or worker_name:
-                    worker_prefix = f"{worker_name} " if worker_name else ""
-                    header = f"✅ {worker_prefix}后台任务完成\n任务ID：`{task_id}`\n内容：{preview}\n\n"
-                else:
-                    header = f'✅ Background task complete\nPrompt: "{preview}"\n\n'
-
-                if text_content:
-                    await adapter.send(
-                        chat_id=source.chat_id,
-                        content=header + text_content,
-                        metadata=_thread_metadata,
-                    )
-                elif not images and not media_files and not self._background_completion_should_stay_silent(
-                    job_kind=job_kind,
-                    worker_name=worker_name,
-                ):
-                    await adapter.send(
-                        chat_id=source.chat_id,
-                        content=header + "(No response generated)",
-                        metadata=_thread_metadata,
-                    )
-
-                # Send extracted images
-                for image_url, alt_text in (images or []):
-                    try:
-                        await adapter.send_image(
-                            chat_id=source.chat_id,
-                            image_url=image_url,
-                            caption=alt_text,
-                        )
-                    except Exception:
-                        pass
-
-                # Send media files
-                for media_path in (media_files or []):
-                    try:
-                        await adapter.send_document(
-                            chat_id=source.chat_id,
-                            file_path=media_path,
-                        )
-                    except Exception:
-                        pass
-            else:
-                preview = prompt[:60] + ("..." if len(prompt) > 60 else "")
-                if not self._background_completion_should_stay_silent(
-                    job_kind=job_kind,
-                    worker_name=worker_name,
-                ):
-                    await adapter.send(
-                        chat_id=source.chat_id,
-                        content=(
-                            f"✅ {f'{worker_name} ' if worker_name else ''}后台任务完成\n任务ID：`{task_id}`\n内容：{preview}\n\n(No response generated)"
-                            if job_kind == "auto" or worker_name
-                            else f'✅ Background task complete\nPrompt: "{preview}"\n\n(No response generated)'
-                        ),
-                        metadata=_thread_metadata,
-                    )
-
-            if job:
-                job["status"] = "completed"
-                job["finished_at"] = time.time()
-                job["updated_at"] = time.time()
-
-        except asyncio.CancelledError:
-            if job:
-                job["status"] = "cancelled"
-                job["finished_at"] = time.time()
-                job["updated_at"] = time.time()
-            raise
-        except Exception as e:
-            logger.exception("Background task %s failed", task_id)
-            if job:
-                job["status"] = "failed"
-                job["error"] = str(e)
-                job["finished_at"] = time.time()
-                job["updated_at"] = time.time()
-            try:
-                await adapter.send(
-                    chat_id=source.chat_id,
-                    content=f"❌ Background task {task_id} failed: {e}",
-                    metadata=_thread_metadata,
-                )
-            except Exception:
-                pass
-        finally:
-            self._managed_background_job_agents.pop(task_id, None)
 
     async def _deliver_background_job_updates_once(self) -> None:
         """Deliver one polling pass of durable background job completions and approvals."""

@@ -250,6 +250,7 @@ AUTHOR_MAP = {
     "1736355688@qq.com": "hedgeho9X",
     "bernylinville@devopsthink.org": "bernylinville",
     "brian@bde.io": "briandevans",
+    "252620095+briandevans@users.noreply.github.com": "briandevans",
     "hubin_ll@qq.com": "LLQWQ",
     "memosr_email@gmail.com": "memosr",
     "anthhub@163.com": "anthhub",

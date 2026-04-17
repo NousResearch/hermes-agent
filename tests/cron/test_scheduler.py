@@ -175,6 +175,19 @@ class TestResolveDeliveryTarget:
             "thread_id": None,
         }
 
+    def test_origin_without_origin_falls_back_to_non_legacy_home_channel(self, monkeypatch):
+        monkeypatch.setenv("WHATSAPP_HOME_CHANNEL", "15551234567")
+        job = {
+            "id": "cron-whatsapp-fallback",
+            "deliver": "origin",
+        }
+
+        assert _resolve_delivery_target(job) == {
+            "platform": "whatsapp",
+            "chat_id": "15551234567",
+            "thread_id": None,
+        }
+
     def test_explicit_discord_topic_target_with_thread_id(self):
         """deliver: 'discord:chat_id:thread_id' parses correctly."""
         job = {

@@ -48,6 +48,26 @@ _KNOWN_DELIVERY_PLATFORMS = frozenset({
     "wecom", "wecom_callback", "weixin", "sms", "email", "webhook", "bluebubbles",
     "qqbot",
 })
+_ORIGIN_HOME_CHANNEL_FALLBACK_PLATFORMS = (
+    "matrix",
+    "telegram",
+    "discord",
+    "slack",
+    "bluebubbles",
+    "whatsapp",
+    "signal",
+    "mattermost",
+    "homeassistant",
+    "dingtalk",
+    "feishu",
+    "wecom",
+    "wecom_callback",
+    "weixin",
+    "sms",
+    "email",
+    "webhook",
+    "qqbot",
+)
 
 from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run
 
@@ -93,7 +113,7 @@ def _resolve_delivery_target(job: dict) -> Optional[dict]:
             }
         # Origin missing (e.g. job created via API/script) — try each
         # platform's home channel as a fallback instead of silently dropping.
-        for platform_name in ("matrix", "telegram", "discord", "slack", "bluebubbles"):
+        for platform_name in _ORIGIN_HOME_CHANNEL_FALLBACK_PLATFORMS:
             chat_id = os.getenv(f"{platform_name.upper()}_HOME_CHANNEL", "")
             if chat_id:
                 logger.info(

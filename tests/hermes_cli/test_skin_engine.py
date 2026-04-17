@@ -152,6 +152,20 @@ class TestSkinManagement:
         init_skin_from_config({})
         assert get_active_skin_name() == "default"
 
+    def test_init_skin_from_empty_config_uses_daylight_on_light_terminal_env(self, monkeypatch):
+        from hermes_cli.skin_engine import init_skin_from_config, get_active_skin_name
+
+        monkeypatch.setenv("TERM_BACKGROUND", "light")
+        init_skin_from_config({})
+        assert get_active_skin_name() == "daylight"
+
+    def test_init_skin_explicit_default_ignores_light_terminal_auto_detection(self, monkeypatch):
+        from hermes_cli.skin_engine import init_skin_from_config, get_active_skin_name
+
+        monkeypatch.setenv("TERM_BACKGROUND", "light")
+        init_skin_from_config({"display": {"skin": "default"}})
+        assert get_active_skin_name() == "default"
+
     def test_init_skin_from_null_display(self):
         """display: null should fall back to default, not crash."""
         from hermes_cli.skin_engine import init_skin_from_config, get_active_skin_name

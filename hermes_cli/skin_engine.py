@@ -112,6 +112,7 @@ Activate with ``/skin <name>`` in the CLI or ``display.skin: <name>`` in config.
 """
 
 import logging
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -647,6 +648,33 @@ _active_skin: Optional[SkinConfig] = None
 _active_skin_name: str = "default"
 
 
+def _looks_like_light_terminal() -> bool:
+    """Best-effort detection for light terminal backgrounds."""
+    explicit = os.getenv("HERMES_LIGHT_TERMINAL", "").strip().lower()
+    if explicit in {"1", "true", "yes", "on"}:
+        return True
+    if explicit in {"0", "false", "no", "off"}:
+        return False
+
+    term_bg = os.getenv("TERM_BACKGROUND", "").strip().lower()
+    if term_bg in {"light", "lightmode"}:
+        return True
+    if term_bg in {"dark", "darkmode"}:
+        return False
+
+    colorfgbg = os.getenv("COLORFGBG", "").strip()
+    if colorfgbg:
+        parts = [p for p in colorfgbg.split(";") if p]
+        if parts:
+            try:
+                # In many terminals the last field represents background.
+                bg = int(parts[-1])
+                return bg in {7, 15}
+            except ValueError:
+                return False
+    return False
+
+
 def _skins_dir() -> Path:
     """User skins directory."""
     return get_hermes_home() / "skins"
@@ -768,9 +796,15 @@ def init_skin_from_config(config: dict) -> None:
     display = config.get("display") or {}
     if not isinstance(display, dict):
         display = {}
-    skin_name = display.get("skin", "default")
-    if isinstance(skin_name, str) and skin_name.strip():
-        set_active_skin(skin_name.strip())
+    configured_skin = display.get("skin", "")
+    if isinstance(configured_skin, str) and configured_skin.strip():
+        set_active_skin(configured_skin.strip())
+        return
+
+    # No explicit skin configured: prefer a light-safe built-in skin when the
+    # terminal appears to use a bright background.
+    if _looks_like_light_terminal():
+        set_active_skin("daylight")
     else:
         set_active_skin("default")
 

@@ -4,6 +4,7 @@ import json
 import pytest
 from pathlib import Path
 
+from tools.registry import registry
 from tools.cronjob_tools import (
     _scan_cron_prompt,
     check_cronjob_requirements,
@@ -121,6 +122,43 @@ class TestUnifiedCronjobTool:
         assert listing["count"] == 1
         assert listing["jobs"][0]["name"] == "Server Check"
         assert listing["jobs"][0]["state"] == "scheduled"
+
+    def test_create_and_update_env_keys(self):
+        created = json.loads(
+            cronjob(
+                action="create",
+                prompt="Run hosted job",
+                schedule="every 1h",
+                env={"CODEKSEI_RUNTIME": "hermes"},
+            )
+        )
+        assert created["success"] is True
+        assert created["job"]["env_keys"] == ["CODEKSEI_RUNTIME"]
+
+        updated = json.loads(
+            cronjob(
+                action="update",
+                job_id=created["job_id"],
+                env={"CODEKSEI_RUNTIME": "hermes", "CODEKSEI_STATE_DIR": "/tmp/codeksei"},
+            )
+        )
+        assert updated["success"] is True
+        assert updated["job"]["env_keys"] == ["CODEKSEI_RUNTIME", "CODEKSEI_STATE_DIR"]
+
+    def test_registry_dispatch_passes_env_through_handler(self):
+        created = json.loads(
+            registry.dispatch("cronjob", {
+                "action": "create",
+                "prompt": "Run hosted job",
+                "schedule": "every 1h",
+                "env": {
+                    "CODEKSEI_RUNTIME": "hermes",
+                    "CODEKSEI_STATE_DIR": "/tmp/codeksei",
+                },
+            })
+        )
+        assert created["success"] is True
+        assert created["job"]["env_keys"] == ["CODEKSEI_RUNTIME", "CODEKSEI_STATE_DIR"]
 
     def test_pause_and_resume(self):
         created = json.loads(cronjob(action="create", prompt="Check", schedule="every 1h"))

@@ -233,6 +233,24 @@ class TestJobCRUD:
         job = create_job(prompt="Test", schedule="30m")
         assert job["deliver"] == "local"
 
+    def test_create_persists_env_overrides(self, tmp_cron_dir):
+        job = create_job(
+            prompt="Hosted job",
+            schedule="every 1h",
+            env={
+                "CODEKSEI_RUNTIME": "hermes",
+                "CODEKSEI_STATE_DIR": "/tmp/codeksei",
+            },
+        )
+
+        assert job["env"] == {
+            "CODEKSEI_RUNTIME": "hermes",
+            "CODEKSEI_STATE_DIR": "/tmp/codeksei",
+        }
+        fetched = get_job(job["id"])
+        assert fetched is not None
+        assert fetched["env"] == job["env"]
+
 
 class TestUpdateJob:
     def test_update_name(self, tmp_cron_dir):

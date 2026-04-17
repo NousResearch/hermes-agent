@@ -36,6 +36,10 @@ CRON_DIR = HERMES_DIR / "cron"
 JOBS_FILE = CRON_DIR / "jobs.json"
 OUTPUT_DIR = CRON_DIR / "output"
 ONESHOT_GRACE_SECONDS = 120
+_ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_MAX_JOB_ENV_ITEMS = 64
+_MAX_JOB_ENV_KEY_LENGTH = 128
+_MAX_JOB_ENV_VALUE_LENGTH = 8192
 
 
 def _normalize_skill_list(skill: Optional[str] = None, skills: Optional[Any] = None) -> List[str]:
@@ -61,6 +65,40 @@ def _apply_skill_fields(job: Dict[str, Any]) -> Dict[str, Any]:
     skills = _normalize_skill_list(normalized.get("skill"), normalized.get("skills"))
     normalized["skills"] = skills
     normalized["skill"] = skills[0] if skills else None
+    return normalized
+
+
+def _normalize_job_env(env: Optional[Any]) -> Dict[str, str]:
+    """Validate and normalize per-job environment overrides."""
+    if env is None:
+        return {}
+    if not isinstance(env, dict):
+        raise ValueError("env must be an object mapping ENV_KEY to string values")
+    if len(env) > _MAX_JOB_ENV_ITEMS:
+        raise ValueError(f"env may contain at most {_MAX_JOB_ENV_ITEMS} entries")
+
+    normalized: Dict[str, str] = {}
+    for raw_key, raw_value in env.items():
+        key = str(raw_key or "").strip()
+        if not key:
+            continue
+        if len(key) > _MAX_JOB_ENV_KEY_LENGTH or not _ENV_KEY_RE.fullmatch(key):
+            raise ValueError(f"invalid env key: {raw_key!r}")
+        value = "" if raw_value is None else str(raw_value)
+        if len(value) > _MAX_JOB_ENV_VALUE_LENGTH:
+            raise ValueError(f"env value for {key!r} exceeds {_MAX_JOB_ENV_VALUE_LENGTH} characters")
+        normalized[key] = value
+    return normalized
+
+
+def _normalize_stored_job(job: Dict[str, Any]) -> Dict[str, Any]:
+    """Return a stored job with backward-compatible fields normalized."""
+    normalized = _apply_skill_fields(job)
+    try:
+        normalized["env"] = _normalize_job_env(normalized.get("env"))
+    except ValueError:
+        logger.warning("Dropping invalid stored cron env on job %s", normalized.get("id", "?"))
+        normalized["env"] = {}
     return normalized
 
 
@@ -377,6 +415,7 @@ def create_job(
     model: Optional[str] = None,
     provider: Optional[str] = None,
     base_url: Optional[str] = None,
+    env: Optional[Dict[str, Any]] = None,
     script: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
@@ -425,6 +464,7 @@ def create_job(
     normalized_model = normalized_model or None
     normalized_provider = normalized_provider or None
     normalized_base_url = normalized_base_url or None
+    normalized_env = _normalize_job_env(env)
     normalized_script = str(script).strip() if isinstance(script, str) else None
     normalized_script = normalized_script or None
 
@@ -458,6 +498,7 @@ def create_job(
         # Delivery configuration
         "deliver": deliver,
         "origin": origin,  # Tracks where job was created for "origin" delivery
+        "env": normalized_env,
     }
 
     jobs = load_jobs()
@@ -472,13 +513,13 @@ def get_job(job_id: str) -> Optional[Dict[str, Any]]:
     jobs = load_jobs()
     for job in jobs:
         if job["id"] == job_id:
-            return _apply_skill_fields(job)
+            return _normalize_stored_job(job)
     return None
 
 
 def list_jobs(include_disabled: bool = False) -> List[Dict[str, Any]]:
     """List all jobs, optionally including disabled ones."""
-    jobs = [_apply_skill_fields(j) for j in load_jobs()]
+    jobs = [_normalize_stored_job(j) for j in load_jobs()]
     if not include_disabled:
         jobs = [j for j in jobs if j.get("enabled", True)]
     return jobs
@@ -491,7 +532,11 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
         if job["id"] != job_id:
             continue
 
-        updated = _apply_skill_fields({**job, **updates})
+        if "env" in updates:
+            updates = dict(updates)
+            updates["env"] = _normalize_job_env(updates.get("env"))
+
+        updated = _normalize_stored_job({**job, **updates})
         schedule_changed = "schedule" in updates
 
         if "skills" in updates or "skill" in updates:

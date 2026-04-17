@@ -149,6 +149,7 @@ class TestCreateJob:
                     "name": "test-job",
                     "schedule": "*/5 * * * *",
                     "prompt": "do something",
+                    "env": {"CODEKSEI_RUNTIME": "hermes"},
                 })
                 assert resp.status == 200
                 data = await resp.json()
@@ -158,6 +159,7 @@ class TestCreateJob:
                 assert call_kwargs["name"] == "test-job"
                 assert call_kwargs["schedule"] == "*/5 * * * *"
                 assert call_kwargs["prompt"] == "do something"
+                assert call_kwargs["env"] == {"CODEKSEI_RUNTIME": "hermes"}
 
     @pytest.mark.asyncio
     async def test_create_job_missing_name(self, adapter):
@@ -298,7 +300,11 @@ class TestUpdateJob:
             ):
                 resp = await cli.patch(
                     f"/api/jobs/{VALID_JOB_ID}",
-                    json={"name": "updated-name", "schedule": "0 * * * *"},
+                    json={
+                        "name": "updated-name",
+                        "schedule": "0 * * * *",
+                        "env": {"CODEKSEI_RUNTIME": "hermes"},
+                    },
                 )
                 assert resp.status == 200
                 data = await resp.json()
@@ -309,6 +315,7 @@ class TestUpdateJob:
                 sanitized = call_args[0][1]
                 assert "name" in sanitized
                 assert "schedule" in sanitized
+                assert sanitized["env"] == {"CODEKSEI_RUNTIME": "hermes"}
 
     @pytest.mark.asyncio
     async def test_update_job_rejects_unknown_fields(self, adapter):

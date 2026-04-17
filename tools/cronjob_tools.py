@@ -192,6 +192,7 @@ def _validate_cron_script_path(script: Optional[str]) -> Optional[str]:
 def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
     prompt = job.get("prompt", "")
     skills = _canonical_skills(job.get("skill"), job.get("skills"))
+    env = job.get("env") if isinstance(job.get("env"), dict) else {}
     result = {
         "job_id": job["id"],
         "name": job["name"],
@@ -212,6 +213,7 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         "state": job.get("state", "scheduled" if job.get("enabled", True) else "paused"),
         "paused_at": job.get("paused_at"),
         "paused_reason": job.get("paused_reason"),
+        "env_keys": sorted(str(key) for key in env.keys()),
     }
     if job.get("script"):
         result["script"] = job["script"]
@@ -232,6 +234,7 @@ def cronjob(
     model: Optional[str] = None,
     provider: Optional[str] = None,
     base_url: Optional[str] = None,
+    env: Optional[Dict[str, Any]] = None,
     reason: Optional[str] = None,
     script: Optional[str] = None,
     task_id: str = None,
@@ -270,6 +273,7 @@ def cronjob(
                 model=_normalize_optional_job_value(model),
                 provider=_normalize_optional_job_value(provider),
                 base_url=_normalize_optional_job_value(base_url, strip_trailing_slash=True),
+                env=env,
                 script=_normalize_optional_job_value(script),
             )
             return json.dumps(
@@ -353,6 +357,8 @@ def cronjob(
                 updates["provider"] = _normalize_optional_job_value(provider)
             if base_url is not None:
                 updates["base_url"] = _normalize_optional_job_value(base_url, strip_trailing_slash=True)
+            if env is not None:
+                updates["env"] = env
             if script is not None:
                 # Pass empty string to clear an existing script
                 if script:
@@ -440,6 +446,11 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
                 "items": {"type": "string"},
                 "description": "Optional ordered list of skill names to load before executing the cron prompt. On update, pass an empty array to clear attached skills."
             },
+            "env": {
+                "type": "object",
+                "description": "Optional per-job environment variables injected only for this cron run. Use for runtime/context flags such as CODEKSEI_*; values are stored with the job.",
+                "additionalProperties": {"type": "string"},
+            },
             "model": {
                 "type": "object",
                 "description": "Optional per-job model override. If provider is omitted, the current main provider is pinned at creation time so the job stays stable.",
@@ -501,6 +512,7 @@ registry.register(
         model=_mo[1],
         provider=_mo[0] or args.get("provider"),
         base_url=args.get("base_url"),
+        env=args.get("env"),
         reason=args.get("reason"),
         script=args.get("script"),
         task_id=kw.get("task_id"),

@@ -1713,7 +1713,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
     _JOB_ID_RE = __import__("re").compile(r"[a-f0-9]{12}")
     # Allowed fields for update — prevents clients injecting arbitrary keys
-    _UPDATE_ALLOWED_FIELDS = {"name", "schedule", "prompt", "deliver", "skills", "skill", "repeat", "enabled"}
+    _UPDATE_ALLOWED_FIELDS = {"name", "schedule", "prompt", "deliver", "skills", "skill", "repeat", "enabled", "env"}
     _MAX_NAME_LENGTH = 200
     _MAX_PROMPT_LENGTH = 5000
 
@@ -1763,6 +1763,7 @@ class APIServerAdapter(BasePlatformAdapter):
             schedule = (body.get("schedule") or "").strip()
             prompt = body.get("prompt", "")
             deliver = body.get("deliver", "local")
+            env = body.get("env")
             skills = body.get("skills")
             repeat = body.get("repeat")
 
@@ -1780,6 +1781,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 )
             if repeat is not None and (not isinstance(repeat, int) or repeat < 1):
                 return web.json_response({"error": "Repeat must be a positive integer"}, status=400)
+            if env is not None and not isinstance(env, dict):
+                return web.json_response({"error": "env must be an object"}, status=400)
 
             kwargs = {
                 "prompt": prompt,
@@ -1787,6 +1790,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 "name": name,
                 "deliver": deliver,
             }
+            if env is not None:
+                kwargs["env"] = env
             if skills:
                 kwargs["skills"] = skills
             if repeat is not None:

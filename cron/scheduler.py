@@ -49,7 +49,7 @@ _KNOWN_DELIVERY_PLATFORMS = frozenset({
     "qqbot",
 })
 
-from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run
+from cron.jobs import _normalize_job_env, get_due_jobs, mark_job_run, save_job_output, advance_next_run
 
 # Sentinel: when a cron agent has nothing new to report, it can start its
 # response with this marker to suppress delivery.  Output is still saved
@@ -597,21 +597,17 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     
     job_id = job["id"]
     job_name = job["name"]
-    prompt = _build_job_prompt(job)
+    prompt = job.get("prompt", "") or ""
     origin = _resolve_origin(job)
     _cron_session_id = f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}"
+    restore_env: dict[str, Optional[str]] = {}
+    job_env: dict[str, str] = {}
 
     logger.info("Running job '%s' (ID: %s)", job_name, job_id)
     logger.info("Prompt: %s", prompt[:100])
 
     try:
-        # Inject origin context so the agent's send_message tool knows the chat.
-        # Must be INSIDE the try block so the finally cleanup always runs.
-        if origin:
-            os.environ["HERMES_SESSION_PLATFORM"] = origin["platform"]
-            os.environ["HERMES_SESSION_CHAT_ID"] = str(origin["chat_id"])
-            if origin.get("chat_name"):
-                os.environ["HERMES_SESSION_CHAT_NAME"] = origin["chat_name"]
+        job_env = _normalize_job_env(job.get("env"))
         # Re-read .env and config.yaml fresh every run so provider/key
         # changes take effect without a gateway restart.
         from dotenv import load_dotenv
@@ -620,12 +616,29 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         except UnicodeDecodeError:
             load_dotenv(str(_hermes_home / ".env"), override=True, encoding="latin-1")
 
+        # Job-scoped runtime context must win over persisted shell/.env values.
+        # Hosted check-in jobs depend on this so CODEKSEI_* host-mode flags and
+        # per-job routing metadata survive clean cron sessions.
+        if origin:
+            _set_job_env(restore_env, "HERMES_SESSION_PLATFORM", origin.get("platform"))
+            _set_job_env(restore_env, "HERMES_SESSION_CHAT_ID", str(origin.get("chat_id") or ""))
+            _set_job_env(restore_env, "HERMES_SESSION_CHAT_NAME", origin.get("chat_name"))
+            _set_job_env(restore_env, "HERMES_SESSION_THREAD_ID", origin.get("thread_id"))
+
         delivery_target = _resolve_delivery_target(job)
         if delivery_target:
-            os.environ["HERMES_CRON_AUTO_DELIVER_PLATFORM"] = delivery_target["platform"]
-            os.environ["HERMES_CRON_AUTO_DELIVER_CHAT_ID"] = str(delivery_target["chat_id"])
-            if delivery_target.get("thread_id") is not None:
-                os.environ["HERMES_CRON_AUTO_DELIVER_THREAD_ID"] = str(delivery_target["thread_id"])
+            _set_job_env(restore_env, "HERMES_CRON_AUTO_DELIVER_PLATFORM", delivery_target.get("platform"))
+            _set_job_env(restore_env, "HERMES_CRON_AUTO_DELIVER_CHAT_ID", str(delivery_target.get("chat_id") or ""))
+            _set_job_env(restore_env, "HERMES_CRON_AUTO_DELIVER_THREAD_ID", delivery_target.get("thread_id"))
+        else:
+            _set_job_env(restore_env, "HERMES_CRON_AUTO_DELIVER_PLATFORM", None)
+            _set_job_env(restore_env, "HERMES_CRON_AUTO_DELIVER_CHAT_ID", None)
+            _set_job_env(restore_env, "HERMES_CRON_AUTO_DELIVER_THREAD_ID", None)
+
+        for key, value in job_env.items():
+            _set_job_env(restore_env, key, value)
+
+        prompt = _build_job_prompt(job)
 
         model = job.get("model") or os.getenv("HERMES_MODEL") or ""
 
@@ -885,16 +898,11 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         return False, output, "", error_msg
 
     finally:
-        # Clean up injected env vars so they don't leak to other jobs
-        for key in (
-            "HERMES_SESSION_PLATFORM",
-            "HERMES_SESSION_CHAT_ID",
-            "HERMES_SESSION_CHAT_NAME",
-            "HERMES_CRON_AUTO_DELIVER_PLATFORM",
-            "HERMES_CRON_AUTO_DELIVER_CHAT_ID",
-            "HERMES_CRON_AUTO_DELIVER_THREAD_ID",
-        ):
-            os.environ.pop(key, None)
+        for key, previous in restore_env.items():
+            if previous is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = previous
         if _session_db:
             try:
                 _session_db.end_session(_cron_session_id, "cron_complete")
@@ -904,6 +912,15 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 _session_db.close()
             except (Exception, KeyboardInterrupt) as e:
                 logger.debug("Job '%s': failed to close SQLite session store: %s", job_id, e)
+
+
+def _set_job_env(restore_env: dict[str, Optional[str]], key: str, value: Optional[object]) -> None:
+    if key not in restore_env:
+        restore_env[key] = os.environ.get(key)
+    if value is None:
+        os.environ.pop(key, None)
+        return
+    os.environ[key] = str(value)
 
 
 def tick(verbose: bool = True, adapters=None, loop=None) -> int:

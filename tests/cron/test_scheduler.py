@@ -751,6 +751,57 @@ class TestRunJobSessionPersistence:
         assert os.getenv("HERMES_CRON_AUTO_DELIVER_THREAD_ID") is None
         fake_db.close.assert_called_once()
 
+    def test_run_job_applies_job_env_overrides_and_restores_previous_values(self, tmp_path, monkeypatch):
+        job = {
+            "id": "hosted-job",
+            "name": "hosted",
+            "prompt": "hello",
+            "env": {
+                "CODEKSEI_RUNTIME": "hermes",
+                "CODEKSEI_STATE_DIR": "/tmp/codeksei-state",
+            },
+        }
+        fake_db = MagicMock()
+        seen = {}
+
+        monkeypatch.setenv("CODEKSEI_RUNTIME", "codex")
+        monkeypatch.delenv("CODEKSEI_STATE_DIR", raising=False)
+
+        class FakeAgent:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def run_conversation(self, *args, **kwargs):
+                seen["runtime"] = os.getenv("CODEKSEI_RUNTIME")
+                seen["state_dir"] = os.getenv("CODEKSEI_STATE_DIR")
+                return {"final_response": "ok"}
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "***",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent", FakeAgent):
+            success, output, final_response, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        assert final_response == "ok"
+        assert "ok" in output
+        assert seen == {
+            "runtime": "hermes",
+            "state_dir": "/tmp/codeksei-state",
+        }
+        assert os.getenv("CODEKSEI_RUNTIME") == "codex"
+        assert os.getenv("CODEKSEI_STATE_DIR") is None
+
 
 class TestRunJobConfigLogging:
     """Verify that config.yaml parse failures are logged, not silently swallowed."""

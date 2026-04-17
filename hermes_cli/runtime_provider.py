@@ -945,7 +945,7 @@ def resolve_runtime_provider(
         # Honour model.base_url from config.yaml when the configured provider
         # matches this provider — mirrors the Anthropic path above.  Without
         # this, users who set model.base_url to e.g. api.minimaxi.com/anthropic
-        # (China endpoint) still get the hardcoded api.minimax.io default (#6039).
+        # (China endpoint) still get the hardcoded api.minimax.chat default (#6039).
         cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
         cfg_base_url = ""
         if cfg_provider == provider:
@@ -966,7 +966,7 @@ def resolve_runtime_provider(
                 from hermes_cli.models import opencode_model_api_mode
                 api_mode = opencode_model_api_mode(provider, model_cfg.get("default", ""))
             # Auto-detect Anthropic-compatible endpoints by URL convention
-            # (e.g. https://api.minimax.io/anthropic, https://dashscope.../anthropic)
+            # (e.g. https://api.minimax.chat/anthropic, https://dashscope.../anthropic)
             elif base_url.rstrip("/").endswith("/anthropic"):
                 api_mode = "anthropic_messages"
         # Strip trailing /v1 for OpenCode Anthropic models (see comment above).

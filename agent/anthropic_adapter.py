@@ -276,7 +276,7 @@ def _requires_bearer_auth(base_url: str | None) -> bool:
     if not normalized:
         return False
     normalized = normalized.rstrip("/").lower()
-    return normalized.startswith(("https://api.minimax.io/anthropic", "https://api.minimaxi.com/anthropic"))
+    return normalized.startswith(("https://api.minimax.chat", "https://api.minimaxi.com/anthropic"))
 
 
 def _common_betas_for_base_url(base_url: str | None) -> list[str]:

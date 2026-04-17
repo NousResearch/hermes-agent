@@ -190,7 +190,7 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         id="minimax",
         name="MiniMax",
         auth_type="api_key",
-        inference_base_url="https://api.minimax.io/anthropic",
+        inference_base_url="https://api.minimax.chat/v1",
         api_key_env_vars=("MINIMAX_API_KEY",),
         base_url_env_var="MINIMAX_BASE_URL",
     ),

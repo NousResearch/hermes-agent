@@ -210,6 +210,12 @@ def load_cli_config() -> Dict[str, Any]:
     else:
         config_path = project_config_path
 
+    from hermes_cli.config import (
+        _expand_env_vars,
+        load_config as _shared_load_config,
+        read_raw_config as _read_raw_config,
+    )
+
     # Default configuration
     defaults = {
         "model": {
@@ -313,79 +319,41 @@ def load_cli_config() -> Dict[str, Any]:
     # When using defaults (no config file / no terminal section), we should NOT
     # overwrite env vars that were already set by .env -- only a user's config
     # file should be authoritative.
-    _file_has_terminal_config = False
+    file_config = _read_raw_config(config_path=config_path)
+    _file_has_terminal_config = "terminal" in file_config
 
-    # Load from file if exists
-    if config_path.exists():
-        try:
-            with open(config_path, "r", encoding="utf-8") as f:
-                file_config = yaml.safe_load(f) or {}
-            
-            _file_has_terminal_config = "terminal" in file_config
+    try:
+        defaults = _shared_load_config(config_path=config_path, defaults=defaults)
+    except Exception as e:
+        logger.warning("Failed to load cli config from %s: %s", config_path, e)
+        defaults = _expand_env_vars(defaults)
 
-            # Handle model config - can be string (new format) or dict (old format)
-            if "model" in file_config:
-                if isinstance(file_config["model"], str):
-                    # New format: model is just a string, convert to dict structure
-                    defaults["model"]["default"] = file_config["model"]
-                elif isinstance(file_config["model"], dict):
-                    # Old format: model is a dict with default/base_url
-                    defaults["model"].update(file_config["model"])
-                    # If the user config sets model.model but not model.default,
-                    # promote model.model to model.default so the user's explicit
-                    # choice isn't shadowed by the hardcoded default.  Without this,
-                    # profile configs that only set "model:" (not "default:") silently
-                    # fall back to claude-opus because the merge preserves the
-                    # hardcoded default and HermesCLI.__init__ checks "default" first.
-                    if "model" in file_config["model"] and "default" not in file_config["model"]:
-                        defaults["model"]["default"] = file_config["model"]["model"]
+    # HermesCLI still expects the legacy nested model + agent fields.
+    model_config = defaults.get("model", {})
+    if isinstance(model_config, str):
+        defaults["model"] = {
+            "default": model_config,
+            "base_url": "",
+            "provider": "auto",
+        }
+    elif isinstance(model_config, dict):
+        defaults["model"] = {
+            "default": model_config.get("default") or model_config.get("model") or "",
+            "base_url": model_config.get("base_url", ""),
+            "provider": model_config.get("provider", "auto"),
+            **model_config,
+        }
 
-            # Legacy root-level provider/base_url fallback.
-            # Some users (or old code) put provider: / base_url: at the
-            # config root instead of inside the model: section.  These are
-            # only used as a FALLBACK when model.provider / model.base_url
-            # is not already set — never as an override.  The canonical
-            # location is model.provider (written by `hermes model`).
-            if not defaults["model"].get("provider"):
-                root_provider = file_config.get("provider")
-                if root_provider:
-                    defaults["model"]["provider"] = root_provider
-            if not defaults["model"].get("base_url"):
-                root_base_url = file_config.get("base_url")
-                if root_base_url:
-                    defaults["model"]["base_url"] = root_base_url
-            
-            # Deep merge file_config into defaults.
-            # First: merge keys that exist in both (deep-merge dicts, overwrite scalars)
-            for key in defaults:
-                if key == "model":
-                    continue  # Already handled above
-                if key in file_config:
-                    if isinstance(defaults[key], dict) and isinstance(file_config[key], dict):
-                        defaults[key].update(file_config[key])
-                    else:
-                        defaults[key] = file_config[key]
-            
-            # Second: carry over keys from file_config that aren't in defaults
-            # (e.g. platform_toolsets, provider_routing, memory, honcho, etc.)
-            for key in file_config:
-                if key not in defaults and key != "model":
-                    defaults[key] = file_config[key]
-            
-            # Handle legacy root-level max_turns (backwards compat) - copy to
-            # agent.max_turns whenever the nested key is missing.
-            agent_file_config = file_config.get("agent")
-            if "max_turns" in file_config and not (
-                isinstance(agent_file_config, dict)
-                and agent_file_config.get("max_turns") is not None
-            ):
-                defaults["agent"]["max_turns"] = file_config["max_turns"]
-        except Exception as e:
-            logger.warning("Failed to load cli-config.yaml: %s", e)
-
-    # Expand ${ENV_VAR} references in config values before bridging to env vars.
-    from hermes_cli.config import _expand_env_vars
-    defaults = _expand_env_vars(defaults)
+    agent_config = defaults.get("agent", {})
+    if isinstance(agent_config, dict):
+        if not agent_config.get("prefill_messages_file") and defaults.get("prefill_messages_file"):
+            agent_config["prefill_messages_file"] = defaults["prefill_messages_file"]
+        root_personalities = defaults.get("personalities")
+        if isinstance(root_personalities, dict) and root_personalities:
+            merged_personalities = dict(agent_config.get("personalities") or {})
+            merged_personalities.update(root_personalities)
+            agent_config["personalities"] = merged_personalities
+        defaults["agent"] = agent_config
 
     # Apply terminal config to environment variables (so terminal_tool picks them up)
     terminal_config = defaults.get("terminal", {})

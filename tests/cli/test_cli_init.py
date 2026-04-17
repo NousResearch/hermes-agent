@@ -345,3 +345,44 @@ class TestProviderResolution:
         cli = _make_cli()
         assert isinstance(cli.model, str)
         assert isinstance(cli.model, str) and '/' in cli.model
+
+
+class TestSharedConfigLoaderCompatibility:
+    def test_string_model_is_normalized_to_cli_model_dict(self, tmp_path, monkeypatch):
+        import yaml
+        import cli
+
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(yaml.safe_dump({"model": "openai/gpt-4.1-mini"}), encoding="utf-8")
+
+        monkeypatch.setattr(cli, "_hermes_home", tmp_path)
+
+        cfg = cli.load_cli_config()
+
+        assert cfg["model"]["default"] == "openai/gpt-4.1-mini"
+        assert cfg["model"]["provider"] == "auto"
+        assert cfg["model"]["base_url"] == ""
+
+    def test_root_prefill_and_personalities_are_mapped_for_cli(self, tmp_path, monkeypatch):
+        import yaml
+        import cli
+
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "prefill_messages_file": "examples/prefill.json",
+                    "personalities": {
+                        "codereviewer": "Review code carefully.",
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(cli, "_hermes_home", tmp_path)
+
+        cfg = cli.load_cli_config()
+
+        assert cfg["agent"]["prefill_messages_file"] == "examples/prefill.json"
+        assert cfg["agent"]["personalities"]["codereviewer"] == "Review code carefully."

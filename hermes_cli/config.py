@@ -2657,7 +2657,13 @@ def _normalize_max_turns_config(config: Dict[str, Any]) -> Dict[str, Any]:
 
 
 
-def read_raw_config() -> Dict[str, Any]:
+def _read_config_file(config_path: Path) -> Dict[str, Any]:
+    """Read a YAML config file and return its parsed object."""
+    with open(config_path, encoding="utf-8") as f:
+        return yaml.safe_load(f) or {}
+
+
+def read_raw_config(config_path: Optional[Path] = None) -> Dict[str, Any]:
     """Read ~/.hermes/config.yaml as-is, without merging defaults or migrating.
 
     Returns the raw YAML dict, or ``{}`` if the file doesn't exist or can't
@@ -2666,27 +2672,30 @@ def read_raw_config() -> Dict[str, Any]:
     + migration pipeline.
     """
     try:
-        config_path = get_config_path()
+        config_path = Path(config_path) if config_path is not None else get_config_path()
         if config_path.exists():
-            with open(config_path, encoding="utf-8") as f:
-                return yaml.safe_load(f) or {}
+            return _read_config_file(config_path)
     except Exception:
         pass
     return {}
 
 
-def load_config() -> Dict[str, Any]:
-    """Load configuration from ~/.hermes/config.yaml."""
+def load_config(
+    config_path: Optional[Path] = None,
+    *,
+    defaults: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Load configuration from a YAML file, merging into *defaults* when given."""
     import copy
+
     ensure_hermes_home()
-    config_path = get_config_path()
-    
-    config = copy.deepcopy(DEFAULT_CONFIG)
-    
+    config_path = Path(config_path) if config_path is not None else get_config_path()
+
+    config = copy.deepcopy(DEFAULT_CONFIG if defaults is None else defaults)
+
     if config_path.exists():
         try:
-            with open(config_path, encoding="utf-8") as f:
-                user_config = yaml.safe_load(f) or {}
+            user_config = _read_config_file(config_path)
 
             if "max_turns" in user_config:
                 agent_user_config = dict(user_config.get("agent") or {})

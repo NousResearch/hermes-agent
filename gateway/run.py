@@ -83,6 +83,7 @@ _hermes_home = get_hermes_home()
 # Load environment variables from ~/.hermes/.env first.
 # User-managed env files should override stale shell exports on restart.
 from dotenv import load_dotenv  # backward-compat for tests that monkeypatch this symbol
+from hermes_cli.config import load_config as _shared_load_config, read_raw_config as _read_raw_config
 from hermes_cli.env_loader import load_hermes_dotenv
 _env_path = _hermes_home / '.env'
 load_hermes_dotenv(hermes_home=_hermes_home, project_env=Path(__file__).resolve().parents[1] / '.env')
@@ -92,20 +93,25 @@ load_hermes_dotenv(hermes_home=_hermes_home, project_env=Path(__file__).resolve(
 _config_path = _hermes_home / 'config.yaml'
 if _config_path.exists():
     try:
-        import yaml as _yaml
-        with open(_config_path, encoding="utf-8") as _f:
-            _cfg = _yaml.safe_load(_f) or {}
-        # Expand ${ENV_VAR} references before bridging to env vars.
-        from hermes_cli.config import _expand_env_vars
-        _cfg = _expand_env_vars(_cfg)
+        _cfg = _shared_load_config()
+        _raw_cfg = _read_raw_config()
         # Top-level simple values (fallback only — don't override .env)
-        for _key, _val in _cfg.items():
+        for _key in _raw_cfg:
+            _val = _cfg.get(_key)
             if isinstance(_val, (str, int, float, bool)) and _key not in os.environ:
                 os.environ[_key] = str(_val)
         # Terminal config is nested — bridge to TERMINAL_* env vars.
         # config.yaml overrides .env for these since it's the documented config path.
-        _terminal_cfg = _cfg.get("terminal", {})
-        if _terminal_cfg and isinstance(_terminal_cfg, dict):
+        _raw_terminal_cfg = _raw_cfg.get("terminal", {})
+        _terminal_cfg = dict(_cfg.get("terminal", {}) or {})
+        if "backend" in _terminal_cfg:
+            _terminal_cfg["env_type"] = _terminal_cfg["backend"]
+        elif "env_type" in _terminal_cfg:
+            _terminal_cfg["backend"] = _terminal_cfg["env_type"]
+        if _raw_terminal_cfg and isinstance(_raw_terminal_cfg, dict):
+            _explicit_terminal_keys = set(_raw_terminal_cfg.keys())
+            if "env_type" in _explicit_terminal_keys:
+                _explicit_terminal_keys.add("backend")
             _terminal_env_map = {
                 "backend": "TERMINAL_ENV",
                 "cwd": "TERMINAL_CWD",
@@ -129,7 +135,7 @@ if _config_path.exists():
                 "persistent_shell": "TERMINAL_PERSISTENT_SHELL",
             }
             for _cfg_key, _env_var in _terminal_env_map.items():
-                if _cfg_key in _terminal_cfg:
+                if _cfg_key in _explicit_terminal_keys and _cfg_key in _terminal_cfg:
                     _val = _terminal_cfg[_cfg_key]
                     # Skip cwd placeholder values (".", "auto", "cwd") — the
                     # gateway resolves these to Path.home() later (line ~255).
@@ -183,34 +189,37 @@ if _config_path.exists():
                     os.environ[_env_map["base_url"]] = _base_url
                 if _api_key:
                     os.environ[_env_map["api_key"]] = _api_key
+        _raw_agent_cfg = _raw_cfg.get("agent", {})
         _agent_cfg = _cfg.get("agent", {})
-        if _agent_cfg and isinstance(_agent_cfg, dict):
-            if "max_turns" in _agent_cfg:
+        if isinstance(_raw_agent_cfg, dict) and _raw_agent_cfg and isinstance(_agent_cfg, dict):
+            if "max_turns" in _raw_agent_cfg:
                 os.environ["HERMES_MAX_ITERATIONS"] = str(_agent_cfg["max_turns"])
             # Bridge agent.gateway_timeout → HERMES_AGENT_TIMEOUT env var.
             # Env var from .env takes precedence (already in os.environ).
-            if "gateway_timeout" in _agent_cfg and "HERMES_AGENT_TIMEOUT" not in os.environ:
+            if "gateway_timeout" in _raw_agent_cfg and "HERMES_AGENT_TIMEOUT" not in os.environ:
                 os.environ["HERMES_AGENT_TIMEOUT"] = str(_agent_cfg["gateway_timeout"])
-            if "gateway_timeout_warning" in _agent_cfg and "HERMES_AGENT_TIMEOUT_WARNING" not in os.environ:
+            if "gateway_timeout_warning" in _raw_agent_cfg and "HERMES_AGENT_TIMEOUT_WARNING" not in os.environ:
                 os.environ["HERMES_AGENT_TIMEOUT_WARNING"] = str(_agent_cfg["gateway_timeout_warning"])
-            if "gateway_notify_interval" in _agent_cfg and "HERMES_AGENT_NOTIFY_INTERVAL" not in os.environ:
+            if "gateway_notify_interval" in _raw_agent_cfg and "HERMES_AGENT_NOTIFY_INTERVAL" not in os.environ:
                 os.environ["HERMES_AGENT_NOTIFY_INTERVAL"] = str(_agent_cfg["gateway_notify_interval"])
-            if "restart_drain_timeout" in _agent_cfg and "HERMES_RESTART_DRAIN_TIMEOUT" not in os.environ:
+            if "restart_drain_timeout" in _raw_agent_cfg and "HERMES_RESTART_DRAIN_TIMEOUT" not in os.environ:
                 os.environ["HERMES_RESTART_DRAIN_TIMEOUT"] = str(_agent_cfg["restart_drain_timeout"])
+        _raw_display_cfg = _raw_cfg.get("display", {})
         _display_cfg = _cfg.get("display", {})
-        if _display_cfg and isinstance(_display_cfg, dict):
-            if "busy_input_mode" in _display_cfg and "HERMES_GATEWAY_BUSY_INPUT_MODE" not in os.environ:
+        if isinstance(_raw_display_cfg, dict) and isinstance(_display_cfg, dict):
+            if "busy_input_mode" in _raw_display_cfg and "HERMES_GATEWAY_BUSY_INPUT_MODE" not in os.environ:
                 os.environ["HERMES_GATEWAY_BUSY_INPUT_MODE"] = str(_display_cfg["busy_input_mode"])
         # Timezone: bridge config.yaml → HERMES_TIMEZONE env var.
         # HERMES_TIMEZONE from .env takes precedence (already in os.environ).
         _tz_cfg = _cfg.get("timezone", "")
-        if _tz_cfg and isinstance(_tz_cfg, str) and "HERMES_TIMEZONE" not in os.environ:
+        if "timezone" in _raw_cfg and _tz_cfg and isinstance(_tz_cfg, str) and "HERMES_TIMEZONE" not in os.environ:
             os.environ["HERMES_TIMEZONE"] = _tz_cfg.strip()
         # Security settings
+        _raw_security_cfg = _raw_cfg.get("security", {})
         _security_cfg = _cfg.get("security", {})
-        if isinstance(_security_cfg, dict):
+        if isinstance(_raw_security_cfg, dict) and isinstance(_security_cfg, dict):
             _redact = _security_cfg.get("redact_secrets")
-            if _redact is not None:
+            if "redact_secrets" in _raw_security_cfg and _redact is not None:
                 os.environ["HERMES_REDACT_SECRETS"] = str(_redact).lower()
     except Exception:
         pass  # Non-fatal; gateway can still run with .env values
@@ -443,13 +452,9 @@ def _platform_config_key(platform: "Platform") -> str:
 
 
 def _load_gateway_config() -> dict:
-    """Load and parse ~/.hermes/config.yaml, returning {} on any error."""
+    """Load gateway config through the shared Hermes config loader."""
     try:
-        config_path = _hermes_home / 'config.yaml'
-        if config_path.exists():
-            import yaml
-            with open(config_path, 'r', encoding='utf-8') as f:
-                return yaml.safe_load(f) or {}
+        return _shared_load_config()
     except Exception:
         logger.debug("Could not load gateway config from %s", _hermes_home / 'config.yaml')
     return {}

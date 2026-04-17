@@ -49,14 +49,15 @@ from gateway.qq_social_runtime_service import (
     match_admin_qq_social_control_request as shared_match_admin_qq_social_control_request,
     run_admin_qq_social_control_shortcut,
 )
+from gateway.send_runtime_service import (
+    match_admin_platform_send_request as shared_match_admin_platform_send_request,
+    run_admin_send_shortcut,
+)
 from gateway.send_intents import (
     extract_qq_inline_send_target_and_message,
-    extract_send_confirmation_message,
     extract_weixin_inline_send_target_and_message,
-    looks_like_send_confirmation,
     looks_like_send_query,
 )
-from gateway.send_requests import match_send_request
 from gateway.session import SessionSource
 from gateway.weixin_group_archive import WeixinGroupArchiveStore
 from gateway.weixin_group_policies import get_group_policy as get_weixin_group_policy
@@ -141,16 +142,15 @@ class DirectControlRouter:
         direct_target_extractor,
         query_prompt_formatter,
     ) -> tuple[dict[str, Any] | None, str | None]:
-        return match_send_request(
+        return shared_match_admin_platform_send_request(
             source=source,
             body=body,
             conversation_history=conversation_history,
+            admin_ids_configured=True,
+            is_admin_user=True,
             inline_extractor=inline_extractor,
             history_target_extractor=history_target_extractor,
             direct_target_extractor=direct_target_extractor,
-            looks_like_send_query=looks_like_send_query,
-            looks_like_send_confirmation=looks_like_send_confirmation,
-            extract_send_confirmation_message=extract_send_confirmation_message,
             query_prompt_formatter=query_prompt_formatter,
         )
 
@@ -172,10 +172,12 @@ class DirectControlRouter:
             return None, None
         if not self.owner._is_admin_user(source):
             return None, None
-        return self._match_admin_send_request_common(
+        return shared_match_admin_platform_send_request(
             source=source,
             body=body,
             conversation_history=conversation_history,
+            admin_ids_configured=True,
+            is_admin_user=True,
             inline_extractor=inline_extractor,
             history_target_extractor=history_target_extractor,
             direct_target_extractor=direct_target_extractor,
@@ -271,23 +273,17 @@ class DirectControlRouter:
         reply_formatter,
     ) -> str | None:
         tool_args, shortcut_error = matcher(event, conversation_history=conversation_history)
-        if shortcut_error:
-            return shortcut_error
-        if not tool_args:
-            return None
-
-        try:
-            result = self._run_send_shortcut_tool(
-                tool_args,
+        return run_admin_send_shortcut(
+            tool_args=tool_args,
+            shortcut_error=shortcut_error,
+            tool_runner=lambda current_tool_args: self._run_send_shortcut_tool(
+                current_tool_args,
                 target_formatter=target_formatter,
-            )
-        except Exception as exc:
-            logger.warning("%s: %s", error_prefix, exc)
-            return f"{error_prefix}：{exc}"
-
-        if result.get("error"):
-            return str(result["error"])
-        return reply_formatter(tool_args)
+            ),
+            error_prefix=error_prefix,
+            reply_formatter=reply_formatter,
+            logger=logger,
+        )
 
     def _try_handle_admin_qq_send_shortcut(
         self,

@@ -167,13 +167,10 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         patchUiState(state => ({
           ...state,
           info,
-          // agent just came online → flip the 'starting agent…' placeholder.
-          // leave running/interrupted/error statuses alone.
           status: state.status === 'starting agent…' ? 'ready' : state.status,
           usage: info.usage ? { ...state.usage, ...info.usage } : state.usage
         }))
 
-        // upgrade the seeded/partial intro row in-place with the real info
         setHistoryItems(prev => prev.map(m => (m.kind === 'intro' ? { ...m, info } : m)))
 
         return

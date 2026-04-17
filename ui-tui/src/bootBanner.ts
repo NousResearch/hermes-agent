@@ -1,8 +1,3 @@
-// Raw-ANSI banner painted to stdout before React/Ink load, giving the user
-// instant visual feedback during the ~170ms dynamic-import window.
-// `<AlternateScreen>` wipes the normal-screen buffer when Ink mounts, so
-// there's no double-banner and palette drift vs. DEFAULT_THEME is harmless.
-
 const GOLD = '\x1b[38;2;255;215;0m'
 const AMBER = '\x1b[38;2;255;191;0m'
 const BRONZE = '\x1b[38;2;205;127;50m'

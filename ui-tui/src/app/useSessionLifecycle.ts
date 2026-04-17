@@ -107,8 +107,6 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
       resetSession()
       setSessionStartedAt(Date.now())
 
-      // session.create returns instantly with partial info (no `version`);
-      // the `session.info` event flips status to 'ready' once the agent is live.
       patchUiState({
         info,
         sid: r.session_id,

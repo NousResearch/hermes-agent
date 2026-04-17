@@ -201,12 +201,6 @@ def handle_request(req: dict) -> dict | None:
 
 
 def _wait_agent(session: dict, rid: str, timeout: float = 30.0) -> dict | None:
-    """Block until the session's agent has been built.
-
-    Returns a JSON-RPC error dict on failure/timeout, ``None`` when the
-    agent is live. Cheap no-op when ``agent_ready`` is absent (sessions
-    from `session.resume`, which builds inline) or already set.
-    """
     ready = session.get("agent_ready")
     if ready is not None and not ready.wait(timeout=timeout):
         return _err(rid, 5032, "agent initialization timed out")
@@ -215,21 +209,11 @@ def _wait_agent(session: dict, rid: str, timeout: float = 30.0) -> dict | None:
 
 
 def _sess_nowait(params, rid):
-    """Resolve session without gating on agent readiness — for handlers
-    that only touch placeholder fields (cols, attached_images) and
-    shouldn't eat the agent-build window on cold start."""
     s = _sessions.get(params.get("session_id") or "")
     return (s, None) if s else (None, _err(rid, 4001, "session not found"))
 
 
 def _sess(params, rid):
-    """Resolve session from params + block on ``_wait_agent``.
-
-    `session.create` builds the agent on a background thread (~500–1500ms
-    cold) so the placeholder session exists before ``session["agent"]``
-    is populated. Routing every agent-touching RPC through `_sess` hides
-    that window — reads become free once the agent is live.
-    """
     s, err = _sess_nowait(params, rid)
     return (None, err) if err else (s, _wait_agent(s, rid))
 
@@ -1062,13 +1046,6 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
 
 @method("session.create")
 def _(rid, params: dict) -> dict:
-    """Non-blocking session creation.
-
-    Returns the sid + minimal info right away; the heavy agent init runs
-    on a background thread and broadcasts `session.info` when tools and
-    skills are wired. Handlers that touch ``session["agent"]`` go through
-    `_sess`, which gates on the `agent_ready` event.
-    """
     sid = uuid.uuid4().hex[:8]
     key = _new_session_key()
     cols = int(params.get("cols", 80))
@@ -1076,8 +1053,6 @@ def _(rid, params: dict) -> dict:
 
     ready = threading.Event()
 
-    # Placeholder session so subsequent RPCs find the sid and can wait on
-    # `agent_ready`; anything derived from the agent is filled in by `_build`.
     _sessions[sid] = {
         "agent": None,
         "agent_error": None,
@@ -1112,7 +1087,7 @@ def _(rid, params: dict) -> dict:
             try:
                 session["slash_worker"] = _SlashWorker(key, getattr(agent, "model", _resolve_model()))
             except Exception:
-                pass  # slash.exec will surface the real failure
+                pass
 
             try:
                 from tools.approval import register_gateway_notify, load_permanent_allowlist
@@ -1544,8 +1519,6 @@ def _(rid, params: dict) -> dict:
 
 @method("input.detect_drop")
 def _(rid, params: dict) -> dict:
-    # Pure text pattern-matching — bypass the agent-ready gate so the first
-    # post-startup send doesn't stack the wait on top of `prompt.submit`'s.
     session, err = _sess_nowait(params, rid)
     if err:
         return err

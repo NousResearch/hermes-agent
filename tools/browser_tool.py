@@ -260,13 +260,31 @@ def _resolve_cdp_override(cdp_url: str) -> str:
 
 
 def _get_cdp_override() -> str:
-    """Return a normalized user-supplied CDP URL override, or empty string.
+    """Return a normalized CDP URL override, or empty string.
 
-    When ``BROWSER_CDP_URL`` is set (e.g. via ``/browser connect``), we skip
-    both Browserbase and the local headless launcher and connect directly to
-    the supplied Chrome DevTools Protocol endpoint.
+    Precedence is:
+    1. ``BROWSER_CDP_URL`` env var (live override from ``/browser connect``)
+    2. ``browser.cdp_url`` in config.yaml (persistent config)
+
+    When either is set, we skip both Browserbase and the local headless
+    launcher and connect directly to the supplied Chrome DevTools Protocol
+    endpoint.
     """
-    return _resolve_cdp_override(os.environ.get("BROWSER_CDP_URL", ""))
+    env_override = os.environ.get("BROWSER_CDP_URL", "").strip()
+    if env_override:
+        return _resolve_cdp_override(env_override)
+
+    try:
+        from hermes_cli.config import read_raw_config
+
+        cfg = read_raw_config()
+        browser_cfg = cfg.get("browser", {})
+        if isinstance(browser_cfg, dict):
+            return _resolve_cdp_override(str(browser_cfg.get("cdp_url", "") or ""))
+    except Exception as e:
+        logger.debug("Could not read browser.cdp_url from config: %s", e)
+
+    return ""
 
 
 # ============================================================================

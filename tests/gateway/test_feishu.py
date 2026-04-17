@@ -639,6 +639,14 @@ class TestAdapterBehavior(unittest.TestCase):
                 calls.append("bot_deleted")
                 return self
 
+            def register_p2_im_chat_access_event_bot_p2p_chat_entered_v1(self, _handler):
+                calls.append("p2p_chat_entered")
+                return self
+
+            def register_p2_im_message_recalled_v1(self, _handler):
+                calls.append("message_recalled")
+                return self
+
             def build(self):
                 calls.append("build")
                 return "handler"
@@ -664,6 +672,8 @@ class TestAdapterBehavior(unittest.TestCase):
                 "card_action",
                 "bot_added",
                 "bot_deleted",
+                "p2p_chat_entered",
+                "message_recalled",
                 "build",
             ],
         )

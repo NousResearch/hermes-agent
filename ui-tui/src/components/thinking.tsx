@@ -537,6 +537,7 @@ interface Group {
 export const ToolTrail = memo(function ToolTrail({
   busy = false,
   detailsMode = 'collapsed',
+  outcome = '',
   reasoningActive = false,
   reasoning = '',
   reasoningTokens,
@@ -550,6 +551,7 @@ export const ToolTrail = memo(function ToolTrail({
 }: {
   busy?: boolean
   detailsMode?: DetailsMode
+  outcome?: string
   reasoningActive?: boolean
   reasoning?: string
   reasoningTokens?: number
@@ -596,7 +598,16 @@ export const ToolTrail = memo(function ToolTrail({
 
   const cot = useMemo(() => thinkingPreview(reasoning, 'full', THINKING_COT_MAX), [reasoning])
 
-  if (!busy && !trail.length && !tools.length && !subagents.length && !activity.length && !cot && !reasoningActive) {
+  if (
+    !busy &&
+    !trail.length &&
+    !tools.length &&
+    !subagents.length &&
+    !activity.length &&
+    !cot &&
+    !reasoningActive &&
+    !outcome
+  ) {
     return null
   }
 
@@ -960,6 +971,13 @@ export const ToolTrail = memo(function ToolTrail({
           dimColor
           t={t}
         />
+      ) : null}
+      {outcome ? (
+        <Box marginTop={1}>
+          <Text color={t.color.dim} dim>
+            · {outcome}
+          </Text>
+        </Box>
       ) : null}
     </Box>
   )

@@ -10,7 +10,7 @@ import type { Theme } from '../theme.js'
 import type { DetailsMode } from '../types.js'
 
 import { GoodVibesHeart, StatusRule, StickyPromptTracker, TranscriptScrollbar } from './appChrome.js'
-import { AppOverlays } from './appOverlays.js'
+import { FloatingOverlays, PromptZone } from './appOverlays.js'
 import { Banner, Panel, SessionPanel } from './branding.js'
 import { MessageLine } from './messageLine.js'
 import { QueuedMessages } from './queuedMessages.js'
@@ -37,6 +37,7 @@ const StreamingAssistant = memo(function StreamingAssistant({
             activity={progress.activity}
             busy={busy}
             detailsMode={detailsMode}
+            outcome={progress.outcome}
             reasoning={progress.reasoning}
             reasoningActive={progress.reasoningActive}
             reasoningStreaming={progress.reasoningStreaming}
@@ -179,16 +180,12 @@ const ComposerPane = memo(function ComposerPane({
           />
         )}
 
-        <AppOverlays
+        <FloatingOverlays
           cols={composer.cols}
           compIdx={composer.compIdx}
           completions={composer.completions}
-          onApprovalChoice={actions.answerApproval}
-          onClarifyAnswer={actions.answerClarify}
           onModelSelect={actions.onModelSelect}
           onPickerSelect={actions.resumeById}
-          onSecretSubmit={actions.answerSecret}
-          onSudoSubmit={actions.answerSudo}
           pagerPageSize={composer.pagerPageSize}
         />
       </Box>
@@ -253,6 +250,14 @@ export const AppLayout = memo(function AppLayout({
         <Box flexDirection="row" flexGrow={1}>
           <TranscriptPane actions={actions} composer={composer} progress={progress} transcript={transcript} />
         </Box>
+
+        <PromptZone
+          cols={composer.cols}
+          onApprovalChoice={actions.answerApproval}
+          onClarifyAnswer={actions.answerClarify}
+          onSecretSubmit={actions.answerSecret}
+          onSudoSubmit={actions.answerSudo}
+        />
 
         <ComposerPane actions={actions} composer={composer} status={status} />
       </Box>

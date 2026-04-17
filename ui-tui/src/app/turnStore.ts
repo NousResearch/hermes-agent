@@ -4,6 +4,7 @@ import type { ActiveTool, ActivityItem, SubagentProgress } from '../types.js'
 
 const buildTurnState = (): TurnState => ({
   activity: [],
+  outcome: '',
   reasoning: '',
   reasoningActive: false,
   reasoningStreaming: false,
@@ -26,6 +27,7 @@ export const resetTurnState = () => $turnState.set(buildTurnState())
 
 export interface TurnState {
   activity: ActivityItem[]
+  outcome: string
   reasoning: string
   reasoningActive: boolean
   reasoningStreaming: boolean

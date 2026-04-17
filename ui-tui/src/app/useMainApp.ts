@@ -280,7 +280,7 @@ export function useMainApp(gw: GatewayClient) {
     sys
   })
 
-  useConfigSync({ rpc, setBellOnComplete, setVoiceEnabled, sid: ui.sid })
+  useConfigSync({ gw, setBellOnComplete, setVoiceEnabled, sid: ui.sid })
 
   useEffect(() => {
     if (!ui.sid || !stdout) {
@@ -516,10 +516,10 @@ export function useMainApp(gw: GatewayClient) {
     (choice: string) =>
       respondWith('approval.respond', { choice, session_id: ui.sid }, () => {
         patchOverlayState({ approval: null })
-        sys(choice === 'deny' ? 'denied' : `approved (${choice})`)
+        patchTurnState({ outcome: choice === 'deny' ? 'denied' : `approved (${choice})` })
         patchUiState({ status: 'running…' })
       }),
-    [respondWith, sys, ui.sid]
+    [respondWith, ui.sid]
   )
 
   const answerSudo = useCallback(
@@ -562,6 +562,7 @@ export function useMainApp(gw: GatewayClient) {
       ? turn.activity.some(item => item.tone !== 'info')
       : Boolean(
           ui.busy ||
+          turn.outcome ||
           turn.subagents.length ||
           turn.tools.length ||
           turn.turnTrail.length ||

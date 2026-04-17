@@ -284,6 +284,13 @@ def _clear_session_context(tokens: list) -> None:
         pass
 
 
+def _enable_gateway_prompts() -> None:
+    """Route approvals through gateway callbacks instead of CLI input()."""
+    os.environ["HERMES_GATEWAY_SESSION"] = "1"
+    os.environ["HERMES_EXEC_ASK"] = "1"
+    os.environ["HERMES_INTERACTIVE"] = "1"
+
+
 # ── Blocking prompt factory ──────────────────────────────────────────
 
 def _block(event: str, sid: str, payload: dict, timeout: int = 300) -> str:
@@ -1043,7 +1050,7 @@ def _(rid, params: dict) -> dict:
     sid = uuid.uuid4().hex[:8]
     key = _new_session_key()
     cols = int(params.get("cols", 80))
-    os.environ["HERMES_INTERACTIVE"] = "1"
+    _enable_gateway_prompts()
 
     ready = threading.Event()
 
@@ -1149,7 +1156,7 @@ def _(rid, params: dict) -> dict:
         else:
             return _err(rid, 4007, "session not found")
     sid = uuid.uuid4().hex[:8]
-    os.environ["HERMES_INTERACTIVE"] = "1"
+    _enable_gateway_prompts()
     try:
         db.reopen_session(target)
         history = db.get_messages_as_conversation(target)

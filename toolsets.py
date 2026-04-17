@@ -201,6 +201,16 @@ TOOLSETS = {
         "includes": []
     },
 
+    "cko_brain": {
+        "description": "CKO Brain tools for /Brain/ knowledge management — Git operations, markdown file I/O, and brain-wide search",
+        "tools": [
+            "git_pull", "git_push", "git_commit",
+            "read_markdown", "write_markdown", "append_to_file",
+            "brain_search"
+        ],
+        "includes": []
+    },
+
 
     # Scenario-specific toolsets
     

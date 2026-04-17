@@ -63,6 +63,25 @@ class TestGatewayPidState:
 
         assert status.get_running_pid() == os.getpid()
 
+    def test_get_running_pid_keeps_permission_limited_gateway_pid(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        pid_path = tmp_path / "gateway.pid"
+        pid_path.write_text(json.dumps({
+            "pid": 4242,
+            "kind": "hermes-gateway",
+            "argv": ["python", "-m", "hermes_cli.main", "gateway", "run"],
+            "start_time": 123,
+        }))
+
+        def fake_kill(pid, sig):
+            raise PermissionError("operation not permitted")
+
+        monkeypatch.setattr(status.os, "kill", fake_kill)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: None)
+
+        assert status.get_running_pid() == 4242
+        assert pid_path.exists()
+
 
 class TestGatewayRuntimeStatus:
     def test_write_runtime_status_overwrites_stale_pid_on_restart(self, tmp_path, monkeypatch):

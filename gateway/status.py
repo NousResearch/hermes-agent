@@ -430,11 +430,17 @@ def get_running_pid() -> Optional[int]:
         remove_pid_file()
         return None
 
+    permission_limited = False
     try:
         os.kill(pid, 0)  # signal 0 = existence check, no actual signal sent
-    except (ProcessLookupError, PermissionError):
+    except ProcessLookupError:
         remove_pid_file()
         return None
+    except PermissionError:
+        # The PID exists but belongs to another user or is hidden by procfs.
+        # Keep the PID record so status checks can still report a running
+        # gateway even when the current session cannot manage it directly.
+        permission_limited = True
 
     recorded_start = record.get("start_time")
     current_start = _get_process_start_time(pid)
@@ -442,10 +448,12 @@ def get_running_pid() -> Optional[int]:
         remove_pid_file()
         return None
 
-    if not _looks_like_gateway_process(pid):
+    if not permission_limited and not _looks_like_gateway_process(pid):
         if not _record_looks_like_gateway(record):
             remove_pid_file()
             return None
+    elif permission_limited and not _record_looks_like_gateway(record):
+        return None
 
     return pid
 

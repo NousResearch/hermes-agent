@@ -267,3 +267,20 @@ class TestWaitForGatewayExit:
 
         assert killed == 2
         assert calls == [(11, True), (22, True)]
+
+
+def test_gateway_status_falls_back_to_pid_file_when_process_visibility_is_limited(monkeypatch, capsys):
+    monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
+    monkeypatch.setattr(gateway, "is_termux", lambda: False)
+    monkeypatch.setattr(gateway, "is_macos", lambda: False)
+    monkeypatch.setattr(gateway, "is_wsl", lambda: False)
+    monkeypatch.setattr(gateway, "find_gateway_pids", lambda exclude_pids=None, all_profiles=False: [])
+    monkeypatch.setattr(gateway, "get_running_pid", lambda: 4242)
+    monkeypatch.setattr(gateway, "_runtime_health_lines", lambda: [])
+
+    gateway.gateway_command(SimpleNamespace(gateway_command="status", deep=False, system=False))
+
+    out = capsys.readouterr().out
+    assert "Gateway is running (PID: 4242)" in out
+    assert "PID file" in out
+    assert "owned by another user" in out

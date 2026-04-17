@@ -14,7 +14,7 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
-from gateway.status import terminate_pid
+from gateway.status import get_running_pid, terminate_pid
 from gateway.restart import (
     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
     GATEWAY_SERVICE_RESTART_EXIT_CODE,
@@ -3174,9 +3174,17 @@ def gateway_command(args):
         else:
             # Check for manually running processes
             pids = find_gateway_pids()
+            pid_file_fallback = False
+            if not pids:
+                pid = get_running_pid()
+                if pid is not None:
+                    pids = [pid]
+                    pid_file_fallback = True
             if pids:
                 print(f"✓ Gateway is running (PID: {', '.join(map(str, pids))})")
                 print("  (Running manually, not as a system service)")
+                if pid_file_fallback:
+                    print("  Process details are only visible via the PID file; it may be owned by another user or hidden by system permissions.")
                 runtime_lines = _runtime_health_lines()
                 if runtime_lines:
                     print()

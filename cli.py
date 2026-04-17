@@ -3510,6 +3510,21 @@ class HermesCLI:
         killed = process_registry.kill_all()
         print(f"  ✅ Stopped {killed} process(es).")
 
+    def _handle_kanban(self):
+        """Handle /kanban — open TUI kanban board view for todo tasks."""
+        from hermes_cli.kanban_view import run_kanban_view
+        from tools.todo_tool import TodoStore
+        
+        # Get the todo store from the agent, or create a new one if not available
+        todo_store = None
+        if hasattr(self, 'agent') and self.agent and hasattr(self.agent, '_todo_store'):
+            todo_store = self.agent._todo_store
+        
+        if todo_store is None:
+            todo_store = TodoStore()
+        
+        run_kanban_view(todo_store)
+
     def _handle_paste_command(self):
         """Handle /paste — explicitly check clipboard for an image.
 
@@ -4513,34 +4528,6 @@ class HermesCLI:
         self._model_picker_state = None
         self._restore_modal_input_snapshot()
         self._invalidate(min_interval=0.0)
-
-    @staticmethod
-    def _compute_model_picker_viewport(
-        selected: int,
-        scroll_offset: int,
-        n: int,
-        term_rows: int,
-        reserved_below: int = 6,
-        panel_chrome: int = 6,
-        min_visible: int = 3,
-    ) -> tuple[int, int]:
-        """Resolve (scroll_offset, visible) for the /model picker viewport.
-
-        ``reserved_below`` matches the approval / clarify panels — input area,
-        status bar, and separators below the panel. ``panel_chrome`` covers
-        this panel's own borders + blanks + hint row. The remaining rows hold
-        the scrollable list, with the offset slid to keep ``selected`` on screen.
-        """
-        max_visible = max(min_visible, term_rows - reserved_below - panel_chrome)
-        if n <= max_visible:
-            return 0, n
-        visible = max_visible
-        if selected < scroll_offset:
-            scroll_offset = selected
-        elif selected >= scroll_offset + visible:
-            scroll_offset = selected - visible + 1
-        scroll_offset = max(0, min(scroll_offset, n - visible))
-        return scroll_offset, visible
 
     def _apply_model_switch_result(self, result, persist_global: bool) -> None:
         if not result.success:
@@ -5590,6 +5577,8 @@ class HermesCLI:
                         print(f"  {status} {p['name']}{version}{detail}{error}")
             except Exception as e:
                 print(f"Plugin system error: {e}")
+        elif canonical == "kanban":
+            self._handle_kanban()
         elif canonical == "rollback":
             self._handle_rollback_command(cmd_original)
         elif canonical == "snapshot":
@@ -8556,7 +8545,6 @@ class HermesCLI:
             # --- /model picker modal ---
             if self._model_picker_state:
                 self._handle_model_picker_selection()
-                event.app.current_buffer.reset()
                 event.app.invalidate()
                 return
 
@@ -8720,13 +8708,6 @@ class HermesCLI:
             else:
                 max_idx = len(state.get("model_list") or []) + 1
             state["selected"] = min(max_idx, state.get("selected", 0) + 1)
-            event.app.invalidate()
-
-        @kb.add('escape', filter=Condition(lambda: bool(self._model_picker_state)), eager=True)
-        def model_picker_escape(event):
-            """ESC closes the /model picker."""
-            self._close_model_picker()
-            event.app.current_buffer.reset()
             event.app.invalidate()
 
         # --- History navigation: up/down browse history in normal input mode ---
@@ -9530,22 +9511,6 @@ class HermesCLI:
 
             box_width = _panel_box_width(title, [hint] + choices, min_width=46, max_width=84)
             inner_text_width = max(8, box_width - 6)
-            selected = state.get("selected", 0)
-
-            # Scrolling viewport: the panel renders into a Window with no max
-            # height, so without limiting visible items the bottom border and
-            # any items past the available terminal rows get clipped on long
-            # provider catalogs (e.g. Ollama Cloud's 36+ models).
-            try:
-                from prompt_toolkit.application import get_app
-                term_rows = get_app().output.get_size().rows
-            except Exception:
-                term_rows = shutil.get_terminal_size((100, 24)).lines
-            scroll_offset, visible = HermesCLI._compute_model_picker_viewport(
-                selected, state.get("_scroll_offset", 0), len(choices), term_rows,
-            )
-            state["_scroll_offset"] = scroll_offset
-
             lines = []
             lines.append(('class:clarify-border', '╭─ '))
             lines.append(('class:clarify-title', title))
@@ -9553,8 +9518,8 @@ class HermesCLI:
             _append_blank_panel_line(lines, 'class:clarify-border', box_width)
             _append_panel_line(lines, 'class:clarify-border', 'class:clarify-hint', hint, box_width)
             _append_blank_panel_line(lines, 'class:clarify-border', box_width)
-            for idx in range(scroll_offset, scroll_offset + visible):
-                choice = choices[idx]
+            selected = state.get("selected", 0)
+            for idx, choice in enumerate(choices):
                 style = 'class:clarify-selected' if idx == selected else 'class:clarify-choice'
                 prefix = '❯ ' if idx == selected else '  '
                 for wrapped in _wrap_panel_text(prefix + choice, inner_text_width, subsequent_indent='  '):

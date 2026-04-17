@@ -778,6 +778,23 @@ DEFAULT_CONFIG = {
 
     # Config schema version - bump this when adding new required fields
     "_config_version": 18,
+
+    # MCP servers — external Model Context Protocol servers connected at startup.
+    # Each server's tools are auto-discovered and prefixed with mcp_{server}_*.
+    # See skills/mcp/native-mcp/SKILL.md for full configuration reference.
+    #
+    # Context7 MCP Server — real-time, version-specific code documentation.
+    # Requires Node.js (for npx) and the `mcp` Python package.
+    # Uncomment the block below to enable Context7:
+    #
+    # "mcp_servers": {
+    #     "context7": {
+    #         "command": "npx",
+    #         "args": ["-y", "@upstash/context7-mcp"],
+    #         "timeout": 120,
+    #         "connect_timeout": 60,
+    #     },
+    # },
 }
 
 # =============================================================================
@@ -985,6 +1002,21 @@ OPTIONAL_ENV_VARS = {
         "url": "https://modelstudio.console.alibabacloud.com/",
         "password": True,
         "category": "provider",
+    },
+    "ALIBABA_CODING_API_KEY": {
+        "description": "Alibaba Cloud DashScope Coding Plan API key (coding.dashscope endpoint)",
+        "prompt": "DashScope Coding Plan API Key",
+        "url": "https://modelstudio.console.alibabacloud.com/",
+        "password": True,
+        "category": "provider",
+    },
+    "ALIBABA_CODING_BASE_URL": {
+        "description": "Custom DashScope Coding Plan base URL (default: https://coding.dashscope.aliyuncs.com/v1)",
+        "prompt": "DashScope Coding Plan Base URL",
+        "url": "",
+        "password": False,
+        "category": "provider",
+        "advanced": True,
     },
     "DASHSCOPE_BASE_URL": {
         "description": "Custom DashScope base URL (default: coding-intl OpenAI-compat endpoint)",

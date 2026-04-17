@@ -48,6 +48,8 @@ _HERMES_CORE_TOOLS = [
     "text_to_speech",
     # Planning & memory
     "todo", "memory",
+    # Documentation
+    "fetch_docs",
     # Session history search
     "session_search",
     # Clarifying questions
@@ -189,6 +191,12 @@ TOOLSETS = {
     "delegation": {
         "description": "Spawn subagents with isolated context for complex subtasks",
         "tools": ["delegate_task"],
+        "includes": []
+    },
+
+    "documentation": {
+        "description": "Documentation retrieval tools — fetch library/framework docs from llms.txt files and the Context7 API for up-to-date, version-specific code documentation",
+        "tools": ["fetch_docs"],
         "includes": []
     },
 

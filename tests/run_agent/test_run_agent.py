@@ -1015,6 +1015,16 @@ class TestBuildApiKwargs:
         kwargs = agent._build_api_kwargs(messages)
         assert kwargs.get("extra_body", {}).get("think") is None
 
+    def test_remote_custom_provider_does_not_receive_ollama_think_flag(self, agent):
+        """Remote OpenAI-compatible custom providers should not receive think=false."""
+        agent.provider = "custom"
+        agent.base_url = "https://api.mistral.ai/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.reasoning_config = {"enabled": False}
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        assert kwargs.get("extra_body", {}).get("think") is None
+
     def test_non_custom_provider_unaffected(self, agent):
         """OpenRouter provider with effort=none should NOT inject think=false."""
         agent.provider = "openrouter"

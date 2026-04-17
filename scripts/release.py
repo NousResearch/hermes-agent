@@ -307,6 +307,7 @@ AUTHOR_MAP = {
     "anthhub@163.com": "anthhub",
     "shenuu@gmail.com": "shenuu",
     "xiayh17@gmail.com": "xiayh0107",
+    "zhujianxyz@gmail.com": "opriz",
     "asurla@nvidia.com": "anniesurla",
     "limkuan24@gmail.com": "WideLee",
     "aviralarora002@gmail.com": "AviArora02-commits",

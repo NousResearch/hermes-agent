@@ -568,15 +568,15 @@ class TestToolsModeInitBehavior:
 
         with patch("plugins.memory.honcho.client.HonchoClientConfig.from_global_config", return_value=cfg), \
              patch("plugins.memory.honcho.client.get_honcho_client", return_value=MagicMock()), \
-             patch("plugins.memory.honcho.session.HonchoSessionManager", return_value=mock_manager), \
+             patch("plugins.memory.honcho.session.HonchoSessionManager", return_value=mock_manager) as mock_manager_cls, \
              patch("hermes_constants.get_hermes_home", return_value=MagicMock()):
             provider.initialize(session_id="test-session-001", **init_kwargs)
 
-        return provider, cfg
+        return provider, cfg, mock_manager_cls
 
     def test_tools_lazy_default(self):
         """tools + initOnSessionStart=false → session NOT initialized after initialize()."""
-        provider, _ = self._make_provider_with_config(
+        provider, _, _ = self._make_provider_with_config(
             recall_mode="tools", init_on_session_start=False,
         )
         assert provider._session_initialized is False
@@ -585,7 +585,7 @@ class TestToolsModeInitBehavior:
 
     def test_tools_eager_init(self):
         """tools + initOnSessionStart=true → session IS initialized after initialize()."""
-        provider, _ = self._make_provider_with_config(
+        provider, _, _ = self._make_provider_with_config(
             recall_mode="tools", init_on_session_start=True,
         )
         assert provider._session_initialized is True
@@ -593,33 +593,34 @@ class TestToolsModeInitBehavior:
 
     def test_tools_eager_prefetch_still_empty(self):
         """tools mode with eager init still returns empty from prefetch() (no auto-injection)."""
-        provider, _ = self._make_provider_with_config(
+        provider, _, _ = self._make_provider_with_config(
             recall_mode="tools", init_on_session_start=True,
         )
         assert provider.prefetch("test query") == ""
 
     def test_tools_lazy_prefetch_empty(self):
         """tools mode with lazy init also returns empty from prefetch()."""
-        provider, _ = self._make_provider_with_config(
+        provider, _, _ = self._make_provider_with_config(
             recall_mode="tools", init_on_session_start=False,
         )
         assert provider.prefetch("test query") == ""
 
     def test_explicit_peer_name_not_overridden_by_user_id(self):
         """Explicit peerName in config must not be replaced by gateway user_id."""
-        _, cfg = self._make_provider_with_config(
+        _, cfg, _ = self._make_provider_with_config(
             recall_mode="tools", init_on_session_start=True,
             peer_name="Kathie", user_id="8439114563",
         )
         assert cfg.peer_name == "Kathie"
 
     def test_user_id_used_when_no_peer_name(self):
-        """Gateway user_id is used as peer_name when no explicit peerName configured."""
-        _, cfg = self._make_provider_with_config(
+        """Gateway user_id is passed separately from config peer_name."""
+        _, cfg, mock_manager_cls = self._make_provider_with_config(
             recall_mode="tools", init_on_session_start=True,
             peer_name=None, user_id="8439114563",
         )
-        assert cfg.peer_name == "8439114563"
+        assert cfg.peer_name is None
+        assert mock_manager_cls.call_args.kwargs["runtime_user_peer_name"] == "8439114563"
 
 
 class TestPerSessionMigrateGuard:

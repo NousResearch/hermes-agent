@@ -7209,12 +7209,13 @@ class AIAgent:
             # it's cheaper and avoids Codex Responses API incompatibility.
             from agent.auxiliary_client import call_llm as _call_llm
             _aux_available = True
+            _flush_temperature = 0.6 if str(self.model or "").strip().lower() == "kimi-for-coding" else 0.3
             try:
                 response = _call_llm(
                     task="flush_memories",
                     messages=api_messages,
                     tools=[memory_tool_def],
-                    temperature=0.3,
+                    temperature=_flush_temperature,
                     max_tokens=5120,
                     # timeout resolved from auxiliary.flush_memories.timeout config
                 )
@@ -7226,7 +7227,7 @@ class AIAgent:
                 # No auxiliary client -- use the Codex Responses path directly
                 codex_kwargs = self._build_api_kwargs(api_messages)
                 codex_kwargs["tools"] = self._responses_tools([memory_tool_def])
-                codex_kwargs["temperature"] = 0.3
+                codex_kwargs["temperature"] = _flush_temperature
                 if "max_output_tokens" in codex_kwargs:
                     codex_kwargs["max_output_tokens"] = 5120
                 response = self._run_codex_stream(codex_kwargs)
@@ -7245,7 +7246,7 @@ class AIAgent:
                     "model": self.model,
                     "messages": api_messages,
                     "tools": [memory_tool_def],
-                    "temperature": 0.3,
+                    "temperature": _flush_temperature,
                     **self._max_tokens_param(5120),
                 }
                 from agent.auxiliary_client import _get_task_timeout

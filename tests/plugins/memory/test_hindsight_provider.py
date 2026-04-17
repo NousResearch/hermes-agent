@@ -705,6 +705,10 @@ class TestAvailability:
             lambda: tmp_path / "nonexistent",
         )
         monkeypatch.setenv("HINDSIGHT_MODE", "local")
+        monkeypatch.setattr(
+            "plugins.memory.hindsight.importlib.import_module",
+            lambda name: object(),
+        )
         p = HindsightMemoryProvider()
         assert p.is_available()
 
@@ -713,7 +717,7 @@ class TestAvailability:
         config_path.parent.mkdir(parents=True, exist_ok=True)
         config_path.write_text(json.dumps({
             "mode": "cloud",
-            "api_key": "config-key",
+            "api_key": "***",
         }))
         monkeypatch.setattr(
             "plugins.memory.hindsight.get_hermes_home",
@@ -723,3 +727,43 @@ class TestAvailability:
         p = HindsightMemoryProvider()
 
         assert p.is_available()
+
+    def test_local_mode_unavailable_when_runtime_import_fails(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "plugins.memory.hindsight.get_hermes_home",
+            lambda: tmp_path / "nonexistent",
+        )
+        monkeypatch.setenv("HINDSIGHT_MODE", "local")
+
+        def _raise(_name):
+            raise RuntimeError(
+                "NumPy was built with baseline optimizations: (x86_64-v2)"
+            )
+
+        monkeypatch.setattr(
+            "plugins.memory.hindsight.importlib.import_module",
+            _raise,
+        )
+        p = HindsightMemoryProvider()
+        assert not p.is_available()
+
+    def test_initialize_disables_local_mode_when_runtime_import_fails(self, tmp_path, monkeypatch):
+        config = {"mode": "local_embedded"}
+        config_path = tmp_path / "hindsight" / "config.json"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(json.dumps(config))
+        monkeypatch.setattr(
+            "plugins.memory.hindsight.get_hermes_home", lambda: tmp_path
+        )
+
+        def _raise(_name):
+            raise RuntimeError("x86_64-v2 unsupported")
+
+        monkeypatch.setattr(
+            "plugins.memory.hindsight.importlib.import_module",
+            _raise,
+        )
+
+        p = HindsightMemoryProvider()
+        p.initialize(session_id="test-session", hermes_home=str(tmp_path), platform="cli")
+        assert p._mode == "disabled"

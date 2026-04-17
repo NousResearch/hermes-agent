@@ -88,6 +88,51 @@ class TestCleanForDisplay:
 # ── Integration: _send_or_edit strips MEDIA: ─────────────────────────────
 
 
+class TestFinalizeCapabilityGate:
+    """Verify REQUIRES_EDIT_FINALIZE gates the redundant final edit.
+
+    Platforms that don't need an explicit finalize signal (Telegram,
+    Slack, Matrix, …) should skip the redundant final edit when the
+    mid-stream edit already delivered the final content.  Platforms that
+    *do* need it (DingTalk AI Cards) must always receive a finalize=True
+    edit at the end of the stream.
+    """
+
+    @pytest.mark.asyncio
+    async def test_identical_text_skip_respects_adapter_flag(self):
+        """_send_or_edit short-circuits identical-text only when the
+        adapter doesn't require an explicit finalize signal."""
+        # Adapter without finalize requirement — should skip identical edit.
+        plain = MagicMock()
+        plain.REQUIRES_EDIT_FINALIZE = False
+        plain.send = AsyncMock(return_value=SimpleNamespace(
+            success=True, message_id="m1",
+        ))
+        plain.edit_message = AsyncMock()
+        plain.MAX_MESSAGE_LENGTH = 4096
+        c1 = GatewayStreamConsumer(plain, "chat_1")
+        await c1._send_or_edit("hello")  # first send
+        await c1._send_or_edit("hello", finalize=True)  # identical → skip
+        plain.edit_message.assert_not_called()
+
+        # Adapter that requires finalize — must still fire the edit.
+        picky = MagicMock()
+        picky.REQUIRES_EDIT_FINALIZE = True
+        picky.send = AsyncMock(return_value=SimpleNamespace(
+            success=True, message_id="m1",
+        ))
+        picky.edit_message = AsyncMock(return_value=SimpleNamespace(
+            success=True, message_id="m1",
+        ))
+        picky.MAX_MESSAGE_LENGTH = 4096
+        c2 = GatewayStreamConsumer(picky, "chat_1")
+        await c2._send_or_edit("hello")
+        await c2._send_or_edit("hello", finalize=True)
+        # Finalize edit must go through even on identical content.
+        picky.edit_message.assert_called_once()
+        assert picky.edit_message.call_args[1]["finalize"] is True
+
+
 class TestSendOrEditMediaStripping:
     """Verify _send_or_edit strips MEDIA: before sending to the platform."""
 

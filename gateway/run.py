@@ -197,7 +197,7 @@ from gateway.config import (
 from gateway.agent_execution_service import (
     create_gateway_agent,
     execute_gateway_sync_turn as shared_execute_gateway_sync_turn,
-    run_gateway_approved_conversation as shared_run_gateway_approved_conversation,
+    run_gateway_background_conversation as shared_run_gateway_background_conversation,
 )
 from gateway.agent_followup_runtime_service import (
     process_gateway_pending_followup as shared_process_gateway_pending_followup,
@@ -6056,7 +6056,6 @@ class GatewayRunner:
         is_admin_user: Optional[bool] = None,
     ) -> None:
         """Execute a background agent task and deliver the result to the chat."""
-        from run_agent import AIAgent
 
         self._ensure_background_job_state()
         job = self._managed_background_jobs.get(task_id)
@@ -6106,23 +6105,12 @@ class GatewayRunner:
                 job["updated_at"] = time.time()
 
             def run_sync():
-                agent = create_gateway_agent(
+                return shared_run_gateway_background_conversation(
                     runtime_spec=runtime_spec,
                     session_id=task_id,
                     source=source,
-                    session_db=self._session_db,
-                    max_iterations=runtime_spec.max_iterations,
-                    quiet_mode=True,
-                    verbose_logging=False,
-                    enabled_toolsets=runtime_spec.enabled_toolsets,
-                )
-                self._managed_background_job_agents[task_id] = agent
-                return shared_run_gateway_approved_conversation(
-                    agent=agent,
                     message=prompt,
-                    pending_model_note=None,
                     conversation_history=bg_history or None,
-                    task_id=task_id,
                     session_key=session_key or task_id,
                     admin_user_ids=list(admin_user_ids or []),
                     is_admin_user=is_admin_user,
@@ -6134,6 +6122,11 @@ class GatewayRunner:
                     admin_only_message_builder=lambda action: self._admin_only_message(
                         source,
                         action,
+                    ),
+                    session_db=self._session_db,
+                    on_agent_created=lambda agent: self._managed_background_job_agents.__setitem__(
+                        task_id,
+                        agent,
                     ),
                 )
 

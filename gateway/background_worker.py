@@ -10,8 +10,8 @@ import sys
 import threading
 
 from gateway.agent_execution_service import (
-    create_gateway_agent,
-    run_gateway_approved_conversation,
+    run_gateway_background_conversation,
+    run_gateway_btw_conversation,
 )
 from gateway.agent_runtime import build_gateway_agent_runtime
 from gateway.background_jobs import BackgroundJobStore, ExternalApprovalBridge
@@ -77,31 +77,6 @@ def _build_agent_runtime(job: dict):
     }
 
 
-def _run_btw_job(*, job: dict, runtime_spec, source: SessionSource):
-    agent = create_gateway_agent(
-        runtime_spec=runtime_spec,
-        session_id=job["task_id"],
-        source=source,
-        max_iterations=min(int(runtime_spec.max_iterations), 8),
-        enabled_toolsets=[],
-        quiet_mode=True,
-        verbose_logging=False,
-        skip_memory=True,
-        skip_context_files=True,
-        persist_session=False,
-    )
-    btw_prompt = (
-        "[Ephemeral /btw side question. Answer using the conversation "
-        "context. No tools available. Be direct and concise.]\n\n"
-        + str(job.get("prompt") or "")
-    )
-    return agent.run_conversation(
-        user_message=btw_prompt,
-        conversation_history=list(job.get("conversation_history") or []) or None,
-        task_id=job["task_id"],
-    )
-
-
 def run_background_job(task_id: str) -> int:
     store = BackgroundJobStore()
     job = store.get_job(task_id)
@@ -145,23 +120,20 @@ def run_background_job(task_id: str) -> int:
 
     try:
         if str(job.get("kind") or "").strip().lower() == "btw":
-            result = _run_btw_job(job=job, runtime_spec=runtime_spec, source=source)
-        else:
-            agent = create_gateway_agent(
+            result = run_gateway_btw_conversation(
                 runtime_spec=runtime_spec,
                 session_id=task_id,
                 source=source,
-                max_iterations=runtime_spec.max_iterations,
-                quiet_mode=True,
-                verbose_logging=False,
-                enabled_toolsets=runtime_spec.enabled_toolsets,
-            )
-            result = run_gateway_approved_conversation(
-                agent=agent,
-                message=str(job.get("prompt") or ""),
-                pending_model_note=None,
+                question=str(job.get("prompt") or ""),
                 conversation_history=list(job.get("conversation_history") or []) or None,
-                task_id=task_id,
+            )
+        else:
+            result = run_gateway_background_conversation(
+                runtime_spec=runtime_spec,
+                session_id=task_id,
+                source=source,
+                message=str(job.get("prompt") or ""),
+                conversation_history=list(job.get("conversation_history") or []) or None,
                 session_key=str(job.get("session_key") or task_id),
                 admin_user_ids=list(job.get("admin_user_ids") or []),
                 is_admin_user=job.get("is_admin_user"),

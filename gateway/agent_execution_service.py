@@ -178,6 +178,16 @@ def prepend_pending_model_switch_note(
     return f"{pending_model_note}\n\n{message}"
 
 
+def build_gateway_btw_prompt(question: str) -> str:
+    """Build the ephemeral side-question prompt used by /btw background jobs."""
+
+    return (
+        "[Ephemeral /btw side question. Answer using the conversation "
+        "context. No tools available. Be direct and concise.]\n\n"
+        + str(question or "")
+    )
+
+
 def build_gateway_approval_notify_sync(
     *,
     status_adapter: Any,
@@ -306,6 +316,88 @@ def run_gateway_approved_conversation(
                 unregister_gateway_notify(approval_session_key, approval_notify_handle)
             except TypeError:
                 unregister_gateway_notify(approval_session_key)
+
+
+def run_gateway_background_conversation(
+    *,
+    runtime_spec: GatewayAgentRuntimeSpec,
+    session_id: str,
+    source: Any,
+    message: str,
+    conversation_history: list[dict[str, Any]] | None,
+    session_key: str | None,
+    admin_user_ids: list[str] | None,
+    is_admin_user: bool | None,
+    status_adapter: Any,
+    status_chat_id: str | None,
+    status_thread_metadata: dict[str, Any] | None,
+    loop_for_step: Any,
+    logger,
+    admin_only_message_builder: Callable[[str], str | None],
+    session_db: Any = None,
+    external_backend: Any = None,
+    on_agent_created: Callable[[Any], None] | None = None,
+) -> dict[str, Any]:
+    """Create and run one background conversation under the shared approval flow."""
+
+    agent = create_gateway_agent(
+        runtime_spec=runtime_spec,
+        session_id=session_id,
+        source=source,
+        session_db=session_db,
+        max_iterations=runtime_spec.max_iterations,
+        quiet_mode=True,
+        verbose_logging=False,
+        enabled_toolsets=runtime_spec.enabled_toolsets,
+    )
+    if on_agent_created is not None:
+        on_agent_created(agent)
+    return run_gateway_approved_conversation(
+        agent=agent,
+        message=message,
+        pending_model_note=None,
+        conversation_history=conversation_history,
+        task_id=session_id,
+        session_key=session_key,
+        admin_user_ids=admin_user_ids,
+        is_admin_user=is_admin_user,
+        status_adapter=status_adapter,
+        status_chat_id=status_chat_id,
+        status_thread_metadata=status_thread_metadata,
+        loop_for_step=loop_for_step,
+        logger=logger,
+        admin_only_message_builder=admin_only_message_builder,
+        external_backend=external_backend,
+    )
+
+
+def run_gateway_btw_conversation(
+    *,
+    runtime_spec: GatewayAgentRuntimeSpec,
+    session_id: str,
+    source: Any,
+    question: str,
+    conversation_history: list[dict[str, Any]] | None,
+) -> dict[str, Any]:
+    """Run one ephemeral /btw side-question conversation."""
+
+    agent = create_gateway_agent(
+        runtime_spec=runtime_spec,
+        session_id=session_id,
+        source=source,
+        max_iterations=min(int(runtime_spec.max_iterations), 8),
+        enabled_toolsets=[],
+        quiet_mode=True,
+        verbose_logging=False,
+        skip_memory=True,
+        skip_context_files=True,
+        persist_session=False,
+    )
+    return agent.run_conversation(
+        user_message=build_gateway_btw_prompt(question),
+        conversation_history=conversation_history,
+        task_id=session_id,
+    )
 
 
 def execute_gateway_sync_turn(

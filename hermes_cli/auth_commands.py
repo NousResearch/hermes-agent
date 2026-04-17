@@ -221,15 +221,13 @@ def auth_add_command(args) -> None:
             creds.get("access_token", ""),
             _oauth_default_label(provider, len(pool.entries()) + 1),
         )
-        entry = PooledCredential.from_dict(provider, {
-            **creds,
-            "label": label,
-            "auth_type": AUTH_TYPE_OAUTH,
-            "source": f"{SOURCE_MANUAL}:device_code",
-            "base_url": creds.get("inference_base_url"),
-        })
-        pool.add_entry(entry)
-        print(f'Added {provider} OAuth credential #{len(pool.entries())}: "{entry.label}"')
+        auth_mod.persist_nous_credentials(
+            creds,
+            label=label,
+            source=f"{SOURCE_MANUAL}:device_code",
+        )
+        count = len(load_pool(provider).entries())
+        print(f'Added {provider} OAuth credential #{count}: "{label}"')
         return
 
     if provider == "openai-codex":

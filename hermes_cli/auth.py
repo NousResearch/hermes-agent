@@ -2159,6 +2159,54 @@ def refresh_nous_oauth_from_state(
     )
 
 
+def persist_nous_credentials(
+    creds: Dict[str, Any],
+    *,
+    label: str,
+    source: str,
+):
+    """Persist minted Nous OAuth credentials to both auth-store sections.
+
+    Nous credentials are read at runtime from two independent locations:
+
+    - ``credential_pool.nous``: used by the runtime ``pool.select()`` path that
+      services outbound inference requests.
+    - ``providers.nous``: used by ``resolve_nous_runtime_credentials()`` — the
+      singleton-state reader invoked during 401 recovery and dashboard status
+      checks.
+
+    Historically ``hermes auth add nous`` wrote only to the pool while the web
+    dashboard device-code flow wrote to both, so CLI-provisioned profiles
+    failed silently when the recovery path was later consulted.  This helper
+    is the single source of truth for CLI/web device-code persistence: both
+    stores are always written together.
+
+    Returns the added :class:`PooledCredential` entry.
+    """
+    from agent.credential_pool import (
+        PooledCredential,
+        load_pool,
+        AUTH_TYPE_OAUTH,
+    )
+
+    pool = load_pool("nous")
+    entry = PooledCredential.from_dict("nous", {
+        **creds,
+        "label": label,
+        "auth_type": AUTH_TYPE_OAUTH,
+        "source": source,
+        "base_url": creds.get("inference_base_url"),
+    })
+    pool.add_entry(entry)
+
+    with _auth_store_lock():
+        auth_store = _load_auth_store()
+        _save_provider_state(auth_store, "nous", creds)
+        _save_auth_store(auth_store)
+
+    return entry
+
+
 def resolve_nous_runtime_credentials(
     *,
     min_key_ttl_seconds: int = DEFAULT_AGENT_KEY_MIN_TTL_SECONDS,

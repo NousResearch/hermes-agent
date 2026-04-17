@@ -9,6 +9,7 @@ import json
 import io
 import os
 import tarfile
+from argparse import Namespace
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
@@ -32,6 +33,7 @@ from hermes_cli.profiles import (
     generate_zsh_completion,
     _get_profiles_root,
     _get_default_hermes_home,
+    sync_profile_to_ssh,
 )
 
 
@@ -869,3 +871,126 @@ class TestEdgeCases:
             delete_profile("coder", yes=True)
 
         assert get_active_profile() == "default"
+
+
+class TestSSHProfileMirror:
+    """Tests for SSH-backed profile mirroring."""
+
+    def test_sync_profile_to_ssh_noops_when_backend_is_not_ssh(self, profile_env, monkeypatch):
+        profile_dir = create_profile("coder", no_alias=True)
+        monkeypatch.delenv("TERMINAL_ENV", raising=False)
+        assert sync_profile_to_ssh(profile_dir, "coder") is None
+
+    def test_sync_profile_to_ssh_mirrors_profile_and_wrapper(self, profile_env, monkeypatch):
+        profile_dir = create_profile("coder", no_alias=True)
+        monkeypatch.setenv("TERMINAL_ENV", "ssh")
+        monkeypatch.setenv("TERMINAL_SSH_HOST", "box.example.com")
+        monkeypatch.setenv("TERMINAL_SSH_USER", "hermes")
+
+        calls = {}
+
+        monkeypatch.setattr(
+            "hermes_cli.profiles._detect_ssh_remote_home",
+            lambda cfg: "/home/hermes",
+        )
+
+        def _fake_sync(local_dir, cfg, remote_dir):
+            calls["sync"] = {
+                "local_dir": local_dir,
+                "host": cfg.host,
+                "user": cfg.user,
+                "remote_dir": remote_dir,
+            }
+
+        monkeypatch.setattr("hermes_cli.profiles._sync_profile_tree_to_ssh", _fake_sync)
+        monkeypatch.setattr(
+            "hermes_cli.profiles._create_remote_wrapper_script",
+            lambda cfg, name, remote_home: f"{remote_home}/.local/bin/{name}",
+        )
+
+        result = sync_profile_to_ssh(profile_dir, "coder", create_alias=True)
+
+        assert calls["sync"]["local_dir"] == profile_dir
+        assert calls["sync"]["host"] == "box.example.com"
+        assert calls["sync"]["user"] == "hermes"
+        assert calls["sync"]["remote_dir"] == "/home/hermes/.hermes/profiles/coder"
+        assert result == {
+            "remote_profile_dir": "/home/hermes/.hermes/profiles/coder",
+            "remote_wrapper_path": "/home/hermes/.local/bin/coder",
+        }
+
+    def test_sync_profile_to_ssh_can_skip_remote_wrapper(self, profile_env, monkeypatch):
+        profile_dir = create_profile("coder", no_alias=True)
+        monkeypatch.setenv("TERMINAL_ENV", "ssh")
+        monkeypatch.setenv("TERMINAL_SSH_HOST", "box.example.com")
+        monkeypatch.setenv("TERMINAL_SSH_USER", "hermes")
+
+        monkeypatch.setattr(
+            "hermes_cli.profiles._detect_ssh_remote_home",
+            lambda cfg: "/home/hermes",
+        )
+        monkeypatch.setattr(
+            "hermes_cli.profiles._sync_profile_tree_to_ssh",
+            lambda *args, **kwargs: None,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.profiles._create_remote_wrapper_script",
+            lambda *args, **kwargs: pytest.fail("wrapper should not be created"),
+        )
+
+        result = sync_profile_to_ssh(profile_dir, "coder", create_alias=False)
+
+        assert result == {
+            "remote_profile_dir": "/home/hermes/.hermes/profiles/coder",
+            "remote_wrapper_path": None,
+        }
+
+
+class TestProfileCreateCommand:
+    """Integration coverage for `hermes profile create`."""
+
+    def test_cmd_profile_create_reports_ssh_mirror(self, profile_env, monkeypatch, capsys):
+        import hermes_cli.main as main_mod
+        import hermes_cli.profiles as profiles_mod
+
+        profile_dir = create_profile("coder", no_alias=True)
+        wrapper_path = profile_env / ".local" / "bin" / "coder"
+        mirror_calls = {}
+
+        monkeypatch.setattr(profiles_mod, "create_profile", lambda **kwargs: profile_dir)
+        monkeypatch.setattr(profiles_mod, "seed_profile_skills", lambda _: {"copied": ["skill-a"]})
+        monkeypatch.setattr(profiles_mod, "check_alias_collision", lambda _: None)
+        monkeypatch.setattr(profiles_mod, "create_wrapper_script", lambda _: wrapper_path)
+        monkeypatch.setattr(profiles_mod, "_is_wrapper_dir_in_path", lambda: True)
+        monkeypatch.setattr(profiles_mod, "_get_wrapper_dir", lambda: wrapper_path.parent)
+        monkeypatch.setattr(profiles_mod, "get_active_profile_name", lambda: "default")
+
+        def _fake_sync(path, name, *, create_alias=True):
+            mirror_calls["path"] = path
+            mirror_calls["name"] = name
+            mirror_calls["create_alias"] = create_alias
+            return {
+                "remote_profile_dir": "/home/hermes/.hermes/profiles/coder",
+                "remote_wrapper_path": "/home/hermes/.local/bin/coder",
+            }
+
+        monkeypatch.setattr(profiles_mod, "sync_profile_to_ssh", _fake_sync)
+
+        args = Namespace(
+            profile_action="create",
+            profile_name="coder",
+            clone=False,
+            clone_all=False,
+            clone_from=None,
+            no_alias=False,
+        )
+        main_mod.cmd_profile(args)
+
+        out = capsys.readouterr().out
+        assert mirror_calls == {
+            "path": profile_dir,
+            "name": "coder",
+            "create_alias": True,
+        }
+        assert "SSH mirror created: /home/hermes/.hermes/profiles/coder" in out
+        assert "Remote wrapper created: /home/hermes/.local/bin/coder" in out

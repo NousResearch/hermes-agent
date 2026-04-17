@@ -23,9 +23,12 @@ import json
 import os
 import re
 import shutil
+import shlex
 import stat
 import subprocess
 import sys
+import tarfile
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import List, Optional
@@ -259,6 +262,188 @@ def remove_wrapper_script(name: str) -> bool:
         except Exception:
             pass
     return False
+
+
+# ---------------------------------------------------------------------------
+# SSH mirror helpers
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class _SSHProfileMirrorConfig:
+    """Resolved SSH backend settings for remote profile mirroring."""
+    host: str
+    user: str
+    port: int = 22
+    key_path: str = ""
+
+
+def _load_terminal_env_from_config() -> None:
+    """Populate TERMINAL_* env vars from config.yaml if they aren't loaded yet."""
+    if (
+        os.getenv("TERMINAL_ENV")
+        and os.getenv("TERMINAL_SSH_HOST")
+        and os.getenv("TERMINAL_SSH_USER")
+    ):
+        return
+
+    try:
+        from hermes_cli.config import load_config
+        load_config()
+    except Exception:
+        pass
+
+
+def _get_ssh_profile_mirror_config() -> Optional[_SSHProfileMirrorConfig]:
+    """Return SSH mirror settings when the active terminal backend is SSH."""
+    _load_terminal_env_from_config()
+
+    env_type = (os.getenv("TERMINAL_ENV", "") or "").strip().lower()
+    if env_type != "ssh":
+        return None
+
+    host = (os.getenv("TERMINAL_SSH_HOST", "") or "").strip()
+    user = (os.getenv("TERMINAL_SSH_USER", "") or "").strip()
+    if not host or not user:
+        return None
+
+    try:
+        port = int((os.getenv("TERMINAL_SSH_PORT", "22") or "22").strip())
+    except (AttributeError, TypeError, ValueError):
+        port = 22
+
+    return _SSHProfileMirrorConfig(
+        host=host,
+        user=user,
+        port=port,
+        key_path=(os.getenv("TERMINAL_SSH_KEY", "") or "").strip(),
+    )
+
+
+def _build_ssh_command(config: _SSHProfileMirrorConfig, remote_command: str) -> list[str]:
+    """Build a one-shot SSH command suitable for remote profile mirroring."""
+    cmd = [
+        "ssh",
+        "-o", "BatchMode=yes",
+        "-o", "StrictHostKeyChecking=accept-new",
+        "-o", "ConnectTimeout=10",
+    ]
+    if config.port != 22:
+        cmd.extend(["-p", str(config.port)])
+    if config.key_path:
+        cmd.extend(["-i", config.key_path])
+    cmd.append(f"{config.user}@{config.host}")
+    cmd.append(remote_command)
+    return cmd
+
+
+def _run_ssh_text(
+    config: _SSHProfileMirrorConfig,
+    remote_command: str,
+    *,
+    timeout: int = 20,
+) -> subprocess.CompletedProcess:
+    """Run a text-mode SSH command and raise a clear error on failure."""
+    result = subprocess.run(
+        _build_ssh_command(config, remote_command),
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip() or f"exit code {result.returncode}"
+        raise RuntimeError(detail)
+    return result
+
+
+def _detect_ssh_remote_home(config: _SSHProfileMirrorConfig) -> str:
+    """Resolve the remote user's home directory over SSH."""
+    result = _run_ssh_text(config, "printf '%s\\n' \"$HOME\"")
+    remote_home = result.stdout.strip()
+    if remote_home:
+        return remote_home
+    if config.user == "root":
+        return "/root"
+    return f"/home/{config.user}"
+
+
+def _sync_profile_tree_to_ssh(
+    profile_dir: Path,
+    config: _SSHProfileMirrorConfig,
+    remote_profile_dir: str,
+) -> None:
+    """Upload a fully prepared local profile directory to the SSH host."""
+    with tempfile.TemporaryDirectory(prefix="hermes-profile-ssh-") as tmpdir:
+        archive_path = Path(tmpdir) / f"{profile_dir.name}.tar.gz"
+        with tarfile.open(archive_path, "w:gz") as tf:
+            for child in sorted(profile_dir.iterdir()):
+                tf.add(child, arcname=child.name)
+
+        remote_cmd = (
+            f"mkdir -p {shlex.quote(remote_profile_dir)} && "
+            f"tar xzf - -C {shlex.quote(remote_profile_dir)}"
+        )
+        with open(archive_path, "rb") as archive:
+            result = subprocess.run(
+                _build_ssh_command(config, remote_cmd),
+                stdin=archive,
+                capture_output=True,
+                timeout=120,
+            )
+
+    if result.returncode != 0:
+        detail = (
+            result.stderr.decode(errors="replace")
+            or result.stdout.decode(errors="replace")
+        ).strip() or f"exit code {result.returncode}"
+        raise RuntimeError(detail)
+
+
+def _create_remote_wrapper_script(
+    config: _SSHProfileMirrorConfig,
+    name: str,
+    remote_home: str,
+) -> str:
+    """Create the profile wrapper on the SSH host and return its path."""
+    wrapper_dir = str(PurePosixPath(remote_home) / ".local" / "bin")
+    wrapper_path = str(PurePosixPath(wrapper_dir) / name)
+    wrapper_content = f'#!/bin/sh\nexec hermes -p {name} "$@"\n'
+    remote_cmd = (
+        f"mkdir -p {shlex.quote(wrapper_dir)} && "
+        f"printf %s {shlex.quote(wrapper_content)} > {shlex.quote(wrapper_path)} && "
+        f"chmod +x {shlex.quote(wrapper_path)}"
+    )
+    _run_ssh_text(config, remote_cmd)
+    return wrapper_path
+
+
+def sync_profile_to_ssh(
+    profile_dir: Path,
+    name: str,
+    *,
+    create_alias: bool = True,
+) -> Optional[dict]:
+    """Mirror a newly created profile to the configured SSH backend.
+
+    Returns ``None`` when the active terminal backend is not SSH. Otherwise
+    returns a dict with ``remote_profile_dir`` and, when applicable,
+    ``remote_wrapper_path``.
+    """
+    config = _get_ssh_profile_mirror_config()
+    if config is None:
+        return None
+
+    remote_home = _detect_ssh_remote_home(config)
+    remote_profile_dir = str(PurePosixPath(remote_home) / ".hermes" / "profiles" / name)
+    _sync_profile_tree_to_ssh(profile_dir, config, remote_profile_dir)
+
+    remote_wrapper_path = None
+    if create_alias:
+        remote_wrapper_path = _create_remote_wrapper_script(config, name, remote_home)
+
+    return {
+        "remote_profile_dir": remote_profile_dir,
+        "remote_wrapper_path": remote_wrapper_path,
+    }
 
 
 # ---------------------------------------------------------------------------

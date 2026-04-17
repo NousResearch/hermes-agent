@@ -10064,6 +10064,11 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                 except (ProcessLookupError, PermissionError, OSError):
                     pass
             remove_pid_file()
+            # Claim the PID file immediately so any concurrent --replace
+            # invocation sees this process rather than an empty file and
+            # skips the termination step, preventing duplicate instances.
+            from gateway.status import write_pid_file as _write_pid_now
+            _write_pid_now()
             # Also release all scoped locks left by the old process.
             # Stopped (Ctrl+Z) processes don't release locks on exit,
             # leaving stale lock files that block the new gateway from starting.

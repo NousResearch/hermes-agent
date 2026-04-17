@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from typing import Any, Callable
 
 
@@ -43,6 +44,66 @@ def build_failed_agent_response(
         )
     return (
         f"The request failed: {str(error_detail)[:300]}\n"
+        "Try again or use /reset to start a fresh session."
+    )
+
+
+def _build_gateway_status_hint(error: Exception) -> str:
+    """Map a gateway exception to a user-facing status hint."""
+
+    status_code = getattr(error, "status_code", None)
+    if status_code == 401:
+        return " Check your API key or run `claude /login` to refresh OAuth credentials."
+
+    if status_code == 429:
+        error_body = getattr(error, "response", None)
+        error_json = {}
+        try:
+            if error_body is not None:
+                error_json = error_body.json().get("error", {})
+        except Exception:
+            error_json = {}
+
+        if error_json.get("type") == "usage_limit_reached":
+            resets_in = error_json.get("resets_in_seconds")
+            if resets_in and resets_in > 0:
+                hours = math.ceil(resets_in / 3600)
+                return f" Your plan's usage limit has been reached. It resets in ~{hours}h."
+            return " Your plan's usage limit has been reached. Please wait until it resets."
+        return " You are being rate-limited. Please wait a moment and try again."
+
+    if status_code == 529:
+        return " The API is temporarily overloaded. Please try again shortly."
+
+    if status_code == 400:
+        return " The request was rejected by the API."
+
+    return ""
+
+
+def build_gateway_exception_response(
+    *,
+    error: Exception,
+    history_len: int,
+) -> str:
+    """Build the user-visible fallback for gateway exceptions."""
+
+    status_code = getattr(error, "status_code", None)
+    if status_code in (400, 500) and history_len > 50:
+        return (
+            "⚠️ Session too large for the model's context window.\n"
+            "Use /compact to compress the conversation, or "
+            "/reset to start fresh."
+        )
+
+    error_text = str(error)
+    error_type = type(error).__name__
+    error_detail = error_text[:300] if error_text else "no details available"
+    status_hint = _build_gateway_status_hint(error)
+    return (
+        f"Sorry, I encountered an error ({error_type}).\n"
+        f"{error_detail}\n"
+        f"{status_hint}"
         "Try again or use /reset to start a fresh session."
     )
 

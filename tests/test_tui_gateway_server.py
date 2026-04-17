@@ -231,6 +231,9 @@ def test_config_set_personality_resets_history_and_returns_info(monkeypatch):
     monkeypatch.setattr(server, "_session_info", lambda agent: {"model": getattr(agent, "model", "?")})
     monkeypatch.setattr(server, "_restart_slash_worker", lambda session: None)
     monkeypatch.setattr(server, "_emit", lambda *args: emits.append(args))
+    # _write_config_key writes to ~/.hermes/config.yaml — races with other
+    # xdist workers that touch the same file. Stub it out.
+    monkeypatch.setattr(server, "_write_config_key", lambda path, value: None)
 
     resp = server.handle_request(
         {"id": "1", "method": "config.set", "params": {"session_id": "sid", "key": "personality", "value": "helpful"}}

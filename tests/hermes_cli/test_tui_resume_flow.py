@@ -15,9 +15,20 @@ def _args(**overrides):
     return Namespace(**base)
 
 
-def test_cmd_chat_tui_continue_uses_latest_tui_session(monkeypatch):
-    import hermes_cli.main as main_mod
+@pytest.fixture
+def main_mod(monkeypatch):
+    """cmd_chat entry with the first-run provider-gate stubbed past.
 
+    `cmd_chat` now early-exits when no API key is configured (post-merge);
+    these tests exercise the post-config routing so we fake the check out.
+    """
+    import hermes_cli.main as mod
+
+    monkeypatch.setattr(mod, "_has_any_provider_configured", lambda: True)
+    return mod
+
+
+def test_cmd_chat_tui_continue_uses_latest_tui_session(monkeypatch, main_mod):
     calls = []
     captured = {}
 
@@ -40,9 +51,7 @@ def test_cmd_chat_tui_continue_uses_latest_tui_session(monkeypatch):
     assert captured["resume"] == "20260408_235959_a1b2c3"
 
 
-def test_cmd_chat_tui_continue_falls_back_to_latest_cli_session(monkeypatch):
-    import hermes_cli.main as main_mod
-
+def test_cmd_chat_tui_continue_falls_back_to_latest_cli_session(monkeypatch, main_mod):
     calls = []
     captured = {}
 
@@ -69,9 +78,7 @@ def test_cmd_chat_tui_continue_falls_back_to_latest_cli_session(monkeypatch):
     assert captured["resume"] == "20260408_235959_d4e5f6"
 
 
-def test_cmd_chat_tui_resume_resolves_title_before_launch(monkeypatch):
-    import hermes_cli.main as main_mod
-
+def test_cmd_chat_tui_resume_resolves_title_before_launch(monkeypatch, main_mod):
     captured = {}
 
     def fake_launch(resume_session_id=None, tui_dev=False):

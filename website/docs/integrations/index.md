@@ -38,7 +38,7 @@ web:
   backend: firecrawl    # firecrawl | parallel | tavily | exa
 ```
 
-If `web.backend` is not set, the backend is auto-detected from whichever API key is available. Self-hosted Firecrawl is also supported via `FIRECRAWL_API_URL`.
+If `web.backend` is not set, the backend is auto-detected from whichever API key is available. Self-hosted Firecrawl is also supported via `FIRECRAWL_API_URL`. In auto-detect mode, Hermes can retry other available web backends when the primary one fails with retryable provider errors such as credits/quota/rate-limit exhaustion or transient upstream outages. If you explicitly set `web.backend`, Hermes honors that provider pin and does not silently switch providers.
 
 ## Browser Automation
 

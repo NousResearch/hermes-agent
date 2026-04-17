@@ -119,6 +119,93 @@ def _is_backend_available(backend: str) -> bool:
         return _has_env("TAVILY_API_KEY")
     return False
 
+
+def _get_backend_fallback_chain(initial_backend: Optional[str] = None) -> List[str]:
+    """Build ordered backend candidates for runtime failover.
+
+    When the user explicitly configures ``web.backend``, honor that choice and do
+    not silently hop to other providers. Cross-provider failover is only allowed
+    for auto-detected backend selection.
+    """
+    primary = (initial_backend or _get_backend()).strip().lower()
+    configured = (_load_web_config().get("backend") or "").strip().lower()
+    if configured in ("firecrawl", "parallel", "tavily", "exa"):
+        return [primary] if primary else []
+
+    ordered: List[str] = []
+    for backend in (primary, "firecrawl", "parallel", "tavily", "exa"):
+        if backend and backend not in ordered and _is_backend_available(backend):
+            ordered.append(backend)
+    if primary and primary not in ordered:
+        ordered.insert(0, primary)
+    return ordered
+
+
+def _is_retryable_backend_error(exc: Exception) -> bool:
+    """Return True when a backend error merits cross-provider failover."""
+    message = str(exc).lower()
+    retryable_markers = (
+        "402",
+        "payment required",
+        "insufficient credits",
+        "quota",
+        "rate limit",
+        "rate-limit",
+        "too many requests",
+        "429",
+        "service unavailable",
+        "503",
+        "bad gateway",
+        "502",
+        "gateway timeout",
+        "504",
+        "temporarily unavailable",
+        "upstream",
+        "timed out",
+        "timeout",
+        "connection reset",
+        "connection aborted",
+        "connection refused",
+        "network",
+        "billing",
+        "credit balance",
+    )
+    non_retryable_markers = (
+        "unsupported parameter",
+        "invalid parameter",
+        "invalid query",
+        "malformed",
+        "bad request",
+        "400",
+        "401",
+        "403",
+        "forbidden",
+        "unauthorized",
+        "not found",
+        "404",
+        "blocked: url contains",
+        "private or internal network address",
+    )
+    if any(marker in message for marker in non_retryable_markers):
+        return False
+    return any(marker in message for marker in retryable_markers)
+
+
+def _log_backend_failover(operation: str, from_backend: str, to_backend: str, exc: Exception) -> None:
+    """Emit a concise failover log for observability."""
+    logger.warning(
+        "%s backend %s failed (%s); retrying with %s",
+        operation,
+        from_backend,
+        str(exc),
+        to_backend,
+    )
+
+
+class RetryableWebBackendError(RuntimeError):
+    """Provider/runtime backend failure that should trigger cross-provider retry."""
+
+
 # ─── Firecrawl Client ────────────────────────────────────────────────────────
 
 _firecrawl_client = None
@@ -396,6 +483,170 @@ def _normalize_result_list(values: Any) -> List[Dict[str, Any]]:
         if isinstance(plain, dict):
             normalized.append(plain)
     return normalized
+
+
+
+def _dispatch_web_search_backend(backend: str, query: str, limit: int) -> Dict[str, Any]:
+    """Execute search against a specific backend."""
+    if backend == "parallel":
+        return _parallel_search(query, limit)
+    if backend == "exa":
+        return _exa_search(query, limit)
+    if backend == "tavily":
+        logger.info("Tavily search: '%s' (limit: %d)", query, limit)
+        raw = _tavily_request("search", {
+            "query": query,
+            "max_results": min(limit, 20),
+            "include_raw_content": False,
+            "include_images": False,
+        })
+        return _normalize_tavily_search_results(raw)
+
+    logger.info("Searching the web via Firecrawl for: '%s' (limit: %d)", query, limit)
+    response = _get_firecrawl_client().search(query=query, limit=limit)
+    return {
+        "success": True,
+        "data": {
+            "web": _extract_web_search_results(response)
+        }
+    }
+
+
+async def _firecrawl_extract_urls(
+    safe_urls: List[str],
+    format: Optional[str],
+) -> List[Dict[str, Any]]:
+    """Extract URLs with Firecrawl and raise on provider-wide retryable failures."""
+    if format == "markdown":
+        formats: List[str] = ["markdown"]
+    elif format == "html":
+        formats = ["html"]
+    else:
+        formats = ["markdown", "html"]
+
+    results: List[Dict[str, Any]] = []
+    retryable_failures: List[str] = []
+
+    from tools.interrupt import is_interrupted as _is_interrupted
+    for url in safe_urls:
+        if _is_interrupted():
+            results.append({"url": url, "error": "Interrupted", "title": ""})
+            continue
+
+        blocked = check_website_access(url)
+        if blocked:
+            logger.info("Blocked web_extract for %s by rule %s", blocked["host"], blocked["rule"])
+            results.append({
+                "url": url, "title": "", "content": "",
+                "error": blocked["message"],
+                "blocked_by_policy": {"host": blocked["host"], "rule": blocked["rule"], "source": blocked["source"]},
+            })
+            continue
+
+        try:
+            logger.info("Scraping: %s", url)
+            try:
+                scrape_result = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        _get_firecrawl_client().scrape,
+                        url=url,
+                        formats=formats,
+                    ),
+                    timeout=60,
+                )
+            except asyncio.TimeoutError as timeout_exc:
+                raise RetryableWebBackendError(
+                    "Scrape timed out after 60s — page may be too large or unresponsive"
+                ) from timeout_exc
+
+            scrape_payload = _extract_scrape_payload(scrape_result)
+            metadata = scrape_payload.get("metadata", {})
+            content_markdown = scrape_payload.get("markdown")
+            content_html = scrape_payload.get("html")
+
+            if not isinstance(metadata, dict):
+                if hasattr(metadata, 'model_dump'):
+                    metadata = metadata.model_dump()
+                elif hasattr(metadata, '__dict__'):
+                    metadata = metadata.__dict__
+                else:
+                    metadata = {}
+
+            title = metadata.get("title", "")
+            final_url = metadata.get("sourceURL", url)
+            final_blocked = check_website_access(final_url)
+            if final_blocked:
+                logger.info("Blocked redirected web_extract for %s by rule %s", final_blocked["host"], final_blocked["rule"])
+                results.append({
+                    "url": final_url, "title": title, "content": "", "raw_content": "",
+                    "error": final_blocked["message"],
+                    "blocked_by_policy": {"host": final_blocked["host"], "rule": final_blocked["rule"], "source": final_blocked["source"]},
+                })
+                continue
+
+            chosen_content = content_markdown if (format == "markdown" or (format is None and content_markdown)) else content_html or content_markdown or ""
+            results.append({
+                "url": final_url,
+                "title": title,
+                "content": chosen_content,
+                "raw_content": chosen_content,
+                "metadata": metadata,
+            })
+
+        except Exception as scrape_err:
+            logger.debug("Scrape failed for %s: %s", url, scrape_err)
+            if _is_retryable_backend_error(scrape_err):
+                retryable_failures.append(str(scrape_err))
+            results.append({
+                "url": url,
+                "title": "",
+                "content": "",
+                "raw_content": "",
+                "error": str(scrape_err)
+            })
+
+    successful_results = [r for r in results if r.get("content")]
+    if retryable_failures and not successful_results:
+        raise RetryableWebBackendError("; ".join(retryable_failures))
+    return results
+
+
+def _extract_results_should_failover(results: List[Dict[str, Any]]) -> bool:
+    """Return True when an extract backend produced only retryable failures."""
+    if not results:
+        return False
+    if any(result.get("content") for result in results):
+        return False
+    errors = [str(result.get("error", "")) for result in results if result.get("error")]
+    if not errors:
+        return False
+    return all(_is_retryable_backend_error(RuntimeError(err)) for err in errors)
+
+
+async def _dispatch_web_extract_backend(
+    backend: str,
+    safe_urls: List[str],
+    format: Optional[str],
+) -> List[Dict[str, Any]]:
+    """Execute extract against a specific backend."""
+    if backend == "parallel":
+        results = await _parallel_extract(safe_urls)
+    elif backend == "exa":
+        results = _exa_extract(safe_urls)
+    elif backend == "tavily":
+        logger.info("Tavily extract: %d URL(s)", len(safe_urls))
+        raw = _tavily_request("extract", {
+            "urls": safe_urls,
+            "include_images": False,
+        })
+        results = _normalize_tavily_documents(raw, fallback_url=safe_urls[0] if safe_urls else "")
+    else:
+        results = await _firecrawl_extract_urls(safe_urls, format)
+
+    if _extract_results_should_failover(results):
+        errors = [str(result.get("error", "")) for result in results if result.get("error")]
+        raise RetryableWebBackendError("; ".join(errors))
+    return results
 
 
 def _extract_web_search_results(response: Any) -> List[Dict[str, Any]]:
@@ -1082,65 +1333,33 @@ def web_search_tool(query: str, limit: int = 5) -> str:
         if is_interrupted():
             return tool_error("Interrupted", success=False)
 
-        # Dispatch to the configured backend
         backend = _get_backend()
-        if backend == "parallel":
-            response_data = _parallel_search(query, limit)
-            debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
-            result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
-            debug_call_data["final_response_size"] = len(result_json)
-            _debug.log_call("web_search_tool", debug_call_data)
-            _debug.save()
-            return result_json
+        backend_chain = _get_backend_fallback_chain(backend)
+        backend_attempts: List[Dict[str, Any]] = []
+        response_data = None
 
-        if backend == "exa":
-            response_data = _exa_search(query, limit)
-            debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
-            result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
-            debug_call_data["final_response_size"] = len(result_json)
-            _debug.log_call("web_search_tool", debug_call_data)
-            _debug.save()
-            return result_json
+        for idx, candidate in enumerate(backend_chain):
+            try:
+                response_data = _dispatch_web_search_backend(candidate, query, limit)
+                backend_attempts.append({"backend": candidate, "status": "success"})
+                if candidate != backend:
+                    logger.info("web_search failover succeeded via %s (primary=%s)", candidate, backend)
+                break
+            except Exception as exc:
+                backend_attempts.append({
+                    "backend": candidate,
+                    "status": "error",
+                    "error": str(exc),
+                    "retryable": _is_retryable_backend_error(exc),
+                })
+                has_more = idx < len(backend_chain) - 1
+                if has_more and _is_retryable_backend_error(exc):
+                    _log_backend_failover("web_search", candidate, backend_chain[idx + 1], exc)
+                    continue
+                raise
 
-        if backend == "tavily":
-            logger.info("Tavily search: '%s' (limit: %d)", query, limit)
-            raw = _tavily_request("search", {
-                "query": query,
-                "max_results": min(limit, 20),
-                "include_raw_content": False,
-                "include_images": False,
-            })
-            response_data = _normalize_tavily_search_results(raw)
-            debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
-            result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
-            debug_call_data["final_response_size"] = len(result_json)
-            _debug.log_call("web_search_tool", debug_call_data)
-            _debug.save()
-            return result_json
-
-        logger.info("Searching the web for: '%s' (limit: %d)", query, limit)
-
-        response = _get_firecrawl_client().search(
-            query=query,
-            limit=limit
-        )
-
-        web_results = _extract_web_search_results(response)
-        results_count = len(web_results)
-        logger.info("Found %d search results", results_count)
-        
-        # Build response with just search metadata (URLs, titles, descriptions)
-        response_data = {
-            "success": True,
-            "data": {
-                "web": web_results
-            }
-        }
-        
-        # Capture debug information
-        debug_call_data["results_count"] = results_count
-        
-        # Convert to JSON
+        debug_call_data["backend_attempts"] = backend_attempts
+        debug_call_data["results_count"] = len((response_data or {}).get("data", {}).get("web", []))
         result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
         
         debug_call_data["final_response_size"] = len(result_json)
@@ -1223,143 +1442,64 @@ async def web_extract_tool(
     try:
         logger.info("Extracting content from %d URL(s)", len(urls))
 
-        # ── SSRF protection — filter out private/internal URLs before any backend ──
+        # ── SSRF + website policy protection before any backend ──
         safe_urls = []
-        ssrf_blocked: List[Dict[str, Any]] = []
+        blocked_results: List[Dict[str, Any]] = []
         for url in urls:
             if not is_safe_url(url):
-                ssrf_blocked.append({
+                blocked_results.append({
                     "url": url, "title": "", "content": "",
                     "error": "Blocked: URL targets a private or internal network address",
                 })
-            else:
-                safe_urls.append(url)
+                continue
+
+            blocked = check_website_access(url)
+            if blocked:
+                logger.info("Blocked web_extract for %s by rule %s before backend dispatch", blocked["host"], blocked["rule"])
+                blocked_results.append({
+                    "url": url,
+                    "title": "",
+                    "content": "",
+                    "error": blocked["message"],
+                    "blocked_by_policy": {"host": blocked["host"], "rule": blocked["rule"], "source": blocked["source"]},
+                })
+                continue
+
+            safe_urls.append(url)
 
         # Dispatch only safe URLs to the configured backend
+        backend_attempts: List[Dict[str, Any]] = []
         if not safe_urls:
             results = []
         else:
             backend = _get_backend()
-
-            if backend == "parallel":
-                results = await _parallel_extract(safe_urls)
-            elif backend == "exa":
-                results = _exa_extract(safe_urls)
-            elif backend == "tavily":
-                logger.info("Tavily extract: %d URL(s)", len(safe_urls))
-                raw = _tavily_request("extract", {
-                    "urls": safe_urls,
-                    "include_images": False,
-                })
-                results = _normalize_tavily_documents(raw, fallback_url=safe_urls[0] if safe_urls else "")
-            else:
-                # ── Firecrawl extraction ──
-                # Determine requested formats for Firecrawl v2
-                formats: List[str] = []
-                if format == "markdown":
-                    formats = ["markdown"]
-                elif format == "html":
-                    formats = ["html"]
-                else:
-                    # Default: request markdown for LLM-readiness and include html as backup
-                    formats = ["markdown", "html"]
-
-                # Always use individual scraping for simplicity and reliability
-                # Batch scraping adds complexity without much benefit for small numbers of URLs
-                results: List[Dict[str, Any]] = []
-
-                from tools.interrupt import is_interrupted as _is_interrupted
-                for url in safe_urls:
-                    if _is_interrupted():
-                        results.append({"url": url, "error": "Interrupted", "title": ""})
+            backend_chain = _get_backend_fallback_chain(backend)
+            results = []
+            for idx, candidate in enumerate(backend_chain):
+                try:
+                    results = await _dispatch_web_extract_backend(candidate, safe_urls, format)
+                    backend_attempts.append({"backend": candidate, "status": "success"})
+                    if candidate != backend:
+                        logger.info("web_extract failover succeeded via %s (primary=%s)", candidate, backend)
+                    break
+                except Exception as exc:
+                    backend_attempts.append({
+                        "backend": candidate,
+                        "status": "error",
+                        "error": str(exc),
+                        "retryable": _is_retryable_backend_error(exc),
+                    })
+                    has_more = idx < len(backend_chain) - 1
+                    if has_more and _is_retryable_backend_error(exc):
+                        _log_backend_failover("web_extract", candidate, backend_chain[idx + 1], exc)
                         continue
+                    raise
 
-                    # Website policy check — block before fetching
-                    blocked = check_website_access(url)
-                    if blocked:
-                        logger.info("Blocked web_extract for %s by rule %s", blocked["host"], blocked["rule"])
-                        results.append({
-                            "url": url, "title": "", "content": "",
-                            "error": blocked["message"],
-                            "blocked_by_policy": {"host": blocked["host"], "rule": blocked["rule"], "source": blocked["source"]},
-                        })
-                        continue
+        debug_call_data["backend_attempts"] = backend_attempts
 
-                    try:
-                        logger.info("Scraping: %s", url)
-                        # Run synchronous Firecrawl scrape in a thread with a
-                        # 60s timeout so a hung fetch doesn't block the session.
-                        try:
-                            scrape_result = await asyncio.wait_for(
-                                asyncio.to_thread(
-                                    _get_firecrawl_client().scrape,
-                                    url=url,
-                                    formats=formats,
-                                ),
-                                timeout=60,
-                            )
-                        except asyncio.TimeoutError:
-                            logger.warning("Firecrawl scrape timed out for %s", url)
-                            results.append({
-                                "url": url, "title": "", "content": "",
-                                "error": "Scrape timed out after 60s — page may be too large or unresponsive. Try browser_navigate instead.",
-                            })
-                            continue
-
-                        scrape_payload = _extract_scrape_payload(scrape_result)
-                        metadata = scrape_payload.get("metadata", {})
-                        title = ""
-                        content_markdown = scrape_payload.get("markdown")
-                        content_html = scrape_payload.get("html")
-
-                        # Ensure metadata is a dict (not an object)
-                        if not isinstance(metadata, dict):
-                            if hasattr(metadata, 'model_dump'):
-                                metadata = metadata.model_dump()
-                            elif hasattr(metadata, '__dict__'):
-                                metadata = metadata.__dict__
-                            else:
-                                metadata = {}
-
-                        # Get title from metadata
-                        title = metadata.get("title", "")
-
-                        # Re-check final URL after redirect
-                        final_url = metadata.get("sourceURL", url)
-                        final_blocked = check_website_access(final_url)
-                        if final_blocked:
-                            logger.info("Blocked redirected web_extract for %s by rule %s", final_blocked["host"], final_blocked["rule"])
-                            results.append({
-                                "url": final_url, "title": title, "content": "", "raw_content": "",
-                                "error": final_blocked["message"],
-                                "blocked_by_policy": {"host": final_blocked["host"], "rule": final_blocked["rule"], "source": final_blocked["source"]},
-                            })
-                            continue
-
-                        # Choose content based on requested format
-                        chosen_content = content_markdown if (format == "markdown" or (format is None and content_markdown)) else content_html or content_markdown or ""
-
-                        results.append({
-                            "url": final_url,
-                            "title": title,
-                            "content": chosen_content,
-                            "raw_content": chosen_content,
-                            "metadata": metadata  # Now guaranteed to be a dict
-                        })
-
-                    except Exception as scrape_err:
-                        logger.debug("Scrape failed for %s: %s", url, scrape_err)
-                        results.append({
-                            "url": url,
-                            "title": "",
-                            "content": "",
-                            "raw_content": "",
-                            "error": str(scrape_err)
-                        })
-
-        # Merge any SSRF-blocked results back in
-        if ssrf_blocked:
-            results = ssrf_blocked + results
+        # Merge any blocked results back in
+        if blocked_results:
+            results = blocked_results + results
 
         response = {"results": results}
         

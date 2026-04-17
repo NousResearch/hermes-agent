@@ -1118,6 +1118,8 @@ web:
 
 **Backend selection:** If `web.backend` is not set, the backend is auto-detected from available API keys. If only `EXA_API_KEY` is set, Exa is used. If only `TAVILY_API_KEY` is set, Tavily is used. If only `PARALLEL_API_KEY` is set, Parallel is used. Otherwise Firecrawl is the default.
 
+**Runtime failover:** When `web.backend` is left unset and Hermes auto-detects the provider, it can retry other available web backends on retryable provider errors such as insufficient credits (`402`), quota/rate-limit issues, and transient upstream outages. If you explicitly set `web.backend`, Hermes honors that pin and does not silently switch providers. It also does not fail over for user/query errors like invalid parameters or malformed requests.
+
 **Self-hosted Firecrawl:** Set `FIRECRAWL_API_URL` to point at your own instance. When a custom URL is set, the API key becomes optional (set `USE_DB_AUTHENTICATION=false` on the server to disable auth).
 
 **Parallel search modes:** Set `PARALLEL_SEARCH_MODE` to control search behavior — `fast`, `one-shot`, or `agentic` (default: `agentic`).

@@ -282,14 +282,18 @@ class TestResolveApproval:
         mock_resolve.assert_not_called()
 
 # ===========================================================================
-# _handle_card_action_event — non-approval card actions
+# _handle_card_action_event — non-approval card actions (regression #11600)
 # ===========================================================================
 
 class TestNonApprovalCardAction:
-    """Non-approval card actions should still route as synthetic commands."""
+    """Non-approval card callbacks must NOT be synthesized into ``/card``
+    slash-commands.  Hermes has never registered a ``card`` command in
+    ``hermes_cli/commands.py``, so the previous synthesis always produced a
+    user-visible ``"Unknown command /card"`` reply — see issue #11600."""
 
     @pytest.mark.asyncio
-    async def test_routes_as_synthetic_command(self):
+    async def test_non_approval_callback_does_not_synthesize_command(self):
+        """Non-approval card action: nothing routed to the agent pipeline."""
         adapter = _make_adapter()
 
         data = _make_card_action_data(
@@ -300,16 +304,120 @@ class TestNonApprovalCardAction:
         with (
             patch.object(
                 adapter, "_resolve_sender_profile", new_callable=AsyncMock,
-                return_value={"user_id": "ou_u", "user_name": "Dave", "user_id_alt": None},
-            ),
-            patch.object(adapter, "get_chat_info", new_callable=AsyncMock, return_value={"name": "Test Chat"}),
-            patch.object(adapter, "_handle_message_with_guards", new_callable=AsyncMock) as mock_handle,
+            ) as mock_resolve_sender,
+            patch.object(
+                adapter, "get_chat_info", new_callable=AsyncMock,
+            ) as mock_chat_info,
+            patch.object(
+                adapter, "_handle_message_with_guards", new_callable=AsyncMock,
+            ) as mock_handle,
         ):
             await adapter._handle_card_action_event(data)
 
-        mock_handle.assert_called_once()
-        event = mock_handle.call_args[0][0]
-        assert "/card button" in event.text
+        mock_handle.assert_not_called()
+        # We also don't round-trip through Feishu chat-info / sender-profile
+        # lookups for a dropped callback — avoid wasted API calls.
+        mock_resolve_sender.assert_not_called()
+        mock_chat_info.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_duplicate_token_still_deduped(self):
+        """Dedup cache still recognizes repeat SDK deliveries so we don't
+        log the same drop twice in a row."""
+        adapter = _make_adapter()
+        data = _make_card_action_data(
+            action_value={"custom_action": "dup"},
+            token="tok_dup",
+        )
+
+        with patch.object(
+            adapter, "_handle_message_with_guards", new_callable=AsyncMock,
+        ) as mock_handle:
+            await adapter._handle_card_action_event(data)
+            await adapter._handle_card_action_event(data)
+
+        # Neither call should synthesize a command.
+        mock_handle.assert_not_called()
+        # Token cache populated on first call, short-circuits second call.
+        assert "tok_dup" in adapter._card_action_tokens
+
+    @pytest.mark.asyncio
+    async def test_non_dict_action_value_is_safe(self):
+        """A Feishu SDK variant / malformed payload that delivers
+        ``action.value`` as a non-dict (e.g. JSON-encoded string) must not
+        crash the adapter or synthesize a command."""
+        adapter = _make_adapter()
+        data = SimpleNamespace(
+            event=SimpleNamespace(
+                token="tok_str",
+                context=SimpleNamespace(open_chat_id="oc_12345"),
+                operator=SimpleNamespace(open_id="ou_user1"),
+                action=SimpleNamespace(tag="button", value="not-a-dict"),
+            ),
+        )
+
+        with patch.object(
+            adapter, "_handle_message_with_guards", new_callable=AsyncMock,
+        ) as mock_handle:
+            await adapter._handle_card_action_event(data)
+
+        mock_handle.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_missing_chat_id_is_safe(self):
+        """Drop path must also handle truncated payloads (no chat_id /
+        no operator) without crashing."""
+        adapter = _make_adapter()
+        data = SimpleNamespace(
+            event=SimpleNamespace(
+                token="tok_partial",
+                context=SimpleNamespace(open_chat_id=""),
+                operator=SimpleNamespace(open_id=""),
+                action=SimpleNamespace(tag="button", value={"x": 1}),
+            ),
+        )
+
+        with patch.object(
+            adapter, "_handle_message_with_guards", new_callable=AsyncMock,
+        ) as mock_handle:
+            await adapter._handle_card_action_event(data)
+
+        mock_handle.assert_not_called()
+
+    def test_non_approval_trigger_does_not_reach_approval_handler(
+        self, _patch_callback_card_types,
+    ):
+        """End-to-end: the sync dispatcher must pass non-approval events
+        through ``_handle_card_action_event`` (which drops them), NOT
+        ``_handle_approval_card_action`` (which would try to resolve a
+        non-existent approval)."""
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        data = _make_card_action_data({"some_other": "value"})
+
+        def _close_coro(_loop, coro):
+            # Close the scheduled coro so pytest doesn't emit
+            # ``coroutine was never awaited`` warnings; the test only
+            # cares that _submit_on_loop was called, not that the drop
+            # path actually ran.
+            coro.close()
+
+        with (
+            patch.object(
+                adapter, "_handle_approval_card_action",
+            ) as mock_approval_handler,
+            patch.object(
+                adapter, "_submit_on_loop", side_effect=_close_coro,
+            ) as mock_submit,
+        ):
+            adapter._on_card_action_trigger(data)
+
+        mock_approval_handler.assert_not_called()
+        # The drop path is still scheduled on the adapter loop (so the
+        # dedup cache etc. run on the adapter's own event loop), but the
+        # important invariant is that it's not the approval handler.
+        mock_submit.assert_called_once()
 
 
 # ===========================================================================

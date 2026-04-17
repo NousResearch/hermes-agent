@@ -243,15 +243,13 @@ Grant the `application:bot.basic_info:read` scope to display peer bot names; wit
 
 ## Interactive Card Actions
 
-When users click buttons or interact with interactive cards sent by the bot, the adapter routes these as synthetic `/card` command events:
+The adapter handles one kind of interactive card callback:
 
-- Button clicks become: `/card button {"key": "value", ...}`
-- The action's `value` payload from the card definition is included as JSON.
-- Card actions are deduplicated with a 15-minute window to prevent double processing.
+- **Command-approval cards.** When the agent needs to run a dangerous command, it sends an interactive card with Allow Once / Session / Always / Deny buttons. Each button carries a `hermes_action` field in its `value` payload; on click, the adapter resolves the pending approval inline and returns an updated "resolved" card as the Feishu callback response so every client re-renders the same resolution state.
 
-Card action events are dispatched with `MessageType.COMMAND`, so they flow through the normal command processing pipeline.
+All other interactive-card callbacks (custom buttons in cards Hermes didn't produce, card types that Feishu reports under `card.action.trigger` without an approval payload, etc.) are dropped at DEBUG log level. Hermes does not register a command handler for generic card actions — routing them through the slash-command pipeline produced user-visible `Unknown command /card` replies, so the adapter now silently drops them instead (see issue #11600).
 
-This is also how **command approval** works — when the agent needs to run a dangerous command, it sends an interactive card with Allow Once / Session / Always / Deny buttons. The user clicks a button, and the card action callback delivers the approval decision back to the agent.
+Card action callbacks are deduplicated with a 15-minute window to prevent double processing of repeat SDK deliveries.
 
 ### Required Feishu App Configuration
 

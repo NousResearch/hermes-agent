@@ -1794,8 +1794,9 @@ class FeishuAdapter(BasePlatformAdapter):
         """Send an interactive card with approval buttons.
 
         The buttons carry ``hermes_action`` in their value dict so that
-        ``_handle_card_action_event`` can intercept them and call
-        ``resolve_gateway_approval()`` to unblock the waiting agent thread.
+        ``_on_card_action_trigger`` routes them to
+        ``_handle_approval_card_action`` / ``_resolve_approval`` and
+        unblocks the waiting agent thread.
         """
         if not self._client:
             return SendResult(success=False, error="Not connected")
@@ -2357,11 +2358,21 @@ class FeishuAdapter(BasePlatformAdapter):
     def _on_card_action_trigger(self, data: Any) -> Any:
         """Handle card-action callback from the Feishu SDK (synchronous).
 
-        For approval actions: parses the event once, returns the resolved card
-        inline (the only reliable way to sync all clients), and schedules a
+        For Hermes-generated approval cards (payloads that carry
+        ``hermes_action``): parse the event once, return the resolved card
+        inline (the only reliable way to sync all clients), and schedule a
         lightweight async method to actually unblock the agent.
 
-        For other card actions: delegates to ``_handle_card_action_event``.
+        For any other card callback: log at debug level and drop.  Hermes
+        does not register a handler for unrecognized card actions and never
+        has — the previous ``/card <tag> …`` synthesis routed those events
+        into the generic slash-command dispatcher, which always produced a
+        user-visible ``Unknown command /card`` reply because the command
+        was never defined in ``hermes_cli/commands.py``
+        (``GATEWAY_KNOWN_COMMANDS`` does not contain ``card``).  See
+        issue #11600.  Silently dropping is strictly better UX: approval
+        cards keep working exactly as before, and non-Hermes cards no
+        longer trigger a fake-command reply to the user.
         """
         loop = self._loop
         if not self._loop_accepts_callbacks(loop):
@@ -2504,7 +2515,30 @@ class FeishuAdapter(BasePlatformAdapter):
         return False
 
     async def _handle_card_action_event(self, data: Any) -> None:
-        """Route Feishu interactive card button clicks as synthetic COMMAND events."""
+        """Log-and-drop handler for non-approval Feishu card callbacks.
+
+        Feishu sends every interactive-card interaction through the
+        ``card.action.trigger`` event.  Hermes-generated approval cards
+        carry a ``hermes_action`` key in the button value and are handled
+        by ``_handle_approval_card_action``; everything else lands here.
+
+        Earlier versions of this adapter synthesized a
+        ``/card <tag> <value>`` slash command and pushed it through the
+        gateway command dispatcher.  That produced a user-visible
+        ``Unknown command /card`` reply on every click because Hermes has
+        never registered a ``card`` command in
+        ``hermes_cli/commands.py`` (and therefore ``GATEWAY_KNOWN_COMMANDS``
+        does not contain it).  It also meant that malformed approval
+        callbacks — callbacks that should have been rejected — instead
+        reached the user as an error message unrelated to approvals.
+        See issue #11600.
+
+        Since there is no registered consumer for non-approval card
+        events anywhere in the codebase, the correct behaviour is to log
+        the event at debug level and return.  The processed-token cache
+        is still maintained so repeated SDK deliveries of the same
+        callback don't re-log.
+        """
         event = getattr(data, "event", None)
         token = str(getattr(event, "token", "") or "")
         if token and self._is_card_action_duplicate(token):
@@ -2515,43 +2549,24 @@ class FeishuAdapter(BasePlatformAdapter):
         chat_id = str(getattr(context, "open_chat_id", "") or "")
         operator = getattr(event, "operator", None)
         open_id = str(getattr(operator, "open_id", "") or "")
-        if not chat_id or not open_id:
-            logger.debug("[Feishu] Card action missing chat_id or operator open_id, dropping")
-            return
 
         action = getattr(event, "action", None)
         action_tag = str(getattr(action, "tag", "") or "button")
         action_value = getattr(action, "value", {}) or {}
 
-        synthetic_text = f"/card {action_tag}"
-        if action_value:
-            try:
-                synthetic_text += f" {json.dumps(action_value, ensure_ascii=False)}"
-            except Exception:
-                pass
-
-        sender_id = SimpleNamespace(open_id=open_id, user_id=None, union_id=None)
-        sender_profile = await self._resolve_sender_profile(sender_id)
-        chat_info = await self.get_chat_info(chat_id)
-        source = self.build_source(
-            chat_id=chat_id,
-            chat_name=chat_info.get("name") or chat_id or "Feishu Chat",
-            chat_type=self._resolve_source_chat_type(chat_info=chat_info, event_chat_type="group"),
-            user_id=sender_profile["user_id"],
-            user_name=sender_profile["user_name"],
-            thread_id=None,
-            user_id_alt=sender_profile["user_id_alt"],
+        # Compact, privacy-preserving log line — no message forwarded, no
+        # synthesized slash command.  Only the action_tag and value-key
+        # list are logged; full value payloads may contain user-visible
+        # strings that shouldn't hit INFO-level logs.
+        try:
+            value_keys = sorted(action_value.keys()) if isinstance(action_value, dict) else []
+        except Exception:
+            value_keys = []
+        logger.debug(
+            "[Feishu] Dropping non-approval card action tag=%r from %s in %s (value keys: %s)",
+            action_tag, open_id or "?", chat_id or "?", value_keys,
         )
-        synthetic_event = MessageEvent(
-            text=synthetic_text,
-            message_type=MessageType.COMMAND,
-            source=source,
-            raw_message=data,
-            message_id=token or str(uuid.uuid4()),
-            timestamp=datetime.now(),
-        )
-        logger.info("[Feishu] Routing card action %r from %s in %s as synthetic command", action_tag, open_id, chat_id)
-        await self._handle_message_with_guards(synthetic_event)
+        return
 
     # =========================================================================
     # Per-chat serialization and typing indicator

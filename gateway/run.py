@@ -589,6 +589,7 @@ class GatewayRunner:
         self._provider_routing = self._load_provider_routing()
         self._fallback_model = self._load_fallback_model()
         self._smart_model_routing = self._load_smart_model_routing()
+        self._last_route_model: Optional[str] = None
 
         # Wire process registry into session store for reset protection
         from tools.process_registry import process_registry
@@ -993,7 +994,37 @@ class GatewayRunner:
         except Exception:
             overrides = None
         route["request_overrides"] = overrides
+
+        # Track the model used this turn for handoff detection
+        self._last_route_model = route.get("model")
+
         return route
+
+    def _build_model_handoff(self, prev_model: str, new_model: str, conversation: list, user_message: str) -> str:
+        """Build a model handoff summary for gateway context continuity.
+
+        Returns the handoff text string, or empty string if no handoff needed.
+        """
+        try:
+            from agent.model_handoff import build_handoff, should_generate_handoff
+            from agent.smart_model_routing import _load_task_state
+
+            task_state = _load_task_state()
+            if not should_generate_handoff(prev_model, new_model, task_state):
+                return ""
+
+            return build_handoff(
+                prev_model=prev_model,
+                new_model=new_model,
+                conversation=conversation,
+                task_state=task_state,
+                focus_topic=user_message[:200] if user_message else None,
+                recent_only=4,
+                max_chars=4000,
+            ) or ""
+        except Exception:
+            logger.debug("Gateway model handoff generation failed", exc_info=True)
+            return ""
 
     async def _handle_adapter_fatal_error(self, adapter: BasePlatformAdapter) -> None:
         """React to an adapter failure after startup.

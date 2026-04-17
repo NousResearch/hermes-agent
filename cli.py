@@ -1782,6 +1782,7 @@ class HermesCLI:
         # Optional cheap-vs-strong routing for simple turns
         self._smart_model_routing = CLI_CONFIG.get("smart_model_routing", {}) or {}
         self._active_agent_route_signature = None
+        self._last_route_model: Optional[str] = None
 
         # Agent will be initialized on first use
         self.agent: Optional[AIAgent] = None
@@ -2819,7 +2820,61 @@ class HermesCLI:
         except Exception:
             overrides = None
         route["request_overrides"] = overrides
+
+        # Track the model used this turn for handoff detection
+        self._last_route_model = route.get("model")
+
         return route
+
+    def _inject_model_handoff(self, prev_model: str, new_model: str, user_message: str) -> None:
+        """Generate and inject a handoff summary when the model changes mid-session.
+
+        When smart routing switches to a different model mid-conversation, the new
+        model needs context about what was done before. This method builds a
+        structured handoff from agent.model_handoff and prepends it as a system
+        message to conversation_history.
+        """
+        try:
+            from agent.model_handoff import build_handoff, should_generate_handoff
+            from agent.smart_model_routing import _load_task_state
+
+            task_state = _load_task_state()
+
+            if not should_generate_handoff(prev_model, new_model, task_state):
+                return
+
+            handoff_text = build_handoff(
+                prev_model=prev_model,
+                new_model=new_model,
+                conversation=self.conversation_history,
+                task_state=task_state,
+                focus_topic=user_message[:200] if user_message else None,
+                recent_only=4,
+                max_chars=4000,
+            )
+
+            if not handoff_text:
+                return
+
+            # Prepend handoff as a system message in the conversation
+            self.conversation_history.insert(0, {
+                "role": "system",
+                "content": handoff_text,
+            })
+
+            # Also persist the handoff for audit
+            try:
+                from agent.model_handoff import save_handoff
+                save_handoff(handoff_text, prev_model, new_model)
+            except Exception:
+                pass
+
+            from agent.display import _DIM, _RST
+            _cprint_local = lambda msg: print(f"\033[2m{msg}\033[0m")
+            _cprint_local(f"  [handoff: {prev_model} → {new_model}]")
+
+        except Exception:
+            logger.debug("Model handoff generation failed", exc_info=True)
 
     def _init_agent(self, *, model_override: str = None, runtime_override: dict = None, route_label: str = None, request_overrides: dict | None = None) -> bool:
         """
@@ -7689,6 +7744,11 @@ class HermesCLI:
 
         turn_route = self._resolve_turn_agent_config(message)
         if turn_route["signature"] != self._active_agent_route_signature:
+            # Model transition detected — generate handoff context for the new model
+            prev_model = self._last_route_model
+            new_model = turn_route.get("model", self.model)
+            if prev_model and prev_model != new_model:
+                self._inject_model_handoff(prev_model, new_model, message)
             self.agent = None
 
         # Initialize agent if needed

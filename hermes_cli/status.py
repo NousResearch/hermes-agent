@@ -327,6 +327,9 @@ def show_status(args):
         home_channel = ""
         if home_var:
             home_channel = os.getenv(home_var, "")
+        # Back-compat: QQBot home channel was renamed from QQ_HOME_CHANNEL to QQBOT_HOME_CHANNEL
+        if not home_channel and home_var == "QQBOT_HOME_CHANNEL":
+            home_channel = os.getenv("QQ_HOME_CHANNEL", "")
         
         status = "configured" if has_token else "not configured"
         if home_channel:

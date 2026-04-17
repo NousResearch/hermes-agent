@@ -709,6 +709,7 @@ Subcommands:
 | `update` | Reinstall hub skills with upstream changes when available. |
 | `audit` | Re-scan installed hub skills. |
 | `uninstall` | Remove a hub-installed skill. |
+| `reset` | Un-stick a bundled skill flagged as `user_modified` by clearing its manifest entry. With `--restore`, also replaces the user copy with the bundled version. |
 | `publish` | Publish a skill to a registry. |
 | `snapshot` | Export/import skill configurations. |
 | `tap` | Manage custom skill sources. |
@@ -730,6 +731,8 @@ hermes skills install https://example.com/SKILL.md --name my-skill        # Over
 hermes skills check
 hermes skills update
 hermes skills config
+hermes skills reset google-workspace
+hermes skills reset google-workspace --restore --yes
 ```
 
 Notes:

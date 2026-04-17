@@ -59,10 +59,13 @@ _HOME_TARGET_ENV_VARS = {
     "signal": "SIGNAL_HOME_CHANNEL",
     "mattermost": "MATTERMOST_HOME_CHANNEL",
     "sms": "SMS_HOME_CHANNEL",
+    "email": "EMAIL_HOME_ADDRESS",
+    "dingtalk": "DINGTALK_HOME_CHANNEL",
     "feishu": "FEISHU_HOME_CHANNEL",
     "wecom": "WECOM_HOME_CHANNEL",
     "weixin": "WEIXIN_HOME_CHANNEL",
     "bluebubbles": "BLUEBUBBLES_HOME_CHANNEL",
+    "qqbot": "QQ_HOME_CHANNEL",
 }
 
 from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run

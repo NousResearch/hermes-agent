@@ -527,6 +527,7 @@ class TestWeixinSendImageFileParameterName:
         """Verify send_image_file accepts image_path and forwards to send_document."""
         adapter = _make_adapter()
         adapter._session = object()
+        adapter._send_session = adapter._session
         adapter._token = "test-token"
 
         send_document_mock.return_value = weixin.SendResult(success=True, message_id="test-id")
@@ -554,6 +555,7 @@ class TestWeixinSendImageFileParameterName:
         """Verify send_image_file works with minimal required params."""
         adapter = _make_adapter()
         adapter._session = object()
+        adapter._send_session = adapter._session
         adapter._token = "test-token"
 
         send_document_mock.return_value = weixin.SendResult(success=True, message_id="test-id")
@@ -578,6 +580,7 @@ class TestWeixinVoiceSending:
     def _connected_adapter(self) -> WeixinAdapter:
         adapter = _make_adapter()
         adapter._session = object()
+        adapter._send_session = adapter._session
         adapter._token = "test-token"
         adapter._base_url = "https://weixin.example.com"
         adapter._token_store.get = lambda account_id, chat_id: "ctx-token"

@@ -3061,12 +3061,24 @@ class GatewayRunner:
                     else f"⏳ Gateway is {self._status_action_gerund()} and is not accepting another turn right now."
                 )
             logger.debug("PRIORITY interrupt for session %s", _quick_key[:20])
-            running_agent.interrupt(event.text)
-            if _quick_key in self._pending_messages:
-                self._pending_messages[_quick_key] += "\n" + event.text
+            try:
+                running_agent.interrupt(event.text)
+            except Exception:
+                logger.warning(
+                    "Interrupt failed for session %s; releasing stale running-agent lock "
+                    "and retrying the message as a fresh turn.",
+                    _quick_key[:30],
+                    exc_info=True,
+                )
+                self._running_agents.pop(_quick_key, None)
+                self._running_agents_ts.pop(_quick_key, None)
+                self._busy_ack_ts.pop(_quick_key, None)
             else:
-                self._pending_messages[_quick_key] = event.text
-            return None
+                if _quick_key in self._pending_messages:
+                    self._pending_messages[_quick_key] += "\n" + event.text
+                else:
+                    self._pending_messages[_quick_key] = event.text
+                return None
 
         # Check for commands
         command = event.get_command()

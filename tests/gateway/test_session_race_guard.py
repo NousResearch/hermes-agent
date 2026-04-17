@@ -37,6 +37,7 @@ def _make_runner():
     runner.adapters = {Platform.TELEGRAM: _FakeAdapter()}
     runner._running_agents = {}
     runner._running_agents_ts = {}
+    runner._busy_ack_ts = {}
     runner._pending_messages = {}
     runner._pending_approvals = {}
     runner._voice_mode = {}
@@ -256,6 +257,35 @@ async def test_recent_telegram_followups_append_in_pending_queue():
     fake_agent.interrupt.assert_not_called()
     adapter = runner.adapters[Platform.TELEGRAM]
     assert adapter._pending_messages[session_key].text == "part one\npart two"
+
+
+@pytest.mark.asyncio
+async def test_interrupt_failure_releases_stale_lock_and_retries_fresh_turn():
+    runner = _make_runner()
+    event = _make_event(text="retry me")
+    session_key = build_session_key(event.source)
+
+    dead_agent = MagicMock()
+    dead_agent.get_activity_summary.return_value = {"seconds_since_activity": 0}
+    dead_agent.interrupt.side_effect = RuntimeError("dead agent")
+    runner._running_agents[session_key] = dead_agent
+    import time as _time
+    runner._running_agents_ts[session_key] = _time.time() - 10
+    runner._busy_ack_ts[session_key] = _time.time()
+
+    async def mock_inner(self_inner, ev, src, qk):
+        assert qk == session_key
+        return "ok"
+
+    with patch.object(GatewayRunner, "_handle_message_with_agent", mock_inner):
+        result = await runner._handle_message(event)
+
+    assert result == "ok"
+    dead_agent.interrupt.assert_called_once_with("retry me")
+    assert session_key not in runner._running_agents
+    assert session_key not in runner._running_agents_ts
+    assert session_key not in runner._busy_ack_ts
+    assert session_key not in runner._pending_messages
 
 
 # ------------------------------------------------------------------

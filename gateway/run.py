@@ -289,6 +289,12 @@ from gateway.group_runtime_status_service import (
 from gateway.session_hygiene_runtime_service import (
     maybe_auto_compress_session_history as shared_maybe_auto_compress_session_history,
 )
+from gateway.shared_group_history_runtime_service import (
+    DEFAULT_SHARED_GROUP_VISIBLE_HISTORY_LIMIT as SHARED_DEFAULT_GROUP_VISIBLE_HISTORY_LIMIT,
+    is_shared_group_internal_artifact as shared_is_shared_group_internal_artifact,
+    prepare_history_for_agent as shared_prepare_history_for_agent,
+    simplify_shared_group_history_for_agent as shared_simplify_shared_group_history_for_agent,
+)
 from gateway.group_target_intents import (
     extract_qq_group_target,
     extract_weixin_group_target,
@@ -392,7 +398,7 @@ logger = logging.getLogger(__name__)
 # session from bypassing the "already running" guard during the async gap
 # between the guard check and actual agent creation.
 _AGENT_PENDING_SENTINEL = object()
-_SHARED_GROUP_VISIBLE_HISTORY_LIMIT = 24
+_SHARED_GROUP_VISIBLE_HISTORY_LIMIT = SHARED_DEFAULT_GROUP_VISIBLE_HISTORY_LIMIT
 _AUTO_VISION_ANALYSIS_TIMEOUT_SECONDS = 8.0
 _AUTO_VISION_ANALYSIS_TIMEOUT_CAP_SECONDS = 45.0
 _AUTO_VISION_ANALYSIS_FAILURE_COOLDOWN_SECONDS = 300.0
@@ -404,15 +410,7 @@ _AUTO_VISION_CACHE_TTL_SECONDS = 3600.0
 _AUTO_VISION_MAX_INFLIGHT_TASKS = 4
 _AUTO_VISION_MAX_CACHE_ENTRIES = 256
 def _is_shared_group_internal_artifact(content: Any) -> bool:
-    text = str(content or "").strip()
-    if not text:
-        return False
-    return text.startswith(
-        (
-            "[CONTEXT COMPACTION]",
-            "[Your active task list was preserved across context compression]",
-        )
-    )
+    return shared_is_shared_group_internal_artifact(content)
 
 
 def _should_forward_agent_status(
@@ -468,35 +466,11 @@ def _simplify_shared_group_history_for_agent(
     *,
     visible_limit: int = _SHARED_GROUP_VISIBLE_HISTORY_LIMIT,
 ) -> List[Dict[str, Any]]:
-    """Reduce shared-group history to visible chat turns only.
-
-    Shared QQ project-group sessions are collaborative, but raw agent internals
-    (tool traces, compaction summaries, preserved todo state) pollute later
-    turns and make chat models keep dragging stale topics forward.  For shared
-    group chats, only replay visible user/assistant turns and bias toward the
-    most recent exchange window.
-    """
-    visible_messages: List[Dict[str, Any]] = []
-    for msg in history:
-        role = str(msg.get("role") or "").strip()
-        if role not in ("user", "assistant"):
-            continue
-
-        content = msg.get("content")
-        if not isinstance(content, str):
-            continue
-        content = content.strip()
-        if not content or content == "[[NO_REPLY]]":
-            continue
-        if _is_shared_group_internal_artifact(content):
-            continue
-
-        visible_messages.append({"role": role, "content": content})
-
-    if visible_limit > 0 and len(visible_messages) > visible_limit:
-        visible_messages = visible_messages[-visible_limit:]
-
-    return visible_messages
+    """Backward-compatible wrapper for shared-group history cleanup."""
+    return shared_simplify_shared_group_history_for_agent(
+        history,
+        visible_limit=visible_limit,
+    )
 
 
 def _resolve_runtime_agent_kwargs() -> dict:
@@ -3139,6 +3113,21 @@ class GatewayRunner:
             logger=logger,
         )
 
+    def _prepare_history_for_agent(
+        self,
+        *,
+        history: List[Dict[str, Any]],
+        context: SessionContext,
+        session_entry: SessionEntry,
+    ) -> List[Dict[str, Any]]:
+        return shared_prepare_history_for_agent(
+            history,
+            shared_session_kind=getattr(context, "shared_session_kind", None),
+            session_id=session_entry.session_id,
+            logger=logger,
+            visible_limit=_SHARED_GROUP_VISIBLE_HISTORY_LIMIT,
+        )
+
     def _resolve_background_job_for_stop(
         self,
         source: SessionSource,
@@ -4049,16 +4038,11 @@ class GatewayRunner:
                 logger.warning("[Gateway] Failed to auto-load topic skill '%s': %s", event.auto_skill, e)
 
         # Load conversation history from transcript
-        history_for_agent = history
-        if getattr(context, "shared_session_kind", None) == "group":
-            history_for_agent = _simplify_shared_group_history_for_agent(history)
-            if len(history_for_agent) != len(history):
-                logger.info(
-                    "Shared group history simplified for session %s: %d -> %d messages",
-                    session_entry.session_id,
-                    len(history),
-                    len(history_for_agent),
-                )
+        history_for_agent = self._prepare_history_for_agent(
+            history=history,
+            context=context,
+            session_entry=session_entry,
+        )
 
         background_message_text = event.text or ""
         _background_shared_thread = (

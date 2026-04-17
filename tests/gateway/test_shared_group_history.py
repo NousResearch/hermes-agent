@@ -1,4 +1,5 @@
 from gateway.config import GatewayConfig, Platform
+from gateway.shared_group_history_runtime_service import prepare_history_for_agent
 from gateway.run import _simplify_shared_group_history_for_agent
 from gateway.session import SessionContext, SessionSource, build_session_context_prompt
 
@@ -81,3 +82,17 @@ def test_shared_group_context_prompt_instructs_model_to_focus_on_latest_batch():
     assert "completed replies" in prompt.lower()
     assert "not drafts or pending points" in prompt.lower()
     assert "newest active prompt only" in prompt.lower()
+
+
+def test_prepare_history_for_agent_leaves_non_shared_group_history_unchanged():
+    history = [
+        {"role": "user", "content": "hello"},
+        {"role": "assistant", "content": "world"},
+    ]
+
+    prepared = prepare_history_for_agent(
+        history,
+        shared_session_kind=None,
+    )
+
+    assert prepared == history

@@ -1,274 +1,244 @@
-# TouchDesigner Troubleshooting
+# TouchDesigner Troubleshooting (twozero MCP)
 
 > See `references/pitfalls.md` for the comprehensive lessons-learned list.
 
-## Quick Connection Diagnostic
+## 1. Connection Issues
 
-```bash
-lsof -i :9981 -P -n | grep LISTEN    # Step 1: Is TD listening?
-curl -s http://127.0.0.1:9981/api/td/server/td   # Step 2: API working?
+### Port 40404 not responding
+
+Check these in order:
+
+1. Is TouchDesigner running?
+   ```bash
+   pgrep TouchDesigner
+   ```
+
+1b. Quick hub health check (no JSON-RPC needed):
+   A plain GET to the MCP URL returns instance info:
+   ```
+   curl -s http://localhost:40404/mcp
+   ```
+   Returns: `{"hub": true, "pid": ..., "instances": {"127.0.0.1_PID": {"project": "...", "tdVersion": "...", ...}}}`
+   If this returns JSON but `instances` is empty, TD is running but twozero hasn't registered yet.
+
+2. Is twozero installed in TD?
+   Open TD Palette Browser > twozero should be listed. If not, install it.
+
+3. Is MCP enabled in twozero settings?
+   In TD, open twozero preferences and confirm MCP server is toggled ON.
+
+4. Test the port directly:
+   ```bash
+   nc -z 127.0.0.1 40404
+   ```
+
+5. Test the MCP endpoint:
+   ```bash
+   curl -s http://localhost:40404/mcp
+   ```
+   Should return JSON with hub info. If it does, the server is running.
+
+### Hub responds but no TD instances
+
+The twozero MCP hub is running but TD hasn't registered. Causes:
+- TD project not loaded yet (still on splash screen)
+- twozero COMP not initialized in the current project
+- twozero version mismatch
+
+Fix: Open/reload a TD project that contains the twozero COMP. Use td_list_instances
+to check which TD instances are registered.
+
+### Multi-instance setup
+
+twozero auto-assigns ports for multiple TD instances:
+- First instance: 40404
+- Second instance: 40405
+- Third instance: 40406
+- etc.
+
+Use `td_list_instances` to discover all running instances and their ports.
+
+## 2. MCP Tool Errors
+
+### td_execute_python returns error
+
+The error message from td_execute_python often contains the Python traceback.
+If it's unclear, use `td_read_textport` to see the full TD console output —
+Python exceptions are always printed there.
+
+Common causes:
+- Syntax error in the script
+- Referencing a node that doesn't exist (op() returns None, then you call .par on None)
+- Using wrong parameter names (see pitfalls.md)
+
+### td_set_operator_pars fails
+
+Parameter name mismatch is the #1 cause. The tool validates param names and
+returns clear errors, but you must use exact names.
+
+Fix: ALWAYS call `td_get_par_info` first to discover the real parameter names:
+```
+td_get_par_info(op_type='glslTOP')
+td_get_par_info(op_type='noiseTOP')
 ```
 
-| Symptom | Cause | Fix |
-|---------|-------|-----|
-| Connection refused | No WebServer DAT | Deploy `scripts/custom_api_handler.py` in TD Textport |
-| HTTP 404 on all routes | .tox module import failed | Deploy custom handler (pitfalls #1-2) |
-| HTTP 200, empty body | Response in wrong key | Handler uses `response['data']` not `response['body']` (pitfalls #6) |
-| HTTP 200, JSON body | Working | Proceed to discovery |
-| MCP tools not callable | Normal — use curl instead | `td_exec()` pattern in SKILL.md works without MCP |
+### td_create_operator type name errors
 
-## Node Creation Issues
+Operator type names use camelCase with family suffix:
+- CORRECT: noiseTOP, glslTOP, levelTOP, compositeTOP, audiospectrumCHOP
+- WRONG:   NoiseTOP, noise_top, NOISE TOP, Noise
+
+### td_get_operator_info for deep inspection
+
+If unsure about any aspect of an operator (params, inputs, outputs, state):
+```
+td_get_operator_info(path='/project1/noise1', detail='full')
+```
+
+## 3. Parameter Discovery
+
+CRITICAL: ALWAYS use td_get_par_info to discover parameter names.
+
+The agent's LLM training data contains WRONG parameter names for TouchDesigner.
+Do not trust them. Known wrong names include dat vs pixeldat, colora vs alpha,
+sizex vs size, and many more. See pitfalls.md for the full list.
+
+Workflow:
+1. td_get_par_info(op_type='glslTOP') — get all params for a type
+2. td_get_operator_info(path='/project1/mynode', detail='full') — get params for a specific instance
+3. Use ONLY the names returned by these tools
+
+## 4. Performance
+
+### Diagnosing slow performance
+
+Use `td_get_perf` to see which operators are slow. Look at cook times —
+anything over 1ms per frame is worth investigating.
+
+Common causes:
+- Resolution too high (especially on Non-Commercial)
+- Complex GLSL shaders
+- Too many TOP-to-CHOP or CHOP-to-TOP transfers (GPU-CPU memory copies)
+- Feedback loops without decay (values accumulate, memory grows)
+
+### Non-Commercial license restrictions
+
+- Resolution cap: 1280x1280. Setting resolutionw=1920 silently clamps to 1280.
+- H.264/H.265/AV1 encoding requires Commercial license. Use ProRes or Hap instead.
+- No commercial use of output.
+
+Always check effective resolution after creation:
+```python
+n.cook(force=True)
+actual = str(n.width) + 'x' + str(n.height)
+```
+
+## 5. Hermes Configuration
+
+### Config location
+
+~/.hermes/config.yaml
+
+### MCP entry format
+
+The twozero TD entry should look like:
+```yaml
+mcpServers:
+  twozero_td:
+    url: http://localhost:40404/mcp
+```
+
+### After config changes
+
+Restart the Hermes session for changes to take effect. The MCP connection is
+established at session startup.
+
+### Verifying MCP tools are available
+
+After restarting, the session log should show twozero MCP tools registered.
+If tools show as registered but aren't callable, check:
+- The twozero MCP hub is still running (curl test above)
+- TD is still running with a project loaded
+- No firewall blocking localhost:40404
+
+## 6. Node Creation Issues
 
 ### "Node type not found" error
 
-**Cause:** Wrong `nodeType` string in `create_td_node`.
+Wrong type string. Use camelCase with family suffix:
+- Wrong: NoiseTop, noise_top, NOISE TOP
+- Right: noiseTOP
 
-**Fix:** Use camelCase with family suffix. Common mistakes:
-- Wrong: `NoiseTop`, `noise_top`, `NOISE TOP`, `Noise`
-- Right: `noiseTop`
-- Wrong: `AudioSpectrum`, `audio_spectrum_chop`
-- Right: `audiospectrumChop`
+### Node created but not visible
 
-**Discovery method:** Use `get_td_classes` to see available types, or `execute_python_script` with `dir(td)` filtered for operator classes.
-
-### Node created but not visible in TD
-
-**Cause:** Node was created in a different container than expected, or TD viewport is looking at a different network.
-
-**Fix:** Check `parentPath` — use absolute paths like `/project1`. Verify with `get_td_nodes(parentPath="/project1")`.
+Check parentPath — use absolute paths like /project1. The default project
+root is /project1. System nodes live at /, /ui, /sys, /local, /perform.
+Don't create user nodes outside /project1.
 
 ### Cannot create node inside a non-COMP
 
-**Cause:** Only COMP operators (Container, Base, Geometry, etc.) can contain child operators. You cannot create nodes inside a TOP, CHOP, SOP, DAT, or MAT.
+Only COMP operators (Container, Base, Geometry, etc.) can contain children.
+You cannot create nodes inside a TOP, CHOP, SOP, DAT, or MAT.
 
-**Fix:** Create a Container COMP or Base COMP first, then create nodes inside it.
+## 7. Wiring Issues
 
-## Parameter Issues
+### Cross-family wiring
 
-### Parameter not updating
+TOPs connect to TOPs, CHOPs to CHOPs, SOPs to SOPs, DATs to DATs.
+Use converter operators to bridge: choptoTOP, topToCHOP, soptoDAT, etc.
 
-**Causes:**
-1. **Wrong parameter name.** TD parameter names change across versions. Run the discovery script (SKILL.md Step 0) or use `get_td_node_parameters` to discover exact names for your TD version. Never trust online docs or this skill's tables — always verify.
-2. **Parameter is read-only.** Some parameters are computed/locked.
-3. **Wrong value type.** Menu parameters need integer index or exact string label.
-4. **Parameter has an expression.** If `node.par.X.expr` is set, `.val` is ignored. Clear the expression first.
-
-**Discovery-based approach (preferred):**
+Note: choptoTOP has NO input connectors. Use par.chop reference instead:
 ```python
-execute_python_script(script="""
-n = op('/project1/mynode')
-pars = [(p.name, type(p.val).__name__, p.val) for p in n.pars()
-        if any(k in p.name.lower() for k in ['color', 'size', 'dat', 'font', 'alpha'])]
-result = pars
-""")
+spec_tex.par.chop = resample_node  # correct
+# NOT: resample.outputConnectors[0].connect(spec_tex.inputConnectors[0])
 ```
 
-**Safe parameter setter pattern:**
+### Feedback loops
+
+Never create A -> B -> A directly. Use a Feedback TOP:
 ```python
-def safe_par(node, name, value):
-    p = getattr(node.par, name, None)
-    if p is not None:
-        p.val = value
-        return True
-    return False  # param doesn't exist in this TD version
+fb = root.create(feedbackTOP, 'fb')
+fb.par.top = comp.path          # reference only, no wire to fb input
+fb.outputConnectors[0].connect(next_node)
 ```
+"Cook dependency loop detected" warning on the chain is expected and correct.
 
-### Common parameter name gotchas
+## 8. GLSL Issues
 
-| What you expect | Actual name | Notes |
-|----------------|-------------|-------|
-| `width` | `resolutionw` | TOP resolution width |
-| `height` | `resolutionh` | TOP resolution height |
-| `filepath` | `file` | File path parameter |
-| `color` | `colorr`, `colorg`, `colorb`, `colora` | Separate RGBA components |
-| `position_x` | `tx` | Translate X |
-| `rotation` | `rz` | Rotate Z (2D rotation) |
-| `scale` | `sx`, `sy` | Separate X/Y scale |
-| `blend_mode` | `operand` | Composite TOP blend mode (integer) |
-| `opacity` | `opacity` | On Level TOP (this one is correct!) |
+### Shader compilation errors are silent
 
-### Composite TOP operand values
+GLSL TOP shows a yellow warning in the UI but node.errors() may return empty.
+Check node.warnings() too. Create an Info DAT pointed at the GLSL TOP for
+full compiler output.
 
-| Mode | Index |
-|------|-------|
-| Over | 0 |
-| Under | 1 |
-| Inside | 2 |
-| Add | 3 |
-| Subtract | 4 |
-| Difference | 5 |
-| Multiply | 18 |
-| Screen | 27 |
-| Maximum | 13 |
-| Minimum | 14 |
-| Average | 28 |
+### TD GLSL specifics
 
-## Connection/Wiring Issues
+- Uses GLSL 4.60 (Vulkan backend). GLSL 3.30 and earlier removed.
+- UV coordinates: vUV.st (not gl_FragCoord)
+- Input textures: sTD2DInputs[0]
+- Output: layout(location = 0) out vec4 fragColor
+- macOS CRITICAL: Always wrap output with TDOutputSwizzle(color)
+- No built-in time uniform. Pass time via GLSL TOP Values page or Constant TOP.
 
-### Connections not working
+## 9. Recording Issues
 
-**Causes:**
-1. **Cross-family wiring.** TOPs can only connect to TOPs, CHOPs to CHOPs, etc. Use converter operators to bridge families.
-2. **Wrong connector index.** Most operators have one output connector (index 0). Multi-output operators may need index 1, 2, etc.
-3. **Node path wrong.** Verify paths are absolute and correctly spelled.
+### H.264/H.265/AV1 requires Commercial license
 
-**Verify connections:**
+Use Apple ProRes on macOS (hardware accelerated, not license-restricted):
 ```python
-execute_python_script(script="""
-node = op('/project1/level1')
-result = {
-    'inputs': [i.path if i else None for i in node.inputs],
-    'outputs': [o.path if o else None for o in node.outputs]
-}
-""")
+rec.par.videocodec = 'prores'  # Preferred on macOS — lossless, Non-Commercial OK
+# rec.par.videocodec = 'mjpa'  # Fallback — lossy, works everywhere
 ```
 
-### Feedback loops causing errors
+### MovieFileOut has no .record() method
 
-**Symptom:** "Circular dependency" or infinite cook loop.
-
-**Fix:** Always use a Feedback TOP (or a Null TOP with a one-frame delay) to break the loop:
-```
-A -> B -> Feedback(references B) -> A
-```
-Never create A -> B -> A directly.
-
-## Performance Issues
-
-### Low FPS / choppy output
-
-**Common causes and fixes:**
-
-1. **Resolution too high.** Start at 1920x1080, only go higher if GPU handles it.
-2. **Too many operators.** Each operator has GPU/CPU overhead. Consolidate where possible.
-3. **Expensive shader.** GLSL TOPs with complex math per-pixel drain GPU. Profile with TD's Performance Monitor (F2).
-4. **No GPU instancing.** Rendering 1000 separate geometry objects is much slower than 1 instanced geometry.
-5. **Unnecessary cooks.** Operators that don't change frame-to-frame still recook if inputs change. Use Null TOPs to cache stable results.
-6. **Large texture transfers.** TOP to CHOP and CHOP to TOP involve GPU-CPU memory transfers. Minimize these.
-
-**Performance Monitor:**
+Use the toggle parameter:
 ```python
-execute_python_script(script="td.performanceMonitor = True")
-# After testing:
-execute_python_script(script="td.performanceMonitor = False")
+rec.par.record = True   # start
+rec.par.record = False  # stop
 ```
 
-### Memory growing over time
+### All exported frames identical
 
-**Causes:**
-- Cache TOPs with high `length` value
-- Feedback loops without brightness decay (values accumulate)
-- Table DATs growing without clearing
-- Movie File In loading many unique frames
-
-**Fix:** Always add slight decay in feedback loops (Level TOP with `opacity=0.98` or multiply blend). Clear tables periodically.
-
-## Export / Recording Issues
-
-### Movie File Out not recording
-
-**Checklist:**
-1. Is the `record` parameter toggled on? `update_td_node_parameters(properties={"record": true})`
-2. Is an input connected? The Movie File Out needs a TOP input.
-3. Is the output path valid and writable? Check `file` parameter.
-4. Is the codec available? H.264 (type 4) is most reliable.
-
-### Exported video is black
-
-**Causes:**
-1. The TOP chain output is all black (brightness too low).
-2. The input TOP has errors (check with `get_td_node_errors`).
-3. Resolution mismatch — the output may be wrong resolution.
-
-**Debug:** Check the input TOP's actual pixel values:
-```python
-execute_python_script(script="""
-import numpy as np
-top = op('/project1/out')
-arr = top.numpyArray(delayed=True)
-result = {'mean': float(arr.mean()), 'max': float(arr.max()), 'shape': list(arr.shape)}
-""")
-```
-
-### .tox export losing connections
-
-**Note:** When saving a component as .tox, only the component and its internal children are saved. External connections (wires to operators outside the component) are lost. Design self-contained components.
-
-## Python Scripting Issues
-
-### execute_python_script returns empty result
-
-**Causes:**
-1. The script used `exec()` semantics (multi-line) but didn't set `result`.
-2. The last expression has no return value (e.g., `print()` returns None).
-
-**Fix:** Explicitly set `result`:
-```python
-execute_python_script(script="""
-nodes = op('/project1').findChildren(type=TOP)
-result = len(nodes)  # explicitly set return value
-""")
-```
-
-### Script errors not clear
-
-**Check stderr in the response.** The MCP server captures both stdout and stderr from script execution. Error tracebacks appear in stderr.
-
-### Module not found in TD Python
-
-**Cause:** TD's Python environment may not have the module. TD bundles numpy, scipy, opencv, Pillow, and requests. Other packages need manual installation.
-
-**Check available packages:**
-```python
-execute_python_script(script="""
-import sys
-result = [p for p in sys.path]
-""")
-```
-
-## Common Workflow Pitfalls
-
-### Building before verifying connection
-
-Always call `get_td_info` first. If TD isn't running or the WebServer DAT isn't loaded, all subsequent tool calls will fail.
-
-### Not checking errors after building
-
-Always call `get_td_node_errors(nodePath="/project1")` after creating and wiring a network. Broken connections and missing references are silent until you check.
-
-### Creating too many operators in one go
-
-When building complex networks, create in logical groups:
-1. Create all operators in a section
-2. Wire that section
-3. Verify with `get_td_node_errors`
-4. Move to the next section
-
-Don't create 50 operators, wire them all, then discover something was wrong 30 operators ago.
-
-### Parameter expressions vs static values
-
-If you set `node.par.X.val = 5` but there's an expression on that parameter (`node.par.X.expr`), the expression wins. To use a static value, clear the expression first:
-```python
-execute_python_script(script="""
-op('/project1/noise1').par.seed.expr = ''  # clear expression
-op('/project1/noise1').par.seed.val = 42   # now static value works
-""")
-```
-
-### Forgetting to start audio playback
-
-Audio File In CHOP won't produce data unless `play` is True and a valid `file` is set:
-```
-update_td_node_parameters(nodePath="/project1/audio_in",
-    properties={"file": "/path/to/music.wav", "play": true})
-```
-
-### GLSL shader compilation errors
-
-If a GLSL TOP shows errors after setting shader code:
-1. Check the shader code in the Text DAT for syntax errors
-2. Ensure the GLSL version is compatible (TD uses GLSL 3.30+)
-3. Input sampler name must be `sTD2DInputs[0]` (not custom names)
-4. Output must use `layout(location = 0) out vec4 fragColor`
-5. UV coordinates come from `vUV.st` (not `gl_FragCoord`)
+TOP.save() captures same frame when called rapidly. Use MovieFileOut for
+real-time recording. Set project.realTime = False for frame-accurate output.

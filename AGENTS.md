@@ -64,7 +64,7 @@ hermes-agent/
 │   ├── src/components/      # Ink components (branding, markdown, prompts, pickers, etc.)
 │   ├── src/hooks/           # useCompletion, useInputHistory, useQueue, useVirtualHistory
 │   └── src/lib/             # Pure helpers (history, osc52, text, rpc, messages)
-├── tui_gateway/          # Python JSON-RPC backend for Ink TUI
+├── tui_gateway/          # Python JSON-RPC backend for the TUI
 │   ├── entry.py             # stdio entrypoint
 │   ├── server.py            # RPC handlers and session logic
 │   ├── render.py            # Optional rich/ANSI bridge
@@ -194,7 +194,7 @@ if canonical == "mycommand":
 
 ## TUI Architecture (ui-tui + tui_gateway)
 
-The Ink TUI is a full replacement for the PT CLI, activated via `hermes --tui` or `HERMES_TUI=1`.
+The TUI is a full replacement for the PT CLI, activated via `hermes --tui` or `HERMES_TUI=1`.
 
 ### Process Model
 

@@ -237,6 +237,7 @@ AUTHOR_MAP = {
     "mbelleau@Michels-MacBook-Pro.local": "malaiwah",
     "michel.belleau@malaiwah.com": "malaiwah",
     "gnanasekaran.sekareee@gmail.com": "gnanam1990",
+    "jz.pentest@gmail.com": "0xyg3n",
     "dhandhalyabhavik@gmail.com": "v1k22",
     "rucchizhao@zhaochenfeideMacBook-Pro.local": "RucchiZ",
     "lehaolin98@outlook.com": "LehaoLin",

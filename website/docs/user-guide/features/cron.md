@@ -16,6 +16,7 @@ Cron jobs can:
 - pause, resume, edit, trigger, and remove jobs
 - attach zero, one, or multiple skills to a job
 - deliver results back to the origin chat, local files, or configured platform targets
+- optionally append delivered results into the target chat's session context for follow-up replies
 - run in fresh agent sessions with the normal static tool list
 
 :::warning
@@ -208,6 +209,30 @@ When scheduling jobs, you specify where the output goes:
 
 The agent's final response is automatically delivered. You do not need to call `send_message` in the cron prompt.
 
+### Follow-up context in the delivery chat
+
+By default, a delivered cron message does **not** become part of the live chat session context. If you want follow-up replies like "add that to my calendar" to refer to the delivered cron message, enable session mirroring for that job:
+
+```python
+cronjob(
+    action="create",
+    prompt="Summarize any new event emails and deliver them here.",
+    schedule="every 30m",
+    append_to_session=True,
+)
+```
+
+This appends the delivered output into the target session transcript after a successful send. The next user message in that same chat or topic can refer to it naturally.
+
+You can also set a global default in `~/.hermes/config.yaml`:
+
+```yaml
+cron:
+  append_deliveries_to_session: true
+```
+
+Per-job `append_to_session` overrides the global default. Use `false` on noisy jobs you do not want added to chat context.
+
 ### Response wrapping
 
 By default, delivered cron output is wrapped with a header and footer so the recipient knows it came from a scheduled task:
@@ -217,9 +242,9 @@ Cronjob Response: Morning feeds
 -------------
 
 <agent output here>
-
-Note: The agent cannot see this message, and therefore cannot respond to it.
 ```
+
+When session mirroring is enabled for that job, the wrapped footer also says that follow-up replies in the same chat can refer to the delivered message.
 
 To deliver the raw agent output without the wrapper, set `cron.wrap_response` to `false`:
 

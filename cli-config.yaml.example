@@ -260,6 +260,16 @@ terminal:
 #   tirith_fail_open: true      # Allow commands if tirith unavailable
 
 # =============================================================================
+# Scheduled Tasks (Cron)
+# =============================================================================
+# Global defaults for cron delivery behavior.
+#
+# cron:
+#   wrap_response: true                  # Add the cron header/footer to delivered output
+#   append_deliveries_to_session: false  # Mirror successful cron deliveries into the target chat session by default
+#                                        # Per-job override: cronjob(..., append_to_session=true|false)
+
+# =============================================================================
 # Browser Tool Configuration
 # =============================================================================
 browser:

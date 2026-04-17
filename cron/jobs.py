@@ -378,6 +378,7 @@ def create_job(
     provider: Optional[str] = None,
     base_url: Optional[str] = None,
     script: Optional[str] = None,
+    append_to_session: Optional[bool] = None,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -397,6 +398,9 @@ def create_job(
         script: Optional path to a Python script whose stdout is injected into the
                 prompt each run.  The script runs before the agent turn, and its output
                 is prepended as context.  Useful for data collection / change detection.
+        append_to_session: Optional per-job override for whether successful
+                deliveries should be mirrored back into the target session
+                transcript. None inherits the global cron config default.
 
     Returns:
         The created job dict
@@ -457,6 +461,7 @@ def create_job(
         "last_delivery_error": None,
         # Delivery configuration
         "deliver": deliver,
+        "append_to_session": append_to_session,
         "origin": origin,  # Tracks where job was created for "origin" delivery
     }
 

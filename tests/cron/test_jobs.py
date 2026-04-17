@@ -233,6 +233,10 @@ class TestJobCRUD:
         job = create_job(prompt="Test", schedule="30m")
         assert job["deliver"] == "local"
 
+    def test_default_append_to_session_inherits_global(self, tmp_cron_dir):
+        job = create_job(prompt="Test", schedule="30m")
+        assert job["append_to_session"] is None
+
 
 class TestUpdateJob:
     def test_update_name(self, tmp_cron_dir):
@@ -274,6 +278,15 @@ class TestUpdateJob:
         assert updated["enabled"] is False
         fetched = get_job(job["id"])
         assert fetched["enabled"] is False
+
+    def test_update_append_to_session(self, tmp_cron_dir):
+        job = create_job(prompt="Check server status", schedule="every 1h")
+        updated = update_job(job["id"], {"append_to_session": True})
+        assert updated is not None
+        assert updated["append_to_session"] is True
+
+        fetched = get_job(job["id"])
+        assert fetched["append_to_session"] is True
 
     def test_update_nonexistent_returns_none(self, tmp_cron_dir):
         result = update_job("nonexistent_id", {"name": "X"})

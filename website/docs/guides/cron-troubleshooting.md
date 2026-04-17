@@ -97,6 +97,17 @@ cron:
   wrap_response: false
 ```
 
+### Check 5: The follow-up message cannot refer to the delivered cron output
+
+By default, delivered cron output is **not** appended into the target chat session. If you want follow-up replies in that chat to refer to the delivered message, enable session mirroring either globally or per job:
+
+```yaml
+cron:
+  append_deliveries_to_session: true
+```
+
+Or set `append_to_session=true` on the specific cron job. An explicit per-job `false` still disables mirroring for that job even when the global default is enabled.
+
 ---
 
 ## Skill Loading Failures

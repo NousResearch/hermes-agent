@@ -231,3 +231,50 @@ class TestUnifiedCronjobTool:
         assert updated["success"] is True
         assert updated["job"]["skills"] == []
         assert updated["job"]["skill"] is None
+
+    def test_create_append_to_session_override(self):
+        created = json.loads(
+            cronjob(
+                action="create",
+                prompt="Check inbox",
+                schedule="every 1h",
+                append_to_session=True,
+            )
+        )
+        assert created["success"] is True
+        assert created["append_to_session"] is True
+        assert created["job"]["append_to_session"] is True
+
+        listing = json.loads(cronjob(action="list"))
+        assert listing["jobs"][0]["append_to_session"] is True
+
+    def test_update_append_to_session_can_inherit_global_default(self):
+        created = json.loads(
+            cronjob(
+                action="create",
+                prompt="Check inbox",
+                schedule="every 1h",
+                append_to_session=True,
+            )
+        )
+        job_id = created["job_id"]
+
+        disabled = json.loads(
+            cronjob(
+                action="update",
+                job_id=job_id,
+                append_to_session=False,
+            )
+        )
+        assert disabled["success"] is True
+        assert disabled["job"]["append_to_session"] is False
+
+        inherited = json.loads(
+            cronjob(
+                action="update",
+                job_id=job_id,
+                append_to_session=None,
+            )
+        )
+        assert inherited["success"] is True
+        assert inherited["job"]["append_to_session"] is None

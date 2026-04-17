@@ -122,6 +122,7 @@ AUTHOR_MAP = {
     "mrflu1918@proton.me": "SPANISHFLU",
     "morganemoss@gmai.com": "mormio",
     "kopjop926@gmail.com": "cesareth",
+    "oleksiy@kovyrin.net": "kovyrin",
     "fuleinist@gmail.com": "fuleinist",
     "jack.47@gmail.com": "JackTheGit",
     "dalvidjr2022@gmail.com": "Jr-kenny",

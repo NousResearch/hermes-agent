@@ -160,6 +160,26 @@ class TestCreateJob:
                 assert call_kwargs["prompt"] == "do something"
 
     @pytest.mark.asyncio
+    async def test_create_job_passes_append_to_session(self, adapter):
+        """POST /api/jobs forwards append_to_session when explicitly provided."""
+        app = _create_app(adapter)
+        mock_create = MagicMock(return_value={**SAMPLE_JOB, "append_to_session": True})
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(
+                APIServerAdapter, "_CRON_AVAILABLE", True
+            ), patch.object(
+                APIServerAdapter, "_cron_create", mock_create
+            ):
+                resp = await cli.post("/api/jobs", json={
+                    "name": "test-job",
+                    "schedule": "*/5 * * * *",
+                    "append_to_session": True,
+                })
+                assert resp.status == 200
+                call_kwargs = mock_create.call_args[1]
+                assert call_kwargs["append_to_session"] is True
+
+    @pytest.mark.asyncio
     async def test_create_job_missing_name(self, adapter):
         """POST /api/jobs without name returns 400."""
         app = _create_app(adapter)
@@ -309,6 +329,26 @@ class TestUpdateJob:
                 sanitized = call_args[0][1]
                 assert "name" in sanitized
                 assert "schedule" in sanitized
+
+    @pytest.mark.asyncio
+    async def test_update_job_allows_append_to_session(self, adapter):
+        """PATCH /api/jobs/{id} should pass append_to_session through the whitelist."""
+        app = _create_app(adapter)
+        updated_job = {**SAMPLE_JOB, "append_to_session": False}
+        mock_update = MagicMock(return_value=updated_job)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(
+                APIServerAdapter, "_CRON_AVAILABLE", True
+            ), patch.object(
+                APIServerAdapter, "_cron_update", mock_update
+            ):
+                resp = await cli.patch(
+                    f"/api/jobs/{VALID_JOB_ID}",
+                    json={"append_to_session": False},
+                )
+                assert resp.status == 200
+                sanitized = mock_update.call_args[0][1]
+                assert sanitized["append_to_session"] is False
 
     @pytest.mark.asyncio
     async def test_update_job_rejects_unknown_fields(self, adapter):

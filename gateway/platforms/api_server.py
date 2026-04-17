@@ -1713,7 +1713,17 @@ class APIServerAdapter(BasePlatformAdapter):
 
     _JOB_ID_RE = __import__("re").compile(r"[a-f0-9]{12}")
     # Allowed fields for update — prevents clients injecting arbitrary keys
-    _UPDATE_ALLOWED_FIELDS = {"name", "schedule", "prompt", "deliver", "skills", "skill", "repeat", "enabled"}
+    _UPDATE_ALLOWED_FIELDS = {
+        "name",
+        "schedule",
+        "prompt",
+        "deliver",
+        "skills",
+        "skill",
+        "repeat",
+        "enabled",
+        "append_to_session",
+    }
     _MAX_NAME_LENGTH = 200
     _MAX_PROMPT_LENGTH = 5000
 
@@ -1765,6 +1775,7 @@ class APIServerAdapter(BasePlatformAdapter):
             deliver = body.get("deliver", "local")
             skills = body.get("skills")
             repeat = body.get("repeat")
+            append_to_session = body.get("append_to_session")
 
             if not name:
                 return web.json_response({"error": "Name is required"}, status=400)
@@ -1780,6 +1791,11 @@ class APIServerAdapter(BasePlatformAdapter):
                 )
             if repeat is not None and (not isinstance(repeat, int) or repeat < 1):
                 return web.json_response({"error": "Repeat must be a positive integer"}, status=400)
+            if append_to_session is not None and not isinstance(append_to_session, bool):
+                return web.json_response(
+                    {"error": "append_to_session must be true, false, or null"},
+                    status=400,
+                )
 
             kwargs = {
                 "prompt": prompt,
@@ -1791,6 +1807,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 kwargs["skills"] = skills
             if repeat is not None:
                 kwargs["repeat"] = repeat
+            if "append_to_session" in body:
+                kwargs["append_to_session"] = append_to_session
 
             job = self._cron_create(**kwargs)
             return web.json_response({"job": job})
@@ -1841,6 +1859,15 @@ class APIServerAdapter(BasePlatformAdapter):
             if "prompt" in sanitized and len(sanitized["prompt"]) > self._MAX_PROMPT_LENGTH:
                 return web.json_response(
                     {"error": f"Prompt must be ≤ {self._MAX_PROMPT_LENGTH} characters"}, status=400,
+                )
+            if (
+                "append_to_session" in sanitized
+                and sanitized["append_to_session"] is not None
+                and not isinstance(sanitized["append_to_session"], bool)
+            ):
+                return web.json_response(
+                    {"error": "append_to_session must be true, false, or null"},
+                    status=400,
                 )
             job = self._cron_update(job_id, sanitized)
             if not job:

@@ -188,13 +188,19 @@ For Telegram topics, use the format `telegram:<chat_id>:<thread_id>` (e.g., `tel
 
 By default (`cron.wrap_response: true`), cron deliveries are wrapped with:
 - A header identifying the cron job name and task
-- A footer noting the agent cannot see the delivered message in conversation
+- A footer with job-management guidance for the recipient
 
 The `[SILENT]` prefix in a cron response suppresses delivery entirely — useful for jobs that only need to write to files or perform side effects.
 
 ### Session Isolation
 
-Cron deliveries are NOT mirrored into gateway session conversation history. They exist only in the cron job's own session. This prevents message alternation violations in the target chat's conversation.
+Cron runs always execute in their own fresh session. Delivery mirroring into the target chat is now opt-in:
+
+- default behavior: no mirroring (`cron.append_deliveries_to_session: false`)
+- global default: `cron.append_deliveries_to_session` in `config.yaml`
+- per-job override: `append_to_session` on the cron job itself
+
+When mirroring is enabled, the scheduler appends the delivered output into the matching target session transcript via `gateway.mirror.mirror_to_session()`. The mirrored transcript entry uses the raw delivered content (not the cron wrapper) so follow-up replies can refer to the substantive message naturally.
 
 ## Recursion Guard
 

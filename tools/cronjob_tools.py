@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional
 from hermes_constants import display_hermes_home
 
 logger = logging.getLogger(__name__)
+_UNSET = object()
 
 # Import from cron module (will be available when properly installed)
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -150,6 +151,14 @@ def _normalize_optional_job_value(value: Optional[Any], *, strip_trailing_slash:
     return text or None
 
 
+def _normalize_optional_bool(value: Any, *, field_name: str) -> Optional[bool]:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    raise ValueError(f"{field_name} must be true, false, or null")
+
+
 def _validate_cron_script_path(script: Optional[str]) -> Optional[str]:
     """Validate a cron job script path at the API boundary.
 
@@ -204,6 +213,7 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         "schedule": job.get("schedule_display"),
         "repeat": _repeat_display(job),
         "deliver": job.get("deliver", "local"),
+        "append_to_session": job.get("append_to_session"),
         "next_run_at": job.get("next_run_at"),
         "last_run_at": job.get("last_run_at"),
         "last_status": job.get("last_status"),
@@ -234,6 +244,7 @@ def cronjob(
     base_url: Optional[str] = None,
     reason: Optional[str] = None,
     script: Optional[str] = None,
+    append_to_session: Any = _UNSET,
     task_id: str = None,
 ) -> str:
     """Unified cron job management tool."""
@@ -258,6 +269,12 @@ def cronjob(
                 script_error = _validate_cron_script_path(script)
                 if script_error:
                     return tool_error(script_error, success=False)
+            normalized_append_to_session = None
+            if append_to_session is not _UNSET:
+                normalized_append_to_session = _normalize_optional_bool(
+                    append_to_session,
+                    field_name="append_to_session",
+                )
 
             job = create_job(
                 prompt=prompt or "",
@@ -271,6 +288,7 @@ def cronjob(
                 provider=_normalize_optional_job_value(provider),
                 base_url=_normalize_optional_job_value(base_url, strip_trailing_slash=True),
                 script=_normalize_optional_job_value(script),
+                append_to_session=normalized_append_to_session,
             )
             return json.dumps(
                 {
@@ -282,6 +300,7 @@ def cronjob(
                     "schedule": job["schedule_display"],
                     "repeat": _repeat_display(job),
                     "deliver": job.get("deliver", "local"),
+                    "append_to_session": job.get("append_to_session"),
                     "next_run_at": job["next_run_at"],
                     "job": _format_job(job),
                     "message": f"Cron job '{job['name']}' created.",
@@ -366,6 +385,11 @@ def cronjob(
                 repeat_state = dict(job.get("repeat") or {})
                 repeat_state["times"] = normalized_repeat
                 updates["repeat"] = repeat_state
+            if append_to_session is not _UNSET:
+                updates["append_to_session"] = _normalize_optional_bool(
+                    append_to_session,
+                    field_name="append_to_session",
+                )
             if schedule is not None:
                 parsed_schedule = parse_schedule(schedule)
                 updates["schedule"] = parsed_schedule
@@ -403,6 +427,11 @@ NOTE: The agent's final response is auto-delivered to the target. Put the primar
 user-facing content in the final response. Cron jobs run autonomously with no user
 present — they cannot ask questions or request clarification.
 
+Optional session mirroring: set append_to_session=true on a job to append
+delivered output into the target session transcript so follow-up replies in that
+chat can refer to the delivered message. Omit it or pass null to inherit the
+global cron.append_deliveries_to_session default from config.yaml.
+
 Important safety rule: cron-run sessions should not recursively schedule more cron jobs.""",
     "parameters": {
         "type": "object",
@@ -434,6 +463,10 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
             "deliver": {
                 "type": "string",
                 "description": "Omit this parameter to auto-deliver back to the current chat and topic (recommended). Auto-detection preserves thread/topic context. Only set explicitly when the user asks to deliver somewhere OTHER than the current conversation. Values: 'origin' (same as omitting), 'local' (no delivery, save only), or platform:chat_id:thread_id for a specific destination. Examples: 'telegram:-1001234567890:17585', 'discord:#engineering', 'sms:+15551234567'. WARNING: 'platform:chat_id' without :thread_id loses topic targeting."
+            },
+            "append_to_session": {
+                "type": ["boolean", "null"],
+                "description": "Optional per-job override for whether delivered output should be appended into the target session transcript. true = append so follow-up replies in that chat can refer to it. false = do not append for this job. null or omit = inherit cron.append_deliveries_to_session from config.yaml."
             },
             "skills": {
                 "type": "array",
@@ -503,6 +536,7 @@ registry.register(
         base_url=args.get("base_url"),
         reason=args.get("reason"),
         script=args.get("script"),
+        append_to_session=(args["append_to_session"] if "append_to_session" in args else _UNSET),
         task_id=kw.get("task_id"),
     ))(),
     check_fn=check_cronjob_requirements,

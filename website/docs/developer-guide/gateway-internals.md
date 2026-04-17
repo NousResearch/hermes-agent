@@ -186,7 +186,7 @@ Outgoing deliveries (`gateway/delivery.py`) handle:
 - **Explicit target delivery** — `send_message` tool specifying `telegram:-1001234567890`
 - **Cross-platform delivery** — deliver to a different platform than the originating message
 
-Cron job deliveries are NOT mirrored into gateway session history — they live in their own cron session only. This is a deliberate design choice to avoid message alternation violations.
+Cron job deliveries still run in their own cron session. Mirroring into the target gateway session is opt-in: the default remains off, but cron jobs can enable it globally (`cron.append_deliveries_to_session`) or per job (`append_to_session`) when follow-up replies in the target chat should refer to the delivered content.
 
 ## Hooks
 

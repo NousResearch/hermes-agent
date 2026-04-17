@@ -198,6 +198,88 @@ def _send_media_via_adapter(adapter, chat_id: str, media_files: list, metadata: 
             logger.warning("Job '%s': failed to send media %s: %s", job.get("id", "?"), media_path, e)
 
 
+def _load_cron_delivery_config() -> dict:
+    """Load cron delivery config with safe fallbacks."""
+    try:
+        user_cfg = load_config() or {}
+    except Exception:
+        return {}
+
+    cron_cfg = user_cfg.get("cron", {})
+    if isinstance(cron_cfg, dict):
+        return cron_cfg
+    return {}
+
+
+def _should_append_delivery_to_session(job: dict, *, cron_cfg: dict) -> bool:
+    """Resolve the effective append-to-session setting for a cron delivery."""
+    job_override = job.get("append_to_session")
+    if job_override is not None:
+        return bool(job_override)
+    return bool(cron_cfg.get("append_deliveries_to_session", False))
+
+
+def _build_delivery_mirror_text(content: str) -> str:
+    """Build the transcript text that should be mirrored for follow-up context."""
+    from gateway.platforms.base import BasePlatformAdapter
+    from tools.send_message_tool import _describe_media_for_mirror
+
+    media_files, cleaned_content = BasePlatformAdapter.extract_media(content)
+    return cleaned_content.strip() or _describe_media_for_mirror(media_files)
+
+
+def _mirror_delivered_result(job: dict, *, target: dict, mirror_text: str) -> None:
+    """Append a successful cron delivery into the matching target session."""
+    if not mirror_text:
+        return
+
+    try:
+        from gateway.mirror import mirror_to_session
+
+        source_label = f"cron:{job.get('name') or job.get('id')}"
+        mirrored = mirror_to_session(
+            target["platform"],
+            target["chat_id"],
+            mirror_text,
+            source_label=source_label,
+            thread_id=target.get("thread_id"),
+        )
+        if mirrored:
+            logger.debug(
+                "Job '%s': mirrored delivery into session for %s:%s",
+                job.get("id", "?"),
+                target["platform"],
+                target["chat_id"],
+            )
+    except Exception as e:
+        logger.debug("Job '%s': delivery mirror failed: %s", job.get("id", "?"), e)
+
+
+def _build_wrapped_delivery_content(
+    *,
+    job: dict,
+    content: str,
+    append_to_session: bool,
+) -> str:
+    """Build the user-facing wrapped cron delivery."""
+    task_name = job.get("name", job["id"])
+    job_id = job.get("id", "")
+    footer_lines = []
+    if append_to_session:
+        footer_lines.append("Follow-up replies in this chat can refer to this message.")
+    footer_lines.append(
+        f"To stop or manage this job, send me a new message (e.g. \"stop reminder {task_name}\")."
+    )
+    footer = "\n".join(footer_lines)
+    return (
+        f"Cronjob Response: {task_name}\n"
+        f"(job_id: {job_id})\n"
+        f"-------------\n\n"
+        f"{content}\n\n"
+        f"{footer}"
+    )
+
+
 def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Optional[str]:
     """
     Deliver job output to the configured target (origin chat, specific platform, etc.).
@@ -278,24 +360,18 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         return msg
 
     # Optionally wrap the content with a header/footer so the user knows this
-    # is a cron delivery.  Wrapping is on by default; set cron.wrap_response: false
+    # is a cron delivery. Wrapping is on by default; set cron.wrap_response: false
     # in config.yaml for clean output.
-    wrap_response = True
-    try:
-        user_cfg = load_config()
-        wrap_response = user_cfg.get("cron", {}).get("wrap_response", True)
-    except Exception:
-        pass
+    cron_cfg = _load_cron_delivery_config()
+    wrap_response = cron_cfg.get("wrap_response", True)
+    append_to_session = _should_append_delivery_to_session(job, cron_cfg=cron_cfg)
+    mirror_text = _build_delivery_mirror_text(content) if append_to_session else ""
 
     if wrap_response:
-        task_name = job.get("name", job["id"])
-        job_id = job.get("id", "")
-        delivery_content = (
-            f"Cronjob Response: {task_name}\n"
-            f"(job_id: {job_id})\n"
-            f"-------------\n\n"
-            f"{content}\n\n"
-            f"To stop or manage this job, send me a new message (e.g. \"stop reminder {task_name}\")."
+        delivery_content = _build_wrapped_delivery_content(
+            job=job,
+            content=content,
+            append_to_session=append_to_session,
         )
     else:
         delivery_content = content
@@ -332,6 +408,8 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 _send_media_via_adapter(runtime_adapter, chat_id, media_files, send_metadata, loop, job)
 
             if adapter_ok:
+                if append_to_session:
+                    _mirror_delivered_result(job, target=target, mirror_text=mirror_text)
                 logger.info("Job '%s': delivered to %s:%s via live adapter", job["id"], platform_name, chat_id)
                 return None
         except Exception as e:
@@ -363,6 +441,9 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         msg = f"delivery error: {result['error']}"
         logger.error("Job '%s': %s", job["id"], msg)
         return msg
+
+    if append_to_session:
+        _mirror_delivered_result(job, target=target, mirror_text=mirror_text)
 
     logger.info("Job '%s': delivered to %s:%s", job["id"], platform_name, chat_id)
     return None

@@ -235,7 +235,7 @@ function ScrollBox({ children, ref, stickyScroll, ...style }: PropsWithChildren<
     // notify/scrollMutated are inline (no useCallback) but only close over
     // refs + imports — stable. Empty deps avoids rebuilding the handle on
     // every render (which re-registers the ref = churn).
-     
+
     []
   )
 

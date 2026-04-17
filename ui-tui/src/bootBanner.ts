@@ -20,8 +20,7 @@ const TAGLINE = `${DIM}⚕ Nous Research · Messenger of the Digital Gods${RESET
 const FALLBACK = `\x1b[1m${GOLD}⚕ NOUS HERMES${RESET}`
 
 export function bootBanner(cols: number = process.stdout.columns || 80): string {
-  const body =
-    cols >= LOGO_WIDTH ? LOGO.map((text, i) => `${GRADIENT[i]}${text}${RESET}`).join('\n') : FALLBACK
+  const body = cols >= LOGO_WIDTH ? LOGO.map((text, i) => `${GRADIENT[i]}${text}${RESET}`).join('\n') : FALLBACK
 
   return `\n${body}\n${TAGLINE}\n\n`
 }

@@ -68,9 +68,45 @@ _ONBOARDING_POLL_INTERVAL_SECONDS = 5.0
 
 
 class CodeAssistError(RuntimeError):
-    def __init__(self, message: str, *, code: str = "code_assist_error") -> None:
+    """Exception raised by the Code Assist (``cloudcode-pa``) integration.
+
+    Carries HTTP status / response / retry-after metadata so the agent's
+    ``error_classifier._extract_status_code`` and the main loop's Retry-After
+    handling (which walks ``error.response.headers``) pick up the right
+    signals.  Without these, 429s from the OAuth path look like opaque
+    ``RuntimeError`` and skip the rate-limit path.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str = "code_assist_error",
+        status_code: Optional[int] = None,
+        response: Any = None,
+        retry_after: Optional[float] = None,
+        details: Optional[Dict[str, Any]] = None,
+    ) -> None:
         super().__init__(message)
         self.code = code
+        # ``status_code`` is picked up by ``agent.error_classifier._extract_status_code``
+        # so a 429 from Code Assist classifies as FailoverReason.rate_limit and
+        # triggers the main loop's fallback_providers chain the same way SDK
+        # errors do.
+        self.status_code = status_code
+        # ``response`` is the underlying ``httpx.Response`` (or a shim with a
+        # ``.headers`` mapping and ``.json()`` method).  The main loop reads
+        # ``error.response.headers["Retry-After"]`` to honor Google's retry
+        # hints when the backend throttles us.
+        self.response = response
+        # Parsed ``Retry-After`` seconds (kept separately for convenience —
+        # Google returns retry hints in both the header and the error body's
+        # ``google.rpc.RetryInfo`` details, and we pick whichever we found).
+        self.retry_after = retry_after
+        # Parsed structured error details from the Google error envelope
+        # (e.g. ``{"reason": "MODEL_CAPACITY_EXHAUSTED", "status": "RESOURCE_EXHAUSTED"}``).
+        # Useful for logging and for tests that want to assert on specifics.
+        self.details = details or {}
 
 
 class ProjectIdRequiredError(CodeAssistError):

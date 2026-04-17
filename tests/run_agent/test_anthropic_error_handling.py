@@ -28,6 +28,39 @@ from gateway.session import SessionSource
 
 
 # ---------------------------------------------------------------------------
+# Fast backoff for tests that exercise the retry loop
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _no_backoff_wait(monkeypatch):
+    """Short-circuit retry backoff so tests don't block on real wall-clock waits.
+
+    The production code uses jittered_backoff() with a 5s base delay plus a
+    tight time.sleep(0.2) loop. Without this patch, each 429/500/529 retry
+    test burns ~10s of real time on CI — across six tests that's ~60s for
+    behavior we're not asserting against timing.
+
+    Tests assert retry counts and final results, never wait durations.
+    """
+    import asyncio as _asyncio
+    import time as _time
+
+    monkeypatch.setattr(run_agent, "jittered_backoff", lambda *a, **k: 0.0)
+    monkeypatch.setattr(_time, "sleep", lambda *_a, **_k: None)
+
+    # Also fast-path asyncio.sleep — the gateway's _run_agent path has
+    # several await asyncio.sleep(...) calls that add real wall-clock time.
+    _real_asyncio_sleep = _asyncio.sleep
+
+    async def _fast_sleep(delay=0, *args, **kwargs):
+        # Yield to the event loop but skip the actual delay.
+        await _real_asyncio_sleep(0)
+
+    monkeypatch.setattr(_asyncio, "sleep", _fast_sleep)
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 

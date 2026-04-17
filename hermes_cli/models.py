@@ -155,6 +155,13 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "grok-4.20-reasoning",
         "grok-4-1-fast-reasoning",
     ],
+    "nvidia": [
+        "nvidia/nemotron-3-super-120b-a12b",
+        "nvidia/nemotron-3-nano-8b-a4b",
+        "z-ai/glm5",
+        "moonshotai/kimi-k2.5",
+        "minimaxai/minimax-m2.5",
+    ],
     "kimi-coding": [
         "kimi-k2.5",
         "kimi-for-coding",
@@ -544,6 +551,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("google-gemini-cli", "Google Gemini (OAuth)",   "Google Gemini via OAuth + Code Assist (free tier supported; no API key needed)"),
     ProviderEntry("deepseek",       "DeepSeek",                 "DeepSeek (DeepSeek-V3, R1, coder — direct API)"),
     ProviderEntry("xai",            "xAI",                      "xAI (Grok models — direct API)"),
+    ProviderEntry("nvidia",         "NVIDIA NIM",               "NVIDIA NIM (Nemotron models — build.nvidia.com or local NIM)"),
     ProviderEntry("zai",            "Z.AI / GLM",               "Z.AI / GLM (Zhipu AI direct API)"),
     ProviderEntry("kimi-coding",    "Kimi / Kimi Coding Plan",  "Kimi Coding Plan (api.kimi.com) & Moonshot API"),
     ProviderEntry("kimi-coding-cn", "Kimi / Moonshot (China)",  "Kimi / Moonshot China (Moonshot CN direct API)"),
@@ -618,6 +626,10 @@ _PROVIDER_ALIASES = {
     "grok": "xai",
     "x-ai": "xai",
     "x.ai": "xai",
+    "nim": "nvidia",
+    "nvidia-nim": "nvidia",
+    "build-nvidia": "nvidia",
+    "nemotron": "nvidia",
     "ollama": "custom",  # bare "ollama" = local; use "ollama-cloud" for cloud
     "ollama_cloud": "ollama-cloud",
 }

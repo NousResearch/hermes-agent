@@ -38,6 +38,7 @@ _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "mimo", "xiaomi-mimo",
     "arcee-ai", "arceeai",
     "xai", "x-ai", "x.ai", "grok",
+    "nvidia", "nim", "nvidia-nim", "nemotron",
     "qwen-portal",
 })
 
@@ -240,6 +241,7 @@ _URL_TO_PROVIDER: Dict[str, str] = {
     "api.fireworks.ai": "fireworks",
     "opencode.ai": "opencode-go",
     "api.x.ai": "xai",
+    "integrate.api.nvidia.com": "nvidia",
     "api.xiaomimimo.com": "xiaomi",
     "xiaomimimo.com": "xiaomi",
     "ollama.com": "ollama-cloud",

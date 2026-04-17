@@ -1072,7 +1072,8 @@ class QQAdapter(BasePlatformAdapter):
     # Attachment processing
     # ------------------------------------------------------------------
 
-    def _detect_message_type(self, media_urls: list, media_types: list):
+    @staticmethod
+    def _detect_message_type(media_urls: list, media_types: list):
         """Determine MessageType from attachment content types."""
         if not media_urls:
             return MessageType.TEXT

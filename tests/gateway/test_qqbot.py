@@ -316,8 +316,7 @@ class TestResolveSTTConfig:
 class TestDetectMessageType:
     def _fn(self, media_urls, media_types):
         from gateway.platforms.qqbot import QQAdapter
-        adapter = QQAdapter(_make_config(app_id="a", client_secret="b"))
-        return adapter._detect_message_type(media_urls, media_types)
+        return QQAdapter._detect_message_type(media_urls, media_types)
 
     def test_no_media(self):
         from gateway.platforms.base import MessageType

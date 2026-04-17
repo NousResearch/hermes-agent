@@ -1230,11 +1230,23 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         if qq_group_allowed:
             extra["group_allow_from"] = qq_group_allowed
         qq_home = os.getenv("QQBOT_HOME_CHANNEL", "").strip()
+        qq_home_name_env = "QQBOT_HOME_CHANNEL_NAME"
+        if not qq_home:
+            # Back-compat: accept the pre-rename name and log a one-time warning.
+            legacy_home = os.getenv("QQ_HOME_CHANNEL", "").strip()
+            if legacy_home:
+                qq_home = legacy_home
+                qq_home_name_env = "QQ_HOME_CHANNEL_NAME"
+                import logging
+                logging.getLogger(__name__).warning(
+                    "QQ_HOME_CHANNEL is deprecated; rename to QQBOT_HOME_CHANNEL "
+                    "in your .env for consistency with the platform key."
+                )
         if qq_home:
             config.platforms[Platform.QQBOT].home_channel = HomeChannel(
                 platform=Platform.QQBOT,
                 chat_id=qq_home,
-                name=os.getenv("QQBOT_HOME_CHANNEL_NAME", "Home"),
+                name=os.getenv("QQBOT_HOME_CHANNEL_NAME") or os.getenv(qq_home_name_env, "Home"),
             )
 
     # Session settings

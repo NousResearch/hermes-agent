@@ -2215,7 +2215,9 @@ def setup_gateway(config: dict):
             missing_home.append("Slack")
         if get_env_value("BLUEBUBBLES_SERVER_URL") and not get_env_value("BLUEBUBBLES_HOME_CHANNEL"):
             missing_home.append("BlueBubbles")
-        if get_env_value("QQ_APP_ID") and not get_env_value("QQBOT_HOME_CHANNEL"):
+        if get_env_value("QQ_APP_ID") and not (
+            get_env_value("QQBOT_HOME_CHANNEL") or get_env_value("QQ_HOME_CHANNEL")
+        ):
             missing_home.append("QQBot")
 
         if missing_home:

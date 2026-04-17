@@ -238,6 +238,8 @@ def dingtalk_qr_auth() -> Optional[Tuple[str, str]]:
 
     print()
     print_info("  Initializing DingTalk device authorization...")
+    print_info("  Note: the scan page is branded 'OpenClaw' — DingTalk's")
+    print_info("        ecosystem onboarding bridge. Safe to use.")
 
     try:
         reg = begin_registration()

@@ -97,6 +97,7 @@ AUTHOR_MAP = {
     "binhnt.ht.92@gmail.com": "binhnt92",
     "johnny@Jons-MBA-M4.local": "acesjohnny",
     "1581133593@qq.com": "liu-collab",
+    "haidaoe@proton.me": "haidao1919",
     # Matrix parity salvage batch (April 2026)
     "sr@samirusani": "samrusani",
     "angelclaw@AngelMacBook.local": "angel12",

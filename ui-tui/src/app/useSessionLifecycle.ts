@@ -186,7 +186,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
                 status: 'ready',
                 usage: usageFrom(r.info ?? null)
               })
-              queueMicrotask(() => scrollRef.current?.scrollToBottom())
+              setTimeout(() => scrollRef.current?.scrollToBottom(), 0)
             })
             .catch((e: Error) => {
               sys(`error: ${e.message}`)

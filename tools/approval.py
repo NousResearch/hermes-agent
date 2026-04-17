@@ -70,6 +70,78 @@ _SENSITIVE_WRITE_TARGET = (
 )
 
 # =========================================================================
+# Safer alternative hints — shown to the agent before escalating to user
+# =========================================================================
+
+_SAFER_ALTERNATIVES: dict[str, str] = {
+    "pipe remote content to shell":
+        "Save to a file first, inspect it, then execute. Example: curl -o /tmp/script.sh URL && less /tmp/script.sh && bash /tmp/script.sh",
+    "pipe remote content to interpreter":
+        "Save curl output to a file first, then process it separately. Example: curl -o /tmp/data.json URL && python3 -c \"import json; data=json.load(open('/tmp/data.json')); print(data)\"",
+    "execute remote script via process substitution":
+        "Save to a file first, inspect it, then execute. Example: curl -o /tmp/script.sh URL && less /tmp/script.sh && bash /tmp/script.sh",
+    "script execution via -e/-c flag":
+        "Save the script to a file with write_file, then execute it via terminal.",
+    "shell command via -c/-lc flag":
+        "Run the command directly in terminal without wrapping in bash -c. Use hermes_tools (read_file, write_file, search_files) when possible.",
+    "recursive delete":
+        "Use targeted file deletion instead of recursive rm. Consider: are you deleting build artifacts? Use a .gitignore or clean target instead.",
+    "recursive delete (long flag)":
+        "Use targeted file deletion instead of recursive rm. Consider: are you deleting build artifacts? Use a .gitignore or clean target instead.",
+    "kill hermes/gateway process (self-termination)":
+        "Use systemctl --user restart hermes-gateway to restart the gateway safely.",
+    "start gateway outside systemd (use 'systemctl --user restart hermes-gateway')":
+        "Use systemctl --user start hermes-gateway instead of running gateway directly.",
+    "force kill processes":
+        "Try killing without -9 first (graceful shutdown). If the process is truly stuck, this may be unavoidable.",
+    "delete in root path":
+        "Verify the exact path. Use absolute paths and double-check before rm with / in the path. Prefer hermes_tools for file operations.",
+    "overwrite system config":
+        "Use hermes_tools (patch function) for targeted edits instead of overwriting entire files. Always read the file first.",
+    "in-place edit of system config":
+        "Use hermes_tools (patch function) for targeted edits instead of sed -i. Safer and more precise.",
+    "script execution via heredoc":
+        "Write the script to a temp file with write_file, then execute via terminal.",
+    "git reset --hard (destroys uncommitted changes)":
+        "Use 'git stash' to save work before resetting.",
+    "git force push (rewrites remote history)":
+        "Use 'git push --force-with-lease' instead (safer force push).",
+    "git force push short flag (rewrites remote history)":
+        "Use 'git push --force-with-lease' instead.",
+    "git clean with force (deletes untracked files)":
+        "Use 'git clean -n' (dry-run) first to preview what will be deleted.",
+    "git branch force delete":
+        "Merge or cherry-pick to another branch first if the work is needed elsewhere.",
+    "kill process via pgrep expansion (self-termination)":
+        "Use 'systemctl restart <service>' instead of manually killing processes.",
+    "kill process via backtick pgrep expansion (self-termination)":
+        "Use 'systemctl restart <service>' instead of manually killing processes.",
+    "chmod +x followed by immediate execution":
+        "Run the script explicitly with 'bash script.sh' instead of chmod +x.",
+}
+
+
+_TIRITH_HINT_OVERRIDES: dict[str, str] = {
+    "pipe_to_interpreter":
+        "Save curl output to a file first, then process it separately. "
+        "Example: curl -o /tmp/data.json URL && python3 -c \"import json; data=json.load(open('/tmp/data.json')); print(data)\"",
+    "pipe_to_shell":
+        "Save to a file first, inspect it, then execute. "
+        "Example: curl -o /tmp/script.sh URL && less /tmp/script.sh && bash /tmp/script.sh",
+}
+
+
+def _get_safer_hint(pattern_key: str) -> str | None:
+    """Return a safer-alternative hint for a dangerous pattern key, if available."""
+    # Tirith keys are prefixed with "tirith:" — check overrides first
+    if pattern_key.startswith("tirith:"):
+        rule_id = pattern_key.split(":", 1)[1]
+        if rule_id in _TIRITH_HINT_OVERRIDES:
+            return _TIRITH_HINT_OVERRIDES[rule_id]
+    return _SAFER_ALTERNATIVES.get(pattern_key)
+
+
+# =========================================================================
 # Dangerous command patterns
 # =========================================================================
 
@@ -96,6 +168,8 @@ DANGEROUS_PATTERNS = [
     (r'\b(bash|sh|zsh|ksh)\s+-[^\s]*c(\s+|$)', "shell command via -c/-lc flag"),
     (r'\b(python[23]?|perl|ruby|node)\s+-[ec]\s+', "script execution via -e/-c flag"),
     (r'\b(curl|wget)\b.*\|\s*(ba)?sh\b', "pipe remote content to shell"),
+    (r'\b(curl|wget)\b.*\|\s*python[23]?\b', "pipe remote content to interpreter"),
+    (r'\b(curl|wget)\b.*\|\s*(perl|ruby|node)\b', "pipe remote content to interpreter"),
     (r'\b(bash|sh|zsh|ksh)\s+<\s*<?\s*\(\s*(curl|wget)\b', "execute remote script via process substitution"),
     (rf'\btee\b.*["\']?{_SENSITIVE_WRITE_TARGET}', "overwrite system file via tee"),
     (rf'>>?\s*["\']?{_SENSITIVE_WRITE_TARGET}', "overwrite system file via redirection"),
@@ -627,27 +701,49 @@ def check_dangerous_command(command: str, env_type: str,
             "pattern_key": pattern_key,
             "description": description,
         })
+        hint = _get_safer_hint(pattern_key)
+        self_correct_msg = (
+            f"⚠️ This command is potentially dangerous ({description}). "
+            "Asking the user for approval.\n\n"
+        )
+        if hint:
+            self_correct_msg += (
+                f"💡 SAFER ALTERNATIVE: {hint}\n\n"
+                "Try a safer approach first. Only request user approval if no safe "
+                "alternative exists for your goal.\n\n"
+            )
+        self_correct_msg += (
+            f"**Command:**\n```\n{command}\n```\n\n"
+            "If a safe alternative is not possible, the user will be asked to approve."
+        )
         return {
             "approved": False,
             "pattern_key": pattern_key,
             "status": "approval_required",
             "command": command,
             "description": description,
-            "message": (
-                f"⚠️ This command is potentially dangerous ({description}). "
-                f"Asking the user for approval.\n\n**Command:**\n```\n{command}\n```"
-            ),
+            "message": self_correct_msg,
+            "safer_hint": hint,
         }
 
     choice = prompt_dangerous_approval(command, description,
                                        approval_callback=approval_callback)
 
     if choice == "deny":
+        hint = _get_safer_hint(pattern_key)
+        deny_msg = (
+            f"BLOCKED: User denied this potentially dangerous command "
+            f"(matched '{description}' pattern). Do NOT retry this command — "
+            "the user has explicitly rejected it. Try a safer alternative instead."
+        )
+        if hint:
+            deny_msg += f"\n\n💡 SAFER ALTERNATIVE: {hint}"
         return {
             "approved": False,
-            "message": f"BLOCKED: User denied this potentially dangerous command (matched '{description}' pattern). Do NOT retry this command - the user has explicitly rejected it.",
+            "message": deny_msg,
             "pattern_key": pattern_key,
             "description": description,
+            "safer_hint": hint,
         }
 
     if choice == "session":
@@ -884,11 +980,23 @@ def check_all_command_guards(command: str, env_type: str,
             choice = entry.result
             if not resolved or choice is None or choice == "deny":
                 reason = "timed out" if not resolved else "denied by user"
+                deny_msg = (
+                    f"BLOCKED: Command {reason}. Do NOT retry this command. "
+                    "Try a safer alternative instead."
+                )
+                # Append hints for the first warning with a safer alternative
+                first_hint = None
+                for key, desc, is_t in warnings:
+                    first_hint = _get_safer_hint(key)
+                    if first_hint:
+                        deny_msg += f"\n\n💡 SAFER ALTERNATIVE: {first_hint}"
+                        break
                 return {
                     "approved": False,
-                    "message": f"BLOCKED: Command {reason}. Do NOT retry this command.",
+                    "message": deny_msg,
                     "pattern_key": primary_key,
                     "description": combined_desc,
+                    "safer_hint": first_hint,
                 }
 
             # User approved — persist based on scope (same logic as CLI)
@@ -913,15 +1021,32 @@ def check_all_command_guards(command: str, env_type: str,
             "pattern_keys": all_keys,
             "description": combined_desc,
         })
+        # Build self-correction hint
+        self_correct_msg = (
+            f"⚠️ {combined_desc}. Asking the user for approval.\n\n"
+        )
+        first_hint = None
+        for key, desc, is_t in warnings:
+            first_hint = _get_safer_hint(key)
+            if first_hint:
+                self_correct_msg += (
+                    f"💡 SAFER ALTERNATIVE: {first_hint}\n\n"
+                    "Try a safer approach first. Only request user approval if no safe "
+                    "alternative exists for your goal.\n\n"
+                )
+                break
+        self_correct_msg += (
+            f"**Command:**\n```\n{command}\n```\n\n"
+            "If a safe alternative is not possible, the user will be asked to approve."
+        )
         return {
             "approved": False,
             "pattern_key": primary_key,
             "status": "approval_required",
             "command": command,
             "description": combined_desc,
-            "message": (
-                f"⚠️ {combined_desc}. Asking the user for approval.\n\n**Command:**\n```\n{command}\n```"
-            ),
+            "message": self_correct_msg,
+            "safer_hint": first_hint,
         }
 
     # CLI interactive: single combined prompt
@@ -931,11 +1056,20 @@ def check_all_command_guards(command: str, env_type: str,
                                        approval_callback=approval_callback)
 
     if choice == "deny":
+        deny_msg = "BLOCKED: User denied. Do NOT retry. Try a safer alternative instead."
+        first_hint = None
+        for key, desc, is_t in warnings:
+            if not is_t:
+                first_hint = _get_safer_hint(key)
+                if first_hint:
+                    deny_msg += f"\n\n💡 SAFER ALTERNATIVE: {first_hint}"
+                break
         return {
             "approved": False,
-            "message": "BLOCKED: User denied. Do NOT retry.",
+            "message": deny_msg,
             "pattern_key": primary_key,
             "description": combined_desc,
+            "safer_hint": first_hint,
         }
 
     # Persist approval for each warning individually

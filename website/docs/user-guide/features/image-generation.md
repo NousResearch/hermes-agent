@@ -17,7 +17,7 @@ Hermes Agent generates images from text prompts via FAL.ai. Eight models are sup
 | `fal-ai/flux-2-pro` | ~6s | Studio photorealism | $0.03/MP |
 | `fal-ai/z-image/turbo` | ~2s | Bilingual EN/CN, 6B params | $0.005/MP |
 | `fal-ai/nano-banana` | ~6s | Gemini 2.5, character consistency | $0.08/image |
-| `fal-ai/gpt-image-1.5` | ~15s | Prompt adherence, quality-tiered | $0.009–0.20/image |
+| `fal-ai/gpt-image-1.5` | ~15s | Prompt adherence | $0.034/image |
 | `fal-ai/ideogram/v3` | ~5s | Best typography | $0.03–0.09/image |
 | `fal-ai/recraft-v3` | ~8s | Vector art, brand styles | $0.04/image |
 | `fal-ai/qwen-image` | ~12s | LLM-based, complex text | $0.02/MP |
@@ -63,23 +63,9 @@ image_gen:
   use_gateway: false            # true if using Nous Subscription
 ```
 
-### GPT-Image Quality Tier
+### GPT-Image Quality
 
-When you select `fal-ai/gpt-image-1.5`, a follow-up prompt asks for the quality tier. This only applies to GPT-Image and dramatically affects cost:
-
-| Tier | 1024×1024 | 1536×1024 / 1024×1536 |
-|---|---|---|
-| `low` | $0.009 | $0.013 |
-| `medium` *(default)* | $0.034 | $0.050–$0.051 |
-| `high` | $0.133 | $0.199–$0.200 |
-
-Stored in `config.yaml`:
-
-```yaml
-image_gen:
-  model: fal-ai/gpt-image-1.5
-  quality_setting: medium
-```
+The `fal-ai/gpt-image-1.5` request quality is pinned to `medium` (~$0.034/image at 1024×1024). We don't expose the `low` / `high` tiers as a user-facing option so that Nous Portal billing stays predictable across all users — the cost spread between tiers is ~22×. If you want a cheaper GPT-Image option, pick a different model; if you want higher quality, use Klein 9B or Imagen-class models.
 
 ## Usage
 

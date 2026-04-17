@@ -206,43 +206,50 @@ class TestDefaults:
 
 
 # ---------------------------------------------------------------------------
-# GPT-Image quality_setting wiring
+# GPT-Image quality is pinned to medium (not user-configurable)
 # ---------------------------------------------------------------------------
 
-class TestGptQualitySetting:
+class TestGptQualityPinnedToMedium:
+    """GPT-Image quality is baked into the FAL_MODELS defaults at 'medium'
+    and cannot be overridden via config. Pinning keeps Nous Portal billing
+    predictable across all users."""
 
-    def test_default_quality_is_medium(self, image_tool):
-        with patch("hermes_cli.config.load_config", return_value={}):
-            assert image_tool._resolve_gpt_quality() == "medium"
+    def test_gpt_payload_always_has_medium_quality(self, image_tool):
+        p = image_tool._build_fal_payload("fal-ai/gpt-image-1.5", "hi", "square")
+        assert p["quality"] == "medium"
 
-    def test_config_quality_low_applied(self, image_tool):
-        with patch("hermes_cli.config.load_config",
-                   return_value={"image_gen": {"quality_setting": "low"}}):
-            assert image_tool._resolve_gpt_quality() == "low"
-
-    def test_config_quality_high_applied(self, image_tool):
+    def test_config_quality_setting_is_ignored(self, image_tool):
+        """Even if a user manually edits config.yaml and adds quality_setting,
+        the payload must still use medium. No code path reads that field."""
         with patch("hermes_cli.config.load_config",
                    return_value={"image_gen": {"quality_setting": "high"}}):
-            assert image_tool._resolve_gpt_quality() == "high"
-
-    def test_invalid_quality_falls_back_to_medium(self, image_tool):
-        with patch("hermes_cli.config.load_config",
-                   return_value={"image_gen": {"quality_setting": "bogus"}}):
-            assert image_tool._resolve_gpt_quality() == "medium"
-
-    def test_gpt_payload_includes_quality(self, image_tool):
-        with patch("hermes_cli.config.load_config",
-                   return_value={"image_gen": {"quality_setting": "low"}}):
             p = image_tool._build_fal_payload("fal-ai/gpt-image-1.5", "hi", "square")
-        assert p["quality"] == "low"
+        assert p["quality"] == "medium"
 
-    def test_non_gpt_model_ignores_quality_setting(self, image_tool):
-        # honors_quality_setting is only set on gpt-image-1.5 — other
-        # models should not inject a `quality` key.
-        with patch("hermes_cli.config.load_config",
-                   return_value={"image_gen": {"quality_setting": "high"}}):
-            p = image_tool._build_fal_payload("fal-ai/flux-2-pro", "hi", "square")
-        assert "quality" not in p
+    def test_non_gpt_model_never_gets_quality(self, image_tool):
+        """quality is only meaningful for gpt-image-1.5 — other models should
+        never have it in their payload."""
+        for mid in image_tool.FAL_MODELS:
+            if mid == "fal-ai/gpt-image-1.5":
+                continue
+            p = image_tool._build_fal_payload(mid, "hi", "square")
+            assert "quality" not in p, f"{mid} unexpectedly has 'quality' in payload"
+
+    def test_honors_quality_setting_flag_is_removed(self, image_tool):
+        """The honors_quality_setting flag was the old override trigger.
+        It must not be present on any model entry anymore."""
+        for mid, meta in image_tool.FAL_MODELS.items():
+            assert "honors_quality_setting" not in meta, (
+                f"{mid} still has honors_quality_setting; "
+                f"remove it — quality is pinned to medium"
+            )
+
+    def test_resolve_gpt_quality_function_is_gone(self, image_tool):
+        """The _resolve_gpt_quality() helper was removed — quality is now
+        a static default, not a runtime lookup."""
+        assert not hasattr(image_tool, "_resolve_gpt_quality"), (
+            "_resolve_gpt_quality should not exist — quality is pinned"
+        )
 
 
 # ---------------------------------------------------------------------------

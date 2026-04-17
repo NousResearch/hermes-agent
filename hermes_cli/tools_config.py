@@ -984,10 +984,9 @@ def _format_imagegen_model_row(model_id: str, meta: dict, widths: dict) -> str:
 def _configure_imagegen_model(backend_name: str, config: dict) -> None:
     """Prompt the user to pick a model for the given imagegen backend.
 
-    Writes selection to ``config[backend_config_key]["model"]`` and, for
-    GPT-Image specifically, also prompts for the quality_setting tier.
-    Safe to call even when stdin is not a TTY — curses_radiolist falls back
-    to keeping the current selection.
+    Writes selection to ``config[backend_config_key]["model"]``. Safe to
+    call even when stdin is not a TTY — curses_radiolist falls back to
+    keeping the current selection.
     """
     backend = IMAGEGEN_BACKENDS.get(backend_name)
     if not backend:
@@ -1042,37 +1041,6 @@ def _configure_imagegen_model(backend_name: str, config: dict) -> None:
     chosen = ordered[idx]
     cur_cfg["model"] = chosen
     _print_success(f"  Model set to: {chosen}")
-
-    # GPT-Image quality tier — only applies when the chosen model honors it.
-    meta = catalog[chosen]
-    if meta.get("honors_quality_setting"):
-        _configure_gpt_quality_setting(cur_cfg)
-
-
-_GPT_QUALITY_CHOICES = [
-    ("low",    "Cheapest — ~$0.009/image, draft quality"),
-    ("medium", "Default — ~$0.034/image, good quality"),
-    ("high",   "Best — ~$0.13-0.20/image, max detail"),
-]
-
-
-def _configure_gpt_quality_setting(img_cfg: dict) -> None:
-    """Prompt for the GPT-Image quality tier; stores under image_gen.quality_setting."""
-    current = img_cfg.get("quality_setting") or "medium"
-    choices = [f"{tier} — {desc}" for tier, desc in _GPT_QUALITY_CHOICES]
-    default_idx = next(
-        (i for i, (tier, _) in enumerate(_GPT_QUALITY_CHOICES) if tier == current),
-        1,
-    )
-    print()
-    idx = _prompt_choice(
-        "  GPT-Image quality tier (affects per-image cost):",
-        choices,
-        default=default_idx,
-    )
-    chosen_tier = _GPT_QUALITY_CHOICES[idx][0]
-    img_cfg["quality_setting"] = chosen_tier
-    _print_success(f"  GPT-Image quality set to: {chosen_tier}")
 
 
 def _configure_provider(provider: dict, config: dict):

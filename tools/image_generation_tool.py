@@ -58,8 +58,6 @@ logger = logging.getLogger(__name__)
 # rejected parameters (each FAL model rejects unknown keys differently).
 #
 # ``upscale`` controls whether to chain Clarity Upscaler after generation.
-# ``honors_quality_setting`` wires ``image_gen.quality_setting`` into the
-# GPT-Image payload.
 
 FAL_MODELS: Dict[str, Dict[str, Any]] = {
     "fal-ai/flux-2/klein/9b": {
@@ -161,8 +159,8 @@ FAL_MODELS: Dict[str, Dict[str, Any]] = {
     "fal-ai/gpt-image-1.5": {
         "display": "GPT Image 1.5",
         "speed": "~15s",
-        "strengths": "Prompt adherence (tiered)",
-        "price": "$0.034/image (med)",
+        "strengths": "Prompt adherence",
+        "price": "$0.034/image",
         "size_style": "gpt_literal",
         "sizes": {
             "landscape": "1536x1024",
@@ -170,7 +168,9 @@ FAL_MODELS: Dict[str, Dict[str, Any]] = {
             "portrait": "1024x1536",
         },
         "defaults": {
-            "quality": "medium",   # overridable via image_gen.quality_setting
+            # Quality is pinned to medium to keep portal billing predictable
+            # across all users (low is too rough, high is 4-6x more expensive).
+            "quality": "medium",
             "num_images": 1,
             "output_format": "png",
         },
@@ -179,7 +179,6 @@ FAL_MODELS: Dict[str, Dict[str, Any]] = {
             "background", "sync_mode",
         },
         "upscale": False,
-        "honors_quality_setting": True,
     },
     "fal-ai/ideogram/v3": {
         "display": "Ideogram V3",
@@ -479,21 +478,6 @@ def _resolve_fal_model() -> tuple:
     return model_id, FAL_MODELS[model_id]
 
 
-def _resolve_gpt_quality() -> str:
-    """Resolve GPT-Image quality tier from config. Defaults to 'medium'."""
-    try:
-        from hermes_cli.config import load_config
-        cfg = load_config()
-        img_cfg = cfg.get("image_gen") if isinstance(cfg, dict) else None
-        if isinstance(img_cfg, dict):
-            q = img_cfg.get("quality_setting")
-            if isinstance(q, str) and q.lower() in ("low", "medium", "high"):
-                return q.lower()
-    except Exception as exc:
-        logger.debug("Could not load image_gen.quality_setting: %s", exc)
-    return "medium"
-
-
 def _build_fal_payload(
     model_id: str,
     prompt: str,
@@ -505,8 +489,7 @@ def _build_fal_payload(
 
     Translates aspect_ratio into the model's native size spec (preset enum,
     aspect-ratio enum, or GPT literal string), merges model defaults, applies
-    caller overrides, wires the GPT quality_setting, then filters to the
-    model's ``supports`` whitelist.
+    caller overrides, then filters to the model's ``supports`` whitelist.
     """
     meta = FAL_MODELS[model_id]
     size_style = meta["size_style"]
@@ -528,9 +511,6 @@ def _build_fal_payload(
 
     if seed is not None and isinstance(seed, int):
         payload["seed"] = seed
-
-    if meta.get("honors_quality_setting"):
-        payload["quality"] = _resolve_gpt_quality()
 
     if overrides:
         for k, v in overrides.items():

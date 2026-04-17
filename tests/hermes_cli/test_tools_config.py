@@ -510,38 +510,32 @@ class TestImagegenModelPicker:
         assert config["image_gen"]["model"] != "fal-ai/flux-2/klein/9b"
         assert config["image_gen"]["model"].startswith("fal-ai/")
 
-    def test_picker_with_gpt_image_also_prompts_quality(self):
-        """Selecting gpt-image-1.5 should trigger the quality_setting prompt."""
+    def test_picker_with_gpt_image_does_not_prompt_quality(self):
+        """GPT-Image quality is pinned to medium in the tool's defaults —
+        no follow-up prompt, no config write for quality_setting."""
         from hermes_cli.tools_config import (
             _configure_imagegen_model,
             IMAGEGEN_BACKENDS,
         )
         catalog, default_model = IMAGEGEN_BACKENDS["fal"]["catalog_fn"]()
-
-        # Build an ordered list that matches what the picker produces so we
-        # can predict which index corresponds to gpt-image-1.5.
         model_ids = list(catalog.keys())
         ordered = [default_model] + [m for m in model_ids if m != default_model]
         gpt_idx = ordered.index("fal-ai/gpt-image-1.5")
 
-        # Two picker calls: one for model, one for quality tier.
-        quality_choices = ["low", "medium", "high"]
-        choice_calls = iter([gpt_idx, 2])  # pick gpt-image, then "high"
-        config = {}
+        # Only ONE picker call is expected (for model) — not two (model + quality).
+        call_count = {"n": 0}
+        def fake_prompt(*a, **kw):
+            call_count["n"] += 1
+            return gpt_idx
 
-        with patch("hermes_cli.tools_config._prompt_choice",
-                   side_effect=lambda *a, **kw: next(choice_calls)):
+        config = {}
+        with patch("hermes_cli.tools_config._prompt_choice", side_effect=fake_prompt):
             _configure_imagegen_model("fal", config)
 
+        assert call_count["n"] == 1, (
+            f"Expected 1 picker call (model only), got {call_count['n']}"
+        )
         assert config["image_gen"]["model"] == "fal-ai/gpt-image-1.5"
-        assert config["image_gen"]["quality_setting"] == "high"
-
-    def test_picker_non_gpt_model_does_not_set_quality(self):
-        from hermes_cli.tools_config import _configure_imagegen_model
-        config = {}
-        # Pick index 0 which is the current default (klein) — not GPT.
-        with patch("hermes_cli.tools_config._prompt_choice", return_value=0):
-            _configure_imagegen_model("fal", config)
         assert "quality_setting" not in config["image_gen"]
 
     def test_picker_no_op_for_unknown_backend(self):

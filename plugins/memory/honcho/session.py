@@ -78,6 +78,7 @@ class HonchoSessionManager:
         honcho: Honcho | None = None,
         context_tokens: int | None = None,
         config: Any | None = None,
+        runtime_user_peer_name: str | None = None,
     ):
         """
         Initialize the session manager.
@@ -87,10 +88,12 @@ class HonchoSessionManager:
             context_tokens: Max tokens for context() calls (None = Honcho default).
             config: HonchoClientConfig from global config (provides peer_name, ai_peer,
                     write_frequency, observation, etc.).
+            runtime_user_peer_name: Gateway user identity for per-user memory scoping.
         """
         self._honcho = honcho
         self._context_tokens = context_tokens
         self._config = config
+        self._runtime_user_peer_name = runtime_user_peer_name
         self._cache: dict[str, HonchoSession] = {}
         self._peers_cache: dict[str, Any] = {}
         self._sessions_cache: dict[str, Any] = {}
@@ -274,8 +277,10 @@ class HonchoSessionManager:
             logger.debug("Local session cache hit: %s", key)
             return self._cache[key]
 
-        # Use peer names from global config when available
-        if self._config and self._config.peer_name:
+        # Gateway sessions should use the runtime user identity when available.
+        if self._runtime_user_peer_name:
+            user_peer_id = self._sanitize_id(self._runtime_user_peer_name)
+        elif self._config and self._config.peer_name:
             user_peer_id = self._sanitize_id(self._config.peer_name)
         else:
             # Fallback: derive from session key

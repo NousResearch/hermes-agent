@@ -17,10 +17,10 @@ export function LanguageSwitcher() {
       title={t.language.switchTo}
       aria-label={t.language.switchTo}
     >
-      {/* Show the *other* language's flag as the clickable target */}
-      <span className="text-base leading-none">{locale === "en" ? "🇨🇳" : "🇬🇧"}</span>
+      {/* Show the *current* language's flag — tooltip advertises the click action */}
+      <span className="text-base leading-none">{locale === "en" ? "🇬🇧" : "🇨🇳"}</span>
       <span className="hidden sm:inline font-display tracking-wide uppercase text-[0.65rem]">
-        {locale === "en" ? "中文" : "EN"}
+        {locale === "en" ? "EN" : "中文"}
       </span>
     </button>
   );

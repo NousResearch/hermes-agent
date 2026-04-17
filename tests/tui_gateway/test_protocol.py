@@ -165,7 +165,7 @@ def test_session_resume_returns_hydrated_messages(server, monkeypatch):
         def reopen_session(self, _sid):
             return None
 
-        def get_messages(self, _sid):
+        def get_messages_as_conversation(self, _sid):
             return [
                 {"role": "user", "content": "hello"},
                 {"role": "assistant", "content": "yo"},
@@ -193,7 +193,7 @@ def test_session_resume_returns_hydrated_messages(server, monkeypatch):
     assert resp["result"]["messages"] == [
         {"role": "user", "text": "hello"},
         {"role": "assistant", "text": "yo"},
-        {"role": "tool", "text": "searched"},
+        {"role": "tool", "name": "tool", "context": ""},
     ]
 
 

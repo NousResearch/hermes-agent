@@ -2887,7 +2887,11 @@ class GatewaySlashCommandsMixin:
             /reasoning show|on               Show model reasoning in responses
             /reasoning hide|off              Hide model reasoning from responses
         """
-        from gateway.run import _platform_config_key
+        from gateway.run import (
+            _load_gateway_config,
+            _platform_config_key,
+            _resolve_gateway_display_bool,
+        )
 
         raw_args = event.get_command_args().strip()
         args, persist_global = self._parse_reasoning_command_args(raw_args)
@@ -2896,7 +2900,7 @@ class GatewaySlashCommandsMixin:
         # reads — same fix as /model (#30479).
         _reasoning_source = await asyncio.to_thread(self._normalize_source_for_session_key, event.source)
         session_key = self._session_key_for_source(_reasoning_source)
-        self._show_reasoning = self._load_show_reasoning()
+        platform_key = _platform_config_key(event.source.platform)
         # Use the session's effective model (session /model override wins over
         # config default) so per-model reasoning_overrides display correctly.
         _session_model = str(
@@ -2907,6 +2911,21 @@ class GatewaySlashCommandsMixin:
             session_key=session_key,
             model=_session_model,
         )
+        try:
+            show_reasoning = _resolve_gateway_display_bool(
+                _load_gateway_config(),
+                platform_key,
+                "show_reasoning",
+                default=bool(getattr(self, "_show_reasoning", False)),
+                platform=event.source.platform,
+                require_platform_override_for={Platform.MATTERMOST},
+            )
+        except Exception:
+            show_reasoning = (
+                False
+                if event.source.platform == Platform.MATTERMOST
+                else bool(getattr(self, "_show_reasoning", False))
+            )
 
         if not raw_args:
             # Show current state
@@ -2922,7 +2941,7 @@ class GatewaySlashCommandsMixin:
                 current_effort = level
             display_state = (
                 t("gateway.reasoning.display_on")
-                if self._show_reasoning
+                if show_reasoning
                 else t("gateway.reasoning.display_off")
             )
             has_session_override = session_key in (getattr(self, "_session_reasoning_overrides", {}) or {})

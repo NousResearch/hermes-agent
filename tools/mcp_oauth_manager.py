@@ -197,14 +197,58 @@ class MCPOAuthManager:
     ) -> Optional[Any]:
         """Build the underlying OAuth provider.
 
-        Delegates to the legacy ``build_oauth_auth`` factory in
-        ``tools.mcp_oauth``. Task 4 of the MCP OAuth consolidation replaces
-        this with direct construction of ``HermesMCPOAuthProvider`` using
-        extracted helpers.
+        Constructs :class:`HermesMCPOAuthProvider` directly using the helpers
+        extracted from ``tools.mcp_oauth``. The subclass injects a pre-flow
+        disk-watch hook so external token refreshes (cron, other CLI
+        instances) are visible to running MCP sessions.
+
+        Returns None if the MCP SDK's OAuth support is unavailable.
         """
-        from tools.mcp_oauth import build_oauth_auth
-        return build_oauth_auth(
-            server_name, entry.server_url, entry.oauth_config,
+        if _HERMES_PROVIDER_CLS is None:
+            logger.warning(
+                "MCP OAuth '%s': SDK auth module unavailable", server_name,
+            )
+            return None
+
+        # Local imports avoid circular deps at module import time.
+        from tools.mcp_oauth import (
+            HermesTokenStorage,
+            _OAUTH_AVAILABLE,
+            _build_client_metadata,
+            _configure_callback_port,
+            _is_interactive,
+            _maybe_preregister_client,
+            _parse_base_url,
+            _redirect_handler,
+            _wait_for_callback,
+        )
+
+        if not _OAUTH_AVAILABLE:
+            return None
+
+        cfg = dict(entry.oauth_config or {})
+        storage = HermesTokenStorage(server_name)
+
+        if not _is_interactive() and not storage.has_cached_tokens():
+            logger.warning(
+                "MCP OAuth for '%s': non-interactive environment and no "
+                "cached tokens found. Run interactively first to complete "
+                "initial authorization.",
+                server_name,
+            )
+
+        _configure_callback_port(cfg)
+        client_metadata = _build_client_metadata(cfg)
+        _maybe_preregister_client(storage, cfg, client_metadata)
+
+        return _HERMES_PROVIDER_CLS(
+            server_name=server_name,
+            server_url=_parse_base_url(entry.server_url),
+            client_metadata=client_metadata,
+            storage=storage,
+            redirect_handler=_redirect_handler,
+            callback_handler=_wait_for_callback,
+            timeout=float(cfg.get("timeout", 300)),
         )
 
     def remove(self, server_name: str) -> None:

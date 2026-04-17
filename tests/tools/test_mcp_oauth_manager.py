@@ -122,3 +122,20 @@ async def test_disk_watch_invalidates_on_mtime_change(tmp_path, monkeypatch):
     assert changed3 is True
     # _initialized flipped — next async_auth_flow will re-read from disk
     assert provider._initialized is False
+
+
+def test_manager_builds_hermes_provider_subclass(tmp_path, monkeypatch):
+    """get_or_build_provider returns HermesMCPOAuthProvider, not plain OAuthClientProvider."""
+    from tools.mcp_oauth_manager import (
+        MCPOAuthManager, _HERMES_PROVIDER_CLS, reset_manager_for_tests,
+    )
+    reset_manager_for_tests()
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    mgr = MCPOAuthManager()
+    provider = mgr.get_or_build_provider("srv", "https://example.com/mcp", None)
+
+    assert _HERMES_PROVIDER_CLS is not None
+    assert isinstance(provider, _HERMES_PROVIDER_CLS)
+    assert provider._hermes_server_name == "srv"
+

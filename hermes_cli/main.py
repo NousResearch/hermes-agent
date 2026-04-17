@@ -292,6 +292,169 @@ def _has_any_provider_configured() -> bool:
     return False
 
 
+def _session_delete_picker(sessions: list) -> set[str]:
+    """Interactive curses-based session picker for multi-deletion.
+    Returns a set of selected session IDs, or an empty set if cancelled.
+    """
+    if not sessions:
+        print("No sessions found.")
+        return set()
+
+    try:
+        import curses
+
+        result_holder = [set()]
+
+        def _format_row(s, max_x, is_selected):
+            title = (s.get("title") or "").strip()
+            preview = (s.get("preview") or "").strip()
+            last_active = _relative_time(s.get("last_active"))
+            sid = s["id"][:18]
+            
+            fixed_cols = 3 + 12 + 6 + 18 + 6 
+            name_width = max(20, max_x - fixed_cols)
+            
+            name = title[:name_width] if title else (preview[:name_width] if preview else sid)
+            
+            checkbox = "[x]" if is_selected else "[ ]"
+            return f"{checkbox} {name:<{name_width}}  {last_active:<10}  {sid}"
+
+        def _match(s, query):
+            q = query.lower()
+            return (
+                q in (s.get("title") or "").lower()
+                or q in (s.get("preview") or "").lower()
+                or q in s.get("id", "").lower()
+                or q in (s.get("source") or "").lower()
+            )
+
+        def _curses_delete(stdscr):
+            curses.curs_set(0)
+            if curses.has_colors():
+                curses.start_color()
+                curses.use_default_colors()
+                curses.init_pair(1, curses.COLOR_RED, -1)   # selected
+                curses.init_pair(2, curses.COLOR_YELLOW, -1) # header
+                curses.init_pair(3, curses.COLOR_CYAN, -1)   # search
+                curses.init_pair(4, 8, -1)                   # dim
+
+            cursor = 0
+            scroll_offset = 0
+            search_text = ""
+            filtered = list(sessions)
+            selected = set()
+
+            while True:
+                stdscr.clear()
+                max_y, max_x = stdscr.getmaxyx()
+                if max_y < 5 or max_x < 40:
+                    stdscr.addstr(0, 0, "Terminal too small")
+                    stdscr.refresh()
+                    stdscr.getch()
+                    return
+
+                if search_text:
+                    header = f"  Delete sessions -- filter: {search_text}█"
+                    header_attr = curses.A_BOLD | (curses.color_pair(3) if curses.has_colors() else 0)
+                else:
+                    header = "  Delete sessions -- Space/Enter toggle | y confirm | n/Esc cancel"
+                    header_attr = curses.A_BOLD | (curses.color_pair(2) if curses.has_colors() else 0)
+                
+                try:
+                    stdscr.addnstr(0, 0, header, max_x - 1, header_attr)
+                except curses.error:
+                    pass
+
+                fixed_cols = 3 + 12 + 6 + 18 + 6
+                name_width = max(20, max_x - fixed_cols)
+                col_header = f"   {'Selection':<10} {'Title / Preview':<{name_width}}  {'Active':<10}  {'ID'}"
+                try:
+                    dim_attr = curses.color_pair(4) if curses.has_colors() else curses.A_DIM
+                    stdscr.addnstr(1, 0, col_header, max_x - 1, dim_attr)
+                except curses.error:
+                    pass
+
+                visible_rows = max_y - 4
+                if not filtered:
+                    stdscr.addnstr(3, 0, "  No sessions match the filter.", max_x - 1, curses.A_DIM)
+                else:
+                    if cursor >= len(filtered): cursor = len(filtered) - 1
+                    if cursor < 0: cursor = 0
+                    if cursor < scroll_offset: scroll_offset = cursor
+                    elif cursor >= scroll_offset + visible_rows: scroll_offset = cursor - visible_rows + 1
+
+                    for draw_i, i in enumerate(range(scroll_offset, min(len(filtered), scroll_offset + visible_rows))):
+                        y = draw_i + 3
+                        if y >= max_y - 1: break
+                        s = filtered[i]
+                        is_sel = s["id"] in selected
+                        arrow = " -> " if i == cursor else "   "
+                        row = arrow + _format_row(s, max_x - 3, is_sel)
+                        attr = curses.A_BOLD | (curses.color_pair(1) if (is_sel and curses.has_colors()) else 0) if i == cursor else curses.A_NORMAL
+                        try:
+                            stdscr.addnstr(y, 0, row, max_x - 1, attr)
+                        except curses.error:
+                            pass
+
+                footer_y = max_y - 1
+                footer = f"  {len(selected)} selected | {cursor + 1}/{len(filtered)} sessions"
+                try:
+                    stdscr.addnstr(footer_y, 0, footer, max_x - 1, curses.color_pair(4) if curses.has_colors() else curses.A_DIM)
+                except curses.error:
+                    pass
+
+                stdscr.refresh()
+                key = stdscr.getch()
+
+                if key in (curses.KEY_UP,):
+                    if filtered: cursor = (cursor - 1) % len(filtered)
+                elif key in (curses.KEY_DOWN,):
+                    if filtered: cursor = (cursor + 1) % len(filtered)
+                elif key in (32,):  # Space
+                    if filtered:
+                        sid = filtered[cursor]["id"]
+                        if sid in selected: selected.remove(sid)
+                        else: selected.add(sid)
+                elif key in (curses.KEY_ENTER, 10, 13):  # Enter toggle
+                    if filtered:
+                        sid = filtered[cursor]["id"]
+                        if sid in selected:
+                            selected.remove(sid)
+                        else:
+                            selected.add(sid)
+                elif key in (ord('y'), ord('Y')):  # Confirm delete
+                    if selected:
+                        result_holder[0] = selected
+                    return
+                elif key in (ord('n'), ord('N')):  # Cancel
+                    return
+                elif key == 27:  # Esc
+                    if search_text:
+                        search_text = ""
+                        filtered = list(sessions)
+                        cursor = 0
+                        scroll_offset = 0
+                    else:
+                        return
+                elif key in (curses.KEY_BACKSPACE, 127, 8):
+                    if search_text:
+                        search_text = search_text[:-1]
+                        filtered = [s for s in sessions if _match(s, search_text)] if search_text else list(sessions)
+                        cursor = 0
+                        scroll_offset = 0
+                elif 32 < key <= 126:
+                    search_text += chr(key)
+                    filtered = [s for s in sessions if _match(s, search_text)]
+                    cursor = 0
+                    scroll_offset = 0
+
+        curses.wrapper(_curses_delete)
+        return result_holder[0]
+    except Exception:
+        pass
+    return set()
+
+
 def _session_browse_picker(sessions: list) -> Optional[str]:
     """Interactive curses-based session browser with live search filtering.
 
@@ -5954,8 +6117,9 @@ Examples:
     sessions_export.add_argument("--source", help="Filter by source")
     sessions_export.add_argument("--session-id", help="Export a specific session")
 
-    sessions_delete = sessions_subparsers.add_parser("delete", help="Delete a specific session")
-    sessions_delete.add_argument("session_id", help="Session ID to delete")
+    sessions_delete = sessions_subparsers.add_parser("delete", help="Delete one or more sessions")
+    sessions_delete.add_argument("session_ids", nargs="*", help="Session ID(s) to delete")
+    sessions_delete.add_argument("--interactive", "-i", action="store_true", help="Open interactive multi-select menu")
     sessions_delete.add_argument("--yes", "-y", action="store_true", help="Skip confirmation")
 
     sessions_prune = sessions_subparsers.add_parser("prune", help="Delete old sessions")
@@ -6052,18 +6216,60 @@ Examples:
                     print(f"Exported {len(sessions)} sessions to {args.output}")
 
         elif action == "delete":
-            resolved_session_id = db.resolve_session_id(args.session_id)
-            if not resolved_session_id:
-                print(f"Session '{args.session_id}' not found.")
-                return
-            if not args.yes:
-                if not _confirm_prompt(f"Delete session '{resolved_session_id}' and all its messages? [y/N] "):
+            from hermes_cli.config import get_hermes_home
+            sessions_dir = get_hermes_home() / "sessions"
+            
+            resolved_ids = []
+            if getattr(args, "interactive", False):
+                # Interactive multi-select mode
+                limit = getattr(args, "limit", 50) or 50
+                source = getattr(args, "source", None)
+                _exclude = None if source else ["tool"]
+                sessions = db.list_sessions_rich(source=source, exclude_sources=_exclude, limit=limit)
+                selected = _session_delete_picker(sessions)
+                if not selected:
                     print("Cancelled.")
                     return
-            if db.delete_session(resolved_session_id):
-                print(f"Deleted session '{resolved_session_id}'.")
+                resolved_ids = list(selected)
             else:
-                print(f"Session '{args.session_id}' not found.")
+                # Direct ID mode
+                ids_to_delete = args.session_ids
+                for sid in ids_to_delete:
+                    resolved = db.resolve_session_id(sid)
+                    if resolved:
+                        resolved_ids.append(resolved)
+                    else:
+                        print(f"Session '{sid}' not found. Skipping.")
+
+            if not resolved_ids:
+                return
+
+            if not args.yes:
+                id_list_str = ", ".join(resolved_ids[:5]) + ("..." if len(resolved_ids) > 5 else "")
+                if not _confirm_prompt(f"Delete {len(resolved_ids)} session(s) ({id_list_str}) and all their messages/files? [y/N] "):
+                    print("Cancelled.")
+                    return
+
+            success_count = 0
+            for rid in resolved_ids:
+                # 1. Delete from Database
+                if db.delete_session(rid):
+                    # 2. Delete physical file
+                    file_path = sessions_dir / f"session_{rid}.json"
+                    if not file_path.exists():
+                        file_path = sessions_dir / f"{rid}.json"
+                    
+                    if file_path.exists():
+                        try:
+                            file_path.unlink()
+                        except Exception as e:
+                            print(f"Warning: Failed to delete file {file_path.name}: {e}")
+                    
+                    success_count += 1
+                else:
+                    print(f"Failed to delete session record for '{rid}'.")
+
+            print(f"Successfully deleted {success_count} session(s).")
 
         elif action == "prune":
             days = args.older_than

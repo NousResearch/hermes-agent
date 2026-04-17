@@ -400,6 +400,19 @@ class SessionDB:
             )
         self._execute_write(_do)
 
+    def delete_session(self, session_id: str) -> bool:
+        """Permanently delete a session and all its associated messages."""
+        def _do(conn):
+            # Delete messages first to satisfy foreign key constraints
+            conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
+            conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+        try:
+            self._execute_write(_do)
+            return True
+        except Exception as e:
+            logger.error(f"Failed to delete session {session_id}: {e}")
+            return False
+
     def update_system_prompt(self, session_id: str, system_prompt: str) -> None:
         """Store the full assembled system prompt snapshot."""
         def _do(conn):

@@ -38,6 +38,7 @@ export function useVirtualHistory(
   const refs = useRef(new Map<string, (el: unknown) => void>())
   const [ver, setVer] = useState(0)
   const [hasScrollRef, setHasScrollRef] = useState(false)
+  const metrics = useRef({ sticky: true, top: 0, vp: 0 })
 
   useLayoutEffect(() => {
     setHasScrollRef(Boolean(scrollRef.current))
@@ -141,10 +142,29 @@ export function useVirtualHistory(
       }
     }
 
+    const s = scrollRef.current
+
+    if (s) {
+      const next = {
+        sticky: s.isSticky(),
+        top: Math.max(0, s.getScrollTop() + s.getPendingDelta()),
+        vp: Math.max(0, s.getViewportHeight())
+      }
+
+      if (
+        next.sticky !== metrics.current.sticky ||
+        next.top !== metrics.current.top ||
+        next.vp !== metrics.current.vp
+      ) {
+        metrics.current = next
+        dirty = true
+      }
+    }
+
     if (dirty) {
       setVer(v => v + 1)
     }
-  }, [end, items, start])
+  }, [end, hasScrollRef, items, scrollRef, start])
 
   return {
     bottomSpacer: Math.max(0, total - (offsets[end] ?? total)),

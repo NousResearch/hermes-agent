@@ -110,10 +110,10 @@ def maybe_auto_title(
 
     # Count user messages in history to detect first exchange.
     # conversation_history includes the exchange that just happened,
-    # so for a first exchange we expect exactly 1 user message
-    # (or 2 counting system). Be generous: generate on first 2 exchanges.
+    # so for a first exchange we expect exactly 1 user message.
+    # Only generate a title on the very first exchange (user_msg_count == 1).
     user_msg_count = sum(1 for m in (conversation_history or []) if m.get("role") == "user")
-    if user_msg_count > 2:
+    if user_msg_count > 1:
         return
 
     thread = threading.Thread(

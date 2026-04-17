@@ -2638,12 +2638,19 @@ def _setup_qqbot():
         if not prompt_yes_no("  Reconfigure QQ Bot?", False):
             return
 
-    # ── QR scan or manual ──
+    # ── Choose setup method ──
+    print()
+    method_choices = [
+        "Scan QR code to add bot automatically (recommended)",
+        "Enter existing App ID and App Secret manually",
+    ]
+    method_idx = prompt_choice("  How would you like to set up QQ Bot?", method_choices, 0)
+
     credentials = None
     used_qr = False
 
-    print()
-    if prompt_yes_no("  Scan QR code to add bot automatically?", True):
+    if method_idx == 0:
+        # ── QR scan-to-configure ──
         try:
             credentials = _qqbot_qr_flow()
         except KeyboardInterrupt:

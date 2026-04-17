@@ -141,6 +141,27 @@ class TestInitSessionFailure:
 
         assert env._snapshot_ready is False
 
+    def test_init_session_bootstraps_into_configured_cwd(self):
+        env = _TestableEnv(cwd="/custom/workspace")
+        calls = []
+
+        def mock_run_bash(cmd, *, login=False, timeout=120, stdin_data=None):
+            calls.append({"cmd": cmd, "login": login, "timeout": timeout})
+            mock = MagicMock()
+            mock.poll.return_value = 0
+            mock.returncode = 0
+            mock.stdout = iter([])
+            return mock
+
+        env._run_bash = mock_run_bash
+        env._wait_for_process = lambda proc, timeout=120: {"output": f"\n{env._cwd_marker}/custom/workspace{env._cwd_marker}\n", "returncode": 0}
+        env.init_session()
+
+        assert len(calls) == 1
+        assert calls[0]["login"] is True
+        assert "cd /custom/workspace || exit 126" in calls[0]["cmd"]
+        assert env.cwd == "/custom/workspace"
+
     def test_login_flag_when_snapshot_not_ready(self):
         """When _snapshot_ready=False, execute() should pass login=True to _run_bash."""
         env = _TestableEnv()

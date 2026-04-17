@@ -320,6 +320,15 @@ class BaseEnvironment(ABC):
         instead of running with ``bash -l``.
         """
         # Full capture: env vars, functions (filtered), aliases, shell options.
+        # IMPORTANT: cd to the configured cwd before recording pwd. Otherwise the
+        # initial session cwd silently becomes the parent Python process cwd
+        # (e.g. a systemd WorkingDirectory or the shell dir that launched Hermes),
+        # which overrides TERMINAL_CWD / terminal.cwd for local sessions.
+        quoted_cwd = (
+            shlex.quote(self.cwd)
+            if self.cwd != "~" and not self.cwd.startswith("~/")
+            else self.cwd
+        )
         bootstrap = (
             f"export -p > {self._snapshot_path}\n"
             f"declare -f | grep -vE '^_[^_]' >> {self._snapshot_path}\n"
@@ -327,6 +336,7 @@ class BaseEnvironment(ABC):
             f"echo 'shopt -s expand_aliases' >> {self._snapshot_path}\n"
             f"echo 'set +e' >> {self._snapshot_path}\n"
             f"echo 'set +u' >> {self._snapshot_path}\n"
+            f"cd {quoted_cwd} || exit 126\n"
             f"pwd -P > {self._cwd_file} 2>/dev/null || true\n"
             f"printf '\\n{self._cwd_marker}%s{self._cwd_marker}\\n' \"$(pwd -P)\"\n"
         )

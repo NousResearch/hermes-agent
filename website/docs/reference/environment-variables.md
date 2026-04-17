@@ -175,6 +175,7 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `DISCORD_FREE_RESPONSE_CHANNELS` | Comma-separated channel IDs where mention is not required |
 | `DISCORD_AUTO_THREAD` | Auto-thread long replies when supported |
 | `DISCORD_REACTIONS` | Enable emoji reactions on messages during processing (default: `true`) |
+| `DISCORD_VOICE_TIMEOUT_SECONDS` | Auto-leave a Discord voice channel after this many idle seconds (default: `300`) |
 | `DISCORD_IGNORED_CHANNELS` | Comma-separated channel IDs where the bot never responds |
 | `DISCORD_NO_THREAD_CHANNELS` | Comma-separated channel IDs where bot responds without auto-threading |
 | `DISCORD_REPLY_TO_MODE` | Reply-reference behavior: `off`, `first` (default), or `all` |

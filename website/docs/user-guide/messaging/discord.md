@@ -280,6 +280,7 @@ Discord behavior is controlled through two files: **`~/.hermes/.env`** for crede
 | `DISCORD_AUTO_THREAD` | No | `true` | When `true`, automatically creates a new thread for every `@mention` in a text channel, so each conversation is isolated (similar to Slack behavior). Messages already inside threads or DMs are unaffected. |
 | `DISCORD_ALLOW_BOTS` | No | `"none"` | Controls how the bot handles messages from other Discord bots. `"none"` — ignore all other bots. `"mentions"` — only accept bot messages that `@mention` Hermes. `"all"` — accept all bot messages. |
 | `DISCORD_REACTIONS` | No | `true` | When `true`, the bot adds emoji reactions to messages during processing (👀 when starting, ✅ on success, ❌ on error). Set to `false` to disable reactions entirely. |
+| `DISCORD_VOICE_TIMEOUT_SECONDS` | No | `300` | Auto-leave a Discord voice channel after this many idle seconds. Set to `0` to leave immediately once inactivity is detected. |
 | `DISCORD_IGNORED_CHANNELS` | No | — | Comma-separated channel IDs where the bot **never** responds, even when `@mentioned`. Takes priority over all other channel settings. |
 | `DISCORD_NO_THREAD_CHANNELS` | No | — | Comma-separated channel IDs where the bot responds directly in the channel instead of creating a thread. Only relevant when `DISCORD_AUTO_THREAD` is `true`. |
 | `DISCORD_REPLY_TO_MODE` | No | `"first"` | Controls reply-reference behavior: `"off"` — never reply to the original message, `"first"` — reply-reference on the first message chunk only (default), `"all"` — reply-reference on every chunk. |
@@ -295,6 +296,7 @@ discord:
   free_response_channels: ""      # Comma-separated channel IDs (or YAML list)
   auto_thread: true               # Auto-create threads on @mention
   reactions: true                 # Add emoji reactions during processing
+  voice_timeout_seconds: 300      # Auto-leave voice after this many idle seconds
   ignored_channels: []            # Channel IDs where bot never responds
   no_thread_channels: []          # Channel IDs where bot responds without threading
 
@@ -346,6 +348,14 @@ Controls whether the bot adds emoji reactions to messages as visual feedback:
 - ❌ added if an error occurs during processing
 
 Disable this if you find the reactions distracting or if the bot's role doesn't have the **Add Reactions** permission.
+
+#### `discord.voice_timeout_seconds`
+
+**Type:** integer — **Default:** `300`
+
+Auto-leave a Discord voice channel after this many idle seconds. This maps to `DISCORD_VOICE_TIMEOUT_SECONDS`; `config.yaml` provides the persistent default, and the env var still wins if both are set.
+
+Set it to `0` if you want the bot to leave immediately once inactivity is detected.
 
 #### `discord.ignored_channels`
 

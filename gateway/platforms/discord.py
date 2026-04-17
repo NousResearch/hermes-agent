@@ -427,13 +427,27 @@ class DiscordAdapter(BasePlatformAdapter):
     _SPLIT_THRESHOLD = 1900  # near the 2000-char split point
 
     # Auto-disconnect from voice channel after this many seconds of inactivity
-    VOICE_TIMEOUT = 300
+    DEFAULT_VOICE_TIMEOUT_SECONDS = 300
+    _voice_timeout_seconds = DEFAULT_VOICE_TIMEOUT_SECONDS
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.DISCORD)
         self._client: Optional[commands.Bot] = None
         self._ready_event = asyncio.Event()
         self._allowed_user_ids: set = set()  # For button approval authorization
+        voice_timeout_raw = os.getenv(
+            "DISCORD_VOICE_TIMEOUT_SECONDS",
+            str(self.DEFAULT_VOICE_TIMEOUT_SECONDS),
+        )
+        try:
+            self._voice_timeout_seconds = max(0, int(voice_timeout_raw))
+        except (TypeError, ValueError):
+            logger.warning(
+                "Invalid DISCORD_VOICE_TIMEOUT_SECONDS=%r; falling back to %s",
+                voice_timeout_raw,
+                self.DEFAULT_VOICE_TIMEOUT_SECONDS,
+            )
+            self._voice_timeout_seconds = self.DEFAULT_VOICE_TIMEOUT_SECONDS
         # Voice channel state (per-guild)
         self._voice_clients: Dict[int, Any] = {}  # guild_id -> VoiceClient
         # Text batching: merge rapid successive messages (Telegram-style)
@@ -1116,9 +1130,9 @@ class DiscordAdapter(BasePlatformAdapter):
         )
 
     async def _voice_timeout_handler(self, guild_id: int) -> None:
-        """Auto-disconnect after VOICE_TIMEOUT seconds of inactivity."""
+        """Auto-disconnect after the configured inactivity timeout."""
         try:
-            await asyncio.sleep(self.VOICE_TIMEOUT)
+            await asyncio.sleep(self._voice_timeout_seconds)
         except asyncio.CancelledError:
             return
         text_ch_id = self._voice_text_channels.get(guild_id)

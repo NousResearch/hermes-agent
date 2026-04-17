@@ -94,6 +94,22 @@ class SlowSyncBot(FakeBot):
         self.tree = SlowSyncTree()
 
 
+def test_voice_timeout_defaults_to_300_seconds(monkeypatch):
+    monkeypatch.delenv("DISCORD_VOICE_TIMEOUT_SECONDS", raising=False)
+
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+
+    assert adapter._voice_timeout_seconds == 300
+
+
+def test_voice_timeout_reads_env_override(monkeypatch):
+    monkeypatch.setenv("DISCORD_VOICE_TIMEOUT_SECONDS", "900")
+
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+
+    assert adapter._voice_timeout_seconds == 900
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("allowed_users", "expected_members_intent"),

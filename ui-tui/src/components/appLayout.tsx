@@ -24,20 +24,13 @@ const StreamingAssistant = memo(function StreamingAssistant({
   detailsMode,
   progress,
   t
-}: {
-  busy: boolean
-  cols: number
-  compact?: boolean
-  detailsMode: DetailsMode
-  progress: AppLayoutProgressProps
-  t: Theme
-}) {
+}: StreamingAssistantProps) {
   if (!progress.showProgressArea && !progress.showStreamingArea) {
     return null
   }
 
   return (
-    <Box flexDirection="column">
+    <>
       {progress.showProgressArea && (
         <Box flexDirection="column" marginBottom={progress.showStreamingArea ? 1 : 0}>
           <ToolTrail
@@ -67,7 +60,7 @@ const StreamingAssistant = memo(function StreamingAssistant({
           t={t}
         />
       )}
-    </Box>
+    </>
   )
 })
 
@@ -79,15 +72,13 @@ const TranscriptPane = memo(function TranscriptPane({
 }: Pick<AppLayoutProps, 'actions' | 'composer' | 'progress' | 'transcript'>) {
   const ui = useStore($uiState)
 
-  const visibleHistory = transcript.virtualRows.slice(transcript.virtualHistory.start, transcript.virtualHistory.end)
-
   return (
     <>
       <ScrollBox flexDirection="column" flexGrow={1} flexShrink={1} ref={transcript.scrollRef} stickyScroll>
         <Box flexDirection="column" paddingX={1}>
           {transcript.virtualHistory.topSpacer > 0 ? <Box height={transcript.virtualHistory.topSpacer} /> : null}
 
-          {visibleHistory.map(row => (
+          {transcript.virtualRows.slice(transcript.virtualHistory.start, transcript.virtualHistory.end).map(row => (
             <Box flexDirection="column" key={row.key} ref={transcript.virtualHistory.measureRef(row.key)}>
               {row.msg.kind === 'intro' ? (
                 <Box flexDirection="column" paddingTop={1}>
@@ -234,6 +225,7 @@ const ComposerPane = memo(function ComposerPane({
                 placeholder={composer.empty ? PLACEHOLDER : ui.busy ? 'Ctrl+C to interrupt…' : ''}
                 value={composer.input}
               />
+
               <Box position="absolute" right={0}>
                 <GoodVibesHeart t={ui.theme} tick={status.goodVibesTick} />
               </Box>
@@ -267,3 +259,12 @@ export const AppLayout = memo(function AppLayout({
     </AlternateScreen>
   )
 })
+
+interface StreamingAssistantProps {
+  busy: boolean
+  cols: number
+  compact?: boolean
+  detailsMode: DetailsMode
+  progress: AppLayoutProgressProps
+  t: Theme
+}

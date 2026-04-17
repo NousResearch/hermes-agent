@@ -1,9 +1,5 @@
 import type { ThemeColors } from './theme.js'
 
-type Line = [string, string]
-
-// ── Rich markup parser ──────────────────────────────────────────────
-// Parses Python Rich markup like "[bold #A3261F]text[/]" into Line[].
 const RICH_RE = /\[(?:bold\s+)?(?:dim\s+)?(#(?:[0-9a-fA-F]{3,8}))\]([\s\S]*?)(\[\/\])/g
 
 export function parseRichMarkup(markup: string): Line[] {
@@ -18,28 +14,29 @@ export function parseRichMarkup(markup: string): Line[] {
       continue
     }
 
-    let lastIndex = 0
-    let matched = false
-    let m: RegExpExecArray | null
+    const matches = [...trimmed.matchAll(RICH_RE)]
 
-    RICH_RE.lastIndex = 0
+    if (!matches.length) {
+      lines.push(['', trimmed])
 
-    while ((m = RICH_RE.exec(trimmed)) !== null) {
-      matched = true
-      const before = trimmed.slice(lastIndex, m.index)
+      continue
+    }
+
+    let cursor = 0
+
+    for (const m of matches) {
+      const before = trimmed.slice(cursor, m.index)
 
       if (before) {
         lines.push(['', before])
       }
 
       lines.push([m[1]!, m[2]!])
-      lastIndex = m.index + m[0].length
+      cursor = m.index! + m[0].length
     }
 
-    if (!matched) {
-      lines.push(['', trimmed])
-    } else if (lastIndex < trimmed.length) {
-      lines.push(['', trimmed.slice(lastIndex)])
+    if (cursor < trimmed.length) {
+      lines.push(['', trimmed.slice(cursor)])
     }
   }
 
@@ -76,10 +73,10 @@ const CADUCEUS_ART = [
 const LOGO_GRADIENT = [0, 0, 1, 1, 2, 2] as const
 const CADUC_GRADIENT = [2, 2, 1, 1, 0, 0, 1, 1, 2, 2, 3, 3, 3, 3, 3] as const
 
-function colorize(art: string[], gradient: readonly number[], c: ThemeColors): Line[] {
-  const palette = [c.gold, c.amber, c.bronze, c.dim]
+const colorize = (art: string[], gradient: readonly number[], c: ThemeColors): Line[] => {
+  const p = [c.gold, c.amber, c.bronze, c.dim]
 
-  return art.map((text, i) => [palette[gradient[i]] ?? c.dim, text])
+  return art.map((text, i) => [p[gradient[i]!] ?? c.dim, text])
 }
 
 export const LOGO_WIDTH = 98
@@ -91,14 +88,6 @@ export const logo = (c: ThemeColors, customLogo?: string): Line[] =>
 export const caduceus = (c: ThemeColors, customHero?: string): Line[] =>
   customHero ? parseRichMarkup(customHero) : colorize(CADUCEUS_ART, CADUC_GRADIENT, c)
 
-export function artWidth(lines: Line[]): number {
-  let max = 0
+export const artWidth = (lines: Line[]) => lines.reduce((m, [, t]) => Math.max(m, t.length), 0)
 
-  for (const [, text] of lines) {
-    if (text.length > max) {
-      max = text.length
-    }
-  }
-
-  return max
-}
+type Line = [string, string]

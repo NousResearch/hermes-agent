@@ -28,16 +28,15 @@ export const stickyPromptFromViewport = (
   const first = Math.max(0, Math.min(messages.length - 1, upperBound(offsets, top) - 1))
   const aboveViewport = (i: number) => (offsets[i] ?? 0) + 1 < top
 
-  if (messages[first]?.role === 'user' && !aboveViewport(first)) {
-    return ''
-  }
-
-  for (let i = first - 1; i >= 0; i--) {
-    if (messages[i]?.role !== 'user' || !aboveViewport(i)) {
+  // Walk backward from the first visible row. The nearest user message wins:
+  // if it's still on screen, no sticky is needed; if it's already scrolled
+  // above the top, its text becomes the floating breadcrumb.
+  for (let i = first; i >= 0; i--) {
+    if (messages[i]?.role !== 'user') {
       continue
     }
 
-    return userDisplay(messages[i]!.text.trim()).replace(/\s+/g, ' ').trim()
+    return aboveViewport(i) ? userDisplay(messages[i]!.text.trim()).replace(/\s+/g, ' ').trim() : ''
   }
 
   return ''

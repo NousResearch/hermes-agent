@@ -213,6 +213,10 @@ export function StickyPromptTracker({
 export function TranscriptScrollbar({ scrollRef, t }: { scrollRef: RefObject<ScrollBoxHandle | null>; t: Theme }) {
   useSyncExternalStore(
     useCallback((cb: () => void) => scrollRef.current?.subscribe(cb) ?? (() => {}), [scrollRef]),
+    // Quantize the scroll snapshot to the values the thumb actually renders
+    // with — thumbTop + thumbSize + viewport height. Streaming drives
+    // scrollHeight up by ~1 row at a time, but the quantized thumb usually
+    // doesn't move, so we skip thousands of render cycles mid-turn.
     () => {
       const s = scrollRef.current
 
@@ -220,7 +224,14 @@ export function TranscriptScrollbar({ scrollRef, t }: { scrollRef: RefObject<Scr
         return NaN
       }
 
-      return `${s.getScrollTop() + s.getPendingDelta()}:${s.getViewportHeight()}:${s.getScrollHeight()}`
+      const vp = Math.max(0, s.getViewportHeight())
+      const total = Math.max(vp, s.getScrollHeight())
+      const top = Math.max(0, s.getScrollTop() + s.getPendingDelta())
+      const thumb = total > vp ? Math.max(1, Math.round((vp * vp) / total)) : vp
+      const travel = Math.max(1, vp - thumb)
+      const thumbTop = total > vp ? Math.round((top / Math.max(1, total - vp)) * travel) : 0
+
+      return `${thumbTop}:${thumb}:${vp}`
     },
     () => ''
   )

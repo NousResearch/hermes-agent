@@ -1113,7 +1113,57 @@ def check_all_command_guards(command: str, env_type: str,
             }
         # verdict == "escalate" → fall through to manual prompt
 
+    # --- Phase 2.7: Self-correction gate (gateway/ask only) ---
+    # Before escalating to user approval, give the model one chance to
+    # self-correct using a safer alternative.  On the first dangerous hit,
+    # return a "self_correct" status with the hint but do NOT notify the
+    # user or block the agent thread.  Only if the model retries with
+    # another dangerous command (second hit) do we proceed to Phase 3.
+    _SELF_CORRECT_KEY = "__self_correct_attempted__"
+    if is_gateway or is_ask:
+        if not is_approved(session_key, _SELF_CORRECT_KEY):
+            # Mark self-correction as attempted so Phase 3 runs next time
+            approve_session(session_key, _SELF_CORRECT_KEY)
+            combined_desc = "; ".join(desc for _, desc, _ in warnings)
+            # Build hint from the first warning that has one
+            hint = None
+            for key, _, is_t in warnings:
+                hint = _get_safer_hint(key)
+                if hint:
+                    break
+            self_correct_msg = (
+                f"⚠️ This command was blocked by security ({combined_desc}).\n\n"
+            )
+            if hint:
+                self_correct_msg += (
+                    f"💡 SAFER ALTERNATIVE: {hint}\n\n"
+                    "Your command was NOT executed. Try again using the safer approach above. "
+                    "If no safe alternative exists for your goal, explain why and your "
+                    "next attempt will be sent to the user for approval.\n\n"
+                )
+            else:
+                self_correct_msg += (
+                    "Your command was NOT executed. Review the security concern and "
+                    "try a safer approach. If no safe alternative exists, explain why "
+                    "and your next attempt will be sent to the user for approval.\n\n"
+                )
+            self_correct_msg += f"**Blocked command:**\n```\n{command}\n```"
+            return {
+                "approved": False,
+                "status": "self_correct",
+                "command": command,
+                "description": combined_desc,
+                "message": self_correct_msg,
+                "safer_hint": hint,
+                "pattern_keys": [key for key, _, _ in warnings],
+            }
+
     # --- Phase 3: Approval ---
+
+    # Clear self-correction state so the gate works again next time
+    with _lock:
+        session_set = _session_approved.get(session_key, set())
+        session_set.discard(_SELF_CORRECT_KEY)
 
     # Combine descriptions for a single approval prompt
     combined_desc = "; ".join(desc for _, desc, _ in warnings)

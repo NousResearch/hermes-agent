@@ -90,7 +90,15 @@ def get_native_tools(config):
 
 
 def provider_has_native_tool(tool, config):
-    return tool in get_native_tools(config)
+    if tool not in get_native_tools(config):
+        return False
+    try:
+        from tools.tool_backend_helpers import prefers_gateway
+        if prefers_gateway(tool):
+            return False
+    except Exception:
+        pass
+    return True
 
 
 def apply_provider_native_tool_defaults(config):

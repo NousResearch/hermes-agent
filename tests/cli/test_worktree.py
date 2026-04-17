@@ -69,6 +69,33 @@ def git_repo_no_remote(tmp_path):
     return repo
 
 
+@pytest.fixture
+def git_repo_remote_no_tracking(tmp_path):
+    """Create a temporary git repo with a remote but no remote-tracking refs."""
+    repo = tmp_path / "test-repo-remote-no-tracking"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@test.com"],
+        cwd=repo, capture_output=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Test"],
+        cwd=repo, capture_output=True,
+    )
+    (repo / "README.md").write_text("# Test Repo\n")
+    subprocess.run(["git", "add", "."], cwd=repo, capture_output=True)
+    subprocess.run(
+        ["git", "commit", "-m", "Initial commit"],
+        cwd=repo, capture_output=True,
+    )
+    subprocess.run(
+        ["git", "remote", "add", "origin", "https://example.com/test-repo.git"],
+        cwd=repo, capture_output=True,
+    )
+    return repo
+
+
 # ---------------------------------------------------------------------------
 # Lightweight reimplementations for testing (avoid importing cli.py)
 # ---------------------------------------------------------------------------
@@ -115,22 +142,25 @@ def _setup_worktree(repo_root):
 
 def _has_unpushed_commits(worktree_path, timeout=10):
     """Test version of the worktree unpushed-commit helper."""
-    remotes = subprocess.run(
-        ["git", "remote"],
-        capture_output=True, text=True, timeout=timeout, cwd=worktree_path,
-    )
-    if remotes.returncode != 0:
-        return True
-    if not remotes.stdout.strip():
-        return False
+    try:
+        remote_refs = subprocess.run(
+            ["git", "for-each-ref", "--format=%(refname)", "refs/remotes"],
+            capture_output=True, text=True, timeout=timeout, cwd=worktree_path,
+        )
+        if remote_refs.returncode != 0:
+            return True
+        if not remote_refs.stdout.strip():
+            return False
 
-    result = subprocess.run(
-        ["git", "log", "--oneline", "HEAD", "--not", "--remotes"],
-        capture_output=True, text=True, timeout=timeout, cwd=worktree_path,
-    )
-    if result.returncode != 0:
+        result = subprocess.run(
+            ["git", "log", "--oneline", "HEAD", "--not", "--remotes"],
+            capture_output=True, text=True, timeout=timeout, cwd=worktree_path,
+        )
+        if result.returncode != 0:
+            return True
+        return bool(result.stdout.strip())
+    except Exception:
         return True
-    return bool(result.stdout.strip())
 
 
 def _cleanup_worktree(info):
@@ -297,6 +327,19 @@ class TestWorktreeCleanup:
     def test_clean_worktree_removed_without_remote(self, git_repo_no_remote):
         """Clean worktrees in repos without remotes should still be removed."""
         info = _setup_worktree(str(git_repo_no_remote))
+        assert info is not None
+        assert Path(info["path"]).exists()
+        assert _has_unpushed_commits(info["path"], timeout=10) is False
+
+        result = _cleanup_worktree(info)
+        assert result is True
+        assert not Path(info["path"]).exists()
+
+    def test_clean_worktree_removed_without_remote_tracking_refs(
+        self, git_repo_remote_no_tracking
+    ):
+        """Configured remotes without fetched refs should not block cleanup."""
+        info = _setup_worktree(str(git_repo_remote_no_tracking))
         assert info is not None
         assert Path(info["path"]).exists()
         assert _has_unpushed_commits(info["path"], timeout=10) is False
@@ -638,6 +681,50 @@ class TestStaleWorktreePruning:
                 subprocess.run(
                     ["git", "branch", "-D", branch],
                     capture_output=True, text=True, timeout=10, cwd=str(git_repo_no_remote),
+                )
+
+        assert not Path(info["path"]).exists()
+
+    def test_prunes_old_clean_worktree_without_remote_tracking_refs(
+        self, git_repo_remote_no_tracking
+    ):
+        """Old clean worktrees with no fetched remote refs should be pruned."""
+        import time
+
+        info = _setup_worktree(str(git_repo_remote_no_tracking))
+        assert info is not None
+        assert Path(info["path"]).exists()
+
+        old_time = time.time() - (25 * 3600)
+        os.utime(info["path"], (old_time, old_time))
+
+        worktrees_dir = git_repo_remote_no_tracking / ".worktrees"
+        cutoff = time.time() - (24 * 3600)
+
+        for entry in worktrees_dir.iterdir():
+            if not entry.is_dir() or not entry.name.startswith("hermes-"):
+                continue
+            mtime = entry.stat().st_mtime
+            if mtime > cutoff:
+                continue
+            if _has_unpushed_commits(str(entry), timeout=5):
+                continue
+
+            branch_result = subprocess.run(
+                ["git", "branch", "--show-current"],
+                capture_output=True, text=True, timeout=5, cwd=str(entry),
+            )
+            branch = branch_result.stdout.strip()
+            subprocess.run(
+                ["git", "worktree", "remove", str(entry), "--force"],
+                capture_output=True, text=True, timeout=15,
+                cwd=str(git_repo_remote_no_tracking),
+            )
+            if branch:
+                subprocess.run(
+                    ["git", "branch", "-D", branch],
+                    capture_output=True, text=True, timeout=10,
+                    cwd=str(git_repo_remote_no_tracking),
                 )
 
         assert not Path(info["path"]).exists()

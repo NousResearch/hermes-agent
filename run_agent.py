@@ -4472,8 +4472,24 @@ class AIAgent:
                 elif hasattr(_socket, "TCP_KEEPALIVE"):
                     # macOS (uses TCP_KEEPALIVE instead of TCP_KEEPIDLE)
                     _sock_opts.append((_socket.IPPROTO_TCP, _socket.TCP_KEEPALIVE, 30))
+                # httpx HTTPTransport with custom args does not honor
+                # HTTPS_PROXY/HTTP_PROXY env vars (trust_env is bypassed
+                # when the transport is user-constructed). Pass proxy
+                # explicitly so SDK clients reach hosts that require a
+                # local forward proxy (e.g. chatgpt.com from networks
+                # where it is unreachable directly).
+                import os as _os
+                _proxy_url = (
+                    _os.environ.get("HTTPS_PROXY")
+                    or _os.environ.get("https_proxy")
+                    or _os.environ.get("HTTP_PROXY")
+                    or _os.environ.get("http_proxy")
+                )
+                _transport_kwargs = {"socket_options": _sock_opts}
+                if _proxy_url:
+                    _transport_kwargs["proxy"] = _proxy_url
                 client_kwargs["http_client"] = _httpx.Client(
-                    transport=_httpx.HTTPTransport(socket_options=_sock_opts),
+                    transport=_httpx.HTTPTransport(**_transport_kwargs),
                 )
             except Exception:
                 pass  # Fall through to default transport if socket opts fail

@@ -80,6 +80,8 @@ class TestStreamingAccumulator:
         mock_create.return_value = mock_client
 
         agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
             model="test/model",
             quiet_mode=True,
             skip_context_files=True,
@@ -120,6 +122,8 @@ class TestStreamingAccumulator:
         mock_create.return_value = mock_client
 
         agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
             model="test/model",
             quiet_mode=True,
             skip_context_files=True,
@@ -167,6 +171,8 @@ class TestStreamingAccumulator:
         mock_create.return_value = mock_client
 
         agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
             model="test/model",
             quiet_mode=True,
             skip_context_files=True,
@@ -205,6 +211,8 @@ class TestStreamingAccumulator:
         mock_create.return_value = mock_client
 
         agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
             model="test/model",
             quiet_mode=True,
             skip_context_files=True,
@@ -245,6 +253,8 @@ class TestStreamingCallbacks:
         mock_create.return_value = mock_client
 
         agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
             model="test/model",
             quiet_mode=True,
             skip_context_files=True,
@@ -277,6 +287,8 @@ class TestStreamingCallbacks:
         mock_create.return_value = mock_client
 
         agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
             model="test/model",
             quiet_mode=True,
             skip_context_files=True,
@@ -308,6 +320,8 @@ class TestStreamingCallbacks:
         mock_create.return_value = mock_client
 
         agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
             model="test/model",
             quiet_mode=True,
             skip_context_files=True,
@@ -346,6 +360,8 @@ class TestStreamingCallbacks:
         mock_create.return_value = mock_client
 
         agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
             model="test/model",
             quiet_mode=True,
             skip_context_files=True,
@@ -381,6 +397,8 @@ class TestStreamingCallbacks:
         mock_create.return_value = mock_client
 
         agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
             model="test/model",
             quiet_mode=True,
             skip_context_files=True,
@@ -428,6 +446,8 @@ class TestStreamingFallback:
         mock_create.return_value = mock_client
 
         agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
             model="test/model",
             quiet_mode=True,
             skip_context_files=True,
@@ -455,6 +475,8 @@ class TestStreamingFallback:
         mock_create.return_value = mock_client
 
         agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
             model="test/model",
             quiet_mode=True,
             skip_context_files=True,
@@ -477,6 +499,8 @@ class TestStreamingFallback:
         mock_create.return_value = mock_client
 
         agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
             model="test/model",
             quiet_mode=True,
             skip_context_files=True,
@@ -500,6 +524,8 @@ class TestStreamingFallback:
         mock_create.return_value = mock_client
 
         agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
             model="test/model",
             quiet_mode=True,
             skip_context_files=True,
@@ -542,6 +568,8 @@ class TestStreamingFallback:
         mock_create.return_value = mock_client
 
         agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
             model="test/model",
             quiet_mode=True,
             skip_context_files=True,
@@ -577,6 +605,8 @@ class TestStreamingFallback:
         mock_create.return_value = mock_client
 
         agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
             model="test/model",
             quiet_mode=True,
             skip_context_files=True,
@@ -619,6 +649,8 @@ class TestReasoningStreaming:
         mock_create.return_value = mock_client
 
         agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
             model="test/model",
             quiet_mode=True,
             skip_context_files=True,
@@ -646,6 +678,8 @@ class TestHasStreamConsumers:
     def test_no_consumers(self):
         from run_agent import AIAgent
         agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
             model="test/model",
             quiet_mode=True,
             skip_context_files=True,
@@ -656,6 +690,8 @@ class TestHasStreamConsumers:
     def test_delta_callback_set(self):
         from run_agent import AIAgent
         agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
             model="test/model",
             quiet_mode=True,
             skip_context_files=True,
@@ -667,6 +703,8 @@ class TestHasStreamConsumers:
     def test_stream_callback_set(self):
         from run_agent import AIAgent
         agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
             model="test/model",
             quiet_mode=True,
             skip_context_files=True,
@@ -688,6 +726,8 @@ class TestCodexStreamCallbacks:
         deltas = []
 
         agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
             model="test/model",
             quiet_mode=True,
             skip_context_files=True,
@@ -729,6 +769,8 @@ class TestCodexStreamCallbacks:
         from run_agent import AIAgent
 
         agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
             model="test/model",
             quiet_mode=True,
             skip_context_files=True,
@@ -792,6 +834,8 @@ class TestCodexStreamCallbacks:
         )
 
         agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
             model="test/model",
             quiet_mode=True,
             skip_context_files=True,
@@ -810,6 +854,8 @@ class TestCodexStreamCallbacks:
         from run_agent import AIAgent
 
         agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
             model="test/model",
             quiet_mode=True,
             skip_context_files=True,
@@ -861,6 +907,8 @@ class TestAnthropicStreamCallbacks:
         from run_agent import AIAgent
 
         agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
             model="test/model",
             quiet_mode=True,
             skip_context_files=True,

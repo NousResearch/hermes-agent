@@ -582,6 +582,16 @@ def clear_task_env_overrides(task_id: str):
 
 # Configuration from environment variables
 
+def sandbox_type_from_cli() -> str:
+    """Return ``config.yaml`` ``sandbox.type`` (defaults to ``local``)."""
+    try:
+        from cli import CLI_CONFIG
+
+        return str((CLI_CONFIG.get("sandbox") or {}).get("type", "local"))
+    except Exception:
+        return "local"
+
+
 def _parse_env_var(name: str, default: str, converter=int, type_label: str = "integer"):
     """Parse an environment variable with *converter*, raising a clear error on bad values.
 
@@ -708,6 +718,15 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
         Environment instance with execute() method
     """
     cc = container_config or {}
+    try:
+        if env_type == "docker" and sandbox_type_from_cli() == "docker":
+            logger.info(
+                "TERMINAL_ENV=docker and sandbox.type=docker: terminal uses "
+                "DockerEnvironment; execute_code may spawn an inner container per "
+                "sandbox.* settings."
+            )
+    except Exception:
+        pass
     cpu = cc.get("container_cpu", 1)
     memory = cc.get("container_memory", 5120)
     disk = cc.get("container_disk", 51200)

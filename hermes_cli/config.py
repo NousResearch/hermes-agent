@@ -699,8 +699,36 @@ DEFAULT_CONFIG = {
         "force_ipv4": False,
     },
 
+    # Optional isolation backend for execute_code / skill runners (orthogonal
+    # to TERMINAL_ENV — terminal backends stay in tools/environments/*).
+    # Gateway approval flows gate tool calls; this block only selects where
+    # child processes run once approved.
+    "sandbox": {
+        "type": "local",
+        "profile": "default",
+        "image": "nikolaik/python-nodejs:python3.11-nodejs20",
+        "post_exec_diff_enabled": False,
+        "profiles": {
+            "default": {
+                "network_policy": "bridge",
+                "cpu_quota": 1.0,
+                "mem_limit_mb": 2048,
+                "cap_drop": ["ALL"],
+                "seccomp_profile_ref": "",
+                "fs_mounts": [],
+            },
+        },
+        "firecracker": {
+            "socket_path": "",
+            "api_timeout_sec": 30,
+        },
+        "gvisor": {
+            "docker_runtime": "runsc",
+        },
+    },
+
     # Config schema version - bump this when adding new required fields
-    "_config_version": 17,
+    "_config_version": 18,
 }
 
 # =============================================================================

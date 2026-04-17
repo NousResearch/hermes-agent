@@ -14,6 +14,10 @@ import pytest
 PROJECT_ROOT = Path(__file__).parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+# ``src/sandbox`` package (setuptools where=src); tests run without editable install.
+_SRC_ROOT = PROJECT_ROOT / "src"
+if _SRC_ROOT.is_dir() and str(_SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(_SRC_ROOT))
 
 
 @pytest.fixture(autouse=True)

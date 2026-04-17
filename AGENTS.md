@@ -65,6 +65,10 @@ hermes-agent/
 
 **User config:** `~/.hermes/config.yaml` (settings), `~/.hermes/.env` (API keys)
 
+### Sandbox execution providers (optional)
+
+`config.yaml` root key `sandbox` selects an isolation backend for `execute_code` when `TERMINAL_ENV=local`: `local` (host Python), `docker`, `gvisor` (Docker with `--runtime=runsc`), or `firecracker` (stub only — not wired for `execute_code`). Gateway approval flows still decide whether a tool may run; `sandbox.*` only changes where the approved child process executes (orthogonal to `tools/environments/*` terminal backends). Implementation: `src/sandbox/` (`SandboxProvider`, `get_provider`).
+
 ## File Dependency Chain
 
 ```

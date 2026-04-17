@@ -939,13 +939,27 @@ def execute_code(
     if not sandbox_tools:
         sandbox_tools = SANDBOX_ALLOWED_TOOLS
 
+    _sb = get_merged_sandbox_config()
+    _sb_type = str(_sb.get("type", "local")).lower()
+    if _sb_type == "firecracker":
+        return json.dumps({
+            "status": "error",
+            "error": (
+                "sandbox.type=firecracker is not supported for execute_code "
+                "in this build; use docker, gvisor, or local."
+            ),
+        })
+
     # --- Set up temp directory with hermes_tools.py and script.py ---
-    tmpdir = tempfile.mkdtemp(prefix="hermes_sandbox_")
-    # Use /tmp on macOS to avoid the long /var/folders/... path that pushes
-    # Unix domain socket paths past the 104-byte macOS AF_UNIX limit.
-    # On Linux, tempfile.gettempdir() already returns /tmp.
-    _sock_tmpdir = "/tmp" if sys.platform == "darwin" else tempfile.gettempdir()
-    sock_path = os.path.join(_sock_tmpdir, f"hermes_rpc_{uuid.uuid4().hex}.sock")
+    # Docker/gVisor: keep the UDS next to the script under one bind-mount.
+    # Local: keep macOS /tmp socket path short (AF_UNIX length limit).
+    if _sb_type in ("docker", "gvisor"):
+        tmpdir = tempfile.mkdtemp(prefix="hermes_sandbox_", dir="/tmp")
+        sock_path = os.path.join(tmpdir, "hermes_rpc.sock")
+    else:
+        tmpdir = tempfile.mkdtemp(prefix="hermes_sandbox_")
+        _sock_tmpdir = "/tmp" if sys.platform == "darwin" else tempfile.gettempdir()
+        sock_path = os.path.join(_sock_tmpdir, f"hermes_rpc_{uuid.uuid4().hex}.sock")
 
     tool_call_log: list = []
     tool_call_counter = [0]  # mutable so the RPC thread can increment
@@ -1027,15 +1041,50 @@ def execute_code(
         if _profile_home:
             child_env["HOME"] = _profile_home
 
-        proc = subprocess.Popen(
-            [sys.executable, "script.py"],
-            cwd=tmpdir,
-            env=child_env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            stdin=subprocess.DEVNULL,
-            preexec_fn=None if _IS_WINDOWS else os.setsid,
-        )
+        if _sb_type in ("docker", "gvisor"):
+            try:
+                from sandbox.errors import SandboxConfigError, SandboxNotSupportedError
+                from sandbox.registry import get_provider
+
+                _prov = get_provider(_sb_type, _sb)
+                _argv = _prov.build_popen_argv(
+                    workdir=tmpdir,
+                    inner_cmd=["python", "script.py"],
+                    child_env=child_env,
+                )
+            except SandboxNotSupportedError as _e:
+                return json.dumps({
+                    "status": "error",
+                    "error": str(_e),
+                    "tool_calls_made": tool_call_counter[0],
+                    "duration_seconds": round(time.monotonic() - exec_start, 2),
+                })
+            except SandboxConfigError as _e:
+                return json.dumps({
+                    "status": "error",
+                    "error": str(_e),
+                    "tool_calls_made": tool_call_counter[0],
+                    "duration_seconds": round(time.monotonic() - exec_start, 2),
+                })
+            proc = subprocess.Popen(
+                _argv,
+                cwd=tmpdir,
+                env=os.environ,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                stdin=subprocess.DEVNULL,
+                preexec_fn=None,
+            )
+        else:
+            proc = subprocess.Popen(
+                [sys.executable, "script.py"],
+                cwd=tmpdir,
+                env=child_env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                stdin=subprocess.DEVNULL,
+                preexec_fn=None if _IS_WINDOWS else os.setsid,
+            )
 
         # --- Poll loop: watch for exit, timeout, and interrupt ---
         deadline = time.monotonic() + timeout
@@ -1258,6 +1307,37 @@ def _load_config() -> dict:
         return CLI_CONFIG.get("code_execution", {})
     except Exception:
         return {}
+
+
+def _deep_merge_dict(base: dict, delta: dict) -> dict:
+    """Shallow-recursive merge for nested dict leaves (sandbox + overrides)."""
+    out = dict(base)
+    for key, val in (delta or {}).items():
+        if isinstance(val, dict) and isinstance(out.get(key), dict):
+            out[key] = _deep_merge_dict(out[key], val)
+        else:
+            out[key] = val
+    return out
+
+
+def get_merged_sandbox_config() -> dict:
+    """Merge ``sandbox`` from defaults, CLI config, and ``code_execution.sandbox``."""
+    from copy import deepcopy
+
+    try:
+        from hermes_cli.config import DEFAULT_CONFIG
+
+        root = deepcopy(DEFAULT_CONFIG.get("sandbox") or {})
+    except Exception:
+        root = {}
+    try:
+        from cli import CLI_CONFIG
+
+        root = _deep_merge_dict(root, CLI_CONFIG.get("sandbox") or {})
+    except Exception:
+        pass
+    root = _deep_merge_dict(root, _load_config().get("sandbox") or {})
+    return root
 
 
 # ---------------------------------------------------------------------------

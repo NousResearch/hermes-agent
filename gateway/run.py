@@ -226,7 +226,10 @@ from gateway.background_delivery_service import (
     recover_stale_background_jobs_once as shared_recover_stale_background_jobs_once,
     sanitize_background_visible_text as shared_sanitize_background_visible_text,
 )
-from gateway.direct_control_router import DirectControlRouter
+from gateway.direct_control_router import (
+    DIRECT_CONTROL_ROUTER_METHODS as SHARED_DIRECT_CONTROL_ROUTER_METHODS,
+    DirectControlRouter,
+)
 from gateway.direct_shortcuts import run_direct_shortcut_handlers
 from gateway.direct_shortcut_runtime_service import (
     get_direct_control_router as shared_get_direct_control_router,
@@ -305,49 +308,7 @@ from gateway.delivery import DeliveryRouter
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType
 
 
-_DIRECT_CONTROL_ROUTER_METHODS = frozenset(
-    {
-        "_extract_recent_send_target_from_history",
-        "_extract_recent_group_target_from_history",
-        "_match_admin_qq_send_request",
-        "_format_admin_qq_send_reply",
-        "_try_handle_admin_qq_send_shortcut",
-        "_match_admin_weixin_send_request",
-        "_format_admin_weixin_send_reply",
-        "_try_handle_admin_weixin_send_shortcut",
-        "_match_admin_platform_send_request",
-        "_extract_platform_text_event_body",
-        "_match_admin_send_request_common",
-        "_run_send_shortcut_tool",
-        "_try_handle_admin_send_shortcut_common",
-        "_match_admin_qq_intel_control_request",
-        "_format_admin_qq_intel_control_reply",
-        "_try_handle_admin_qq_intel_control",
-        "_try_handle_admin_qq_group_runtime_status",
-        "_load_qq_group_runtime_status_details",
-        "_try_handle_admin_weixin_group_runtime_status",
-        "_load_weixin_group_runtime_status_details",
-        "_try_handle_admin_platform_group_runtime_status",
-        "_resolve_oral_report_delivery_target",
-        "_match_admin_qq_group_control_request",
-        "_format_admin_qq_group_control_reply",
-        "_try_handle_admin_qq_group_control",
-        "_match_admin_weixin_group_control_request",
-        "_format_admin_weixin_group_control_reply",
-        "_try_handle_admin_weixin_group_control",
-        "_run_qq_group_control_tool",
-        "_run_weixin_group_control_tool",
-        "_try_handle_admin_group_control_common",
-        "_match_admin_platform_group_control_request",
-        "_match_admin_group_control_request_common",
-        "_match_admin_qq_group_moderation_request",
-        "_format_admin_qq_group_moderation_reply",
-        "_try_handle_admin_qq_group_moderation",
-        "_match_admin_qq_social_control_request",
-        "_format_admin_qq_social_control_reply",
-        "_try_handle_admin_qq_social_control",
-    }
-)
+_DIRECT_CONTROL_ROUTER_METHODS = SHARED_DIRECT_CONTROL_ROUTER_METHODS
 
 
 def _normalize_whatsapp_identifier(value: str) -> str:

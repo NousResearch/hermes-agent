@@ -203,6 +203,12 @@ from gateway.agent_execution_service import (
     normalize_conversation_history,
     run_gateway_approved_conversation as shared_run_gateway_approved_conversation,
 )
+from gateway.agent_followup_runtime_service import (
+    clear_gateway_pending_interrupt as shared_clear_gateway_pending_interrupt,
+    deliver_gateway_first_response_before_followup as shared_deliver_gateway_first_response_before_followup,
+    extract_gateway_pending_followup as shared_extract_gateway_pending_followup,
+    queue_gateway_pending_followup_for_later as shared_queue_gateway_pending_followup_for_later,
+)
 from gateway.agent_lifecycle_runtime_service import (
     cleanup_gateway_agent_runtime_tasks as shared_cleanup_gateway_agent_runtime_tasks,
     mark_gateway_streaming_delivery_state as shared_mark_gateway_streaming_delivery_state,
@@ -8865,54 +8871,23 @@ class GatewayRunner:
                     self._effective_model = None
                     self._effective_provider = None
 
-            # Check if we were interrupted OR have a queued message (/queue).
             result = result_holder[0]
             adapter = self.adapters.get(source.platform)
-            
-            # Get pending message from adapter.
-            # Use session_key (not source.chat_id) to match adapter's storage keys.
-            pending = None
-            pending_event = None
-            if result and adapter and session_key:
-                if result.get("interrupted"):
-                    pending_event, pending = _dequeue_pending_event_text(adapter, session_key)
-                    if not pending and result.get("interrupt_message"):
-                        pending = result.get("interrupt_message")
-                else:
-                    pending_event, pending = _dequeue_pending_event_text(adapter, session_key)
-                    if pending:
-                        logger.debug("Processing queued message after agent completion: '%s...'", pending[:40])
-            
-            # Safety net: if the pending text is a slash command (e.g. "/stop",
-            # "/new"), discard it — commands should never be passed to the agent
-            # as user input.  The primary fix is in base.py (commands bypass the
-            # active-session guard), but this catches edge cases where command
-            # text leaks through the interrupt_message fallback.
-            if pending and pending.strip().startswith("/"):
-                _pending_parts = pending.strip().split(None, 1)
-                _pending_cmd_word = _pending_parts[0][1:].lower() if _pending_parts else ""
-                if _pending_cmd_word:
-                    try:
-                        from hermes_cli.commands import resolve_command as _rc_pending
-                        if _rc_pending(_pending_cmd_word):
-                            logger.info(
-                                "Discarding command '/%s' from pending queue — "
-                                "commands must not be passed as agent input",
-                                _pending_cmd_word,
-                            )
-                            pending = None
-                    except Exception:
-                        pass
+            pending_followup = shared_extract_gateway_pending_followup(
+                result=result,
+                adapter=adapter,
+                session_key=session_key,
+                dequeue_pending_event_text=_dequeue_pending_event_text,
+                logger=logger,
+            )
 
-            if pending:
-                logger.debug("Processing pending message: '%s...'", pending[:40])
-                
-                # Clear the adapter's interrupt event so the next _run_agent call
-                # doesn't immediately re-trigger the interrupt before the new agent
-                # even makes its first API call (this was causing an infinite loop).
-                if adapter and hasattr(adapter, '_active_sessions') and session_key and session_key in adapter._active_sessions:
-                    adapter._active_sessions[session_key].clear()
-                
+            if pending_followup:
+                logger.debug("Processing pending message: '%s...'", pending_followup.text[:40])
+                shared_clear_gateway_pending_interrupt(
+                    adapter=adapter,
+                    session_key=session_key,
+                )
+
                 # Cap recursion depth to prevent resource exhaustion when the
                 # user sends multiple messages while the agent keeps failing. (#816)
                 if _interrupt_depth >= self._MAX_INTERRUPT_DEPTH:
@@ -8921,58 +8896,41 @@ class GatewayRunner:
                         "queueing message instead of recursing.",
                         _interrupt_depth, session_key,
                     )
-                    # Queue the pending message for normal processing on next turn
-                    adapter = self.adapters.get(source.platform)
-                    if adapter and hasattr(adapter, 'queue_message'):
-                        from gateway.platforms.base import MessageEvent as _ME, MessageType as _MT
-                        adapter.queue_message(
-                            session_key,
-                            _ME(
-                                text=pending,
-                                message_type=_MT.TEXT,
-                                source=source,
-                                message_id=getattr(pending_event, "message_id", None) or getattr(event, "message_id", None),
-                            ),
-                        )
+                    shared_queue_gateway_pending_followup_for_later(
+                        adapter=adapter,
+                        session_key=session_key,
+                        pending_text=pending_followup.text,
+                        source=source,
+                        pending_event=pending_followup.event,
+                        fallback_event=event,
+                    )
                     return result_holder[0] or {"final_response": response, "messages": history}
 
-                was_interrupted = result.get("interrupted")
-                if not was_interrupted:
-                    # Queued message after normal completion — deliver the first
-                    # response before processing the queued follow-up.
-                    # Skip if streaming already delivered it.
-                    _sc = stream_consumer_holder[0]
-                    _already_streamed = _sc and getattr(_sc, "already_sent", False)
-                    first_response = result.get("final_response", "")
-                    suppress_first_response = bool(result.get("suppress_reply"))
-                    if first_response and first_response.strip() == "[[NO_REPLY]]":
-                        suppress_first_response = True
-                        first_response = ""
-                    if first_response and not _already_streamed and not suppress_first_response:
-                        try:
-                            await adapter.send(source.chat_id, first_response,
-                                               metadata=getattr(pending_event, "metadata", None) or getattr(event, "metadata", None))
-                        except Exception as e:
-                            logger.warning("Failed to send first response before queued message: %s", e)
-                # else: interrupted — discard the interrupted response ("Operation
-                # interrupted." is just noise; the user already knows they sent a
-                # new message).
+                await shared_deliver_gateway_first_response_before_followup(
+                    result=result,
+                    adapter=adapter,
+                    chat_id=source.chat_id,
+                    pending_event=pending_followup.event,
+                    fallback_event=event,
+                    stream_consumer=stream_consumer_holder[0],
+                    logger=logger,
+                )
 
                 # Process the pending message with updated history
                 updated_history = result.get("messages", history)
                 return await self._run_agent(
-                    message=pending,
+                    message=pending_followup.text,
                     context_prompt=context_prompt,
                     history=updated_history,
                     source=source,
                     session_id=session_id,
                     session_key=session_key,
                     _interrupt_depth=_interrupt_depth + 1,
-                    event_message_id=getattr(pending_event, "message_id", None),
-                    event=pending_event,
+                    event_message_id=getattr(pending_followup.event, "message_id", None),
+                    event=pending_followup.event,
                     admin_user_ids=admin_user_ids,
                     is_admin_user=is_admin_user,
-                    raw_message=getattr(pending_event, "raw_message", None),
+                    raw_message=getattr(pending_followup.event, "raw_message", None),
                 )
         finally:
             await shared_cleanup_gateway_agent_runtime_tasks(

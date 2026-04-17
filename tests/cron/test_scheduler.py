@@ -12,6 +12,14 @@ from tools.env_passthrough import clear_env_passthrough
 from tools.credential_files import clear_credential_files
 
 
+@pytest.fixture(autouse=True)
+def isolate_tick_lock(tmp_path, monkeypatch):
+    """Keep tick() tests hermetic by isolating the scheduler lock file."""
+    lock_dir = tmp_path / "cron-lock"
+    monkeypatch.setattr("cron.scheduler._LOCK_DIR", lock_dir)
+    monkeypatch.setattr("cron.scheduler._LOCK_FILE", lock_dir / ".tick.lock")
+
+
 class TestResolveOrigin:
     def test_full_origin(self):
         job = {

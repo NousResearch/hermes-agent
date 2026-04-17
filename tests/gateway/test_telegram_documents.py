@@ -23,6 +23,7 @@ from gateway.platforms.base import (
     MessageType,
     SendResult,
     SUPPORTED_DOCUMENT_TYPES,
+    SUPPORTED_VIDEO_TYPES,
 )
 
 
@@ -117,6 +118,12 @@ def _make_update(msg):
     return update
 
 
+def _make_video(file_obj=None):
+    video = MagicMock()
+    video.get_file = AsyncMock(return_value=file_obj or _make_file_obj(b"video-bytes"))
+    return video
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -132,9 +139,12 @@ def adapter():
 
 @pytest.fixture(autouse=True)
 def _redirect_cache(tmp_path, monkeypatch):
-    """Point document cache to tmp_path so tests don't touch ~/.hermes."""
+    """Point document/video cache to tmp_path so tests don't touch ~/.hermes."""
     monkeypatch.setattr(
         "gateway.platforms.base.DOCUMENT_CACHE_DIR", tmp_path / "doc_cache"
+    )
+    monkeypatch.setattr(
+        "gateway.platforms.base.VIDEO_CACHE_DIR", tmp_path / "video_cache"
     )
 
 
@@ -346,6 +356,37 @@ class TestDocumentDownloadBlock:
         await adapter._handle_media_message(update, MagicMock())
         # handle_message should still be called (the handler catches the exception)
         adapter.handle_message.assert_called_once()
+
+
+class TestVideoDownloadBlock:
+    @pytest.mark.asyncio
+    async def test_native_video_is_cached(self, adapter):
+        file_obj = _make_file_obj(b"fake-mp4")
+        file_obj.file_path = "videos/clip.mp4"
+        msg = _make_message()
+        msg.video = _make_video(file_obj)
+        update = _make_update(msg)
+
+        await adapter._handle_media_message(update, MagicMock())
+        event = adapter.handle_message.call_args[0][0]
+        assert event.message_type == MessageType.VIDEO
+        assert len(event.media_urls) == 1
+        assert os.path.exists(event.media_urls[0])
+        assert event.media_types == [SUPPORTED_VIDEO_TYPES[".mp4"]]
+
+    @pytest.mark.asyncio
+    async def test_mp4_document_is_treated_as_video(self, adapter):
+        file_obj = _make_file_obj(b"fake-mp4-doc")
+        doc = _make_document(file_name="good.mp4", mime_type="video/mp4", file_size=1024, file_obj=file_obj)
+        msg = _make_message(document=doc)
+        update = _make_update(msg)
+
+        await adapter._handle_media_message(update, MagicMock())
+        event = adapter.handle_message.call_args[0][0]
+        assert event.message_type == MessageType.VIDEO
+        assert len(event.media_urls) == 1
+        assert os.path.exists(event.media_urls[0])
+        assert event.media_types == [SUPPORTED_VIDEO_TYPES[".mp4"]]
 
 
 # ---------------------------------------------------------------------------

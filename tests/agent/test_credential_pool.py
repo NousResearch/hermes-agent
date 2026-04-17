@@ -393,6 +393,100 @@ def test_try_refresh_current_updates_only_current_entry(tmp_path, monkeypatch):
     assert secondary["refresh_token"] == "refresh-other"
 
 
+def test_select_only_syncs_codex_singleton_device_code_entry(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "providers": {
+                "openai-codex": {
+                    "tokens": {
+                        "access_token": "cli-access-stale",
+                        "refresh_token": "cli-refresh-stale",
+                    },
+                    "last_refresh": "2026-04-16T12:00:00Z",
+                }
+            },
+            "credential_pool": {
+                "openai-codex": [
+                    {
+                        "id": "manual-1",
+                        "label": "manual-primary",
+                        "auth_type": "oauth",
+                        "priority": 0,
+                        "source": "manual:device_code",
+                        "access_token": "manual-access-1",
+                        "refresh_token": "manual-refresh-1",
+                        "base_url": "https://chatgpt.com/backend-api/codex",
+                        "last_status": "exhausted",
+                        "last_status_at": time.time() - 7_200,
+                        "last_error_code": 429,
+                    },
+                    {
+                        "id": "manual-2",
+                        "label": "manual-secondary",
+                        "auth_type": "oauth",
+                        "priority": 1,
+                        "source": "manual:device_code",
+                        "access_token": "manual-access-2",
+                        "refresh_token": "manual-refresh-2",
+                        "base_url": "https://chatgpt.com/backend-api/codex",
+                        "last_status": "exhausted",
+                        "last_status_at": time.time() - 7_200,
+                        "last_error_code": 429,
+                    },
+                    {
+                        "id": "singleton",
+                        "label": "device-code",
+                        "auth_type": "oauth",
+                        "priority": 2,
+                        "source": "device_code",
+                        "access_token": "cli-access-stale",
+                        "refresh_token": "cli-refresh-stale",
+                        "base_url": "https://chatgpt.com/backend-api/codex",
+                        "last_status": "exhausted",
+                        "last_status_at": time.time() - 7_200,
+                        "last_error_code": 429,
+                    },
+                ]
+            },
+        },
+    )
+
+    monkeypatch.setattr(
+        "agent.credential_pool._codex_access_token_is_expiring",
+        lambda access_token, skew_seconds: False,
+    )
+    monkeypatch.setattr(
+        "agent.credential_pool._import_codex_cli_tokens",
+        lambda: {
+            "access_token": "cli-access-fresh",
+            "refresh_token": "cli-refresh-fresh",
+        },
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("openai-codex")
+    selected = pool.select()
+
+    assert selected is not None
+
+    auth_payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    persisted = {
+        entry["id"]: entry
+        for entry in auth_payload["credential_pool"]["openai-codex"]
+    }
+
+    assert persisted["manual-1"]["access_token"] == "manual-access-1"
+    assert persisted["manual-1"]["refresh_token"] == "manual-refresh-1"
+    assert persisted["manual-2"]["access_token"] == "manual-access-2"
+    assert persisted["manual-2"]["refresh_token"] == "manual-refresh-2"
+    assert persisted["singleton"]["access_token"] == "cli-access-fresh"
+    assert persisted["singleton"]["refresh_token"] == "cli-refresh-fresh"
+
+
 def test_load_pool_seeds_env_api_key(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-seeded")

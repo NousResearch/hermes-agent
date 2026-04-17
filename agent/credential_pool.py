@@ -464,8 +464,12 @@ class CredentialPool:
         When the Codex CLI (or another Hermes profile) refreshes its token,
         the pool entry's refresh_token becomes stale.  This method detects that
         by comparing against ~/.codex/auth.json and syncing the fresh pair.
+
+        Only the singleton ``device_code`` entry is backed by the shared Codex
+        CLI auth file. Manual pool entries such as ``manual:device_code`` must
+        remain isolated and never be rewritten from that singleton state.
         """
-        if self.provider != "openai-codex":
+        if self.provider != "openai-codex" or entry.source != "device_code":
             return entry
         try:
             cli_tokens = _import_codex_cli_tokens()

@@ -11,7 +11,7 @@ import type {
   SetupStatusResponse
 } from '../gatewayTypes.js'
 import { asRpcResult } from '../lib/rpc.js'
-import type { Msg, SessionInfo, Usage } from '../types.js'
+import type { Msg, PanelSection, SessionInfo, Usage } from '../types.js'
 
 import type { ComposerActions, GatewayRpc, StateSetter } from './interfaces.js'
 import { patchOverlayState } from './overlayStore.js'
@@ -39,7 +39,7 @@ export interface UseSessionLifecycleOptions {
   colsRef: { current: number }
   composerActions: ComposerActions
   gw: GatewayClient
-  panel: (title: string, sections: import('../types.js').PanelSection[]) => void
+  panel: (title: string, sections: PanelSection[]) => void
   rpc: GatewayRpc
   setHistoryItems: StateSetter<Msg[]>
   setLastUserMsg: StateSetter<string>

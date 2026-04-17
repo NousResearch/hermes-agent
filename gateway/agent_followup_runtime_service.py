@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable
 
 
 @dataclass(slots=True)
@@ -13,6 +13,70 @@ class GatewayPendingFollowup:
     event: Any | None
     text: str
     was_interrupted: bool
+
+
+async def process_gateway_pending_followup(
+    *,
+    result: dict[str, Any] | None,
+    adapter: Any,
+    session_key: str | None,
+    dequeue_pending_event_text: Callable[[Any, str], tuple[Any | None, str | None]],
+    logger: Any,
+    interrupt_depth: int,
+    max_interrupt_depth: int,
+    source: Any,
+    fallback_event: Any | None,
+    chat_id: str | None,
+    stream_consumer: Any,
+    history: list[dict[str, Any]] | None,
+    current_response_fallback: dict[str, Any],
+    recurse_followup: Callable[[GatewayPendingFollowup, list[dict[str, Any]] | None], Awaitable[dict[str, Any]]],
+) -> dict[str, Any] | None:
+    """Process any queued follow-up after a foreground turn completes."""
+
+    pending_followup = extract_gateway_pending_followup(
+        result=result,
+        adapter=adapter,
+        session_key=session_key,
+        dequeue_pending_event_text=dequeue_pending_event_text,
+        logger=logger,
+    )
+    if not pending_followup:
+        return None
+
+    logger.debug("Processing pending message: '%s...'", pending_followup.text[:40])
+    clear_gateway_pending_interrupt(
+        adapter=adapter,
+        session_key=session_key,
+    )
+
+    if interrupt_depth >= max_interrupt_depth:
+        logger.warning(
+            "Interrupt recursion depth %d reached for session %s — queueing message instead of recursing.",
+            interrupt_depth,
+            session_key,
+        )
+        queue_gateway_pending_followup_for_later(
+            adapter=adapter,
+            session_key=session_key,
+            pending_text=pending_followup.text,
+            source=source,
+            pending_event=pending_followup.event,
+            fallback_event=fallback_event,
+        )
+        return current_response_fallback
+
+    await deliver_gateway_first_response_before_followup(
+        result=result,
+        adapter=adapter,
+        chat_id=chat_id,
+        pending_event=pending_followup.event,
+        fallback_event=fallback_event,
+        stream_consumer=stream_consumer,
+        logger=logger,
+    )
+    updated_history = result.get("messages", history) if result else history
+    return await recurse_followup(pending_followup, updated_history)
 
 
 def extract_gateway_pending_followup(

@@ -201,10 +201,7 @@ from gateway.agent_execution_service import (
     gateway_approval_context,
 )
 from gateway.agent_followup_runtime_service import (
-    clear_gateway_pending_interrupt as shared_clear_gateway_pending_interrupt,
-    deliver_gateway_first_response_before_followup as shared_deliver_gateway_first_response_before_followup,
-    extract_gateway_pending_followup as shared_extract_gateway_pending_followup,
-    queue_gateway_pending_followup_for_later as shared_queue_gateway_pending_followup_for_later,
+    process_gateway_pending_followup as shared_process_gateway_pending_followup,
 )
 from gateway.agent_lifecycle_runtime_service import (
     cleanup_gateway_agent_runtime_tasks as shared_cleanup_gateway_agent_runtime_tasks,
@@ -8533,51 +8530,8 @@ class GatewayRunner:
 
             result = result_holder[0]
             adapter = self.adapters.get(source.platform)
-            pending_followup = shared_extract_gateway_pending_followup(
-                result=result,
-                adapter=adapter,
-                session_key=session_key,
-                dequeue_pending_event_text=_dequeue_pending_event_text,
-                logger=logger,
-            )
 
-            if pending_followup:
-                logger.debug("Processing pending message: '%s...'", pending_followup.text[:40])
-                shared_clear_gateway_pending_interrupt(
-                    adapter=adapter,
-                    session_key=session_key,
-                )
-
-                # Cap recursion depth to prevent resource exhaustion when the
-                # user sends multiple messages while the agent keeps failing. (#816)
-                if _interrupt_depth >= self._MAX_INTERRUPT_DEPTH:
-                    logger.warning(
-                        "Interrupt recursion depth %d reached for session %s — "
-                        "queueing message instead of recursing.",
-                        _interrupt_depth, session_key,
-                    )
-                    shared_queue_gateway_pending_followup_for_later(
-                        adapter=adapter,
-                        session_key=session_key,
-                        pending_text=pending_followup.text,
-                        source=source,
-                        pending_event=pending_followup.event,
-                        fallback_event=event,
-                    )
-                    return result_holder[0] or {"final_response": response, "messages": history}
-
-                await shared_deliver_gateway_first_response_before_followup(
-                    result=result,
-                    adapter=adapter,
-                    chat_id=source.chat_id,
-                    pending_event=pending_followup.event,
-                    fallback_event=event,
-                    stream_consumer=stream_consumer_holder[0],
-                    logger=logger,
-                )
-
-                # Process the pending message with updated history
-                updated_history = result.get("messages", history)
+            async def _continue_pending_followup(pending_followup, updated_history):
                 return await self._run_agent(
                     message=pending_followup.text,
                     context_prompt=context_prompt,
@@ -8592,6 +8546,28 @@ class GatewayRunner:
                     is_admin_user=is_admin_user,
                     raw_message=getattr(pending_followup.event, "raw_message", None),
                 )
+
+            followup_result = await shared_process_gateway_pending_followup(
+                result=result,
+                adapter=adapter,
+                session_key=session_key,
+                dequeue_pending_event_text=_dequeue_pending_event_text,
+                logger=logger,
+                interrupt_depth=_interrupt_depth,
+                max_interrupt_depth=self._MAX_INTERRUPT_DEPTH,
+                source=source,
+                fallback_event=event,
+                chat_id=source.chat_id,
+                stream_consumer=stream_consumer_holder[0],
+                history=history,
+                current_response_fallback=result_holder[0] or {
+                    "final_response": response,
+                    "messages": history,
+                },
+                recurse_followup=_continue_pending_followup,
+            )
+            if followup_result is not None:
+                return followup_result
         finally:
             await shared_cleanup_gateway_agent_runtime_tasks(
                 tasks=runtime_tasks,

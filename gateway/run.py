@@ -680,6 +680,20 @@ def _ensure_ssl_certs() -> None:
 
     import ssl
 
+    # On macOS/Homebrew, the Python runtime inside a venv can report a built-in
+    # cafile like /private/etc/ssl/cert.pem even when the system's usable trust
+    # store lives under Homebrew's OpenSSL bundle. Prefer the Homebrew bundle
+    # first so corporate/intercepting CAs imported there are visible to Hermes.
+    for candidate in (
+        "/opt/homebrew/etc/openssl@3/cert.pem",               # macOS Homebrew ARM
+        "/usr/local/etc/openssl@3/cert.pem",                 # macOS Homebrew Intel
+        "/opt/homebrew/etc/openssl@1.1/cert.pem",            # macOS Homebrew ARM (older)
+        "/usr/local/etc/openssl@1.1/cert.pem",               # macOS Homebrew Intel (older)
+    ):
+        if os.path.exists(candidate):
+            os.environ["SSL_CERT_FILE"] = candidate
+            return
+
     # 1. Python's compiled-in defaults
     paths = ssl.get_default_verify_paths()
     for candidate in (paths.cafile, paths.openssl_cafile):
@@ -703,8 +717,6 @@ def _ensure_ssl_certs() -> None:
         "/etc/ssl/ca-bundle.pem",                            # SUSE/OpenSUSE
         "/etc/ssl/cert.pem",                                 # Alpine / macOS
         "/etc/pki/tls/cert.pem",                             # Fedora
-        "/usr/local/etc/openssl@1.1/cert.pem",               # macOS Homebrew Intel
-        "/opt/homebrew/etc/openssl@1.1/cert.pem",            # macOS Homebrew ARM
     ):
         if os.path.exists(candidate):
             os.environ["SSL_CERT_FILE"] = candidate

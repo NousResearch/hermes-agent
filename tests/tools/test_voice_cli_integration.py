@@ -40,6 +40,36 @@ def _make_voice_cli(**overrides):
 
 
 # ============================================================================
+# Voice record key normalization
+# ============================================================================
+
+from cli import _voice_record_key_display, _voice_record_key_to_prompt_toolkit_keys
+
+
+class TestVoiceRecordKeyNormalization:
+    def test_ctrl_plus_maps_to_prompt_toolkit_ctrl_key(self):
+        assert _voice_record_key_to_prompt_toolkit_keys("ctrl+b") == ("c-b",)
+        assert _voice_record_key_display("ctrl+b") == "Ctrl+B"
+
+    def test_alt_plus_maps_to_escape_sequence(self):
+        assert _voice_record_key_to_prompt_toolkit_keys("alt+space") == (
+            "escape",
+            "space",
+        )
+        assert _voice_record_key_display("alt+space") == "Alt+Space"
+
+    def test_meta_is_supported_as_alt_alias(self):
+        assert _voice_record_key_to_prompt_toolkit_keys("meta+x") == (
+            "escape",
+            "x",
+        )
+
+    def test_unsupported_combo_raises(self):
+        with pytest.raises(ValueError):
+            _voice_record_key_to_prompt_toolkit_keys("ctrl+alt+b")
+
+
+# ============================================================================
 # Markdown stripping — import real function from tts_tool
 # ============================================================================
 

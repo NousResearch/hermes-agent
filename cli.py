@@ -68,6 +68,81 @@ from hermes_cli.banner import _format_context_length, format_banner_version_labe
 _COMMAND_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
 
 
+def _voice_record_key_to_prompt_toolkit_keys(raw_key: str) -> tuple[str, ...]:
+    """Convert ``voice.record_key`` config syntax into prompt_toolkit keys.
+
+    Supports the common ``ctrl+*`` and ``shift+*`` single-key bindings as a
+    single prompt_toolkit key, and translates ``alt+*``/``meta+*`` into the
+    two-key ``escape`` sequence prompt_toolkit expects.
+    """
+    normalized = (raw_key or "").strip().lower()
+    if not normalized:
+        raise ValueError("voice.record_key is empty")
+
+    parts = [part for part in normalized.split("+") if part]
+    if not parts:
+        raise ValueError("voice.record_key is empty")
+
+    if len(parts) == 1:
+        return (parts[0],)
+
+    if len(parts) != 2:
+        raise ValueError(
+            f"unsupported voice.record_key '{raw_key}'; use a single modifier like ctrl+, shift+, alt+, or meta+"
+        )
+
+    modifier, key = parts
+    if modifier == "ctrl":
+        return (f"c-{key}",)
+    if modifier == "shift":
+        return (f"s-{key}",)
+    if modifier in {"alt", "meta"}:
+        return ("escape", key)
+
+    raise ValueError(
+        f"unsupported voice.record_key '{raw_key}'; use ctrl+, shift+, alt+, or meta+"
+    )
+
+
+def _voice_record_key_display(raw_key: str) -> str:
+    """Return a human-readable display string for ``voice.record_key``."""
+    try:
+        keys = _voice_record_key_to_prompt_toolkit_keys(raw_key)
+    except Exception:
+        return raw_key
+
+    def _pretty_key_name(key: str) -> str:
+        special = {
+            "space": "Space",
+            "enter": "Enter",
+            "tab": "Tab",
+            "escape": "Esc",
+            "backspace": "Backspace",
+        }
+        if key in special:
+            return special[key]
+        if len(key) == 1:
+            return key.upper()
+        if key.startswith("c-"):
+            return f"Ctrl+{_pretty_key_name(key[2:])}"
+        if key.startswith("s-"):
+            return f"Shift+{_pretty_key_name(key[2:])}"
+        return key.replace("-", " ").title()
+
+    if len(keys) == 1:
+        key = keys[0]
+        if key.startswith("c-"):
+            return f"Ctrl+{_pretty_key_name(key[2:])}"
+        if key.startswith("s-"):
+            return f"Shift+{_pretty_key_name(key[2:])}"
+        return _pretty_key_name(key)
+
+    if len(keys) == 2 and keys[0] == "escape":
+        return f"Alt+{_pretty_key_name(keys[1])}"
+
+    return "+".join(_pretty_key_name(key) for key in keys)
+
+
 # Load .env from ~/.hermes/.env first, then project root as dev fallback.
 # User-managed env files should override stale shell exports on restart.
 from hermes_constants import get_hermes_home, display_hermes_home
@@ -7180,13 +7255,19 @@ class HermesCLI:
         # _voice_message_prefix property and its usage in _process_message().
 
         tts_status = " (TTS enabled)" if self._voice_tts else ""
+        _raw_ptt = "ctrl+b"
         try:
             from hermes_cli.config import load_config
             _raw_ptt = load_config().get("voice", {}).get("record_key", "ctrl+b")
-            _ptt_key = _raw_ptt.lower().replace("ctrl+", "c-").replace("alt+", "a-")
-        except Exception:
-            _ptt_key = "c-b"
-        _ptt_display = _ptt_key.replace("c-", "Ctrl+").upper()
+            _ptt_keys = _voice_record_key_to_prompt_toolkit_keys(_raw_ptt)
+        except Exception as exc:
+            logger.warning(
+                "Invalid voice.record_key=%r; falling back to ctrl+b: %s",
+                _raw_ptt,
+                exc,
+            )
+            _ptt_keys = ("c-b",)
+        _ptt_display = _voice_record_key_display(_raw_ptt if _ptt_keys != ("c-b",) else "ctrl+b")
         _cprint(f"\n{_ACCENT}Voice mode enabled{tts_status}{_RST}")
         _cprint(f"  {_DIM}{_ptt_display} to start/stop recording{_RST}")
         _cprint(f"  {_DIM}/voice tts  to toggle speech output{_RST}")
@@ -8848,14 +8929,20 @@ class HermesCLI:
         # Voice push-to-talk key: configurable via config.yaml (voice.record_key)
         # Default: Ctrl+B (avoids conflict with Ctrl+R readline reverse-search)
         # Config uses "ctrl+b" format; prompt_toolkit expects "c-b" format.
+        _raw_key = "ctrl+b"
         try:
             from hermes_cli.config import load_config
             _raw_key = load_config().get("voice", {}).get("record_key", "ctrl+b")
-            _voice_key = _raw_key.lower().replace("ctrl+", "c-").replace("alt+", "a-")
-        except Exception:
-            _voice_key = "c-b"
+            _voice_key = _voice_record_key_to_prompt_toolkit_keys(_raw_key)
+        except Exception as exc:
+            logger.warning(
+                "Invalid voice.record_key=%r; falling back to ctrl+b: %s",
+                _raw_key,
+                exc,
+            )
+            _voice_key = ("c-b",)
 
-        @kb.add(_voice_key)
+        @kb.add(*_voice_key)
         def handle_voice_record(event):
             """Toggle voice recording when voice mode is active.
 

@@ -4177,7 +4177,7 @@ class HermesCLI:
         if not target:
             # Show numbered list of recent sessions and prompt for selection
             _cprint("  Recent sessions:")
-            _cprint()
+            _cprint("")
             sessions = self._list_recent_sessions(limit=10)
             if not sessions:
                 _cprint("  No recent sessions found.")
@@ -4194,7 +4194,7 @@ class HermesCLI:
                 sid = session["id"]
                 _cprint(f"  {i:<4} {title:<32} {preview:<40} {last_active:<13} {sid}")
             
-            _cprint()
+            _cprint("")
             try:
                 user_input = input(f"  Enter session number to resume (1-{len(sessions)}), or press Enter to cancel: ").strip()
                 if user_input:

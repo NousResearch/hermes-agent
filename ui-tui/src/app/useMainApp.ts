@@ -568,6 +568,8 @@ export function useMainApp(gw: GatewayClient) {
       : Boolean(
           ui.busy ||
           turn.outcome ||
+          turn.streamPendingTools.length ||
+          turn.streamSegments.length ||
           turn.subagents.length ||
           turn.tools.length ||
           turn.turnTrail.length ||

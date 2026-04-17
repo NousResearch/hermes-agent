@@ -1,6 +1,6 @@
 import { atom } from 'nanostores'
 
-import type { ActiveTool, ActivityItem, SubagentProgress } from '../types.js'
+import type { ActiveTool, ActivityItem, Msg, SubagentProgress } from '../types.js'
 
 const buildTurnState = (): TurnState => ({
   activity: [],
@@ -9,6 +9,8 @@ const buildTurnState = (): TurnState => ({
   reasoningActive: false,
   reasoningStreaming: false,
   reasoningTokens: 0,
+  streamPendingTools: [],
+  streamSegments: [],
   streaming: '',
   subagents: [],
   toolTokens: 0,
@@ -32,6 +34,8 @@ export interface TurnState {
   reasoningActive: boolean
   reasoningStreaming: boolean
   reasoningTokens: number
+  streamPendingTools: string[]
+  streamSegments: Msg[]
   streaming: string
   subagents: SubagentProgress[]
   toolTokens: number

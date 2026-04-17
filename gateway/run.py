@@ -228,6 +228,11 @@ from gateway.background_delivery_service import (
 )
 from gateway.direct_control_router import DirectControlRouter
 from gateway.direct_shortcuts import run_direct_shortcut_handlers
+from gateway.direct_shortcut_runtime_service import (
+    get_direct_control_router as shared_get_direct_control_router,
+    prime_session_env_for_direct_shortcuts as shared_prime_session_env_for_direct_shortcuts,
+    try_handle_direct_gateway_shortcuts as shared_try_handle_direct_gateway_shortcuts,
+)
 from gateway.employee_routes import get_employee_routes
 from gateway.runtime_status_service import (
     build_runtime_status_summary as shared_build_runtime_status_summary,
@@ -3261,27 +3266,10 @@ class GatewayRunner:
         )
 
     def _prime_session_env_for_direct_shortcuts(self, source: SessionSource) -> None:
-        """Populate session env so tool-backed direct shortcuts can run off the main path."""
-        if not source:
-            return
-        session_entry = self.session_store.get_or_create_session(source)
-        admin_user_ids = self._configured_admin_user_ids(source.platform)
-        is_admin_user = self._is_admin_user(source) if admin_user_ids else None
-        context = build_session_context(
-            source,
-            self.config,
-            session_entry,
-            admin_user_ids=admin_user_ids,
-            is_admin_user=is_admin_user,
-        )
-        self._set_session_env(context)
+        shared_prime_session_env_for_direct_shortcuts(self, source)
 
     def _get_direct_control_router(self) -> DirectControlRouter:
-        router = getattr(self, "_direct_control_router", None)
-        if router is None:
-            router = DirectControlRouter(self)
-            self._direct_control_router = router
-        return router
+        return shared_get_direct_control_router(self, router_cls=DirectControlRouter)
 
     def _try_handle_direct_gateway_shortcuts(
         self,
@@ -3290,15 +3278,10 @@ class GatewayRunner:
         prepare_session_env: bool = False,
         conversation_history: Optional[List[Dict[str, Any]]] = None,
     ) -> str | None:
-        source = getattr(event, "source", None)
-        if prepare_session_env and source is not None:
-            try:
-                self._prime_session_env_for_direct_shortcuts(source)
-            except Exception as exc:
-                logger.debug("Failed to prime direct-shortcut session env: %s", exc)
-        return run_direct_shortcut_handlers(
+        return shared_try_handle_direct_gateway_shortcuts(
             self,
             event,
+            prepare_session_env=prepare_session_env,
             conversation_history=conversation_history,
             logger=logger,
         )

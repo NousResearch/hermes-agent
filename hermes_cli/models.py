@@ -135,7 +135,6 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "gemini-2.5-flash-lite",
         # Gemma open models (also served via AI Studio)
         "gemma-4-31b-it",
-        "gemma-4-26b-it",
     ],
     "google-gemini-cli": [
         "gemini-2.5-pro",

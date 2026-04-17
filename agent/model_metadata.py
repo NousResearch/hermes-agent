@@ -125,7 +125,6 @@ DEFAULT_CONTEXT_LENGTHS = {
     "gemini": 1048576,
     # Gemma (open models served via AI Studio)
     "gemma-4-31b": 256000,
-    "gemma-4-26b": 256000,
     "gemma-3": 131072,
     "gemma": 8192,  # fallback for older gemma models
     # DeepSeek

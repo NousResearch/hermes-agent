@@ -178,10 +178,6 @@ class TestGeminiContextLength:
             ctx = get_model_context_length("gemma-4-31b-it", provider="gemini")
         assert ctx == 256000
 
-    def test_gemma_4_26b_context(self):
-        ctx = get_model_context_length("gemma-4-26b-it", provider="gemini")
-        assert ctx == 256000
-
     def test_gemini_3_context(self):
         ctx = get_model_context_length("gemini-3.1-pro-preview", provider="gemini")
         assert ctx == 1048576

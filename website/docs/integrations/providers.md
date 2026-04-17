@@ -295,6 +295,30 @@ When using xAI as a provider (any base URL containing `x.ai`), Hermes automatica
 
 No configuration is needed — caching activates automatically when an xAI endpoint is detected and a session ID is available. This reduces latency and cost for multi-turn conversations.
 
+### NVIDIA NIM
+
+Nemotron and other open source models via [build.nvidia.com](https://build.nvidia.com) (free API key) or a local NIM endpoint.
+
+```bash
+# Cloud (build.nvidia.com)
+hermes chat --provider nvidia --model nvidia/nemotron-3-super-120b-a12b
+# Requires: NVIDIA_API_KEY in ~/.hermes/.env
+
+# Local NIM endpoint — override base URL
+NVIDIA_BASE_URL=http://localhost:8000/v1 hermes chat --provider nvidia --model nvidia/nemotron-3-super-120b-a12b
+```
+
+Or set it permanently in `config.yaml`:
+```yaml
+model:
+  provider: "nvidia"
+  default: "nvidia/nemotron-3-super-120b-a12b"
+```
+
+:::tip Local NIM
+For on-prem deployments (DGX Spark, local GPU), set `NVIDIA_BASE_URL=http://localhost:8000/v1`. NIM exposes the same OpenAI-compatible chat completions API as build.nvidia.com, so switching between cloud and local is a one-line env-var change.
+:::
+
 ### Hugging Face Inference Providers
 
 [Hugging Face Inference Providers](https://huggingface.co/docs/inference-providers) routes to 20+ open models through a unified OpenAI-compatible endpoint (`router.huggingface.co/v1`). Requests are automatically routed to the fastest available backend (Groq, Together, SambaNova, etc.) with automatic failover.

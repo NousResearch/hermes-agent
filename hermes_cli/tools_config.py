@@ -290,6 +290,15 @@ TOOL_CATEGORIES = {
                 ],
             },
             {
+                "name": "SearXNG",
+                "badge": "free · self-hosted",
+                "tag": "Open-source federated search (self-hosted)",
+                "web_backend": "searxng",
+                "env_vars": [
+                    {"key": "SEARXNG_URL", "prompt": "SearXNG instance URL (e.g., https://searx.example.com)"},
+                ],
+            },
+            {
                 "name": "Firecrawl Self-Hosted",
                 "badge": "free · self-hosted",
                 "tag": "Run your own Firecrawl instance (Docker)",

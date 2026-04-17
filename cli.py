@@ -4554,27 +4554,31 @@ class HermesCLI:
         _cprint(f"  ✓ Model switched: {result.new_model}")
         _cprint(f"    Provider: {provider_label}")
 
-        mi = result.model_info
-        if mi:
-            if mi.context_window:
-                _cprint(f"    Context: {mi.context_window:,} tokens")
-            if mi.max_output:
-                _cprint(f"    Max output: {mi.max_output:,} tokens")
-            if mi.has_cost_data():
-                _cprint(f"    Cost: {mi.format_cost()}")
-            _cprint(f"    Capabilities: {mi.format_capabilities()}")
+        # Use result.context_length (per-model custom_providers override) when set
+        if result.context_length:
+            _cprint(f"    Context: {result.context_length:,} tokens")
         else:
-            try:
-                from agent.model_metadata import get_model_context_length
-                ctx = get_model_context_length(
-                    result.new_model,
-                    base_url=result.base_url or self.base_url,
-                    api_key=result.api_key or self.api_key,
-                    provider=result.target_provider,
-                )
-                _cprint(f"    Context: {ctx:,} tokens")
-            except Exception:
-                pass
+            mi = result.model_info
+            if mi:
+                if mi.context_window:
+                    _cprint(f"    Context: {mi.context_window:,} tokens")
+                if mi.max_output:
+                    _cprint(f"    Max output: {mi.max_output:,} tokens")
+                if mi.has_cost_data():
+                    _cprint(f"    Cost: {mi.format_cost()}")
+                _cprint(f"    Capabilities: {mi.format_capabilities()}")
+            else:
+                try:
+                    from agent.model_metadata import get_model_context_length
+                    ctx = get_model_context_length(
+                        result.new_model,
+                        base_url=result.base_url or self.base_url,
+                        api_key=result.api_key or self.api_key,
+                        provider=result.target_provider,
+                    )
+                    _cprint(f"    Context: {ctx:,} tokens")
+                except Exception:
+                    pass
 
         cache_enabled = (
             ("openrouter" in (result.base_url or "").lower() and "claude" in result.new_model.lower())
@@ -4779,29 +4783,32 @@ class HermesCLI:
         _cprint(f"  ✓ Model switched: {result.new_model}")
         _cprint(f"    Provider: {provider_label}")
 
-        # Rich metadata from models.dev
-        mi = result.model_info
-        if mi:
-            if mi.context_window:
-                _cprint(f"    Context: {mi.context_window:,} tokens")
-            if mi.max_output:
-                _cprint(f"    Max output: {mi.max_output:,} tokens")
-            if mi.has_cost_data():
-                _cprint(f"    Cost: {mi.format_cost()}")
-            _cprint(f"    Capabilities: {mi.format_capabilities()}")
+        # Rich metadata from models.dev (prefer result.context_length if set)
+        if result.context_length:
+            _cprint(f"    Context: {result.context_length:,} tokens")
         else:
-            # Fallback to old context length lookup
-            try:
-                from agent.model_metadata import get_model_context_length
-                ctx = get_model_context_length(
-                    result.new_model,
-                    base_url=result.base_url or self.base_url,
-                    api_key=result.api_key or self.api_key,
-                    provider=result.target_provider,
-                )
-                _cprint(f"    Context: {ctx:,} tokens")
-            except Exception:
-                pass
+            mi = result.model_info
+            if mi:
+                if mi.context_window:
+                    _cprint(f"    Context: {mi.context_window:,} tokens")
+                if mi.max_output:
+                    _cprint(f"    Max output: {mi.max_output:,} tokens")
+                if mi.has_cost_data():
+                    _cprint(f"    Cost: {mi.format_cost()}")
+                _cprint(f"    Capabilities: {mi.format_capabilities()}")
+            else:
+                # Fallback to old context length lookup
+                try:
+                    from agent.model_metadata import get_model_context_length
+                    ctx = get_model_context_length(
+                        result.new_model,
+                        base_url=result.base_url or self.base_url,
+                        api_key=result.api_key or self.api_key,
+                        provider=result.target_provider,
+                    )
+                    _cprint(f"    Context: {ctx:,} tokens")
+                except Exception:
+                    pass
 
         # Cache notice
         cache_enabled = (
@@ -7630,14 +7637,24 @@ class HermesCLI:
             self._modal_input_snapshot = None
 
     def _restore_modal_input_snapshot(self) -> None:
-        """Restore any draft text that was present before a modal prompt opened."""
+        """Restore any draft text that was present before a modal prompt opened.
+
+        Note: if the saved text looks like a slash-command that was just dispatched
+        (starts with '/' and contains no spaces after), it is discarded — the user
+        already sent it and doesn't want it restored to the input bar.
+        """
         snapshot = self._modal_input_snapshot
         self._modal_input_snapshot = None
         if not snapshot or not getattr(self, "_app", None):
             return
         try:
             buf = self._app.current_buffer
-            buf.text = snapshot.get("text", "")
+            text = snapshot.get("text", "")
+            # Don't restore a slash-command that was just dispatched — the user
+            # already sent it and doesn't want it re-appearing in the input bar.
+            if text.startswith("/") and " " not in text:
+                text = ""
+            buf.text = text
             buf.cursor_position = min(snapshot.get("cursor_position", 0), len(buf.text))
         except Exception:
             pass

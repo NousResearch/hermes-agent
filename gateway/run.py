@@ -4780,10 +4780,30 @@ class GatewayRunner:
                         plabel = result.provider_label or result.target_provider
                         lines = [f"Model switched to `{result.new_model}`"]
                         lines.append(f"Provider: {plabel}")
+                        # Use context_length from result (per-model custom_providers override)
+                        # when available, before falling back to models.dev metadata.
+                        if result.context_length:
+                            lines.append(f"Context: {result.context_length:,} tokens")
+                        else:
+                            mi = result.model_info
+                            if mi and mi.context_window:
+                                lines.append(f"Context: {mi.context_window:,} tokens")
+                            elif mi is None:
+                                # No models.dev entry — probe directly
+                                try:
+                                    from agent.model_metadata import get_model_context_length
+                                    _ctx = get_model_context_length(
+                                        result.new_model,
+                                        base_url=result.base_url,
+                                        api_key=result.api_key,
+                                        provider=result.target_provider,
+                                    )
+                                    if _ctx:
+                                        lines.append(f"Context: {_ctx:,} tokens")
+                                except Exception:
+                                    pass
                         mi = result.model_info
                         if mi:
-                            if mi.context_window:
-                                lines.append(f"Context: {mi.context_window:,} tokens")
                             if mi.max_output:
                                 lines.append(f"Max output: {mi.max_output:,} tokens")
                             if mi.has_cost_data():
@@ -4916,28 +4936,31 @@ class GatewayRunner:
         lines = [f"Model switched to `{result.new_model}`"]
         lines.append(f"Provider: {provider_label}")
 
-        # Rich metadata from models.dev
-        mi = result.model_info
-        if mi:
-            if mi.context_window:
-                lines.append(f"Context: {mi.context_window:,} tokens")
-            if mi.max_output:
-                lines.append(f"Max output: {mi.max_output:,} tokens")
-            if mi.has_cost_data():
-                lines.append(f"Cost: {mi.format_cost()}")
-            lines.append(f"Capabilities: {mi.format_capabilities()}")
+        # Rich metadata from models.dev (prefer result.context_length if set)
+        if result.context_length:
+            lines.append(f"Context: {result.context_length:,} tokens")
         else:
-            try:
-                from agent.model_metadata import get_model_context_length
-                ctx = get_model_context_length(
-                    result.new_model,
-                    base_url=result.base_url or current_base_url,
-                    api_key=result.api_key or current_api_key,
-                    provider=result.target_provider,
-                )
-                lines.append(f"Context: {ctx:,} tokens")
-            except Exception:
-                pass
+            mi = result.model_info
+            if mi:
+                if mi.context_window:
+                    lines.append(f"Context: {mi.context_window:,} tokens")
+                if mi.max_output:
+                    lines.append(f"Max output: {mi.max_output:,} tokens")
+                if mi.has_cost_data():
+                    lines.append(f"Cost: {mi.format_cost()}")
+                lines.append(f"Capabilities: {mi.format_capabilities()}")
+            else:
+                try:
+                    from agent.model_metadata import get_model_context_length
+                    ctx = get_model_context_length(
+                        result.new_model,
+                        base_url=result.base_url or current_base_url,
+                        api_key=result.api_key or current_api_key,
+                        provider=result.target_provider,
+                    )
+                    lines.append(f"Context: {ctx:,} tokens")
+                except Exception:
+                    pass
 
         # Cache notice
         cache_enabled = (

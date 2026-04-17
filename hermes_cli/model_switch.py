@@ -240,6 +240,7 @@ class ModelSwitchResult:
     resolved_via_alias: str = ""
     capabilities: Optional[ModelCapabilities] = None
     model_info: Optional[ModelInfo] = None
+    context_length: Optional[int] = None  # Populated with per-model config override if set
     is_global: bool = False
 
 
@@ -749,6 +750,26 @@ def switch_model(
     # --- Get full model info from models.dev ---
     model_info = get_model_info(target_provider, new_model)
 
+    # --- Resolve context_length: per-model custom_providers config takes priority
+    #    over the generic get_model_context_length probe chain ---
+    context_length: Optional[int] = None
+    if base_url:
+        try:
+            from hermes_cli.config import get_compatible_custom_providers, load_config
+            _cfg = load_config()
+            _cps = get_compatible_custom_providers(_cfg)
+            _url_norm = base_url.rstrip("/")
+            for _cp in _cps:
+                if isinstance(_cp, dict) and (_cp.get("base_url") or "").rstrip("/") == _url_norm:
+                    _cp_models = _cp.get("models", {})
+                    if isinstance(_cp_models, dict):
+                        _cp_mcfg = _cp_models.get(new_model, {})
+                        if isinstance(_cp_mcfg, dict) and _cp_mcfg.get("context_length"):
+                            context_length = int(_cp_mcfg["context_length"])
+                    break
+        except Exception:
+            pass
+
     # --- Collect warnings ---
     warnings: list[str] = []
     if validation.get("message"):
@@ -771,6 +792,7 @@ def switch_model(
         resolved_via_alias=resolved_alias,
         capabilities=capabilities,
         model_info=model_info,
+        context_length=context_length,
         is_global=is_global,
     )
 

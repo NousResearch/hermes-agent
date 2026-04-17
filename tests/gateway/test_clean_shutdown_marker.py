@@ -82,6 +82,24 @@ class TestSuspendRecentlyActive:
         count2 = store.suspend_recently_active()
         assert count2 == 1
 
+    def test_excluded_session_keys_are_not_suspended(self, tmp_path):
+        store = _make_store(tmp_path)
+        keep_source = _make_source(chat_id="keep")
+        suspend_source = _make_source(chat_id="suspend")
+
+        keep_entry = store.get_or_create_session(keep_source)
+        suspend_entry = store.get_or_create_session(suspend_source)
+
+        count = store.suspend_recently_active(
+            exclude_session_keys={keep_entry.session_key}
+        )
+        assert count == 1
+
+        with store._lock:
+            store._ensure_loaded_locked()
+            assert store._entries[keep_entry.session_key].suspended is False
+            assert store._entries[suspend_entry.session_key].suspended is True
+
 
 # ---------------------------------------------------------------------------
 # Clean shutdown marker integration
@@ -224,3 +242,66 @@ class TestCleanShutdownMarker:
             asyncio.get_event_loop().run_until_complete(runner.stop(restart=True))
 
         assert marker.exists(), ".clean_shutdown marker should exist after restart-stop too"
+
+    def test_timed_out_restart_writes_planned_restart_marker(self, tmp_path, monkeypatch):
+        """A planned restart that times out should preserve exact session keys."""
+        monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+
+        from gateway.run import GatewayRunner
+        runner = object.__new__(GatewayRunner)
+        runner._restart_requested = True
+        runner._restart_detached = False
+        runner._restart_via_service = False
+        runner._restart_task_started = False
+        runner._running = True
+        runner._draining = False
+        runner._stop_task = None
+        runner._running_agents = {"session:keep": MagicMock()}
+        runner._pending_messages = {}
+        runner._pending_approvals = {}
+        runner._background_tasks = set()
+        runner._shutdown_event = MagicMock()
+        runner._restart_drain_timeout = 5
+        runner._exit_code = None
+        runner._exit_reason = None
+        runner.adapters = {}
+        runner.config = GatewayConfig()
+
+        with patch("gateway.run.GatewayRunner._notify_active_sessions_of_shutdown", new_callable=AsyncMock), \
+             patch("gateway.run.GatewayRunner._drain_active_agents", new_callable=AsyncMock, return_value=({"session:keep": MagicMock()}, True)), \
+             patch("gateway.run.GatewayRunner._interrupt_running_agents"), \
+             patch("gateway.run.GatewayRunner._finalize_shutdown_agents"), \
+             patch("gateway.run.GatewayRunner._update_runtime_status"), \
+             patch("gateway.status.remove_pid_file"), \
+             patch("tools.process_registry.process_registry") as mock_proc_reg, \
+             patch("tools.terminal_tool.cleanup_all_environments"), \
+             patch("tools.browser_tool.cleanup_all_browsers"):
+            mock_proc_reg.kill_all = MagicMock()
+
+            import asyncio
+            asyncio.get_event_loop().run_until_complete(runner.stop(restart=True))
+
+        planned = tmp_path / ".planned_restart_sessions.json"
+        assert planned.exists(), "planned restart marker should be written"
+        assert 'session:keep' in planned.read_text(encoding='utf-8')
+        assert not (tmp_path / ".restart_failure_counts").exists()
+
+    def test_planned_restart_marker_excludes_preserved_sessions_from_suspension(self, tmp_path, monkeypatch):
+        """Startup should preserve planned-restart sessions while still suspending crash leftovers."""
+        monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+
+        planned = tmp_path / ".planned_restart_sessions.json"
+        planned.write_text('{"session_keys": ["session:keep"]}', encoding='utf-8')
+
+        from gateway.run import GatewayRunner
+        runner = object.__new__(GatewayRunner)
+        runner.session_store = MagicMock()
+        runner.session_store.suspend_recently_active.return_value = 1
+        runner._suspend_stuck_loop_sessions = MagicMock(return_value=0)
+
+        runner._recover_previous_run_sessions()
+
+        runner.session_store.suspend_recently_active.assert_called_once_with(
+            exclude_session_keys={"session:keep"}
+        )
+        assert not planned.exists(), "planned restart marker should be consumed on startup"

@@ -1602,6 +1602,73 @@ class GatewayRunner:
 
     _STUCK_LOOP_THRESHOLD = 3  # restarts while active before auto-suspend
     _STUCK_LOOP_FILE = ".restart_failure_counts"
+    _PLANNED_RESTART_FILE = ".planned_restart_sessions.json"
+
+    def _write_planned_restart_marker(self, session_keys: set[str]) -> None:
+        """Persist intentionally interrupted sessions for the next startup.
+
+        Used when a user-requested/service-requested restart times out while
+        draining active agents. On the next startup, these exact sessions are
+        preserved instead of being blanket-suspended as crash leftovers.
+        """
+        if not session_keys:
+            return
+        path = _hermes_home / self._PLANNED_RESTART_FILE
+        payload = {"session_keys": sorted(str(k) for k in session_keys if k)}
+        try:
+            path.write_text(json.dumps(payload), encoding="utf-8")
+        except Exception as e:
+            logger.debug("Failed to write planned restart marker: %s", e)
+
+    def _consume_planned_restart_marker(self) -> set[str]:
+        """Return preserved session keys from the previous intentional restart."""
+        path = _hermes_home / self._PLANNED_RESTART_FILE
+        if not path.exists():
+            return set()
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            session_keys = data.get("session_keys") if isinstance(data, dict) else []
+            if not isinstance(session_keys, list):
+                session_keys = []
+            return {str(k) for k in session_keys if k}
+        except Exception as e:
+            logger.debug("Failed to read planned restart marker: %s", e)
+            return set()
+        finally:
+            try:
+                path.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+    def _recover_previous_run_sessions(self) -> set[str]:
+        """Handle startup recovery markers from the previous gateway process."""
+        _clean_marker = _hermes_home / ".clean_shutdown"
+        if _clean_marker.exists():
+            logger.info("Previous gateway exited cleanly — skipping session suspension")
+            try:
+                _clean_marker.unlink()
+            except Exception:
+                pass
+            # A clean shutdown takes precedence over any stale planned marker.
+            self._consume_planned_restart_marker()
+            return set()
+
+        preserved_session_keys = self._consume_planned_restart_marker()
+        try:
+            suspended = self.session_store.suspend_recently_active(
+                exclude_session_keys=preserved_session_keys,
+            )
+            if suspended:
+                logger.info("Suspended %d in-flight session(s) from previous run", suspended)
+        except Exception as e:
+            logger.warning("Session suspension on startup failed: %s", e)
+
+        if preserved_session_keys:
+            logger.info(
+                "Preserving %d session(s) across planned restart timeout",
+                len(preserved_session_keys),
+            )
+        return preserved_session_keys
 
     def _increment_restart_failure_counts(self, active_session_keys: set) -> None:
         """Increment restart-failure counters for sessions active at shutdown.
@@ -1819,29 +1886,7 @@ class GatewayRunner:
         except Exception as e:
             logger.warning("Process checkpoint recovery: %s", e)
 
-        # Suspend sessions that were active when the gateway last exited.
-        # This prevents stuck sessions from being blindly resumed on restart,
-        # which can create an unrecoverable loop (#7536).  Suspended sessions
-        # auto-reset on the next incoming message, giving the user a clean start.
-        #
-        # SKIP suspension after a clean (graceful) shutdown — the previous
-        # process already drained active agents, so sessions aren't stuck.
-        # This prevents unwanted auto-resets after `hermes update`,
-        # `hermes gateway restart`, or `/restart`.
-        _clean_marker = _hermes_home / ".clean_shutdown"
-        if _clean_marker.exists():
-            logger.info("Previous gateway exited cleanly — skipping session suspension")
-            try:
-                _clean_marker.unlink()
-            except Exception:
-                pass
-        else:
-            try:
-                suspended = self.session_store.suspend_recently_active()
-                if suspended:
-                    logger.info("Suspended %d in-flight session(s) from previous run", suspended)
-            except Exception as e:
-                logger.warning("Session suspension on startup failed: %s", e)
+        self._recover_previous_run_sessions()
 
         # Stuck-loop detection (#7536): if a session has been active across
         # 3+ consecutive restarts, it's probably stuck in a loop (the same
@@ -2391,11 +2436,18 @@ class GatewayRunner:
                     (_hermes_home / ".clean_shutdown").touch()
                 except Exception:
                     pass
+                # A successful clean stop supersedes any stale planned marker.
+                try:
+                    (_hermes_home / self._PLANNED_RESTART_FILE).unlink(missing_ok=True)
+                except Exception:
+                    pass
             else:
+                if self._restart_requested and active_agents:
+                    self._write_planned_restart_marker(set(active_agents.keys()))
                 logger.info(
                     "Skipping .clean_shutdown marker — drain timed out with "
                     "interrupted agents; next startup will suspend recently "
-                    "active sessions."
+                    "active sessions unless explicitly preserved for a planned restart."
                 )
 
             # Track sessions that were active at shutdown for stuck-loop
@@ -2403,7 +2455,7 @@ class GatewayRunner:
             # for sessions that were running.  If a session hits the
             # threshold (3 consecutive restarts while active), the next
             # startup auto-suspends it — breaking the loop.
-            if active_agents:
+            if active_agents and not self._restart_requested:
                 self._increment_restart_failure_counts(set(active_agents.keys()))
 
             if self._restart_requested and self._restart_via_service:

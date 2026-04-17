@@ -802,22 +802,34 @@ class SessionStore:
                 return True
         return False
 
-    def suspend_recently_active(self, max_age_seconds: int = 120) -> int:
+    def suspend_recently_active(
+        self,
+        max_age_seconds: int = 120,
+        exclude_session_keys: Optional[set[str]] = None,
+    ) -> int:
         """Mark recently-active sessions as suspended.
 
         Called on gateway startup to prevent sessions that were likely
         in-flight when the gateway last exited from being blindly resumed
-        (#7536).  Only suspends sessions updated within *max_age_seconds*
+        (#7536). Only suspends sessions updated within *max_age_seconds*
         to avoid resetting long-idle sessions that are harmless to resume.
+
+        ``exclude_session_keys`` lets callers preserve specific sessions
+        (for example, when a restart was intentional and those sessions
+        should continue after startup).
+
         Returns the number of sessions that were suspended.
         """
         from datetime import timedelta
 
         cutoff = _now() - timedelta(seconds=max_age_seconds)
+        excluded = set(exclude_session_keys or ())
         count = 0
         with self._lock:
             self._ensure_loaded_locked()
             for entry in self._entries.values():
+                if entry.session_key in excluded:
+                    continue
                 if not entry.suspended and entry.updated_at >= cutoff:
                     entry.suspended = True
                     count += 1

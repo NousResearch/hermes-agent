@@ -1,4 +1,4 @@
-import { useApp, useHasSelection, useSelection, useStdout, type ScrollBoxHandle } from '@hermes/ink'
+import { type ScrollBoxHandle, useApp, useHasSelection, useSelection, useStdout } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 

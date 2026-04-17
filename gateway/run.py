@@ -289,6 +289,11 @@ from gateway.group_runtime_status_service import (
 from gateway.session_hygiene_runtime_service import (
     maybe_auto_compress_session_history as shared_maybe_auto_compress_session_history,
 )
+from gateway.message_preprocessing_runtime_service import (
+    is_shared_thread_session as shared_is_shared_thread_session,
+    prepend_reply_context_if_missing as shared_prepend_reply_context_if_missing,
+    prepend_shared_thread_sender as shared_prepend_shared_thread_sender,
+)
 from gateway.shared_group_history_runtime_service import (
     DEFAULT_SHARED_GROUP_VISIBLE_HISTORY_LIMIT as SHARED_DEFAULT_GROUP_VISIBLE_HISTORY_LIMIT,
     is_shared_group_internal_artifact as shared_is_shared_group_internal_artifact,
@@ -476,6 +481,47 @@ def _simplify_shared_group_history_for_agent(
 def _resolve_runtime_agent_kwargs() -> dict:
     """Resolve provider credentials for gateway-created AIAgent instances."""
     return shared_resolve_runtime_agent_kwargs()
+
+
+def _is_shared_thread_session(
+    *,
+    source: SessionSource,
+    thread_sessions_per_user: bool,
+) -> bool:
+    return shared_is_shared_thread_session(
+        source=source,
+        thread_sessions_per_user=thread_sessions_per_user,
+    )
+
+
+def _prepend_reply_context_if_missing(
+    *,
+    message_text: str,
+    event: MessageEvent,
+    history: List[Dict[str, Any]],
+) -> str:
+    return shared_prepend_reply_context_if_missing(
+        message_text=message_text,
+        reply_to_text=getattr(event, "reply_to_text", None),
+        reply_to_message_id=getattr(event, "reply_to_message_id", None),
+        history=history,
+    )
+
+
+def _prepend_shared_thread_sender(
+    *,
+    message_text: str,
+    source: SessionSource,
+    thread_sessions_per_user: bool,
+) -> str:
+    return shared_prepend_shared_thread_sender(
+        message_text=message_text,
+        user_name=source.user_name,
+        shared_thread=_is_shared_thread_session(
+            source=source,
+            thread_sessions_per_user=thread_sessions_per_user,
+        ),
+    )
 
 
 def _load_gateway_flush_memory_store():
@@ -4045,22 +4091,18 @@ class GatewayRunner:
         )
 
         background_message_text = event.text or ""
-        _background_shared_thread = (
-            source.chat_type != "dm"
-            and source.thread_id
-            and not getattr(self.config, "thread_sessions_per_user", False)
+        background_message_text = _prepend_shared_thread_sender(
+            message_text=background_message_text,
+            source=source,
+            thread_sessions_per_user=bool(
+                getattr(self.config, "thread_sessions_per_user", False)
+            ),
         )
-        if _background_shared_thread and source.user_name:
-            background_message_text = f"[{source.user_name}] {background_message_text}"
-        if getattr(event, "reply_to_text", None) and event.reply_to_message_id:
-            reply_snippet = event.reply_to_text[:500]
-            found_in_history = any(
-                reply_snippet[:200] in (msg.get("content") or "")
-                for msg in history
-                if msg.get("role") in ("assistant", "user", "tool")
-            )
-            if not found_in_history:
-                background_message_text = f'[Replying to: "{reply_snippet}"]\n\n{background_message_text}'
+        background_message_text = _prepend_reply_context_if_missing(
+            message_text=background_message_text,
+            event=event,
+            history=history,
+        )
         background_dispatch = self._resolve_auto_background_dispatch(
             event,
             background_message_text,
@@ -4151,10 +4193,11 @@ class GatewayRunner:
         # tell participants apart.  Skip for DMs (single-user by nature) and
         # when per-user thread isolation is explicitly enabled.
         # -----------------------------------------------------------------
-        _is_shared_thread = (
-            source.chat_type != "dm"
-            and source.thread_id
-            and not getattr(self.config, "thread_sessions_per_user", False)
+        _is_shared_thread = _is_shared_thread_session(
+            source=source,
+            thread_sessions_per_user=bool(
+                getattr(self.config, "thread_sessions_per_user", False)
+            ),
         )
         attachments = event.ensure_attachments()
         image_attachments = [
@@ -4278,18 +4321,17 @@ class GatewayRunner:
         # or background task, the agent has no context about what's being
         # referenced. Prepend the quoted text so the agent understands. (#1594)
         # -----------------------------------------------------------------
-        if getattr(event, 'reply_to_text', None) and event.reply_to_message_id:
-            reply_snippet = event.reply_to_text[:500]
-            found_in_history = any(
-                reply_snippet[:200] in (msg.get("content") or "")
-                for msg in history
-                if msg.get("role") in ("assistant", "user", "tool")
-            )
-            if not found_in_history:
-                message_text = f'[Replying to: "{reply_snippet}"]\n\n{message_text}'
+        message_text = _prepend_reply_context_if_missing(
+            message_text=message_text,
+            event=event,
+            history=history,
+        )
 
-        if _is_shared_thread and source.user_name and message_text.strip():
-            message_text = f"[{source.user_name}] {message_text}"
+        message_text = shared_prepend_shared_thread_sender(
+            message_text=message_text,
+            user_name=source.user_name,
+            shared_thread=_is_shared_thread,
+        )
 
         try:
             # Emit agent:start hook

@@ -1,9 +1,15 @@
 import { useCallback } from 'react'
 
+import { buildSetupRequiredSections, SETUP_REQUIRED_TITLE } from '../content/setup.js'
 import { introMsg, toTranscriptMessages } from '../domain/messages.js'
 import { ZERO } from '../domain/usage.js'
 import { type GatewayClient } from '../gatewayClient.js'
-import type { SessionCloseResponse, SessionCreateResponse, SessionResumeResponse } from '../gatewayTypes.js'
+import type {
+  SessionCloseResponse,
+  SessionCreateResponse,
+  SessionResumeResponse,
+  SetupStatusResponse
+} from '../gatewayTypes.js'
 import { asRpcResult } from '../lib/rpc.js'
 import type { Msg, SessionInfo, Usage } from '../types.js'
 
@@ -33,6 +39,7 @@ export interface UseSessionLifecycleOptions {
   colsRef: { current: number }
   composerActions: ComposerActions
   gw: GatewayClient
+  panel: (title: string, sections: import('../types.js').PanelSection[]) => void
   rpc: GatewayRpc
   setHistoryItems: StateSetter<Msg[]>
   setLastUserMsg: StateSetter<string>
@@ -48,6 +55,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
     colsRef,
     composerActions,
     gw,
+    panel,
     rpc,
     setHistoryItems,
     setLastUserMsg,
@@ -94,6 +102,15 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
 
   const newSession = useCallback(
     async (msg?: string) => {
+      const setup = await rpc<SetupStatusResponse>('setup.status', {})
+
+      if (setup?.provider_configured === false) {
+        panel(SETUP_REQUIRED_TITLE, buildSetupRequiredSections())
+        patchUiState({ status: 'setup required' })
+
+        return
+      }
+
       await closeSession(getUiState().sid)
 
       const r = await rpc<SessionCreateResponse>('session.create', { cols: colsRef.current })
@@ -126,7 +143,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
         sys(msg)
       }
     },
-    [closeSession, colsRef, resetSession, rpc, setHistoryItems, setSessionStartedAt, sys]
+    [closeSession, colsRef, panel, resetSession, rpc, setHistoryItems, setSessionStartedAt, sys]
   )
 
   const resumeById = useCallback(
@@ -134,38 +151,47 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
       patchOverlayState({ picker: false })
       patchUiState({ status: 'resuming…' })
 
-      closeSession(getUiState().sid === id ? null : getUiState().sid).then(() =>
-        gw
-          .request<SessionResumeResponse>('session.resume', { cols: colsRef.current, session_id: id })
-          .then(raw => {
-            const r = asRpcResult<SessionResumeResponse>(raw)
+      rpc<SetupStatusResponse>('setup.status', {}).then(setup => {
+        if (setup?.provider_configured === false) {
+          panel(SETUP_REQUIRED_TITLE, buildSetupRequiredSections())
+          patchUiState({ status: 'setup required' })
 
-            if (!r) {
-              sys('error: invalid response: session.resume')
+          return
+        }
 
-              return patchUiState({ status: 'ready' })
-            }
+        closeSession(getUiState().sid === id ? null : getUiState().sid).then(() =>
+          gw
+            .request<SessionResumeResponse>('session.resume', { cols: colsRef.current, session_id: id })
+            .then(raw => {
+              const r = asRpcResult<SessionResumeResponse>(raw)
 
-            resetSession()
-            setSessionStartedAt(Date.now())
+              if (!r) {
+                sys('error: invalid response: session.resume')
 
-            const resumed = toTranscriptMessages(r.messages)
+                return patchUiState({ status: 'ready' })
+              }
 
-            setHistoryItems(r.info ? [introMsg(r.info), ...resumed] : resumed)
-            patchUiState({
-              info: r.info ?? null,
-              sid: r.session_id,
-              status: 'ready',
-              usage: usageFrom(r.info ?? null)
+              resetSession()
+              setSessionStartedAt(Date.now())
+
+              const resumed = toTranscriptMessages(r.messages)
+
+              setHistoryItems(r.info ? [introMsg(r.info), ...resumed] : resumed)
+              patchUiState({
+                info: r.info ?? null,
+                sid: r.session_id,
+                status: 'ready',
+                usage: usageFrom(r.info ?? null)
+              })
             })
-          })
-          .catch((e: Error) => {
-            sys(`error: ${e.message}`)
-            patchUiState({ status: 'ready' })
-          })
-      )
+            .catch((e: Error) => {
+              sys(`error: ${e.message}`)
+              patchUiState({ status: 'ready' })
+            })
+        )
+      })
     },
-    [closeSession, colsRef, gw, resetSession, setHistoryItems, setSessionStartedAt, sys]
+    [closeSession, colsRef, gw, panel, resetSession, rpc, setHistoryItems, setSessionStartedAt, sys]
   )
 
   const guardBusySessionSwitch = useCallback(

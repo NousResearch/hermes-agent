@@ -129,6 +129,14 @@ def test_enable_gateway_prompts_sets_gateway_env(monkeypatch):
     assert server.os.environ["HERMES_INTERACTIVE"] == "1"
 
 
+def test_setup_status_reports_provider_config(monkeypatch):
+    monkeypatch.setattr("hermes_cli.main._has_any_provider_configured", lambda: False)
+
+    resp = server.handle_request({"id": "1", "method": "setup.status", "params": {}})
+
+    assert resp["result"]["provider_configured"] is False
+
+
 def test_config_set_reasoning_updates_live_session_and_agent(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
     agent = types.SimpleNamespace(reasoning_config=None)

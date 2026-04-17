@@ -26,6 +26,7 @@ const buildCtx = (appended: Msg[]) =>
       colsRef: ref(80),
       newSession: vi.fn(),
       resetSession: vi.fn(),
+      resumeById: vi.fn(),
       setCatalog: vi.fn()
     },
     system: {
@@ -34,6 +35,8 @@ const buildCtx = (appended: Msg[]) =>
     },
     transcript: {
       appendMessage: (msg: Msg) => appended.push(msg),
+      panel: (title: string, sections: any[]) =>
+        appended.push({ kind: 'panel', panelData: { sections, title }, role: 'system', text: '' }),
       setHistoryItems: vi.fn()
     }
   }) as any
@@ -137,5 +140,25 @@ describe('createGatewayEventHandler', () => {
     expect(appended).toHaveLength(1)
     expect(appended[0]?.thinking).toBe(fromServer)
     expect(appended[0]?.thinkingTokens).toBe(estimateTokensRough(fromServer))
+  })
+
+  it('shows setup panel for missing provider startup error', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    onEvent({
+      payload: {
+        message:
+          'agent init failed: No LLM provider configured. Run `hermes model` to select a provider, or run `hermes setup` for first-time configuration.'
+      },
+      type: 'error'
+    } as any)
+
+    expect(appended).toHaveLength(1)
+    expect(appended[0]).toMatchObject({
+      kind: 'panel',
+      panelData: { title: 'Setup Required' },
+      role: 'system'
+    })
   })
 })

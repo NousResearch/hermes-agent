@@ -110,8 +110,10 @@ def merge_turn_runtime_defaults(
     Args:
         primary: Base turn config to merge onto. Not mutated.
         skill_defaults: Output of ``extract_skill_runtime_defaults``.
-        skill_name: Used in log events and hard-fail reasons.  Sanitize before
-            passing (see ``agent.skill_utils.is_safe_skill_name``).
+        skill_name: Used in log events and hard-fail reasons.  Values that
+            fail ``agent.skill_utils.is_safe_skill_name`` are replaced with
+            the empty string so structured logs stay safe even if a caller
+            forgot to sanitize.
         explicit_lock: Fields the user or operator explicitly locked for this
             turn, e.g. ``{"model": "anthropic/claude-4.6"}``.  Always beats
             skill defaults.
@@ -124,6 +126,15 @@ def merge_turn_runtime_defaults(
         :class:`MergeResult` whose ``merged`` dict is safe to pass to
         ``resolve_turn_route()``.
     """
+    # Defensive sanitization: structured log events emit
+    # ``skill_name_sanitized`` under the assumption the value is safe.
+    # Callers are asked to pre-sanitize (see docstring), but we enforce
+    # the contract here so a forgetful caller cannot corrupt observability.
+    from agent.skill_utils import is_safe_skill_name
+
+    if not is_safe_skill_name(skill_name):
+        skill_name = ""
+
     events: List[LogEvent] = []
     merged: Dict[str, Any] = dict(primary or {})
     explicit = explicit_lock or {}

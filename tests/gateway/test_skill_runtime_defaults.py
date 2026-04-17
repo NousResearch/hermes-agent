@@ -257,10 +257,13 @@ class TestGatewaySkillCommandSetsTurnRuntimeDefaults:
             await runner._handle_message(event)
 
         kwargs = runner._run_agent.call_args.kwargs
+        # skill_name is carried inside runtime_defaults so the merger can
+        # emit a non-empty skill_name_sanitized in structured log events.
         assert kwargs.get("turn_runtime_defaults") == {
             "reasoning_effort": "low",
             "reasoning_config": {"enabled": True, "effort": "low"},
             "required": [],
+            "skill_name": "plan",
         }
 
 

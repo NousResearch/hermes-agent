@@ -2963,16 +2963,13 @@ class HermesCLI:
         )
         try:
             self.agent.reasoning_config = effective
-        except Exception:
-            pass
-        try:
             self.agent.service_tier = getattr(self, "service_tier", None)
-        except Exception:
-            pass
-        try:
             self.agent.request_overrides = turn_route.get("request_overrides")
-        except Exception:
-            pass
+        except AttributeError:
+            logger.debug(
+                "per-turn agent mutation skipped (missing attribute)",
+                exc_info=True,
+            )
 
     def _init_agent(self, *, model_override: str = None, runtime_override: dict = None, route_label: str = None, request_overrides: dict | None = None) -> bool:
         """

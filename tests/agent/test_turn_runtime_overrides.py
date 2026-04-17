@@ -201,6 +201,34 @@ class TestMergeTurnRuntimeDefaults:
         assert result.hard_fail is None
         assert result.merged["reasoning_config"] == _reasoning("low")
 
+    def test_unsafe_skill_name_is_scrubbed_in_events(self):
+        """Control chars in skill_name must not leak into structured logs."""
+        skill = {
+            "reasoning_effort": "low",
+            "reasoning_config": _reasoning("low"),
+            "required": [],
+        }
+        result = merge_turn_runtime_defaults(
+            {}, skill, skill_name="evil\nname: pwn"
+        )
+        for event in result.events:
+            assert event.fields.get("skill_name_sanitized") == ""
+
+    def test_unsafe_skill_name_scrubbed_in_hard_fail(self):
+        skill = {
+            "reasoning_effort": "high",
+            "reasoning_config": _reasoning("high"),
+            "required": ["reasoning_effort"],
+        }
+        result = merge_turn_runtime_defaults(
+            {},
+            skill,
+            session_default_reasoning=_reasoning("low"),
+            skill_name="bad name with spaces",
+        )
+        assert result.hard_fail is not None
+        assert result.hard_fail.skill_name == ""
+
 
 class TestMergeMultiSkillRuntimeDefaults:
     def test_single_skill_passes_through(self):

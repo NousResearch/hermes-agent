@@ -348,6 +348,7 @@ def build_skill_invocation_payload(
     try:
         from agent.skill_utils import (
             extract_skill_runtime_defaults,
+            is_safe_skill_name,
             parse_frontmatter,
         )
 
@@ -357,6 +358,12 @@ def build_skill_invocation_payload(
         if raw_content:
             frontmatter, _ = parse_frontmatter(raw_content)
             runtime_defaults = extract_skill_runtime_defaults(frontmatter)
+            # Carry the skill_name inside runtime_defaults so downstream
+            # mergers (CLI, gateway) can emit a non-empty
+            # skill_name_sanitized in structured log events.  Names that
+            # fail is_safe_skill_name are dropped to keep logs safe.
+            if runtime_defaults and is_safe_skill_name(skill_name):
+                runtime_defaults["skill_name"] = skill_name
     except Exception:
         # Fail soft — a broken extractor never blocks a skill invocation.
         runtime_defaults = {}

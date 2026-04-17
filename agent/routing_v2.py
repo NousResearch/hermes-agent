@@ -107,13 +107,23 @@ def select_model(prompt: str, benchmarks: Dict[str, Dict[str, float]], tiers: Li
                 best = group[-1]
                 break
     tier = _find_tier_for_model(tiers, best) or len(tiers)
-    return {
+    decision = {
         "category": category,
         "model": best,
         "tier": tier,
         "benchmark_score": _score_for_model(benchmarks, category, best),
         "reason": "benchmark_best",
     }
+    # Enrich with delegation policy + subagent plan (zero-token).
+    try:
+        from agent import delegation_policy as _dp
+        delegate, reason = _dp.should_delegate(prompt, decision)
+        decision["delegate"] = delegate
+        decision["delegate_reason"] = reason
+        decision["subagents"] = _dp.plan_subagents(prompt, decision)
+    except Exception:
+        pass
+    return decision
 
 
 def escalate(current_model: str, tiers: List[List[str]], reason: str = "") -> Dict[str, Any]:

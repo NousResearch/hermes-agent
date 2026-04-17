@@ -6,7 +6,7 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from brokerage.app import create_app
+from brokerage.app import build_service, create_app
 from brokerage.brokers.base import BrokerAdapter
 from brokerage.config import BrokerageSettings
 from brokerage.models import BrokerSubmissionResult, TradeIntent
@@ -23,6 +23,7 @@ class FakeBroker(BrokerAdapter):
             broker_status="Submitted",
         )
         self._positions = positions or []
+        self.last_positions_query: dict[str, str | None] | None = None
 
     def submit_order(self, intent: TradeIntent) -> BrokerSubmissionResult:
         return self.result
@@ -39,8 +40,11 @@ class FakeBroker(BrokerAdapter):
     def cancel_order(self, order_id: str):
         return None
 
-    def get_positions(self, *, account_mode: str | None = None) -> list[dict]:
-        return self._positions
+    def get_positions(self, *, account_mode: str | None = None, account: str | None = None) -> list[dict]:
+        self.last_positions_query = {"account_mode": account_mode, "account": account}
+        if account is None:
+            return self._positions
+        return [p for p in self._positions if p.get("account") == account]
 
 
 def _make_client(tmp_path: Path, *, token: str = "test-token", positions: list[dict] | None = None) -> TestClient:
@@ -66,6 +70,23 @@ def test_healthz_returns_ok(tmp_path):
     assert data["ok"] is True
     assert "connected" in data
     assert "mode" in data
+
+
+def test_build_service_loads_brokerage_settings_from_hermes_config(tmp_path, monkeypatch):
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "brokerage:\n"
+        "  live_enabled: true\n"
+        "  default_live_account: U3510752\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    service = build_service()
+
+    assert service.settings.live_enabled is True
+    assert service.settings.default_live_account == "U3510752"
 
 
 def test_create_trade_intent_requires_bearer_auth(tmp_path):
@@ -119,6 +140,35 @@ def test_create_trade_intent_returns_pending_preview_and_confirmation_code(tmp_p
     }
 
 
+def test_create_trade_intent_accepts_paper_stop_market_order(tmp_path):
+    client = _make_client(tmp_path)
+
+    response = client.post(
+        "/trade-intents",
+        headers=_auth_headers(),
+        json={
+            "account_mode": "paper",
+            "symbol": "AAPL",
+            "side": "SELL",
+            "quantity": 5,
+            "order_type": "STOP",
+            "stop_price": 180.25,
+            "asset_class": "stock",
+        },
+    )
+
+    assert response.status_code == 201
+    assert response.json()["preview"] == {
+        "account_mode": "paper",
+        "side": "SELL",
+        "symbol": "AAPL",
+        "quantity": 5,
+        "order_type": "STOP",
+        "asset_class": "stock",
+        "stop_price": 180.25,
+    }
+
+
 def test_confirm_trade_intent_submits_order(tmp_path):
     client = _make_client(tmp_path)
     created = client.post(
@@ -148,6 +198,32 @@ def test_confirm_trade_intent_submits_order(tmp_path):
         "broker_status": "Submitted",
         "detail": None,
     }
+
+
+def test_create_trade_intent_accepts_explicit_broker_account(tmp_path):
+    settings = BrokerageSettings(service_token="test-token", live_enabled=True)
+    store = SQLiteBrokerageStore(tmp_path / "brokerage.db")
+    policy = BrokeragePolicy(settings)
+    service = BrokerageService(settings, store, policy, FakeBroker())
+    app = create_app(service=service, auth_token="test-token")
+    client = TestClient(app)
+
+    response = client.post(
+        "/trade-intents",
+        headers=_auth_headers(),
+        json={
+            "account_mode": "live",
+            "symbol": "AAPL",
+            "side": "BUY",
+            "quantity": 1,
+            "order_type": "MARKET",
+            "asset_class": "stock",
+            "broker_account": "u3510752",
+        },
+    )
+
+    assert response.status_code == 201
+    assert response.json()["preview"]["broker_account"] == "U3510752"
 
 
 def test_cancel_trade_intent_returns_cancelled_status(tmp_path):
@@ -215,8 +291,8 @@ def test_get_positions_returns_empty_when_no_positions(tmp_path):
 
 def test_get_positions_returns_broker_positions(tmp_path):
     positions = [
-        {"symbol": "AAPL", "position": 5.0, "avg_cost": 264.98, "account_mode": "paper"},
-        {"symbol": "MSFT", "position": 3.0, "avg_cost": 420.50, "account_mode": "paper"},
+        {"account": "DUQ218494", "symbol": "AAPL", "position": 5.0, "avg_cost": 264.98, "account_mode": "paper"},
+        {"account": "DUQ218494", "symbol": "MSFT", "position": 3.0, "avg_cost": 420.50, "account_mode": "paper"},
     ]
     client = _make_client(tmp_path, positions=positions)
 
@@ -228,17 +304,26 @@ def test_get_positions_returns_broker_positions(tmp_path):
     assert body["positions"] == positions
 
 
-def test_get_positions_passes_account_mode_query_param(tmp_path):
+def test_get_positions_passes_account_mode_and_account_query_params(tmp_path):
     positions = [
-        {"symbol": "AAPL", "position": 5.0, "avg_cost": 264.98, "account_mode": "paper"},
+        {"account": "DUQ218494", "symbol": "AAPL", "position": 5.0, "avg_cost": 264.98, "account_mode": "paper"},
+        {"account": "U3510752", "symbol": "NFLX", "position": 10.0, "avg_cost": 900.5, "account_mode": "live"},
     ]
-    client = _make_client(tmp_path, positions=positions)
+    settings = BrokerageSettings(service_token="test-token")
+    store = SQLiteBrokerageStore(tmp_path / "brokerage.db")
+    policy = BrokeragePolicy(settings)
+    broker = FakeBroker(positions=positions)
+    service = BrokerageService(settings, store, policy, broker)
+    app = create_app(service=service, auth_token="test-token")
+    client = TestClient(app)
 
-    response = client.get("/positions?account_mode=paper", headers=_auth_headers())
+    response = client.get("/positions?account_mode=live&account=U3510752", headers=_auth_headers())
 
     assert response.status_code == 200
     body = response.json()
     assert body["count"] == 1
+    assert body["positions"] == [positions[1]]
+    assert broker.last_positions_query == {"account_mode": "live", "account": "U3510752"}
 
 
 def test_get_positions_requires_auth(tmp_path):

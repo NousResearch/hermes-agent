@@ -11,6 +11,7 @@ def test_brokerage_settings_defaults_to_paper_mode_and_local_service():
     settings = BrokerageSettings()
     assert settings.service_url == "http://127.0.0.1:8787"
     assert settings.default_account_mode == "paper"
+    assert settings.default_live_account is None
     assert settings.confirmation_ttl_seconds == 120
 
 
@@ -53,6 +54,33 @@ def test_trade_intent_rejects_limit_price_for_market_orders():
             order_type="MARKET",
             asset_class="stock",
             limit_price=200.0,
+        )
+
+
+def test_trade_intent_requires_stop_price_for_stop_orders():
+    with pytest.raises(ValidationError):
+        TradeIntent(
+            request_id="r1",
+            account_mode="paper",
+            symbol="AAPL",
+            side="SELL",
+            quantity=10,
+            order_type="STOP",
+            asset_class="stock",
+        )
+
+
+def test_trade_intent_rejects_stop_price_for_non_stop_orders():
+    with pytest.raises(ValidationError):
+        TradeIntent(
+            request_id="r1",
+            account_mode="paper",
+            symbol="AAPL",
+            side="SELL",
+            quantity=10,
+            order_type="MARKET",
+            asset_class="stock",
+            stop_price=180.0,
         )
 
 

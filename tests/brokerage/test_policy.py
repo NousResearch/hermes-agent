@@ -55,6 +55,19 @@ def test_validate_new_intent_rejects_trade_over_paper_notional_cap():
     assert "paper_max_notional" in decision.reason
 
 
+def test_validate_new_intent_uses_stop_price_for_paper_stop_notional_estimate():
+    settings = BrokerageSettings(paper_max_notional=500.0)
+    policy = BrokeragePolicy(settings)
+
+    decision = policy.validate_new_intent(
+        _make_intent(side="SELL", quantity=5, order_type="STOP", stop_price=150.0),
+        market_snapshot={"last_price": 50.0},
+    )
+
+    assert decision.allowed is False
+    assert "paper_max_notional" in decision.reason
+
+
 # --- Live mode validation ---
 
 def test_validate_new_intent_blocks_live_when_live_disabled():

@@ -11,7 +11,7 @@ from brokerage.config import BrokerageSettings
 from brokerage.models import BrokerSubmissionResult, TradeIntent
 
 try:
-    from ib_insync import IB, LimitOrder, MarketOrder, Stock
+    from ib_insync import IB, LimitOrder, MarketOrder, StopOrder, Stock
 except Exception:  # pragma: no cover - exercised via mocked methods in tests
     IB = None
 
@@ -27,6 +27,13 @@ except Exception:  # pragma: no cover - exercised via mocked methods in tests
             self.totalQuantity = totalQuantity
             self.orderType = "LMT"
             self.lmtPrice = lmtPrice
+
+    class StopOrder:  # type: ignore[no-redef]
+        def __init__(self, action, totalQuantity, stopPrice):
+            self.action = action
+            self.totalQuantity = totalQuantity
+            self.orderType = "STP"
+            self.auxPrice = stopPrice
 
     class Stock:  # type: ignore[no-redef]
         def __init__(self, symbol, exchange, currency):
@@ -131,6 +138,7 @@ class IBKRTwsBrokerAdapter(BrokerAdapter):
         if self.is_connected:
             logger.info("Disconnecting from %s mode to switch to %s", self._connected_mode, account_mode)
             self._safe_disconnect()
+            ib = self._ensure_ib()
 
         # Connect to the requested mode
         port = self._select_port(account_mode)
@@ -149,6 +157,7 @@ class IBKRTwsBrokerAdapter(BrokerAdapter):
                 self._ib.disconnect()
             except Exception as exc:
                 logger.warning("Error during disconnect: %s", exc)
+        self._ib = None
         self._connected_mode = None
 
     def disconnect(self) -> None:
@@ -184,10 +193,17 @@ class IBKRTwsBrokerAdapter(BrokerAdapter):
 
     def _build_order(self, intent: TradeIntent):
         if intent.order_type == "MARKET":
-            return MarketOrder(intent.side, intent.quantity)
-        if intent.order_type == "LIMIT":
-            return LimitOrder(intent.side, intent.quantity, intent.limit_price)
-        raise ValueError(f"Unsupported order type: {intent.order_type}")
+            order = MarketOrder(intent.side, intent.quantity)
+        elif intent.order_type == "LIMIT":
+            order = LimitOrder(intent.side, intent.quantity, intent.limit_price)
+        elif intent.order_type == "STOP":
+            order = StopOrder(intent.side, intent.quantity, intent.stop_price)
+        else:
+            raise ValueError(f"Unsupported order type: {intent.order_type}")
+
+        if intent.broker_account:
+            order.account = intent.broker_account
+        return order
 
     def _qualify_contract(self, contract):
         ib = self._ensure_ib()
@@ -325,7 +341,7 @@ class IBKRTwsBrokerAdapter(BrokerAdapter):
     def cancel_order(self, order_id: str):
         raise NotImplementedError("cancel_order not implemented yet")
 
-    def get_positions(self, *, account_mode: str | None = None) -> list[dict]:
+    def get_positions(self, *, account_mode: str | None = None, account: str | None = None) -> list[dict]:
         """Return current IBKR account positions.
 
         Requires an active connection. If account_mode is given and differs
@@ -349,7 +365,10 @@ class IBKRTwsBrokerAdapter(BrokerAdapter):
 
         result = []
         for p in positions:
+            if account is not None and getattr(p, "account", None) != account:
+                continue
             result.append({
+                "account": getattr(p, "account", None),
                 "symbol": p.contract.symbol,
                 "position": float(p.position),
                 "avg_cost": float(p.avgCost),

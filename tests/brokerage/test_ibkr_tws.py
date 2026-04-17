@@ -56,6 +56,16 @@ def test_build_order_maps_limit_order_correctly():
     assert order.lmtPrice == 123.45
 
 
+def test_build_order_maps_stop_market_order_correctly():
+    adapter = IBKRTwsBrokerAdapter(BrokerageSettings())
+    order = adapter._build_order(_make_intent(side="SELL", order_type="STOP", stop_price=180.25))
+
+    assert order.action == "SELL"
+    assert order.totalQuantity == 10
+    assert order.orderType == "STP"
+    assert order.auxPrice == 180.25
+
+
 def test_submit_order_returns_submission_result_from_mocked_ib():
     adapter = IBKRTwsBrokerAdapter(BrokerageSettings())
     trade = SimpleNamespace(orderStatus=SimpleNamespace(status="Submitted"), order=SimpleNamespace(orderId=1234))
@@ -71,6 +81,32 @@ def test_submit_order_returns_submission_result_from_mocked_ib():
     assert result.accepted is True
     assert result.broker_order_id == "1234"
     assert result.broker_status == "Submitted"
+
+
+def test_submit_order_sets_target_ib_account_when_present_on_intent():
+    adapter = IBKRTwsBrokerAdapter(BrokerageSettings())
+    trade = SimpleNamespace(orderStatus=SimpleNamespace(status="Submitted"), order=SimpleNamespace(orderId=1234))
+    intent = SimpleNamespace(
+        asset_class="stock",
+        account_mode="live",
+        symbol="AAPL",
+        side="BUY",
+        quantity=1,
+        order_type="MARKET",
+        limit_price=None,
+        broker_account="U3510752",
+    )
+
+    with patch.object(adapter, "_ensure_connected") as mock_connect, patch.object(adapter, "_qualify_contract") as mock_contract:
+        adapter._ib = MagicMock()
+        mock_connect.return_value = None
+        mock_contract.return_value = SimpleNamespace(conId=1)
+        adapter._ib.placeOrder.return_value = trade
+
+        adapter.submit_order(intent)
+
+    submitted_order = adapter._ib.placeOrder.call_args.args[1]
+    assert submitted_order.account == "U3510752"
 
 
 def test_submit_order_rejects_non_stock_assets_defensively():
@@ -211,3 +247,53 @@ def test_get_order_status_prefers_completed_terminal_state_over_execution_histor
     result = adapter.get_order_status("1234", expected_quantity=10)
 
     assert result == {"broker_status": "Cancelled"}
+
+
+def test_get_positions_returns_account_labels_from_ib_positions():
+    adapter = IBKRTwsBrokerAdapter(BrokerageSettings())
+    mock_ib = MagicMock()
+    adapter._ib = mock_ib
+    mock_ib.isConnected.return_value = True
+    adapter._connected_mode = "live"
+    mock_ib.positions.return_value = [
+        SimpleNamespace(account="U123", contract=SimpleNamespace(symbol="NFLX"), position=10, avgCost=900.5),
+        SimpleNamespace(account="U456", contract=SimpleNamespace(symbol="SPY"), position=5.25, avgCost=500.0),
+    ]
+
+    result = adapter.get_positions(account_mode="live")
+
+    assert result == [
+        {"account": "U123", "symbol": "NFLX", "position": 10.0, "avg_cost": 900.5, "account_mode": "live"},
+        {"account": "U456", "symbol": "SPY", "position": 5.25, "avg_cost": 500.0, "account_mode": "live"},
+    ]
+
+
+def test_get_positions_filters_to_requested_account():
+    adapter = IBKRTwsBrokerAdapter(BrokerageSettings())
+    mock_ib = MagicMock()
+    adapter._ib = mock_ib
+    mock_ib.isConnected.return_value = True
+    adapter._connected_mode = "live"
+    mock_ib.positions.return_value = [
+        SimpleNamespace(account="U123", contract=SimpleNamespace(symbol="NFLX"), position=10, avgCost=900.5),
+        SimpleNamespace(account="U456", contract=SimpleNamespace(symbol="SPY"), position=5.25, avgCost=500.0),
+    ]
+
+    result = adapter.get_positions(account_mode="live", account="U456")
+
+    assert result == [
+        {"account": "U456", "symbol": "SPY", "position": 5.25, "avg_cost": 500.0, "account_mode": "live"},
+    ]
+
+
+def test_safe_disconnect_clears_ib_instance_to_prevent_cross_mode_position_leaks():
+    adapter = IBKRTwsBrokerAdapter(BrokerageSettings())
+    mock_ib = MagicMock()
+    adapter._ib = mock_ib
+    adapter._connected_mode = "paper"
+
+    adapter._safe_disconnect()
+
+    mock_ib.disconnect.assert_called_once()
+    assert adapter._ib is None
+    assert adapter._connected_mode is None

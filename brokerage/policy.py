@@ -86,6 +86,9 @@ class BrokeragePolicy:
         if intent.order_type == "LIMIT" and intent.limit_price is not None:
             return float(intent.quantity) * float(intent.limit_price)
 
+        if intent.order_type == "STOP" and intent.stop_price is not None:
+            return float(intent.quantity) * float(intent.stop_price)
+
         if market_snapshot and market_snapshot.get("last_price") is not None:
             return float(intent.quantity) * float(market_snapshot["last_price"])
 

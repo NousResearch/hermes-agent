@@ -34,8 +34,9 @@ CREATE_TRADE_INTENT_SCHEMA = {
             "symbol": {"type": "string"},
             "side": {"type": "string", "enum": ["buy", "sell", "BUY", "SELL"]},
             "quantity": {"type": "integer", "minimum": 1},
-            "order_type": {"type": "string", "enum": ["market", "limit", "MARKET", "LIMIT"]},
+            "order_type": {"type": "string", "enum": ["market", "limit", "stop", "MARKET", "LIMIT", "STOP"]},
             "limit_price": {"type": "number", "exclusiveMinimum": 0},
+            "stop_price": {"type": "number", "exclusiveMinimum": 0},
             "asset_class": {"type": "string", "default": "stock"},
             "time_in_force": {"type": "string", "default": "DAY"},
             "raw_user_text": {
@@ -156,6 +157,8 @@ def create_trade_intent_tool(args: dict[str, Any], **kwargs) -> str:
     }
     if args.get("limit_price") is not None:
         payload["limit_price"] = args.get("limit_price")
+    if args.get("stop_price") is not None:
+        payload["stop_price"] = args.get("stop_price")
     if args.get("raw_user_text"):
         payload["raw_request_text"] = args.get("raw_user_text")
     return _service_request("POST", "/trade-intents", payload=payload)

@@ -200,6 +200,37 @@ def test_create_trade_intent_sends_expected_payload_and_auth_header(monkeypatch)
     ]
 
 
+def test_create_trade_intent_forwards_stop_price(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        brokerage_tool,
+        "_load_brokerage_config",
+        lambda: {"enabled": True, "service_url": "http://127.0.0.1:8787", "service_token": "secret"},
+    )
+    monkeypatch.setattr(
+        brokerage_tool.httpx,
+        "Client",
+        lambda timeout: _FakeClient(calls, _FakeResponse(201, {"intent_id": "ti_stop", "status": "pending_confirmation"})),
+    )
+
+    json.loads(
+        brokerage_tool.create_trade_intent_tool(
+            {
+                "account_mode": "paper",
+                "symbol": "aapl",
+                "side": "sell",
+                "quantity": 5,
+                "order_type": "stop",
+                "stop_price": 180.25,
+                "asset_class": "stock",
+            }
+        )
+    )
+
+    assert calls[0]["json"]["order_type"] == "stop"
+    assert calls[0]["json"]["stop_price"] == 180.25
+
+
 def test_confirm_trade_intent_forwards_intent_id_and_confirmation_text(monkeypatch):
     calls = []
     monkeypatch.setattr(
@@ -278,6 +309,9 @@ def test_service_http_errors_become_json_errors(monkeypatch):
 
 
 def test_brokerage_toolset_is_unavailable_when_disabled(monkeypatch):
+    monkeypatch.delenv("BROKERAGE_ENABLED", raising=False)
+    monkeypatch.delenv("BROKERAGE_SERVICE_URL", raising=False)
+    monkeypatch.delenv("BROKERAGE_SERVICE_TOKEN", raising=False)
     monkeypatch.setattr(
         brokerage_tool,
         "_load_brokerage_config",

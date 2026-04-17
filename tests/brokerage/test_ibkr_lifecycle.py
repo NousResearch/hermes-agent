@@ -174,7 +174,11 @@ def test_switching_account_mode_reconnects():
     # First call to isConnected during _ensure_connected check returns True (paper mode)
     # But since mode != "live", it should disconnect and reconnect
 
-    with patch.object(adapter, "_ensure_ib", return_value=mock_ib):
+    def fake_ensure_ib():
+        adapter._ib = mock_ib
+        return mock_ib
+
+    with patch.object(adapter, "_ensure_ib", side_effect=fake_ensure_ib):
         adapter.submit_order(_make_intent(account_mode="live"))
 
     # Should have disconnected from paper and connected to live

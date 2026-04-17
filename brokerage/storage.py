@@ -34,11 +34,13 @@ class SQLiteBrokerageStore:
                     created_at TEXT NOT NULL,
                     status TEXT NOT NULL,
                     account_mode TEXT NOT NULL,
+                    broker_account TEXT,
                     symbol TEXT NOT NULL,
                     side TEXT NOT NULL,
                     quantity INTEGER NOT NULL,
                     order_type TEXT NOT NULL,
                     limit_price REAL,
+                    stop_price REAL,
                     asset_class TEXT NOT NULL,
                     confirmation_code TEXT,
                     confirmation_expires_at TEXT,
@@ -49,6 +51,11 @@ class SQLiteBrokerageStore:
                 )
                 """
             )
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(trade_intents)")}
+            if "broker_account" not in columns:
+                conn.execute("ALTER TABLE trade_intents ADD COLUMN broker_account TEXT")
+            if "stop_price" not in columns:
+                conn.execute("ALTER TABLE trade_intents ADD COLUMN stop_price REAL")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS trade_events (
@@ -76,22 +83,24 @@ class SQLiteBrokerageStore:
             conn.execute(
                 """
                 INSERT INTO trade_intents (
-                    intent_id, created_at, status, account_mode, symbol, side,
-                    quantity, order_type, limit_price, asset_class,
+                    intent_id, created_at, status, account_mode, broker_account, symbol, side,
+                    quantity, order_type, limit_price, stop_price, asset_class,
                     confirmation_code, confirmation_expires_at,
                     session_id, telegram_chat_id, ibkr_order_id, raw_request_text
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     intent.request_id,
                     datetime.now(timezone.utc).isoformat(),
                     intent.status,
                     intent.account_mode,
+                    intent.broker_account,
                     intent.symbol,
                     intent.side,
                     intent.quantity,
                     intent.order_type,
                     intent.limit_price,
+                    intent.stop_price,
                     intent.asset_class,
                     confirmation_code,
                     confirmation_expires_at.isoformat() if confirmation_expires_at else None,

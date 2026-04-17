@@ -16,12 +16,14 @@ from brokerage.storage import SQLiteBrokerageStore
 
 class CreateTradeIntentRequest(BaseModel):
     account_mode: str
+    broker_account: str | None = None
     symbol: str
     side: str
     quantity: int
     order_type: str
     asset_class: str = "stock"
     limit_price: float | None = None
+    stop_price: float | None = None
     raw_request_text: str | None = None
     session_id: str | None = None
     telegram_chat_id: str | None = None
@@ -40,11 +42,25 @@ class BrokerageAppDependencies(BaseModel):
 
 
 def build_service(settings: BrokerageSettings | None = None) -> BrokerageService:
-    runtime_settings = settings or BrokerageSettings()
+    runtime_settings = settings or _load_brokerage_settings_from_config()
     store = SQLiteBrokerageStore()
     policy = BrokeragePolicy(runtime_settings)
     broker = IBKRTwsBrokerAdapter(runtime_settings)
     return BrokerageService(runtime_settings, store, policy, broker)
+
+
+def _load_brokerage_settings_from_config() -> BrokerageSettings:
+    try:
+        from hermes_cli.config import load_config
+
+        config = load_config() or {}
+    except Exception:
+        config = {}
+
+    brokerage_config = config.get("brokerage", {}) if isinstance(config, dict) else {}
+    if not isinstance(brokerage_config, dict):
+        brokerage_config = {}
+    return BrokerageSettings(**brokerage_config)
 
 
 def create_app(
@@ -117,9 +133,9 @@ def create_app(
             raise _translate_error(exc) from exc
 
     @app.get("/positions", dependencies=[Depends(require_auth)])
-    def get_positions(account_mode: str | None = None) -> dict:
+    def get_positions(account_mode: str | None = None, account: str | None = None) -> dict:
         """Return current broker account positions."""
-        positions = deps.service.get_positions(account_mode=account_mode)
+        positions = deps.service.get_positions(account_mode=account_mode, account=account)
         return {"positions": positions, "count": len(positions)}
 
     return app

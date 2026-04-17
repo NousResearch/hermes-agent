@@ -38,6 +38,8 @@ class BrokerageService:
         order_type: str,
         asset_class: str = "stock",
         limit_price: float | None = None,
+        stop_price: float | None = None,
+        broker_account: str | None = None,
         raw_request_text: str | None = None,
         session_id: str | None = None,
         telegram_chat_id: str | None = None,
@@ -46,12 +48,14 @@ class BrokerageService:
         intent = TradeIntent(
             request_id=self._generate_intent_id(),
             account_mode=account_mode,
+            broker_account=self._resolve_broker_account(account_mode=account_mode, broker_account=broker_account),
             symbol=symbol,
             side=side,
             quantity=quantity,
             order_type=order_type,
             asset_class=asset_class,
             limit_price=limit_price,
+            stop_price=stop_price,
             status="pending_confirmation",
         )
 
@@ -158,9 +162,9 @@ class BrokerageService:
         row = self._require_intent(intent_id)
         return self._refresh_broker_status(row)
 
-    def get_positions(self, *, account_mode: str | None = None) -> list[dict]:
+    def get_positions(self, *, account_mode: str | None = None, account: str | None = None) -> list[dict]:
         """Return current broker account positions."""
-        return self.broker.get_positions(account_mode=account_mode)
+        return self.broker.get_positions(account_mode=account_mode, account=account)
 
     def _refresh_broker_status(self, row: dict) -> dict:
         if row.get("status") != "submitted" or not row.get("ibkr_order_id"):
@@ -221,12 +225,14 @@ class BrokerageService:
         return TradeIntent(
             request_id=row["intent_id"],
             account_mode=row["account_mode"],
+            broker_account=row.get("broker_account"),
             symbol=row["symbol"],
             side=row["side"],
             quantity=row["quantity"],
             order_type=row["order_type"],
             asset_class=row["asset_class"],
             limit_price=row["limit_price"],
+            stop_price=row.get("stop_price"),
             status=row["status"],
         )
 
@@ -258,9 +264,20 @@ class BrokerageService:
             "order_type": intent.order_type,
             "asset_class": intent.asset_class,
         }
+        if intent.broker_account is not None:
+            preview["broker_account"] = intent.broker_account
         if intent.limit_price is not None:
             preview["limit_price"] = intent.limit_price
+        if intent.stop_price is not None:
+            preview["stop_price"] = intent.stop_price
         return preview
+
+    def _resolve_broker_account(self, *, account_mode: str, broker_account: str | None) -> str | None:
+        if broker_account is not None:
+            return broker_account
+        if account_mode == "live":
+            return self.settings.default_live_account
+        return None
 
     @staticmethod
     def _parse_optional_datetime(value: str | None) -> datetime | None:

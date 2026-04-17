@@ -24,6 +24,7 @@ class FakeBroker(BrokerAdapter):
         self.order_statuses = order_statuses or {}
         self.submitted: list[TradeIntent] = []
         self._positions = positions or []
+        self.last_positions_query: dict[str, str | None] | None = None
 
     def submit_order(self, intent: TradeIntent) -> BrokerSubmissionResult:
         self.submitted.append(intent)
@@ -41,8 +42,11 @@ class FakeBroker(BrokerAdapter):
     def cancel_order(self, order_id: str):
         return None
 
-    def get_positions(self, *, account_mode: str | None = None) -> list[dict]:
-        return self._positions
+    def get_positions(self, *, account_mode: str | None = None, account: str | None = None) -> list[dict]:
+        self.last_positions_query = {"account_mode": account_mode, "account": account}
+        if account is None:
+            return self._positions
+        return [p for p in self._positions if p.get("account") == account]
 
 
 def _make_service(tmp_path, broker: BrokerAdapter | None = None) -> BrokerageService:
@@ -123,6 +127,112 @@ def test_confirm_intent_with_valid_token_submits_order(tmp_path):
     assert result["status"] == "submitted"
     assert result["broker_order_id"] == "ib-123"
     assert len(broker.submitted) == 1
+
+
+def test_paper_stop_market_order_survives_create_and_confirm(tmp_path):
+    broker = FakeBroker()
+    service = _make_service(tmp_path, broker=broker)
+    created = service.create_intent(
+        account_mode="paper",
+        symbol="AAPL",
+        side="SELL",
+        quantity=5,
+        order_type="STOP",
+        stop_price=180.25,
+        asset_class="stock",
+    )
+
+    assert created["preview"]["stop_price"] == 180.25
+
+    result = service.confirm_intent(created["intent_id"], f"CONFIRM {created['confirmation_code']}")
+
+    assert result["status"] == "submitted"
+    assert broker.submitted[0].order_type == "STOP"
+    assert broker.submitted[0].stop_price == 180.25
+
+
+def test_live_trade_defaults_to_configured_live_account_and_freezes_it_in_preview(tmp_path):
+    settings = BrokerageSettings(live_enabled=True, default_live_account="U3510752")
+    store = SQLiteBrokerageStore(tmp_path / "brokerage.db")
+    policy = BrokeragePolicy(settings)
+    broker = FakeBroker()
+    service = BrokerageService(settings, store, policy, broker)
+
+    created = service.create_intent(
+        account_mode="live",
+        symbol="AAPL",
+        side="BUY",
+        quantity=1,
+        order_type="MARKET",
+        asset_class="stock",
+    )
+
+    assert created["preview"]["broker_account"] == "U3510752"
+
+    result = service.confirm_intent(
+        created["intent_id"],
+        f"CONFIRM LIVE BUY 1 AAPL {created['confirmation_code']}",
+    )
+
+    assert result["status"] == "submitted"
+    assert broker.submitted[0].broker_account == "U3510752"
+
+
+def test_explicit_live_account_overrides_default_live_account(tmp_path):
+    settings = BrokerageSettings(live_enabled=True, default_live_account="U3510752")
+    store = SQLiteBrokerageStore(tmp_path / "brokerage.db")
+    policy = BrokeragePolicy(settings)
+    broker = FakeBroker()
+    service = BrokerageService(settings, store, policy, broker)
+
+    created = service.create_intent(
+        account_mode="live",
+        symbol="AAPL",
+        side="BUY",
+        quantity=1,
+        order_type="MARKET",
+        asset_class="stock",
+        broker_account="U3053904",
+    )
+
+    assert created["preview"]["broker_account"] == "U3053904"
+
+    service.confirm_intent(
+        created["intent_id"],
+        f"CONFIRM LIVE BUY 1 AAPL {created['confirmation_code']}",
+    )
+
+    assert broker.submitted[0].broker_account == "U3053904"
+
+
+def test_live_stop_market_order_uses_default_live_account(tmp_path):
+    settings = BrokerageSettings(live_enabled=True, default_live_account="U3510752")
+    store = SQLiteBrokerageStore(tmp_path / "brokerage.db")
+    policy = BrokeragePolicy(settings)
+    broker = FakeBroker()
+    service = BrokerageService(settings, store, policy, broker)
+
+    created = service.create_intent(
+        account_mode="live",
+        symbol="AAPL",
+        side="SELL",
+        quantity=1,
+        order_type="STOP",
+        stop_price=180.25,
+        asset_class="stock",
+    )
+
+    assert created["preview"]["broker_account"] == "U3510752"
+    assert created["preview"]["stop_price"] == 180.25
+
+    service.confirm_intent(
+        created["intent_id"],
+        f"CONFIRM LIVE SELL 1 AAPL {created['confirmation_code']}",
+    )
+
+    assert broker.submitted[0].broker_account == "U3510752"
+    assert broker.submitted[0].order_type == "STOP"
+    assert broker.submitted[0].stop_price == 180.25
 
 
 def test_get_intent_reconciles_submitted_trade_to_filled_status(tmp_path):
@@ -460,7 +570,7 @@ def test_cancel_cancelled_intent_fails(tmp_path):
 
 def test_get_positions_delegates_to_broker(tmp_path):
     positions = [
-        {"symbol": "AAPL", "position": 5.0, "avg_cost": 264.98, "account_mode": "paper"},
+        {"account": "DUQ218494", "symbol": "AAPL", "position": 5.0, "avg_cost": 264.98, "account_mode": "paper"},
     ]
     broker = FakeBroker(positions=positions)
     service = _make_service(tmp_path, broker=broker)
@@ -468,6 +578,21 @@ def test_get_positions_delegates_to_broker(tmp_path):
     result = service.get_positions(account_mode="paper")
 
     assert result == positions
+    assert broker.last_positions_query == {"account_mode": "paper", "account": None}
+
+
+def test_get_positions_delegates_account_filter_to_broker(tmp_path):
+    positions = [
+        {"account": "DUQ218494", "symbol": "AAPL", "position": 5.0, "avg_cost": 264.98, "account_mode": "paper"},
+        {"account": "U3510752", "symbol": "NFLX", "position": 10.0, "avg_cost": 900.5, "account_mode": "live"},
+    ]
+    broker = FakeBroker(positions=positions)
+    service = _make_service(tmp_path, broker=broker)
+
+    result = service.get_positions(account_mode="live", account="U3510752")
+
+    assert result == [positions[1]]
+    assert broker.last_positions_query == {"account_mode": "live", "account": "U3510752"}
 
 
 def test_get_positions_returns_empty_list_when_no_positions(tmp_path):

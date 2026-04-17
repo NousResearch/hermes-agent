@@ -7207,9 +7207,16 @@ class AIAgent:
 
             # Use auxiliary client for the flush call when available --
             # it's cheaper and avoids Codex Responses API incompatibility.
-            from agent.auxiliary_client import call_llm as _call_llm
+            from agent.auxiliary_client import (
+                call_llm as _call_llm,
+                _fixed_temperature_for_model,
+            )
             _aux_available = True
-            _flush_temperature = 0.6 if str(self.model or "").strip().lower() == "kimi-for-coding" else 0.3
+            # Use the fixed-temperature override (e.g. kimi-for-coding → 0.6) if
+            # the model has a strict contract; otherwise the historical 0.3 default.
+            _flush_temperature = _fixed_temperature_for_model(self.model)
+            if _flush_temperature is None:
+                _flush_temperature = 0.3
             try:
                 response = _call_llm(
                     task="flush_memories",

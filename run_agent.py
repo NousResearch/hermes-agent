@@ -5511,6 +5511,35 @@ class AIAgent:
             self._touch_activity("waiting for provider response (streaming)")
             stream = request_client_holder["client"].chat.completions.create(**stream_kwargs)
 
+            # Some OpenAI-compatible adapters (for example copilot-acp) accept
+            # stream=True but still return a completed response object rather
+            # than an iterator of chunks. Treat that as "streaming unsupported"
+            # for the rest of this session instead of crashing on
+            # ``for chunk in stream`` with ``SimpleNamespace is not iterable``.
+            response_choices = getattr(stream, "choices", None)
+            if isinstance(response_choices, list) and response_choices:
+                logger.info(
+                    "Streaming request returned a final response object instead of "
+                    "an iterator; switching %s/%s to non-streaming for this session.",
+                    self.provider or "unknown",
+                    self.model or "unknown",
+                )
+                self._disable_streaming = True
+                message = getattr(response_choices[0], "message", None)
+                if message is not None:
+                    reasoning_text = (
+                        getattr(message, "reasoning_content", None)
+                        or getattr(message, "reasoning", None)
+                    )
+                    if isinstance(reasoning_text, str) and reasoning_text:
+                        _fire_first_delta()
+                        self._fire_reasoning_delta(reasoning_text)
+                    content = getattr(message, "content", None)
+                    if isinstance(content, str) and content:
+                        _fire_first_delta()
+                        self._fire_stream_delta(content)
+                return stream
+
             # Capture rate limit headers from the initial HTTP response.
             # The OpenAI SDK Stream object exposes the underlying httpx
             # response via .response before any chunks are consumed.

@@ -61,6 +61,7 @@ _VENDOR_PREFIXES: dict[str, str] = {
 # Providers whose APIs consume vendor/model slugs.
 _AGGREGATOR_PROVIDERS: frozenset[str] = frozenset({
     "openrouter",
+    "fastrouter",
     "nous",
     "ai-gateway",
     "kilocode",

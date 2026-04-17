@@ -77,6 +77,8 @@ def _normalize_provider(provider: str) -> str:
     normalized = (provider or "").strip().lower()
     if normalized in {"or", "open-router"}:
         return "openrouter"
+    if normalized in {"fr", "fast-router", "fast_router"}:
+        return "fastrouter"
     # Check if it matches a custom provider name
     custom_key = _resolve_custom_provider_input(normalized)
     if custom_key:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -395,6 +396,8 @@ def resolve_billing_route(
         return BillingRoute(provider="openai-codex", model=model, base_url=base_url or "", billing_mode="subscription_included")
     if provider_name == "openrouter" or "openrouter.ai" in base:
         return BillingRoute(provider="openrouter", model=model, base_url=base_url or "", billing_mode="official_models_api")
+    if provider_name == "fastrouter" or "fastrouter.ai" in base:
+        return BillingRoute(provider="fastrouter", model=model, base_url=base_url or "", billing_mode="official_models_api")
     if provider_name == "anthropic":
         return BillingRoute(provider="anthropic", model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
     if provider_name == "openai":
@@ -414,6 +417,19 @@ def _openrouter_pricing_entry(route: BillingRoute) -> Optional[PricingEntry]:
         route.model,
         source_url="https://openrouter.ai/docs/api/api-reference/models/get-models",
         pricing_version="openrouter-models-api",
+    )
+
+
+def _fastrouter_pricing_entry(route: BillingRoute) -> Optional[PricingEntry]:
+    from hermes_constants import FASTROUTER_MODELS_URL
+    return _pricing_entry_from_metadata(
+        fetch_endpoint_model_metadata(
+            "https://api.fastrouter.ai/api/v1",
+            api_key=os.getenv("FASTROUTER_API_KEY", ""),
+        ),
+        route.model,
+        source_url=FASTROUTER_MODELS_URL,
+        pricing_version="fastrouter-models-api",
     )
 
 
@@ -479,6 +495,8 @@ def get_pricing_entry(
         )
     if route.provider == "openrouter":
         return _openrouter_pricing_entry(route)
+    if route.provider == "fastrouter":
+        return _fastrouter_pricing_entry(route)
     if route.base_url:
         entry = _pricing_entry_from_metadata(
             fetch_endpoint_model_metadata(route.base_url, api_key=api_key or ""),
@@ -619,6 +637,8 @@ def estimate_usage_cost(
 
     if route.provider == "openrouter":
         notes.append("OpenRouter cost is estimated from the models API until reconciled.")
+    if route.provider == "fastrouter":
+        notes.append("FastRouter cost is estimated from the models API until reconciled.")
 
     return CostResult(
         amount_usd=amount,

@@ -47,7 +47,7 @@ from openai import OpenAI
 
 from agent.credential_pool import load_pool
 from hermes_cli.config import get_hermes_home
-from hermes_constants import OPENROUTER_BASE_URL
+from hermes_constants import OPENROUTER_BASE_URL, FASTROUTER_BASE_URL
 
 logger = logging.getLogger(__name__)
 
@@ -136,6 +136,7 @@ auxiliary_is_nous: bool = False
 
 # Default auxiliary models per provider
 _OPENROUTER_MODEL = "google/gemini-3-flash-preview"
+_FASTROUTER_MODEL = "google/gemini-3-flash-preview"
 _NOUS_MODEL = "google/gemini-3-flash-preview"
 _NOUS_FREE_TIER_VISION_MODEL = "xiaomi/mimo-v2-omni"
 _NOUS_FREE_TIER_AUX_MODEL = "xiaomi/mimo-v2-pro"
@@ -778,6 +779,23 @@ def _try_openrouter() -> Tuple[Optional[OpenAI], Optional[str]]:
                    default_headers=_OR_HEADERS), _OPENROUTER_MODEL
 
 
+def _try_fastrouter() -> Tuple[Optional[OpenAI], Optional[str]]:
+    pool_present, entry = _select_pool_entry("fastrouter")
+    if pool_present:
+        fr_key = _pool_runtime_api_key(entry)
+        if not fr_key:
+            return None, None
+        base_url = _pool_runtime_base_url(entry, FASTROUTER_BASE_URL) or FASTROUTER_BASE_URL
+        logger.debug("Auxiliary client: FastRouter via pool")
+        return OpenAI(api_key=fr_key, base_url=base_url), _FASTROUTER_MODEL
+
+    fr_key = os.getenv("FASTROUTER_API_KEY")
+    if not fr_key:
+        return None, None
+    logger.debug("Auxiliary client: FastRouter")
+    return OpenAI(api_key=fr_key, base_url=FASTROUTER_BASE_URL), _FASTROUTER_MODEL
+
+
 def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
     # Check cross-session rate limit guard before attempting Nous —
     # if another session already recorded a 429, skip Nous entirely
@@ -1053,13 +1071,14 @@ def _try_anthropic() -> Tuple[Optional[Any], Optional[str]]:
 
 _AUTO_PROVIDER_LABELS = {
     "_try_openrouter": "openrouter",
+    "_try_fastrouter": "fastrouter",
     "_try_nous": "nous",
     "_try_custom_endpoint": "local/custom",
     "_try_codex": "openai-codex",
     "_resolve_api_key_provider": "api-key",
 }
 
-_AGGREGATOR_PROVIDERS = frozenset({"openrouter", "nous"})
+_AGGREGATOR_PROVIDERS = frozenset({"openrouter", "fastrouter", "nous"})
 
 _MAIN_RUNTIME_FIELDS = ("provider", "model", "base_url", "api_key", "api_mode")
 
@@ -1087,6 +1106,7 @@ def _get_provider_chain() -> List[tuple]:
     """
     return [
         ("openrouter", _try_openrouter),
+        ("fastrouter", _try_fastrouter),
         ("nous", _try_nous),
         ("local/custom", _try_custom_endpoint),
         ("openai-codex", _try_codex),
@@ -1430,6 +1450,17 @@ def resolve_provider_client(
         return (_to_async_client(client, final_model) if async_mode
                 else (client, final_model))
 
+    # ── FastRouter ────────────────────────────────────────────────────
+    if provider == "fastrouter":
+        client, default = _try_fastrouter()
+        if client is None:
+            logger.warning("resolve_provider_client: fastrouter requested "
+                           "but FASTROUTER_API_KEY not set")
+            return None, None
+        final_model = _normalize_resolved_model(model or default, provider)
+        return (_to_async_client(client, final_model) if async_mode
+                else (client, final_model))
+
     # ── Nous Portal (OAuth) ──────────────────────────────────────────
     if provider == "nous":
         client, default = _try_nous()
@@ -1728,6 +1759,8 @@ def _resolve_strict_vision_backend(provider: str) -> Tuple[Optional[Any], Option
     provider = _normalize_vision_provider(provider)
     if provider == "openrouter":
         return _try_openrouter()
+    if provider == "fastrouter":
+        return _try_fastrouter()
     if provider == "nous":
         return _try_nous(vision=True)
     if provider == "openai-codex":

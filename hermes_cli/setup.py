@@ -187,7 +187,7 @@ def print_noninteractive_setup_guidance(reason: str | None = None) -> None:
     print_info("  hermes config set model.base_url http://localhost:8080/v1")
     print_info("  hermes config set model.default your-model-name")
     print()
-    print_info("Or set OPENROUTER_API_KEY / OPENAI_API_KEY in your environment.")
+    print_info("Or set OPENROUTER_API_KEY / FASTROUTER_API_KEY / OPENAI_API_KEY in your environment.")
     print_info("Run 'hermes setup' in an interactive terminal to use the full wizard.")
     print()
 
@@ -366,11 +366,11 @@ def _print_setup_summary(config: dict, hermes_home):
     else:
         tool_status.append(("Vision (image analysis)", False, "run 'hermes setup' to configure"))
 
-    # Mixture of Agents — requires OpenRouter specifically (calls multiple models)
-    if get_env_value("OPENROUTER_API_KEY"):
+    # Mixture of Agents — requires an aggregator key (calls multiple models)
+    if get_env_value("OPENROUTER_API_KEY") or get_env_value("FASTROUTER_API_KEY"):
         tool_status.append(("Mixture of Agents", True, None))
     else:
-        tool_status.append(("Mixture of Agents", False, "OPENROUTER_API_KEY"))
+        tool_status.append(("Mixture of Agents", False, "OPENROUTER_API_KEY or FASTROUTER_API_KEY"))
 
     # Web tools (Exa, Parallel, Firecrawl, or Tavily)
     if subscription_features.web.managed_by_nous:
@@ -790,10 +790,11 @@ def setup_model_provider(config: dict, *, quick: bool = False):
 
         _vision_choices = [
             "OpenRouter — uses Gemini (free tier at openrouter.ai/keys)",
+            "FastRouter — intelligent routing (fastrouter.ai)",
             "OpenAI-compatible endpoint — base URL, API key, and vision model",
             "Skip for now",
         ]
-        _vision_idx = prompt_choice("Configure vision:", _vision_choices, 2)
+        _vision_idx = prompt_choice("Configure vision:", _vision_choices, 3)
 
         if _vision_idx == 0:  # OpenRouter
             _or_key = prompt("  OpenRouter API key", password=True).strip()
@@ -802,7 +803,14 @@ def setup_model_provider(config: dict, *, quick: bool = False):
                 print_success("OpenRouter key saved — vision will use Gemini")
             else:
                 print_info("Skipped — vision won't be available")
-        elif _vision_idx == 1:  # OpenAI-compatible endpoint
+        elif _vision_idx == 1:  # FastRouter
+            _fr_key = prompt("  FastRouter API key", password=True).strip()
+            if _fr_key:
+                save_env_value("FASTROUTER_API_KEY", _fr_key)
+                print_success("FastRouter key saved — vision will use Gemini")
+            else:
+                print_info("Skipped — vision won't be available")
+        elif _vision_idx == 2:  # OpenAI-compatible endpoint
             _base_url = prompt("  Base URL (blank for OpenAI)").strip() or "https://api.openai.com/v1"
             _api_key_label = "  API key"
             if "api.openai.com" in _base_url.lower():
@@ -2401,6 +2409,7 @@ def _get_section_config_summary(config: dict, section_key: str) -> Optional[str]
     if section_key == "model":
         has_key = bool(
             get_env_value("OPENROUTER_API_KEY")
+            or get_env_value("FASTROUTER_API_KEY")
             or get_env_value("OPENAI_API_KEY")
             or get_env_value("ANTHROPIC_API_KEY")
         )
@@ -2847,6 +2856,7 @@ def run_setup_wizard(args):
     active_provider = get_active_provider()
     is_existing = (
         bool(get_env_value("OPENROUTER_API_KEY"))
+        or bool(get_env_value("FASTROUTER_API_KEY"))
         or bool(get_env_value("OPENAI_BASE_URL"))
         or active_provider is not None
     )

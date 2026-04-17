@@ -60,6 +60,25 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
 
 _openrouter_catalog_cache: list[tuple[str, str]] | None = None
 
+FASTROUTER_MODELS: list[tuple[str, str]] = [
+    ("anthropic/claude-opus-4.6",       "recommended"),
+    ("anthropic/claude-sonnet-4.6",     ""),
+    ("anthropic/claude-sonnet-4.5",     ""),
+    ("anthropic/claude-haiku-4.5",      ""),
+    ("openai/gpt-5.4",                  ""),
+    ("openai/gpt-5.4-mini",             ""),
+    ("openai/gpt-5.3-codex",            ""),
+    ("google/gemini-3-pro-preview",     ""),
+    ("google/gemini-3-flash-preview",   ""),
+    ("google/gemini-3.1-pro-preview",   ""),
+    ("x-ai/grok-4.20",                  ""),
+    ("qwen/qwen3.6-plus",              ""),
+    ("deepseek/deepseek-r1",            ""),
+    ("minimax/minimax-m2.7",            ""),
+]
+
+_fastrouter_catalog_cache: list[tuple[str, str]] | None = None
+
 
 def _codex_curated_models() -> list[str]:
     """Derive the openai-codex curated list from codex_models.py.
@@ -104,6 +123,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "openai/gpt-5.4-nano",
         "openrouter/elephant-alpha",
     ],
+    "fastrouter": [mid for mid, _ in FASTROUTER_MODELS],
     "openai-codex": _codex_curated_models(),
     "copilot-acp": [
         "copilot-acp",
@@ -524,6 +544,7 @@ class ProviderEntry(NamedTuple):
 CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("nous",           "Nous Portal",              "Nous Portal (Nous Research subscription)"),
     ProviderEntry("openrouter",     "OpenRouter",               "OpenRouter (100+ models, pay-per-use)"),
+    ProviderEntry("fastrouter",     "FastRouter",               "FastRouter (100+ models, intelligent routing)"),
     ProviderEntry("anthropic",      "Anthropic",                "Anthropic (Claude models — API key or Claude Code)"),
     ProviderEntry("openai-codex",   "OpenAI Codex",             "OpenAI Codex"),
     ProviderEntry("xiaomi",         "Xiaomi MiMo",              "Xiaomi MiMo (MiMo-V2 models — pro, omni, flash)"),
@@ -692,6 +713,67 @@ def fetch_openrouter_models(
 def model_ids(*, force_refresh: bool = False) -> list[str]:
     """Return just the OpenRouter model-id strings."""
     return [mid for mid, _ in fetch_openrouter_models(force_refresh=force_refresh)]
+
+
+def fetch_fastrouter_models(
+    timeout: float = 8.0,
+    *,
+    force_refresh: bool = False,
+) -> list[tuple[str, str]]:
+    """Return the curated FastRouter picker list, refreshed from the live catalog when possible."""
+    global _fastrouter_catalog_cache
+
+    if _fastrouter_catalog_cache is not None and not force_refresh:
+        return list(_fastrouter_catalog_cache)
+
+    fallback = list(FASTROUTER_MODELS)
+    preferred_ids = [mid for mid, _ in fallback]
+
+    try:
+        req = urllib.request.Request(
+            "https://api.fastrouter.ai/api/v1/models",
+            headers={"Accept": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            payload = json.loads(resp.read().decode())
+    except Exception:
+        return list(_fastrouter_catalog_cache or fallback)
+
+    live_items = payload.get("data", [])
+    if not isinstance(live_items, list):
+        return list(_fastrouter_catalog_cache or fallback)
+
+    live_by_id: dict[str, dict[str, Any]] = {}
+    for item in live_items:
+        if not isinstance(item, dict):
+            continue
+        mid = str(item.get("id") or "").strip()
+        if not mid:
+            continue
+        live_by_id[mid] = item
+
+    curated: list[tuple[str, str]] = []
+    for preferred_id in preferred_ids:
+        live_item = live_by_id.get(preferred_id)
+        if live_item is None:
+            continue
+        desc = ""
+        pricing = live_item.get("pricing")
+        if isinstance(pricing, dict):
+            try:
+                if float(pricing.get("prompt", "0")) == 0 and float(pricing.get("completion", "0")) == 0:
+                    desc = "free"
+            except (TypeError, ValueError):
+                pass
+        curated.append((preferred_id, desc))
+
+    if not curated:
+        return list(_fastrouter_catalog_cache or fallback)
+
+    first_id, _ = curated[0]
+    curated[0] = (first_id, "recommended")
+    _fastrouter_catalog_cache = curated
+    return list(curated)
 
 
 
@@ -1031,10 +1113,10 @@ def detect_provider_for_model(
     # --- Step 0: bare provider name typed as model ---
     # If someone types `/model nous` or `/model anthropic`, treat it as a
     # provider switch and pick the first model from that provider's catalog.
-    # Skip "custom" and "openrouter" — custom has no model catalog, and
-    # openrouter requires an explicit model name to be useful.
+    # Skip "custom" and aggregators — custom has no model catalog, and
+    # aggregators require an explicit model name to be useful.
     resolved_provider = _PROVIDER_ALIASES.get(name_lower, name_lower)
-    if resolved_provider not in {"custom", "openrouter"}:
+    if resolved_provider not in {"custom", "openrouter", "fastrouter"}:
         default_models = _PROVIDER_MODELS.get(resolved_provider, [])
         if (
             resolved_provider in _PROVIDER_LABELS
@@ -1044,7 +1126,7 @@ def detect_provider_for_model(
             return (resolved_provider, default_models[0])
 
     # Aggregators list other providers' models — never auto-switch TO them
-    _AGGREGATORS = {"nous", "openrouter"}
+    _AGGREGATORS = {"nous", "openrouter", "fastrouter"}
 
     # If the model belongs to the current provider's catalog, don't suggest switching
     current_models = _PROVIDER_MODELS.get(current_provider, [])

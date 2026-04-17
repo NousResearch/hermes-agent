@@ -17,7 +17,7 @@ from hermes_cli.config import get_env_path, get_env_value, get_hermes_home, load
 from hermes_cli.models import provider_label
 from hermes_cli.nous_subscription import get_nous_subscription_features
 from hermes_cli.runtime_provider import resolve_requested_provider
-from hermes_constants import OPENROUTER_MODELS_URL
+from hermes_constants import OPENROUTER_MODELS_URL, FASTROUTER_MODELS_URL
 from tools.tool_backend_helpers import managed_nous_tools_enabled
 
 def check_mark(ok: bool) -> str:
@@ -454,7 +454,21 @@ def show_status(args):
                 print(f"  OpenRouter:   {check_mark(ok)} {'reachable' if ok else f'error ({response.status_code})'}")
             except Exception as e:
                 print(f"  OpenRouter:   {check_mark(False)} error: {e}")
-        
+
+        fastrouter_key = os.getenv("FASTROUTER_API_KEY", "")
+        if fastrouter_key:
+            try:
+                import httpx
+                response = httpx.get(
+                    FASTROUTER_MODELS_URL,
+                    headers={"Authorization": f"Bearer {fastrouter_key}"},
+                    timeout=10
+                )
+                ok = response.status_code == 200
+                print(f"  FastRouter:   {check_mark(ok)} {'reachable' if ok else f'error ({response.status_code})'}")
+            except Exception as e:
+                print(f"  FastRouter:   {check_mark(False)} error: {e}")
+
         # Check gateway port
         try:
             import socket

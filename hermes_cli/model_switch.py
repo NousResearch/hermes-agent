@@ -396,7 +396,7 @@ def _resolve_alias_fallback(
     Falls back to ``("openrouter", "nous")`` only when no authenticated
     providers are supplied (backwards compat for non-interactive callers).
     """
-    providers = authenticated_providers or ("openrouter", "nous")
+    providers = authenticated_providers or ("openrouter", "fastrouter", "nous")
     for provider in providers:
         result = resolve_alias(raw_input, provider)
         if result is not None:
@@ -793,7 +793,7 @@ def list_authenticated_providers(
         get_provider_info as _mdev_pinfo,
     )
     from hermes_cli.auth import PROVIDER_REGISTRY
-    from hermes_cli.models import OPENROUTER_MODELS, _PROVIDER_MODELS
+    from hermes_cli.models import OPENROUTER_MODELS, FASTROUTER_MODELS, _PROVIDER_MODELS
 
     results: List[dict] = []
     seen_slugs: set = set()  # lowercase-normalized to catch case variants (#9545)
@@ -804,6 +804,7 @@ def list_authenticated_providers(
     # Build curated model lists keyed by hermes provider ID
     curated: dict[str, list[str]] = dict(_PROVIDER_MODELS)
     curated["openrouter"] = [mid for mid, _ in OPENROUTER_MODELS]
+    curated["fastrouter"] = [mid for mid, _ in FASTROUTER_MODELS]
     # "nous" shares OpenRouter's curated list if not separately defined
     if "nous" not in curated:
         curated["nous"] = curated["openrouter"]

@@ -822,6 +822,14 @@ OPTIONAL_ENV_VARS = {
         "category": "provider",
         "advanced": True,
     },
+    "FASTROUTER_API_KEY": {
+        "description": "FastRouter API key (intelligent LLM routing, 100+ models)",
+        "prompt": "FastRouter API key",
+        "url": "https://fastrouter.ai",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
     "GOOGLE_API_KEY": {
         "description": "Google AI Studio API key (also recognized as GEMINI_API_KEY)",
         "prompt": "Google AI Studio API key",
@@ -2668,6 +2676,7 @@ _FALLBACK_COMMENT = """
 #
 # Supported providers:
 #   openrouter   (OPENROUTER_API_KEY)  — routes to any model
+#   fastrouter   (FASTROUTER_API_KEY)  — intelligent LLM routing
 #   openai-codex (OAuth — hermes auth) — OpenAI Codex
 #   nous         (OAuth — hermes auth) — Nous Portal
 #   zai          (ZAI_API_KEY)         — Z.AI / GLM
@@ -2712,6 +2721,7 @@ _COMMENTED_SECTIONS = """
 #
 # Supported providers:
 #   openrouter   (OPENROUTER_API_KEY)  — routes to any model
+#   fastrouter   (FASTROUTER_API_KEY)  — intelligent LLM routing
 #   openai-codex (OAuth — hermes auth) — OpenAI Codex
 #   nous         (OAuth — hermes auth) — Nous Portal
 #   zai          (ZAI_API_KEY)         — Z.AI / GLM
@@ -3161,6 +3171,7 @@ def show_config():
     
     keys = [
         ("OPENROUTER_API_KEY", "OpenRouter"),
+        ("FASTROUTER_API_KEY", "FastRouter"),
         ("VOICE_TOOLS_OPENAI_KEY", "OpenAI (STT/TTS)"),
         ("EXA_API_KEY", "Exa"),
         ("PARALLEL_API_KEY", "Parallel"),
@@ -3340,7 +3351,7 @@ def set_config_value(key: str, value: str):
         return
     # Check if it's an API key (goes to .env)
     api_keys = [
-        'OPENROUTER_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'VOICE_TOOLS_OPENAI_KEY',
+        'OPENROUTER_API_KEY', 'FASTROUTER_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'VOICE_TOOLS_OPENAI_KEY',
         'EXA_API_KEY', 'PARALLEL_API_KEY', 'FIRECRAWL_API_KEY', 'FIRECRAWL_API_URL',
         'FIRECRAWL_GATEWAY_URL', 'TOOL_GATEWAY_DOMAIN', 'TOOL_GATEWAY_SCHEME',
         'TOOL_GATEWAY_USER_TOKEN', 'TAVILY_API_KEY',

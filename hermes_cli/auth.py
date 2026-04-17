@@ -38,7 +38,7 @@ import httpx
 import yaml
 
 from hermes_cli.config import get_hermes_home, get_config_path, read_raw_config
-from hermes_constants import OPENROUTER_BASE_URL
+from hermes_constants import OPENROUTER_BASE_URL, FASTROUTER_BASE_URL
 
 logger = logging.getLogger(__name__)
 
@@ -206,6 +206,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         inference_base_url="https://api.minimaxi.com/anthropic",
         api_key_env_vars=("MINIMAX_CN_API_KEY",),
         base_url_env_var="MINIMAX_CN_BASE_URL",
+    ),
+    "fastrouter": ProviderConfig(
+        id="fastrouter",
+        name="FastRouter",
+        auth_type="api_key",
+        inference_base_url="https://api.fastrouter.ai/api/v1",
+        api_key_env_vars=("FASTROUTER_API_KEY",),
+        base_url_env_var="FASTROUTER_BASE_URL",
     ),
     "deepseek": ProviderConfig(
         id="deepseek",
@@ -945,6 +953,7 @@ def resolve_provider(
         "aws": "bedrock", "aws-bedrock": "bedrock", "amazon-bedrock": "bedrock", "amazon": "bedrock",
         "go": "opencode-go", "opencode-go-sub": "opencode-go",
         "kilo": "kilocode", "kilo-code": "kilocode", "kilo-gateway": "kilocode",
+        "fast-router": "fastrouter", "fast_router": "fastrouter",
         # Local server aliases — route through the generic custom provider
         "lmstudio": "custom", "lm-studio": "custom", "lm_studio": "custom",
         "ollama": "custom", "ollama_cloud": "ollama-cloud",

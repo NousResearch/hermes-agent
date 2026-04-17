@@ -588,6 +588,7 @@ class TestGetTextAuxiliaryClient:
 
     def test_codex_fallback_when_nothing_else(self, codex_auth_dir):
         with patch("agent.auxiliary_client._try_openrouter", return_value=(None, None)), \
+             patch("agent.auxiliary_client._try_fastrouter", return_value=(None, None)), \
              patch("agent.auxiliary_client._try_nous", return_value=(None, None)), \
              patch("agent.auxiliary_client._try_custom_endpoint", return_value=(None, None)), \
              patch("agent.auxiliary_client._read_main_provider", return_value="openrouter"), \
@@ -635,12 +636,14 @@ class TestGetTextAuxiliaryClient:
 
     def test_custom_endpoint_uses_codex_wrapper_when_runtime_requests_responses_api(self, monkeypatch):
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        monkeypatch.delenv("FASTROUTER_API_KEY", raising=False)
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
         with patch("agent.auxiliary_client._resolve_custom_runtime",
                    return_value=("https://api.openai.com/v1", "sk-test", "codex_responses")), \
              patch("agent.auxiliary_client._read_main_model", return_value="gpt-5.3-codex"), \
              patch("agent.auxiliary_client._try_openrouter", return_value=(None, None)), \
+             patch("agent.auxiliary_client._try_fastrouter", return_value=(None, None)), \
              patch("agent.auxiliary_client._try_nous", return_value=(None, None)), \
              patch("agent.auxiliary_client._read_main_provider", return_value="openrouter"), \
              patch("agent.auxiliary_client.OpenAI") as mock_openai:
@@ -1057,11 +1060,11 @@ class TestIsPaymentError:
 class TestGetProviderChain:
     """_get_provider_chain() resolves functions at call time (testable)."""
 
-    def test_returns_five_entries(self):
+    def test_returns_six_entries(self):
         chain = _get_provider_chain()
-        assert len(chain) == 5
+        assert len(chain) == 6
         labels = [label for label, _ in chain]
-        assert labels == ["openrouter", "nous", "local/custom", "openai-codex", "api-key"]
+        assert labels == ["openrouter", "fastrouter", "nous", "local/custom", "openai-codex", "api-key"]
 
     def test_picks_up_patched_functions(self):
         """Patches on _try_* functions must be visible in the chain."""
@@ -1077,6 +1080,7 @@ class TestTryPaymentFallback:
     def test_skips_failed_provider(self):
         mock_client = MagicMock()
         with patch("agent.auxiliary_client._try_openrouter", return_value=(None, None)), \
+             patch("agent.auxiliary_client._try_fastrouter", return_value=(None, None)), \
              patch("agent.auxiliary_client._try_nous", return_value=(mock_client, "nous-model")), \
              patch("agent.auxiliary_client._read_main_provider", return_value="openrouter"):
             client, model, label = _try_payment_fallback("openrouter", task="compression")
@@ -1086,6 +1090,7 @@ class TestTryPaymentFallback:
 
     def test_returns_none_when_no_fallback(self):
         with patch("agent.auxiliary_client._try_openrouter", return_value=(None, None)), \
+             patch("agent.auxiliary_client._try_fastrouter", return_value=(None, None)), \
              patch("agent.auxiliary_client._try_nous", return_value=(None, None)), \
              patch("agent.auxiliary_client._try_custom_endpoint", return_value=(None, None)), \
              patch("agent.auxiliary_client._try_codex", return_value=(None, None)), \
@@ -1108,6 +1113,7 @@ class TestTryPaymentFallback:
     def test_skips_to_codex_when_or_and_nous_fail(self):
         mock_codex = MagicMock()
         with patch("agent.auxiliary_client._try_openrouter", return_value=(None, None)), \
+             patch("agent.auxiliary_client._try_fastrouter", return_value=(None, None)), \
              patch("agent.auxiliary_client._try_nous", return_value=(None, None)), \
              patch("agent.auxiliary_client._try_custom_endpoint", return_value=(None, None)), \
              patch("agent.auxiliary_client._try_codex", return_value=(mock_codex, "gpt-5.2-codex")), \

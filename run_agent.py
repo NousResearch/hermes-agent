@@ -752,7 +752,7 @@ class AIAgent:
         # Pre-warm OpenRouter model metadata cache in a background thread.
         # fetch_model_metadata() is cached for 1 hour; this avoids a blocking
         # HTTP request on the first API response when pricing is estimated.
-        if self.provider == "openrouter" or self._is_openrouter_url():
+        if self.provider == "openrouter" or self._is_openrouter_url() or self.provider == "fastrouter" or self._is_fastrouter_url():
             threading.Thread(
                 target=lambda: fetch_model_metadata(),
                 daemon=True,
@@ -811,10 +811,10 @@ class AIAgent:
         # Anthropic prompt caching: auto-enabled for Claude models via OpenRouter.
         # Reduces input costs by ~75% on multi-turn conversations by caching the
         # conversation prefix. Uses system_and_3 strategy (4 breakpoints).
-        is_openrouter = self._is_openrouter_url()
+        is_aggregator_router = self._is_aggregator_router_url()
         is_claude = "claude" in self.model.lower()
         is_native_anthropic = self.api_mode == "anthropic_messages" and self.provider == "anthropic"
-        self._use_prompt_caching = (is_openrouter and is_claude) or is_native_anthropic
+        self._use_prompt_caching = (is_aggregator_router and is_claude) or is_native_anthropic
         self._cache_ttl = "5m"  # Default 5-minute TTL (1.25x write cost)
         
         # Iteration budget: the LLM is only notified when it actually exhausts
@@ -981,6 +981,11 @@ class AIAgent:
                         "X-OpenRouter-Title": "Hermes Agent",
                         "X-OpenRouter-Categories": "productivity,cli-agent",
                     }
+                elif "fastrouter" in effective_base.lower():
+                    client_kwargs["default_headers"] = {
+                        "HTTP-Referer": "https://hermes-agent.nousresearch.com",
+                        "X-Title": "Hermes Agent",
+                    }
                 elif "api.githubcopilot.com" in effective_base.lower():
                     from hermes_cli.models import copilot_default_headers
 
@@ -1035,14 +1040,14 @@ class AIAgent:
             
             self._client_kwargs = client_kwargs  # stored for rebuilding after interrupt
 
-            # Enable fine-grained tool streaming for Claude on OpenRouter.
-            # Without this, Anthropic buffers the entire tool call and goes
-            # silent for minutes while thinking — OpenRouter's upstream proxy
-            # times out during the silence.  The beta header makes Anthropic
-            # stream tool call arguments token-by-token, keeping the
-            # connection alive.
+            # Enable fine-grained tool streaming for Claude on aggregator routers
+            # (OpenRouter, FastRouter).  Without this, Anthropic buffers the
+            # entire tool call and goes silent for minutes while thinking —
+            # the upstream proxy times out during the silence.  The beta header
+            # makes Anthropic stream tool call arguments token-by-token,
+            # keeping the connection alive.
             _effective_base = str(client_kwargs.get("base_url", "")).lower()
-            if "openrouter" in _effective_base and "claude" in (self.model or "").lower():
+            if ("openrouter" in _effective_base or "fastrouter" in _effective_base) and "claude" in (self.model or "").lower():
                 headers = client_kwargs.get("default_headers") or {}
                 existing_beta = headers.get("x-anthropic-beta", "")
                 _FINE_GRAINED = "fine-grained-tool-streaming-2025-05-14"
@@ -2026,6 +2031,14 @@ class AIAgent:
     def _is_openrouter_url(self) -> bool:
         """Return True when the base URL targets OpenRouter."""
         return "openrouter" in self._base_url_lower
+
+    def _is_fastrouter_url(self) -> bool:
+        """Return True when the base URL targets FastRouter."""
+        return "fastrouter" in self._base_url_lower
+
+    def _is_aggregator_router_url(self) -> bool:
+        """Return True for OpenRouter-compatible aggregator endpoints."""
+        return self._is_openrouter_url() or self._is_fastrouter_url()
 
     @staticmethod
     def _model_requires_responses_api(model: str) -> bool:
@@ -4884,6 +4897,11 @@ class AIAgent:
         normalized = (base_url or "").lower()
         if "openrouter" in normalized:
             self._client_kwargs["default_headers"] = dict(_OR_HEADERS)
+        elif "fastrouter" in normalized:
+            self._client_kwargs["default_headers"] = {
+                "HTTP-Referer": "https://hermes-agent.nousresearch.com",
+                "X-Title": "Hermes Agent",
+            }
         elif "api.githubcopilot.com" in normalized:
             from hermes_cli.models import copilot_default_headers
 
@@ -6157,7 +6175,7 @@ class AIAgent:
             return False
 
         # Skip for aggregator providers — they manage their own retry infra
-        if self._is_openrouter_url():
+        if self._is_aggregator_router_url():
             return False
         provider_lower = (self.provider or "").strip().lower()
         if provider_lower in ("nous", "nous-research"):
@@ -6652,7 +6670,7 @@ class AIAgent:
             # (the documented max output for qwen3-coder models) so the
             # model has adequate output budget for tool calls.
             api_kwargs.update(self._max_tokens_param(65536))
-        elif (self._is_openrouter_url() or "nousresearch" in self._base_url_lower) and "claude" in (self.model or "").lower():
+        elif (self._is_aggregator_router_url() or "nousresearch" in self._base_url_lower) and "claude" in (self.model or "").lower():
             # OpenRouter and Nous Portal translate requests to Anthropic's
             # Messages API, which requires max_tokens as a mandatory field.
             # When we omit it, the proxy picks a default that can be too
@@ -6670,16 +6688,18 @@ class AIAgent:
         extra_body = {}
 
         _is_openrouter = self._is_openrouter_url()
+        _is_fastrouter = self._is_fastrouter_url()
+        _is_aggregator_router = _is_openrouter or _is_fastrouter
         _is_github_models = (
             "models.github.ai" in self._base_url_lower
             or "api.githubcopilot.com" in self._base_url_lower
         )
 
-        # Provider preferences (only, ignore, order, sort) are OpenRouter-
-        # specific.  Only send to OpenRouter-compatible endpoints.
+        # Provider preferences (only, ignore, order, sort) are supported by
+        # OpenRouter-compatible aggregator endpoints (OpenRouter, FastRouter).
         # TODO: Nous Portal will add transparent proxy support — re-enable
         # for _is_nous when their backend is updated.
-        if provider_preferences and _is_openrouter:
+        if provider_preferences and _is_aggregator_router:
             extra_body["provider"] = provider_preferences
         _is_nous = "nousresearch" in self._base_url_lower
 
@@ -6759,7 +6779,7 @@ class AIAgent:
                 return bool(github_model_reasoning_efforts(self.model))
             except Exception:
                 return False
-        if "openrouter" not in self._base_url_lower:
+        if "openrouter" not in self._base_url_lower and "fastrouter" not in self._base_url_lower:
             return False
         if "api.mistral.ai" in self._base_url_lower:
             return False

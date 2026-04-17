@@ -182,12 +182,13 @@ def _get_default_output_dir() -> str:
     return str(get_hermes_dir("cache/audio", "audio_cache"))
 
 DEFAULT_OUTPUT_DIR = _get_default_output_dir()
+DEFAULT_TTS_CHUNK_CHARS = 3000
 
 # ---------------------------------------------------------------------------
 # Per-provider input-character limits (from official provider docs).
 # A single global cap was wrong: OpenAI is 4096, xAI is 15k, MiniMax is 10k,
 # ElevenLabs is model-dependent (5k / 10k / 30k / 40k), Gemini caps at ~8k
-# input tokens.  Users can override any of these via
+# input tokens. Users can override any of these via
 # ``tts.<provider>.max_text_length`` in config.yaml.
 # ---------------------------------------------------------------------------
 PROVIDER_MAX_TEXT_LENGTH: Dict[str, int] = {
@@ -197,7 +198,7 @@ PROVIDER_MAX_TEXT_LENGTH: Dict[str, int] = {
     "minimax": 10000,     # https://platform.minimax.io/docs/api-reference/speech-t2a-http (sync)
     "mistral": 4000,      # conservative; no published per-request cap
     "gemini": 5000,       # Gemini TTS caps at ~8k input tokens / ~655s audio
-    "elevenlabs": 10000,  # fallback when model-aware lookup can't resolve (multilingual_v2)
+    "elevenlabs": 10000,  # fallback when model-aware lookup can't resolve
     "neutts": 2000,       # local model, quality falls off on long text
     "kittentts": 2000,    # local 25MB model
     "piper": 5000,        # local VITS model, phoneme-based; practical cap
@@ -1918,6 +1919,7 @@ def _has_openai_audio_backend() -> bool:
 # ===========================================================================
 # Sentence boundary pattern: punctuation followed by space or newline
 _SENTENCE_BOUNDARY_RE = re.compile(r'(?<=[.!?])(?:\s|\n)|(?:\n\n)')
+_CLAUSE_BOUNDARY_RE = re.compile(r'(?<=[,;:])\s+|(?<=—)\s*|(?<=-)\s+')
 
 # Markdown stripping patterns (same as cli.py _voice_speak_response)
 _MD_CODE_BLOCK = re.compile(r'```[\s\S]*?```')
@@ -1945,6 +1947,115 @@ def _strip_markdown_for_tts(text: str) -> str:
     text = _MD_HR.sub('', text)
     text = _MD_EXCESS_NL.sub('\n\n', text)
     return text.strip()
+
+
+def _split_tts_fragment_at_words(text: str, max_chars: int) -> list[str]:
+    """Split an oversized fragment on word boundaries."""
+    words = text.split()
+    if not words:
+        return []
+
+    chunks: list[str] = []
+    current = ""
+    for word in words:
+        candidate = f"{current} {word}".strip()
+        if current and len(candidate) > max_chars:
+            chunks.append(current)
+            current = word
+            continue
+        if len(word) > max_chars:
+            if current:
+                chunks.append(current)
+                current = ""
+            for i in range(0, len(word), max_chars):
+                chunks.append(word[i:i + max_chars])
+            continue
+        current = candidate
+
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def _split_tts_unit(text: str, max_chars: int) -> list[str]:
+    """Split a single oversized unit using clause, then word boundaries."""
+    text = text.strip()
+    if not text:
+        return []
+    if len(text) <= max_chars:
+        return [text]
+
+    clause_parts = [part.strip() for part in _CLAUSE_BOUNDARY_RE.split(text) if part.strip()]
+    if len(clause_parts) > 1:
+        chunks: list[str] = []
+        current = ""
+        for part in clause_parts:
+            if len(part) > max_chars:
+                if current:
+                    chunks.append(current)
+                    current = ""
+                chunks.extend(_split_tts_fragment_at_words(part, max_chars))
+                continue
+
+            candidate = f"{current} {part}".strip()
+            if current and len(candidate) > max_chars:
+                chunks.append(current)
+                current = part
+            else:
+                current = candidate
+
+        if current:
+            chunks.append(current)
+        return chunks
+
+    return _split_tts_fragment_at_words(text, max_chars)
+
+
+def chunk_tts_text(text: str, max_chars: int = DEFAULT_TTS_CHUNK_CHARS) -> list[str]:
+    """Split long TTS text into sentence-aware chunks.
+
+    Paragraph breaks are preserved when possible, but they do *not* force a new
+    chunk by themselves. This avoids pathological cases where story-like prose
+    becomes dozens of tiny voice notes simply because the source has many short
+    paragraphs.
+    """
+    normalized = text.replace("\r\n", "\n").strip()
+    if not normalized:
+        return []
+    if len(normalized) <= max_chars:
+        return [normalized]
+
+    paragraphs = [p.strip() for p in re.split(r'\n{2,}', normalized) if p.strip()]
+    if not paragraphs:
+        paragraphs = [normalized]
+
+    chunks: list[str] = []
+    current = ""
+
+    for paragraph in paragraphs:
+        sentences = [s.strip() for s in _SENTENCE_BOUNDARY_RE.split(paragraph) if s.strip()]
+        units = sentences or [paragraph]
+
+        for unit in units:
+            if len(unit) > max_chars:
+                if current:
+                    chunks.append(current)
+                    current = ""
+                chunks.extend(_split_tts_unit(unit, max_chars))
+                continue
+
+            separator = "\n\n" if current else ""
+            candidate = f"{current}{separator}{unit}" if current else unit
+            if current and len(candidate) > max_chars:
+                chunks.append(current)
+                current = unit
+            else:
+                current = candidate
+
+    if current:
+        chunks.append(current)
+
+    return chunks
 
 
 def stream_tts_to_speaker(

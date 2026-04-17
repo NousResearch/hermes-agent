@@ -7836,10 +7836,16 @@ class GatewayRunner:
                 last_prompt_tokens=agent_result.get("last_prompt_tokens", 0),
             )
 
-            # Auto voice reply: send TTS audio before the text response
+            # Auto voice reply: send TTS audio before the text response.
+            # In /voice tts mode, long multi-part replies become audio-primary:
+            # send the voice chunks, then replace the full text wall with a short
+            # control/status message instead of duplicating the entire answer.
             _already_sent = bool(agent_result.get("already_sent"))
+            _voice_reply_meta = None
             if self._should_send_voice_reply(event, response, agent_messages, already_sent=_already_sent):
-                await self._send_voice_reply(event, response)
+                _voice_reply_meta = await self._send_voice_reply(event, response)
+                if _voice_reply_meta and _voice_reply_meta.get("audio_primary"):
+                    response = _voice_reply_meta.get("status_text") or None
 
             # If streaming already delivered the response, extract and
             # deliver any MEDIA: files before returning None.  Streaming
@@ -9930,65 +9936,168 @@ class GatewayRunner:
 
         return True
 
-    async def _send_voice_reply(self, event: MessageEvent, text: str) -> None:
-        """Generate TTS audio and send as a voice message before the text reply."""
+    def _should_use_audio_primary_voice_reply(
+        self,
+        event: MessageEvent,
+        tts_chunks: list[str],
+    ) -> bool:
+        """Return True when voice should become the primary artifact.
+
+        Current policy mirrors the OpenClaw-style payload model for `/voice tts`
+        without giving up Hermes' full chunked narration:
+        - only in `/voice tts` mode (`voice_mode == "all"`)
+        - only when the reply is long enough to require multiple TTS chunks
+        - suppress the parallel long-form text wall in favor of a short status blurb
+        """
+        if not tts_chunks or len(tts_chunks) <= 1:
+            return False
+        chat_id = event.source.chat_id
+        return self._voice_mode.get(chat_id, "off") == "all"
+
+    @staticmethod
+    def _is_telegram_source(source: SessionSource) -> bool:
+        platform = getattr(source, "platform", None)
+        value = getattr(platform, "value", platform)
+        return str(value).strip().lower() == "telegram"
+
+    def _should_disable_streaming_for_voice_mode(self, source: SessionSource) -> bool:
+        """Disable token streaming when Telegram auto-TTS should own delivery.
+
+        In `/voice tts` mode on Telegram, progressive text streaming causes the
+        exact duplication the user reported: the full answer is streamed/chunked
+        as text, and then the voice pipeline sends its own chunked audio. For
+        this mode, prefer voice-first delivery and send the aligned text payload
+        after the audio instead of streaming the raw answer live.
+        """
+        if not self._is_telegram_source(source):
+            return False
+        return self._voice_mode.get(source.chat_id, "off") == "all"
+
+    async def _send_audio_primary_text_chunks(
+        self,
+        event: MessageEvent,
+        text_chunks: list[str],
+        adapter,
+    ) -> bool:
+        """Send text chunks that align with audio-primary Telegram voice parts."""
+        if not text_chunks or not adapter or not hasattr(adapter, "send"):
+            return False
+
+        metadata = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+        for index, chunk in enumerate(text_chunks):
+            await adapter.send(
+                event.source.chat_id,
+                chunk,
+                reply_to=event.message_id if index == 0 else None,
+                metadata=metadata,
+            )
+        return True
+
+    async def _send_voice_reply(self, event: MessageEvent, text: str) -> dict[str, Any] | None:
+        """Generate TTS audio and send as voice media.
+
+        Returns metadata describing whether the reply should become audio-primary.
+        """
         import uuid as _uuid
-        audio_path = None
-        actual_path = None
         try:
-            from tools.tts_tool import text_to_speech_tool, _strip_markdown_for_tts
+            from tools.tts_tool import (
+                DEFAULT_TTS_CHUNK_CHARS,
+                _strip_markdown_for_tts,
+                chunk_tts_text,
+                text_to_speech_tool,
+            )
 
-            tts_text = _strip_markdown_for_tts(text[:4000])
+            tts_text = _strip_markdown_for_tts(text)
             if not tts_text:
-                return
-
-            # Use .mp3 extension so edge-tts conversion to opus works correctly.
-            # The TTS tool may convert to .ogg — use file_path from result.
-            audio_path = os.path.join(
-                tempfile.gettempdir(), "hermes_voice",
-                f"tts_reply_{_uuid.uuid4().hex[:12]}.mp3",
-            )
-            os.makedirs(os.path.dirname(audio_path), exist_ok=True)
-
-            result_json = await asyncio.to_thread(
-                text_to_speech_tool, text=tts_text, output_path=audio_path
-            )
-            result = json.loads(result_json)
-
-            # Use the actual file path from result (may differ after opus conversion)
-            actual_path = result.get("file_path", audio_path)
-            if not result.get("success") or not os.path.isfile(actual_path):
-                logger.warning("Auto voice reply TTS failed: %s", result.get("error"))
-                return
+                return None
 
             adapter = self.adapters.get(event.source.platform)
-
-            # If connected to a voice channel, play there instead of sending a file
             guild_id = self._get_guild_id(event)
-            if (guild_id
-                    and hasattr(adapter, "play_in_voice_channel")
-                    and hasattr(adapter, "is_in_voice_channel")
-                    and adapter.is_in_voice_channel(guild_id)):
-                await adapter.play_in_voice_channel(guild_id, actual_path)
-            elif adapter and hasattr(adapter, "send_voice"):
-                reply_anchor = self._reply_anchor_for_event(event)
-                thread_meta = self._thread_metadata_for_source(event.source, reply_anchor)
-                send_kwargs: Dict[str, Any] = {
-                    "chat_id": event.source.chat_id,
-                    "audio_path": actual_path,
-                    "reply_to": reply_anchor,
-                }
-                if thread_meta:
-                    send_kwargs["metadata"] = thread_meta
-                await adapter.send_voice(**send_kwargs)
+            chunk_chars = DEFAULT_TTS_CHUNK_CHARS
+            if self._is_telegram_source(event.source):
+                # Keep a safety margin below Telegram's hard text limit while
+                # still approximating the chunk sizes the user sees in-chat.
+                chunk_chars = max(DEFAULT_TTS_CHUNK_CHARS, 3500)
+
+            tts_chunks = chunk_tts_text(tts_text, max_chars=chunk_chars)
+            if not tts_chunks:
+                return None
+
+            audio_primary = self._should_use_audio_primary_voice_reply(event, tts_chunks)
+            reply_anchor = self._reply_anchor_for_event(event)
+            thread_meta = self._thread_metadata_for_source(event.source, reply_anchor)
+
+            for index, chunk in enumerate(tts_chunks, start=1):
+                audio_path = None
+                actual_path = None
+                try:
+                    # Use .mp3 extension so edge-tts conversion to opus works correctly.
+                    # The TTS tool may convert to .ogg — use file_path from result.
+                    audio_path = os.path.join(
+                        tempfile.gettempdir(), "hermes_voice",
+                        f"tts_reply_{_uuid.uuid4().hex[:12]}_{index}.mp3",
+                    )
+                    os.makedirs(os.path.dirname(audio_path), exist_ok=True)
+
+                    result_json = await asyncio.to_thread(
+                        text_to_speech_tool, text=chunk, output_path=audio_path
+                    )
+                    result = json.loads(result_json)
+
+                    # Use the actual file path from result (may differ after opus conversion)
+                    actual_path = result.get("file_path", audio_path)
+                    if not result.get("success") or not os.path.isfile(actual_path):
+                        logger.warning("Auto voice reply TTS failed: %s", result.get("error"))
+                        return None
+
+                    # If connected to a voice channel, play there instead of sending a file
+                    if (guild_id
+                            and hasattr(adapter, "play_in_voice_channel")
+                            and hasattr(adapter, "is_in_voice_channel")
+                            and adapter.is_in_voice_channel(guild_id)):
+                        await adapter.play_in_voice_channel(guild_id, actual_path)
+                    elif adapter and hasattr(adapter, "send_voice"):
+                        send_kwargs: Dict[str, Any] = {
+                            "chat_id": event.source.chat_id,
+                            "audio_path": actual_path,
+                            "reply_to": reply_anchor,
+                        }
+                        if thread_meta:
+                            send_kwargs["metadata"] = thread_meta
+                        await adapter.send_voice(**send_kwargs)
+                finally:
+                    for p in {audio_path, actual_path} - {None}:
+                        try:
+                            os.unlink(p)
+                        except OSError:
+                            pass
+
+            mirrored_text = False
+            status_text = None
+            if audio_primary and self._is_telegram_source(event.source):
+                try:
+                    mirrored_text = await self._send_audio_primary_text_chunks(
+                        event,
+                        tts_chunks,
+                        adapter,
+                    )
+                except Exception as send_err:
+                    logger.warning("Failed to send aligned Telegram text chunks for auto voice reply: %s", send_err)
+                    mirrored_text = False
+
+            if not mirrored_text:
+                part_word = "part" if len(tts_chunks) == 1 else "parts"
+                status_text = f"Sent {len(tts_chunks)} voice {part_word}."
+
+            return {
+                "sent_chunks": len(tts_chunks),
+                "audio_primary": audio_primary,
+                "status_text": status_text,
+                "mirrored_text": mirrored_text,
+            }
         except Exception as e:
             logger.warning("Auto voice reply failed: %s", e, exc_info=True)
-        finally:
-            for p in {audio_path, actual_path} - {None}:
-                try:
-                    os.unlink(p)
-                except OSError:
-                    pass
+            return None
 
     async def _deliver_media_from_response(
         self,
@@ -13926,6 +14035,8 @@ class GatewayRunner:
             if _plat_streaming is None
             else bool(_plat_streaming)
         )
+        if _streaming_enabled and self._should_disable_streaming_for_voice_mode(source):
+            _streaming_enabled = False
 
         _thread_metadata: Optional[Dict[str, Any]] = self._thread_metadata_for_source(source, event_message_id)
 
@@ -14739,6 +14850,8 @@ class GatewayRunner:
                 if _plat_streaming is None
                 else bool(_plat_streaming)
             )
+            if _streaming_enabled and self._should_disable_streaming_for_voice_mode(source):
+                _streaming_enabled = False
             _want_stream_deltas = _streaming_enabled
             _want_interim_messages = interim_assistant_messages_enabled
             _want_interim_consumer = _want_interim_messages

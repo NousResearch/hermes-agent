@@ -3007,17 +3007,39 @@ class BasePlatformAdapter(ABC):
                         and text_content
                         and not media_files):
                     try:
-                        from tools.tts_tool import text_to_speech_tool, check_tts_requirements
+                        from tools.tts_tool import (
+                            DEFAULT_TTS_CHUNK_CHARS,
+                            check_tts_requirements,
+                            chunk_tts_text,
+                            text_to_speech_tool,
+                        )
                         if check_tts_requirements():
                             import json as _json
-                            speech_text = re.sub(r'[*_`#\[\]()]', '', text_content)[:4000].strip()
+                            speech_text = re.sub(r'[*_`#\[\]()]', '', text_content).strip()
                             if not speech_text:
                                 raise ValueError("Empty text after markdown cleanup")
-                            tts_result_str = await asyncio.to_thread(
-                                text_to_speech_tool, text=speech_text
-                            )
-                            tts_data = _json.loads(tts_result_str)
-                            _tts_path = tts_data.get("file_path")
+                            speech_chunks = chunk_tts_text(speech_text, max_chars=DEFAULT_TTS_CHUNK_CHARS)
+                            if not speech_chunks:
+                                raise ValueError("Empty text after markdown cleanup")
+                            for speech_chunk in speech_chunks:
+                                tts_result_str = await asyncio.to_thread(
+                                    text_to_speech_tool, text=speech_chunk
+                                )
+                                tts_data = _json.loads(tts_result_str)
+                                _tts_path = tts_data.get("file_path")
+                                if _tts_path and Path(_tts_path).exists():
+                                    try:
+                                        await self.play_tts(
+                                            chat_id=event.source.chat_id,
+                                            audio_path=_tts_path,
+                                            metadata=_thread_metadata,
+                                        )
+                                    finally:
+                                        try:
+                                            os.remove(_tts_path)
+                                        except OSError:
+                                            pass
+                                    _tts_path = None
                     except Exception as tts_err:
                         logger.warning("[%s] Auto-TTS failed: %s", self.name, tts_err)
 

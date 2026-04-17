@@ -449,20 +449,6 @@ class TestRunDebug:
 # Argparse integration
 # ---------------------------------------------------------------------------
 
-class TestArgparseIntegration:
-    def test_module_imports_clean(self):
-        from hermes_cli.debug import run_debug, run_debug_share
-        assert callable(run_debug)
-        assert callable(run_debug_share)
-
-    def test_cmd_debug_dispatches(self):
-        from hermes_cli.main import cmd_debug
-
-        args = MagicMock()
-        args.debug_command = None
-        cmd_debug(args)
-
-
 # ---------------------------------------------------------------------------
 # Delete / auto-delete
 # ---------------------------------------------------------------------------

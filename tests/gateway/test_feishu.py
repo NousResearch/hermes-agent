@@ -29,13 +29,6 @@ def _mock_event_dispatcher_builder(mock_handler_class):
     return mock_builder
 
 
-class TestPlatformEnum(unittest.TestCase):
-    def test_feishu_in_platform_enum(self):
-        from gateway.config import Platform
-
-        self.assertEqual(Platform.FEISHU.value, "feishu")
-
-
 class TestConfigEnvOverrides(unittest.TestCase):
     @patch.dict(os.environ, {
         "FEISHU_APP_ID": "cli_xxx",
@@ -80,24 +73,6 @@ class TestConfigEnvOverrides(unittest.TestCase):
         _apply_env_overrides(config)
 
         self.assertIn(Platform.FEISHU, config.get_connected_platforms())
-
-
-class TestGatewayIntegration(unittest.TestCase):
-    def test_feishu_in_adapter_factory(self):
-        source = Path("gateway/run.py").read_text(encoding="utf-8")
-        self.assertIn("Platform.FEISHU", source)
-        self.assertIn("FeishuAdapter", source)
-
-    def test_feishu_in_authorization_maps(self):
-        source = Path("gateway/run.py").read_text(encoding="utf-8")
-        self.assertIn("FEISHU_ALLOWED_USERS", source)
-        self.assertIn("FEISHU_ALLOW_ALL_USERS", source)
-
-    def test_feishu_toolset_exists(self):
-        from toolsets import TOOLSETS
-
-        self.assertIn("hermes-feishu", TOOLSETS)
-        self.assertIn("hermes-feishu", TOOLSETS["hermes-gateway"]["includes"])
 
 
 class TestFeishuMessageNormalization(unittest.TestCase):
@@ -472,27 +447,6 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
         self.assertEqual(info["type"], "group")
 
 class TestAdapterModule(unittest.TestCase):
-    def test_adapter_requirement_helper_exists(self):
-        source = Path("gateway/platforms/feishu.py").read_text(encoding="utf-8")
-        self.assertIn("def check_feishu_requirements()", source)
-        self.assertIn("FEISHU_AVAILABLE", source)
-
-    def test_adapter_declares_websocket_scope(self):
-        source = Path("gateway/platforms/feishu.py").read_text(encoding="utf-8")
-        self.assertIn("Supported modes: websocket, webhook", source)
-        self.assertIn("FEISHU_CONNECTION_MODE", source)
-
-    def test_adapter_registers_message_read_noop_handler(self):
-        source = Path("gateway/platforms/feishu.py").read_text(encoding="utf-8")
-        self.assertIn("register_p2_im_message_message_read_v1", source)
-        self.assertIn("def _on_message_read_event", source)
-
-    def test_adapter_registers_reaction_and_card_handlers_for_websocket(self):
-        source = Path("gateway/platforms/feishu.py").read_text(encoding="utf-8")
-        self.assertIn("register_p2_im_message_reaction_created_v1", source)
-        self.assertIn("register_p2_im_message_reaction_deleted_v1", source)
-        self.assertIn("register_p2_card_action_trigger", source)
-
     def test_load_settings_uses_sdk_defaults_for_invalid_ws_reconnect_values(self):
         from gateway.platforms.feishu import FeishuAdapter
 

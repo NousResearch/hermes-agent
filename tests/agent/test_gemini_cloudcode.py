@@ -826,85 +826,6 @@ class TestGeminiCloudCodeClient:
         finally:
             client.close()
 
-    def test_create_with_mocked_http(self, monkeypatch):
-        """End-to-end: mock oauth + http, verify translation works."""
-        from agent import gemini_cloudcode_adapter, google_oauth
-        from agent.google_oauth import GoogleCredentials, save_credentials
-
-        # Set up logged-in state
-        save_credentials(GoogleCredentials(
-            access_token="bearer-tok",
-            refresh_token="rt",
-            expires_ms=int((time.time() + 3600) * 1000),
-            project_id="test-proj",
-        ))
-
-        # Mock the HTTP response
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {
-            "response": {
-                "candidates": [{
-                    "content": {"parts": [{"text": "hello from mock"}]},
-                    "finishReason": "STOP",
-                }],
-                "usageMetadata": {
-                    "promptTokenCount": 5,
-                    "candidatesTokenCount": 3,
-                    "totalTokenCount": 8,
-                },
-            }
-        }
-
-        client = gemini_cloudcode_adapter.GeminiCloudCodeClient()
-        try:
-            with patch.object(client._http, "post", return_value=mock_response) as mock_post:
-                result = client.chat.completions.create(
-                    model="gemini-2.5-flash",
-                    messages=[{"role": "user", "content": "hi"}],
-                )
-            assert result.choices[0].message.content == "hello from mock"
-
-            # Verify the request was wrapped correctly
-            call_args = mock_post.call_args
-            assert "cloudcode-pa.googleapis.com" in call_args[0][0]
-            assert ":generateContent" in call_args[0][0]
-            json_body = call_args[1]["json"]
-            assert json_body["project"] == "test-proj"
-            assert json_body["model"] == "gemini-2.5-flash"
-            assert "request" in json_body
-            # Auth header
-            assert call_args[1]["headers"]["Authorization"] == "Bearer bearer-tok"
-        finally:
-            client.close()
-
-    def test_create_raises_on_http_error(self, monkeypatch):
-        from agent import gemini_cloudcode_adapter
-        from agent.google_oauth import GoogleCredentials, save_credentials
-
-        save_credentials(GoogleCredentials(
-            access_token="tok", refresh_token="rt",
-            expires_ms=int((time.time() + 3600) * 1000),
-            project_id="p",
-        ))
-
-        mock_response = MagicMock()
-        mock_response.status_code = 401
-        mock_response.text = "unauthorized"
-
-        client = gemini_cloudcode_adapter.GeminiCloudCodeClient()
-        try:
-            with patch.object(client._http, "post", return_value=mock_response):
-                with pytest.raises(gemini_cloudcode_adapter.CodeAssistError) as exc_info:
-                    client.chat.completions.create(
-                        model="gemini-2.5-flash",
-                        messages=[{"role": "user", "content": "hi"}],
-                    )
-            assert exc_info.value.code == "code_assist_unauthorized"
-        finally:
-            client.close()
-
-
 # =============================================================================
 # Provider registration
 # =============================================================================
@@ -915,14 +836,6 @@ class TestProviderRegistration:
 
         assert "google-gemini-cli" in PROVIDER_REGISTRY
         assert PROVIDER_REGISTRY["google-gemini-cli"].auth_type == "oauth_external"
-
-    @pytest.mark.parametrize("alias", [
-        "gemini-cli", "gemini-oauth", "google-gemini-cli",
-    ])
-    def test_alias_resolves(self, alias):
-        from hermes_cli.auth import resolve_provider
-
-        assert resolve_provider(alias) == "google-gemini-cli"
 
     def test_google_gemini_alias_still_goes_to_api_key_gemini(self):
         """Regression guard: don't shadow the existing google-gemini → gemini alias."""

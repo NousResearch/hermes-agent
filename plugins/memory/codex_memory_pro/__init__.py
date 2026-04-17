@@ -60,7 +60,7 @@ _RECALL_SCHEMA = {
         "properties": {
             "query": {"type": "string", "description": "Search query — keywords, phrases, or natural language."},
             "project": {"type": "string", "description": "Project ID for scoping (e.g. codex-memory-pro)."},
-            "scope": {"type": "string", "description": "Scope filter: global, project:xxx, or session:xxx."},
+            "scope": {"type": "string", "description": "Scope filter: global or project:xxx (e.g. project:codex-memory-pro)."},
             "limit": {"type": "integer", "description": "Max results (default 8)."},
         },
         "required": ["query"],
@@ -79,8 +79,7 @@ _SEARCH_SCHEMA = {
         "properties": {
             "query": {"type": "string", "description": "Search query."},
             "project": {"type": "string", "description": "Project ID for scoping."},
-            "scope": {"type": "string", "description": "Scope filter: global, project:xxx, or session:xxx."},
-            "sessionId": {"type": "string", "description": "Session ID for scoping."},
+            "scope": {"type": "string", "description": "Scope filter: global or project:xxx (e.g. project:codex-memory-pro)."},
             "mode": {
                 "type": "string",
                 "enum": ["auto", "memories", "documents", "hybrid"],
@@ -105,8 +104,7 @@ _REMEMBER_SCHEMA = {
             "text": {"type": "string", "description": "Content to remember."},
             "category": {"type": "string", "description": "Category: preference, workflow, fact, etc."},
             "project": {"type": "string", "description": "Project ID for scoping."},
-            "scope": {"type": "string", "description": "Scope: global, project:xxx, or session:xxx."},
-            "sessionId": {"type": "string", "description": "Session ID for scoping."},
+            "scope": {"type": "string", "description": "Scope: global or project:xxx."},
         },
         "required": ["text"],
     },
@@ -365,15 +363,15 @@ class CodexMemoryProvider(MemoryProvider):
             return
 
         # --- Resolve config overrides ---
-        self._session_id = session_id or ""
+        self._session_id = session_id or ""  # only used for capture event tracing
+        self._project = ""  # Empty — let CLI resolveContextualScope/buildRoutePayload infer
         hermes_home = kwargs.get("hermes_home", "")
 
         # Read plugin-specific config if present
         self._resolve_config(hermes_home)
 
-        # Override project from kwargs if provided
-        if kwargs.get("project"):
-            self._project = kwargs["project"]
+        # Override project from kwargs/config if explicitly set
+        # (e.g. config.yaml memory.codex_memory_pro.project)
 
         # --- Start event loop thread ---
         self._start_event_loop()
@@ -603,12 +601,8 @@ class CodexMemoryProvider(MemoryProvider):
         if not query or not query.strip():
             return ""
 
-        # Build args for memory_prepare
+        # Build args for memory_prepare (no project — let CLI infer scope)
         args: dict[str, Any] = {"query": query}
-        if self._session_id:
-            args["sessionId"] = self._session_id
-        if self._project:
-            args["project"] = self._project
 
         # Use shorter timeout for prefetch (blocks response generation)
         result = self._call_tool("memory_prepare", args, timeout=5.0)
@@ -663,9 +657,7 @@ class CodexMemoryProvider(MemoryProvider):
         args: dict[str, Any] = {
             "userText": user_brief,
             "assistantText": asst_brief,
-        }
-        if self._session_id:
-            args["sessionId"] = self._session_id
+        }  # No project — let CLI buildRoutePayload infer
 
         def _capture():
             try:
@@ -700,9 +692,7 @@ class CodexMemoryProvider(MemoryProvider):
             args: dict[str, Any] = {
                 "userText": self._last_user[:2000],
                 "assistantText": self._last_assistant[:2000],
-            }
-            if self._session_id:
-                args["sessionId"] = self._session_id
+            }  # No project — let CLI infer
             try:
                 self._call_tool("memory_capture", args, timeout=10.0)
             except Exception as e:
@@ -780,8 +770,7 @@ class CodexMemoryProvider(MemoryProvider):
             args["category"] = "preference"
         else:
             args["category"] = "fact"
-        if self._project:
-            args["project"] = self._project
+        # No project — let CLI buildRoutePayload infer
 
         def _persist():
             try:
@@ -810,9 +799,7 @@ class CodexMemoryProvider(MemoryProvider):
         args: dict[str, Any] = {
             "text": text,
             "category": "workflow",
-        }
-        if self._project:
-            args["project"] = self._project
+        }  # No project — let CLI infer
 
         def _record():
             try:
@@ -857,6 +844,13 @@ class CodexMemoryProvider(MemoryProvider):
             return []
         return list(ALL_TOOL_SCHEMAS)
 
+    # Scope dimensions for Hermes:
+    #   - global:   通用记忆（偏好、事实、规则）
+    #   - project:<name>: 项目专属记忆（name = 项目目录名，如 codex-memory-pro）
+    #   - project:Hermes: Hermes 自身相关记忆（默认）
+    # Note: sessionId has been fully removed — it was causing scope locking to
+    # ephemeral session UUIDs, filtering out all cross-session memories.
+
     def handle_tool_call(self, tool_name: str, args: dict, **kwargs) -> str:
         """Dispatch a tool call to the MCP server.
 
@@ -868,10 +862,6 @@ class CodexMemoryProvider(MemoryProvider):
         mcp_name = _TOOL_NAME_MAP.get(tool_name)
         if not mcp_name:
             return tool_error(f"Unknown codex-memory-pro tool: {tool_name}")
-
-        # Inject session_id if not provided
-        if "sessionId" not in args and self._session_id:
-            args = {**args, "sessionId": self._session_id}
 
         return self._call_tool(mcp_name, args)
 

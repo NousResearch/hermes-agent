@@ -5904,6 +5904,12 @@ Examples:
     mcp_cfg_p = mcp_sub.add_parser("configure", aliases=["config"], help="Toggle tool selection")
     mcp_cfg_p.add_argument("name", help="Server name to configure")
 
+    mcp_login_p = mcp_sub.add_parser(
+        "login",
+        help="Force re-authentication for an OAuth-based MCP server",
+    )
+    mcp_login_p.add_argument("name", help="Server name to re-authenticate")
+
     def cmd_mcp(args):
         from hermes_cli.mcp_config import mcp_command
         mcp_command(args)

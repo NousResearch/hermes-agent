@@ -783,7 +783,8 @@ class MCPServerTask:
 
     __slots__ = (
         "name", "session", "tool_timeout",
-        "_task", "_ready", "_shutdown_event", "_tools", "_error", "_config",
+        "_task", "_ready", "_shutdown_event", "_reconnect_event",
+        "_tools", "_error", "_config",
         "_sampling", "_registered_tool_names", "_auth_type", "_refresh_lock",
     )
 
@@ -794,6 +795,12 @@ class MCPServerTask:
         self._task: Optional[asyncio.Task] = None
         self._ready = asyncio.Event()
         self._shutdown_event = asyncio.Event()
+        # Set by tool handlers on auth failure after manager.handle_401()
+        # confirms recovery is viable. When set, _run_http / _run_stdio
+        # exit their async-with blocks cleanly (no exception), and the
+        # outer run() loop re-enters the transport so the MCP session is
+        # rebuilt with fresh credentials.
+        self._reconnect_event = asyncio.Event()
         self._tools: list = []
         self._error: Optional[Exception] = None
         self._config: dict = {}
@@ -887,6 +894,40 @@ class MCPServerTask:
                     self.name, len(self._registered_tool_names),
                 )
 
+    async def _wait_for_lifecycle_event(self) -> str:
+        """Block until either _shutdown_event or _reconnect_event fires.
+
+        Returns:
+            "shutdown"  if the server should exit the run loop entirely.
+            "reconnect" if the server should tear down the current MCP
+                        session and re-enter the transport (fresh OAuth
+                        tokens, new session ID, etc.). The reconnect event
+                        is cleared before return so the next cycle starts
+                        with a fresh signal.
+
+        Shutdown takes precedence if both events are set simultaneously.
+        """
+        shutdown_task = asyncio.create_task(self._shutdown_event.wait())
+        reconnect_task = asyncio.create_task(self._reconnect_event.wait())
+        try:
+            await asyncio.wait(
+                {shutdown_task, reconnect_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+        finally:
+            for t in (shutdown_task, reconnect_task):
+                if not t.done():
+                    t.cancel()
+                    try:
+                        await t
+                    except (asyncio.CancelledError, Exception):
+                        pass
+
+        if self._shutdown_event.is_set():
+            return "shutdown"
+        self._reconnect_event.clear()
+        return "reconnect"
+
     async def _run_stdio(self, config: dict):
         """Run the server using stdio transport."""
         command = config.get("command")
@@ -932,7 +973,10 @@ class MCPServerTask:
                 self.session = session
                 await self._discover_tools()
                 self._ready.set()
-                await self._shutdown_event.wait()
+                # stdio transport does not use OAuth, but we still honor
+                # _reconnect_event (e.g. future manual /mcp refresh) for
+                # consistency with _run_http.
+                await self._wait_for_lifecycle_event()
         # Context exited cleanly — subprocess was terminated by the SDK.
         if new_pids:
             with _lock:
@@ -951,16 +995,18 @@ class MCPServerTask:
         headers = dict(config.get("headers") or {})
         connect_timeout = config.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT)
 
-        # OAuth 2.1 PKCE: build httpx.Auth handler using the MCP SDK.
-        # If OAuth setup fails (e.g. non-interactive environment without
-        # cached tokens), re-raise so this server is reported as failed
-        # without blocking other MCP servers from connecting.
+        # OAuth 2.1 PKCE: route through the central MCPOAuthManager so the
+        # same provider instance is reused across reconnects, pre-flow
+        # disk-watch is active, and config-time CLI code paths share state.
+        # If OAuth setup fails (e.g. non-interactive env without cached
+        # tokens), re-raise so this server is reported as failed without
+        # blocking other MCP servers from connecting.
         _oauth_auth = None
         if self._auth_type == "oauth":
             try:
-                from tools.mcp_oauth import build_oauth_auth
-                _oauth_auth = build_oauth_auth(
-                    self.name, url, config.get("oauth")
+                from tools.mcp_oauth_manager import get_manager
+                _oauth_auth = get_manager().get_or_build_provider(
+                    self.name, url, config.get("oauth"),
                 )
             except Exception as exc:
                 logger.warning("MCP OAuth setup failed for '%s': %s", self.name, exc)
@@ -995,7 +1041,12 @@ class MCPServerTask:
                         self.session = session
                         await self._discover_tools()
                         self._ready.set()
-                        await self._shutdown_event.wait()
+                        reason = await self._wait_for_lifecycle_event()
+                        if reason == "reconnect":
+                            logger.info(
+                                "MCP server '%s': reconnect requested — "
+                                "tearing down HTTP session", self.name,
+                            )
         else:
             # Deprecated API (mcp < 1.24.0): manages httpx client internally.
             _http_kwargs: dict = {
@@ -1012,7 +1063,12 @@ class MCPServerTask:
                     self.session = session
                     await self._discover_tools()
                     self._ready.set()
-                    await self._shutdown_event.wait()
+                    reason = await self._wait_for_lifecycle_event()
+                    if reason == "reconnect":
+                        logger.info(
+                            "MCP server '%s': reconnect requested — "
+                            "tearing down legacy HTTP session", self.name,
+                        )
 
     async def _discover_tools(self):
         """Discover tools from the connected session."""
@@ -1060,8 +1116,25 @@ class MCPServerTask:
                     await self._run_http(config)
                 else:
                     await self._run_stdio(config)
-                # Normal exit (shutdown requested) -- break out
-                break
+                # Transport returned cleanly. Two cases:
+                #  - _shutdown_event was set: exit the run loop entirely.
+                #  - _reconnect_event was set (auth recovery): loop back and
+                #    rebuild the MCP session with fresh credentials. Do NOT
+                #    touch the retry counters — this is not a failure.
+                if self._shutdown_event.is_set():
+                    break
+                logger.info(
+                    "MCP server '%s': reconnecting (OAuth recovery or "
+                    "manual refresh)",
+                    self.name,
+                )
+                # Reset the session reference; _run_http/_run_stdio will
+                # repopulate it on successful re-entry.
+                self.session = None
+                # Keep _ready set across reconnects so tool handlers can
+                # still detect a transient in-flight state — it'll be
+                # re-set after the fresh session initializes.
+                continue
             except Exception as exc:
                 self.session = None
 
@@ -1141,6 +1214,12 @@ class MCPServerTask:
         from tools.registry import registry
 
         self._shutdown_event.set()
+        # Defensive: if _wait_for_lifecycle_event is blocking, we need ANY
+        # event to unblock it. _shutdown_event alone is sufficient (the
+        # helper checks shutdown first), but setting reconnect too ensures
+        # there's no race where the helper misses the shutdown flag after
+        # returning "reconnect".
+        self._reconnect_event.set()
         if self._task and not self._task.done():
             try:
                 await asyncio.wait_for(self._task, timeout=10)
@@ -1173,6 +1252,175 @@ _servers: Dict[str, MCPServerTask] = {}
 # Reset to 0 on any successful call.
 _server_error_counts: Dict[str, int] = {}
 _CIRCUIT_BREAKER_THRESHOLD = 3
+
+# ---------------------------------------------------------------------------
+# Auth-failure detection helpers (Task 6 of MCP OAuth consolidation)
+# ---------------------------------------------------------------------------
+
+# Cached tuple of auth-related exception types. Lazy so this module
+# imports cleanly when the MCP SDK OAuth module is missing.
+_AUTH_ERROR_TYPES: tuple = ()
+
+
+def _get_auth_error_types() -> tuple:
+    """Return a tuple of exception types that indicate MCP OAuth failure.
+
+    Cached after first call. Includes:
+      - ``mcp.client.auth.OAuthFlowError`` / ``OAuthTokenError`` — raised by
+        the SDK's auth flow when discovery, refresh, or full re-auth fails.
+      - ``mcp.client.auth.UnauthorizedError`` (older MCP SDKs) — kept as an
+        optional import for forward/backward compatibility.
+      - ``tools.mcp_oauth.OAuthNonInteractiveError`` — raised by our callback
+        handler when no user is present to complete a browser flow.
+      - ``httpx.HTTPStatusError`` — caller must additionally check
+        ``status_code == 401`` via :func:`_is_auth_error`.
+    """
+    global _AUTH_ERROR_TYPES
+    if _AUTH_ERROR_TYPES:
+        return _AUTH_ERROR_TYPES
+    types: list = []
+    try:
+        from mcp.client.auth import OAuthFlowError, OAuthTokenError
+        types.extend([OAuthFlowError, OAuthTokenError])
+    except ImportError:
+        pass
+    try:
+        # Older MCP SDK variants exported this
+        from mcp.client.auth import UnauthorizedError  # type: ignore
+        types.append(UnauthorizedError)
+    except ImportError:
+        pass
+    try:
+        from tools.mcp_oauth import OAuthNonInteractiveError
+        types.append(OAuthNonInteractiveError)
+    except ImportError:
+        pass
+    try:
+        import httpx
+        types.append(httpx.HTTPStatusError)
+    except ImportError:
+        pass
+    _AUTH_ERROR_TYPES = tuple(types)
+    return _AUTH_ERROR_TYPES
+
+
+def _is_auth_error(exc: BaseException) -> bool:
+    """Return True if ``exc`` indicates an MCP OAuth failure.
+
+    ``httpx.HTTPStatusError`` is only treated as auth-related when the
+    response status code is 401. Other HTTP errors fall through to the
+    generic error path in the tool handlers.
+    """
+    types = _get_auth_error_types()
+    if not types or not isinstance(exc, types):
+        return False
+    try:
+        import httpx
+        if isinstance(exc, httpx.HTTPStatusError):
+            return getattr(exc.response, "status_code", None) == 401
+    except ImportError:
+        pass
+    return True
+
+
+def _handle_auth_error_and_retry(
+    server_name: str,
+    exc: BaseException,
+    retry_call,
+    op_description: str,
+):
+    """Attempt auth recovery and one retry; return None to fall through.
+
+    Called by the 5 MCP tool handlers when ``session.<op>()`` raises an
+    auth-related exception. Workflow:
+
+      1. Ask :class:`tools.mcp_oauth_manager.MCPOAuthManager.handle_401` if
+         recovery is viable (i.e., disk has fresh tokens, or the SDK can
+         refresh in-place).
+      2. If yes, set the server's ``_reconnect_event`` so the server task
+         tears down the current MCP session and rebuilds it with fresh
+         credentials. Wait briefly for ``_ready`` to re-fire.
+      3. Retry the operation once. Return the retry result if it produced
+         a non-error JSON payload. Otherwise return the ``needs_reauth``
+         error dict so the model stops hallucinating manual refresh.
+      4. Return None if ``exc`` is not an auth error, signalling the
+         caller to use the generic error path.
+
+    Args:
+        server_name: Name of the MCP server that raised.
+        exc: The exception from the failed tool call.
+        retry_call: Zero-arg callable that re-runs the tool call, returning
+            the same JSON string format as the handler.
+        op_description: Human-readable name of the operation (for logs).
+
+    Returns:
+        A JSON string if auth recovery was attempted, or None to fall
+        through to the caller's generic error path.
+    """
+    if not _is_auth_error(exc):
+        return None
+
+    from tools.mcp_oauth_manager import get_manager
+    manager = get_manager()
+
+    async def _recover():
+        return await manager.handle_401(server_name, None)
+
+    try:
+        recovered = _run_on_mcp_loop(_recover(), timeout=10)
+    except Exception as rec_exc:
+        logger.warning(
+            "MCP OAuth '%s': recovery attempt failed: %s",
+            server_name, rec_exc,
+        )
+        recovered = False
+
+    if recovered:
+        with _lock:
+            srv = _servers.get(server_name)
+        if srv is not None and hasattr(srv, "_reconnect_event"):
+            loop = _mcp_loop
+            if loop is not None and loop.is_running():
+                loop.call_soon_threadsafe(srv._reconnect_event.set)
+                # Wait briefly for the session to come back ready. Bounded
+                # so that a stuck reconnect falls through to the error
+                # path rather than hanging the caller.
+                deadline = time.monotonic() + 15
+                while time.monotonic() < deadline:
+                    if srv.session is not None and srv._ready.is_set():
+                        break
+                    time.sleep(0.25)
+
+        try:
+            result = retry_call()
+            try:
+                parsed = json.loads(result)
+                if "error" not in parsed:
+                    _server_error_counts[server_name] = 0
+                    return result
+            except (json.JSONDecodeError, TypeError):
+                _server_error_counts[server_name] = 0
+                return result
+        except Exception as retry_exc:
+            logger.warning(
+                "MCP %s/%s retry after auth recovery failed: %s",
+                server_name, op_description, retry_exc,
+            )
+
+    # No recovery available, or retry also failed: surface a structured
+    # needs_reauth error. Bumps the circuit breaker so the model stops
+    # retrying the tool.
+    _server_error_counts[server_name] = _server_error_counts.get(server_name, 0) + 1
+    return json.dumps({
+        "error": (
+            f"MCP server '{server_name}' requires re-authentication. "
+            f"Run `hermes mcp login {server_name}` (or delete the tokens "
+            f"file under ~/.hermes/mcp-tokens/ and restart). Do NOT retry "
+            f"this tool — ask the user to re-authenticate."
+        ),
+        "needs_reauth": True,
+        "server": server_name,
+    }, ensure_ascii=False)
 
 # Dedicated event loop running in a background daemon thread.
 _mcp_loop: Optional[asyncio.AbstractEventLoop] = None
@@ -1420,8 +1668,11 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                 return json.dumps({"result": structured}, ensure_ascii=False)
             return json.dumps({"result": text_result}, ensure_ascii=False)
 
+        def _call_once():
+            return _run_on_mcp_loop(_call(), timeout=tool_timeout)
+
         try:
-            result = _run_on_mcp_loop(_call(), timeout=tool_timeout)
+            result = _call_once()
             # Check if the MCP tool itself returned an error
             try:
                 parsed = json.loads(result)
@@ -1435,6 +1686,16 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
         except InterruptedError:
             return _interrupted_call_result()
         except Exception as exc:
+            # Auth-specific recovery path: consult the manager, signal
+            # reconnect if viable, retry once. Returns None to fall
+            # through for non-auth exceptions.
+            recovered = _handle_auth_error_and_retry(
+                server_name, exc, _call_once,
+                f"tools/call {tool_name}",
+            )
+            if recovered is not None:
+                return recovered
+
             _server_error_counts[server_name] = _server_error_counts.get(server_name, 0) + 1
             logger.error(
                 "MCP tool %s/%s call failed: %s",
@@ -1476,11 +1737,19 @@ def _make_list_resources_handler(server_name: str, tool_timeout: float):
                 resources.append(entry)
             return json.dumps({"resources": resources}, ensure_ascii=False)
 
-        try:
+        def _call_once():
             return _run_on_mcp_loop(_call(), timeout=tool_timeout)
+
+        try:
+            return _call_once()
         except InterruptedError:
             return _interrupted_call_result()
         except Exception as exc:
+            recovered = _handle_auth_error_and_retry(
+                server_name, exc, _call_once, "resources/list",
+            )
+            if recovered is not None:
+                return recovered
             logger.error(
                 "MCP %s/list_resources failed: %s", server_name, exc,
             )
@@ -1522,11 +1791,19 @@ def _make_read_resource_handler(server_name: str, tool_timeout: float):
                     parts.append(f"[binary data, {len(block.blob)} bytes]")
             return json.dumps({"result": "\n".join(parts) if parts else ""}, ensure_ascii=False)
 
-        try:
+        def _call_once():
             return _run_on_mcp_loop(_call(), timeout=tool_timeout)
+
+        try:
+            return _call_once()
         except InterruptedError:
             return _interrupted_call_result()
         except Exception as exc:
+            recovered = _handle_auth_error_and_retry(
+                server_name, exc, _call_once, "resources/read",
+            )
+            if recovered is not None:
+                return recovered
             logger.error(
                 "MCP %s/read_resource failed: %s", server_name, exc,
             )
@@ -1571,11 +1848,19 @@ def _make_list_prompts_handler(server_name: str, tool_timeout: float):
                 prompts.append(entry)
             return json.dumps({"prompts": prompts}, ensure_ascii=False)
 
-        try:
+        def _call_once():
             return _run_on_mcp_loop(_call(), timeout=tool_timeout)
+
+        try:
+            return _call_once()
         except InterruptedError:
             return _interrupted_call_result()
         except Exception as exc:
+            recovered = _handle_auth_error_and_retry(
+                server_name, exc, _call_once, "prompts/list",
+            )
+            if recovered is not None:
+                return recovered
             logger.error(
                 "MCP %s/list_prompts failed: %s", server_name, exc,
             )
@@ -1628,11 +1913,19 @@ def _make_get_prompt_handler(server_name: str, tool_timeout: float):
                 resp["description"] = result.description
             return json.dumps(resp, ensure_ascii=False)
 
-        try:
+        def _call_once():
             return _run_on_mcp_loop(_call(), timeout=tool_timeout)
+
+        try:
+            return _call_once()
         except InterruptedError:
             return _interrupted_call_result()
         except Exception as exc:
+            recovered = _handle_auth_error_and_retry(
+                server_name, exc, _call_once, "prompts/get",
+            )
+            if recovered is not None:
+                return recovered
             logger.error(
                 "MCP %s/get_prompt failed: %s", server_name, exc,
             )

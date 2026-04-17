@@ -14,6 +14,8 @@ def _would_warn():
                    "EMAIL_ALLOWED_USERS",
                    "SMS_ALLOWED_USERS", "MATTERMOST_ALLOWED_USERS",
                    "MATRIX_ALLOWED_USERS", "DINGTALK_ALLOWED_USERS", "FEISHU_ALLOWED_USERS", "WECOM_ALLOWED_USERS",
+                   "AAMP_ALLOWED_USERS",
+                   "AAMP_SENDER_POLICIES",
                    "GATEWAY_ALLOWED_USERS")
     )
     _allow_all = os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in ("true", "1", "yes") or any(
@@ -22,7 +24,8 @@ def _would_warn():
                    "WHATSAPP_ALLOW_ALL_USERS", "SLACK_ALLOW_ALL_USERS",
                    "SIGNAL_ALLOW_ALL_USERS", "EMAIL_ALLOW_ALL_USERS",
                    "SMS_ALLOW_ALL_USERS", "MATTERMOST_ALLOW_ALL_USERS",
-                   "MATRIX_ALLOW_ALL_USERS", "DINGTALK_ALLOW_ALL_USERS", "FEISHU_ALLOW_ALL_USERS", "WECOM_ALLOW_ALL_USERS")
+                   "MATRIX_ALLOW_ALL_USERS", "DINGTALK_ALLOW_ALL_USERS", "FEISHU_ALLOW_ALL_USERS", "WECOM_ALLOW_ALL_USERS",
+                   "AAMP_ALLOW_ALL_USERS")
     )
     return not _any_allowlist and not _allow_all
 
@@ -43,4 +46,16 @@ class TestAllowlistStartupCheck:
 
     def test_gateway_allow_all_users_suppresses_warning(self):
         with patch.dict(os.environ, {"GATEWAY_ALLOW_ALL_USERS": "yes"}, clear=True):
+            assert _would_warn() is False
+
+    def test_aamp_allowlist_suppresses_warning(self):
+        with patch.dict(os.environ, {"AAMP_ALLOWED_USERS": "peer@example.com"}, clear=True):
+            assert _would_warn() is False
+
+    def test_aamp_sender_policies_suppress_warning(self):
+        with patch.dict(
+            os.environ,
+            {"AAMP_SENDER_POLICIES": '[{"sender":"peer@example.com"}]'},
+            clear=True,
+        ):
             assert _would_warn() is False

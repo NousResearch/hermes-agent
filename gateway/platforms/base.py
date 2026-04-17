@@ -851,6 +851,13 @@ class BasePlatformAdapter(ABC):
     - Sending messages/responses
     - Handling media
     """
+
+    # Capability flags. Adapters can override these to opt out of gateway
+    # behaviors that would otherwise emit extra permanent messages.
+    SUPPORTS_MESSAGE_EDITING = True
+    SUPPORTS_STREAMING = True
+    SUPPORTS_INTERIM_MESSAGES = True
+    SUPPORTS_TOOL_PROGRESS = True
     
     def __init__(self, config: PlatformConfig, platform: Platform):
         self.config = config

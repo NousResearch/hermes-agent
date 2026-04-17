@@ -122,6 +122,7 @@ def _configured_platforms() -> list[str]:
         "whatsapp": "WHATSAPP_ENABLED",
         "signal": "SIGNAL_HTTP_URL",
         "email": "EMAIL_ADDRESS",
+        "aamp": "AAMP_BASE_URL",
         "sms": "TWILIO_ACCOUNT_SID",
         "matrix": "MATRIX_HOMESERVER_URL",
         "mattermost": "MATTERMOST_URL",

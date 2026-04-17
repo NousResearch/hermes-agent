@@ -21,6 +21,8 @@ def _clear_auth_env(monkeypatch) -> None:
         "MATTERMOST_ALLOWED_USERS",
         "MATRIX_ALLOWED_USERS",
         "DINGTALK_ALLOWED_USERS", "FEISHU_ALLOWED_USERS", "WECOM_ALLOWED_USERS",
+        "AAMP_ALLOWED_USERS",
+        "AAMP_SENDER_POLICIES",
         "GATEWAY_ALLOWED_USERS",
         "TELEGRAM_ALLOW_ALL_USERS",
         "DISCORD_ALLOW_ALL_USERS",
@@ -32,6 +34,7 @@ def _clear_auth_env(monkeypatch) -> None:
         "MATTERMOST_ALLOW_ALL_USERS",
         "MATRIX_ALLOW_ALL_USERS",
         "DINGTALK_ALLOW_ALL_USERS", "FEISHU_ALLOW_ALL_USERS", "WECOM_ALLOW_ALL_USERS",
+        "AAMP_ALLOW_ALL_USERS",
         "GATEWAY_ALLOW_ALL_USERS",
     ):
         monkeypatch.delenv(key, raising=False)
@@ -253,3 +256,100 @@ async def test_global_ignore_suppresses_pairing_reply(monkeypatch):
     assert result is None
     runner.pairing_store.generate_code.assert_not_called()
     adapter.send.assert_not_awaited()
+
+
+def test_aamp_sender_policy_authorizes_matching_dispatch_context(monkeypatch):
+    _clear_auth_env(monkeypatch)
+    config = GatewayConfig(
+        platforms={
+            Platform.AAMP: PlatformConfig(
+                enabled=True,
+                extra={
+                    "sender_policies": [
+                        {
+                            "sender": "dispatch@example.com",
+                            "dispatchContextRules": {"tenant": ["acme"]},
+                        }
+                    ]
+                },
+            )
+        },
+    )
+    runner, _adapter = _make_runner(Platform.AAMP, config)
+
+    event = MessageEvent(
+        text="hello",
+        message_id="task-1",
+        raw_message={
+            "taskId": "task-1",
+            "messageId": "msg-1",
+            "from": "dispatch@example.com",
+            "dispatchContext": {"tenant": "acme"},
+        },
+        source=SessionSource(
+            platform=Platform.AAMP,
+            user_id="dispatch@example.com",
+            chat_id="dispatch@example.com",
+            user_name="dispatcher",
+            chat_type="dm",
+            thread_id="task-1",
+        ),
+    )
+
+    assert runner._authorize_message_event(event) == (True, None)
+
+
+@pytest.mark.asyncio
+async def test_unauthorized_aamp_dm_sends_rejected_task_result(monkeypatch):
+    _clear_auth_env(monkeypatch)
+    config = GatewayConfig(
+        platforms={
+            Platform.AAMP: PlatformConfig(
+                enabled=True,
+                extra={
+                    "sender_policies": [
+                        {
+                            "sender": "dispatch@example.com",
+                            "dispatchContextRules": {"tenant": ["acme"]},
+                        }
+                    ]
+                },
+            )
+        },
+    )
+    runner, adapter = _make_runner(Platform.AAMP, config)
+
+    result = await runner._handle_message(
+        MessageEvent(
+            text="hello",
+            message_id="task-1",
+            raw_message={
+                "taskId": "task-1",
+                "messageId": "msg-1",
+                "from": "stranger@example.com",
+                "dispatchContext": {"tenant": "acme"},
+            },
+            source=SessionSource(
+                platform=Platform.AAMP,
+                user_id="stranger@example.com",
+                chat_id="stranger@example.com",
+                user_name="stranger",
+                chat_type="dm",
+                thread_id="task-1",
+            ),
+        )
+    )
+
+    assert result is None
+    runner.pairing_store.generate_code.assert_not_called()
+    adapter.send.assert_awaited_once_with(
+        "stranger@example.com",
+        "Request rejected: sender stranger@example.com is not allowed by senderPolicies",
+        reply_to="task-1",
+        metadata={
+            "thread_id": "task-1",
+            "aamp_message_id": "msg-1",
+            "aamp_status": "rejected",
+            "aamp_error_msg": "sender stranger@example.com is not allowed by senderPolicies",
+        },
+    )

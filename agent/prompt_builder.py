@@ -358,6 +358,13 @@ PLATFORM_HINTS = {
         "MEDIA:/absolute/path/to/file in your response. Images (.jpg, .png, "
         ".heic) appear as photos and other files arrive as attachments."
     ),
+    "aamp": (
+        "You are communicating through AAMP, an asynchronous mailbox-based agent "
+        "messaging protocol. Use plain text formatting and keep the response "
+        "self-contained, because it may be delivered back as a task result email. "
+        "Prefer direct answers over chatty back-and-forth, and include any key "
+        "links or next steps inline."
+    ),
     "weixin": (
         "You are on Weixin/WeChat. Markdown formatting is supported, so you may use it when "
         "it improves readability, but keep the message compact and chat-friendly. You can send media files natively: "

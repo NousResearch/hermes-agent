@@ -1772,33 +1772,32 @@ class GatewayRunner:
         # Warn if no user allowlists are configured and open access is not opted in
         _any_allowlist = any(
             os.getenv(v)
-            for v in ("TELEGRAM_ALLOWED_USERS", "DISCORD_ALLOWED_USERS",
-                       "WHATSAPP_ALLOWED_USERS", "SLACK_ALLOWED_USERS",
-                       "SIGNAL_ALLOWED_USERS", "SIGNAL_GROUP_ALLOWED_USERS",
-                       "EMAIL_ALLOWED_USERS",
-                       "SMS_ALLOWED_USERS", "MATTERMOST_ALLOWED_USERS",
-                       "MATRIX_ALLOWED_USERS", "DINGTALK_ALLOWED_USERS",
-                       "FEISHU_ALLOWED_USERS",
-                       "WECOM_ALLOWED_USERS",
-                       "WECOM_CALLBACK_ALLOWED_USERS",
-                       "WEIXIN_ALLOWED_USERS",
-                       "BLUEBUBBLES_ALLOWED_USERS",
-                       "QQ_ALLOWED_USERS",
-                       "GATEWAY_ALLOWED_USERS")
+            for v in (
+                "TELEGRAM_ALLOWED_USERS", "DISCORD_ALLOWED_USERS",
+                "WHATSAPP_ALLOWED_USERS", "SLACK_ALLOWED_USERS",
+                "SIGNAL_ALLOWED_USERS", "SIGNAL_GROUP_ALLOWED_USERS",
+                "EMAIL_ALLOWED_USERS", "SMS_ALLOWED_USERS",
+                "MATTERMOST_ALLOWED_USERS", "MATRIX_ALLOWED_USERS",
+                "DINGTALK_ALLOWED_USERS", "FEISHU_ALLOWED_USERS",
+                "WECOM_ALLOWED_USERS", "WECOM_CALLBACK_ALLOWED_USERS",
+                "WEIXIN_ALLOWED_USERS", "BLUEBUBBLES_ALLOWED_USERS",
+                "QQ_ALLOWED_USERS", "AAMP_ALLOWED_USERS",
+                "AAMP_SENDER_POLICIES", "GATEWAY_ALLOWED_USERS",
+            )
         )
         _allow_all = os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in ("true", "1", "yes") or any(
             os.getenv(v, "").lower() in ("true", "1", "yes")
-            for v in ("TELEGRAM_ALLOW_ALL_USERS", "DISCORD_ALLOW_ALL_USERS",
-                       "WHATSAPP_ALLOW_ALL_USERS", "SLACK_ALLOW_ALL_USERS",
-                       "SIGNAL_ALLOW_ALL_USERS", "EMAIL_ALLOW_ALL_USERS",
-                       "SMS_ALLOW_ALL_USERS", "MATTERMOST_ALLOW_ALL_USERS",
-                       "MATRIX_ALLOW_ALL_USERS", "DINGTALK_ALLOW_ALL_USERS",
-                       "FEISHU_ALLOW_ALL_USERS",
-                       "WECOM_ALLOW_ALL_USERS",
-                       "WECOM_CALLBACK_ALLOW_ALL_USERS",
-                       "WEIXIN_ALLOW_ALL_USERS",
-                       "BLUEBUBBLES_ALLOW_ALL_USERS",
-                       "QQ_ALLOW_ALL_USERS")
+            for v in (
+                "TELEGRAM_ALLOW_ALL_USERS", "DISCORD_ALLOW_ALL_USERS",
+                "WHATSAPP_ALLOW_ALL_USERS", "SLACK_ALLOW_ALL_USERS",
+                "SIGNAL_ALLOW_ALL_USERS", "EMAIL_ALLOW_ALL_USERS",
+                "SMS_ALLOW_ALL_USERS", "MATTERMOST_ALLOW_ALL_USERS",
+                "MATRIX_ALLOW_ALL_USERS", "DINGTALK_ALLOW_ALL_USERS",
+                "FEISHU_ALLOW_ALL_USERS", "WECOM_ALLOW_ALL_USERS",
+                "WECOM_CALLBACK_ALLOW_ALL_USERS", "WEIXIN_ALLOW_ALL_USERS",
+                "BLUEBUBBLES_ALLOW_ALL_USERS", "QQ_ALLOW_ALL_USERS",
+                "AAMP_ALLOW_ALL_USERS",
+            )
         )
         if not _any_allowlist and not _allow_all:
             logger.warning(
@@ -2575,6 +2574,13 @@ class GatewayRunner:
                 return None
             return QQAdapter(config)
 
+        elif platform == Platform.AAMP:
+            from gateway.platforms.aamp import AampAdapter, check_aamp_requirements
+            if not check_aamp_requirements():
+                logger.warning("AAMP: aamp-sdk==0.1.0 is not installed")
+                return None
+            return AampAdapter(config)
+
         return None
 
     def _is_user_authorized(self, source: SessionSource) -> bool:
@@ -2617,6 +2623,7 @@ class GatewayRunner:
             Platform.WEIXIN: "WEIXIN_ALLOWED_USERS",
             Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOWED_USERS",
             Platform.QQBOT: "QQ_ALLOWED_USERS",
+            Platform.AAMP: "AAMP_ALLOWED_USERS",
         }
         platform_allow_all_map = {
             Platform.TELEGRAM: "TELEGRAM_ALLOW_ALL_USERS",
@@ -2635,6 +2642,7 @@ class GatewayRunner:
             Platform.WEIXIN: "WEIXIN_ALLOW_ALL_USERS",
             Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOW_ALL_USERS",
             Platform.QQBOT: "QQ_ALLOW_ALL_USERS",
+            Platform.AAMP: "AAMP_ALLOW_ALL_USERS",
         }
 
         # Per-platform allow-all flag (e.g., DISCORD_ALLOW_ALL_USERS=true)
@@ -2692,6 +2700,65 @@ class GatewayRunner:
         if config and hasattr(config, "get_unauthorized_dm_behavior"):
             return config.get_unauthorized_dm_behavior(platform)
         return "pair"
+
+    def _get_aamp_authorization_result(self, event: MessageEvent) -> Optional[tuple[bool, Optional[str]]]:
+        """Return an AAMP-specific authorization result when sender policies are configured."""
+        if event.source.platform != Platform.AAMP:
+            return None
+
+        platform_cfg = None
+        config = getattr(self, "config", None)
+        if config and getattr(config, "platforms", None):
+            platform_cfg = config.platforms.get(Platform.AAMP)
+
+        from gateway.platforms.aamp import load_aamp_sender_policies, match_aamp_sender_policy
+
+        policies = load_aamp_sender_policies(platform_cfg)
+        if not policies:
+            return None
+
+        task = event.raw_message if isinstance(event.raw_message, dict) else {}
+        result = match_aamp_sender_policy(task, policies)
+        if result is None:
+            return None
+        return result.allowed, result.reason
+
+    def _authorize_message_event(self, event: MessageEvent) -> tuple[bool, Optional[str]]:
+        """Authorize an incoming event, including AAMP-specific sender policies."""
+        aamp_result = self._get_aamp_authorization_result(event)
+        if aamp_result is not None:
+            return aamp_result
+
+        allowed = self._is_user_authorized(event.source)
+        if allowed:
+            return True, None
+        return False, f"user {event.source.user_id or '(unknown user)'} is not authorized"
+
+    async def _send_aamp_unauthorized_result(self, event: MessageEvent, reason: Optional[str]) -> None:
+        """Reply to unauthorized AAMP requests with a rejected task.result."""
+        adapter = self.adapters.get(Platform.AAMP)
+        if adapter is None:
+            return
+
+        task = event.raw_message if isinstance(event.raw_message, dict) else {}
+        task_id = str(event.source.thread_id or task.get("taskId") or "").strip()
+        chat_id = str(event.source.chat_id or task.get("from") or "").strip()
+        if not task_id or not chat_id:
+            return
+
+        message_id = str(task.get("messageId") or "").strip() or None
+        rejection_reason = (reason or "sender is not authorized").strip()
+        await adapter.send(
+            chat_id,
+            f"Request rejected: {rejection_reason}",
+            reply_to=task_id,
+            metadata={
+                "thread_id": task_id,
+                "aamp_message_id": message_id,
+                "aamp_status": "rejected",
+                "aamp_error_msg": rejection_reason,
+            },
+        )
     
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """
@@ -2719,40 +2786,53 @@ class GatewayRunner:
             # flow with a None user_id.
             logger.debug("Ignoring message with no user_id from %s", source.platform.value)
             return None
-        elif not self._is_user_authorized(source):
-            logger.warning("Unauthorized user: %s (%s) on %s", source.user_id, source.user_name, source.platform.value)
-            # In DMs: offer pairing code. In groups: silently ignore.
-            if source.chat_type == "dm" and self._get_unauthorized_dm_behavior(source.platform) == "pair":
-                platform_name = source.platform.value if source.platform else "unknown"
-                # Rate-limit ALL pairing responses (code or rejection) to
-                # prevent spamming the user with repeated messages when
-                # multiple DMs arrive in quick succession.
-                if self.pairing_store._is_rate_limited(platform_name, source.user_id):
-                    return None
-                code = self.pairing_store.generate_code(
-                    platform_name, source.user_id, source.user_name or ""
+        else:
+            authorized, unauthorized_reason = self._authorize_message_event(event)
+            if authorized:
+                unauthorized_reason = None
+            else:
+                logger.warning(
+                    "Unauthorized user: %s (%s) on %s: %s",
+                    source.user_id,
+                    source.user_name,
+                    source.platform.value,
+                    unauthorized_reason or "authorization denied",
                 )
-                if code:
-                    adapter = self.adapters.get(source.platform)
-                    if adapter:
-                        await adapter.send(
-                            source.chat_id,
-                            f"Hi~ I don't recognize you yet!\n\n"
-                            f"Here's your pairing code: `{code}`\n\n"
-                            f"Ask the bot owner to run:\n"
-                            f"`hermes pairing approve {platform_name} {code}`"
-                        )
-                else:
-                    adapter = self.adapters.get(source.platform)
-                    if adapter:
-                        await adapter.send(
-                            source.chat_id,
-                            "Too many pairing requests right now~ "
-                            "Please try again later!"
-                        )
-                    # Record rate limit so subsequent messages are silently ignored
-                    self.pairing_store._record_rate_limit(platform_name, source.user_id)
-            return None
+                if source.platform == Platform.AAMP:
+                    await self._send_aamp_unauthorized_result(event, unauthorized_reason)
+                    return None
+            # In DMs: offer pairing code. In groups: silently ignore.
+                if source.chat_type == "dm" and self._get_unauthorized_dm_behavior(source.platform) == "pair":
+                    platform_name = source.platform.value if source.platform else "unknown"
+                    # Rate-limit ALL pairing responses (code or rejection) to
+                    # prevent spamming the user with repeated messages when
+                    # multiple DMs arrive in quick succession.
+                    if self.pairing_store._is_rate_limited(platform_name, source.user_id):
+                        return None
+                    code = self.pairing_store.generate_code(
+                        platform_name, source.user_id, source.user_name or ""
+                    )
+                    if code:
+                        adapter = self.adapters.get(source.platform)
+                        if adapter:
+                            await adapter.send(
+                                source.chat_id,
+                                f"Hi~ I don't recognize you yet!\n\n"
+                                f"Here's your pairing code: `{code}`\n\n"
+                                f"Ask the bot owner to run:\n"
+                                f"`hermes pairing approve {platform_name} {code}`"
+                            )
+                    else:
+                        adapter = self.adapters.get(source.platform)
+                        if adapter:
+                            await adapter.send(
+                                source.chat_id,
+                                "Too many pairing requests right now~ "
+                                "Please try again later!"
+                            )
+                        # Record rate limit so subsequent messages are silently ignored
+                        self.pairing_store._record_rate_limit(platform_name, source.user_id)
+                return None
         
         # Intercept messages that are responses to a pending /update prompt.
         # The update process (detached) wrote .update_prompt.json; the watcher
@@ -6859,7 +6939,8 @@ class GatewayRunner:
         Platform.TELEGRAM, Platform.DISCORD, Platform.SLACK, Platform.WHATSAPP,
         Platform.SIGNAL, Platform.MATTERMOST, Platform.MATRIX,
         Platform.HOMEASSISTANT, Platform.EMAIL, Platform.SMS, Platform.DINGTALK,
-        Platform.FEISHU, Platform.WECOM, Platform.WECOM_CALLBACK, Platform.WEIXIN, Platform.BLUEBUBBLES, Platform.QQBOT, Platform.LOCAL,
+        Platform.FEISHU, Platform.WECOM, Platform.WECOM_CALLBACK, Platform.WEIXIN,
+        Platform.BLUEBUBBLES, Platform.QQBOT, Platform.AAMP, Platform.LOCAL,
     })
 
     async def _handle_debug_command(self, event: MessageEvent) -> str:
@@ -8164,6 +8245,11 @@ class GatewayRunner:
         # which checks display.platforms.<platform>.<key> first, then
         # display.<key> global, then built-in platform defaults.
         from gateway.display_config import resolve_display_setting
+        _adapter = self.adapters.get(source.platform)
+        _adapter_supports_tool_progress = getattr(_adapter, "SUPPORTS_TOOL_PROGRESS", True)
+        _adapter_supports_interim = getattr(_adapter, "SUPPORTS_INTERIM_MESSAGES", True)
+        _adapter_supports_streaming = getattr(_adapter, "SUPPORTS_STREAMING", True)
+        _adapter_supports_edit = getattr(_adapter, "SUPPORTS_MESSAGE_EDITING", True)
 
         # Apply tool preview length config (0 = no limit)
         try:
@@ -8183,12 +8269,17 @@ class GatewayRunner:
         # Disable tool progress for webhooks - they don't support message editing,
         # so each progress line would be sent as a separate message.
         from gateway.config import Platform
-        tool_progress_enabled = progress_mode != "off" and source.platform != Platform.WEBHOOK
+        tool_progress_enabled = (
+            progress_mode != "off"
+            and source.platform != Platform.WEBHOOK
+            and _adapter_supports_tool_progress
+        )
         # Natural assistant status messages are intentionally independent from
         # tool progress and token streaming. Users can keep tool_progress quiet
         # in chat platforms while opting into concise mid-turn updates.
         interim_assistant_messages_enabled = (
             source.platform != Platform.WEBHOOK
+            and _adapter_supports_interim
             and is_truthy_value(
                 display_config.get("interim_assistant_messages"),
                 default=True,
@@ -8536,23 +8627,20 @@ class GatewayRunner:
                 if _plat_streaming is None
                 else bool(_plat_streaming)
             )
-            _want_stream_deltas = _streaming_enabled
+            _want_stream_deltas = _streaming_enabled and _adapter_supports_streaming
             _want_interim_messages = interim_assistant_messages_enabled
             _want_interim_consumer = _want_interim_messages
             if _want_stream_deltas or _want_interim_consumer:
                 try:
                     from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
-                    _adapter = self.adapters.get(source.platform)
                     if _adapter:
                         # Platforms that don't support editing sent messages
-                        # (e.g. QQ, WeChat) should skip streaming entirely —
-                        # without edit support, the consumer sends a partial
-                        # first message that can never be updated, resulting in
-                        # duplicate messages (partial + final).
-                        _adapter_supports_edit = getattr(_adapter, "SUPPORTS_MESSAGE_EDITING", True)
-                        if not _adapter_supports_edit:
-                            raise RuntimeError("skip streaming for non-editable platform")
-                        _effective_cursor = _scfg.cursor
+                        # (e.g. WeChat) must not show a cursor in intermediate
+                        # sends — the cursor would be permanently visible because
+                        # it can never be edited away.  Use an empty cursor for
+                        # such platforms so streaming still delivers the final
+                        # response, just without the typing indicator.
+                        _effective_cursor = _scfg.cursor if _adapter_supports_edit else ""
                         # Some Matrix clients render the streaming cursor
                         # as a visible tofu/white-box artifact.  Keep
                         # streaming text on Matrix, but suppress the cursor.

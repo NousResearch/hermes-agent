@@ -1817,6 +1817,31 @@ _PLATFORMS = [
         ],
     },
     {
+        "key": "aamp",
+        "label": "AAMP",
+        "emoji": "📬",
+        "token_var": "AAMP_BASE_URL",
+        "setup_instructions": [
+            "1. Start or obtain an AAMP management-service endpoint",
+            "2. Hermes auto-registers an AAMP mailbox with the default slug hermes",
+            "3. The service URL defaults to https://meshmail.ai if you leave it blank",
+            "4. Optionally restrict senders with AAMP_ALLOWED_USERS",
+            "5. Optionally define AAMP_SENDER_POLICIES for sender + X-AAMP-Dispatch-Context exact-match rules",
+            "6. Optionally set AAMP_HOME_CHANNEL to a peer mailbox that should receive cron results and notifications",
+        ],
+        "vars": [
+            {"name": "AAMP_BASE_URL", "prompt": "AAMP service URL (optional, default: https://meshmail.ai)", "password": False,
+             "help": "Base URL of the AAMP management service. Leave empty to use https://meshmail.ai. Hermes auto-registers with mailbox slug hermes by default. AAMP_HOST is also supported as an alias."},
+            {"name": "AAMP_ALLOWED_USERS", "prompt": "Allowed sender mailboxes (comma-separated, or empty)", "password": False,
+             "is_allowlist": True,
+             "help": "Restrict which AAMP peer mailboxes can interact with Hermes."},
+            {"name": "AAMP_SENDER_POLICIES", "prompt": "AAMP sender policies JSON (optional)", "password": False,
+             "help": 'Optional OpenClaw-style policy JSON. Example: [{"sender":"dispatch@meshmail.ai","dispatchContextRules":{"tenant":["acme"],"workflow":["prod"]}}]. When set, these rules take precedence over the coarse AAMP allowlist for inbound AAMP requests.'},
+            {"name": "AAMP_HOME_CHANNEL", "prompt": "Home mailbox (peer email for cron/notifications, or empty)", "password": False,
+             "help": "Optional peer mailbox address that receives cron results, notifications, and bare send_message deliveries for AAMP."},
+        ],
+    },
+    {
         "key": "sms",
         "label": "SMS (Twilio)",
         "emoji": "📱",
@@ -2004,6 +2029,28 @@ _PLATFORMS = [
     },
 ]
 
+_DEFAULT_AAMP_BASE_URL = "https://meshmail.ai"
+
+
+def _is_aamp_configured() -> bool:
+    """Return True when AAMP has enough config to be considered enabled in setup UIs."""
+    credentials_file = get_env_value("AAMP_CREDENTIALS_FILE") or ""
+    if credentials_file:
+        has_cached_identity = Path(credentials_file).expanduser().exists()
+    else:
+        has_cached_identity = (get_hermes_home() / "aamp" / "mailbox_identity.json").exists()
+
+    return bool(
+        get_env_value("AAMP_BASE_URL")
+        or get_env_value("AAMP_HOST")
+        or get_env_value("AAMP_SLUG")
+        or get_env_value("AAMP_EMAIL")
+        or get_env_value("AAMP_MAILBOX_TOKEN")
+        or get_env_value("AAMP_PASSWORD")
+        or get_env_value("AAMP_SMTP_PASSWORD")
+        or has_cached_identity
+    )
+
 
 def _platform_status(platform: dict) -> str:
     """Return a plain-text status string for a platform.
@@ -2052,6 +2099,10 @@ def _platform_status(platform: dict) -> str:
             return "configured"
         if val or token:
             return "partially configured"
+        return "not configured"
+    if platform.get("key") == "aamp":
+        if _is_aamp_configured():
+            return f"configured (default base: {_DEFAULT_AAMP_BASE_URL})"
         return "not configured"
     if val:
         return "configured"
@@ -2172,6 +2223,10 @@ def _setup_standard_platform(platform: dict):
             save_env_value(var["name"], value)
             print_success(f"  Saved {var['name']}")
         elif var["name"] == token_var:
+            if platform.get("key") == "aamp":
+                save_env_value("AAMP_BASE_URL", _DEFAULT_AAMP_BASE_URL)
+                print_success(f"  Using default AAMP service URL: {_DEFAULT_AAMP_BASE_URL}")
+                continue
             print_warning(f"  Skipped — {label} won't work without this.")
             return
         else:
@@ -2191,6 +2246,53 @@ def _setup_standard_platform(platform: dict):
     print_success(f"{emoji} {label} configured!")
 
 
+def _resolve_aamp_setup_identity():
+    """Resolve the current AAMP mailbox identity for setup-time UX."""
+    try:
+        from gateway.config import GatewayConfig, Platform, _apply_env_overrides
+        from gateway.platforms.aamp import resolve_aamp_identity
+    except Exception as exc:
+        return None, None, exc
+
+    config = GatewayConfig()
+    _apply_env_overrides(config)
+    platform_cfg = config.platforms.get(Platform.AAMP)
+    if platform_cfg is None:
+        return None, None, RuntimeError("AAMP is not configured yet")
+
+    try:
+        identity, credentials_path = asyncio.run(resolve_aamp_identity(platform_cfg))
+    except Exception as exc:
+        return None, None, exc
+    return identity, credentials_path, None
+
+
+def _print_aamp_setup_summary() -> None:
+    """Show the registered AAMP mailbox and how to invoke it."""
+    if not _is_aamp_configured():
+        return
+
+    print()
+    identity, credentials_path, error = _resolve_aamp_setup_identity()
+    if error is not None:
+        print_warning("  Hermes couldn't resolve the AAMP mailbox during setup.")
+        print_info("  The mailbox will auto-register on first gateway start instead.")
+        print_info("  After startup, check ~/.hermes/aamp/mailbox_identity.json for the registered mailbox.")
+        print_info(f"  Reason: {error}")
+        return
+
+    print_success(f"  Hermes AAMP mailbox: {identity.email}")
+    print_info(f"  Send AAMP tasks to: {identity.email}")
+    print_info("  Any AAMP agent can invoke Hermes by sending a task.dispatch to that mailbox.")
+    print_info(f"  Cached identity: {credentials_path}")
+
+    home_mailbox = (get_env_value("AAMP_HOME_CHANNEL") or "").strip()
+    if home_mailbox:
+        print_info(f"  Default outbound notification mailbox: {home_mailbox}")
+    else:
+        print_info("  Tip: set AAMP_HOME_CHANNEL if you want cron results and notifications sent to a default peer mailbox.")
+
+
 def _setup_whatsapp():
     """Delegate to the existing WhatsApp setup flow."""
     from hermes_cli.main import cmd_whatsapp
@@ -2202,6 +2304,13 @@ def _setup_email():
     """Configure Email via the standard platform setup."""
     email_platform = next(p for p in _PLATFORMS if p["key"] == "email")
     _setup_standard_platform(email_platform)
+
+
+def _setup_aamp():
+    """Configure AAMP via the standard platform setup."""
+    aamp_platform = next(p for p in _PLATFORMS if p["key"] == "aamp")
+    _setup_standard_platform(aamp_platform)
+    _print_aamp_setup_summary()
 
 
 def _setup_sms():
@@ -2756,7 +2865,7 @@ def gateway_setup():
 
     # ── Post-setup: offer to install/restart gateway ──
     any_configured = any(
-        bool(get_env_value(p["token_var"]))
+        (_is_aamp_configured() if p["key"] == "aamp" else bool(get_env_value(p["token_var"])))
         for p in _PLATFORMS
         if p["key"] != "whatsapp"
     ) or (get_env_value("WHATSAPP_ENABLED") or "").lower() == "true"

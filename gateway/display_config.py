@@ -92,6 +92,7 @@ _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
     "wecom":           _TIER_LOW,
     "wecom_callback":  _TIER_LOW,
     "dingtalk":        _TIER_LOW,
+    "aamp":            _TIER_MINIMAL,
 
     # Tier 4 — batch or non-interactive delivery
     "email":           _TIER_MINIMAL,

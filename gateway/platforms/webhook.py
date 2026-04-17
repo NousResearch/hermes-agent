@@ -204,6 +204,7 @@ class WebhookAdapter(BasePlatformAdapter):
             "weixin",
             "bluebubbles",
             "qqbot",
+            "aamp",
         ):
             return await self._deliver_cross_platform(
                 deliver_type, content, delivery

@@ -254,6 +254,15 @@ class TestSaveConfigAtomicity:
             assert raw["agent"]["max_turns"] == 77
 
 
+class TestAampEnvMetadata:
+    def test_aamp_sender_policies_is_registered(self):
+        from hermes_cli.config import OPTIONAL_ENV_VARS
+
+        assert "AAMP_SENDER_POLICIES" in OPTIONAL_ENV_VARS
+        assert OPTIONAL_ENV_VARS["AAMP_SENDER_POLICIES"]["category"] == "messaging"
+        assert OPTIONAL_ENV_VARS["AAMP_SENDER_POLICIES"]["advanced"] is True
+
+
 class TestSanitizeEnvLines:
     """Tests for .env file corruption repair."""
 

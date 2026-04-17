@@ -45,6 +45,51 @@ class TestDingTalkRequirements:
         from gateway.platforms.dingtalk import check_dingtalk_requirements
         assert check_dingtalk_requirements() is True
 
+    def test_returns_true_when_config_extra_has_credentials(self, monkeypatch):
+        monkeypatch.setattr(
+            "gateway.platforms.dingtalk.DINGTALK_STREAM_AVAILABLE", True
+        )
+        monkeypatch.setattr("gateway.platforms.dingtalk.HTTPX_AVAILABLE", True)
+        monkeypatch.delenv("DINGTALK_CLIENT_ID", raising=False)
+        monkeypatch.delenv("DINGTALK_CLIENT_SECRET", raising=False)
+        from gateway.platforms.dingtalk import check_dingtalk_requirements
+
+        config = PlatformConfig(
+            enabled=True,
+            extra={"client_id": "cfg-id", "client_secret": "cfg-secret"},
+        )
+
+        assert check_dingtalk_requirements(config) is True
+
+    def test_gateway_runner_accepts_config_credentials(self, monkeypatch):
+        monkeypatch.setattr(
+            "gateway.platforms.dingtalk.DINGTALK_STREAM_AVAILABLE", True
+        )
+        monkeypatch.setattr("gateway.platforms.dingtalk.HTTPX_AVAILABLE", True)
+        monkeypatch.delenv("DINGTALK_CLIENT_ID", raising=False)
+        monkeypatch.delenv("DINGTALK_CLIENT_SECRET", raising=False)
+
+        from gateway.config import GatewayConfig
+        from gateway.run import GatewayRunner
+
+        runner = object.__new__(GatewayRunner)
+        runner.config = GatewayConfig(platforms={})
+
+        config = PlatformConfig(
+            enabled=True,
+            extra={"client_id": "cfg-id", "client_secret": "cfg-secret"},
+        )
+        fake_adapter = MagicMock(name="DingTalkAdapterInstance")
+
+        with patch(
+            "gateway.platforms.dingtalk.DingTalkAdapter",
+            return_value=fake_adapter,
+        ) as mock_adapter:
+            adapter = runner._create_adapter(Platform.DINGTALK, config)
+
+        assert adapter is fake_adapter
+        mock_adapter.assert_called_once_with(config)
+
 
 # ---------------------------------------------------------------------------
 # Adapter construction
@@ -680,4 +725,3 @@ class TestIncomingHandlerProcess:
         # Clean up: release the gate so the background task finishes
         processing_gate.set()
         await asyncio.sleep(0.05)
-

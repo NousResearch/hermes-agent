@@ -303,6 +303,10 @@ from gateway.agent_prelude_runtime_service import (
     append_discord_voice_channel_context as shared_append_discord_voice_channel_context,
     build_agent_start_hook_context as shared_build_agent_start_hook_context,
 )
+from gateway.context_reference_runtime_service import (
+    GatewayContextReferenceOutcome,
+    expand_gateway_context_references as shared_expand_gateway_context_references,
+)
 from gateway.onboarding_runtime_service import (
     append_first_message_onboarding_note as shared_append_first_message_onboarding_note,
     build_home_channel_prompt as shared_build_home_channel_prompt,
@@ -623,6 +627,28 @@ def _build_agent_start_hook_context(
         user_id=source.user_id,
         session_id=session_id,
         message_text=message_text,
+    )
+
+
+async def _expand_gateway_context_references(
+    message_text: str,
+    *,
+    runner: Any,
+    logger,
+) -> GatewayContextReferenceOutcome:
+    try:
+        model = runner._model
+        base_url = runner._base_url or ""
+    except Exception as exc:
+        logger.debug("@ context reference expansion failed: %s", exc)
+        return GatewayContextReferenceOutcome(message_text=message_text)
+
+    return await shared_expand_gateway_context_references(
+        message_text,
+        model=model,
+        base_url=base_url,
+        messaging_cwd=os.environ.get("MESSAGING_CWD"),
+        logger=logger,
     )
 
 
@@ -4394,27 +4420,20 @@ class GatewayRunner:
 
             # Expand @ context references (@file:, @folder:, @diff, etc.)
             if "@" in message_text:
-                try:
-                    from agent.context_references import preprocess_context_references_async
-                    from agent.model_metadata import get_model_context_length
-                    _msg_cwd = os.environ.get("MESSAGING_CWD", os.path.expanduser("~"))
-                    _msg_ctx_len = get_model_context_length(
-                        self._model, base_url=self._base_url or "")
-                    _ctx_result = await preprocess_context_references_async(
-                        message_text, cwd=_msg_cwd,
-                        context_length=_msg_ctx_len, allowed_root=_msg_cwd)
-                    if _ctx_result.blocked:
-                        _adapter = self.adapters.get(source.platform)
-                        if _adapter:
-                            await _adapter.send(
-                                source.chat_id,
-                                "\n".join(_ctx_result.warnings) or "Context injection refused.",
-                            )
-                        return
-                    if _ctx_result.expanded:
-                        message_text = _ctx_result.message
-                except Exception as exc:
-                    logger.debug("@ context reference expansion failed: %s", exc)
+                _ctx_outcome = await _expand_gateway_context_references(
+                    message_text,
+                    runner=self,
+                    logger=logger,
+                )
+                if _ctx_outcome.blocked_warning:
+                    _adapter = self.adapters.get(source.platform)
+                    if _adapter:
+                        await _adapter.send(
+                            source.chat_id,
+                            _ctx_outcome.blocked_warning,
+                        )
+                    return
+                message_text = _ctx_outcome.message_text
 
             # Run the agent
             agent_result = await self._run_agent(

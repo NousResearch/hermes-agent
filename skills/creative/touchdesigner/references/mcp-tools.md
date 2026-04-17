@@ -1,501 +1,382 @@
-# TouchDesigner MCP Tools Reference
+# twozero MCP Tools Reference
 
-Complete parameter schemas and usage examples for all 13 MCP tools from the 8beeeaaat/touchdesigner-mcp server.
+36 tools from twozero MCP v2.774+ (April 2026).
+All tools accept an optional `target_instance` param for multi-TD-instance scenarios.
 
-## Hermes Configuration
+## Execution & Scripting
 
-Add a `touchdesigner` entry under the `mcp_servers` section of your Hermes config. Example YAML block:
+### td_execute_python
 
-```yaml
-# Under mcp_servers: in config.yaml
-mcp_servers:
-  touchdesigner:
-    command: npx
-    args: ["-y", "touchdesigner-mcp-server@latest"]
-    env:
-      TD_API_URL: "http://127.0.0.1:9981"
-    timeout: 120
-    connect_timeout: 60
-```
+Execute Python code inside TouchDesigner and return the result. Has full access to TD Python API (op, project, app, etc). Print statements and the last expression value are captured. Best for: wiring connections (inputConnectors), setting expressions (par.X.expr/mode), querying parameter names, and batch creation scripts (5+ operators). For creating 1-4 operators, prefer td_create_operator instead.
 
-For a locally built server, point `command` to `node` and `args` to the built server index.js path. Set `TD_API_URL` to the TouchDesigner WebServer DAT address (default port 9981).
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `code` | string | yes | Python code to execute in TouchDesigner |
 
-For the documentation/knowledge server (no running TD needed), add a `td_docs` entry using `touchdesigner-mcp-server` as the npx package.
+## Network & Structure
 
-Tools are registered as `mcp_touchdesigner_<tool_name>` in Hermes.
+### td_get_network
 
-**If MCP tools are not available as direct function calls** (common when the MCP server connects but Hermes doesn't expose them as callable tools), use the custom API handler directly via `curl` in `execute_code` or `terminal`:
+Get the operator network structure in TouchDesigner (TD) at a given path. Returns compact list: name OPType flags. First line is full path of queried op. Flags: ch:N=children count, !cook=allowCooking off, bypass, private=isPrivate, blocked:reason, "comment text". depth=0 (default) = current level only. depth=1 = one level of children (indented). To explore deeper, call again on a specific COMP path. System operators (/ui, /sys) are hidden by default.
 
-```python
-import json, shlex
-from hermes_tools import terminal
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `path` | string | no | Network path to inspect, e.g. '/' or '/project1' |
+| `depth` | integer | no | How many levels deep to recurse. 0=current level only (recommended), 1=include direct children of COMPs |
+| `includeSystem` | boolean | no | Include system operators (/ui, /sys). Default false. |
+| `nodeXY` | boolean | no | Include nodeX,nodeY coordinates. Default false. |
 
-def td_exec(script):
-    """Execute Python in TouchDesigner via the REST API."""
-    escaped = json.dumps({"script": script})
-    cmd = f"curl -s --max-time 15 -X POST -H 'Content-Type: application/json' -d {shlex.quote(escaped)} 'http://127.0.0.1:9981/api/td/server/exec'"
-    r = terminal(cmd, timeout=20)
-    return json.loads(r['output'])
+### td_create_operator
 
-# Example: list all nodes
-result = td_exec('result = [c.name for c in op("/project1").children]')
-print(result)  # {"result": ["node1", "node2", ...], "stdout": "", "stderr": ""}
-```
+Create a new operator (node) in TouchDesigner (TD). Preferred way to create operators — handles viewport positioning, viewer flag, and docked ops automatically. For batch creation (5+ ops), you may use td_execute_python with a script instead, but then call td_get_hints('construction') first for correct parameter names and layout rules. Supports all TD operator types: TOP, CHOP, SOP, DAT, COMP, MAT. If parent is omitted, creates in the currently open network at the user's viewport position. When building a container: first create baseCOMP (no parent), then create children with parent=compPath.
 
-This `td_exec` helper works with both the official .tox handler and the custom API handler from `scripts/custom_api_handler.py`.
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | string | yes | Operator type, e.g. 'textDAT', 'constantCHOP', 'noiseTOP', 'transformTOP', 'baseCOMP' |
+| `parent` | string | no | Path to the parent operator. If omitted, uses the currently open network in TD. |
+| `name` | string | no | Name for the new operator (optional, TD auto-names if omitted) |
+| `parameters` | object | no | Key-value pairs of parameters to set on the created operator |
 
-Tools are registered as `mcp_touchdesigner_<tool_name>` in Hermes.
+### td_find_op
 
-## Common Formatting Parameters
+Find operators by name and/or type across the project. Returns TSV: path, OPType, flags. Flags: bypass, !cook, private, blocked:reason. Use td_search to search inside code/expressions; use td_find_op to find operators themselves.
 
-Most tools accept these optional formatting parameters:
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | no | Substring to match in operator name (case-insensitive). E.g. 'noise' finds noise1, noise2, myNoise. |
+| `type` | string | no | Substring to match in OPType (case-insensitive). E.g. 'noiseTOP', 'baseCOMP', 'CHOP'. Use exact type for precision or partial for broader matches. |
+| `root` | string | no | Root operator path to search from. Default '/project1'. |
+| `max_results` | number | no | Maximum results to return. Default 50. |
+| `max_depth` | number | no | Max recursion depth from root. Default unlimited. |
+| `detail` | `basic` / `summary` | no | Result detail level. 'basic' = name/path/type (fast). 'summary' = + connections, non-default pars, expressions. Default 'basic'. |
 
-| Parameter | Type | Values | Description |
-|-----------|------|--------|-------------|
-| `detailLevel` | string | `"minimal"`, `"summary"`, `"detailed"` | Response verbosity |
-| `responseFormat` | string | `"json"`, `"yaml"`, `"markdown"` | Output format |
-| `limit` | integer | 1-500 | Max items (on list-type tools only) |
+### td_search
 
-These are client-side formatting — they control how the MCP server formats the response text, not what data TD returns.
+Search for text across all code (DAT scripts), parameter expressions, and string parameter values in the TD project. Returns TSV: path, kind (code/expression/parameter/ref), line, text. JSON when context>0. Words are OR-matched. Use quotes for exact phrases: 'GetLogin "op('login')"'. Use count_only=true to quickly check if something is referenced without fetching full results.
 
----
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `query` | string | yes | Search query. Multiple words = OR (any match). Wrap in quotes for exact phrase. Example: 'GetLogin getLogin' finds either. |
+| `root` | string | no | Root operator path to search from. Default '/project1'. |
+| `scope` | `all` / `code` / `editable` / `expressions` / `parameters` | no | What to search. 'code' = DAT scripts only (fast, ~0.05s). 'editable' = only editable code (skips inherited/ref DATs). 'expressions' = parameter expressions only. 'parameters' = string parameter values only. 'all' = everything (slow, ~1.5s due to parameter scan). Default 'all'. |
+| `case_sensitive` | boolean | no | Case-sensitive matching. Default false. |
+| `max_results` | number | no | Maximum results to return. Default 50. |
+| `context` | number | no | Lines to show before/after each code match. Saves td_read_dat calls. Default 0. |
+| `count_only` | boolean | no | Return only match count, not results. Fast existence check. |
+| `max_depth` | number | no | Max recursion depth from root. Default unlimited. |
 
-## Tool 1: describe_td_tools
+### td_navigate_to
 
-**Purpose:** Meta-tool — lists all available TouchDesigner MCP tools with descriptions and parameters.
+Navigate the TouchDesigner Network Editor viewport to show a specific operator. Opens the operator's parent network and centers the view on it. Use this to show the user where a problem is, or to navigate to an operator before modifying it.
 
-**Parameters:**
-| Name | Type | Required | Description |
-|------|------|----------|-------------|
-| `filter` | string | No | Keyword to filter tools by name, description, or parameter |
-| `detailLevel` | string | No | Response verbosity |
-| `responseFormat` | string | No | Output format |
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `path` | string | yes | Path to the operator to navigate to, e.g. '/project1/noise1' |
 
-**Example:** Find tools related to node creation
-```
-describe_td_tools(filter="create")
-```
+## Operator Inspection
 
-**Note:** This tool runs entirely in the MCP server — it does NOT contact TouchDesigner. Use it to discover what's available.
+### td_get_operator_info
 
----
+Get information about a specific operator (node) in TouchDesigner (TD). detail='summary': connections, non-default pars, expressions, CHOP channels (compact). detail='full': all of the above PLUS every parameter with value/default/label.
 
-## Tool 2: get_td_info
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `path` | string | yes | Full path to the operator, e.g. '/project1/noise1' |
+| `detail` | `summary` / `full` | no | Level of detail. 'summary' = connections, expressions, non-default pars, custom pars (pulse marked), CHOP channels. 'full' = summary + all parameters. Default 'full'. |
 
-**Purpose:** Get TouchDesigner server information (version, OS, build).
+### td_get_operators_info
 
-**Parameters:**
-| Name | Type | Required | Description |
-|------|------|----------|-------------|
-| `detailLevel` | string | No | Response verbosity |
-| `responseFormat` | string | No | Output format |
+Get information about multiple operators in one call. Returns an array of operator info objects. Use instead of calling td_get_operator_info multiple times.
 
-**Example:** Check TD is running and get version
-```
-get_td_info()
-```
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `paths` | array | yes | Array of full operator paths, e.g. ['/project1/null1', '/project1/null2'] |
+| `detail` | `summary` / `full` | no | Level of detail. Default 'summary'. |
 
-**Returns:** TD version, build number, OS name/version, MCP API version.
+### td_get_par_info
 
-**Use this first** to verify the connection is working before building networks.
+Get parameter names and details for a TouchDesigner operator type. Without specific pars: returns compact list of all parameters with their names, types, and menu options. With pars: returns full details (help text, menu values, style) for specific parameters. Use this when you need to know exact parameter names before setting them.
 
----
-
-## Tool 3: execute_python_script
-
-**Purpose:** Execute arbitrary Python code inside TouchDesigner's Python environment.
-
-**Parameters:**
-| Name | Type | Required | Description |
-|------|------|----------|-------------|
-| `script` | string | **Yes** | Python code to execute |
-| `detailLevel` | string | No | Response verbosity |
-| `responseFormat` | string | No | Output format |
-
-**Available globals in the script:**
-- `op` — find operators by path
-- `ops` — find multiple operators by pattern
-- `me` — the WebServer DAT running the script
-- `parent` — me.parent()
-- `project` — root project component
-- `td` — the full td module
-- `result` — set this to explicitly return a value
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `op_type` | string | yes | TD operator type name, e.g. 'noiseTOP', 'blurTOP', 'lfoCHOP', 'compositeTOP' |
+| `pars` | array | no | Optional list of specific parameter names to get full details for |
 
-**Execution behavior:**
-- Single-line scripts: tries `eval()` first (returns value), falls back to `exec()`
-- Multi-line scripts: uses `exec()` always
-- stdout/stderr are captured and returned separately
-- If `result` is not set, tries to evaluate the last expression as the return value
+## Parameter Setting
 
-**Examples:**
-
-```python
-# Simple query
-execute_python_script(script="op('/project1/noise1').par.seed.val")
-# Returns: {"result": 42, "stdout": "", "stderr": ""}
-
-# Multi-line script
-execute_python_script(script="""
-nodes = op('/project1').findChildren(type=TOP)
-result = [{'name': n.name, 'type': n.OPType} for n in nodes]
-""")
-
-# Connect two operators
-execute_python_script(script="op('/project1/noise1').outputConnectors[0].connect(op('/project1/level1'))")
+### td_set_operator_pars
 
-# Create and configure in one script
-execute_python_script(script="""
-parent = op('/project1')
-n = parent.create(noiseTop, 'my_noise')
-n.par.seed.val = 42
-n.par.monochrome.val = True
-n.par.resolutionw.val = 1920
-n.par.resolutionh.val = 1080
-result = {'path': n.path, 'type': n.OPType}
-""")
+Set parameters and flags on an operator in TouchDesigner (TD). Safer than td_execute_python for simple parameter changes. Can set values, toggle bypass/viewer, without writing Python code.
 
-# Batch wire a chain
-execute_python_script(script="""
-chain = ['noise1', 'level1', 'blur1', 'composite1', 'null_out']
-for i in range(len(chain) - 1):
-    src = op(f'/project1/{chain[i]}')
-    dst = op(f'/project1/{chain[i+1]}')
-    if src and dst:
-        src.outputConnectors[0].connect(dst)
-result = 'Wired chain: ' + ' -> '.join(chain)
-""")
-```
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `path` | string | yes | Path to the operator |
+| `parameters` | object | no | Key-value pairs of parameters to set |
+| `bypass` | boolean | no | Set bypass state of the operator (not available on COMPs) |
+| `viewer` | boolean | no | Set viewer state of the operator |
+| `allowCooking` | boolean | no | Set cooking flag on a COMP. When False, internal network stops cooking (0 CPU). COMP-only. |
 
-**When to use:** Wiring connections, complex logic, batch operations, querying state that other tools don't cover. This is the most powerful and flexible tool.
+## Data Read/Write
 
----
+### td_read_dat
 
-## Tool 4: create_td_node
+Read the text content of a DAT operator in TouchDesigner (TD). Returns content with line numbers. Use to read scripts, extensions, GLSL shaders, table data.
 
-**Purpose:** Create a new operator in TouchDesigner.
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `path` | string | yes | Path to the DAT operator |
+| `start_line` | integer | no | Start line (1-based). Omit to read from beginning. |
+| `end_line` | integer | no | End line (inclusive). Omit to read to end. |
 
-**Parameters:**
-| Name | Type | Required | Description |
-|------|------|----------|-------------|
-| `parentPath` | string | **Yes** | Path to parent (e.g., `/project1`) |
-| `nodeType` | string | **Yes** | Operator type (e.g., `noiseTop`, `mathChop`) |
-| `nodeName` | string | No | Custom name (auto-generated if omitted) |
-| `detailLevel` | string | No | Response verbosity |
-| `responseFormat` | string | No | Output format |
+### td_write_dat
 
-**Examples:**
+Write or patch text content of a DAT operator in TouchDesigner (TD). Can do full replacement or StrReplace-style patching (old_text -> new_text). Use for editing scripts, extensions, shaders. Does NOT reinit extensions automatically.
 
-```
-create_td_node(parentPath="/project1", nodeType="noiseTop", nodeName="bg_noise")
-create_td_node(parentPath="/project1", nodeType="compositeTop")  # auto-named
-create_td_node(parentPath="/project1/audio_chain", nodeType="audiospectrumChop", nodeName="spectrum")
-```
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `path` | string | yes | Path to the DAT operator |
+| `text` | string | no | Full replacement text. Use this OR old_text+new_text, not both. |
+| `old_text` | string | no | Text to find and replace (must be unique in the DAT) |
+| `new_text` | string | no | Replacement text |
+| `replace_all` | boolean | no | If true, replaces ALL occurrences of old_text (default: false, requires unique match) |
 
-**Returns:** Node summary with id, name, path, opType, and all default parameter values.
+### td_read_chop
 
-**Node type naming convention:** camelCase family suffix — `noiseTop`, `mathChop`, `gridSop`, `tableDat`, `phongMat`, `geometryComp`. See `references/operators.md` for the full list.
+Read CHOP channel sample data. Returns channel values as arrays. Use when you need the actual sample values (animation curves, lookup tables, waveforms), not just the summary from td_get_operator_info.
 
----
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `path` | string | yes | Path to the CHOP operator |
+| `channels` | array | no | Channel names to read. Omit to read all channels. |
+| `start` | integer | no | Start sample index (0-based). Omit to read from beginning. |
+| `end` | integer | no | End sample index (inclusive). Omit to read to end. |
 
-## Tool 5: delete_td_node
+### td_read_textport
 
-**Purpose:** Delete an existing operator.
+Read the last N lines from the TouchDesigner (TD) log/textport (console output). Use this to see errors, warnings and print output from TD.
 
-**Parameters:**
-| Name | Type | Required | Description |
-|------|------|----------|-------------|
-| `nodePath` | string | **Yes** | Absolute path to node (e.g., `/project1/noise1`) |
-| `detailLevel` | string | No | Response verbosity |
-| `responseFormat` | string | No | Output format |
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `lines` | integer | no | Number of recent lines to return |
 
-**Example:**
+### td_clear_textport
 
-```
-delete_td_node(nodePath="/project1/noise1")
-```
+Clear the MCP textport log buffer. Use this before starting a debug session or an edit-run-check loop to keep td_read_textport output focused and minimal.
 
-**Returns:** Confirmation with the deleted node's summary (captured before deletion).
+No parameters (other than optional `target_instance`).
 
----
+## Visual Capture
 
-## Tool 6: get_td_nodes
+### td_get_screenshot
 
-**Purpose:** List operators under a path with optional filtering.
+Get a screenshot of an operator's viewer in TouchDesigner (TD). Saves the image to a file and returns the file path. Use your file-reading tool to view the image. Shows what the operator looks like in its viewer (TOP output, CHOP waveform graph, SOP geometry, DAT table, parameter UI, etc). Use this to visually inspect any operator, or to generate images via TD for use in your project. TWO-STEP ASYNC USAGE: Step 1 — call with 'path' to start: returns {'status': 'pending', 'requestId': '...'}. Step 2 — call with 'request_id' to retrieve: returns {'file': '/tmp/.../opname_id.jpg'}. Then read the file to see the image. If step 2 still returns pending, make one other tool call then retry.
 
-**Parameters:**
-| Name | Type | Required | Description |
-|------|------|----------|-------------|
-| `parentPath` | string | **Yes** | Parent path (e.g., `/project1`) |
-| `pattern` | string | No | Glob pattern for name filtering (default: `*`) |
-| `includeProperties` | boolean | No | Include full parameter values (default: false) |
-| `detailLevel` | string | No | Response verbosity |
-| `responseFormat` | string | No | Output format |
-| `limit` | integer | No | Max items (1-500) |
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `path` | string | no | Full operator path to screenshot, e.g. '/project1/noise1'. Required for step 1. |
+| `request_id` | string | no | Request ID from step 1 to retrieve the completed screenshot. |
+| `max_size` | integer | no | Max pixel size for the longer side (default 512). Use 0 for original operator resolution (useful for pixel-accurate UI work). Higher values (e.g. 1024) for more detail. |
+| `output_path` | string | no | Optional absolute path where the image should be saved (e.g. '/Users/me/project/render.png'). If omitted, saved to /tmp/pisang_mcp/screenshots/. Use absolute paths — TD's working directory may differ from the agent's. |
+| `as_top` | boolean | no | If true, captures the operator directly as a TOP (bypasses the viewer renderer), preserving alpha/transparency. Only works for TOP operators — if the target is not a TOP, falls back to the viewer automatically. Use this when you need a clean PNG with alpha, e.g. to save a generated image for use in another project. |
+| `format` | `auto` / `jpg` / `png` | no | Image format. 'auto' (default): JPEG for viewer mode, PNG for as_top=true. 'jpg': always JPEG (smaller). 'png': always PNG (lossless). |
 
-**Examples:**
+### td_get_screenshots
 
-```
-# List all direct children of /project1
-get_td_nodes(parentPath="/project1")
+Get screenshots of multiple operators in one batch. Saves images to files and returns file paths. Use your file-reading tool to view images. TWO-STEP ASYNC USAGE: Step 1 — call with 'paths' array to start: returns {'status': 'pending', 'batchId': '...', 'total': N}. Step 2 — call with 'batch_id' to retrieve: returns {'files': [{op, file}, ...]}. Then read the files to see the images. If still processing returns {'status': 'pending', 'ready': K, 'total': N}.
 
-# Find all noise operators
-get_td_nodes(parentPath="/project1", pattern="noise*")
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `paths` | array | no | List of full operator paths to screenshot. Required for step 1. |
+| `batch_id` | string | no | Batch ID from step 1 to retrieve completed screenshots. |
+| `max_size` | integer | no | Max pixel size for longer side (default 512). Use 0 for original resolution. |
+| `as_top` | boolean | no | If true, captures TOP operators directly (preserves alpha). Non-TOP operators fall back to viewer. |
+| `output_dir` | string | no | Optional absolute path to a directory. Each screenshot saved as <opname>.jpg or .png inside it and kept on disk. |
+| `format` | `auto` / `jpg` / `png` | no | Image format. 'auto' (default): JPEG for viewer mode, PNG for as_top=true. 'jpg': always JPEG (smaller). 'png': always PNG (lossless). |
 
-# Get full parameter details
-get_td_nodes(parentPath="/project1", pattern="*", includeProperties=true, limit=20)
-```
+### td_get_screen_screenshot
 
-**Returns:** List of node summaries. With `includeProperties=false` (default): id, name, path, opType only. With `includeProperties=true`: full parameter values included.
+Capture a screenshot of the actual screen via TD's screenGrabTOP. Saves the image to a file and returns the file path. Use your file-reading tool to view the image. Unlike td_get_screenshot (operator viewer), this shows what the user literally sees on their monitor — TD windows, UI panels, everything. Use when simulating mouse/keyboard input to verify what happened on screen. Workflow: td_get_screen_screenshot → read file → td_input_execute → wait idle → td_get_screen_screenshot again. TWO-STEP ASYNC: Step 1 — call without request_id: returns {'status':'pending','requestId':'...'}. Step 2 — call with request_id: returns {'file': '/tmp/.../screen_id.jpg', 'info': '...metadata...'}. Then read the file to see the image. The requestId also stays usable with td_screen_point_to_global for later coordinate lookup. crop_x/y/w/h are in ACTUAL SCREEN PIXELS (not image pixels). Crops exceeding screen bounds are auto-clamped. SMART DEFAULTS: max_size is auto when omitted — 1920 for full screen (good overview), max(crop_w,crop_h) for cropped (guarantees 1:1 scale). At 1:1 scale: screen_coord = crop_origin + image_pixel. Otherwise use the formula from metadata.
 
----
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `request_id` | string | no | Request ID from step 1 to retrieve the completed screenshot. |
+| `max_size` | integer | no | Max pixel size for the longer side. Auto when omitted: 1920 for full screen, max(crop_w,crop_h) for cropped (1:1). Set explicitly to override. |
+| `crop_x` | integer | no | Left edge in screen pixels. |
+| `crop_y` | integer | no | Top edge in screen pixels (y=0 at top of screen). |
+| `crop_w` | integer | no | Width in pixels. |
+| `crop_h` | integer | no | Height in pixels. |
+| `display` | integer | no | Screen index (default 0 = primary display). |
 
-## Tool 7: get_td_node_parameters
+## Context & Focus
 
-**Purpose:** Get detailed parameters of a specific node.
+### td_get_focus
 
-**Parameters:**
-| Name | Type | Required | Description |
-|------|------|----------|-------------|
-| `nodePath` | string | **Yes** | Node path (e.g., `/project1/noise1`) |
-| `detailLevel` | string | No | Response verbosity |
-| `responseFormat` | string | No | Output format |
-| `limit` | integer | No | Max parameters (1-500) |
+Get the current user focus in TouchDesigner (TD): which network is open, selected operators, current operator, and rollover (what is under the mouse cursor). IMPORTANT: when the user says 'this operator' or 'вот этот', they mean the SELECTED/CURRENT operator, NOT the rollover. Rollover is just incidental mouse position and should be ignored for intent. Pass screenshots=true to immediately start a screenshot batch for all selected operators — response includes a 'screenshots' field with batchId; retrieve with td_get_screenshots(batch_id=...).
 
-**Example:**
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `screenshots` | boolean | no | If true, start a screenshot batch for all selected operators. Retrieve with td_get_screenshots(batch_id=...). |
+| `max_size` | integer | no | Max screenshot size when screenshots=true (default 512). |
+| `as_top` | boolean | no | Passed to the screenshot batch when screenshots=true. |
 
-```
-get_td_node_parameters(nodePath="/project1/noise1")
-```
+### td_get_errors
 
-**Returns:** All parameter name-value pairs for the node. Use this to discover available parameters before calling update_td_node_parameters.
+Find errors and warnings in TouchDesigner (TD) operators. Checks operator errors, warnings, AND broken parameter expressions (missing channels, bad references, etc). Also includes recent script errors from the log (tracebacks), grouped and deduplicated — e.g. 1000 identical mouse-move errors shown as ×1000 with one entry. If path is given, checks that operator and its children. If no path, checks the currently open network. Use '/' for entire project. Use when user says something is broken, has errors, red nodes, горит ошибка, etc. TIP: call td_clear_textport before reproducing an error to keep log focused. TIP: combine with td_get_perf when user says 'тупит/лагает' to check both errors and performance.
 
----
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `path` | string | no | Path to check. If omitted, checks the current network. Use '/' to scan entire project. |
+| `recursive` | boolean | no | Check children recursively (default true) |
+| `include_log` | boolean | no | Include recent script errors from log, grouped by unique signature (default true). Use td_clear_textport before reproducing an error to keep results focused. |
 
-## Tool 8: get_td_node_errors
+### td_get_perf
 
-**Purpose:** Check for errors on a node and all its descendants (recursive).
+Get performance data from TouchDesigner (TD). Returns TSV: header with fps/budget/memory summary, then slowest operators sorted by cook time. Columns: path, OPType, cpu/cook(ms), gpu/cook(ms), cpu/s, gpu/s, rate, flags. Use when user reports lag, low FPS, slow performance, тупит, тормозит.
 
-**Parameters:**
-| Name | Type | Required | Description |
-|------|------|----------|-------------|
-| `nodePath` | string | **Yes** | Absolute path to inspect (e.g., `/project1`) |
-| `detailLevel` | string | No | Response verbosity |
-| `responseFormat` | string | No | Output format |
-| `limit` | integer | No | Max error items (1-500) |
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `path` | string | no | Path to profile. If omitted, profiles the current network. Use '/' for entire project. |
+| `top` | integer | no | Number of slowest operators to return |
 
-**Examples:**
+## Documentation
 
-```
-# Check entire project for errors
-get_td_node_errors(nodePath="/project1")
+### td_get_docs
 
-# Check a specific chain
-get_td_node_errors(nodePath="/project1/audio_chain")
-```
+Get comprehensive documentation on a TouchDesigner topic. Unlike td_get_hints (compact tips), this returns in-depth reference material. Call without arguments to see available topics with descriptions. Call with a topic name to get the full documentation.
 
-**Returns:** Error count, hasErrors boolean, and list of errors each with nodePath, nodeName, opType, and error message.
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `topic` | string | no | Topic to get docs for. Omit to list available topics. |
 
-**Always call this after building a network** to catch wiring mistakes, missing references, and configuration errors.
+### td_get_hints
 
----
+Get TouchDesigner tips and common patterns for a topic. Call this BEFORE creating operators or writing TD Python code to learn correct parameter names, expressions, and idiomatic approaches. Available topics: animation, noise, connections, parameters, scripting, construction, ui_analysis, panel_layout, screenshots, input_simulation, undo. IMPORTANT: always call with topic='construction' before building multi-operator setups to get correct TOP/CHOP parameter names, compositeTOP input ordering, and layout guidelines. IMPORTANT: always call with topic='input_simulation' before using td_input_execute to learn focus recovery, coordinate systems, and testing workflow.
 
-## Tool 9: update_td_node_parameters
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `topic` | string | yes | Topic to get hints for. Available: 'animation', 'noise', 'connections', 'parameters', 'scripting', 'construction', 'ui_analysis', 'panel_layout', 'screenshots', 'input_simulation', 'undo', 'networking', 'all' |
 
-**Purpose:** Update parameters on an existing node.
+### td_agents_md
 
-**Parameters:**
-| Name | Type | Required | Description |
-|------|------|----------|-------------|
-| `nodePath` | string | **Yes** | Path to node (e.g., `/project1/noise1`) |
-| `properties` | object | **Yes** | Key-value pairs to update (e.g., `{"seed": 42, "monochrome": true}`) |
-| `detailLevel` | string | No | Response verbosity |
-| `responseFormat` | string | No | Output format |
+Read, write, or update the agents_md documentation inside a COMP container. agents_md is a Markdown textDAT describing the container's purpose, structure, and conventions. action='read': returns content + staleness check (compares documented children vs live state). action='update': refreshes auto-generated sections (children list, connections) from live state, preserves human-written sections. action='write': sets full content, creates the DAT if missing.
 
-**Examples:**
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `path` | string | yes | Path to the COMP container |
+| `action` | `read` / `update` / `write` | yes | read=get content+staleness, update=refresh auto sections, write=set content |
+| `content` | string | no | Markdown content (only for action='write') |
 
-```
-# Set noise parameters
-update_td_node_parameters(
-    nodePath="/project1/noise1",
-    properties={"seed": 42, "monochrome": false, "period": 4.0, "harmonics": 3,
-                "resolutionw": 1920, "resolutionh": 1080}
-)
+## Input Automation
 
-# Set a file path
-update_td_node_parameters(
-    nodePath="/project1/moviefilein1",
-    properties={"file": "/Users/me/Videos/clip.mp4", "play": true}
-)
+### td_input_execute
 
-# Set compositing mode
-update_td_node_parameters(
-    nodePath="/project1/composite1",
-    properties={"operand": 0}  # 0=Over, 1=Under, 3=Add, 18=Multiply, 27=Screen
-)
-```
+Send a sequence of mouse/keyboard commands to TouchDesigner. Commands execute sequentially with smooth bezier movement. Returns immediately — poll td_input_status() until status='idle' before proceeding. Command types: 'focus' — bring TD to foreground. 'move' — smooth mouse move: {type,x,y,duration,easing}. 'click' — click: {type,x,y,button,hold,duration,easing}. hold=seconds to hold down. duration=smooth move before click. 'dblclick' — double click: {type,x,y,duration}. 'mousedown'/'mouseup' — {type,x,y,button}. 'key' — keystroke: {type,keys} e.g. 'ctrl+z','tab','escape','shift+f5'. Requires Accessibility permission on Mac. 'type' — human-like typing: {type,text,wpm,variance} — layout-independent Unicode, variable timing. 'wait' — pause: {type,duration}. 'scroll' — {type,x,y,dx,dy,steps} — human-like scroll: moves mouse to (x,y) first, then sends dy (vertical, +up) and dx (horizontal, +right) as multiple ticks with natural timing. steps=4 by default. Mouse commands may include coord_space='logical' (default) or coord_space='physical'. On macOS, 'physical' means actual screen pixels from td_get_screen_screenshot and is converted to CGEvent logical coords automatically. Top-level coord_space applies to commands that do not override it. on_error: 'stop' (default) clears queue on error; 'continue' skips failed command. IMPORTANT: call td_get_hints('input_simulation') before first use to learn focus recovery, coordinate systems, and testing workflow.
 
-**Returns:** List of successfully updated properties and any that failed (with reasons). Raises error if zero properties were updated.
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `commands` | array | yes | List of command dicts to execute in sequence. |
+| `coord_space` | `logical` / `physical` | no | Default coordinate space for mouse commands that do not specify their own coord_space. 'logical' uses CGEvent coords directly. 'physical' uses actual screen pixels from td_get_screen_screenshot and is auto-converted on macOS. |
+| `on_error` | `stop` / `continue` | no | What to do on error. Default 'stop'. |
 
-**Parameter value types:** Floats, ints, booleans, and strings are all accepted. For menu parameters, use either the string label or the integer index.
+### td_input_status
 
----
+Get current status of the td_input command queue. Poll this after td_input_execute until status='idle'. Returns: status ('idle'/'running'), current command, queue_remaining, last error.
 
-## Tool 10: exec_node_method
+No parameters (other than optional `target_instance`).
 
-**Purpose:** Call a Python method directly on a specific node.
+### td_input_clear
 
-**Parameters:**
-| Name | Type | Required | Description |
-|------|------|----------|-------------|
-| `nodePath` | string | **Yes** | Path to node |
-| `method` | string | **Yes** | Method name to call |
-| `args` | array | No | Positional arguments (strings, numbers, booleans) |
-| `kwargs` | object | No | Keyword arguments |
-| `detailLevel` | string | No | Response verbosity |
-| `responseFormat` | string | No | Output format |
+Clear the td_input command queue and stop current execution immediately.
 
-**Examples:**
+No parameters (other than optional `target_instance`).
 
-```
-# Get all children of a component
-exec_node_method(nodePath="/project1", method="findChildren")
+### td_op_screen_rect
 
-# Find specific children
-exec_node_method(nodePath="/project1", method="findChildren",
-                 kwargs={"name": "noise*", "depth": 1})
+Get the screen coordinates of an operator node in the network editor. Returns {x,y,w,h,cx,cy} where cx,cy is the center for clicking. Use this to find where to click on a specific operator. Only works if the operator's parent network is currently open in a network editor pane.
 
-# Get node errors
-exec_node_method(nodePath="/project1/noise1", method="errors")
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `path` | string | yes | Full path to the operator, e.g. '/project1/myComp/noise1' |
 
-# Get node warnings
-exec_node_method(nodePath="/project1/noise1", method="warnings")
+### td_click_screen_point
 
-# Save a component as .tox
-exec_node_method(nodePath="/project1/myContainer", method="save",
-                 args=["/path/to/component.tox"])
-```
+Resolve a point inside a previous td_get_screen_screenshot result and click it. Pass the screenshot request_id plus either normalized u/v or image_x/image_y. Queues a td_input click using physical screen coordinates, so it works directly with screenshot-derived points. Use duration/easing to control the cursor travel before the click.
 
-**Returns:** Processed return value of the method call. TD operators are serialized to their path strings, iterables to lists, etc.
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `request_id` | string | yes | Request ID originally returned by td_get_screen_screenshot. |
+| `u` | number | no | Normalized horizontal position inside the screenshot region (0=left, 1=right). Use with v. |
+| `v` | number | no | Normalized vertical position inside the screenshot region (0=top, 1=bottom). Use with u. |
+| `image_x` | number | no | Horizontal pixel coordinate inside the returned screenshot image. Use with image_y. |
+| `image_y` | number | no | Vertical pixel coordinate inside the returned screenshot image. Use with image_x. |
+| `button` | `left` / `right` / `middle` | no | Mouse button to click. Default left. |
+| `hold` | number | no | Seconds to hold the mouse button down before releasing. |
+| `duration` | number | no | Seconds for the cursor to travel to the target before clicking. |
+| `easing` | `linear` / `ease-in` / `ease-out` / `ease-in-out` | no | Cursor movement easing for the pre-click travel. |
+| `focus` | boolean | no | If true, bring TD to the front before clicking and wait briefly for focus to settle. |
 
----
+### td_screen_point_to_global
 
-## Tool 11: get_td_classes
+Convert a point inside a previous td_get_screen_screenshot result into absolute screen coordinates. Pass the screenshot request_id plus either normalized u/v (0..1 inside that screenshot region) or image_x/image_y in returned image pixels. Returns absolute physical screen coordinates, logical coordinates, and a ready-to-use td_input_execute payload. Metadata is kept for the most recent screen screenshots so multiple agents can resolve points later by request_id.
 
-**Purpose:** List available TouchDesigner Python classes and modules.
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `request_id` | string | yes | Request ID originally returned by td_get_screen_screenshot. |
+| `u` | number | no | Normalized horizontal position inside the screenshot region (0=left, 1=right). Use with v. |
+| `v` | number | no | Normalized vertical position inside the screenshot region (0=top, 1=bottom). Use with u. |
+| `image_x` | number | no | Horizontal pixel coordinate inside the returned screenshot image. Use with image_y. |
+| `image_y` | number | no | Vertical pixel coordinate inside the returned screenshot image. Use with image_x. |
 
-**Parameters:**
-| Name | Type | Required | Description |
-|------|------|----------|-------------|
-| `detailLevel` | string | No | Response verbosity |
-| `responseFormat` | string | No | Output format |
-| `limit` | integer | No | Max items (default: 50) |
+## System
 
-**Example:**
+### td_list_instances
 
-```
-get_td_classes(limit=100)
-```
+List all running TouchDesigner (TD) instances with active MCP servers. Returns port, project name, PID, and instanceId for each instance. Call this at the start of every conversation to discover available instances and choose which one to work with. instanceId is stable for the lifetime of a TD process and is used as target_instance in all other tool calls.
 
-**Returns:** List of class/module names and their docstrings from the td module. Useful for discovering what's available in TD's Python environment.
+No parameters (other than optional `target_instance`).
 
----
+### td_project_quit
 
-## Tool 12: get_td_class_details
+Save and/or close the current TouchDesigner (TD) project. Can save before closing. Reports if project has unsaved changes. To close a different instance, pass target_instance=instanceId. WARNING: this will shut down the MCP server on that instance.
 
-**Purpose:** Get methods and properties of a specific TD Python class.
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `save` | boolean | no | Save the project before closing. Default true. |
+| `force` | boolean | no | Force close without save dialog. Default false. |
 
-**Parameters:**
-| Name | Type | Required | Description |
-|------|------|----------|-------------|
-| `className` | string | **Yes** | Class name (e.g., `noiseTop`, `OP`, `COMP`) |
-| `detailLevel` | string | No | Response verbosity |
-| `responseFormat` | string | No | Output format |
-| `limit` | integer | No | Max methods/properties (default: 30) |
+### td_reinit_extension
 
-**Examples:**
+Reinitialize an extension on a COMP in TouchDesigner (TD). Call this AFTER finishing all code edits via td_write_dat to apply changes. Do NOT call after every small edit - batch your changes first.
 
-```
-# Inspect the noiseTop class
-get_td_class_details(className="noiseTop")
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `path` | string | yes | Path to the COMP with the extension |
 
-# Inspect the base OP class (all operators inherit from this)
-get_td_class_details(className="OP", limit=50)
+### td_dev_log
 
-# Inspect COMP (component) class
-get_td_class_details(className="COMP")
-```
+Read the last N entries from the MCP dev log. Only available when Devmode is enabled. Shows request/response history.
 
-**Returns:** Class name, type, description, methods (name + description + type), and properties (name + description + type).
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `count` | integer | no | Number of recent log entries to return |
 
----
+### td_clear_dev_log
 
-## Tool 13: get_td_module_help
+Clear the current MCP dev log by closing the old file and starting a fresh one. Only available when Devmode is enabled.
 
-**Purpose:** Retrieve Python help() text for any TD module, class, or function.
+No parameters (other than optional `target_instance`).
 
-**Parameters:**
-| Name | Type | Required | Description |
-|------|------|----------|-------------|
-| `moduleName` | string | **Yes** | Module/class name (e.g., `noiseCHOP`, `tdu`, `td.OP`) |
-| `detailLevel` | string | No | Response verbosity |
-| `responseFormat` | string | No | Output format |
+### td_test_session
 
-**Examples:**
+Manage test sessions, bug reports, and conversation export. IMPORTANT: Do NOT proactively suggest exporting chat or submitting reports. These are tools for specific situations: - export_chat / submit_report: ONLY when the user encounters a BUG with the plugin or TouchDesigner and wants to report it, or when the user explicitly asks to export the conversation. Never suggest this at session end or as routine action. USER PHRASES → ACTIONS: 'разбор тестовых сессий' / 'analyze test sessions' → list, then pull, read meta.json → index.jsonl → calls/. 'разбор репортов' / 'analyze user reports' → list with session='user', then pull by name. 'экспортируй чат' / 'export chat' → (1) export_chat_id → marker, (2) export_chat with session=marker. 'сообщи о проблеме' / 'report bug' → export chat, review for privacy, then submit_report with summary + tags + result_op=file_path. ACTIONS: export_chat_id | export_chat | submit_report | start | note | import_chat | end | list | pull. list: default=auto-detect repo. session='user' for user_reports (dev only). pull: auto-searches both repos. Auto-detects dev vs user Hub access.
 
-```
-# Get help for the noise CHOP class
-get_td_module_help(moduleName="noiseCHOP")
-
-# Get help for the tdu utilities module
-get_td_module_help(moduleName="tdu")
-
-# Dotted name resolution works
-get_td_module_help(moduleName="td.OP")
-```
-
-**Returns:** Full Python help() text output, cleaned of backspace characters.
-
----
-
-## Workflow: Building a Complete Network
-
-Typical sequence of tool calls to build a project:
-
-1. `get_td_info` — verify connection
-2. `get_td_nodes(parentPath="/project1")` — see what already exists
-3. `create_td_node` (multiple) — create all operators
-4. `update_td_node_parameters` (multiple) — configure each operator
-5. `execute_python_script` — wire all connections in one batch script
-6. `get_td_node_errors(nodePath="/project1")` — check for problems
-7. `get_td_node_parameters` — verify specific nodes if needed
-8. Iterate: adjust parameters, add operators, fix errors
-
-## TD Documentation MCP Server Tools
-
-The bottobot/touchdesigner-mcp-server provides 21 reference/knowledge tools (no running TD needed):
-
-| Tool | Purpose |
-|------|---------|
-| `get_operator` | Get full documentation for a specific operator |
-| `search_operators` | Search operators by keyword |
-| `list_operators` | List all operators (filterable by family) |
-| `compare_operators` | Compare two operators side by side |
-| `get_operator_examples` | Get usage examples for an operator |
-| `suggest_workflow` | Get workflow suggestions for a task |
-| `get_tutorial` | Get a full TD tutorial |
-| `list_tutorials` | List available tutorials |
-| `search_tutorials` | Search tutorial content |
-| `get_python_api` | Get Python API class documentation |
-| `search_python_api` | Search Python API |
-| `list_python_classes` | List all documented Python classes |
-| `get_version_info` | Get TD version release notes |
-| `list_versions` | List all documented TD versions |
-| `get_experimental_techniques` | Get advanced technique guides (GLSL, ML, generative, etc.) |
-| `search_experimental` | Search experimental techniques |
-| `get_glsl_pattern` | Get GLSL code patterns (SDF, color, math utilities) |
-| `get_operator_connections` | Get common operator wiring patterns |
-| `get_network_template` | Get complete network templates with Python generation scripts |
-| `get_experimental_build` | Get experimental build info |
-| `list_experimental_builds` | List experimental builds |
-
-This server contains 630 operator docs, 14 tutorials, 69 Python API classes, and 7 experimental technique categories with working code.
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `action` | `export_chat_id` / `export_chat` / `submit_report` / `start` / `note` / `import_chat` / `end` / `list` / `pull` | yes | Action: export_chat_id / export_chat / submit_report / start / note / import_chat / end / list / pull |
+| `prompt` | string | no | (start) The test prompt/task description |
+| `tags` | array | no | (start) Tags for categorization, e.g. ['ui', 'layout'] |
+| `text` | string | no | (note) Observation text. (import_chat) Full conversation text. |
+| `outcome` | `success` / `partial` / `failure` | no | (end) Result: success / partial / failure |
+| `summary` | string | no | (end) Brief summary of what happened |
+| `result_op` | string | no | (end) Path to operator to save as result.tox |
+| `session` | string | no | (pull) Session name or substring to download |

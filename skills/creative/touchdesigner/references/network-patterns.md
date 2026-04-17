@@ -20,32 +20,32 @@ Audio File In CHOP -> Audio Spectrum CHOP -> Math CHOP (scale)
 **MCP Build Sequence:**
 
 ```
-1. create_td_node(parentPath="/project1", nodeType="audiofileinChop", nodeName="audio_in")
-2. create_td_node(parentPath="/project1", nodeType="audiospectrumChop", nodeName="spectrum")
-3. create_td_node(parentPath="/project1", nodeType="mathChop", nodeName="spectrum_scale")
-4. create_td_node(parentPath="/project1", nodeType="noiseTop", nodeName="noise1")
-5. create_td_node(parentPath="/project1", nodeType="levelTop", nodeName="level1")
-6. create_td_node(parentPath="/project1", nodeType="feedbackTop", nodeName="feedback1")
-7. create_td_node(parentPath="/project1", nodeType="compositeTop", nodeName="comp1")
-8. create_td_node(parentPath="/project1", nodeType="nullTop", nodeName="out")
+1. td_create_operator(parent="/project1", type="audiofileinChop", name="audio_in")
+2. td_create_operator(parent="/project1", type="audiospectrumChop", name="spectrum")
+3. td_create_operator(parent="/project1", type="mathChop", name="spectrum_scale")
+4. td_create_operator(parent="/project1", type="noiseTop", name="noise1")
+5. td_create_operator(parent="/project1", type="levelTop", name="level1")
+6. td_create_operator(parent="/project1", type="feedbackTop", name="feedback1")
+7. td_create_operator(parent="/project1", type="compositeTop", name="comp1")
+8. td_create_operator(parent="/project1", type="nullTop", name="out")
 
-9. update_td_node_parameters(nodePath="/project1/audio_in",
+9. td_set_operator_pars(path="/project1/audio_in",
      properties={"file": "/path/to/music.wav", "play": true})
-10. update_td_node_parameters(nodePath="/project1/spectrum",
+10. td_set_operator_pars(path="/project1/spectrum",
      properties={"size": 512})
-11. update_td_node_parameters(nodePath="/project1/spectrum_scale",
+11. td_set_operator_pars(path="/project1/spectrum_scale",
      properties={"gain": 2.0, "postoff": 0.0})
-12. update_td_node_parameters(nodePath="/project1/noise1",
-     properties={"type": 1, "monochrome": false, "resolutionw": 1920, "resolutionh": 1080,
+12. td_set_operator_pars(path="/project1/noise1",
+     properties={"type": 1, "monochrome": false, "resolutionw": 1280, "resolutionh": 720,
                   "period": 4.0, "harmonics": 3, "amp": 1.0})
-13. update_td_node_parameters(nodePath="/project1/level1",
+13. td_set_operator_pars(path="/project1/level1",
      properties={"opacity": 0.95, "gamma1": 0.75})
-14. update_td_node_parameters(nodePath="/project1/feedback1",
+14. td_set_operator_pars(path="/project1/feedback1",
      properties={"top": "/project1/comp1"})
-15. update_td_node_parameters(nodePath="/project1/comp1",
+15. td_set_operator_pars(path="/project1/comp1",
      properties={"operand": 0})
 
-16. execute_python_script: """
+16. td_execute_python: """
 op('/project1/audio_in').outputConnectors[0].connect(op('/project1/spectrum'))
 op('/project1/spectrum').outputConnectors[0].connect(op('/project1/spectrum_scale'))
 op('/project1/noise1').outputConnectors[0].connect(op('/project1/level1'))
@@ -54,7 +54,7 @@ op('/project1/feedback1').outputConnectors[0].connect(op('/project1/comp1').inpu
 op('/project1/comp1').outputConnectors[0].connect(op('/project1/out'))
 """
 
-17. execute_python_script: """
+17. td_execute_python: """
 # Export spectrum values to drive noise parameters
 # This makes the noise react to audio frequencies
 op('/project1/noise1').par.seed.expr = "op('/project1/spectrum_scale')['chan1']"
@@ -85,7 +85,7 @@ Math CHOP: chanop=1 (Add channels), range1low=0, range1high=10
 Trigger CHOP: attack=0.02, peak=1.0, decay=0.3, sustain=0.0, release=0.1
 
 # Export to visual: Scale, brightness, or color intensity
-execute_python_script: "op('/project1/level1').par.brightness1.expr = \"1.0 + op('/project1/trigger1')['chan1'] * 0.5\""
+td_execute_python: "op('/project1/level1').par.brightness1.expr = \"1.0 + op('/project1/trigger1')['chan1'] * 0.5\""
 ```
 
 ### Pattern 3: Multi-Band Audio -> Multi-Layer Visuals
@@ -109,26 +109,26 @@ Audio In -> Spectrum -> Audio Band EQ (3 bands: bass, mid, treble)
                        Out
 ```
 
-### Pattern 3b: Audio-Reactive GLSL Fractal (Proven td_exec Recipe)
+### Pattern 3b: Audio-Reactive GLSL Fractal (Proven Recipe)
 
-Complete working recipe tested in TD 099. Plays an MP3, runs FFT, feeds spectrum as a texture into a GLSL shader where inner fractal reacts to bass, outer to treble.
+Complete working recipe. Plays an MP3, runs FFT, feeds spectrum as a texture into a GLSL shader where inner fractal reacts to bass, outer to treble.
 
 **Network:**
 ```
-AudioFileIn CHOP → AudioSpectrum CHOP → Math CHOP (boost) → Resample CHOP (256)
-                                                                  ↓
-                                                            CHOP To TOP (256x1 spectrum texture)
-                                                                  ↓
+AudioFileIn CHOP → AudioSpectrum CHOP (FFT=512, outlength=256)
+    → Math CHOP (gain=10) → CHOP To TOP (256x2 spectrum texture, dataformat=r)
+                                                                   ↓
 Constant TOP (time, rgba32float) → GLSL TOP (input 0=time, input 1=spectrum) → Null → MovieFileOut
                                                                                         ↓
 AudioFileIn CHOP → Audio Device Out CHOP                                          Record to .mov
 ```
 
-**Build via td_exec (one call per step for reliability):**
+**Build via td_execute_python (one call per step for reliability):**
 
 ```python
 # Step 1: Audio chain
-td_exec("""
+# td_execute_python script:
+td_execute_python(code="""
 root = op('/project1')
 audio = root.create(audiofileinCHOP, 'audio_in')
 audio.par.file = '/path/to/music.mp3'
@@ -148,7 +148,7 @@ resamp.par.timeslice = True
 resamp.par.rate = 256
 
 chop2top = root.create(choptoTOP, 'spectrum_tex')
-resamp.outputConnectors[0].connect(chop2top.inputConnectors[0])
+chop2top.par.chop = resamp  # CHOP To TOP has NO input connectors — use par.chop reference
 
 # Audio output (hear the music)
 aout = root.create(audiodeviceoutCHOP, 'audio_out')
@@ -156,8 +156,9 @@ audio.outputConnectors[0].connect(aout.inputConnectors[0])
 result = 'audio chain ok'
 """)
 
-# Step 2: Time driver (MUST be rgba32float — see pitfalls #12)
-td_exec("""
+# Step 2: Time driver (MUST be rgba32float — see pitfalls #6)
+# td_execute_python script:
+td_execute_python(code="""
 root = op('/project1')
 td = root.create(constantTOP, 'time_driver')
 td.par.format = 'rgba32float'
@@ -170,7 +171,8 @@ result = 'time ok'
 """)
 
 # Step 3: GLSL shader (write to /tmp, load from file)
-td_exec("""
+# td_execute_python script:
+td_execute_python(code="""
 root = op('/project1')
 glsl = root.create(glslTOP, 'audio_shader')
 glsl.par.outputresolution = 'custom'
@@ -188,7 +190,8 @@ result = 'glsl ok'
 """)
 
 # Step 4: Output + recorder
-td_exec("""
+# td_execute_python script:
+td_execute_python(code="""
 root = op('/project1')
 out = root.create(nullTOP, 'output')
 op('/project1/audio_shader').outputConnectors[0].connect(out.inputConnectors[0])
@@ -214,7 +217,7 @@ vec3 palette(float t) {
 
 void main() {
     // Input 0 = time (1x1 rgba32float constant)
-    // Input 1 = audio spectrum (256x1 CHOP To TOP)
+    // Input 1 = audio spectrum (256x2 CHOP To TOP, stereo — sample at y=0.25 for first channel)
     vec4 td = texture(sTD2DInputs[0], vec2(0.5));
     float t = td.r + td.g * 1000.0;
 
@@ -223,15 +226,15 @@ void main() {
     vec2 uv0 = uv;
     vec3 finalColor = vec3(0.0);
 
-    float bass = texture(sTD2DInputs[1], vec2(0.05, 0.0)).r;
-    float mids = texture(sTD2DInputs[1], vec2(0.25, 0.0)).r;
+    float bass = texture(sTD2DInputs[1], vec2(0.05, 0.25)).r;
+    float mids = texture(sTD2DInputs[1], vec2(0.25, 0.25)).r;
 
     for (float i = 0.0; i < 4.0; i++) {
         uv = fract(uv * (1.4 + bass * 0.3)) - 0.5;
         float d = length(uv) * exp(-length(uv0));
 
         // Sample spectrum at distance: inner=bass, outer=treble
-        float freq = texture(sTD2DInputs[1], vec2(clamp(d * 0.5, 0.0, 1.0), 0.0)).r;
+        float freq = texture(sTD2DInputs[1], vec2(clamp(d * 0.5, 0.0, 1.0), 0.25)).r;
 
         vec3 col = palette(length(uv0) + i * 0.4 + t * 0.35);
         d = sin(d * (7.0 + bass * 4.0) + t * 1.5) / 8.0;
@@ -247,7 +250,7 @@ void main() {
 ```
 
 **Key insights from testing:**
-- `spectrum_tex` (CHOP To TOP) produces a 256x1 texture — x position = frequency
+- `spectrum_tex` (CHOP To TOP) produces a 256x2 texture — x position = frequency, y=0.25 for first channel
 - Sampling at `vec2(0.05, 0.0)` gets bass, `vec2(0.65, 0.0)` gets treble
 - Sampling based on pixel distance (`d * 0.5`) makes inner fractal react to bass, outer to treble
 - `bass * 0.3` in the `fract()` zoom makes the fractal breathe with kicks
@@ -269,26 +272,26 @@ Noise TOP -> Composite TOP -> Level TOP -> Null TOP (out)
 **MCP Build Sequence:**
 
 ```
-1. create_td_node(parentPath="/project1", nodeType="noiseTop", nodeName="seed_noise")
-2. create_td_node(parentPath="/project1", nodeType="compositeTop", nodeName="mix")
-3. create_td_node(parentPath="/project1", nodeType="transformTop", nodeName="evolve")
-4. create_td_node(parentPath="/project1", nodeType="feedbackTop", nodeName="fb")
-5. create_td_node(parentPath="/project1", nodeType="levelTop", nodeName="color_correct")
-6. create_td_node(parentPath="/project1", nodeType="nullTop", nodeName="out")
+1. td_create_operator(parent="/project1", type="noiseTop", name="seed_noise")
+2. td_create_operator(parent="/project1", type="compositeTop", name="mix")
+3. td_create_operator(parent="/project1", type="transformTop", name="evolve")
+4. td_create_operator(parent="/project1", type="feedbackTop", name="fb")
+5. td_create_operator(parent="/project1", type="levelTop", name="color_correct")
+6. td_create_operator(parent="/project1", type="nullTop", name="out")
 
-7. update_td_node_parameters(nodePath="/project1/seed_noise",
+7. td_set_operator_pars(path="/project1/seed_noise",
      properties={"type": 1, "monochrome": false, "period": 2.0, "amp": 0.3,
-                  "resolutionw": 1920, "resolutionh": 1080})
-8. update_td_node_parameters(nodePath="/project1/mix",
+                  "resolutionw": 1280, "resolutionh": 720})
+8. td_set_operator_pars(path="/project1/mix",
      properties={"operand": 27})  # 27 = Screen blend
-9. update_td_node_parameters(nodePath="/project1/evolve",
+9. td_set_operator_pars(path="/project1/evolve",
      properties={"sx": 1.003, "sy": 1.003, "rz": 0.5, "extend": 2})  # slight zoom + rotate, repeat edges
-10. update_td_node_parameters(nodePath="/project1/fb",
+10. td_set_operator_pars(path="/project1/fb",
      properties={"top": "/project1/mix"})
-11. update_td_node_parameters(nodePath="/project1/color_correct",
+11. td_set_operator_pars(path="/project1/color_correct",
      properties={"opacity": 0.98, "gamma1": 0.85})
 
-12. execute_python_script: """
+12. td_execute_python: """
 op('/project1/seed_noise').outputConnectors[0].connect(op('/project1/mix').inputConnectors[0])
 op('/project1/fb').outputConnectors[0].connect(op('/project1/evolve'))
 op('/project1/evolve').outputConnectors[0].connect(op('/project1/mix').inputConnectors[1])
@@ -319,15 +322,15 @@ Table DAT (instance data) -> DAT to CHOP -> Geometry COMP (instancing on) -> Ren
 **MCP Build Sequence:**
 
 ```
-1. create_td_node(parentPath="/project1", nodeType="tableDat", nodeName="instance_data")
-2. create_td_node(parentPath="/project1", nodeType="geometryComp", nodeName="geo1")
-3. create_td_node(parentPath="/project1/geo1", nodeType="sphereSop", nodeName="sphere")
-4. create_td_node(parentPath="/project1", nodeType="constMat", nodeName="mat1")
-5. create_td_node(parentPath="/project1", nodeType="cameraComp", nodeName="cam1")
-6. create_td_node(parentPath="/project1", nodeType="lightComp", nodeName="light1")
-7. create_td_node(parentPath="/project1", nodeType="renderTop", nodeName="render1")
+1. td_create_operator(parent="/project1", type="tableDat", name="instance_data")
+2. td_create_operator(parent="/project1", type="geometryComp", name="geo1")
+3. td_create_operator(parent="/project1/geo1", type="sphereSop", name="sphere")
+4. td_create_operator(parent="/project1", type="constMat", name="mat1")
+5. td_create_operator(parent="/project1", type="cameraComp", name="cam1")
+6. td_create_operator(parent="/project1", type="lightComp", name="light1")
+7. td_create_operator(parent="/project1", type="renderTop", name="render1")
 
-8. execute_python_script: """
+8. td_execute_python: """
 import random, math
 dat = op('/project1/instance_data')
 dat.clear()
@@ -346,15 +349,15 @@ for i in range(500):
     ])
 """
 
-9. update_td_node_parameters(nodePath="/project1/geo1",
+9. td_set_operator_pars(path="/project1/geo1",
      properties={"instancing": true, "instancechop": "",
                   "instancedat": "/project1/instance_data",
                   "material": "/project1/mat1"})
-10. update_td_node_parameters(nodePath="/project1/render1",
+10. td_set_operator_pars(path="/project1/render1",
      properties={"camera": "/project1/cam1", "geometry": "/project1/geo1",
                   "light": "/project1/light1",
-                  "resolutionw": 1920, "resolutionh": 1080})
-11. update_td_node_parameters(nodePath="/project1/cam1",
+                  "resolutionw": 1280, "resolutionh": 720})
+11. td_set_operator_pars(path="/project1/cam1",
      properties={"tz": 10})
 ```
 
@@ -369,7 +372,7 @@ Text DAT (GLSL code) -> GLSL TOP (resolution, dat reference) -> Feedback TOP
                          Level TOP (out)
 ```
 
-**Key GLSL code (write to Text DAT via execute_python_script):**
+**Key GLSL code (write to Text DAT via td_execute_python):**
 
 ```glsl
 // Gray-Scott reaction-diffusion
@@ -422,26 +425,26 @@ Movie File In TOP -> HSV Adjust TOP -> Level TOP -> Blur TOP -> Composite TOP ->
 **MCP Build Sequence:**
 
 ```
-1. create_td_node(parentPath="/project1", nodeType="moviefileinTop", nodeName="video_in")
-2. create_td_node(parentPath="/project1", nodeType="hsvadjustTop", nodeName="color")
-3. create_td_node(parentPath="/project1", nodeType="levelTop", nodeName="levels")
-4. create_td_node(parentPath="/project1", nodeType="blurTop", nodeName="blur")
-5. create_td_node(parentPath="/project1", nodeType="compositeTop", nodeName="overlay")
-6. create_td_node(parentPath="/project1", nodeType="textTop", nodeName="title")
-7. create_td_node(parentPath="/project1", nodeType="nullTop", nodeName="out")
+1. td_create_operator(parent="/project1", type="moviefileinTop", name="video_in")
+2. td_create_operator(parent="/project1", type="hsvadjustTop", name="color")
+3. td_create_operator(parent="/project1", type="levelTop", name="levels")
+4. td_create_operator(parent="/project1", type="blurTop", name="blur")
+5. td_create_operator(parent="/project1", type="compositeTop", name="overlay")
+6. td_create_operator(parent="/project1", type="textTop", name="title")
+7. td_create_operator(parent="/project1", type="nullTop", name="out")
 
-8. update_td_node_parameters(nodePath="/project1/video_in",
+8. td_set_operator_pars(path="/project1/video_in",
      properties={"file": "/path/to/video.mp4", "play": true})
-9. update_td_node_parameters(nodePath="/project1/color",
+9. td_set_operator_pars(path="/project1/color",
      properties={"hueoffset": 0.1, "saturationmult": 1.3})
-10. update_td_node_parameters(nodePath="/project1/levels",
+10. td_set_operator_pars(path="/project1/levels",
      properties={"brightness1": 1.1, "contrast": 1.2, "gamma1": 0.9})
-11. update_td_node_parameters(nodePath="/project1/blur",
+11. td_set_operator_pars(path="/project1/blur",
      properties={"sizex": 2, "sizey": 2})
-12. update_td_node_parameters(nodePath="/project1/title",
+12. td_set_operator_pars(path="/project1/title",
      properties={"text": "My Video", "fontsizex": 48, "alignx": 1, "aligny": 1})
 
-13. execute_python_script: """
+13. td_execute_python: """
 chain = ['video_in', 'color', 'levels', 'blur']
 for i in range(len(chain) - 1):
     op(f'/project1/{chain[i]}').outputConnectors[0].connect(op(f'/project1/{chain[i+1]}'))
@@ -460,7 +463,7 @@ Record the output to a file. **H.264/H.265 require a Commercial license** — us
 ```
 
 ```python
-# Build via td_exec():
+# Build via td_execute_python:
 root = op('/project1')
 
 # Always put a Null TOP before the recorder
@@ -488,24 +491,72 @@ rec.par.record = False
 - `TOP.save()` called rapidly always captures the same frame — use MovieFileOut for animation
 - See `pitfalls.md` #25-27 for full details
 
-### Pattern 8b: TD → External Pipeline (e.g., ASCII Video)
+### Pattern 8b: TD → External Pipeline (FFmpeg / Python / Post-Processing)
 
-Export TD visuals for use in another tool (ffmpeg, Python, ASCII art, etc.):
+Export TD visuals for use in another tool (ffmpeg, Python, ASCII art, etc.). This is the standard workflow when you need to composite TD output with external processing (ASCII conversion, Python shader chains, ML inference, etc.).
+
+**Step 1: Record to video in TD**
 
 ```python
-# 1. Record with MovieFileOut (MJPEG)
-rec.par.videocodec = 'mjpa'
+# Preferred: ProRes on macOS (lossless, Non-Commercial OK, ~55MB/s at 1280x720)
+rec.par.videocodec = 'prores'
+# Fallback for non-macOS: mjpa (Motion JPEG)
+# rec.par.videocodec = 'mjpa'
 rec.par.record = True
 # ... wait N seconds ...
 rec.par.record = False
-
-# 2. Extract frames with ffmpeg (outside TD)
-# ffmpeg -i /tmp/output.mov -vframes 120 /tmp/frames/frame_%06d.png
-
-# 3. Load frames in Python for processing
-# from PIL import Image
-# img = Image.open('/tmp/frames/frame_000001.png')
 ```
+
+**Step 2: Extract frames with ffmpeg**
+
+```bash
+# Extract all frames at 30fps
+ffmpeg -y -i /tmp/output.mov -vf 'fps=30' /tmp/frames/frame_%06d.png
+
+# Or extract a specific duration
+ffmpeg -y -i /tmp/output.mov -t 25 -vf 'fps=30' /tmp/frames/frame_%06d.png
+
+# Or extract specific frame range
+ffmpeg -y -i /tmp/output.mov -vf 'select=between(n\,0\,749)' -vsync vfr /tmp/frames/frame_%06d.png
+```
+
+**Step 3: Process frames in Python**
+
+```python
+from PIL import Image
+import os
+
+frames_dir = '/tmp/frames'
+output_dir = '/tmp/processed'
+os.makedirs(output_dir, exist_ok=True)
+
+for fname in sorted(os.listdir(frames_dir)):
+    if not fname.endswith('.png'):
+        continue
+    img = Image.open(os.path.join(frames_dir, fname))
+    # ... apply your processing ...
+    img.save(os.path.join(output_dir, fname))
+```
+
+**Step 4: Mux processed frames back with audio**
+
+```bash
+# Create video from processed frames + audio with fade-out
+ffmpeg -y \
+  -framerate 30 -i /tmp/processed/frame_%06d.png \
+  -i /tmp/audio.mp3 \
+  -c:v libx264 -pix_fmt yuv420p -crf 18 \
+  -c:a aac -b:a 192k \
+  -shortest \
+  -af 'afade=t=out:st=23:d=2' \
+  /tmp/final_output.mp4
+```
+
+**Key considerations:**
+- Use ProRes for the TD recording step to avoid generation loss during compositing
+- Extract at the target output framerate (not TD's render framerate)
+- For audio-synced content, analyze the audio file separately in Python (scipy FFT) to get per-frame features (rms, spectral bands, beats) and drive compositing parameters
+- Always verify TD FPS > 0 before recording (see pitfalls #37, #38)
 
 ## Data Visualization
 
@@ -524,7 +575,7 @@ Box SOP -> Geometry COMP (instancing from CHOP) -> Render TOP -> Null TOP (out)
 
 ```python
 # Script DAT code to transform data to instance positions
-execute_python_script: """
+td_execute_python: """
 source = op('/project1/data_table')
 instance = op('/project1/instance_transform')
 instance.clear()
@@ -545,21 +596,23 @@ for i in range(1, source.numRows):
 
 ### Pattern 9b: Audio-Reactive GLSL Fractal (Proven Recipe)
 
-Audio spectrum drives a GLSL fractal shader directly via a spectrum texture input. Bass thickens inner fractal lines, mids twist rotation, highs light outer edges. Tested and working on TD 099 Non-Commercial.
+Audio spectrum drives a GLSL fractal shader directly via a spectrum texture input. Bass thickens inner fractal lines, mids twist rotation, highs light outer edges. **Always run discovery (SKILL.md Step 0) before using any param names from these recipes — they may differ in your TD version.**
 
 ```
-Audio File In CHOP → Audio Spectrum CHOP → Math CHOP (boost gain=5)
-    → Resample CHOP (256 samples) → CHOP To TOP (spectrum texture, 256x1)
+Audio File In CHOP → Audio Spectrum CHOP (FFT=512, outlength=256)
+    → Math CHOP (gain=10)
+    → CHOP To TOP (spectrum texture, 256x2, dataformat=r)
                                           ↓ (input 1)
 Constant TOP (rgba32float, time) → GLSL TOP (audio-reactive shader) → Null TOP
         (input 0)                    ↑
                               Text DAT (shader code)
 ```
 
-**Build via td_exec (complete working script):**
+**Build via td_execute_python (complete working script):**
 
 ```python
-td_exec("""
+# td_execute_python script:
+td_execute_python(code="""
 import os
 root = op('/project1')
 
@@ -568,25 +621,24 @@ audio = root.create(audiofileinCHOP, 'audio_in')
 audio.par.file = '/path/to/music.mp3'
 audio.par.playmode = 0  # Locked to timeline
 
-# FFT analysis
+# FFT analysis (output length manually set to 256 bins)
 spectrum = root.create(audiospectrumCHOP, 'spectrum')
 audio.outputConnectors[0].connect(spectrum.inputConnectors[0])
+spectrum.par.fftsize = '512'
+spectrum.par.outputmenu = 'setmanually'
+spectrum.par.outlength = 256
 
-# Normalize + boost
+# THEN boost gain on the raw spectrum (NO Lag CHOP — see pitfall #34)
 math = root.create(mathCHOP, 'math_norm')
 spectrum.outputConnectors[0].connect(math.inputConnectors[0])
-math.par.gain = 5
+math.par.gain = 10
 
-# Resample to 256 bins for texture
-resample = root.create(resampleCHOP, 'resample_spec')
-math.outputConnectors[0].connect(resample.inputConnectors[0])
-resample.par.timeslice = True
-resample.par.rate = 256
-
-# Spectrum → texture (256x1 image)
+# Spectrum → texture (256x2 image — stereo, sample at y=0.25 for first channel)
 # NOTE: choptoTOP has NO input connectors — use par.chop reference!
 spec_tex = root.create(choptoTOP, 'spectrum_tex')
-spec_tex.par.chop = resample
+spec_tex.par.chop = math
+spec_tex.par.dataformat = 'r'
+spec_tex.par.layout = 'rowscropped'
 
 # Time driver (rgba32float to avoid 0-1 clamping!)
 time_drv = root.create(constantTOP, 'time_driver')
@@ -640,9 +692,9 @@ void main() {
     vec2 uv0 = uv;
     vec3 finalColor = vec3(0.0);
 
-    float bass = texture(sTD2DInputs[1], vec2(0.05, 0.0)).r;
-    float mids = texture(sTD2DInputs[1], vec2(0.25, 0.0)).r;
-    float highs = texture(sTD2DInputs[1], vec2(0.65, 0.0)).r;
+    float bass = texture(sTD2DInputs[1], vec2(0.05, 0.25)).r;
+    float mids = texture(sTD2DInputs[1], vec2(0.25, 0.25)).r;
+    float highs = texture(sTD2DInputs[1], vec2(0.65, 0.25)).r;
 
     float ca = cos(t * (0.15 + mids * 0.3));
     float sa = sin(t * (0.15 + mids * 0.3));
@@ -651,7 +703,7 @@ void main() {
     for (float i = 0.0; i < 4.0; i++) {
         uv = fract(uv * (1.4 + bass * 0.3)) - 0.5;
         float d = length(uv) * exp(-length(uv0));
-        float freq = texture(sTD2DInputs[1], vec2(clamp(d*0.5, 0.0, 1.0), 0.0)).r;
+        float freq = texture(sTD2DInputs[1], vec2(clamp(d*0.5, 0.0, 1.0), 0.25)).r;
         vec3 col = palette(length(uv0) + i * 0.4 + t * 0.35);
         d = sin(d * (7.0 + bass * 4.0) + t * 1.5) / 8.0;
         d = abs(d);
@@ -769,7 +821,7 @@ Multi Touch In DAT -> Script CHOP (parse touches) -> [export to visual params]
 
 ```python
 # Normalize mouse position to 0-1 range
-execute_python_script: """
+td_execute_python: """
 op('/project1/noise1').par.offsetx.expr = "op('/project1/mouse_norm')['tx']"
 op('/project1/noise1').par.offsety.expr = "op('/project1/mouse_norm')['ty']"
 """
@@ -782,12 +834,12 @@ OSC In CHOP (port 7000) -> Select CHOP (pick channels) -> [export to visual para
 ```
 
 ```
-1. create_td_node(parentPath="/project1", nodeType="oscinChop", nodeName="osc_in")
-2. update_td_node_parameters(nodePath="/project1/osc_in", properties={"port": 7000})
+1. td_create_operator(parent="/project1", type="oscinChop", name="osc_in")
+2. td_set_operator_pars(path="/project1/osc_in", properties={"port": 7000})
 
 # OSC messages like /frequency 440 will appear as channel "frequency" with value 440
 # Export to any parameter:
-3. execute_python_script: "op('/project1/noise1').par.period.expr = \"op('/project1/osc_in')['frequency']\""
+3. td_execute_python: "op('/project1/noise1').par.period.expr = \"op('/project1/osc_in')['frequency']\""
 ```
 
 ### Pattern 14: MIDI Control (DJ/VJ)
@@ -815,12 +867,12 @@ Source C (camera) --------+
 
 ```python
 # MIDI CC1 controls which source is active (0-127 -> 0-2)
-execute_python_script: """
+td_execute_python: """
 op('/project1/switch1').par.index.expr = "int(op('/project1/midi_in')['cc1'] / 42)"
 """
 
 # MIDI CC2 controls crossfade between current and next
-execute_python_script: """
+td_execute_python: """
 op('/project1/cross1').par.cross.expr = "op('/project1/midi_in')['cc2'] / 127.0"
 """
 ```
@@ -851,7 +903,7 @@ Script CHOP (cue state: current_cue, progress, next_cue_trigger)
 ```
 
 ```python
-execute_python_script: """
+td_execute_python: """
 # Simple cue system
 cue_table = op('/project1/cue_list')
 cue_state = op('/project1/cue_state')
@@ -900,7 +952,7 @@ WebSocket DAT -> Script DAT (parse JSON messages) -> [update visuals]
 ```
 
 ```python
-execute_python_script: """
+td_execute_python: """
 ws = op('/project1/websocket1')
 ws.par.address = 'ws://localhost:8080'
 ws.par.active = True

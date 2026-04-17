@@ -1,152 +1,114 @@
 #!/usr/bin/env bash
-# TouchDesigner MCP Setup Verification Script
-# Checks all prerequisites and guides configuration
-
+# setup.sh — Automated setup for twozero MCP plugin for TouchDesigner
+# Idempotent: safe to run multiple times.
 set -euo pipefail
 
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m'
+GREEN='\033[0;32m'; RED='\033[0;31m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
+OK="${GREEN}✔${NC}"; FAIL="${RED}✘${NC}"; WARN="${YELLOW}⚠${NC}"
 
-pass() { echo -e "  ${GREEN}✓${NC} $1"; }
-fail() { echo -e "  ${RED}✗${NC} $1"; }
-warn() { echo -e "  ${YELLOW}!${NC} $1"; }
-info() { echo -e "  ${BLUE}→${NC} $1"; }
+TWOZERO_URL="https://www.404zero.com/pisang/twozero.tox"
+TOX_PATH="$HOME/Downloads/twozero.tox"
+HERMES_CFG="$HOME/.hermes/config.yaml"
+MCP_PORT=40404
+MCP_ENDPOINT="http://localhost:${MCP_PORT}/mcp"
 
-echo ""
-echo "TouchDesigner MCP Setup Check"
-echo "=============================="
-echo ""
+manual_steps=()
 
-ERRORS=0
+echo -e "\n${CYAN}═══ twozero MCP for TouchDesigner — Setup ═══${NC}\n"
 
-# 1. Check Node.js
-echo "1. Node.js"
-if command -v node &>/dev/null; then
-    NODE_VER=$(node --version 2>/dev/null || echo "unknown")
-    MAJOR=$(echo "$NODE_VER" | sed 's/^v//' | cut -d. -f1)
-    if [ "$MAJOR" -ge 18 ] 2>/dev/null; then
-        pass "Node.js $NODE_VER (>= 18 required)"
+# ── 1. Check if TouchDesigner is running ──
+if pgrep -if "TouchDesigner" >/dev/null 2>&1; then
+    echo -e " ${OK} TouchDesigner is running"
+    td_running=true
+else
+    echo -e " ${WARN} TouchDesigner is not running"
+    td_running=false
+fi
+
+# ── 2. Ensure twozero.tox exists ──
+if [[ -f "$TOX_PATH" ]]; then
+    echo -e " ${OK} twozero.tox already exists at ${TOX_PATH}"
+else
+    echo -e " ${WARN} twozero.tox not found — downloading..."
+    if curl -fSL -o "$TOX_PATH" "$TWOZERO_URL" 2>/dev/null; then
+        echo -e " ${OK} Downloaded twozero.tox to ${TOX_PATH}"
     else
-        fail "Node.js $NODE_VER (>= 18 required, please upgrade)"
-        ERRORS=$((ERRORS + 1))
+        echo -e " ${FAIL} Failed to download twozero.tox from ${TWOZERO_URL}"
+        echo "       Please download manually and place at ${TOX_PATH}"
+        manual_steps+=("Download twozero.tox from ${TWOZERO_URL} to ${TOX_PATH}")
+    fi
+fi
+
+# ── 3. Ensure Hermes config has twozero_td MCP entry ──
+if [[ ! -f "$HERMES_CFG" ]]; then
+    echo -e " ${FAIL} Hermes config not found at ${HERMES_CFG}"
+    manual_steps+=("Create ${HERMES_CFG} with twozero_td MCP server entry")
+elif grep -q 'twozero_td' "$HERMES_CFG" 2>/dev/null; then
+    echo -e " ${OK} twozero_td MCP entry exists in Hermes config"
+else
+    echo -e " ${WARN} Adding twozero_td MCP entry to Hermes config..."
+    python3 -c "
+import yaml, sys, copy
+
+cfg_path = '$HERMES_CFG'
+with open(cfg_path, 'r') as f:
+    cfg = yaml.safe_load(f) or {}
+
+if 'mcp_servers' not in cfg:
+    cfg['mcp_servers'] = {}
+
+if 'twozero_td' not in cfg['mcp_servers']:
+    cfg['mcp_servers']['twozero_td'] = {
+        'url': '${MCP_ENDPOINT}',
+        'timeout': 120,
+        'connect_timeout': 60
+    }
+    with open(cfg_path, 'w') as f:
+        yaml.dump(cfg, f, default_flow_style=False, sort_keys=False)
+    print('added')
+else:
+    print('exists')
+" 2>/dev/null && echo -e " ${OK} twozero_td MCP entry added to config" \
+              || { echo -e " ${FAIL} Could not update config (is PyYAML installed?)"; \
+                   manual_steps+=("Add twozero_td MCP entry to ${HERMES_CFG} manually"); }
+    manual_steps+=("Restart Hermes session to pick up config change")
+fi
+
+# ── 4. Test if MCP port is responding ──
+if nc -z 127.0.0.1 "$MCP_PORT" 2>/dev/null; then
+    echo -e " ${OK} Port ${MCP_PORT} is open"
+
+    # ── 5. Verify MCP endpoint responds ──
+    resp=$(curl -s --max-time 3 "$MCP_ENDPOINT" 2>/dev/null || true)
+    if [[ -n "$resp" ]]; then
+        echo -e " ${OK} MCP endpoint responded at ${MCP_ENDPOINT}"
+    else
+        echo -e " ${WARN} Port open but MCP endpoint returned empty response"
+        manual_steps+=("Verify MCP is enabled in twozero settings")
     fi
 else
-    fail "Node.js not found"
-    info "Install: https://nodejs.org/ or 'brew install node'"
-    ERRORS=$((ERRORS + 1))
-fi
-
-# 2. Check npm/npx
-echo "2. npm/npx"
-if command -v npx &>/dev/null; then
-    NPX_VER=$(npx --version 2>/dev/null || echo "unknown")
-    pass "npx $NPX_VER"
-else
-    fail "npx not found (usually comes with Node.js)"
-    ERRORS=$((ERRORS + 1))
-fi
-
-# 3. Check MCP Python package
-echo "3. MCP Python package"
-HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
-VENV_PYTHON=""
-
-# Try to find the Hermes venv Python
-if [ -f "$HERMES_HOME/hermes-agent/.venv/bin/python" ]; then
-    VENV_PYTHON="$HERMES_HOME/hermes-agent/.venv/bin/python"
-elif [ -f "$HERMES_HOME/hermes-agent/venv/bin/python" ]; then
-    VENV_PYTHON="$HERMES_HOME/hermes-agent/venv/bin/python"
-fi
-
-if [ -n "$VENV_PYTHON" ]; then
-    if $VENV_PYTHON -c "import mcp" 2>/dev/null; then
-        MCP_VER=$($VENV_PYTHON -c "import importlib.metadata; print(importlib.metadata.version('mcp'))" 2>/dev/null || echo "installed")
-        pass "mcp package ($MCP_VER) in Hermes venv"
+    echo -e " ${WARN} Port ${MCP_PORT} is not open"
+    if [[ "$td_running" == true ]]; then
+        manual_steps+=("In TD: drag twozero.tox into network editor → click Install")
+        manual_steps+=("Enable MCP: twozero icon → Settings → mcp → 'auto start MCP' → Yes")
     else
-        fail "mcp package not installed in Hermes venv"
-        info "Install: $VENV_PYTHON -m pip install mcp"
-        ERRORS=$((ERRORS + 1))
+        manual_steps+=("Launch TouchDesigner")
+        manual_steps+=("Drag twozero.tox into the TD network editor and click Install")
+        manual_steps+=("Enable MCP: twozero icon → Settings → mcp → 'auto start MCP' → Yes")
     fi
+fi
+
+# ── Status Report ──
+echo -e "\n${CYAN}═══ Status Report ═══${NC}\n"
+
+if [[ ${#manual_steps[@]} -eq 0 ]]; then
+    echo -e " ${OK} ${GREEN}Fully configured! twozero MCP is ready to use.${NC}\n"
+    exit 0
 else
-    warn "Could not find Hermes venv — check mcp package manually"
-fi
-
-# 4. Check TouchDesigner
-echo "4. TouchDesigner"
-TD_FOUND=false
-
-# macOS
-if [ -d "/Applications/TouchDesigner.app" ]; then
-    TD_FOUND=true
-    pass "TouchDesigner found at /Applications/TouchDesigner.app"
-fi
-
-# Linux (common install locations)
-if command -v TouchDesigner &>/dev/null; then
-    TD_FOUND=true
-    pass "TouchDesigner found in PATH"
-fi
-
-if [ -d "$HOME/TouchDesigner" ]; then
-    TD_FOUND=true
-    pass "TouchDesigner found at ~/TouchDesigner"
-fi
-
-if [ "$TD_FOUND" = false ]; then
-    warn "TouchDesigner not detected (may be installed elsewhere)"
-    info "Download from: https://derivative.ca/download"
-    info "Free Non-Commercial license available"
-fi
-
-# 5. Check TD WebServer DAT reachability
-echo "5. TouchDesigner WebServer DAT"
-TD_URL="${TD_API_URL:-http://127.0.0.1:9981}"
-if command -v curl &>/dev/null; then
-    HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 3 "$TD_URL/api/td/server/td" 2>/dev/null || echo "000")
-    if [ "$HTTP_CODE" = "200" ]; then
-        TD_INFO=$(curl -s --connect-timeout 3 "$TD_URL/api/td/server/td" 2>/dev/null || echo "{}")
-        pass "TD WebServer DAT responding at $TD_URL"
-        info "Response: $TD_INFO"
-    elif [ "$HTTP_CODE" = "000" ]; then
-        warn "Cannot reach TD WebServer DAT at $TD_URL"
-        info "Make sure TouchDesigner is running with mcp_webserver_base.tox imported"
-    else
-        warn "TD WebServer DAT returned HTTP $HTTP_CODE at $TD_URL"
-    fi
-else
-    warn "curl not found — cannot test TD connection"
-fi
-
-# 6. Check Hermes config
-echo "6. Hermes MCP config"
-CONFIG_FILE="$HERMES_HOME/config.yaml"
-if [ -f "$CONFIG_FILE" ]; then
-    if grep -q "touchdesigner" "$CONFIG_FILE" 2>/dev/null; then
-        pass "TouchDesigner MCP server configured in config.yaml"
-    else
-        warn "No 'touchdesigner' entry found in mcp_servers config"
-        info "Add a touchdesigner entry under mcp_servers: in $CONFIG_FILE"
-        info "See references/mcp-tools.md for the configuration block"
-    fi
-else
-    warn "No Hermes config.yaml found at $CONFIG_FILE"
-fi
-
-# Summary
-echo ""
-echo "=============================="
-if [ $ERRORS -eq 0 ]; then
-    echo -e "${GREEN}All critical checks passed!${NC}"
+    echo -e " ${WARN} ${YELLOW}Manual steps remaining:${NC}\n"
+    for i in "${!manual_steps[@]}"; do
+        echo -e "   $((i+1)). ${manual_steps[$i]}"
+    done
     echo ""
-    echo "Next steps:"
-    echo "  1. Open TouchDesigner and import mcp_webserver_base.tox"
-    echo "  2. Add the MCP server config to Hermes (see references/mcp-tools.md)"
-    echo "  3. Restart Hermes and test: 'Get TouchDesigner server info'"
-else
-    echo -e "${RED}$ERRORS critical issue(s) found.${NC}"
-    echo "Fix the issues above, then re-run this script."
+    exit 1
 fi
-echo ""

@@ -1,278 +1,339 @@
 ---
 name: touchdesigner
-description: "Control a running TouchDesigner instance programmatically — create operators, set parameters, wire connections, execute Python, build real-time visuals. Covers: GLSL shaders, audio-reactive, generative art, video processing, instancing, and live performance."
-version: 3.0.0
+description: "Control a running TouchDesigner instance via twozero MCP — create operators, set parameters, wire connections, execute Python, build real-time visuals. 36 native tools."
+version: 1.0.0
 author: Hermes Agent
 license: MIT
 metadata:
   hermes:
-    tags: [TouchDesigner, MCP, creative-coding, real-time-visuals, generative-art, audio-reactive, VJ, installation, GLSL]
+    tags: [TouchDesigner, MCP, twozero, creative-coding, real-time-visuals, generative-art, audio-reactive, VJ, installation, GLSL]
     related_skills: [native-mcp, ascii-video, manim-video, hermes-video]
-    security:
-      allow_network: true
-      allow_install: true
-      allow_config_write: true
+
 ---
 
-# TouchDesigner Integration
+# TouchDesigner Integration (twozero MCP)
+
+## CRITICAL RULES
+
+1. **NEVER guess parameter names.** Call `td_get_par_info` for the op type FIRST. Your training data is wrong for TD 2025.32.
+2. **If `tdAttributeError` fires, STOP.** Call `td_get_operator_info` on the failing node before continuing.
+3. **NEVER hardcode absolute paths** in script callbacks. Use `me.parent()` / `scriptOp.parent()`.
+4. **Prefer native MCP tools over td_execute_python.** Use `td_create_operator`, `td_set_operator_pars`, `td_get_errors` etc. Only fall back to `td_execute_python` for complex multi-step logic.
+5. **Call `td_get_hints` before building.** It returns patterns specific to the op type you're working with.
 
 ## Architecture
 
-Hermes Agent -> HTTP REST (curl) -> TD WebServer DAT (port 9981) -> TD Python environment.
+```
+Hermes Agent -> MCP (Streamable HTTP) -> twozero.tox (port 40404) -> TD Python
+```
 
-The agent controls a **running TouchDesigner instance** via a REST API on port 9981. It does NOT generate .toe files from scratch.
+36 native tools. Free plugin (no payment/license — confirmed April 2026).
+Context-aware (knows selected OP, current network).
+Hub health check: `GET http://localhost:40404/mcp` returns JSON with instance PID, project name, TD version.
 
-## First-Time Setup (one-time, persists across sessions)
+## Setup (Automated)
 
-### 1. Verify TD is running and check for existing API
+Run the setup script to handle everything:
 
 ```bash
-lsof -i :9981 -P -n | grep LISTEN   # TD listening?
-curl -s --max-time 5 http://127.0.0.1:9981/api/td/server/td  # API working?
+bash ~/.hermes/skills/creative/touchdesigner/scripts/setup.sh
 ```
 
-If HTTP 200 + JSON → skip to **Discovery**. Setup is already done.
+The script will:
+1. Check if TD is running
+2. Download twozero.tox if not already cached
+3. Add `twozero_td` MCP server to Hermes config (if missing)
+4. Test the MCP connection on port 40404
+5. Report what manual steps remain (drag .tox into TD, enable MCP toggle)
 
-### 2. If no API: deploy the custom handler
+### Manual steps (one-time, cannot be automated)
 
-The user must paste ONE line into TD Textport (Alt+T / Dialogs > Textport and DATs):
+1. **Drag `~/Downloads/twozero.tox` into the TD network editor** → click Install
+2. **Enable MCP:** click twozero icon → Settings → mcp → "auto start MCP" → Yes
+3. **Restart Hermes session** to pick up the new MCP server
 
-```
-exec(open('PATH_TO_SKILL/scripts/custom_api_handler.py').read())
-```
-
-Copy this to their clipboard with `pbcopy`. This creates a WebServer DAT + callback handler pair in `/project1` that implements the REST API. No external dependencies.
-
-**Why not the official .tox?** The `mcp_webserver_base.tox` from 8beeeaaat/touchdesigner-mcp frequently fails to import its Python modules after drag-drop (relative path resolution issue). Our custom handler is self-contained and more reliable. See `references/pitfalls.md` #1-2.
-
-### 3. Save the project to persist the API
-
-After the handler is running, save the project so the API auto-starts on every future TD launch:
-
-```python
-td_exec("project.save(os.path.expanduser('~/Documents/HermesAgent.toe'))")
-```
-
-TD auto-opens the last saved project on launch. From now on, `open /Applications/TouchDesigner.app` → port 9981 is live → agent can connect immediately.
-
-To launch TD with this project explicitly:
+After setup, verify:
 ```bash
-open /Applications/TouchDesigner.app ~/Documents/HermesAgent.toe
+nc -z 127.0.0.1 40404 && echo "twozero MCP: READY"
 ```
 
-### 4. Optional: Configure Hermes MCP
+## Environment Notes
 
-Add under `mcp_servers:` in the user's Hermes config:
-```yaml
-touchdesigner:
-  command: npx
-  args: ["-y", "touchdesigner-mcp-server@latest"]
-  env:
-    TD_API_URL: "http://127.0.0.1:9981"
-  timeout: 120
-```
-
-This is optional — the agent works fully via `curl` to the REST API using `execute_code`. MCP tools are a convenience layer.
-
-## Talking to TD (the td_exec pattern)
-
-All communication uses this pattern in `execute_code`:
-
-```python
-import json, shlex
-from hermes_tools import terminal
-
-API = "http://127.0.0.1:9981"
-def td_exec(script):
-    payload = json.dumps({"script": script})
-    cmd = f"curl -s --max-time 15 -X POST -H 'Content-Type: application/json' -d {shlex.quote(payload)} '{API}/api/td/server/exec'"
-    r = terminal(cmd, timeout=20)
-    return json.loads(r['output'])
-
-# Returns: {"result": <value>, "stdout": "...", "stderr": "..."}
-```
-
-For large GLSL shaders: write to a temp file, then `td_exec("op('...').text = open('/tmp/shader.glsl').read()")`.
+- **Non-Commercial TD** caps resolution at 1280×1280. Use `outputresolution = 'custom'` and set width/height explicitly.
+- **Codecs:** `prores` (preferred on macOS) or `mjpa` as fallback. H.264/H.265/AV1 require a Commercial license.
+- Always call `td_get_par_info` before setting params — names vary by TD version (see CRITICAL RULES #1).
 
 ## Workflow
 
-### Step 0: Discovery (MANDATORY — never skip)
+### Step 0: Discover (before building anything)
 
-**Never hardcode parameter names.** They change between TD versions. Run this first:
-
-```python
-td_exec("""
-import sys
-info = {'version': str(app.version), 'platform': sys.platform}
-root = op('/project1')
-for name, optype in [('glslTOP', glslTOP), ('constantTOP', constantTOP),
-                      ('blurTOP', blurTOP), ('textTOP', textTOP),
-                      ('levelTOP', levelTOP), ('compositeTOP', compositeTOP),
-                      ('transformTOP', transformTOP), ('feedbackTOP', feedbackTOP),
-                      ('windowCOMP', windowCOMP)]:
-    n = root.create(optype, '_d_' + name)
-    kw = ['color','size','font','dat','alpha','opacity','resolution','text',
-          'extend','operand','top','pixel','format','win','type']
-    info[name] = [p.name for p in n.pars() if any(k in p.name.lower() for k in kw)]
-    n.destroy()
-result = info
-""")
+```
+Call td_get_par_info with op_type for each type you plan to use.
+Call td_get_hints with the topic you're building (e.g. "glsl", "audio reactive", "feedback").
+Call td_get_focus to see where the user is and what's selected.
+Call td_get_network to see what already exists.
 ```
 
-Use the returned param names for ALL subsequent calls. Store them in your session context.
+No temp nodes, no cleanup. This replaces the old discovery dance entirely.
 
 ### Step 1: Clean + Build
 
-Build the entire network in ONE `td_exec` call (batching avoids round-trip overhead and ensures TD advances frames between calls):
+**IMPORTANT: Split cleanup and creation into SEPARATE MCP calls.** Destroying and recreating same-named nodes in one `td_execute_python` script causes "Invalid OP object" errors. See pitfalls #10b.
+
+Use `td_create_operator` for each node (handles viewport positioning automatically):
+
+```
+td_create_operator(type="noiseTOP", parent="/project1", name="bg", parameters={"resolutionw": 1280, "resolutionh": 720})
+td_create_operator(type="levelTOP", parent="/project1", name="brightness")
+td_create_operator(type="nullTOP", parent="/project1", name="out")
+```
+
+For bulk creation or wiring, use `td_execute_python`:
 
 ```python
-td_exec("""
+# td_execute_python script:
 root = op('/project1')
-keep = {'api_server', 'api_handler'}
-for child in list(root.children):  # snapshot before destroying
-    if child.name not in keep and child.valid:
-        child.destroy()
-
-# Create nodes, set params (using discovered names), wire, verify
-...
-result = {'nodes': len(list(root.children)), 'errors': [...]}
-""")
+nodes = []
+for name, optype in [('bg', noiseTOP), ('fx', levelTOP), ('out', nullTOP)]:
+    n = root.create(optype, name)
+    nodes.append(n.path)
+# Wire chain
+for i in range(len(nodes)-1):
+    op(nodes[i]).outputConnectors[0].connect(op(nodes[i+1]).inputConnectors[0])
+result = {'created': nodes}
 ```
 
-### Step 2: Wire connections
+### Step 2: Set Parameters
 
-```python
-gl.outputConnectors[0].connect(comp.inputConnectors[0])
+Prefer the native tool (validates params, won't crash):
+
+```
+td_set_operator_pars(path="/project1/bg", parameters={"roughness": 0.6, "monochrome": true})
 ```
 
-### Step 3: Verify
+For expressions or modes, use `td_execute_python`:
 
 ```python
-for c in list(root.children):
-    e = c.errors(); w = c.warnings()
-    if e: print(c.name, 'ERR:', e)
+op('/project1/time_driver').par.colorr.expr = "absTime.seconds % 1000.0"
 ```
 
-### Step 4: Display
+### Step 3: Wire
+
+Use `td_execute_python` — no native wire tool exists:
 
 ```python
-win = root.create(windowCOMP, 'display')
-win.par.winop = out.path    # discovered param name
+op('/project1/bg').outputConnectors[0].connect(op('/project1/fx').inputConnectors[0])
+```
+
+### Step 4: Verify
+
+```
+td_get_errors(path="/project1", recursive=true)
+td_get_perf()
+td_get_operator_info(path="/project1/out", detail="full")
+```
+
+### Step 5: Display / Capture
+
+```
+td_get_screenshot(path="/project1/out")
+```
+
+Or open a window via script:
+
+```python
+win = op('/project1').create(windowCOMP, 'display')
+win.par.winop = op('/project1/out').path
 win.par.winw = 1280; win.par.winh = 720
 win.par.winopen.pulse()
 ```
 
+## MCP Tool Quick Reference
+
+**Core (use these most):**
+| Tool | What |
+|------|------|
+| `td_execute_python` | Run arbitrary Python in TD. Full API access. |
+| `td_create_operator` | Create node with params + auto-positioning |
+| `td_set_operator_pars` | Set params safely (validates, won't crash) |
+| `td_get_operator_info` | Inspect one node: connections, params, errors |
+| `td_get_operators_info` | Inspect multiple nodes in one call |
+| `td_get_network` | See network structure at a path |
+| `td_get_errors` | Find errors/warnings recursively |
+| `td_get_par_info` | Get param names for an OP type (replaces discovery) |
+| `td_get_hints` | Get patterns/tips before building |
+| `td_get_focus` | What network is open, what's selected |
+
+**Read/Write:**
+| Tool | What |
+|------|------|
+| `td_read_dat` | Read DAT text content |
+| `td_write_dat` | Write/patch DAT content |
+| `td_read_chop` | Read CHOP channel values |
+| `td_read_textport` | Read TD console output |
+
+**Visual:**
+| Tool | What |
+|------|------|
+| `td_get_screenshot` | Capture one OP viewer to file |
+| `td_get_screenshots` | Capture multiple OPs at once |
+| `td_get_screen_screenshot` | Capture actual screen via TD |
+| `td_navigate_to` | Jump network editor to an OP |
+
+**Search:**
+| Tool | What |
+|------|------|
+| `td_find_op` | Find ops by name/type across project |
+| `td_search` | Search code, expressions, string params |
+
+**System:**
+| Tool | What |
+|------|------|
+| `td_get_perf` | Performance profiling (FPS, slow ops) |
+| `td_list_instances` | List all running TD instances |
+| `td_get_docs` | In-depth docs on a TD topic |
+| `td_agents_md` | Read/write per-COMP markdown docs |
+| `td_reinit_extension` | Reload extension after code edit |
+| `td_clear_textport` | Clear console before debug session |
+
+**Input Automation:**
+| Tool | What |
+|------|------|
+| `td_input_execute` | Send mouse/keyboard to TD |
+| `td_input_status` | Poll input queue status |
+| `td_input_clear` | Stop input automation |
+| `td_op_screen_rect` | Get screen coords of a node |
+| `td_click_screen_point` | Click a point in a screenshot |
+
+See `references/mcp-tools.md` for full parameter schemas.
+
 ## Key Implementation Rules
 
-**Always clean safely:** `list(root.children)` before iterating + `child.valid` check.
-
-**GLSL time:** No `uTDCurrentTime` in TD 099. Feed time via 1x1 Constant TOP.
-**CRITICAL: must use `rgba32float` format** — the default 8-bit format clamps values to 0-1, so `absTime.seconds % 1000.0` becomes 1.0 and the shader appears frozen:
+**GLSL time:** No `uTDCurrentTime` in GLSL TOP. Use the Values page:
 ```python
-t = root.create(constantTOP, 'time_driver')
-t.par.format = 'rgba32float'  # ← REQUIRED or time is stuck at 1.0
-t.par.outputresolution = 'custom'
-t.par.resolutionw = 1
-t.par.resolutionh = 1
-t.par.colorr.expr = "absTime.seconds % 1000.0"
-t.par.colorg.expr = "int(absTime.seconds / 1000.0)"
-t.outputConnectors[0].connect(glsl.inputConnectors[0])
-# In GLSL: vec4 td = texture(sTD2DInputs[0], vec2(.5)); float t = td.r + td.g*1000.;
+# Call td_get_par_info(op_type="glslTOP") first to confirm param names
+td_set_operator_pars(path="/project1/shader", parameters={"value0name": "uTime"})
+# Then set expression via script:
+# op('/project1/shader').par.value0.expr = "absTime.seconds"
+# In GLSL: uniform float uTime;
 ```
 
-**Feedback TOP:** Use `top` parameter reference (not direct input wire). The "Not enough sources" error resolves after first cook. The "Cook dependency loop" warning is expected.
+Fallback: Constant TOP in `rgba32float` format (8-bit clamps to 0-1, freezing the shader).
+
+**Feedback TOP:** Use `top` parameter reference, not direct input wire. "Not enough sources" resolves after first cook. "Cook dependency loop" warning is expected.
 
 **Resolution:** Non-Commercial caps at 1280×1280. Use `outputresolution = 'custom'`.
 
-**Large shaders:** Write GLSL to `/tmp/file.glsl`, then `td_exec("op('shader').text = open('/tmp/file.glsl').read()")`.
+**Large shaders:** Write GLSL to `/tmp/file.glsl`, then use `td_write_dat` or `td_execute_python` to load.
 
-**WebServer DAT quirk:** Response body goes in `response['data']` not `response['body']`. Request POST body comes as bytes in `request['data']`.
+**Vertex/Point access (TD 2025.32):** `point.P[0]`, `point.P[1]`, `point.P[2]` — NOT `.x`, `.y`, `.z`.
+
+**Extensions:** `ext0object` format is `"op('./datName').module.ClassName(me)"` in CONSTANT mode. After editing extension code with `td_write_dat`, call `td_reinit_extension`.
+
+**Script callbacks:** ALWAYS use relative paths via `me.parent()` / `scriptOp.parent()`.
+
+**Cleaning nodes:** Always `list(root.children)` before iterating + `child.valid` check.
 
 ## Recording / Exporting Video
 
-To capture TD output as video or image sequence for external use (e.g., ASCII video pipeline):
-
-### Movie Recording (recommended)
-
 ```python
-# Put a Null TOP before the recorder (official best practice)
+# via td_execute_python:
+root = op('/project1')
 rec = root.create(moviefileoutTOP, 'recorder')
-null_out.outputConnectors[0].connect(rec.inputConnectors[0])
-
+op('/project1/out').outputConnectors[0].connect(rec.inputConnectors[0])
 rec.par.type = 'movie'
 rec.par.file = '/tmp/output.mov'
-rec.par.videocodec = 'mjpa'  # Motion JPEG — works on Non-Commercial
-
-# Start/stop recording (par.record is a toggle, NOT .record() method)
+rec.par.videocodec = 'prores'  # Apple ProRes — NOT license-restricted on macOS
 rec.par.record = True   # start
-# ... wait ...
-rec.par.record = False  # stop
+# rec.par.record = False  # stop (call separately later)
 ```
 
-**H.264/H.265 require a Commercial license** — use `mjpa` (Motion JPEG) or `prores` on Non-Commercial. Extract frames afterward with ffmpeg if needed:
-```bash
-ffmpeg -i /tmp/output.mov -vframes 120 /tmp/frames/frame_%06d.png
-```
+H.264/H.265/AV1 need Commercial license. Use `prores` on macOS or `mjpa` as fallback.
+Extract frames: `ffmpeg -i /tmp/output.mov -vframes 120 /tmp/frames/frame_%06d.png`
 
-### Image Sequence Export
+**TOP.save() is useless for animation** — captures same GPU texture every time. Always use MovieFileOut.
 
-```python
-rec.par.type = 'imagesequence'
-rec.par.imagefiletype = 'png'
-rec.par.file.expr = "'/tmp/frames/out' + me.fileSuffix"  # fileSuffix is REQUIRED
-rec.par.record = True
-```
+### Before Recording: Checklist
 
-### Pitfalls
-
-- **Race condition:** When setting `par.file` and starting recording in the same script, use `run("...", delayFrames=2)` so the file path is applied before recording begins.
-- **TOP.save() is useless for animation:** Calling `op('null1').save(path)` in a loop or rapid API calls captures the same GPU texture every time — TD doesn't cook new frames between save calls. Always use MovieFileOut for animated output.
-- See `references/pitfalls.md` #25-27 for full details.
+1. **Verify FPS > 0** via `td_get_perf`. If FPS=0 the recording will be empty. See pitfalls #37-38.
+2. **Verify shader output is not black** via `td_get_screenshot`. Black output = shader error or missing input. See pitfalls #7, #39.
+3. **If recording with audio:** cue audio to start first, then delay recording by 3 frames. See pitfalls #18.
+4. **Set output path before starting record** — setting both in the same script can race.
 
 ## Audio-Reactive GLSL (Proven Recipe)
 
-Complete chain for music-driven visuals: AudioFileIn → AudioSpectrum → Math (boost) → Resample (256) → CHOP To TOP → GLSL TOP (spectrum sampled per-pixel). See `references/network-patterns.md` Pattern 3b for the full working recipe with shader code.
+### Correct signal chain (tested April 2026)
 
-## Audio-Reactive Visuals
-
-The most powerful TD workflow for the agent: play an audio file, analyze its spectrum, and drive a GLSL shader in real-time. The agent builds the entire signal chain programmatically.
-
-**Signal chain:**
 ```
-AudioFileIn CHOP → AudioSpectrum CHOP → Math CHOP (gain=5)
-  → Resample CHOP (256) → CHOP To TOP (spectrum texture)
-                                  ↓ (GLSL input 1)
-  Constant TOP (rgba32float, time) → GLSL TOP → Null TOP → MovieFileOut
-        (input 0)
+AudioFileIn CHOP (playmode=sequential)
+  → AudioSpectrum CHOP (FFT=512, outputmenu=setmanually, outlength=256, timeslice=ON)
+  → Math CHOP (gain=10)
+  → CHOP to TOP (dataformat=r, layout=rowscropped)
+  → GLSL TOP input 1 (spectrum texture, 256x2)
+
+Constant TOP (rgba32float, time) → GLSL TOP input 0
+GLSL TOP → Null TOP → MovieFileOut
 ```
 
-**Key technique:** The spectrum becomes a 256×1 texture. In GLSL, `texture(sTD2DInputs[1], vec2(x, 0.0)).r` samples frequency at position x (0=bass, 1=treble). This lets the shader react per-pixel to different frequency bands.
+### Critical audio-reactive rules (empirically verified)
 
-**Smoothing is critical:** Raw FFT jitters. Use `Math CHOP` gain to boost weak signal, then the GLSL shader's own temporal integration (via feedback or time-smoothed params) handles visual smoothing.
+1. **TimeSlice must stay ON** for AudioSpectrum. OFF = processes entire audio file → 24000+ samples → CHOP to TOP overflow.
+2. **Set Output Length manually** to 256 via `outputmenu='setmanually'` and `outlength=256`. Default outputs 22050 samples.
+3. **DO NOT use Lag CHOP for spectrum smoothing.** Lag CHOP operates in timeslice mode and expands 256 samples to 2400+, averaging all values to near-zero (~1e-06). The shader receives no usable data. This was the #1 audio sync failure in testing.
+4. **DO NOT use Filter CHOP either** — same timeslice expansion problem with spectrum data.
+5. **Smoothing belongs in the GLSL shader** if needed, via temporal lerp with a feedback texture: `mix(prevValue, newValue, 0.3)`. This gives frame-perfect sync with zero pipeline latency.
+6. **CHOP to TOP dataformat = 'r'**, layout = 'rowscropped'. Spectrum output is 256x2 (stereo). Sample at y=0.25 for first channel.
+7. **Math gain = 10** (not 5). Raw spectrum values are ~0.19 in bass range. Gain of 10 gives usable ~5.0 for the shader.
+8. **No Resample CHOP needed.** Control output size via AudioSpectrum's `outlength` param directly.
 
-See `references/network-patterns.md` Pattern 9b for the complete build script + shader code.
+### GLSL spectrum sampling
+
+```glsl
+// Input 0 = time (1x1 rgba32float), Input 1 = spectrum (256x2)
+float iTime = texture(sTD2DInputs[0], vec2(0.5)).r;
+
+// Sample multiple points per band and average for stability:
+// NOTE: y=0.25 for first channel (stereo texture is 256x2, first row center is 0.25)
+float bass = (texture(sTD2DInputs[1], vec2(0.02, 0.25)).r +
+              texture(sTD2DInputs[1], vec2(0.05, 0.25)).r) / 2.0;
+float mid  = (texture(sTD2DInputs[1], vec2(0.2, 0.25)).r +
+              texture(sTD2DInputs[1], vec2(0.35, 0.25)).r) / 2.0;
+float hi   = (texture(sTD2DInputs[1], vec2(0.6, 0.25)).r +
+              texture(sTD2DInputs[1], vec2(0.8, 0.25)).r) / 2.0;
+```
+
+See `references/network-patterns.md` for complete build scripts + shader code.
 
 ## Operator Quick Reference
 
-| Family | Color | Examples | Suffix |
-|--------|-------|----------|--------|
-| TOP | Purple | noiseTop, glslTop, compositeTop, levelTop, blurTop, textTop, nullTop, feedbackTop, renderTop | TOP |
-| CHOP | Green | audiofileinChop, audiospectrumChop, mathChop, lfoChop, constantChop | CHOP |
-| SOP | Blue | gridSop, sphereSop, transformSop, noiseSop | SOP |
-| DAT | White | textDat, tableDat, scriptDat, webserverDAT | DAT |
-| MAT | Yellow | phongMat, pbrMat, glslMat, constMat | MAT |
-| COMP | Gray | geometryComp, containerComp, cameraComp, lightComp, windowCOMP | COMP |
+| Family | Color | Python class / MCP type | Suffix |
+|--------|-------|-------------|--------|
+| TOP | Purple | noiseTOP, glslTOP, compositeTOP, levelTop, blurTOP, textTOP, nullTOP | TOP |
+| CHOP | Green | audiofileinCHOP, audiospectrumCHOP, mathCHOP, lfoCHOP, constantCHOP | CHOP |
+| SOP | Blue | gridSOP, sphereSOP, transformSOP, noiseSOP | SOP |
+| DAT | White | textDAT, tableDAT, scriptDAT, webserverDAT | DAT |
+| MAT | Yellow | phongMAT, pbrMAT, glslMAT, constMAT | MAT |
+| COMP | Gray | geometryCOMP, containerCOMP, cameraCOMP, lightCOMP, windowCOMP | COMP |
 
-See `references/operators.md` for full catalog. See `references/network-patterns.md` for recipes.
+## Security Notes
+
+- MCP runs on localhost only (port 40404). No authentication — any local process can send commands.
+- `td_execute_python` has unrestricted access to the TD Python environment and filesystem as the TD process user.
+- `setup.sh` downloads twozero.tox from the official 404zero.com URL. Verify the download if concerned.
+- The skill never sends data outside localhost. All MCP communication is local.
 
 ## References
 
 | File | What |
 |------|------|
-| `references/pitfalls.md` | **READ FIRST** — 31 hard-won lessons from real sessions |
+| `references/pitfalls.md` | Hard-won lessons from real sessions |
 | `references/operators.md` | All operator families with params and use cases |
-| `references/network-patterns.md` | Recipes: audio-reactive, generative, video, GLSL, instancing |
-| `references/mcp-tools.md` | MCP tool schemas (optional — curl works without MCP) |
+| `references/network-patterns.md` | Recipes: audio-reactive, generative, GLSL, instancing |
+| `references/mcp-tools.md` | Full twozero MCP tool parameter schemas |
 | `references/python-api.md` | TD Python: op(), scripting, extensions |
-| `references/troubleshooting.md` | Connection diagnostics, param debugging, performance |
-| `scripts/custom_api_handler.py` | Self-contained REST API handler for TD WebServer DAT |
+| `references/troubleshooting.md` | Connection diagnostics, debugging |
+| `scripts/setup.sh` | Automated setup script |
+
+---
+
+> You're not writing code. You're conducting light.

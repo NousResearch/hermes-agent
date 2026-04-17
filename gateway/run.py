@@ -299,6 +299,12 @@ from gateway.message_preprocessing_runtime_service import (
     prepend_reply_context_if_missing as shared_prepend_reply_context_if_missing,
     prepend_shared_thread_sender as shared_prepend_shared_thread_sender,
 )
+from gateway.onboarding_runtime_service import (
+    append_first_message_onboarding_note as shared_append_first_message_onboarding_note,
+    build_home_channel_prompt as shared_build_home_channel_prompt,
+    home_channel_env_var_name as shared_home_channel_env_var_name,
+    should_prompt_for_home_channel as shared_should_prompt_for_home_channel,
+)
 from gateway.shared_group_history_runtime_service import (
     DEFAULT_SHARED_GROUP_VISIBLE_HISTORY_LIMIT as SHARED_DEFAULT_GROUP_VISIBLE_HISTORY_LIMIT,
     is_shared_group_internal_artifact as shared_is_shared_group_internal_artifact,
@@ -557,6 +563,33 @@ def _prepend_document_context_notes(
         attachments=attachments,
         message_type=message_type,
         document_type=MessageType.DOCUMENT,
+    )
+
+
+def _append_first_message_onboarding_note(
+    context_prompt: str,
+    *,
+    history: List[Dict[str, Any]],
+    has_any_sessions: bool,
+) -> str:
+    return shared_append_first_message_onboarding_note(
+        context_prompt,
+        history=history,
+        has_any_sessions=has_any_sessions,
+    )
+
+
+def _should_prompt_for_home_channel(
+    *,
+    history: List[Dict[str, Any]],
+    platform: Optional[Platform],
+) -> bool:
+    env_key = shared_home_channel_env_var_name(platform)
+    configured = bool(env_key and os.getenv(env_key))
+    return shared_should_prompt_for_home_channel(
+        history=history,
+        platform=platform,
+        home_channel_configured=configured,
     )
 
 
@@ -4169,29 +4202,24 @@ class GatewayRunner:
         )
 
         # First-message onboarding -- only on the very first interaction ever
-        if not history and not self.session_store.has_any_sessions():
-            context_prompt += (
-                "\n\n[System note: This is the user's very first message ever. "
-                "Briefly introduce yourself and mention that /help shows available commands. "
-                "Keep the introduction concise -- one or two sentences max.]"
-            )
+        context_prompt = _append_first_message_onboarding_note(
+            context_prompt,
+            history=history,
+            has_any_sessions=self.session_store.has_any_sessions(),
+        )
         
         # One-time prompt if no home channel is set for this platform
         # Skip for webhooks - they deliver directly to configured targets (github_comment, etc.)
-        if not history and source.platform and source.platform != Platform.LOCAL and source.platform != Platform.WEBHOOK:
-            platform_name = source.platform.value
-            env_key = f"{platform_name.upper()}_HOME_CHANNEL"
-            if not os.getenv(env_key):
-                adapter = self.adapters.get(source.platform)
-                if adapter:
-                    await adapter.send(
-                        source.chat_id,
-                        f"📬 No home channel is set for {platform_name.title()}. "
-                        f"A home channel is where Hermes delivers cron job results "
-                        f"and cross-platform messages.\n\n"
-                        f"Type /sethome to make this chat your home channel, "
-                        f"or ignore to skip."
-                    )
+        if _should_prompt_for_home_channel(
+            history=history,
+            platform=source.platform,
+        ):
+            adapter = self.adapters.get(source.platform)
+            if adapter and source.platform is not None:
+                await adapter.send(
+                    source.chat_id,
+                    shared_build_home_channel_prompt(source.platform),
+                )
         
         # -----------------------------------------------------------------
         # Voice channel awareness — inject current voice channel state

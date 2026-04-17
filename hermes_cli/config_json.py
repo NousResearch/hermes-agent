@@ -191,6 +191,9 @@ def migrate_yaml_to_json(yaml_path: Optional[Path] = None,
             result["success"] = True
         except Exception as e:
             result["errors"].append(f"Failed to write JSON: {e}")
+    else:
+        # Dry run is always successful if we got here
+        result["success"] = True
     
     return result
 

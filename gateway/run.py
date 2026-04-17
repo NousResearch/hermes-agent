@@ -4670,11 +4670,22 @@ class GatewayRunner:
                     current_provider = model_cfg.get("provider", current_provider)
                     current_base_url = model_cfg.get("base_url", "")
                 user_provs = cfg.get("providers")
-                try:
-                    from hermes_cli.config import get_compatible_custom_providers
-                    custom_provs = get_compatible_custom_providers(cfg)
-                except Exception:
-                    custom_provs = cfg.get("custom_providers")
+                # Only populate custom_provs when providers: dict is absent.
+                # When both formats exist, get_compatible_custom_providers()
+                # re-converts the same providers: entries into list format,
+                # causing list_authenticated_providers() to show duplicates
+                # (step 3 processes user_provs dict, step 4 processes the
+                # re-converted list — with different slug formats so dedup
+                # can't catch them).
+                if user_provs and isinstance(user_provs, dict):
+                    # Newer v12+ format present — use it directly
+                    custom_provs = None
+                else:
+                    try:
+                        from hermes_cli.config import get_compatible_custom_providers
+                        custom_provs = get_compatible_custom_providers(cfg)
+                    except Exception:
+                        custom_provs = cfg.get("custom_providers")
         except Exception:
             pass
 

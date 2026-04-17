@@ -950,6 +950,15 @@ def _validate_proxy_env_urls() -> None:
             ) from exc
 
 
+def _has_proxy_env_configured() -> bool:
+    """Return True when any standard proxy env var is set to a non-empty value."""
+    for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
+                "https_proxy", "http_proxy", "all_proxy"):
+        if str(os.environ.get(key) or "").strip():
+            return True
+    return False
+
+
 def _validate_base_url(base_url: str) -> None:
     """Reject obviously broken custom endpoint URLs before they reach httpx."""
     from urllib.parse import urlparse

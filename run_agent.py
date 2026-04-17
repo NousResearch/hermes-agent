@@ -4403,7 +4403,11 @@ class AIAgent:
         return False
 
     def _create_openai_client(self, client_kwargs: dict, *, reason: str, shared: bool) -> Any:
-        from agent.auxiliary_client import _validate_base_url, _validate_proxy_env_urls
+        from agent.auxiliary_client import (
+            _has_proxy_env_configured,
+            _validate_base_url,
+            _validate_proxy_env_urls,
+        )
         # Treat client_kwargs as read-only. Callers pass self._client_kwargs (or shallow
         # copies of it) in; any in-place mutation leaks back into the stored dict and is
         # reused on subsequent requests. #10933 hit this by injecting an httpx.Client
@@ -4459,7 +4463,7 @@ class AIAgent:
         # constructs a fresh one — no stale closed transport can be reused.
         # Tests in ``tests/run_agent/test_create_openai_client_reuse.py`` and
         # ``tests/run_agent/test_sequential_chats_live.py`` pin this invariant.
-        if "http_client" not in client_kwargs:
+        if "http_client" not in client_kwargs and not _has_proxy_env_configured():
             try:
                 import httpx as _httpx
                 import socket as _socket

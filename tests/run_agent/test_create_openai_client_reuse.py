@@ -23,6 +23,8 @@ from run_agent import AIAgent
 
 def _make_agent():
     return AIAgent(
+        api_key="test-key-value",
+        base_url="https://api.example.com/v1",
         model="test/model",
         quiet_mode=True,
         skip_context_files=True,
@@ -183,4 +185,35 @@ def test_replace_primary_openai_client_survives_repeated_rebuilds():
     assert len({id(c) for c in constructed}) == len(constructed), (
         "Some _create_openai_client calls returned the same object across "
         "a teardown — rebuild is not producing fresh clients"
+    )
+
+
+def test_create_openai_client_skips_custom_transport_when_proxy_env_present(monkeypatch):
+    """Proxy env vars must keep httpx's default proxy-aware transport path.
+
+    Passing a custom ``httpx.HTTPTransport`` bypasses env-proxy auto-detection,
+    which breaks WSL and other proxied setups (#11609). When a proxy env var is
+    configured, `_create_openai_client` should hand the SDK no explicit
+    ``http_client`` so httpx can honor HTTP(S)_PROXY / ALL_PROXY on its own.
+    """
+    agent = _make_agent()
+    constructed: list = []
+    fake_openai = _make_fake_openai_factory(constructed)
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:7897")
+
+    with patch("run_agent.OpenAI", fake_openai):
+        agent._create_openai_client(
+            {
+                "api_key": "test-key-value",
+                "base_url": "https://api.example.com/v1",
+            },
+            reason="proxy_env",
+            shared=False,
+        )
+
+    assert len(constructed) == 1
+    assert constructed[0]._http_client is None, (
+        "Proxy env configured, but _create_openai_client still injected a "
+        "custom http_client. That bypasses httpx env-proxy detection and "
+        "reproduces #11609 on WSL / proxied setups."
     )

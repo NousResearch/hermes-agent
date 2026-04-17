@@ -8,7 +8,11 @@ from __future__ import annotations
 
 import pytest
 
-from agent.auxiliary_client import _validate_base_url, _validate_proxy_env_urls
+from agent.auxiliary_client import (
+    _has_proxy_env_configured,
+    _validate_base_url,
+    _validate_proxy_env_urls,
+)
 
 
 # -- proxy env validation ------------------------------------------------
@@ -29,6 +33,24 @@ def test_proxy_env_accepts_empty(monkeypatch):
     monkeypatch.delenv("https_proxy", raising=False)
     monkeypatch.delenv("all_proxy", raising=False)
     _validate_proxy_env_urls()  # should not raise
+
+
+def test_has_proxy_env_configured_detects_uppercase(monkeypatch):
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:7897")
+    assert _has_proxy_env_configured() is True
+
+
+def test_has_proxy_env_configured_detects_lowercase(monkeypatch):
+    monkeypatch.delenv("HTTPS_PROXY", raising=False)
+    monkeypatch.setenv("http_proxy", "http://127.0.0.1:7897")
+    assert _has_proxy_env_configured() is True
+
+
+def test_has_proxy_env_configured_ignores_empty_values(monkeypatch):
+    for key in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
+                "http_proxy", "https_proxy", "all_proxy"):
+        monkeypatch.setenv(key, "   ")
+    assert _has_proxy_env_configured() is False
 
 
 @pytest.mark.parametrize("key", [

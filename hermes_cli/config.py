@@ -1912,8 +1912,14 @@ def check_config_version() -> Tuple[int, int]:
     
     Returns (current_version, latest_version).
     """
-    config = load_config()
-    current = config.get("_config_version", 0)
+    raw_config = read_raw_config()
+    if "_config_version" in raw_config:
+        current = raw_config.get("_config_version", 0)
+    elif "config_version" in raw_config:
+        current = raw_config.get("config_version", 0)
+    else:
+        config = load_config()
+        current = config.get("_config_version", 0)
     latest = DEFAULT_CONFIG.get("_config_version", 1)
     return current, latest
 

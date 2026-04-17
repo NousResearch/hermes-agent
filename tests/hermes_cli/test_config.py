@@ -592,6 +592,31 @@ class TestCustomProviderCompatibility:
 class TestInterimAssistantMessageConfig:
     """Test the explicit gateway interim-message config gate."""
 
+    def test_legacy_config_version_alias_migrates_summary_compression(self, tmp_path):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "config_version": 13,
+                    "compression": {
+                        "summary_model": "MiniMax-M2.7",
+                        "summary_provider": "minimax-cn",
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+
+        assert raw["_config_version"] == 18
+        assert raw["auxiliary"]["compression"]["model"] == "MiniMax-M2.7"
+        assert raw["auxiliary"]["compression"]["provider"] == "minimax-cn"
+        assert "summary_model" not in raw["compression"]
+        assert "summary_provider" not in raw["compression"]
+
     def test_default_config_enables_interim_assistant_messages(self):
         assert DEFAULT_CONFIG["display"]["interim_assistant_messages"] is True
 

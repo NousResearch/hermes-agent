@@ -59,7 +59,7 @@ except ImportError:
         "Run 'hermes web' to auto-install, or: pip install hermes-agent[web]"
     )
 
-WEB_DIST = Path(__file__).parent / "web_dist"
+WEB_DIST = Path(os.environ["HERMES_WEB_DIST"]) if "HERMES_WEB_DIST" in os.environ else Path(__file__).parent / "web_dist"
 _log = logging.getLogger(__name__)
 
 app = FastAPI(title="Hermes Agent", version=__version__)

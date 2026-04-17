@@ -1274,7 +1274,7 @@ async def _send_qqbot(pconfig, chat_id, message):
 
             # Step 2: Send message via REST
             headers = {
-                "Authorization": f"QQBotAccessToken {access_token}",
+                "Authorization": f"QQBot {access_token}",
                 "Content-Type": "application/json",
             }
             url = f"https://api.sgroup.qq.com/channels/{chat_id}/messages"

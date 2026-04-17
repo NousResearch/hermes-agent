@@ -802,6 +802,57 @@ class SessionStore:
                 return True
         return False
 
+    def prune_old_entries(self, max_age_days: int) -> int:
+        """Drop SessionEntry records older than max_age_days.
+
+        Pruning is based on ``updated_at`` (last activity), not ``created_at``.
+        A session that's been active within the window is kept regardless of
+        how old it is.  Entries marked ``suspended`` are kept — the user
+        explicitly paused them for later resume.  Entries held by an active
+        process (via has_active_processes_fn) are also kept so long-running
+        background work isn't orphaned.
+
+        Pruning is functionally identical to a natural reset-policy expiry:
+        the transcript in SQLite stays, but the session_key → session_id
+        mapping is dropped and the user starts a fresh session on return.
+
+        ``max_age_days <= 0`` disables pruning; returns 0 immediately.
+        Returns the number of entries removed.
+        """
+        if max_age_days is None or max_age_days <= 0:
+            return 0
+        from datetime import timedelta
+
+        cutoff = _now() - timedelta(days=max_age_days)
+        removed_keys: list[str] = []
+
+        with self._lock:
+            self._ensure_loaded_locked()
+            for key, entry in list(self._entries.items()):
+                if entry.suspended:
+                    continue
+                # Never prune sessions with an active background process
+                # attached — the user may still be waiting on output.
+                if self._has_active_processes_fn is not None:
+                    try:
+                        if self._has_active_processes_fn(entry.session_id):
+                            continue
+                    except Exception:
+                        pass
+                if entry.updated_at < cutoff:
+                    removed_keys.append(key)
+            for key in removed_keys:
+                self._entries.pop(key, None)
+            if removed_keys:
+                self._save()
+
+        if removed_keys:
+            logger.info(
+                "SessionStore pruned %d entries older than %d days",
+                len(removed_keys), max_age_days,
+            )
+        return len(removed_keys)
+
     def suspend_recently_active(self, max_age_seconds: int = 120) -> int:
         """Mark recently-active sessions as suspended.
 

@@ -2178,6 +2178,30 @@ class GatewayRunner:
                         )
                 except Exception as _e:
                     logger.debug("Idle agent sweep failed: %s", _e)
+
+                # Periodically prune stale SessionStore entries.  The
+                # in-memory dict (and sessions.json) would otherwise grow
+                # unbounded in gateways serving many rotating chats /
+                # threads / users over long time windows.  Pruning is
+                # invisible to users — a resumed session just gets a
+                # fresh session_id, exactly as if the reset policy fired.
+                _last_prune_ts = getattr(self, "_last_session_store_prune_ts", 0.0)
+                _prune_interval = 3600.0  # once per hour
+                if time.time() - _last_prune_ts > _prune_interval:
+                    try:
+                        _max_age = int(
+                            getattr(self.config, "session_store_max_age_days", 0) or 0
+                        )
+                        if _max_age > 0:
+                            _pruned = self.session_store.prune_old_entries(_max_age)
+                            if _pruned:
+                                logger.info(
+                                    "SessionStore prune: dropped %d stale entries",
+                                    _pruned,
+                                )
+                    except Exception as _e:
+                        logger.debug("SessionStore prune failed: %s", _e)
+                    self._last_session_store_prune_ts = time.time()
             except Exception as e:
                 logger.debug("Session expiry watcher error: %s", e)
             # Sleep in small increments so we can stop quickly

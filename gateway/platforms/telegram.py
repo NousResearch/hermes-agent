@@ -118,6 +118,84 @@ def _strip_mdv2(text: str) -> str:
     return cleaned
 
 
+# ---------------------------------------------------------------------------
+# Markdown table → code block conversion
+# ---------------------------------------------------------------------------
+# Telegram's MarkdownV2 has no table syntax — '|' is just an escaped literal,
+# so pipe tables render as noisy backslash-pipe text with no alignment.
+# Wrapping the table in a fenced code block makes Telegram render it as
+# monospace preformatted text with columns intact.
+
+# Matches a GFM table delimiter row: optional outer pipes, cells containing
+# only dashes (with optional leading/trailing colons for alignment) separated
+# by '|'.  Requires at least one internal '|' so lone '---' horizontal rules
+# are NOT matched.
+_TABLE_SEPARATOR_RE = re.compile(
+    r'^\s*\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*){1,}\|?\s*$'
+)
+
+
+def _is_table_row(line: str) -> bool:
+    """Return True if *line* could plausibly be a table data row."""
+    stripped = line.strip()
+    return bool(stripped) and '|' in stripped
+
+
+def _wrap_markdown_tables(text: str) -> str:
+    """Wrap GFM-style pipe tables in ``` fences so Telegram renders them.
+
+    Detected by a row containing '|' immediately followed by a delimiter
+    row matching :data:`_TABLE_SEPARATOR_RE`.  Subsequent pipe-containing
+    non-blank lines are consumed as the table body and included in the
+    wrapped block.  Tables inside existing fenced code blocks are left
+    alone.
+    """
+    if '|' not in text or '-' not in text:
+        return text
+
+    lines = text.split('\n')
+    out: list[str] = []
+    in_fence = False
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.lstrip()
+
+        # Track existing fenced code blocks — never touch content inside.
+        if stripped.startswith('```'):
+            in_fence = not in_fence
+            out.append(line)
+            i += 1
+            continue
+        if in_fence:
+            out.append(line)
+            i += 1
+            continue
+
+        # Look for a header row (contains '|') immediately followed by a
+        # delimiter row.
+        if (
+            '|' in line
+            and i + 1 < len(lines)
+            and _TABLE_SEPARATOR_RE.match(lines[i + 1])
+        ):
+            table_block = [line, lines[i + 1]]
+            j = i + 2
+            while j < len(lines) and _is_table_row(lines[j]):
+                table_block.append(lines[j])
+                j += 1
+            out.append('```')
+            out.extend(table_block)
+            out.append('```')
+            i = j
+            continue
+
+        out.append(line)
+        i += 1
+
+    return '\n'.join(out)
+
+
 class TelegramAdapter(BasePlatformAdapter):
     """
     Telegram bot adapter.
@@ -1915,6 +1993,12 @@ class TelegramAdapter(BasePlatformAdapter):
             return key
 
         text = content
+
+        # 0) Pre-wrap GFM-style pipe tables in ``` fences.  Telegram can't
+        #    render tables natively, but fenced code blocks render as
+        #    monospace preformatted text with columns intact.  The wrapped
+        #    tables then flow through step (1) below as protected regions.
+        text = _wrap_markdown_tables(text)
 
         # 1) Protect fenced code blocks (``` ... ```)
         #    Per MarkdownV2 spec, \ and ` inside pre/code must be escaped.

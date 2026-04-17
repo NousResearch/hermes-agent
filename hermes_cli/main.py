@@ -3881,69 +3881,20 @@ def _install_python_dependencies_with_optional_fallback(
         print(f"  ⚠ Skipped optional extras that still failed: {', '.join(failed_extras)}")
 
 
-def cmd_update(args):
-    """Update Hermes Agent to the latest version."""
-    import shutil
-    from hermes_cli.config import is_managed, managed_error
+def _run_edge_update(git_cmd: list, project_root, gateway_mode: bool, gw_input_fn, is_fork: bool, args) -> None:
+    """Full edge-channel update: fetch origin, pull main, then run post-update steps.
 
-    if is_managed():
-        managed_error("update Hermes Agent")
-        return
+    This contains the original update logic (pre-channel-split) verbatim so
+    it can be called from cmd_update's else branch without re-indenting the
+    entire 460-line try block.
+    """
+    import shutil as _shutil_edge
 
-    gateway_mode = getattr(args, "gateway", False)
-    # In gateway mode, use file-based IPC for prompts instead of stdin
-    gw_input_fn = (lambda prompt, default="": _gateway_prompt(prompt, default)) if gateway_mode else None
-    
-    print("⚕ Updating Hermes Agent...")
-    print()
-    
-    # Try git-based update first, fall back to ZIP download on Windows
-    # when git file I/O is broken (antivirus, NTFS filter drivers, etc.)
-    use_zip_update = False
-    git_dir = PROJECT_ROOT / '.git'
-    
-    if not git_dir.exists():
-        if sys.platform == "win32":
-            use_zip_update = True
-        else:
-            print("✗ Not a git repository. Please reinstall:")
-            print("  curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash")
-            sys.exit(1)
-    
-    # On Windows, git can fail with "unable to write loose object file: Invalid argument"
-    # due to filesystem atomicity issues. Set the recommended workaround.
-    if sys.platform == "win32" and git_dir.exists():
-        subprocess.run(
-            ["git", "-c", "windows.appendAtomically=false", "config", "windows.appendAtomically", "false"],
-            cwd=PROJECT_ROOT, check=False, capture_output=True
-        )
-
-    # Build git command once — reused for fork detection and the update itself.
-    git_cmd = ["git"]
-    if sys.platform == "win32":
-        git_cmd = ["git", "-c", "windows.appendAtomically=false"]
-
-    # Detect if we're updating from a fork (before any branch logic)
-    origin_url = _get_origin_url(git_cmd, PROJECT_ROOT)
-    is_fork = _is_fork(origin_url)
-
-    if is_fork:
-        print("⚠ Updating from fork:")
-        print(f"  {origin_url}")
-        print()
-
-    if use_zip_update:
-        # ZIP-based update for Windows when git is broken
-        _update_via_zip(args)
-        return
-
-    # Fetch and pull
     try:
-
         print("→ Fetching updates...")
         fetch_result = subprocess.run(
             git_cmd + ["fetch", "origin"],
-            cwd=PROJECT_ROOT,
+            cwd=project_root,
             capture_output=True,
             text=True,
         )
@@ -3963,7 +3914,7 @@ def cmd_update(args):
         # Get current branch (returns literal "HEAD" when detached)
         result = subprocess.run(
             git_cmd + ["rev-parse", "--abbrev-ref", "HEAD"],
-            cwd=PROJECT_ROOT,
+            cwd=project_root,
             capture_output=True,
             text=True,
             check=True,
@@ -3978,16 +3929,16 @@ def cmd_update(args):
             label = "detached HEAD" if current_branch == "HEAD" else f"branch '{current_branch}'"
             print(f"  ⚠ Currently on {label} — switching to main for update...")
             # Stash before checkout so uncommitted work isn't lost
-            auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
+            auto_stash_ref = _stash_local_changes_if_needed(git_cmd, project_root)
             subprocess.run(
                 git_cmd + ["checkout", "main"],
-                cwd=PROJECT_ROOT,
+                cwd=project_root,
                 capture_output=True,
                 text=True,
                 check=True,
             )
         else:
-            auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
+            auto_stash_ref = _stash_local_changes_if_needed(git_cmd, project_root)
 
         prompt_for_restore = auto_stash_ref is not None and (
             gateway_mode or (sys.stdin.isatty() and sys.stdout.isatty())
@@ -3996,7 +3947,7 @@ def cmd_update(args):
         # Check if there are updates
         result = subprocess.run(
             git_cmd + ["rev-list", f"HEAD..origin/{branch}", "--count"],
-            cwd=PROJECT_ROOT,
+            cwd=project_root,
             capture_output=True,
             text=True,
             check=True,
@@ -4008,14 +3959,14 @@ def cmd_update(args):
             # Restore stash and switch back to original branch if we moved
             if auto_stash_ref is not None:
                 _restore_stashed_changes(
-                    git_cmd, PROJECT_ROOT, auto_stash_ref,
+                    git_cmd, project_root, auto_stash_ref,
                     prompt_user=prompt_for_restore,
                     input_fn=gw_input_fn,
                 )
             if current_branch not in ("main", "HEAD"):
                 subprocess.run(
                     git_cmd + ["checkout", current_branch],
-                    cwd=PROJECT_ROOT, capture_output=True, text=True, check=False,
+                    cwd=project_root, capture_output=True, text=True, check=False,
                 )
             print("✓ Already up to date!")
             return
@@ -4027,7 +3978,7 @@ def cmd_update(args):
         try:
             pull_result = subprocess.run(
                 git_cmd + ["pull", "--ff-only", "origin", branch],
-                cwd=PROJECT_ROOT,
+                cwd=project_root,
                 capture_output=True,
                 text=True,
             )
@@ -4038,7 +3989,7 @@ def cmd_update(args):
                 print("  ⚠ Fast-forward not possible (history diverged), resetting to match remote...")
                 reset_result = subprocess.run(
                     git_cmd + ["reset", "--hard", f"origin/{branch}"],
-                    cwd=PROJECT_ROOT,
+                    cwd=project_root,
                     capture_output=True,
                     text=True,
                 )
@@ -4059,32 +4010,32 @@ def cmd_update(args):
                 else:
                     _restore_stashed_changes(
                         git_cmd,
-                        PROJECT_ROOT,
+                        project_root,
                         auto_stash_ref,
                         prompt_user=prompt_for_restore,
                         input_fn=gw_input_fn,
                     )
-        
+
         _invalidate_update_cache()
 
         # Clear stale .pyc bytecode cache — prevents ImportError on gateway
         # restart when updated source references names that didn't exist in
         # the old bytecode (e.g. get_hermes_home added to hermes_constants).
-        removed = _clear_bytecode_cache(PROJECT_ROOT)
+        removed = _clear_bytecode_cache(project_root)
         if removed:
             print(f"  ✓ Cleared {removed} stale __pycache__ director{'y' if removed == 1 else 'ies'}")
 
         # Fork upstream sync logic (only for main branch on forks)
         if is_fork and branch == "main":
-            _sync_with_upstream_if_needed(git_cmd, PROJECT_ROOT)
-        
+            _sync_with_upstream_if_needed(git_cmd, project_root)
+
         # Reinstall Python dependencies. Prefer .[all], but if one optional extra
         # breaks on this machine, keep base deps and reinstall the remaining extras
         # individually so update does not silently strip working capabilities.
         print("→ Updating Python dependencies...")
-        uv_bin = shutil.which("uv")
+        uv_bin = _shutil_edge.which("uv")
         if uv_bin:
-            uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
+            uv_env = {**os.environ, "VIRTUAL_ENV": str(project_root / "venv")}
             _install_python_dependencies_with_optional_fallback([uv_bin, "pip"], env=uv_env)
         else:
             # Use sys.executable to explicitly call the venv's pip module,
@@ -4093,28 +4044,27 @@ def cmd_update(args):
             # ensurepip before trying the editable install.
             pip_cmd = [sys.executable, "-m", "pip"]
             try:
-                subprocess.run(pip_cmd + ["--version"], cwd=PROJECT_ROOT, check=True, capture_output=True)
+                subprocess.run(pip_cmd + ["--version"], cwd=project_root, check=True, capture_output=True)
             except subprocess.CalledProcessError:
                 subprocess.run(
                     [sys.executable, "-m", "ensurepip", "--upgrade", "--default-pip"],
-                    cwd=PROJECT_ROOT,
+                    cwd=project_root,
                     check=True,
                 )
             _install_python_dependencies_with_optional_fallback(pip_cmd)
-        
+
         # Check for Node.js deps
-        if (PROJECT_ROOT / "package.json").exists():
-            import shutil
-            if shutil.which("npm"):
+        if (project_root / "package.json").exists():
+            if _shutil_edge.which("npm"):
                 print("→ Updating Node.js dependencies...")
-                subprocess.run(["npm", "install", "--silent"], cwd=PROJECT_ROOT, check=False)
+                subprocess.run(["npm", "install", "--silent"], cwd=project_root, check=False)
 
         # Build web UI frontend (optional — requires npm)
-        _build_web_ui(PROJECT_ROOT / "web")
+        _build_web_ui(project_root / "web")
 
         print()
         print("✓ Code updated!")
-        
+
         # After git pull, source files on disk are newer than cached Python
         # modules in this process.  Reload hermes_constants so that any lazy
         # import executed below (skills sync, gateway restart) sees new
@@ -4125,7 +4075,7 @@ def cmd_update(args):
             importlib.reload(_hc)
         except Exception:
             pass  # non-fatal — worst case a lazy import fails gracefully
-        
+
         # Sync bundled skills (copies new, updates changed, respects user deletions)
         try:
             from tools.skills_sync import sync_skills
@@ -4185,25 +4135,25 @@ def cmd_update(args):
         # Check for config migrations
         print()
         print("→ Checking configuration for new options...")
-        
+
         from hermes_cli.config import (
-            get_missing_env_vars, get_missing_config_fields, 
+            get_missing_env_vars, get_missing_config_fields,
             check_config_version, migrate_config
         )
-        
+
         missing_env = get_missing_env_vars(required_only=True)
         missing_config = get_missing_config_fields()
         current_ver, latest_ver = check_config_version()
-        
+
         needs_migration = missing_env or missing_config or current_ver < latest_ver
-        
+
         if needs_migration:
             print()
             if missing_env:
                 print(f"  ⚠️  {len(missing_env)} new required setting(s) need configuration")
             if missing_config:
                 print(f"  ℹ️  {len(missing_config)} new config option(s) available")
-            
+
             print()
             if gateway_mode:
                 response = _gateway_prompt(
@@ -4218,13 +4168,13 @@ def cmd_update(args):
                     response = input("Would you like to configure them now? [Y/n]: ").strip().lower()
                 except EOFError:
                     response = "n"
-            
+
             if response in ('', 'y', 'yes'):
                 print()
                 # In gateway mode, run auto-migrations only (no input() prompts
                 # for API keys which would hang the detached process).
                 results = migrate_config(interactive=not gateway_mode, quiet=False)
-                
+
                 if results["env_added"] or results["config_added"]:
                     print()
                     print("✓ Configuration updated!")
@@ -4235,33 +4185,19 @@ def cmd_update(args):
                 print("Skipped. Run 'hermes config migrate' later to configure.")
         else:
             print("  ✓ Configuration is up to date")
-        
+
         print()
         print("✓ Update complete!")
-        
+
         # Write exit code *before* the gateway restart attempt.
-        # When running as ``hermes update --gateway`` (spawned by the gateway's
-        # /update command), this process lives inside the gateway's systemd
-        # cgroup.  ``systemctl restart hermes-gateway`` kills everything in the
-        # cgroup (KillMode=mixed → SIGKILL to remaining processes), including
-        # us and the wrapping bash shell.  The shell never reaches its
-        # ``printf $status > .update_exit_code`` epilogue, so the exit-code
-        # marker file is never created.  The new gateway's update watcher then
-        # polls for 30 minutes and sends a spurious timeout message.
-        #
-        # Writing the marker here — after git pull + pip install succeed but
-        # before we attempt the restart — ensures the new gateway sees it
-        # regardless of how we die.
         if gateway_mode:
             _exit_code_path = get_hermes_home() / ".update_exit_code"
             try:
                 _exit_code_path.write_text("0")
             except OSError:
                 pass
-        
+
         # Auto-restart ALL gateways after update.
-        # The code update (git pull) is shared across all profiles, so every
-        # running gateway needs restarting to pick up the new code.
         try:
             from hermes_cli.gateway import (
                 is_macos, supports_systemd_services, _ensure_user_systemd_env,
@@ -4273,8 +4209,6 @@ def cmd_update(args):
             restarted_services = []
             killed_pids = set()
 
-            # --- Systemd services (Linux) ---
-            # Discover all hermes-gateway* units (default + profiles)
             if supports_systemd_services():
                 try:
                     _ensure_user_systemd_env()
@@ -4291,11 +4225,10 @@ def cmd_update(args):
                             parts = line.split()
                             if not parts:
                                 continue
-                            unit = parts[0]  # e.g. hermes-gateway.service or hermes-gateway-coder.service
+                            unit = parts[0]
                             if not unit.endswith(".service"):
                                 continue
                             svc_name = unit.removesuffix(".service")
-                            # Check if active
                             check = subprocess.run(
                                 scope_cmd + ["is-active", svc_name],
                                 capture_output=True, text=True, timeout=5,
@@ -4306,9 +4239,6 @@ def cmd_update(args):
                                     capture_output=True, text=True, timeout=15,
                                 )
                                 if restart.returncode == 0:
-                                    # Verify the service actually survived the
-                                    # restart.  systemctl restart returns 0 even
-                                    # if the new process crashes immediately.
                                     import time as _time
                                     _time.sleep(3)
                                     verify = subprocess.run(
@@ -4318,11 +4248,8 @@ def cmd_update(args):
                                     if verify.stdout.strip() == "active":
                                         restarted_services.append(svc_name)
                                     else:
-                                        # Retry once — transient startup failures
-                                        # (stale module cache, import race) often
-                                        # resolve on the second attempt.
                                         print(f"  ⚠ {svc_name} died after restart, retrying...")
-                                        retry = subprocess.run(
+                                        subprocess.run(
                                             scope_cmd + ["restart", svc_name],
                                             capture_output=True, text=True, timeout=15,
                                         )
@@ -4345,7 +4272,6 @@ def cmd_update(args):
                     except (FileNotFoundError, subprocess.TimeoutExpired):
                         pass
 
-            # --- Launchd services (macOS) ---
             if is_macos():
                 try:
                     from hermes_cli.gateway import launchd_restart, get_launchd_label, get_launchd_plist_path
@@ -4359,16 +4285,12 @@ def cmd_update(args):
                             try:
                                 launchd_restart()
                                 restarted_services.append(get_launchd_label())
-                            except subprocess.CalledProcessError as e:
-                                stderr = (getattr(e, "stderr", "") or "").strip()
+                            except subprocess.CalledProcessError as exc:
+                                stderr = (getattr(exc, "stderr", "") or "").strip()
                                 print(f"  ⚠ Gateway restart failed: {stderr}")
                 except (FileNotFoundError, subprocess.TimeoutExpired, ImportError):
                     pass
 
-            # --- Manual (non-service) gateways ---
-            # Kill any remaining gateway processes not managed by a service.
-            # Exclude PIDs that belong to just-restarted services so we don't
-            # immediately kill the process that systemd/launchd just spawned.
             service_pids = _get_service_pids()
             manual_pids = find_gateway_pids(exclude_pids=service_pids, all_profiles=True)
             for pid in manual_pids:
@@ -4385,21 +4307,16 @@ def cmd_update(args):
                 if killed_pids:
                     print(f"  → Stopped {len(killed_pids)} manual gateway process(es)")
                     print("    Restart manually: hermes gateway run")
-                    # Also restart for each profile if needed
                     if len(killed_pids) > 1:
                         print("    (or: hermes -p <profile> gateway run  for each profile)")
 
-            if not restarted_services and not killed_pids:
-                # No gateways were running — nothing to do
-                pass
-
         except Exception as e:
             logger.debug("Gateway restart during update failed: %s", e)
-        
+
         print()
         print("Tip: You can now select a provider and model:")
         print("  hermes model              # Select provider and model")
-        
+
     except subprocess.CalledProcessError as e:
         if sys.platform == "win32":
             print(f"⚠ Git update failed: {e}")
@@ -4409,6 +4326,533 @@ def cmd_update(args):
         else:
             print(f"✗ Update failed: {e}")
             sys.exit(1)
+
+
+def _update_to_latest_release_tag(git_cmd: list, project_root) -> str | None:
+    """Fetch tags and checkout the latest vYYYY.M.D release tag.
+
+    Returns the tag string that was checked out, or None if already on the
+    latest tag (caller should print "already up to date" and return early).
+
+    Raises SystemExit on unrecoverable errors.
+    """
+    import urllib.request
+    import json as _json
+
+    print("→ Fetching tags...")
+    fetch_result = subprocess.run(
+        git_cmd + ["fetch", "origin", "--tags"],
+        cwd=project_root,
+        capture_output=True,
+        text=True,
+    )
+    if fetch_result.returncode != 0:
+        stderr = fetch_result.stderr.strip()
+        if "Could not resolve host" in stderr or "unable to access" in stderr:
+            print("✗ Network error — cannot reach the remote repository.")
+        elif "Authentication failed" in stderr or "could not read Username" in stderr:
+            print("✗ Authentication failed — check your git credentials or SSH key.")
+        else:
+            print("✗ Failed to fetch tags from origin.")
+            if stderr:
+                print(f"  {stderr.splitlines()[0]}")
+        sys.exit(1)
+
+    # Try GitHub API first, fall back to local tag list
+    latest_tag: str | None = None
+    try:
+        req = urllib.request.Request(
+            "https://api.github.com/repos/NousResearch/hermes-agent/releases/latest",
+            headers={"Accept": "application/vnd.github+json", "User-Agent": "hermes-agent"},
+        )
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            data = _json.loads(resp.read().decode())
+            latest_tag = data.get("tag_name", "").strip()
+    except Exception:
+        latest_tag = None  # fall through to local tag list
+
+    if not latest_tag:
+        # Local fallback: list all v20* tags sorted newest-first
+        tag_result = subprocess.run(
+            git_cmd + ["tag", "--list", "v20*", "--sort=-version:refname"],
+            cwd=project_root,
+            capture_output=True,
+            text=True,
+        )
+        tags = [t.strip() for t in tag_result.stdout.splitlines() if t.strip()]
+        if not tags:
+            print("✗ No release tags found. Cannot perform stable-channel update.")
+            sys.exit(1)
+        latest_tag = tags[0]
+
+    print(f"  Latest stable release: {latest_tag}")
+
+    # Check if we're already on this tag
+    current_tag_result = subprocess.run(
+        git_cmd + ["describe", "--tags", "--exact-match"],
+        cwd=project_root,
+        capture_output=True,
+        text=True,
+    )
+    current_tag = current_tag_result.stdout.strip() if current_tag_result.returncode == 0 else None
+
+    if current_tag == latest_tag:
+        return None  # already on latest
+
+    print(f"  Checking out {latest_tag}...")
+    checkout_result = subprocess.run(
+        git_cmd + ["checkout", latest_tag],
+        cwd=project_root,
+        capture_output=True,
+        text=True,
+    )
+    if checkout_result.returncode != 0:
+        print(f"✗ Failed to checkout tag {latest_tag}.")
+        if checkout_result.stderr.strip():
+            print(f"  {checkout_result.stderr.strip()}")
+        sys.exit(1)
+
+    return latest_tag
+
+
+def cmd_update(args):
+    """Update Hermes Agent to the latest version."""
+    import shutil
+    from hermes_cli.config import is_managed, managed_error
+
+    if is_managed():
+        managed_error("update Hermes Agent")
+        return
+
+    gateway_mode = getattr(args, "gateway", False)
+    # In gateway mode, use file-based IPC for prompts instead of stdin
+    gw_input_fn = (lambda prompt, default="": _gateway_prompt(prompt, default)) if gateway_mode else None
+    
+    print("⚕ Updating Hermes Agent...")
+    print()
+
+    # Determine update channel: --channel flag > config > default "edge"
+    from hermes_cli.config import load_config as _load_cfg
+    _cfg = _load_cfg()
+    channel = getattr(args, "channel", None) or _cfg.get("update", {}).get("channel", "edge")
+    if channel not in ("edge", "stable"):
+        print(f"✗ Invalid channel '{channel}'. Use 'edge' or 'stable'.")
+        sys.exit(1)
+    print(f"  Channel: {channel}")
+    print()
+
+    # Try git-based update first, fall back to ZIP download on Windows
+    # when git file I/O is broken (antivirus, NTFS filter drivers, etc.)
+    use_zip_update = False
+    git_dir = PROJECT_ROOT / '.git'
+    
+    if not git_dir.exists():
+        if sys.platform == "win32":
+            use_zip_update = True
+        else:
+            print("✗ Not a git repository. Please reinstall:")
+            print("  curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash")
+            sys.exit(1)
+    
+    # On Windows, git can fail with "unable to write loose object file: Invalid argument"
+    # due to filesystem atomicity issues. Set the recommended workaround.
+    if sys.platform == "win32" and git_dir.exists():
+        subprocess.run(
+            ["git", "-c", "windows.appendAtomically=false", "config", "windows.appendAtomically", "false"],
+            cwd=PROJECT_ROOT, check=False, capture_output=True
+        )
+
+    # Build git command once — reused for fork detection and the update itself.
+    git_cmd = ["git"]
+    if sys.platform == "win32":
+        git_cmd = ["git", "-c", "windows.appendAtomically=false"]
+
+    # Detect if we're updating from a fork (before any branch logic)
+    origin_url = _get_origin_url(git_cmd, PROJECT_ROOT)
+    is_fork = _is_fork(origin_url)
+
+    if is_fork:
+        print("⚠ Updating from fork:")
+        print(f"  {origin_url}")
+        print()
+
+    if use_zip_update:
+        # ZIP-based update for Windows when git is broken
+        _update_via_zip(args)
+        return
+
+    # ── Stable-channel path ──────────────────────────────────────────────────
+    if channel == "stable":
+        try:
+            auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
+            prompt_for_restore = auto_stash_ref is not None and (
+                gateway_mode or (sys.stdin.isatty() and sys.stdout.isatty())
+            )
+            checked_out_tag = _update_to_latest_release_tag(git_cmd, PROJECT_ROOT)
+            if checked_out_tag is None:
+                _invalidate_update_cache()
+                if auto_stash_ref is not None:
+                    _restore_stashed_changes(
+                        git_cmd, PROJECT_ROOT, auto_stash_ref,
+                        prompt_user=prompt_for_restore,
+                        input_fn=gw_input_fn,
+                    )
+                print("✓ Already on latest stable release!")
+                return
+            if auto_stash_ref is not None:
+                _restore_stashed_changes(
+                    git_cmd, PROJECT_ROOT, auto_stash_ref,
+                    prompt_user=prompt_for_restore,
+                    input_fn=gw_input_fn,
+                )
+        except SystemExit:
+            raise
+        except Exception as exc:
+            print(f"✗ Stable-channel update failed: {exc}")
+            sys.exit(1)
+        # Fall through to shared post-update steps (pip install, skills sync, etc.)
+
+    # ── Edge-channel path (existing logic) ───────────────────────────────────
+    else:
+        _run_edge_update(git_cmd, PROJECT_ROOT, gateway_mode, gw_input_fn, is_fork, args)
+        return
+
+    # ── Post-update shared steps (pip install, skills sync, gateway restart) ─
+    # Reached only from stable-channel path (edge returns inside _run_edge_update)
+    _invalidate_update_cache()
+
+    # Clear stale .pyc bytecode cache — prevents ImportError on gateway
+    # restart when updated source references names that didn't exist in
+    # the old bytecode (e.g. get_hermes_home added to hermes_constants).
+    removed = _clear_bytecode_cache(PROJECT_ROOT)
+    if removed:
+        print(f"  ✓ Cleared {removed} stale __pycache__ director{'y' if removed == 1 else 'ies'}")
+
+    # Fork upstream sync logic (only for main branch / non-fork installs)
+    if is_fork:
+        _sync_with_upstream_if_needed(git_cmd, PROJECT_ROOT)
+
+    # Reinstall Python dependencies. Prefer .[all], but if one optional extra
+    # breaks on this machine, keep base deps and reinstall the remaining extras
+    # individually so update does not silently strip working capabilities.
+    print("→ Updating Python dependencies...")
+    uv_bin = shutil.which("uv")
+    if uv_bin:
+        uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
+        _install_python_dependencies_with_optional_fallback([uv_bin, "pip"], env=uv_env)
+    else:
+        # Use sys.executable to explicitly call the venv's pip module,
+        # avoiding PEP 668 'externally-managed-environment' errors on Debian/Ubuntu.
+        # Some environments lose pip inside the venv; bootstrap it back with
+        # ensurepip before trying the editable install.
+        pip_cmd = [sys.executable, "-m", "pip"]
+        try:
+            subprocess.run(pip_cmd + ["--version"], cwd=PROJECT_ROOT, check=True, capture_output=True)
+        except subprocess.CalledProcessError:
+            subprocess.run(
+                [sys.executable, "-m", "ensurepip", "--upgrade", "--default-pip"],
+                cwd=PROJECT_ROOT,
+                check=True,
+            )
+        _install_python_dependencies_with_optional_fallback(pip_cmd)
+
+    # Check for Node.js deps
+    if (PROJECT_ROOT / "package.json").exists():
+        import shutil
+        if shutil.which("npm"):
+            print("→ Updating Node.js dependencies...")
+            subprocess.run(["npm", "install", "--silent"], cwd=PROJECT_ROOT, check=False)
+
+    # Build web UI frontend (optional — requires npm)
+    _build_web_ui(PROJECT_ROOT / "web")
+
+    print()
+    print("✓ Code updated!")
+
+    # After git pull/checkout, source files on disk are newer than cached Python
+    # modules in this process.  Reload hermes_constants so that any lazy
+    # import executed below (skills sync, gateway restart) sees new
+    # attributes like display_hermes_home() added since the last release.
+    try:
+        import importlib
+        import hermes_constants as _hc
+        importlib.reload(_hc)
+    except Exception:
+        pass  # non-fatal — worst case a lazy import fails gracefully
+
+    # Sync bundled skills (copies new, updates changed, respects user deletions)
+    try:
+        from tools.skills_sync import sync_skills
+        print()
+        print("→ Syncing bundled skills...")
+        result = sync_skills(quiet=True)
+        if result["copied"]:
+            print(f"  + {len(result['copied'])} new: {', '.join(result['copied'])}")
+        if result.get("updated"):
+            print(f"  ↑ {len(result['updated'])} updated: {', '.join(result['updated'])}")
+        if result.get("user_modified"):
+            print(f"  ~ {len(result['user_modified'])} user-modified (kept)")
+        if result.get("cleaned"):
+            print(f"  − {len(result['cleaned'])} removed from manifest")
+        if not result["copied"] and not result.get("updated"):
+            print("  ✓ Skills are up to date")
+    except Exception as e:
+        logger.debug("Skills sync during update failed: %s", e)
+
+    # Sync bundled skills to all other profiles
+    try:
+        from hermes_cli.profiles import list_profiles, get_active_profile_name, seed_profile_skills
+        active = get_active_profile_name()
+        other_profiles = [p for p in list_profiles() if p.name != active]
+        if other_profiles:
+            print()
+            print("→ Syncing bundled skills to other profiles...")
+            for p in other_profiles:
+                try:
+                    r = seed_profile_skills(p.path, quiet=True)
+                    if r:
+                        copied = len(r.get("copied", []))
+                        updated = len(r.get("updated", []))
+                        modified = len(r.get("user_modified", []))
+                        parts = []
+                        if copied: parts.append(f"+{copied} new")
+                        if updated: parts.append(f"↑{updated} updated")
+                        if modified: parts.append(f"~{modified} user-modified")
+                        status = ", ".join(parts) if parts else "up to date"
+                    else:
+                        status = "sync failed"
+                    print(f"  {p.name}: {status}")
+                except Exception as pe:
+                    print(f"  {p.name}: error ({pe})")
+    except Exception:
+        pass  # profiles module not available or no profiles
+
+    # Sync Honcho host blocks to all profiles
+    try:
+        from plugins.memory.honcho.cli import sync_honcho_profiles_quiet
+        synced = sync_honcho_profiles_quiet()
+        if synced:
+            print(f"\n-> Honcho: synced {synced} profile(s)")
+    except Exception:
+        pass  # honcho plugin not installed or not configured
+
+    # Check for config migrations
+    print()
+    print("→ Checking configuration for new options...")
+
+    from hermes_cli.config import (
+        get_missing_env_vars, get_missing_config_fields,
+        check_config_version, migrate_config
+    )
+
+    missing_env = get_missing_env_vars(required_only=True)
+    missing_config = get_missing_config_fields()
+    current_ver, latest_ver = check_config_version()
+
+    needs_migration = missing_env or missing_config or current_ver < latest_ver
+
+    if needs_migration:
+        print()
+        if missing_env:
+            print(f"  ⚠️  {len(missing_env)} new required setting(s) need configuration")
+        if missing_config:
+            print(f"  ℹ️  {len(missing_config)} new config option(s) available")
+
+        print()
+        if gateway_mode:
+            response = _gateway_prompt(
+                "Would you like to configure new options now? [Y/n]", "n"
+            ).strip().lower()
+        elif not (sys.stdin.isatty() and sys.stdout.isatty()):
+            print("  ℹ Non-interactive session — skipping config migration prompt.")
+            print("    Run 'hermes config migrate' later to apply any new config/env options.")
+            response = "n"
+        else:
+            try:
+                response = input("Would you like to configure them now? [Y/n]: ").strip().lower()
+            except EOFError:
+                response = "n"
+
+        if response in ('', 'y', 'yes'):
+            print()
+            # In gateway mode, run auto-migrations only (no input() prompts
+            # for API keys which would hang the detached process).
+            results = migrate_config(interactive=not gateway_mode, quiet=False)
+
+            if results["env_added"] or results["config_added"]:
+                print()
+                print("✓ Configuration updated!")
+            if gateway_mode and missing_env:
+                print("  ℹ API keys require manual entry: hermes config migrate")
+        else:
+            print()
+            print("Skipped. Run 'hermes config migrate' later to configure.")
+    else:
+        print("  ✓ Configuration is up to date")
+
+    print()
+    print("✓ Update complete!")
+
+    # Write exit code *before* the gateway restart attempt.
+    # When running as ``hermes update --gateway`` (spawned by the gateway's
+    # /update command), this process lives inside the gateway's systemd
+    # cgroup.  ``systemctl restart hermes-gateway`` kills everything in the
+    # cgroup (KillMode=mixed → SIGKILL to remaining processes), including
+    # us and the wrapping bash shell.  The shell never reaches its
+    # ``printf $status > .update_exit_code`` epilogue, so the exit-code
+    # marker file is never created.  The new gateway's update watcher then
+    # polls for 30 minutes and sends a spurious timeout message.
+    #
+    # Writing the marker here — after git pull + pip install succeed but
+    # before we attempt the restart — ensures the new gateway sees it
+    # regardless of how we die.
+    if gateway_mode:
+        _exit_code_path = get_hermes_home() / ".update_exit_code"
+        try:
+            _exit_code_path.write_text("0")
+        except OSError:
+            pass
+
+    # Auto-restart ALL gateways after update.
+    # The code update (git pull/checkout) is shared across all profiles, so every
+    # running gateway needs restarting to pick up the new code.
+    try:
+        from hermes_cli.gateway import (
+            is_macos, supports_systemd_services, _ensure_user_systemd_env,
+            find_gateway_pids,
+            _get_service_pids,
+        )
+        import signal as _signal
+
+        restarted_services = []
+        killed_pids = set()
+
+        # --- Systemd services (Linux) ---
+        # Discover all hermes-gateway* units (default + profiles)
+        if supports_systemd_services():
+            try:
+                _ensure_user_systemd_env()
+            except Exception:
+                pass
+
+            for scope, scope_cmd in [("user", ["systemctl", "--user"]), ("system", ["systemctl"])]:
+                try:
+                    result = subprocess.run(
+                        scope_cmd + ["list-units", "hermes-gateway*", "--plain", "--no-legend", "--no-pager"],
+                        capture_output=True, text=True, timeout=10,
+                    )
+                    for line in result.stdout.strip().splitlines():
+                        parts = line.split()
+                        if not parts:
+                            continue
+                        unit = parts[0]  # e.g. hermes-gateway.service or hermes-gateway-coder.service
+                        if not unit.endswith(".service"):
+                            continue
+                        svc_name = unit.removesuffix(".service")
+                        # Check if active
+                        check = subprocess.run(
+                            scope_cmd + ["is-active", svc_name],
+                            capture_output=True, text=True, timeout=5,
+                        )
+                        if check.stdout.strip() == "active":
+                            restart = subprocess.run(
+                                scope_cmd + ["restart", svc_name],
+                                capture_output=True, text=True, timeout=15,
+                            )
+                            if restart.returncode == 0:
+                                # Verify the service actually survived the
+                                # restart.  systemctl restart returns 0 even
+                                # if the new process crashes immediately.
+                                import time as _time
+                                _time.sleep(3)
+                                verify = subprocess.run(
+                                    scope_cmd + ["is-active", svc_name],
+                                    capture_output=True, text=True, timeout=5,
+                                )
+                                if verify.stdout.strip() == "active":
+                                    restarted_services.append(svc_name)
+                                else:
+                                    # Retry once — transient startup failures
+                                    # (stale module cache, import race) often
+                                    # resolve on the second attempt.
+                                    print(f"  ⚠ {svc_name} died after restart, retrying...")
+                                    retry = subprocess.run(
+                                        scope_cmd + ["restart", svc_name],
+                                        capture_output=True, text=True, timeout=15,
+                                    )
+                                    _time.sleep(3)
+                                    verify2 = subprocess.run(
+                                        scope_cmd + ["is-active", svc_name],
+                                        capture_output=True, text=True, timeout=5,
+                                    )
+                                    if verify2.stdout.strip() == "active":
+                                        restarted_services.append(svc_name)
+                                        print(f"  ✓ {svc_name} recovered on retry")
+                                    else:
+                                        print(
+                                            f"  ✗ {svc_name} failed to stay running after restart.\n"
+                                            f"    Check logs: journalctl --user -u {svc_name} --since '2 min ago'\n"
+                                            f"    Restart manually: systemctl {'--user ' if scope == 'user' else ''}restart {svc_name}"
+                                        )
+                            else:
+                                print(f"  ⚠ Failed to restart {svc_name}: {restart.stderr.strip()}")
+                except (FileNotFoundError, subprocess.TimeoutExpired):
+                    pass
+
+        # --- Launchd services (macOS) ---
+        if is_macos():
+            try:
+                from hermes_cli.gateway import launchd_restart, get_launchd_label, get_launchd_plist_path
+                plist_path = get_launchd_plist_path()
+                if plist_path.exists():
+                    check = subprocess.run(
+                        ["launchctl", "list", get_launchd_label()],
+                        capture_output=True, text=True, timeout=5,
+                    )
+                    if check.returncode == 0:
+                        try:
+                            launchd_restart()
+                            restarted_services.append(get_launchd_label())
+                        except subprocess.CalledProcessError as e:
+                            stderr = (getattr(e, "stderr", "") or "").strip()
+                            print(f"  ⚠ Gateway restart failed: {stderr}")
+            except (FileNotFoundError, subprocess.TimeoutExpired, ImportError):
+                pass
+
+        # --- Manual (non-service) gateways ---
+        # Kill any remaining gateway processes not managed by a service.
+        # Exclude PIDs that belong to just-restarted services so we don't
+        # immediately kill the process that systemd/launchd just spawned.
+        service_pids = _get_service_pids()
+        manual_pids = find_gateway_pids(exclude_pids=service_pids, all_profiles=True)
+        for pid in manual_pids:
+            try:
+                os.kill(pid, _signal.SIGTERM)
+                killed_pids.add(pid)
+            except (ProcessLookupError, PermissionError):
+                pass
+
+        if restarted_services or killed_pids:
+            print()
+            for svc in restarted_services:
+                print(f"  ✓ Restarted {svc}")
+            if killed_pids:
+                print(f"  → Stopped {len(killed_pids)} manual gateway process(es)")
+                print("    Restart manually: hermes gateway run")
+                # Also restart for each profile if needed
+                if len(killed_pids) > 1:
+                    print("    (or: hermes -p <profile> gateway run  for each profile)")
+
+        if not restarted_services and not killed_pids:
+            # No gateways were running — nothing to do
+            pass
+
+    except Exception as e:
+        logger.debug("Gateway restart during update failed: %s", e)
+
+    print()
+    print("Tip: You can now select a provider and model:")
+    print("  hermes model              # Select provider and model")
 
 
 def _coalesce_session_name_args(argv: list) -> list:
@@ -6174,6 +6618,16 @@ Examples:
     update_parser.add_argument(
         "--gateway", action="store_true", default=False,
         help="Gateway mode: use file-based IPC for prompts instead of stdin (used internally by /update)"
+    )
+    update_parser.add_argument(
+        "--channel",
+        choices=["edge", "stable"],
+        default=None,
+        metavar="{edge,stable}",
+        help=(
+            "Update channel to use for this run (overrides update.channel config). "
+            "'edge' tracks main HEAD (default); 'stable' tracks the latest vYYYY.M.D release tag."
+        ),
     )
     update_parser.set_defaults(func=cmd_update)
     

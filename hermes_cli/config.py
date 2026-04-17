@@ -776,8 +776,15 @@ DEFAULT_CONFIG = {
         "force_ipv4": False,
     },
 
+    # Update channel settings.
+    # channel: "edge"   — track main HEAD (default, existing behaviour)
+    #          "stable" — track the latest vYYYY.M.D release tag
+    "update": {
+        "channel": "edge",
+    },
+
     # Config schema version - bump this when adding new required fields
-    "_config_version": 18,
+    "_config_version": 19,
 }
 
 # =============================================================================

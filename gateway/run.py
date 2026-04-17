@@ -199,7 +199,6 @@ from gateway.agent_execution_service import (
     create_gateway_agent,
     execute_gateway_sync_turn as shared_execute_gateway_sync_turn,
     gateway_approval_context,
-    setup_gateway_stream_consumer as shared_setup_gateway_stream_consumer,
 )
 from gateway.agent_followup_runtime_service import (
     clear_gateway_pending_interrupt as shared_clear_gateway_pending_interrupt,
@@ -217,9 +216,7 @@ from gateway.agent_progress_runtime_service import (
     build_gateway_progress_runtime as shared_build_gateway_progress_runtime,
 )
 from gateway.agent_turn_runtime_service import (
-    build_gateway_background_review_callback as shared_build_gateway_background_review_callback,
-    configure_gateway_agent_for_turn as shared_configure_gateway_agent_for_turn,
-    reuse_or_create_gateway_agent as shared_reuse_or_create_gateway_agent,
+    prepare_gateway_cached_turn_agent as shared_prepare_gateway_cached_turn_agent,
 )
 from gateway.agent_runtime import (
     agent_config_signature as shared_agent_config_signature,
@@ -8427,34 +8424,19 @@ class GatewayRunner:
             max_iterations = prepared_runtime.max_iterations
             self._reasoning_config = reasoning_config
 
-            _stream_consumer, _stream_delta_cb = shared_setup_gateway_stream_consumer(
+            prepared_agent = shared_prepare_gateway_cached_turn_agent(
+                runtime_spec=runtime_spec,
+                session_key=session_key,
+                session_id=session_id,
+                source=source,
+                progress_runtime=progress_runtime,
+                reasoning_config=reasoning_config,
                 streaming_config=getattr(getattr(self, "config", None), "streaming", None),
                 adapter=self.adapters.get(source.platform),
-                chat_id=source.chat_id,
                 thread_metadata={"thread_id": _progress_thread_id} if _progress_thread_id else None,
                 stream_consumer_holder=stream_consumer_holder,
-                logger=logger,
-            )
-
-            turn_route = runtime_spec.turn_route
-
-            # Check agent cache — reuse the AIAgent from the previous message
-            # in this session to preserve the frozen system prompt and tool
-            # schemas for prompt cache hits.
-            _sig = self._agent_config_signature(
-                turn_route["model"],
-                turn_route["runtime"],
-                runtime_spec.enabled_toolsets,
-                runtime_spec.combined_ephemeral or "",
-            )
-            agent = None
-            _cache_lock = getattr(self, "_agent_cache_lock", None)
-            _cache = getattr(self, "_agent_cache", None)
-            agent, _ = shared_reuse_or_create_gateway_agent(
-                session_key=session_key,
-                signature=_sig,
-                cache=_cache,
-                cache_lock=_cache_lock,
+                cache=getattr(self, "_agent_cache", None),
+                cache_lock=getattr(self, "_agent_cache_lock", None),
                 create_agent=lambda: create_gateway_agent(
                     runtime_spec=runtime_spec,
                     session_id=session_id,
@@ -8466,21 +8448,14 @@ class GatewayRunner:
                     quiet_mode=True,
                     verbose_logging=False,
                 ),
+                status_adapter=_status_adapter,
+                status_chat_id=_status_chat_id,
+                status_thread_metadata=_status_thread_metadata,
+                loop_for_step=_loop_for_step,
                 logger=logger,
             )
-            shared_configure_gateway_agent_for_turn(
-                agent=agent,
-                progress_runtime=progress_runtime,
-                stream_delta_callback=_stream_delta_cb,
-                reasoning_config=reasoning_config,
-                background_review_callback=shared_build_gateway_background_review_callback(
-                    status_adapter=_status_adapter,
-                    status_chat_id=_status_chat_id,
-                    status_thread_metadata=_status_thread_metadata,
-                    loop_for_step=_loop_for_step,
-                    logger=logger,
-                ),
-            )
+            agent = prepared_agent.agent
+            _stream_consumer = prepared_agent.stream_consumer
 
             # Store agent reference for interrupt support
             agent_holder[0] = agent

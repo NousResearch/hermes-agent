@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 from gateway.agent_turn_runtime_service import (
     build_gateway_background_review_callback,
     configure_gateway_agent_for_turn,
+    prepare_gateway_cached_turn_agent,
     reuse_or_create_gateway_agent,
 )
 
@@ -116,3 +117,80 @@ def test_build_gateway_background_review_callback_schedules_send(monkeypatch):
         metadata={"thread_id": "7"},
     )
     run_coroutine.assert_called_once()
+
+
+def test_prepare_gateway_cached_turn_agent_sets_up_streaming_cache_and_callbacks(
+    monkeypatch,
+):
+    agent = object()
+    runtime_spec = SimpleNamespace(
+        turn_route={"model": "gpt-test", "runtime": {"api_key": "secret"}},
+        enabled_toolsets=["hermes-qq"],
+        combined_ephemeral="ctx",
+    )
+    progress_runtime = SimpleNamespace(
+        progress_callback="progress-cb",
+        step_callback="step-cb",
+        status_callback="status-cb",
+    )
+    source = SimpleNamespace(chat_id="chat-1")
+    setup_calls = {}
+    reuse_calls = {}
+    configure_calls = {}
+
+    monkeypatch.setattr(
+        "gateway.agent_turn_runtime_service.setup_gateway_stream_consumer",
+        lambda **kwargs: setup_calls.update(kwargs) or ("stream-consumer", "stream-delta"),
+    )
+    monkeypatch.setattr(
+        "gateway.agent_turn_runtime_service.agent_config_signature",
+        lambda *args: "sig-1",
+    )
+    monkeypatch.setattr(
+        "gateway.agent_turn_runtime_service.reuse_or_create_gateway_agent",
+        lambda **kwargs: reuse_calls.update(kwargs) or (agent, True),
+    )
+    monkeypatch.setattr(
+        "gateway.agent_turn_runtime_service.build_gateway_background_review_callback",
+        lambda **kwargs: "background-review",
+    )
+    monkeypatch.setattr(
+        "gateway.agent_turn_runtime_service.configure_gateway_agent_for_turn",
+        lambda **kwargs: configure_calls.update(kwargs),
+    )
+
+    prepared = prepare_gateway_cached_turn_agent(
+        runtime_spec=runtime_spec,
+        session_key="session-1",
+        session_id="turn-1",
+        source=source,
+        progress_runtime=progress_runtime,
+        reasoning_config={"effort": "high"},
+        streaming_config="streaming-config",
+        adapter="adapter",
+        thread_metadata={"thread_id": "7"},
+        stream_consumer_holder=[None],
+        cache={"session-1": ("old", "old-sig")},
+        cache_lock=threading.Lock(),
+        create_agent=lambda: agent,
+        status_adapter="status-adapter",
+        status_chat_id="chat-1",
+        status_thread_metadata={"thread_id": "99"},
+        loop_for_step="loop",
+        logger=MagicMock(),
+    )
+
+    assert prepared.agent is agent
+    assert prepared.stream_consumer == "stream-consumer"
+    assert setup_calls["chat_id"] == "chat-1"
+    assert setup_calls["thread_metadata"] == {"thread_id": "7"}
+    assert reuse_calls["session_key"] == "session-1"
+    assert reuse_calls["signature"] == "sig-1"
+    assert callable(reuse_calls["create_agent"])
+    assert configure_calls == {
+        "agent": agent,
+        "progress_runtime": progress_runtime,
+        "stream_delta_callback": "stream-delta",
+        "reasoning_config": {"effort": "high"},
+        "background_review_callback": "background-review",
+    }

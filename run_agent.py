@@ -9711,6 +9711,20 @@ class AIAgent:
                     )
                     if recovered_with_pool:
                         continue
+                    # On 429 for codex: try re-reading token from auth.json.
+                    # External tools or manual edits may have updated the
+                    # singleton token while this agent was running — rebuild
+                    # the client to pick up the change.
+                    if (
+                        status_code == 429
+                        and self.provider == "openai-codex"
+                        and self.api_mode == "codex_responses"
+                        and not codex_auth_retry_attempted
+                    ):
+                        codex_auth_retry_attempted = True
+                        if self._try_refresh_codex_client_credentials(force=True):
+                            self._vprint(f"{self.log_prefix}🔐 Codex token refreshed after 429 (external change detected). Retrying...", force=True)
+                            continue
                     if (
                         self.api_mode == "codex_responses"
                         and self.provider == "openai-codex"

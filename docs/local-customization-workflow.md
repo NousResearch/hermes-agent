@@ -20,10 +20,10 @@ This repo now treats upstream tracking and Henry-specific customizations as sepa
 ## Normal update flow
 
 1. Make sure your current work is committed on `henry/patches`.
-2. Fetch upstream and refresh the clean base via `scripts/sync-local-mods.sh`.
-3. Let the script create a disposable sync worktree.
+2. Run `scripts/sync-local-mods.sh --snapshot-dirty` if you have unrelated local drift that still needs preserving.
+3. Let the script fetch upstream, reset `main`, create a disposable sync worktree, and replay `main..henry/patches`.
 4. Review any replay conflicts in that disposable worktree.
-5. Run smoke tests before promoting the refreshed patch stack.
+5. Run smoke tests there, or pass `--smoke-test '<command>'` so the script does it for you.
 
 ## Add a new local customization
 

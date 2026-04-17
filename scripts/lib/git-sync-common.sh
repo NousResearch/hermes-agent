@@ -28,3 +28,18 @@ require_clean_or_snapshot_flag() {
     die "working tree is dirty; commit it first or rerun with --snapshot-dirty"
   fi
 }
+
+branch_exists() {
+  local branch_name="$1"
+  git show-ref --verify --quiet "refs/heads/${branch_name}"
+}
+
+remote_branch_exists() {
+  local remote_branch="$1"
+  git show-ref --verify --quiet "refs/remotes/${remote_branch}"
+}
+
+ensure_dir_missing() {
+  local path="$1"
+  [[ ! -e "$path" ]] || die "path already exists: $path"
+}

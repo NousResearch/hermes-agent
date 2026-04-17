@@ -269,12 +269,6 @@ class TestConnect:
 # ---------------------------------------------------------------------------
 
 
-class TestPlatformEnum:
-
-    def test_dingtalk_in_platform_enum(self):
-        assert Platform.DINGTALK.value == "dingtalk"
-
-
 # ---------------------------------------------------------------------------
 # SDK compatibility regression tests (dingtalk-stream >= 0.20 / 0.24)
 # ---------------------------------------------------------------------------

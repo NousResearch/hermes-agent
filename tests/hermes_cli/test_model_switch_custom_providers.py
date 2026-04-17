@@ -104,6 +104,46 @@ def test_switch_model_accepts_explicit_named_custom_provider(monkeypatch):
     assert result.api_key == "no-key-required"
 
 
+def test_switch_model_accepts_shorthand_named_custom_provider_syntax(monkeypatch):
+    """`/model flusions:gpt-5.4` should resolve to custom:flusions."""
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda requested: {
+            "api_key": "flusions-key",
+            "base_url": "https://www.flusions.com/v1",
+            "api_mode": "chat_completions",
+        },
+    )
+    monkeypatch.setattr("hermes_cli.models.validate_requested_model", lambda *a, **k: _MOCK_VALIDATION)
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_info", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_capabilities", lambda *a, **k: None)
+
+    result = switch_model(
+        raw_input="flusions:gpt-5.4",
+        current_provider="openrouter",
+        current_model="openai/gpt-5.4",
+        current_base_url="https://openrouter.ai/api/v1",
+        current_api_key="or-key",
+        explicit_provider="",
+        user_providers={},
+        custom_providers=[
+            {
+                "name": "Flusions",
+                "base_url": "https://www.flusions.com/v1",
+                "api_key": "flusions-key",
+                "model": "gpt-5.4",
+            }
+        ],
+    )
+
+    assert result.success is True
+    assert result.target_provider == "custom:flusions"
+    assert result.provider_label == "Flusions"
+    assert result.new_model == "gpt-5.4"
+    assert result.base_url == "https://www.flusions.com/v1"
+    assert result.api_key == "flusions-key"
+
+
 def test_list_groups_same_name_custom_providers_into_one_row(monkeypatch):
     """Multiple custom_providers entries sharing a name should produce one row
     with all models collected, not N duplicate rows."""

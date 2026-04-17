@@ -13,9 +13,10 @@ This module ties together the foundation layers:
 - ``hermes_cli.providers``        -- canonical provider identity + overlays
 - ``hermes_cli.model_normalize``  -- per-provider name formatting
 
-Provider switching uses the ``--provider`` flag exclusively.
-No colon-based ``provider:model`` syntax — colons are reserved for
-OpenRouter variant suffixes (``:free``, ``:extended``, ``:fast``).
+Provider switching supports both explicit ``--provider`` and inline
+``provider:model`` syntax.  Named custom providers can be selected with
+either ``custom:<name>:<model>`` or the shorthand ``<name>:<model>`` when
+``<name>`` resolves to a configured custom provider.
 """
 
 from __future__ import annotations
@@ -572,17 +573,60 @@ def switch_model(
                         ),
                     )
             else:
-                # --- Step c: On aggregator, convert vendor:model to vendor/model ---
-                # Only convert when there's no slash — a slash means the name
-                # is already in vendor/model format and the colon is a variant
-                # tag (:free, :extended, :fast) that must be preserved.
+                # --- Step c: provider:model syntax (including named custom providers) ---
+                provider_from_colon = False
                 colon_pos = raw_input.find(":")
-                if colon_pos > 0 and "/" not in raw_input and is_aggregator(current_provider):
-                    left = raw_input[:colon_pos].strip().lower()
+                if colon_pos > 0 and "/" not in raw_input:
+                    left = raw_input[:colon_pos].strip()
                     right = raw_input[colon_pos + 1:].strip()
-                    if left and right:
-                        # Colons become slashes for aggregator slugs
-                        new_model = f"{left}/{right}"
+
+                    # Support custom:name:model triple syntax.
+                    # Example: custom:flusions:gpt-5.4 -> provider=custom:flusions model=gpt-5.4
+                    if left.lower() == "custom" and ":" in right:
+                        second_colon = right.find(":")
+                        custom_name = right[:second_colon].strip()
+                        actual_model = right[second_colon + 1:].strip()
+                        if custom_name and actual_model:
+                            pdef = resolve_provider_full(
+                                f"custom:{custom_name}",
+                                user_providers,
+                                custom_providers,
+                            )
+                            if pdef is not None:
+                                target_provider = pdef.id
+                                new_model = actual_model
+                                provider_from_colon = True
+                                logger.debug(
+                                    "Resolved custom triple '%s' -> provider=%s model=%s",
+                                    raw_input, target_provider, new_model,
+                                )
+
+                    # Support shorthand provider:model for any resolvable provider.
+                    # Example: flusions:gpt-5.4, anthropic:claude-sonnet-4.6
+                    if not provider_from_colon and left and right:
+                        pdef = resolve_provider_full(
+                            left,
+                            user_providers,
+                            custom_providers,
+                        )
+                        if pdef is not None:
+                            target_provider = pdef.id
+                            new_model = right
+                            provider_from_colon = True
+                            logger.debug(
+                                "Resolved provider:model '%s' -> provider=%s model=%s",
+                                raw_input, target_provider, new_model,
+                            )
+
+                    # Legacy behavior on aggregators: vendor:model -> vendor/model
+                    # when the left side is not a resolvable provider name.
+                    if (
+                        not provider_from_colon
+                        and left
+                        and right
+                        and is_aggregator(current_provider)
+                    ):
+                        new_model = f"{left.lower()}/{right}"
                         logger.debug(
                             "Converted vendor:model '%s' to aggregator slug '%s'",
                             raw_input, new_model,
@@ -1086,5 +1130,3 @@ def list_authenticated_providers(
     results.sort(key=lambda r: (not r["is_current"], -r["total_models"]))
 
     return results
-
-

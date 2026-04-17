@@ -1,4 +1,4 @@
-import { useApp, useHasSelection, useSelection, useStdout, type ScrollBoxHandle } from '@hermes/ink'
+import { type ScrollBoxHandle, useApp, useHasSelection, useSelection, useStdout } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
@@ -426,9 +426,11 @@ export function useMainApp(gw: GatewayClient) {
       composerActions,
       composerRefs,
       gateway,
+      panel,
       sendQueued,
       session.newSession,
       session.resetSession,
+      session.resumeById,
       stdout,
       sys
     ]

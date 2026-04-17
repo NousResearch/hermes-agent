@@ -54,6 +54,10 @@ except ImportError:  # pragma: no cover - dependency gate
 
 from gateway.config import Platform, PlatformConfig
 from gateway.group_runtime import build_group_message_metadata
+from gateway.group_runtime_service import (
+    resolve_weixin_effective_group_policy,
+    weixin_group_message_allowed,
+)
 from gateway.weixin_group_archive import WeixinGroupArchiveStore
 from gateway.weixin_group_policies import default_group_policy, get_group_policy, has_group_policy
 from gateway.platforms.helpers import MessageDeduplicator
@@ -1350,26 +1354,19 @@ class WeixinAdapter(BasePlatformAdapter):
         return True
 
     def _group_message_allowed(self, chat_id: str) -> bool:
-        normalized_chat_id = str(chat_id or "").strip()
-        if not normalized_chat_id:
-            return False
-        if has_group_policy(normalized_chat_id):
-            return True
-        if self._group_policy == "disabled":
-            return False
-        if self._group_policy == "allowlist":
-            return normalized_chat_id in self._group_allow_from
-        return True
+        return weixin_group_message_allowed(
+            chat_id,
+            has_policy=has_group_policy(str(chat_id or "").strip()),
+            group_policy_mode=str(self._group_policy or "").strip().lower(),
+            group_allow_from=set(self._group_allow_from or set()),
+        )
 
     def _effective_group_policy(self, chat_id: str) -> Dict[str, Any]:
-        normalized_chat_id = str(chat_id or "").strip()
-        if not normalized_chat_id:
-            return default_group_policy("")
-        try:
-            return get_group_policy(normalized_chat_id)
-        except Exception:
-            logger.exception("[%s] Failed to load Weixin group policy for %s", self.name, normalized_chat_id)
-            return default_group_policy(normalized_chat_id)
+        return resolve_weixin_effective_group_policy(
+            chat_id,
+            policy_loader=get_group_policy,
+            default_policy_loader=default_group_policy,
+        )
 
     async def _archive_group_message(
         self,

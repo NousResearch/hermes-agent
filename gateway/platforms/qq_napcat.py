@@ -35,6 +35,11 @@ from gateway.group_runtime import (
     resolve_group_trigger_reason,
     text_looks_like_request,
 )
+from gateway.group_runtime_service import (
+    qq_group_message_allowed,
+    qq_policy_has_runtime_override,
+    resolve_qq_effective_group_policy,
+)
 from gateway.qq_group_archive import QqGroupArchiveStore
 from gateway.qq_intel_assignments import get_group_monitoring_overlay, list_intel_workers
 from gateway.qq_intents import (
@@ -644,17 +649,13 @@ class QqNapCatAdapter(BasePlatformAdapter):
 
     def _group_message_allowed(self, payload: Dict[str, Any]) -> bool:
         group_id = str(payload.get("group_id") or "").strip()
-        if not group_id:
-            return False
-        if self._intel_group_overlay(group_id).get("active"):
-            return True
-        if has_group_policy(group_id):
-            return True
-        if not self.allow_all_groups and self.allowed_groups and group_id not in self.allowed_groups:
-            return False
-        if not self.allow_all_groups and not self.allowed_groups:
-            return False
-        return True
+        return qq_group_message_allowed(
+            group_id,
+            allow_all_groups=bool(self.allow_all_groups),
+            allowed_groups=set(self.allowed_groups or set()),
+            has_policy=has_group_policy(group_id),
+            overlay_active=bool(self._intel_group_overlay(group_id).get("active")),
+        )
 
     def _intel_group_overlay(self, group_id: str) -> dict[str, Any]:
         normalized_group_id = str(group_id or "").strip()
@@ -672,62 +673,15 @@ class QqNapCatAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _policy_has_runtime_override(policy: dict[str, Any]) -> bool:
-        mode = str(policy.get("mode") or "").strip().lower()
-        return bool(
-            mode not in {"", "default"}
-            or bool(policy.get("archive_enabled"))
-            or bool(policy.get("daily_report_enabled"))
-            or str(policy.get("daily_report_target") or "").strip()
-            or str(policy.get("manual_report_target") or "").strip()
-            or not bool(policy.get("purge_raw_after_rollup", True))
-        )
+        return qq_policy_has_runtime_override(policy)
 
     def _effective_group_policy(self, group_id: str) -> dict[str, Any]:
-        normalized_group_id = str(group_id or "").strip()
-        if not normalized_group_id:
-            return default_group_policy("")
-        try:
-            policy = get_group_policy(normalized_group_id)
-        except Exception:
-            logger.exception(
-                "[%s] Failed to load QQ group policy for %s",
-                self.name,
-                normalized_group_id,
-            )
-            policy = default_group_policy(normalized_group_id)
-
-        overlay = self._intel_group_overlay(normalized_group_id)
-        if overlay.get("active") and not self._policy_has_runtime_override(policy):
-            merged = dict(policy)
-            workers = list(overlay.get("workers") or [])
-            daily_report_targets = _unique_nonempty_text(
-                [
-                    worker.get("daily_report_target")
-                    for worker in workers
-                    if bool(worker.get("daily_report_enabled"))
-                ]
-            )
-            manual_report_targets = _unique_nonempty_text(
-                [worker.get("manual_report_target") for worker in workers]
-            )
-            notify_targets = _unique_nonempty_text(
-                [worker.get("notify_target") for worker in workers]
-            )
-            merged["mode"] = "collect_only"
-            merged["archive_enabled"] = bool(overlay.get("archive_enabled"))
-            merged["daily_report_enabled"] = bool(overlay.get("daily_report_enabled"))
-            merged["daily_report_target"] = (
-                daily_report_targets[0] if len(daily_report_targets) == 1 else None
-            )
-            merged["manual_report_target"] = (
-                manual_report_targets[0] if len(manual_report_targets) == 1 else None
-            )
-            merged["notify_target"] = notify_targets[0] if len(notify_targets) == 1 else None
-            merged["daily_report_targets"] = daily_report_targets
-            merged["manual_report_targets"] = manual_report_targets
-            merged["notify_targets"] = notify_targets
-            return merged
-        return policy
+        return resolve_qq_effective_group_policy(
+            group_id,
+            policy_loader=get_group_policy,
+            default_policy_loader=default_group_policy,
+            overlay_loader=self._intel_group_overlay,
+        )
 
     def _group_runs_project_mode(self, group_id: str) -> bool:
         if self._project_group_mode:

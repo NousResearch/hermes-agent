@@ -79,7 +79,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from hermes_constants import get_hermes_home
 from utils import atomic_yaml_write
 from agent.skill_commands import build_preloaded_skills_prompt
-from agent.auxiliary_client import resolve_vision_request_target
 _hermes_home = get_hermes_home()
 
 # Load environment variables from ~/.hermes/.env first.
@@ -197,59 +196,43 @@ from gateway.config import (
     load_gateway_config,
     _coerce_list,
 )
+from gateway.agent_execution_service import (
+    collect_history_media_paths,
+    create_gateway_agent,
+    gateway_approval_context,
+    normalize_conversation_history,
+)
+from gateway.agent_runtime import (
+    agent_config_signature as shared_agent_config_signature,
+    build_gateway_agent_runtime,
+    load_ephemeral_system_prompt as shared_load_ephemeral_system_prompt,
+    load_fallback_model as shared_load_fallback_model,
+    load_gateway_user_config as shared_load_gateway_user_config,
+    load_prefill_messages as shared_load_prefill_messages,
+    load_provider_routing as shared_load_provider_routing,
+    load_reasoning_config as shared_load_reasoning_config,
+    load_show_reasoning as shared_load_show_reasoning,
+    load_smart_model_routing as shared_load_smart_model_routing,
+    platform_config_key as shared_platform_config_key,
+    resolve_gateway_model as shared_resolve_gateway_model,
+    resolve_runtime_agent_kwargs as shared_resolve_runtime_agent_kwargs,
+    resolve_turn_agent_config as shared_resolve_turn_agent_config,
+)
+from gateway.direct_control_router import DirectControlRouter
 from gateway.direct_shortcuts import run_direct_shortcut_handlers
 from gateway.employee_routes import get_employee_routes
 from gateway.group_control_intents import (
-    looks_like_group_chat_enable_request,
     looks_like_group_listen_disable_request,
     looks_like_group_listen_enable_request,
-    looks_like_group_report_disable_request,
-    looks_like_group_report_enable_request,
     looks_like_group_runtime_status_query as looks_like_shared_group_runtime_status_query,
-    resolve_oral_report_delivery_target,
 )
-from gateway.group_control_requests import match_group_control_request
-from gateway.group_runtime_status_requests import match_group_runtime_status_request
 from gateway.group_target_intents import (
     extract_qq_group_target,
-    extract_recent_target_from_history,
     extract_weixin_group_target,
 )
-from gateway.group_reply_formatters import (
-    format_admin_group_control_reply,
-    format_admin_send_reply,
-    format_group_runtime_status_reply,
-)
-from gateway.send_intents import (
-    extract_qq_inline_send_target_and_message,
-    extract_send_confirmation_message,
-    extract_weixin_inline_send_target_and_message,
-    looks_like_send_confirmation,
-    looks_like_send_query,
-)
-from gateway.send_requests import match_send_request
 from gateway.qq_group_archive import QqGroupArchiveStore
 from gateway.qq_group_policies import get_group_policy, list_group_policies
 from gateway.qq_intel_assignments import get_group_monitoring_overlay, list_intel_workers
-from gateway.qq_intel_control_requests import (
-    extract_qq_oral_intel_hire_objective,
-    extract_qq_worker_name,
-    looks_like_qq_intel_worker_context,
-    match_qq_intel_control_request,
-)
-from gateway.qq_group_moderation_requests import (
-    extract_qq_oral_moderation_duration_seconds,
-    extract_qq_oral_moderation_reason,
-    extract_qq_oral_moderation_user_query,
-    match_qq_group_moderation_action,
-    match_qq_group_moderation_request,
-)
-from gateway.qq_social_control_requests import (
-    looks_like_qq_social_policy_query,
-    match_qq_social_control_request,
-    match_qq_social_request_type,
-    qq_social_policy_notify_target,
-)
 from gateway.weixin_group_archive import WeixinGroupArchiveStore
 from gateway.weixin_group_policies import (
     get_group_policy as get_weixin_group_policy,
@@ -291,6 +274,51 @@ from gateway.background_jobs import (
 )
 from gateway.delivery import DeliveryRouter
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType
+
+
+_DIRECT_CONTROL_ROUTER_METHODS = frozenset(
+    {
+        "_extract_recent_send_target_from_history",
+        "_extract_recent_group_target_from_history",
+        "_match_admin_qq_send_request",
+        "_format_admin_qq_send_reply",
+        "_try_handle_admin_qq_send_shortcut",
+        "_match_admin_weixin_send_request",
+        "_format_admin_weixin_send_reply",
+        "_try_handle_admin_weixin_send_shortcut",
+        "_match_admin_platform_send_request",
+        "_extract_platform_text_event_body",
+        "_match_admin_send_request_common",
+        "_run_send_shortcut_tool",
+        "_try_handle_admin_send_shortcut_common",
+        "_match_admin_qq_intel_control_request",
+        "_format_admin_qq_intel_control_reply",
+        "_try_handle_admin_qq_intel_control",
+        "_try_handle_admin_qq_group_runtime_status",
+        "_load_qq_group_runtime_status_details",
+        "_try_handle_admin_weixin_group_runtime_status",
+        "_load_weixin_group_runtime_status_details",
+        "_try_handle_admin_platform_group_runtime_status",
+        "_resolve_oral_report_delivery_target",
+        "_match_admin_qq_group_control_request",
+        "_format_admin_qq_group_control_reply",
+        "_try_handle_admin_qq_group_control",
+        "_match_admin_weixin_group_control_request",
+        "_format_admin_weixin_group_control_reply",
+        "_try_handle_admin_weixin_group_control",
+        "_run_qq_group_control_tool",
+        "_run_weixin_group_control_tool",
+        "_try_handle_admin_group_control_common",
+        "_match_admin_platform_group_control_request",
+        "_match_admin_group_control_request_common",
+        "_match_admin_qq_group_moderation_request",
+        "_format_admin_qq_group_moderation_reply",
+        "_try_handle_admin_qq_group_moderation",
+        "_match_admin_qq_social_control_request",
+        "_format_admin_qq_social_control_reply",
+        "_try_handle_admin_qq_social_control",
+    }
+)
 
 
 def _normalize_whatsapp_identifier(value: str) -> str:
@@ -502,27 +530,7 @@ def _simplify_shared_group_history_for_agent(
 
 def _resolve_runtime_agent_kwargs() -> dict:
     """Resolve provider credentials for gateway-created AIAgent instances."""
-    from hermes_cli.runtime_provider import (
-        resolve_runtime_provider,
-        format_runtime_provider_error,
-    )
-
-    try:
-        runtime = resolve_runtime_provider(
-            requested=os.getenv("HERMES_INFERENCE_PROVIDER"),
-        )
-    except Exception as exc:
-        raise RuntimeError(format_runtime_provider_error(exc)) from exc
-
-    return {
-        "api_key": runtime.get("api_key"),
-        "base_url": runtime.get("base_url"),
-        "provider": runtime.get("provider"),
-        "api_mode": runtime.get("api_mode"),
-        "command": runtime.get("command"),
-        "args": list(runtime.get("args") or []),
-        "credential_pool": runtime.get("credential_pool"),
-    }
+    return shared_resolve_runtime_agent_kwargs()
 
 
 def _load_gateway_flush_memory_store():
@@ -1090,20 +1098,23 @@ def _check_unavailable_skill(command_name: str) -> str | None:
 
 def _platform_config_key(platform: "Platform") -> str:
     """Map a Platform enum to its config.yaml key (LOCAL→"cli", rest→enum value)."""
-    return "cli" if platform == Platform.LOCAL else platform.value
+    return shared_platform_config_key(platform)
+
+
+def _sync_shared_gateway_home() -> None:
+    """Keep shared gateway helpers aligned with gateway.run test overrides."""
+    try:
+        import gateway.agent_runtime as _agent_runtime
+
+        _agent_runtime._hermes_home = _hermes_home
+    except Exception:
+        pass
 
 
 def _load_gateway_config() -> dict:
     """Load and parse ~/.hermes/config.yaml, returning {} on any error."""
-    try:
-        config_path = _hermes_home / 'config.yaml'
-        if config_path.exists():
-            import yaml
-            with open(config_path, 'r', encoding='utf-8') as f:
-                return yaml.safe_load(f) or {}
-    except Exception:
-        logger.debug("Could not load gateway config from %s", _hermes_home / 'config.yaml')
-    return {}
+    _sync_shared_gateway_home()
+    return shared_load_gateway_user_config()
 
 
 def _resolve_gateway_model(config: dict | None = None) -> str:
@@ -1113,13 +1124,7 @@ def _resolve_gateway_model(config: dict | None = None) -> str:
     back to the hardcoded default which fails when the active provider is
     openai-codex.
     """
-    cfg = config if config is not None else _load_gateway_config()
-    model_cfg = cfg.get("model", {})
-    if isinstance(model_cfg, str):
-        return model_cfg
-    elif isinstance(model_cfg, dict):
-        return model_cfg.get("default") or model_cfg.get("model") or ""
-    return ""
+    return shared_resolve_gateway_model(config)
 
 
 def _resolve_hermes_bin() -> Optional[list[str]]:
@@ -1263,6 +1268,7 @@ class GatewayRunner:
         self._managed_background_job_tasks: Dict[str, asyncio.Task] = {}
         self._managed_background_job_agents: Dict[str, Any] = {}
         self._background_job_store = BackgroundJobStore()
+        self._direct_control_router = DirectControlRouter(self)
         self._auto_vision_cache: Dict[str, Dict[str, Any]] = {}
         self._auto_vision_tasks: Dict[str, asyncio.Task] = {}
         self._auto_vision_unhealthy_until = 0.0
@@ -1535,19 +1541,12 @@ class GatewayRunner:
         )
 
     def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict) -> dict:
-        from agent.smart_model_routing import resolve_turn_route
-
-        primary = {
-            "model": model,
-            "api_key": runtime_kwargs.get("api_key"),
-            "base_url": runtime_kwargs.get("base_url"),
-            "provider": runtime_kwargs.get("provider"),
-            "api_mode": runtime_kwargs.get("api_mode"),
-            "command": runtime_kwargs.get("command"),
-            "args": list(runtime_kwargs.get("args") or []),
-            "credential_pool": runtime_kwargs.get("credential_pool"),
-        }
-        return resolve_turn_route(user_message, getattr(self, "_smart_model_routing", {}), primary)
+        return shared_resolve_turn_agent_config(
+            user_message,
+            model,
+            runtime_kwargs,
+            getattr(self, "_smart_model_routing", {}),
+        )
 
     async def _handle_adapter_fatal_error(self, adapter: BasePlatformAdapter) -> None:
         """React to an adapter failure after startup.
@@ -1623,36 +1622,8 @@ class GatewayRunner:
         the prefill_messages_file key in ~/.hermes/config.yaml.
         Relative paths are resolved from ~/.hermes/.
         """
-        import json as _json
-        file_path = os.getenv("HERMES_PREFILL_MESSAGES_FILE", "")
-        if not file_path:
-            try:
-                import yaml as _y
-                cfg_path = _hermes_home / "config.yaml"
-                if cfg_path.exists():
-                    with open(cfg_path, encoding="utf-8") as _f:
-                        cfg = _y.safe_load(_f) or {}
-                    file_path = cfg.get("prefill_messages_file", "")
-            except Exception:
-                pass
-        if not file_path:
-            return []
-        path = Path(file_path).expanduser()
-        if not path.is_absolute():
-            path = _hermes_home / path
-        if not path.exists():
-            logger.warning("Prefill messages file not found: %s", path)
-            return []
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = _json.load(f)
-            if not isinstance(data, list):
-                logger.warning("Prefill messages file must contain a JSON array: %s", path)
-                return []
-            return data
-        except Exception as e:
-            logger.warning("Failed to load prefill messages from %s: %s", path, e)
-            return []
+        _sync_shared_gateway_home()
+        return shared_load_prefill_messages()
 
     @staticmethod
     def _load_ephemeral_system_prompt() -> str:
@@ -1661,19 +1632,8 @@ class GatewayRunner:
         Checks HERMES_EPHEMERAL_SYSTEM_PROMPT env var first, then falls back to
         agent.system_prompt in ~/.hermes/config.yaml.
         """
-        prompt = os.getenv("HERMES_EPHEMERAL_SYSTEM_PROMPT", "")
-        if prompt:
-            return prompt
-        try:
-            import yaml as _y
-            cfg_path = _hermes_home / "config.yaml"
-            if cfg_path.exists():
-                with open(cfg_path, encoding="utf-8") as _f:
-                    cfg = _y.safe_load(_f) or {}
-                return (cfg.get("agent", {}).get("system_prompt", "") or "").strip()
-        except Exception:
-            pass
-        return ""
+        _sync_shared_gateway_home()
+        return shared_load_ephemeral_system_prompt()
 
     @staticmethod
     def _load_reasoning_config() -> dict | None:
@@ -1683,35 +1643,14 @@ class GatewayRunner:
         "high", "medium", "low", "minimal", "none". Returns None to use
         default (medium).
         """
-        from hermes_constants import parse_reasoning_effort
-        effort = ""
-        try:
-            import yaml as _y
-            cfg_path = _hermes_home / "config.yaml"
-            if cfg_path.exists():
-                with open(cfg_path, encoding="utf-8") as _f:
-                    cfg = _y.safe_load(_f) or {}
-                effort = str(cfg.get("agent", {}).get("reasoning_effort", "") or "").strip()
-        except Exception:
-            pass
-        result = parse_reasoning_effort(effort)
-        if effort and effort.strip() and result is None:
-            logger.warning("Unknown reasoning_effort '%s', using default (medium)", effort)
-        return result
+        _sync_shared_gateway_home()
+        return shared_load_reasoning_config()
 
     @staticmethod
     def _load_show_reasoning() -> bool:
         """Load show_reasoning toggle from config.yaml display section."""
-        try:
-            import yaml as _y
-            cfg_path = _hermes_home / "config.yaml"
-            if cfg_path.exists():
-                with open(cfg_path, encoding="utf-8") as _f:
-                    cfg = _y.safe_load(_f) or {}
-                return bool(cfg.get("display", {}).get("show_reasoning", False))
-        except Exception:
-            pass
-        return False
+        _sync_shared_gateway_home()
+        return shared_load_show_reasoning()
 
     @staticmethod
     def _load_background_notifications_mode() -> str:
@@ -1751,16 +1690,8 @@ class GatewayRunner:
     @staticmethod
     def _load_provider_routing() -> dict:
         """Load OpenRouter provider routing preferences from config.yaml."""
-        try:
-            import yaml as _y
-            cfg_path = _hermes_home / "config.yaml"
-            if cfg_path.exists():
-                with open(cfg_path, encoding="utf-8") as _f:
-                    cfg = _y.safe_load(_f) or {}
-                return cfg.get("provider_routing", {}) or {}
-        except Exception:
-            pass
-        return {}
+        _sync_shared_gateway_home()
+        return shared_load_provider_routing()
 
     @staticmethod
     def _load_fallback_model() -> list | dict | None:
@@ -1770,32 +1701,14 @@ class GatewayRunner:
         dict (legacy ``fallback_model``), or None if not configured.
         AIAgent.__init__ normalizes both formats into a chain.
         """
-        try:
-            import yaml as _y
-            cfg_path = _hermes_home / "config.yaml"
-            if cfg_path.exists():
-                with open(cfg_path, encoding="utf-8") as _f:
-                    cfg = _y.safe_load(_f) or {}
-                fb = cfg.get("fallback_providers") or cfg.get("fallback_model") or None
-                if fb:
-                    return fb
-        except Exception:
-            pass
-        return None
+        _sync_shared_gateway_home()
+        return shared_load_fallback_model()
 
     @staticmethod
     def _load_smart_model_routing() -> dict:
         """Load optional smart cheap-vs-strong model routing config."""
-        try:
-            import yaml as _y
-            cfg_path = _hermes_home / "config.yaml"
-            if cfg_path.exists():
-                with open(cfg_path, encoding="utf-8") as _f:
-                    cfg = _y.safe_load(_f) or {}
-                return cfg.get("smart_model_routing", {}) or {}
-        except Exception:
-            pass
-        return {}
+        _sync_shared_gateway_home()
+        return shared_load_smart_model_routing()
 
     async def start(self) -> bool:
         """
@@ -3518,6 +3431,13 @@ class GatewayRunner:
         )
         self._set_session_env(context)
 
+    def _get_direct_control_router(self) -> DirectControlRouter:
+        router = getattr(self, "_direct_control_router", None)
+        if router is None:
+            router = DirectControlRouter(self)
+            self._direct_control_router = router
+        return router
+
     def _try_handle_direct_gateway_shortcuts(
         self,
         event: MessageEvent,
@@ -3537,383 +3457,6 @@ class GatewayRunner:
             conversation_history=conversation_history,
             logger=logger,
         )
-
-    @staticmethod
-    def _looks_like_send_query(message_text: str) -> bool:
-        return looks_like_send_query(message_text)
-
-    @staticmethod
-    def _looks_like_send_confirmation(message_text: str) -> bool:
-        return looks_like_send_confirmation(message_text)
-
-    @staticmethod
-    def _extract_send_confirmation_message(message_text: str) -> str:
-        return extract_send_confirmation_message(message_text)
-
-    @staticmethod
-    def _extract_qq_inline_send_target_and_message(message_text: str) -> tuple[str, str]:
-        return extract_qq_inline_send_target_and_message(message_text)
-
-    @staticmethod
-    def _extract_weixin_inline_send_target_and_message(message_text: str) -> tuple[str, str]:
-        return extract_weixin_inline_send_target_and_message(message_text)
-
-    def _extract_recent_send_target_from_history(
-        self,
-        source: SessionSource,
-        conversation_history: Optional[List[Dict[str, Any]]],
-        *,
-        target_extractor,
-    ) -> str:
-        return extract_recent_target_from_history(
-            source,
-            conversation_history,
-            extractor=target_extractor,
-            predicate=lambda item, content: (
-                str(item.get("role") or "").strip().lower() == "user"
-                and self._looks_like_send_query(content)
-            ),
-        )
-
-    @staticmethod
-    def _extract_recent_group_target_from_history(
-        source: SessionSource,
-        conversation_history: Optional[List[Dict[str, Any]]],
-        extractor,
-    ) -> str:
-        return extract_recent_target_from_history(
-            source,
-            conversation_history,
-            extractor=extractor,
-        )
-
-    def _match_admin_qq_send_request(
-        self,
-        event: MessageEvent,
-        *,
-        conversation_history: Optional[List[Dict[str, Any]]] = None,
-    ) -> tuple[dict[str, Any] | None, str | None]:
-        return self._match_admin_platform_send_request(
-            event,
-            conversation_history=conversation_history,
-            platform=Platform.QQ_NAPCAT,
-            inline_extractor=self._extract_qq_inline_send_target_and_message,
-            history_target_extractor=lambda source, history: self._extract_recent_send_target_from_history(
-                source,
-                history,
-                target_extractor=extract_qq_group_target,
-            ),
-            direct_target_extractor=extract_qq_group_target,
-            query_prompt_formatter=lambda target_label: (
-                f"可以。把要发的内容直接发我，或者一句话说“往 QQ 群 {target_label} 发：xxx”。"
-            ),
-        )
-
-    @staticmethod
-    def _format_admin_qq_send_reply(tool_args: dict[str, Any]) -> str:
-        return format_admin_send_reply(
-            tool_args,
-            platform_label="QQ 群",
-            target_normalizer=lambda value: str(value or "").replace("qq_napcat:group:", "").replace("group:", "").strip(),
-        )
-
-    def _try_handle_admin_qq_send_shortcut(
-        self,
-        event: MessageEvent,
-        *,
-        conversation_history: Optional[List[Dict[str, Any]]] = None,
-    ) -> str | None:
-        return self._try_handle_admin_send_shortcut_common(
-            event,
-            conversation_history=conversation_history,
-            matcher=self._match_admin_qq_send_request,
-            target_formatter=lambda target: (
-                f"qq_napcat:{target}" if str(target).startswith("group:") else str(target)
-            ),
-            error_prefix="QQ 发消息执行失败",
-            reply_formatter=self._format_admin_qq_send_reply,
-        )
-
-    def _match_admin_weixin_send_request(
-        self,
-        event: MessageEvent,
-        *,
-        conversation_history: Optional[List[Dict[str, Any]]] = None,
-    ) -> tuple[dict[str, Any] | None, str | None]:
-        return self._match_admin_platform_send_request(
-            event,
-            conversation_history=conversation_history,
-            platform=Platform.WEIXIN,
-            inline_extractor=self._extract_weixin_inline_send_target_and_message,
-            history_target_extractor=lambda source, history: self._extract_recent_send_target_from_history(
-                source,
-                history,
-                target_extractor=extract_weixin_group_target,
-            ),
-            direct_target_extractor=extract_weixin_group_target,
-            query_prompt_formatter=lambda target_label: (
-                f"可以。把要发的内容直接发我，或者一句话说“往 微信群 {target_label} 发：xxx”。"
-            ),
-        )
-
-    @staticmethod
-    def _format_admin_weixin_send_reply(tool_args: dict[str, Any]) -> str:
-        return format_admin_send_reply(
-            tool_args,
-            platform_label="微信群",
-            target_normalizer=lambda value: str(value or "").replace("weixin:", "").strip(),
-        )
-
-    def _try_handle_admin_weixin_send_shortcut(
-        self,
-        event: MessageEvent,
-        *,
-        conversation_history: Optional[List[Dict[str, Any]]] = None,
-    ) -> str | None:
-        return self._try_handle_admin_send_shortcut_common(
-            event,
-            conversation_history=conversation_history,
-            matcher=self._match_admin_weixin_send_request,
-            target_formatter=lambda target: (
-                str(target) if str(target).startswith("weixin:") else f"weixin:{str(target)}"
-            ),
-            error_prefix="微信发消息执行失败",
-            reply_formatter=self._format_admin_weixin_send_reply,
-        )
-
-    def _match_admin_platform_send_request(
-        self,
-        event: MessageEvent,
-        *,
-        conversation_history: Optional[List[Dict[str, Any]]] = None,
-        platform: Platform,
-        inline_extractor,
-        history_target_extractor,
-        direct_target_extractor,
-        query_prompt_formatter,
-    ) -> tuple[dict[str, Any] | None, str | None]:
-        source, body = self._extract_platform_text_event_body(
-            event,
-            platform=platform,
-        )
-        if source is None:
-            return None, None
-
-        if not self._configured_admin_user_ids(getattr(source, "platform", None)):
-            return None, None
-        if not self._is_admin_user(source):
-            return None, None
-
-        return self._match_admin_send_request_common(
-            source=source,
-            body=body,
-            conversation_history=conversation_history,
-            inline_extractor=inline_extractor,
-            history_target_extractor=history_target_extractor,
-            direct_target_extractor=direct_target_extractor,
-            query_prompt_formatter=query_prompt_formatter,
-        )
-
-    @staticmethod
-    def _extract_platform_text_event_body(
-        event: MessageEvent,
-        *,
-        platform: Platform,
-    ) -> tuple[SessionSource | None, str]:
-        source = getattr(event, "source", None)
-        if getattr(source, "platform", None) != platform:
-            return None, ""
-        if event.get_command():
-            return None, ""
-        if getattr(event, "message_type", None) != MessageType.TEXT:
-            return None, ""
-        if getattr(event, "media_urls", None):
-            return None, ""
-
-        body = str(getattr(event, "text", "") or "").strip()
-        if not body:
-            return None, ""
-        return source, body
-
-    def _match_admin_send_request_common(
-        self,
-        *,
-        source: SessionSource,
-        body: str,
-        conversation_history: Optional[List[Dict[str, Any]]],
-        inline_extractor,
-        history_target_extractor,
-        direct_target_extractor,
-        query_prompt_formatter,
-    ) -> tuple[dict[str, Any] | None, str | None]:
-        return match_send_request(
-            source=source,
-            body=body,
-            conversation_history=conversation_history,
-            inline_extractor=inline_extractor,
-            history_target_extractor=history_target_extractor,
-            direct_target_extractor=direct_target_extractor,
-            looks_like_send_query=self._looks_like_send_query,
-            looks_like_send_confirmation=self._looks_like_send_confirmation,
-            extract_send_confirmation_message=self._extract_send_confirmation_message,
-            query_prompt_formatter=query_prompt_formatter,
-        )
-
-    @staticmethod
-    def _run_send_shortcut_tool(tool_args: dict[str, Any], *, target_formatter):
-        from tools.send_message_tool import send_message_tool
-
-        target = str(tool_args.get("target") or "").strip()
-        message = str(tool_args.get("message") or "").strip()
-        raw = send_message_tool(
-            {
-                "action": "send",
-                "target": target_formatter(target),
-                "message": message,
-            }
-        )
-        return json.loads(raw) if isinstance(raw, str) else (raw or {})
-
-    def _try_handle_admin_send_shortcut_common(
-        self,
-        event: MessageEvent,
-        *,
-        conversation_history: Optional[List[Dict[str, Any]]] = None,
-        matcher,
-        target_formatter,
-        error_prefix: str,
-        reply_formatter,
-    ) -> str | None:
-        tool_args, shortcut_error = matcher(
-            event,
-            conversation_history=conversation_history,
-        )
-        if shortcut_error:
-            return shortcut_error
-        if not tool_args:
-            return None
-
-        try:
-            result = self._run_send_shortcut_tool(
-                tool_args,
-                target_formatter=target_formatter,
-            )
-        except Exception as exc:
-            logger.warning("%s: %s", error_prefix, exc)
-            return f"{error_prefix}：{exc}"
-
-        if result.get("error"):
-            return str(result["error"])
-        return reply_formatter(tool_args)
-
-    def _match_admin_qq_intel_control_request(
-        self,
-        event: MessageEvent,
-    ) -> tuple[dict[str, Any] | None, str | None]:
-        source, body = self._extract_platform_text_event_body(
-            event,
-            platform=Platform.QQ_NAPCAT,
-        )
-        if source is None:
-            return None, None
-        known_worker_names = {
-            str(item.get("worker_name") or "").strip()
-            for item in list_intel_workers()
-            if isinstance(item, dict) and str(item.get("worker_name") or "").strip()
-        }
-        return match_qq_intel_control_request(
-            source=source,
-            body=body,
-            admin_ids_configured=bool(self._configured_admin_user_ids(getattr(source, "platform", None))),
-            is_admin_user=self._is_admin_user(source),
-            looks_like_joined_group_list_query=self._looks_like_joined_group_list_query,
-            extract_worker_name=extract_qq_worker_name,
-            looks_like_worker_context=looks_like_qq_intel_worker_context,
-            known_worker_names=known_worker_names,
-            target_extractor=extract_qq_group_target,
-            report_target_resolver=self._resolve_oral_report_delivery_target,
-            hire_objective_extractor=extract_qq_oral_intel_hire_objective,
-        )
-
-    def _format_admin_qq_intel_control_reply(self, tool_args: dict[str, Any], result: dict[str, Any]) -> str:
-        action = str(tool_args.get("action") or "").strip().lower()
-        if action == "list_joined_groups":
-            groups = list(result.get("groups") or [])
-            if not groups:
-                return "当前还没查到已加入的 QQ 群。"
-            lines = ["当前已加入的 QQ 群："]
-            for item in groups[:20]:
-                if not isinstance(item, dict):
-                    continue
-                group_id = str(item.get("group_id") or "").strip()
-                group_name = str(item.get("group_name") or group_id).strip()
-                lines.append(f"- {group_name} ({group_id})")
-            return "\n".join(lines)
-
-        worker = result.get("worker") or {}
-        worker_name = str(worker.get("worker_name") or tool_args.get("worker_name") or "").strip()
-        status_label = self._format_intel_worker_status_label(worker.get("status"))
-        if action == "hire_worker":
-            target_group = str(
-                worker.get("target_group_id")
-                or worker.get("target_group_ref")
-                or tool_args.get("target_group")
-                or ""
-            ).replace("group:", "").strip()
-            return f"已安排情报员 {worker_name} 去 QQ 群 {target_group} 执行任务。当前状态：{status_label}。"
-        if action == "pause_worker":
-            return f"情报员 {worker_name} 已暂停。当前状态：{status_label}。"
-        if action == "resume_worker":
-            return f"情报员 {worker_name} 已恢复任务。当前状态：{status_label}。"
-        if action == "stop_worker":
-            return f"情报员 {worker_name} 已停用。当前状态：{status_label}。"
-        if action == "run_report_now":
-            delivery = str((result.get("delivery") or {}).get("target") or tool_args.get("manual_report_target") or "").strip()
-            if delivery:
-                return f"已让情报员 {worker_name} 立即汇报，发送到 {delivery}。"
-            return f"已让情报员 {worker_name} 立即汇报。"
-
-        group_id = str(worker.get("target_group_id") or "").strip()
-        group_name = str(worker.get("target_group_name") or "").strip()
-        objective = str(worker.get("objective") or "").strip()
-        lines = [f"情报员 {worker_name} 当前状态：{status_label}。"]
-        if group_id or group_name:
-            label = group_name or group_id
-            if group_id and group_name and group_id != group_name:
-                label = f"{group_name} ({group_id})"
-            lines.append(f"目标群：{label}")
-        if objective:
-            lines.append(f"任务：{objective}")
-        daily_targets = self._unique_report_targets([worker.get("daily_report_target")])
-        manual_targets = self._unique_report_targets([worker.get("manual_report_target")])
-        if bool(worker.get("daily_report_enabled")) and daily_targets:
-            lines.append(f"日报目标：{', '.join(daily_targets)}")
-        if manual_targets:
-            lines.append(f"立即汇报目标：{', '.join(manual_targets)}")
-        last_error = str(worker.get("last_error") or "").strip()
-        if last_error:
-            lines.append(f"备注：{last_error}")
-        return "\n".join(lines)
-
-    def _try_handle_admin_qq_intel_control(self, event: MessageEvent) -> str | None:
-        tool_args, shortcut_error = self._match_admin_qq_intel_control_request(event)
-        if shortcut_error:
-            return shortcut_error
-        if not tool_args:
-            return None
-
-        try:
-            from tools.qq_control_tool import qq_control_tool
-
-            raw = qq_control_tool(tool_args)
-            result = json.loads(raw) if isinstance(raw, str) else (raw or {})
-        except Exception as exc:
-            logger.warning("Admin QQ oral intel control shortcut failed: %s", exc)
-            return f"QQ 情报员控制执行失败：{exc}"
-
-        if result.get("error"):
-            return str(result["error"])
-        return self._format_admin_qq_intel_control_reply(tool_args, result)
 
     def _try_handle_admin_qq_group_runtime_status(
         self,
@@ -4029,27 +3572,19 @@ class GatewayRunner:
         history_target_extractor,
         status_loader,
     ) -> str | None:
-        source, body = self._extract_platform_text_event_body(
+        return self._get_direct_control_router()._try_handle_admin_platform_group_runtime_status(
             event,
-            platform=platform,
-        )
-        if source is None:
-            return None
-        target = match_group_runtime_status_request(
-            source=source,
-            body=body,
             conversation_history=conversation_history,
-            admin_ids_configured=bool(self._configured_admin_user_ids(getattr(source, "platform", None))),
-            is_admin_user=self._is_admin_user(source),
-            looks_like_group_runtime_status_query=self._looks_like_group_runtime_status_query,
+            platform=platform,
             target_extractor=target_extractor,
             history_target_extractor=history_target_extractor,
+            status_loader=status_loader,
         )
-        if not target:
-            return None
 
-        status_details = status_loader(target)
-        return format_group_runtime_status_reply(**status_details)
+    def __getattr__(self, name: str):
+        if name in _DIRECT_CONTROL_ROUTER_METHODS:
+            return getattr(self._get_direct_control_router(), name)
+        raise AttributeError(f"{type(self).__name__!s} object has no attribute {name!r}")
 
     @staticmethod
     def _sanitize_background_visible_text(text: str) -> str:
@@ -4085,336 +3620,6 @@ class GatewayRunner:
         if preview:
             lines.append(f"任务：{preview}")
         return "\n".join(lines)
-
-    @staticmethod
-    def _resolve_oral_report_delivery_target(
-        source: SessionSource,
-        message_text: str,
-        *,
-        prefer_dm: bool,
-    ) -> str:
-        del source
-        return resolve_oral_report_delivery_target(message_text, prefer_dm=prefer_dm)
-
-    def _match_admin_qq_group_control_request(
-        self,
-        event: MessageEvent,
-    ) -> tuple[dict[str, Any] | None, str | None]:
-        return self._match_admin_platform_group_control_request(
-            event,
-            platform=Platform.QQ_NAPCAT,
-            target_extractor=extract_qq_group_target,
-            missing_target_message="要切群监听/日报，请直接说清群号，或者在目标群里明确说“这个群”。",
-            admin_action_label="调整 QQ 群监听/日报策略",
-            collect_only_action="enable_collect_only",
-            unresolved_target_guard=lambda body: any(marker in body for marker in ("情报员", "员工")),
-        )
-
-    @staticmethod
-    def _format_admin_qq_group_control_reply(tool_args: dict[str, Any], result: dict[str, Any]) -> str:
-        return format_admin_group_control_reply(
-            tool_args,
-            result,
-            platform_label="QQ 群",
-            target_key="group_id",
-            collect_only_action="enable_collect_only",
-            strip_group_prefix=True,
-        )
-
-    def _try_handle_admin_qq_group_control(self, event: MessageEvent) -> str | None:
-        return self._try_handle_admin_group_control_common(
-            event,
-            matcher=self._match_admin_qq_group_control_request,
-            tool_runner=self._run_qq_group_control_tool,
-            error_prefix="QQ 群监听控制执行失败",
-            reply_formatter=self._format_admin_qq_group_control_reply,
-        )
-
-    def _match_admin_weixin_group_control_request(
-        self,
-        event: MessageEvent,
-    ) -> tuple[dict[str, Any] | None, str | None]:
-        return self._match_admin_platform_group_control_request(
-            event,
-            platform=Platform.WEIXIN,
-            target_extractor=extract_weixin_group_target,
-            missing_target_message="要切微信群监听/日报，请直接说清 chatroom，或者在目标群里明确说“这个群”。",
-            admin_action_label="调整微信群监听/日报策略",
-            collect_only_action="collect_only",
-        )
-
-    @staticmethod
-    def _format_admin_weixin_group_control_reply(tool_args: dict[str, Any], result: dict[str, Any]) -> str:
-        return format_admin_group_control_reply(
-            tool_args,
-            result,
-            platform_label="微信群",
-            target_key="chat_id",
-            collect_only_action="collect_only",
-            strip_group_prefix=False,
-        )
-
-    def _try_handle_admin_weixin_group_control(self, event: MessageEvent) -> str | None:
-        return self._try_handle_admin_group_control_common(
-            event,
-            matcher=self._match_admin_weixin_group_control_request,
-            tool_runner=self._run_weixin_group_control_tool,
-            error_prefix="微信群监听控制执行失败",
-            reply_formatter=self._format_admin_weixin_group_control_reply,
-        )
-
-    @staticmethod
-    def _run_qq_group_control_tool(tool_args: dict[str, Any]) -> dict[str, Any]:
-        from tools.qq_control_tool import qq_control_tool
-
-        raw = qq_control_tool(tool_args)
-        return json.loads(raw) if isinstance(raw, str) else (raw or {})
-
-    @staticmethod
-    def _run_weixin_group_control_tool(tool_args: dict[str, Any]) -> dict[str, Any]:
-        from tools.weixin_control_tool import weixin_control_tool
-
-        raw = weixin_control_tool(tool_args)
-        return json.loads(raw) if isinstance(raw, str) else (raw or {})
-
-    def _try_handle_admin_group_control_common(
-        self,
-        event: MessageEvent,
-        *,
-        matcher,
-        tool_runner,
-        error_prefix: str,
-        reply_formatter,
-    ) -> str | None:
-        tool_args, shortcut_error = matcher(event)
-        if shortcut_error:
-            return shortcut_error
-        if not tool_args:
-            return None
-
-        try:
-            result = tool_runner(tool_args)
-        except Exception as exc:
-            logger.warning("%s: %s", error_prefix, exc)
-            return f"{error_prefix}：{exc}"
-
-        if result.get("error"):
-            return str(result["error"])
-        return reply_formatter(tool_args, result)
-
-    def _match_admin_platform_group_control_request(
-        self,
-        event: MessageEvent,
-        *,
-        platform: Platform,
-        target_extractor,
-        missing_target_message: str,
-        admin_action_label: str,
-        collect_only_action: str,
-        unresolved_target_guard=None,
-    ) -> tuple[dict[str, Any] | None, str | None]:
-        source, body = self._extract_platform_text_event_body(
-            event,
-            platform=platform,
-        )
-        if source is None:
-            return None, None
-
-        target = target_extractor(source, body)
-        if unresolved_target_guard is not None and unresolved_target_guard(body) and not target:
-            return None, None
-        return self._match_admin_group_control_request_common(
-            source=source,
-            body=body,
-            target=target,
-            missing_target_message=missing_target_message,
-            admin_action_label=admin_action_label,
-            collect_only_action=collect_only_action,
-            report_target_resolver=self._resolve_oral_report_delivery_target,
-        )
-
-    def _match_admin_group_control_request_common(
-        self,
-        *,
-        source: SessionSource,
-        body: str,
-        target: str | None,
-        missing_target_message: str,
-        admin_action_label: str,
-        collect_only_action: str,
-        report_target_resolver,
-    ) -> tuple[dict[str, Any] | None, str | None]:
-        return match_group_control_request(
-            source=source,
-            body=body,
-            target=target,
-            admin_ids_configured=bool(self._configured_admin_user_ids(getattr(source, "platform", None))),
-            is_admin_user=self._is_admin_user(source),
-            missing_target_message=missing_target_message,
-            admin_only_message=self._admin_only_message(source, admin_action_label),
-            collect_only_action=collect_only_action,
-            report_target_resolver=report_target_resolver,
-        )
-
-    def _match_admin_qq_group_moderation_request(
-        self,
-        event: MessageEvent,
-    ) -> tuple[dict[str, Any] | None, str | None]:
-        source, body = self._extract_platform_text_event_body(
-            event,
-            platform=Platform.QQ_NAPCAT,
-        )
-        if source is None:
-            return None, None
-        return match_qq_group_moderation_request(
-            source=source,
-            body=body,
-            admin_ids_configured=bool(self._configured_admin_user_ids(getattr(source, "platform", None))),
-            is_admin_user=self._is_admin_user(source),
-            admin_only_message=self._admin_only_message(source, "操作 QQ 群禁言/踢人"),
-            action_matcher=match_qq_group_moderation_action,
-            target_extractor=extract_qq_group_target,
-            user_query_extractor=extract_qq_oral_moderation_user_query,
-            reason_extractor=extract_qq_oral_moderation_reason,
-            duration_extractor=extract_qq_oral_moderation_duration_seconds,
-        )
-
-    @staticmethod
-    def _format_admin_qq_group_moderation_reply(tool_args: dict[str, Any], result: dict[str, Any]) -> str:
-        action = str(result.get("action") or tool_args.get("action") or "").strip().lower()
-        group_id = str(result.get("group_id") or tool_args.get("target") or "").replace("group:", "").strip()
-        member_name = str(
-            result.get("member_name")
-            or tool_args.get("user_query")
-            or result.get("user_id")
-            or "目标成员"
-        ).strip()
-        reason = str(result.get("reason") or tool_args.get("reason") or "").strip()
-        if action == "mute_user":
-            duration_seconds = int(result.get("duration_seconds") or tool_args.get("duration_seconds") or 0)
-            line = f"已把 QQ 群 {group_id} 的 {member_name} 禁言 {duration_seconds} 秒。"
-        else:
-            line = f"已把 QQ 群 {group_id} 的 {member_name} 踢出。"
-        if reason:
-            line += f" 原因：{reason}。"
-        return line
-
-    def _try_handle_admin_qq_group_moderation(self, event: MessageEvent) -> str | None:
-        tool_args, shortcut_error = self._match_admin_qq_group_moderation_request(event)
-        if shortcut_error:
-            return shortcut_error
-        if not tool_args:
-            return None
-
-        try:
-            from tools.qq_control_tool import qq_control_tool
-
-            raw = qq_control_tool(tool_args)
-            result = json.loads(raw) if isinstance(raw, str) else (raw or {})
-        except Exception as exc:
-            logger.warning("Admin QQ oral moderation shortcut failed: %s", exc)
-            return f"QQ 群管理执行失败：{exc}"
-
-        if result.get("error"):
-            return str(result["error"])
-        return self._format_admin_qq_group_moderation_reply(tool_args, result)
-
-    def _match_admin_qq_social_control_request(
-        self,
-        event: MessageEvent,
-    ) -> tuple[dict[str, Any] | None, str | None]:
-        source, body = self._extract_platform_text_event_body(
-            event,
-            platform=Platform.QQ_NAPCAT,
-        )
-        if source is None:
-            return None, None
-        return match_qq_social_control_request(
-            source=source,
-            body=body,
-            admin_ids_configured=bool(self._configured_admin_user_ids(getattr(source, "platform", None))),
-            is_admin_user=self._is_admin_user(source),
-            admin_only_message=self._admin_only_message(source, "处理 QQ 社交请求"),
-            looks_like_request_list_query=_looks_like_qq_social_request_list_query,
-            looks_like_policy_candidate=_looks_like_qq_social_policy_candidate,
-            looks_like_policy_query=looks_like_qq_social_policy_query,
-            request_type_matcher=match_qq_social_request_type,
-            notify_target_resolver=qq_social_policy_notify_target,
-        )
-
-    @staticmethod
-    def _format_admin_qq_social_control_reply(tool_args: dict[str, Any], result: dict[str, Any]) -> str:
-        action = str(tool_args.get("action") or "").strip().lower()
-        if action == "list_requests":
-            requests = list(result.get("requests") or [])
-            request_type = str(tool_args.get("request_type") or "").strip().lower()
-            if not requests:
-                if request_type == "friend":
-                    return "当前没有待处理的 QQ 好友申请。"
-                if request_type == "group":
-                    return "当前没有待处理的 QQ 加群/邀请申请。"
-                return "当前没有待处理的 QQ 社交申请。"
-
-            if request_type == "friend":
-                lines = ["当前待处理的 QQ 好友申请："]
-            elif request_type == "group":
-                lines = ["当前待处理的 QQ 加群/邀请申请："]
-            else:
-                lines = ["当前待处理的 QQ 社交申请："]
-            for item in requests[:10]:
-                if not isinstance(item, dict):
-                    continue
-                key = str(item.get("request_key") or "").strip()
-                user_id = str(item.get("user_id") or "").strip()
-                group_id = str(item.get("group_id") or "").strip()
-                comment = str(item.get("comment") or "").strip()
-                line = f"- {key}"
-                if user_id:
-                    line += f" | 用户 {user_id}"
-                if group_id:
-                    line += f" | 群 {group_id}"
-                if comment:
-                    line += f" | 备注：{comment}"
-                lines.append(line)
-            return "\n".join(lines)
-
-        policy = result.get("policy") or {}
-        lines = ["QQ 社交自动处理策略已更新：" if action == "set_social_policy" else "QQ 社交自动处理策略："]
-        enabled_label = "已开启" if action == "set_social_policy" else "开"
-        disabled_label = "已关闭" if action == "set_social_policy" else "关"
-        lines.append(
-            f"- 好友申请自动通过：{enabled_label if bool(policy.get('auto_approve_friend_requests')) else disabled_label}"
-        )
-        lines.append(
-            f"- 加群申请自动通过：{enabled_label if bool(policy.get('auto_approve_group_add_requests')) else disabled_label}"
-        )
-        lines.append(
-            f"- 群邀请自动通过：{enabled_label if bool(policy.get('auto_approve_group_invites')) else disabled_label}"
-        )
-        notify_target = str(policy.get("notify_target") or "").strip()
-        if notify_target:
-            lines.append(f"- 通知目标：{notify_target}")
-        return "\n".join(lines)
-
-    def _try_handle_admin_qq_social_control(self, event: MessageEvent) -> str | None:
-        tool_args, shortcut_error = self._match_admin_qq_social_control_request(event)
-        if shortcut_error:
-            return shortcut_error
-        if not tool_args:
-            return None
-
-        try:
-            from tools.qq_social_tool import qq_social_tool
-
-            raw = qq_social_tool(tool_args)
-            result = json.loads(raw) if isinstance(raw, str) else (raw or {})
-        except Exception as exc:
-            logger.warning("Admin QQ social shortcut failed: %s", exc)
-            return f"QQ 社交控制执行失败：{exc}"
-
-        if result.get("error"):
-            return str(result["error"])
-        return self._format_admin_qq_social_control_reply(tool_args, result)
 
     def _start_background_job(
         self,
@@ -7863,73 +7068,61 @@ class GatewayRunner:
             from hermes_cli.tools_config import _get_platform_tools
             enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
 
-            pr = self._provider_routing
-            max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
             reasoning_config = self._load_reasoning_config()
             self._reasoning_config = reasoning_config
-            turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
             bg_history = list(conversation_history or [])
             event_loop = asyncio.get_event_loop()
 
-            def run_sync():
-                combined_ephemeral = (context_prompt or "").strip()
-                loaded_skill_names: List[str] = []
-                missing_skills: List[str] = []
-                if preloaded_skills:
-                    skill_prompt, loaded_skill_names, missing_skills = build_preloaded_skills_prompt(
-                        list(preloaded_skills),
-                        task_id=task_id,
+            combined_context_prompt = str(context_prompt or "").strip()
+            loaded_skill_names: List[str] = []
+            missing_skills: List[str] = []
+            if preloaded_skills:
+                skill_prompt, loaded_skill_names, missing_skills = build_preloaded_skills_prompt(
+                    list(preloaded_skills),
+                    task_id=task_id,
+                )
+                if skill_prompt:
+                    combined_context_prompt = (
+                        f"{skill_prompt}\n\n{combined_context_prompt}".strip()
+                        if combined_context_prompt
+                        else skill_prompt
                     )
-                    if skill_prompt:
-                        combined_ephemeral = (
-                            f"{skill_prompt}\n\n{combined_ephemeral}".strip()
-                            if combined_ephemeral
-                            else skill_prompt
-                        )
-                if job:
-                    job["loaded_skills"] = loaded_skill_names
-                    job["missing_skills"] = missing_skills
-                    job["updated_at"] = time.time()
-                platform_system_prompt = ""
-                try:
-                    platform_config = self.config.platforms.get(source.platform)
-                    if platform_config and isinstance(getattr(platform_config, "extra", None), dict):
-                        platform_system_prompt = str(platform_config.extra.get("system_prompt") or "").strip()
-                except Exception:
-                    platform_system_prompt = ""
-                if platform_system_prompt:
-                    combined_ephemeral = (combined_ephemeral + "\n\n" + platform_system_prompt).strip()
+            if job:
+                job["loaded_skills"] = loaded_skill_names
+                job["missing_skills"] = missing_skills
+                job["updated_at"] = time.time()
 
-                agent = AIAgent(
-                    model=turn_route["model"],
-                    **turn_route["runtime"],
-                    max_iterations=max_iterations,
+            runtime_spec = build_gateway_agent_runtime(
+                source=source,
+                user_message=prompt,
+                context_prompt=combined_context_prompt,
+                gateway_ephemeral_system_prompt=getattr(self, "_ephemeral_system_prompt", ""),
+                provider_routing=getattr(self, "_provider_routing", {}),
+                fallback_model=getattr(self, "_fallback_model", None),
+                smart_model_routing=getattr(self, "_smart_model_routing", {}),
+                reasoning_config=reasoning_config,
+                user_config=user_config,
+                model=model,
+                runtime_kwargs=runtime_kwargs,
+                enabled_toolsets=enabled_toolsets,
+            )
+
+            def run_sync():
+                agent = create_gateway_agent(
+                    runtime_spec=runtime_spec,
+                    session_id=task_id,
+                    source=source,
+                    session_db=self._session_db,
+                    max_iterations=runtime_spec.max_iterations,
                     quiet_mode=True,
                     verbose_logging=False,
-                    enabled_toolsets=enabled_toolsets,
-                    ephemeral_system_prompt=combined_ephemeral or None,
-                    reasoning_config=reasoning_config,
-                    providers_allowed=pr.get("only"),
-                    providers_ignored=pr.get("ignore"),
-                    providers_order=pr.get("order"),
-                    provider_sort=pr.get("sort"),
-                    provider_require_parameters=pr.get("require_parameters", False),
-                    provider_data_collection=pr.get("data_collection"),
-                    session_id=task_id,
-                    platform=platform_key,
-                    user_id=source.user_id,
-                    session_db=self._session_db,
-                    fallback_model=self._fallback_model,
+                    enabled_toolsets=runtime_spec.enabled_toolsets,
                 )
                 self._managed_background_job_agents[task_id] = agent
 
                 from tools.approval import (
                     build_gateway_approval_message,
                     register_gateway_notify,
-                    reset_current_admin_policy,
-                    reset_current_session_key,
-                    set_current_admin_policy,
-                    set_current_session_key,
                     unregister_gateway_notify,
                 )
                 approval_session_key = session_key or task_id
@@ -7963,25 +7156,23 @@ class GatewayRunner:
                     except Exception as exc:
                         logger.error("Failed to send background approval request: %s", exc)
 
-                approval_session_token = set_current_session_key(approval_session_key)
-                approval_admin_tokens = set_current_admin_policy(
-                    list(admin_user_ids or []),
-                    is_admin_user,
-                )
-                approval_notify_handle = register_gateway_notify(
-                    approval_session_key,
-                    _approval_notify_sync,
-                )
-                try:
-                    return agent.run_conversation(
-                        user_message=prompt,
-                        conversation_history=bg_history or None,
-                        task_id=task_id,
+                with gateway_approval_context(
+                    session_key=approval_session_key,
+                    admin_user_ids=list(admin_user_ids or []),
+                    is_admin_user=is_admin_user,
+                ):
+                    approval_notify_handle = register_gateway_notify(
+                        approval_session_key,
+                        _approval_notify_sync,
                     )
-                finally:
-                    unregister_gateway_notify(approval_session_key, approval_notify_handle)
-                    reset_current_admin_policy(approval_admin_tokens)
-                    reset_current_session_key(approval_session_token)
+                    try:
+                        return agent.run_conversation(
+                            user_message=prompt,
+                            conversation_history=bg_history or None,
+                            task_id=task_id,
+                        )
+                    finally:
+                        unregister_gateway_notify(approval_session_key, approval_notify_handle)
 
             loop = asyncio.get_event_loop()
             result = await loop.run_in_executor(None, run_sync)
@@ -8316,8 +7507,6 @@ class GatewayRunner:
         self, question: str, source, session_key: str, task_id: str,
     ) -> None:
         """Execute an ephemeral /btw side question and deliver the answer."""
-        from run_agent import AIAgent
-
         adapter = self.adapters.get(source.platform)
         if not adapter:
             logger.warning("No adapter for platform %s in /btw task %s", source.platform, task_id)
@@ -8337,10 +7526,7 @@ class GatewayRunner:
 
             user_config = _load_gateway_config()
             model = _resolve_gateway_model(user_config)
-            platform_key = _platform_config_key(source.platform)
             reasoning_config = self._load_reasoning_config()
-            turn_route = self._resolve_turn_agent_config(question, model, runtime_kwargs)
-            pr = self._provider_routing
 
             # Snapshot history from running agent or stored transcript
             running_agent = self._running_agents.get(session_key)
@@ -8355,26 +7541,31 @@ class GatewayRunner:
                 "context. No tools available. Be direct and concise.]\n\n"
                 + question
             )
+            runtime_spec = build_gateway_agent_runtime(
+                source=source,
+                user_message=question,
+                context_prompt="",
+                gateway_ephemeral_system_prompt=getattr(self, "_ephemeral_system_prompt", ""),
+                provider_routing=getattr(self, "_provider_routing", {}),
+                fallback_model=getattr(self, "_fallback_model", None),
+                smart_model_routing=getattr(self, "_smart_model_routing", {}),
+                reasoning_config=reasoning_config,
+                user_config=user_config,
+                model=model,
+                runtime_kwargs=runtime_kwargs,
+                enabled_toolsets=[],
+            )
 
             def run_sync():
-                agent = AIAgent(
-                    model=turn_route["model"],
-                    **turn_route["runtime"],
+                agent = create_gateway_agent(
+                    runtime_spec=runtime_spec,
+                    session_id=task_id,
+                    source=source,
+                    session_db=None,
                     max_iterations=8,
+                    enabled_toolsets=[],
                     quiet_mode=True,
                     verbose_logging=False,
-                    enabled_toolsets=[],
-                    reasoning_config=reasoning_config,
-                    providers_allowed=pr.get("only"),
-                    providers_ignored=pr.get("ignore"),
-                    providers_order=pr.get("order"),
-                    provider_sort=pr.get("sort"),
-                    provider_require_parameters=pr.get("require_parameters", False),
-                    provider_data_collection=pr.get("data_collection"),
-                    session_id=task_id,
-                    platform=platform_key,
-                    session_db=None,
-                    fallback_model=self._fallback_model,
                     skip_memory=True,
                     skip_context_files=True,
                     persist_session=False,
@@ -10329,31 +9520,12 @@ class GatewayRunner:
         reused — preserving the frozen system prompt and tool schemas for
         prompt cache hits.
         """
-        import hashlib, json as _j
-
-        # Fingerprint the FULL credential string instead of using a short
-        # prefix. OAuth/JWT-style tokens frequently share a common prefix
-        # (e.g. "eyJhbGci"), which can cause false cache hits across auth
-        # switches if only the first few characters are considered.
-        _api_key = str(runtime.get("api_key", "") or "")
-        _api_key_fingerprint = hashlib.sha256(_api_key.encode()).hexdigest() if _api_key else ""
-
-        blob = _j.dumps(
-            [
-                model,
-                _api_key_fingerprint,
-                runtime.get("base_url", ""),
-                runtime.get("provider", ""),
-                runtime.get("api_mode", ""),
-                sorted(enabled_toolsets) if enabled_toolsets else [],
-                # reasoning_config excluded — it's set per-message on the
-                # cached agent and doesn't affect system prompt or tools.
-                ephemeral_prompt or "",
-            ],
-            sort_keys=True,
-            default=str,
+        return shared_agent_config_signature(
+            model,
+            runtime,
+            enabled_toolsets,
+            ephemeral_prompt,
         )
-        return hashlib.sha256(blob.encode()).hexdigest()[:16]
 
     def _evict_cached_agent(self, session_key: str) -> None:
         """Remove a cached agent for a session (called on /new, /model, etc)."""
@@ -10407,7 +9579,6 @@ class GatewayRunner:
         This is run in a thread pool to not block the event loop.
         Supports interruption via new messages.
         """
-        from run_agent import AIAgent
         import queue
         
         user_config = _load_gateway_config()
@@ -10695,8 +9866,7 @@ class GatewayRunner:
             # (prepending model-switch notes) makes Python treat it as a
             # local variable in the entire function.  `nonlocal` lets us
             # read *and* reassign the outer `_run_agent` parameter without
-            # triggering an UnboundLocalError on the earlier read at
-            # `_resolve_turn_agent_config(message, …)`.
+            # triggering an UnboundLocalError during runtime resolution.
             nonlocal message
 
             # Pass session_key to process registry via env var so background
@@ -10705,24 +9875,6 @@ class GatewayRunner:
 
             # Read from env var or use default (same as CLI)
             max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
-            
-            # Map platform enum to the platform hint key the agent understands.
-            # Platform.LOCAL ("local") maps to "cli"; others pass through as-is.
-            platform_key = "cli" if source.platform == Platform.LOCAL else source.platform.value
-            
-            # Combine platform context with user-configured ephemeral system prompt
-            combined_ephemeral = context_prompt or ""
-            if self._ephemeral_system_prompt:
-                combined_ephemeral = (combined_ephemeral + "\n\n" + self._ephemeral_system_prompt).strip()
-            platform_system_prompt = ""
-            try:
-                platform_config = self.config.platforms.get(source.platform)
-                if platform_config and isinstance(getattr(platform_config, "extra", None), dict):
-                    platform_system_prompt = str(platform_config.extra.get("system_prompt") or "").strip()
-            except Exception:
-                platform_system_prompt = ""
-            if platform_system_prompt:
-                combined_ephemeral = (combined_ephemeral + "\n\n" + platform_system_prompt).strip()
 
             # Re-read .env and config for fresh credentials (gateway is long-lived,
             # keys may change without restart).
@@ -10732,8 +9884,6 @@ class GatewayRunner:
                 load_dotenv(_env_path, override=True, encoding="latin-1")
             except Exception:
                 pass
-
-            model = _resolve_gateway_model(user_config)
 
             try:
                 runtime_kwargs = _resolve_runtime_agent_kwargs()
@@ -10745,9 +9895,31 @@ class GatewayRunner:
                     "tools": [],
                 }
 
-            pr = self._provider_routing
             reasoning_config = self._load_reasoning_config()
             self._reasoning_config = reasoning_config
+            try:
+                runtime_spec = build_gateway_agent_runtime(
+                    source=source,
+                    user_message=message,
+                    context_prompt=context_prompt,
+                    gateway_ephemeral_system_prompt=getattr(self, "_ephemeral_system_prompt", ""),
+                    provider_routing=getattr(self, "_provider_routing", {}),
+                    fallback_model=getattr(self, "_fallback_model", None),
+                    smart_model_routing=getattr(self, "_smart_model_routing", {}),
+                    reasoning_config=reasoning_config,
+                    user_config=user_config,
+                    model=_resolve_gateway_model(user_config),
+                    runtime_kwargs=runtime_kwargs,
+                    enabled_toolsets=enabled_toolsets,
+                )
+            except Exception as exc:
+                return {
+                    "final_response": f"⚠️ Provider authentication failed: {exc}",
+                    "messages": [],
+                    "api_calls": 0,
+                    "tools": [],
+                }
+
             # Set up streaming consumer if enabled
             _stream_consumer = None
             _stream_delta_cb = None
@@ -10777,7 +9949,7 @@ class GatewayRunner:
                 except Exception as _sc_err:
                     logger.debug("Could not set up stream consumer: %s", _sc_err)
 
-            turn_route = self._resolve_turn_agent_config(message, model, runtime_kwargs)
+            turn_route = runtime_spec.turn_route
 
             # Check agent cache — reuse the AIAgent from the previous message
             # in this session to preserve the frozen system prompt and tool
@@ -10785,8 +9957,8 @@ class GatewayRunner:
             _sig = self._agent_config_signature(
                 turn_route["model"],
                 turn_route["runtime"],
-                enabled_toolsets,
-                combined_ephemeral,
+                runtime_spec.enabled_toolsets,
+                runtime_spec.combined_ephemeral or "",
             )
             agent = None
             _cache_lock = getattr(self, "_agent_cache_lock", None)
@@ -10800,27 +9972,16 @@ class GatewayRunner:
 
             if agent is None:
                 # Config changed or first message — create fresh agent
-                agent = AIAgent(
-                    model=turn_route["model"],
-                    **turn_route["runtime"],
+                agent = create_gateway_agent(
+                    runtime_spec=runtime_spec,
+                    session_id=session_id,
+                    source=source,
+                    session_db=self._session_db,
+                    prefill_messages=self._prefill_messages or None,
                     max_iterations=max_iterations,
+                    enabled_toolsets=runtime_spec.enabled_toolsets,
                     quiet_mode=True,
                     verbose_logging=False,
-                    enabled_toolsets=enabled_toolsets,
-                    ephemeral_system_prompt=combined_ephemeral or None,
-                    prefill_messages=self._prefill_messages or None,
-                    reasoning_config=reasoning_config,
-                    providers_allowed=pr.get("only"),
-                    providers_ignored=pr.get("ignore"),
-                    providers_order=pr.get("order"),
-                    provider_sort=pr.get("sort"),
-                    provider_require_parameters=pr.get("require_parameters", False),
-                    provider_data_collection=pr.get("data_collection"),
-                    session_id=session_id,
-                    platform=platform_key,
-                    user_id=source.user_id,
-                    session_db=self._session_db,
-                    fallback_model=self._fallback_model,
                 )
                 if _cache_lock and _cache is not None:
                     with _cache_lock:
@@ -10858,71 +10019,8 @@ class GatewayRunner:
             # Capture the full tool definitions for transcript logging
             tools_holder[0] = agent.tools if hasattr(agent, 'tools') else None
             
-            # Convert history to agent format.
-            # Two cases:
-            #   1. Normal path (from transcript): simple {role, content, timestamp} dicts
-            #      - Strip timestamps, keep role+content
-            #   2. Interrupt path (from agent result["messages"]): full agent messages
-            #      that may include tool_calls, tool_call_id, reasoning, etc.
-            #      - These must be passed through intact so the API sees valid
-            #        assistant→tool sequences (dropping tool_calls causes 500 errors)
-            agent_history = []
-            for msg in history:
-                role = msg.get("role")
-                if not role:
-                    continue
-                
-                # Skip metadata entries (tool definitions, session info)
-                # -- these are for transcript logging, not for the LLM
-                if role in ("session_meta",):
-                    continue
-                
-                # Skip system messages -- the agent rebuilds its own system prompt
-                if role == "system":
-                    continue
-                
-                # Rich agent messages (tool_calls, tool results) must be passed
-                # through intact so the API sees valid assistant→tool sequences
-                has_tool_calls = "tool_calls" in msg
-                has_tool_call_id = "tool_call_id" in msg
-                is_tool_message = role == "tool"
-                
-                if has_tool_calls or has_tool_call_id or is_tool_message:
-                    clean_msg = {k: v for k, v in msg.items() if k != "timestamp"}
-                    agent_history.append(clean_msg)
-                else:
-                    # Simple text message - just need role and content
-                    content = msg.get("content")
-                    if content:
-                        # Tag cross-platform mirror messages so the agent knows their origin
-                        if msg.get("mirror"):
-                            mirror_src = msg.get("mirror_source", "another session")
-                            content = f"[Delivered from {mirror_src}] {content}"
-                        entry = {"role": role, "content": content}
-                        # Preserve reasoning fields on assistant messages so
-                        # multi-turn reasoning context survives session reload.
-                        # The agent's _build_api_kwargs converts these to the
-                        # provider-specific format (reasoning_content, etc.).
-                        if role == "assistant":
-                            for _rkey in ("reasoning", "reasoning_details",
-                                          "codex_reasoning_items"):
-                                _rval = msg.get(_rkey)
-                                if _rval:
-                                    entry[_rkey] = _rval
-                        agent_history.append(entry)
-            
-            # Collect MEDIA paths already in history so we can exclude them
-            # from the current turn's extraction. This is compression-safe:
-            # even if the message list shrinks, we know which paths are old.
-            _history_media_paths: set = set()
-            for _hm in agent_history:
-                if _hm.get("role") in ("tool", "function"):
-                    _hc = _hm.get("content", "")
-                    if "MEDIA:" in _hc:
-                        for _match in re.finditer(r'MEDIA:(\S+)', _hc):
-                            _p = _match.group(1).strip().rstrip('",}')
-                            if _p:
-                                _history_media_paths.add(_p)
+            agent_history = normalize_conversation_history(history)
+            _history_media_paths = collect_history_media_paths(agent_history)
             
             # Register per-session gateway approval callback so dangerous
             # command approval blocks the agent thread (mirrors CLI input()).
@@ -10931,10 +10029,6 @@ class GatewayRunner:
             from tools.approval import (
                 build_gateway_approval_message,
                 register_gateway_notify,
-                reset_current_admin_policy,
-                reset_current_session_key,
-                set_current_admin_policy,
-                set_current_session_key,
                 unregister_gateway_notify,
             )
 
@@ -11015,26 +10109,24 @@ class GatewayRunner:
                 message = _msn + "\n\n" + message
 
             _approval_session_key = session_key or ""
-            _approval_session_token = set_current_session_key(_approval_session_key)
-            _approval_admin_tokens = set_current_admin_policy(
-                list(admin_user_ids or []),
-                is_admin_user,
-            )
-            _approval_notify_handle = register_gateway_notify(
-                _approval_session_key,
-                _approval_notify_sync,
-            )
-            try:
-                result = agent.run_conversation(message, conversation_history=agent_history, task_id=session_id)
-            finally:
+            with gateway_approval_context(
+                session_key=_approval_session_key,
+                admin_user_ids=list(admin_user_ids or []),
+                is_admin_user=is_admin_user,
+            ):
+                _approval_notify_handle = register_gateway_notify(
+                    _approval_session_key,
+                    _approval_notify_sync,
+                )
                 try:
-                    unregister_gateway_notify(_approval_session_key, _approval_notify_handle)
-                except TypeError:
-                    # Backward-compat for tests / older shims still exposing the
-                    # legacy single-argument unregister signature.
-                    unregister_gateway_notify(_approval_session_key)
-                reset_current_admin_policy(_approval_admin_tokens)
-                reset_current_session_key(_approval_session_token)
+                    result = agent.run_conversation(message, conversation_history=agent_history, task_id=session_id)
+                finally:
+                    try:
+                        unregister_gateway_notify(_approval_session_key, _approval_notify_handle)
+                    except TypeError:
+                        # Backward-compat for tests / older shims still exposing the
+                        # legacy single-argument unregister signature.
+                        unregister_gateway_notify(_approval_session_key)
             result_holder[0] = result
 
             # Signal the stream consumer that the agent is done

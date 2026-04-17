@@ -9,18 +9,10 @@ import signal
 import sys
 import threading
 
-from agent.skill_commands import build_preloaded_skills_prompt
+from gateway.agent_execution_service import create_gateway_agent, gateway_approval_context
+from gateway.agent_runtime import build_gateway_agent_runtime
 from gateway.background_jobs import BackgroundJobStore, ExternalApprovalBridge
 from gateway.session import SessionSource
-from run_agent import AIAgent
-from tools.approval import (
-    reset_current_admin_policy,
-    reset_current_session_key,
-    reset_external_approval_backend,
-    set_current_admin_policy,
-    set_current_session_key,
-    set_external_approval_backend,
-)
 
 
 logger = logging.getLogger(__name__)
@@ -66,103 +58,31 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
 
 
 def _build_agent_runtime(job: dict):
-    from agent.smart_model_routing import resolve_turn_route
-    from gateway.run import (
-        GatewayRunner,
-        _load_gateway_config,
-        _platform_config_key,
-        _resolve_gateway_model,
-        _resolve_runtime_agent_kwargs,
-    )
-    from hermes_cli.tools_config import _get_platform_tools
-
     source = SessionSource.from_dict(job["source"])
-    runtime_kwargs = _resolve_runtime_agent_kwargs()
-    if not runtime_kwargs.get("api_key"):
-        raise RuntimeError("no provider credentials configured")
-
-    user_config = _load_gateway_config()
-    model = _resolve_gateway_model(user_config)
-    platform_key = _platform_config_key(source.platform)
-    enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
-    provider_routing = GatewayRunner._load_provider_routing()
-    fallback_model = GatewayRunner._load_fallback_model()
-    reasoning_config = GatewayRunner._load_reasoning_config()
-    smart_model_routing = GatewayRunner._load_smart_model_routing()
-
-    primary = {
-        "model": model,
-        "api_key": runtime_kwargs.get("api_key"),
-        "base_url": runtime_kwargs.get("base_url"),
-        "provider": runtime_kwargs.get("provider"),
-        "api_mode": runtime_kwargs.get("api_mode"),
-        "command": runtime_kwargs.get("command"),
-        "args": list(runtime_kwargs.get("args") or []),
-        "credential_pool": runtime_kwargs.get("credential_pool"),
-    }
-    turn_route = resolve_turn_route(job["prompt"], smart_model_routing, primary)
-
-    combined_ephemeral = str(job.get("context_prompt") or "").strip()
-    loaded_skill_names: list[str] = []
-    missing_skills: list[str] = []
-    if job.get("preloaded_skills"):
-        skill_prompt, loaded_skill_names, missing_skills = build_preloaded_skills_prompt(
-            list(job.get("preloaded_skills") or []),
-            task_id=job["task_id"],
-        )
-        if skill_prompt:
-            combined_ephemeral = (
-                f"{skill_prompt}\n\n{combined_ephemeral}".strip()
-                if combined_ephemeral
-                else skill_prompt
-            )
-
-    platform_system_prompt = ""
-    platform_cfg = (user_config.get("gateway", {}) or {}).get("platforms", {}) if isinstance(user_config, dict) else {}
-    raw_platform_cfg = platform_cfg.get(source.platform.value, {}) if isinstance(platform_cfg, dict) else {}
-    extra = raw_platform_cfg.get("extra") if isinstance(raw_platform_cfg, dict) else None
-    if isinstance(extra, dict):
-        platform_system_prompt = str(extra.get("system_prompt") or "").strip()
-    if platform_system_prompt:
-        combined_ephemeral = (combined_ephemeral + "\n\n" + platform_system_prompt).strip()
-
+    runtime_spec = build_gateway_agent_runtime(
+        source=source,
+        user_message=str(job.get("prompt") or ""),
+        context_prompt=str(job.get("context_prompt") or ""),
+        preloaded_skills=list(job.get("preloaded_skills") or []),
+        skill_task_id=str(job.get("task_id") or ""),
+    )
     return {
         "source": source,
-        "enabled_toolsets": enabled_toolsets,
-        "provider_routing": provider_routing,
-        "fallback_model": fallback_model,
-        "reasoning_config": reasoning_config,
-        "turn_route": turn_route,
-        "combined_ephemeral": combined_ephemeral or None,
-        "loaded_skills": loaded_skill_names,
-        "missing_skills": missing_skills,
-        "max_iterations": int(os.getenv("HERMES_MAX_ITERATIONS", "90")),
+        "runtime_spec": runtime_spec,
+        "loaded_skills": runtime_spec.loaded_skills,
+        "missing_skills": runtime_spec.missing_skills,
     }
 
 
-def _run_btw_job(*, job: dict, runtime: dict, source: SessionSource):
-    provider_routing = runtime["provider_routing"]
-    turn_route = runtime["turn_route"]
-    agent = AIAgent(
-        model=turn_route["model"],
-        **turn_route["runtime"],
-        max_iterations=min(int(runtime["max_iterations"]), 8),
+def _run_btw_job(*, job: dict, runtime_spec, source: SessionSource):
+    agent = create_gateway_agent(
+        runtime_spec=runtime_spec,
+        session_id=job["task_id"],
+        source=source,
+        max_iterations=min(int(runtime_spec.max_iterations), 8),
+        enabled_toolsets=[],
         quiet_mode=True,
         verbose_logging=False,
-        enabled_toolsets=[],
-        ephemeral_system_prompt=runtime["combined_ephemeral"],
-        reasoning_config=runtime["reasoning_config"],
-        providers_allowed=provider_routing.get("only"),
-        providers_ignored=provider_routing.get("ignore"),
-        providers_order=provider_routing.get("order"),
-        provider_sort=provider_routing.get("sort"),
-        provider_require_parameters=provider_routing.get("require_parameters", False),
-        provider_data_collection=provider_routing.get("data_collection"),
-        session_id=job["task_id"],
-        platform=source.platform.value if source.platform else "unknown",
-        user_id=source.user_id,
-        fallback_model=runtime["fallback_model"],
-        session_db=None,
         skip_memory=True,
         skip_context_files=True,
         persist_session=False,
@@ -212,6 +132,7 @@ def run_background_job(task_id: str) -> int:
         missing_skills=runtime["missing_skills"],
     )
     source = runtime["source"]
+    runtime_spec = runtime["runtime_spec"]
     approval_bridge = ExternalApprovalBridge(
         store=store,
         task_id=task_id,
@@ -219,43 +140,30 @@ def run_background_job(task_id: str) -> int:
         source=source,
     )
 
-    approval_session_token = set_current_session_key(str(job.get("session_key") or task_id))
-    approval_admin_tokens = set_current_admin_policy(
-        list(job.get("admin_user_ids") or []),
-        job.get("is_admin_user"),
-    )
-    approval_bridge_token = set_external_approval_backend(approval_bridge)
     try:
-        provider_routing = runtime["provider_routing"]
-        turn_route = runtime["turn_route"]
         if str(job.get("kind") or "").strip().lower() == "btw":
-            result = _run_btw_job(job=job, runtime=runtime, source=source)
+            result = _run_btw_job(job=job, runtime_spec=runtime_spec, source=source)
         else:
-            agent = AIAgent(
-                model=turn_route["model"],
-                **turn_route["runtime"],
-                max_iterations=runtime["max_iterations"],
+            agent = create_gateway_agent(
+                runtime_spec=runtime_spec,
+                session_id=task_id,
+                source=source,
+                max_iterations=runtime_spec.max_iterations,
                 quiet_mode=True,
                 verbose_logging=False,
-                enabled_toolsets=runtime["enabled_toolsets"],
-                ephemeral_system_prompt=runtime["combined_ephemeral"],
-                reasoning_config=runtime["reasoning_config"],
-                providers_allowed=provider_routing.get("only"),
-                providers_ignored=provider_routing.get("ignore"),
-                providers_order=provider_routing.get("order"),
-                provider_sort=provider_routing.get("sort"),
-                provider_require_parameters=provider_routing.get("require_parameters", False),
-                provider_data_collection=provider_routing.get("data_collection"),
-                session_id=task_id,
-                platform=source.platform.value if source.platform else "unknown",
-                user_id=source.user_id,
-                fallback_model=runtime["fallback_model"],
+                enabled_toolsets=runtime_spec.enabled_toolsets,
             )
-            result = agent.run_conversation(
-                user_message=str(job.get("prompt") or ""),
-                conversation_history=list(job.get("conversation_history") or []) or None,
-                task_id=task_id,
-            )
+            with gateway_approval_context(
+                session_key=str(job.get("session_key") or task_id),
+                admin_user_ids=list(job.get("admin_user_ids") or []),
+                is_admin_user=job.get("is_admin_user"),
+                external_backend=approval_bridge,
+            ):
+                result = agent.run_conversation(
+                    user_message=str(job.get("prompt") or ""),
+                    conversation_history=list(job.get("conversation_history") or []) or None,
+                    task_id=task_id,
+                )
         response = ""
         if result:
             response = str(result.get("final_response") or "")
@@ -272,9 +180,6 @@ def run_background_job(task_id: str) -> int:
     finally:
         heartbeat_stop.set()
         heartbeat_thread.join(timeout=1.0)
-        reset_external_approval_backend(approval_bridge_token)
-        reset_current_admin_policy(approval_admin_tokens)
-        reset_current_session_key(approval_session_token)
 
 
 def main(argv: list[str] | None = None) -> int:

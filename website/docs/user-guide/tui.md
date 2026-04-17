@@ -1,22 +1,22 @@
 ---
 sidebar_position: 2
-title: "Ink TUI"
-description: "Launch the modern Node-based terminal UI for Hermes — mouse-friendly, rich overlays, and non-blocking input."
+title: "TUI"
+description: "Launch the modern terminal UI for Hermes — mouse-friendly, rich overlays, and non-blocking input."
 ---
 
-# Ink TUI
+# TUI
 
-The Ink TUI is the modern front-end for Hermes — a Node/React terminal UI backed by the same Python runtime as the [Classic CLI](cli.md). Same agent, same sessions, same slash commands; a cleaner, more responsive surface for interacting with them.
+The TUI is the modern front-end for Hermes — a terminal UI backed by the same Python runtime as the [Classic CLI](cli.md). Same agent, same sessions, same slash commands; a cleaner, more responsive surface for interacting with them.
 
 It's the recommended way to run Hermes interactively.
 
 ## Launch
 
 ```bash
-# Launch the Ink TUI
+# Launch the TUI
 hermes --tui
 
-# Resume the latest Ink session (falls back to the latest classic session)
+# Resume the latest TUI session (falls back to the latest classic session)
 hermes --tui -c
 hermes --tui --continue
 
@@ -32,13 +32,13 @@ You can also enable it via env var:
 
 ```bash
 export HERMES_TUI=1
-hermes          # now uses the Ink TUI
+hermes          # now uses the TUI
 hermes chat     # same
 ```
 
-The classic CLI remains available as the default. Anything documented in [CLI Interface](cli.md) — slash commands, quick commands, skill preloading, personalities, multi-line input, interrupts — works in the Ink TUI identically.
+The classic CLI remains available as the default. Anything documented in [CLI Interface](cli.md) — slash commands, quick commands, skill preloading, personalities, multi-line input, interrupts — works in the TUI identically.
 
-## Why the Ink TUI
+## Why the TUI
 
 - **Instant first frame** — the banner paints before the app finishes loading, so the terminal never feels frozen while Hermes is starting.
 - **Non-blocking input** — type and queue messages before the session is ready. Your first prompt sends the moment the agent comes online.
@@ -123,7 +123,7 @@ display:
 
 ## Sessions
 
-Sessions are shared between the Ink TUI and the classic CLI — both write to the same `~/.hermes/state.db`. You can start a session in one, resume in the other. The session picker surfaces sessions from both sources, with a source tag.
+Sessions are shared between the TUI and the classic CLI — both write to the same `~/.hermes/state.db`. You can start a session in one, resume in the other. The session picker surfaces sessions from both sources, with a source tag.
 
 See [Sessions](sessions.md) for lifecycle, search, compression, and export.
 

@@ -1985,7 +1985,7 @@ def _cli_exec_blocked(argv: list[str]) -> str | None:
         return "bare `hermes` is interactive — use `/hermes chat -q …` or run `hermes` in another terminal"
     a0 = argv[0].lower()
     if a0 == "setup":
-        return "`hermes setup` needs a full terminal — run it outside the Ink UI"
+        return "`hermes setup` needs a full terminal — run it outside the TUI"
     if a0 == "gateway":
         return "`hermes gateway` is long-running — run it in another terminal"
     if a0 == "sessions" and len(argv) > 1 and argv[1].lower() == "browse":

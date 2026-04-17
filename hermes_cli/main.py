@@ -843,7 +843,7 @@ def _ensure_tui_node() -> None:
 
 
 def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
-    """Ink TUI: --dev → tsx src; else node dist (HERMES_TUI_DIR or ui-tui, build when stale)."""
+    """TUI: --dev → tsx src; else node dist (HERMES_TUI_DIR or ui-tui, build when stale)."""
     _ensure_tui_node()
 
     def _node_bin(bin: str)-> str:
@@ -925,7 +925,7 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
     return [node, str(root / "dist" / "entry.js")], root
 
 def _launch_tui(resume_session_id: Optional[str] = None, tui_dev: bool = False):
-    """Replace current process with the Ink TUI."""
+    """Replace current process with the TUI."""
     tui_dir = PROJECT_ROOT / "ui-tui"
 
     env = os.environ.copy()
@@ -5236,7 +5236,7 @@ For more help on a command:
         "--tui",
         action="store_true",
         default=False,
-        help="Launch the Ink-based terminal UI instead of the classic REPL"
+        help="Launch the modern TUI instead of the classic REPL"
     )
     parser.add_argument(
         "--dev",
@@ -5349,7 +5349,7 @@ For more help on a command:
         "--tui",
         action="store_true",
         default=False,
-        help="Launch the Ink-based terminal UI instead of the classic REPL"
+        help="Launch the modern TUI instead of the classic REPL"
     )
     chat_parser.add_argument(
         "--dev",

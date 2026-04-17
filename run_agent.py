@@ -11743,7 +11743,38 @@ class AIAgent:
                         messages.pop()
 
                     messages.append(final_msg)
-                    
+
+                    # ── Post-response compression ──────────────────
+                    # Normal text responses (no tool calls) exit the
+                    # loop here.  Without a compression check at this
+                    # point, context can only shrink via the preflight
+                    # check at the START of the next turn — but if the
+                    # model keeps returning pure text, the loop never
+                    # enters the tool_calls branch and in-loop checks
+                    # never fire.  The context grows unbounded until
+                    # the model starts returning empty responses, at
+                    # which point it's already degraded.
+                    #
+                    # Compressing here means the NEXT turn starts with
+                    # a clean slate instead of carrying a bloated
+                    # history into the preflight check.
+                    _cc = self.context_compressor
+                    if _cc.last_prompt_tokens > 0:
+                        _real_tokens = (
+                            _cc.last_prompt_tokens
+                            + _cc.last_completion_tokens
+                        )
+                    else:
+                        _real_tokens = estimate_messages_tokens_rough(messages)
+                    if self.compression_enabled and _cc.should_compress(_real_tokens):
+                        self._safe_print("  ⟳ compacting context after response…")
+                        messages, active_system_prompt = self._compress_context(
+                            messages, system_message,
+                            approx_tokens=_cc.last_prompt_tokens,
+                            task_id=effective_task_id,
+                        )
+                        conversation_history = None
+
                     _turn_exit_reason = f"text_response(finish_reason={finish_reason})"
                     if not self.quiet_mode:
                         self._safe_print(f"🎉 Conversation completed after {api_call_count} OpenAI-compatible API call(s)")

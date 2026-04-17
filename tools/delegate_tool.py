@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 import os
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional
 
 from toolsets import TOOLSETS
@@ -79,6 +79,11 @@ def _get_max_concurrent_children() -> int:
     return _DEFAULT_MAX_CONCURRENT_CHILDREN
 DEFAULT_MAX_ITERATIONS = 50
 _HEARTBEAT_INTERVAL = 30  # seconds between parent activity heartbeats during delegation
+
+# Subagent hard timeout — prevents runaway delegates from blocking forever.
+# Can be overridden via HERMES_DELEGATE_TASK_TIMEOUT env var (value in seconds).
+_DELEGATE_TASK_TIMEOUT_DEFAULT = 3600  # 60 minutes
+_DELEGATE_BATCH_TIMEOUT_DEFAULT = 7200  # 120 minutes (overall batch timeout)
 DEFAULT_TOOLSETS = ["terminal", "file", "web"]
 
 
@@ -729,14 +734,72 @@ def delegate_task(
         _model_tools._last_resolved_tool_names = _parent_tool_names
 
     if n_tasks == 1:
-        # Single task -- run directly (no thread pool overhead)
+        # Single task -- run with interrupt + hard-timeout protection.
+        # The subagent thread is wrapped so it can be interrupted and the
+        # parent never blocks forever (previously it was a bare call with
+        # no timeout and no interrupt propagation).
         _i, _t, child = children[0]
-        result = _run_single_child(0, _t["goal"], child, parent_agent)
-        results.append(result)
+        task_timeout = float(os.getenv(
+            "HERMES_DELEGATE_TASK_TIMEOUT", _DELEGATE_TASK_TIMEOUT_DEFAULT
+        ))
+        result_holder: list = [None]
+
+        def _protected_run():
+            try:
+                result_holder[0] = _run_single_child(
+                    0, _t["goal"], child, parent_agent
+                )
+            except Exception as exc:
+                result_holder[0] = {
+                    "task_index": 0,
+                    "status": "error",
+                    "summary": None,
+                    "error": str(exc),
+                    "api_calls": 0,
+                    "duration_seconds": 0,
+                }
+
+        _child_thread = threading.Thread(target=_protected_run, daemon=True)
+        _child_thread.start()
+        _child_thread.join(timeout=task_timeout)
+
+        if _child_thread.is_alive():
+            # Timed out -- signal the child to stop and wait briefly for it.
+            child.interrupt()
+            _child_thread.join(timeout=10)
+            elapsed = round(time.monotonic() - overall_start, 2)
+            result_holder[0] = {
+                "task_index": 0,
+                "status": "timeout",
+                "summary": None,
+                "error": (
+                    f"Subagent timed out after {int(task_timeout)}s. "
+                    "Interrupt signal sent to child."
+                ),
+                "api_calls": 0,
+                "duration_seconds": elapsed,
+            }
+
+        if result_holder[0] is None:
+            result_holder[0] = {
+                "task_index": 0,
+                "status": "error",
+                "summary": None,
+                "error": "Subagent returned no result (unexpected).",
+                "api_calls": 0,
+                "duration_seconds": round(time.monotonic() - overall_start, 2),
+            }
+
+        results.append(result_holder[0])
     else:
-        # Batch -- run in parallel with per-task progress lines
+        # Batch -- run in parallel with per-task progress lines.
+        # Also add overall batch hard-timeout as a safety net.
         completed_count = 0
         spinner_ref = getattr(parent_agent, '_delegate_spinner', None)
+        batch_timeout = float(os.getenv(
+            "HERMES_DELEGATE_BATCH_TIMEOUT", _DELEGATE_BATCH_TIMEOUT_DEFAULT
+        ))
+        batch_deadline = overall_start + batch_timeout
 
         with ThreadPoolExecutor(max_workers=max_children) as executor:
             futures = {}
@@ -750,22 +813,60 @@ def delegate_task(
                 )
                 futures[future] = i
 
-            # Poll futures with interrupt checking.  as_completed() blocks
-            # until ALL futures finish — if a child agent gets stuck,
-            # the parent blocks forever even after interrupt propagation.
-            # Instead, use wait() with a short timeout so we can bail
-            # when the parent is interrupted.
             pending = set(futures.keys())
             while pending:
-                if getattr(parent_agent, "_interrupt_requested", False) is True:
-                    # Parent interrupted — collect whatever finished and
-                    # abandon the rest.  Children already received the
-                    # interrupt signal; we just can't wait forever.
+                # Hard overall batch timeout -- abandon all children.
+                if time.monotonic() >= batch_deadline:
+                    for f in pending:
+                        idx = futures[f]
+                        if not f.done():
+                            child_for_task = children[idx][2]
+                            child_for_task.interrupt()
+                    # Give interrupt signal a moment to propagate.
+                    time.sleep(1)
                     for f in pending:
                         idx = futures[f]
                         if f.done():
                             try:
-                                entry = f.result()
+                                entry = f.result(timeout=5)
+                            except Exception:
+                                entry = {
+                                    "task_index": idx,
+                                    "status": "error",
+                                    "summary": None,
+                                    "error": "Batch timeout",
+                                    "api_calls": 0,
+                                    "duration_seconds": 0,
+                                }
+                        else:
+                            entry = {
+                                "task_index": idx,
+                                "status": "timeout",
+                                "summary": None,
+                                "error": (
+                                    f"Batch timed out after {int(batch_timeout)}s"
+                                ),
+                                "api_calls": 0,
+                                "duration_seconds": 0,
+                            }
+                        results.append(entry)
+                        completed_count += 1
+                    break
+
+                # Parent interrupt requested -- propagate to all children.
+                if getattr(parent_agent, "_interrupt_requested", False) is True:
+                    for f in pending:
+                        if not f.done():
+                            idx = futures[f]
+                            child_for_task = children[idx][2]
+                            child_for_task.interrupt()
+                    # Give interrupt signals a moment to propagate.
+                    time.sleep(1)
+                    for f in pending:
+                        idx = futures[f]
+                        if f.done():
+                            try:
+                                entry = f.result(timeout=5)
                             except Exception as exc:
                                 entry = {
                                     "task_index": idx,
@@ -780,7 +881,9 @@ def delegate_task(
                                 "task_index": idx,
                                 "status": "interrupted",
                                 "summary": None,
-                                "error": "Parent agent interrupted — child did not finish in time",
+                                "error": (
+                                    "Parent agent interrupted; child did not finish"
+                                ),
                                 "api_calls": 0,
                                 "duration_seconds": 0,
                             }

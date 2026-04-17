@@ -36,6 +36,7 @@ Usage:
     hermes honcho migrate                  # Step-by-step migration guide: OpenClaw native → Hermes + Honcho
     hermes version             Show version
     hermes update              Update to latest version
+    hermes update-skills       Pull only built-in skills from upstream
     hermes uninstall           Uninstall Hermes Agent
     hermes acp                 Run as an ACP server for editor integration
     hermes sessions browse     Interactive session picker with search
@@ -4483,6 +4484,118 @@ def cmd_update(args):
             sys.exit(1)
 
 
+def cmd_update_skills(args):
+    """Pull ONLY new/updated built-in skills from upstream without touching code.
+
+    Uses `git archive` to extract skills/ from upstream/main into a temp
+    directory, then runs the standard manifest-based skill sync against it.
+    No branch switching, no code checkout, no dependency changes.
+    """
+    import tempfile
+
+    print("⚕ Updating skills from upstream...")
+    print()
+
+    git_dir = PROJECT_ROOT / '.git'
+    if not git_dir.exists():
+        print("✗ Not a git repository — cannot fetch upstream skills.")
+        sys.exit(1)
+
+    git_cmd = ["git"]
+
+    # ── 1. Ensure 'upstream' remote exists ──────────────────────────────
+    # Try 'upstream' first; fall back to 'origin' for standard installs
+    remote = None
+    for candidate in ("upstream", "origin"):
+        r = subprocess.run(
+            git_cmd + ["remote", "get-url", candidate],
+            cwd=PROJECT_ROOT, capture_output=True, text=True,
+        )
+        if r.returncode == 0:
+            remote = candidate
+            remote_url = r.stdout.strip()
+            break
+
+    if remote is None:
+        print("✗ No git remote found (tried 'upstream' and 'origin').")
+        print("  Add one: git remote add origin https://github.com/NousResearch/hermes-agent.git")
+        sys.exit(1)
+
+    print(f"  {remote}: {remote_url}")
+    print()
+
+    # ── 2. Fetch remote main (just refs, lightweight) ───────────────────
+    print(f"→ Fetching {remote}/main...")
+    r = subprocess.run(
+        git_cmd + ["fetch", remote, "main"],
+        cwd=PROJECT_ROOT, capture_output=True, text=True,
+    )
+    if r.returncode != 0:
+        stderr = r.stderr.strip()
+        print(f"✗ Failed to fetch {remote}: {stderr}")
+        sys.exit(1)
+    print("  ✓ Fetched")
+
+    # ── 3. Extract skills/ from remote/main via git archive ─────────────
+    with tempfile.TemporaryDirectory(prefix="hermes-skills-") as tmpdir:
+        print(f"→ Extracting skills from {remote}/main...")
+
+        archive_proc = subprocess.Popen(
+            git_cmd + ["archive", f"{remote}/main", "--", "skills/"],
+            cwd=PROJECT_ROOT,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        extract_proc = subprocess.run(
+            ["tar", "xf", "-"],
+            cwd=tmpdir,
+            stdin=archive_proc.stdout,
+            capture_output=True,
+        )
+        archive_proc.stdout.close()
+        archive_proc.wait()
+
+        if archive_proc.returncode != 0 or extract_proc.returncode != 0:
+            stderr = archive_proc.stderr.read().decode() if archive_proc.stderr else ""
+            print(f"✗ Failed to extract skills: {stderr}")
+            sys.exit(1)
+
+        extracted_skills_dir = Path(tmpdir) / "skills"
+        if not extracted_skills_dir.exists():
+            print(f"✗ No skills/ directory found in {remote}/main")
+            sys.exit(1)
+
+        # Count what's available
+        skill_count = sum(1 for _ in extracted_skills_dir.rglob("SKILL.md"))
+        print(f"  ✓ Found {skill_count} skills in upstream")
+
+        # ── 4. Run manifest-based sync against the extracted dir ────────
+        print()
+        print("→ Syncing skills...")
+        try:
+            from tools.skills_sync import sync_skills
+            result = sync_skills(quiet=False, bundled_dir=extracted_skills_dir)
+        except Exception as e:
+            print(f"✗ Skill sync failed: {e}")
+            sys.exit(1)
+
+    # ── 5. Report ───────────────────────────────────────────────────────
+    print()
+    if result["copied"]:
+        print(f"  + {len(result['copied'])} new: {', '.join(result['copied'])}")
+    if result.get("updated"):
+        print(f"  ↑ {len(result['updated'])} updated: {', '.join(result['updated'])}")
+    if result.get("user_modified"):
+        print(f"  ~ {len(result['user_modified'])} user-modified (kept): {', '.join(result['user_modified'])}")
+    if result.get("cleaned"):
+        print(f"  − {len(result['cleaned'])} removed from manifest: {', '.join(result['cleaned'])}")
+    if not result["copied"] and not result.get("updated"):
+        print("  ✓ Skills are up to date")
+
+    print()
+    print(f"✓ Done — {result.get('total_bundled', 0)} upstream skills checked, no code was changed.")
+
+
 def _coalesce_session_name_args(argv: list) -> list:
     """Join unquoted multi-word session names after -c/--continue and -r/--resume.
 
@@ -4497,7 +4610,7 @@ def _coalesce_session_name_args(argv: list) -> list:
     _SUBCOMMANDS = {
         "chat", "model", "gateway", "setup", "whatsapp", "login", "logout", "auth",
         "status", "cron", "doctor", "config", "pairing", "skills", "tools",
-        "mcp", "sessions", "insights", "version", "update", "uninstall",
+        "mcp", "sessions", "insights", "version", "update", "update-skills", "uninstall",
         "profile", "dashboard",
         "honcho", "claw", "plugins", "acp",
         "webhook", "memory", "dump", "debug", "backup", "import", "completion", "logs",
@@ -6273,6 +6386,17 @@ Examples:
         help="Gateway mode: use file-based IPC for prompts instead of stdin (used internally by /update)"
     )
     update_parser.set_defaults(func=cmd_update)
+
+    # =========================================================================
+    # update-skills command (pull only built-in skills from upstream)
+    # =========================================================================
+    update_skills_parser = subparsers.add_parser(
+        "update-skills",
+        help="Pull only new/updated built-in skills from upstream (no code changes)",
+        description="Fetch skills/ from upstream/main via git archive and sync to ~/.hermes/skills/. "
+                    "No branch switching, no code checkout, no dependency changes."
+    )
+    update_skills_parser.set_defaults(func=cmd_update_skills)
     
     # =========================================================================
     # uninstall command

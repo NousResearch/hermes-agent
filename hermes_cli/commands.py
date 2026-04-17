@@ -161,6 +161,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
                cli_only=True, args_hint="<path>"),
     CommandDef("update", "Update Hermes Agent to the latest version", "Info",
                gateway_only=True),
+    CommandDef("update-skills", "Pull only new/updated built-in skills from upstream", "Info"),
     CommandDef("debug", "Upload debug report (system info + logs) and get shareable links", "Info"),
 
     # Exit

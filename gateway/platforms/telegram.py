@@ -118,6 +118,105 @@ def _strip_mdv2(text: str) -> str:
     return cleaned
 
 
+def _split_table_row(line: str) -> List[str]:
+    row = line.strip()
+    if row.startswith("|"):
+        row = row[1:]
+    if row.endswith("|"):
+        row = row[:-1]
+    return [cell.strip() for cell in row.split("|")]
+
+
+def _rewrite_table_block_for_telegram(lines: List[str]) -> str:
+    if len(lines) < 2:
+        return "\n".join(lines)
+    headers = _split_table_row(lines[0])
+    body_rows = [_split_table_row(line) for line in lines[2:] if line.strip()]
+    if not headers or not body_rows:
+        return "\n".join(lines)
+
+    formatted_rows: List[str] = []
+    for row in body_rows:
+        pairs = []
+        for idx, header in enumerate(headers):
+            if idx >= len(row):
+                break
+            label = header or f"Column {idx + 1}"
+            value = row[idx].strip()
+            if value:
+                pairs.append((label, value))
+        if not pairs:
+            continue
+        if len(pairs) == 1:
+            label, value = pairs[0]
+            formatted_rows.append(f"{label}: {value}")
+            continue
+        summary = "  ".join(f"{label}: {value}" for label, value in pairs)
+        formatted_rows.append(summary)
+    return "\n".join(formatted_rows) if formatted_rows else "\n".join(lines)
+
+
+_TABLE_RULE_RE = re.compile(r"^\s*\|?(?:\s*:?-+:?\s*\|)+\s*:?-+:?\s*\|?\s*$")
+_FENCE_RE = re.compile(r"^```\s*([\w+-]*)$")
+
+
+def _rewrite_list_line(line: str) -> str:
+    # Dash list → bullet
+    if re.match(r"^\s*-\s+", line):
+        return re.sub(r"^(\s*)-\s+", r"\1• ", line)
+    # Asterisk list → bullet (avoid touching **bold** or *italic* mid-line)
+    if re.match(r"^\s*\*\s+", line):
+        return re.sub(r"^(\s*)\*\s+", r"\1• ", line)
+    # Numbered list → (number)
+    m = re.match(r"^(\s*)(\d+)\.\s+", line)
+    if m:
+        return f"{m.group(1)}({m.group(2)}) {line[m.end():]}"
+    return line
+
+
+def _normalize_markdown_for_telegram(content: str) -> str:
+    lines = content.splitlines()
+    result: List[str] = []
+    i = 0
+    in_code_block = False
+
+    while i < len(lines):
+        line = lines[i].rstrip()
+        fence_match = _FENCE_RE.match(line.strip())
+        if fence_match:
+            in_code_block = not in_code_block
+            result.append(line)
+            i += 1
+            continue
+
+        if in_code_block:
+            result.append(line)
+            i += 1
+            continue
+
+        # Table block detection
+        if (
+            i + 1 < len(lines)
+            and "|" in lines[i]
+            and _TABLE_RULE_RE.match(lines[i + 1].rstrip())
+        ):
+            table_lines = [lines[i].rstrip(), lines[i + 1].rstrip()]
+            i += 2
+            while i < len(lines) and "|" in lines[i]:
+                table_lines.append(lines[i].rstrip())
+                i += 1
+            result.append(_rewrite_table_block_for_telegram(table_lines))
+            continue
+
+        # List rewriting
+        result.append(_rewrite_list_line(line))
+        i += 1
+
+    normalized = "\n".join(item.rstrip() for item in result)
+    normalized = re.sub(r"\n{3,}", "\n\n", normalized)
+    return normalized.strip()
+
+
 class TelegramAdapter(BasePlatformAdapter):
     """
     Telegram bot adapter.
@@ -2055,6 +2154,8 @@ class TelegramAdapter(BasePlatformAdapter):
             return content, []
 
         text = content
+        # Normalize tables and lists for Telegram entities mode before extracting entities.
+        text = _normalize_markdown_for_telegram(text)
         # Replace Markdown horizontal rules with a plain-text divider that works
         # in Telegram entities mode (Telegram has no native hr entity).
         text = re.sub(r'^\s*(?:-{3,}|={3,}|_{3,})\s*$', '────────', text, flags=re.MULTILINE)

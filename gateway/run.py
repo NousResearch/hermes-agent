@@ -218,6 +218,11 @@ from gateway.agent_lifecycle_runtime_service import (
 from gateway.agent_progress_runtime_service import (
     build_gateway_progress_runtime as shared_build_gateway_progress_runtime,
 )
+from gateway.agent_turn_runtime_service import (
+    build_gateway_background_review_callback as shared_build_gateway_background_review_callback,
+    configure_gateway_agent_for_turn as shared_configure_gateway_agent_for_turn,
+    reuse_or_create_gateway_agent as shared_reuse_or_create_gateway_agent,
+)
 from gateway.agent_runtime import (
     agent_config_signature as shared_agent_config_signature,
     build_gateway_agent_runtime,
@@ -8483,16 +8488,12 @@ class GatewayRunner:
             agent = None
             _cache_lock = getattr(self, "_agent_cache_lock", None)
             _cache = getattr(self, "_agent_cache", None)
-            if _cache_lock and _cache is not None:
-                with _cache_lock:
-                    cached = _cache.get(session_key)
-                    if cached and cached[1] == _sig:
-                        agent = cached[0]
-                        logger.debug("Reusing cached agent for session %s", session_key)
-
-            if agent is None:
-                # Config changed or first message — create fresh agent
-                agent = create_gateway_agent(
+            agent, _ = shared_reuse_or_create_gateway_agent(
+                session_key=session_key,
+                signature=_sig,
+                cache=_cache,
+                cache_lock=_cache_lock,
+                create_agent=lambda: create_gateway_agent(
                     runtime_spec=runtime_spec,
                     session_id=session_id,
                     source=source,
@@ -8502,37 +8503,22 @@ class GatewayRunner:
                     enabled_toolsets=runtime_spec.enabled_toolsets,
                     quiet_mode=True,
                     verbose_logging=False,
-                )
-                if _cache_lock and _cache is not None:
-                    with _cache_lock:
-                        _cache[session_key] = (agent, _sig)
-                logger.debug("Created new agent for session %s (sig=%s)", session_key, _sig)
-
-            # Per-message state — callbacks and reasoning config change every
-            # turn and must not be baked into the cached agent constructor.
-            agent.tool_progress_callback = progress_runtime.progress_callback
-            agent.step_callback = progress_runtime.step_callback
-            agent.stream_delta_callback = _stream_delta_cb
-            agent.status_callback = progress_runtime.status_callback
-            agent.reasoning_config = reasoning_config
-
-            # Background review delivery — send "💾 Memory updated" etc. to user
-            def _bg_review_send(message: str) -> None:
-                if not _status_adapter:
-                    return
-                try:
-                    asyncio.run_coroutine_threadsafe(
-                        _status_adapter.send(
-                            _status_chat_id,
-                            message,
-                            metadata=_status_thread_metadata,
-                        ),
-                        _loop_for_step,
-                    )
-                except Exception as _e:
-                    logger.debug("background_review_callback error: %s", _e)
-
-            agent.background_review_callback = _bg_review_send
+                ),
+                logger=logger,
+            )
+            shared_configure_gateway_agent_for_turn(
+                agent=agent,
+                progress_runtime=progress_runtime,
+                stream_delta_callback=_stream_delta_cb,
+                reasoning_config=reasoning_config,
+                background_review_callback=shared_build_gateway_background_review_callback(
+                    status_adapter=_status_adapter,
+                    status_chat_id=_status_chat_id,
+                    status_thread_metadata=_status_thread_metadata,
+                    loop_for_step=_loop_for_step,
+                    logger=logger,
+                ),
+            )
 
             # Store agent reference for interrupt support
             agent_holder[0] = agent

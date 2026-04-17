@@ -38,22 +38,16 @@ from gateway.group_target_intents import (
 )
 from gateway.platforms.base import MessageEvent, MessageType
 from gateway.qq_group_policies import get_group_policy
+from gateway.qq_intel_runtime_service import (
+    format_admin_qq_intel_control_reply as shared_format_admin_qq_intel_control_reply,
+    match_admin_qq_intel_control_request as shared_match_admin_qq_intel_control_request,
+    run_admin_qq_intel_control_shortcut,
+)
 from gateway.qq_intel_assignments import get_group_monitoring_overlay, list_intel_workers
-from gateway.qq_intel_control_requests import (
-    extract_qq_oral_intel_hire_objective,
-    extract_qq_worker_name,
-    looks_like_qq_intel_worker_context,
-    match_qq_intel_control_request,
-)
-from gateway.qq_intents import (
-    _looks_like_qq_social_policy_candidate,
-    _looks_like_qq_social_request_list_query,
-)
-from gateway.qq_social_control_requests import (
-    looks_like_qq_social_policy_query,
-    match_qq_social_control_request,
-    match_qq_social_request_type,
-    qq_social_policy_notify_target,
+from gateway.qq_social_runtime_service import (
+    format_admin_qq_social_control_reply as shared_format_admin_qq_social_control_reply,
+    match_admin_qq_social_control_request as shared_match_admin_qq_social_control_request,
+    run_admin_qq_social_control_shortcut,
 )
 from gateway.send_intents import (
     extract_qq_inline_send_target_and_message,
@@ -337,110 +331,49 @@ class DirectControlRouter:
             event,
             platform=Platform.QQ_NAPCAT,
         )
-        if source is None:
-            return None, None
         known_worker_names = {
             str(item.get("worker_name") or "").strip()
             for item in list_intel_workers()
             if isinstance(item, dict) and str(item.get("worker_name") or "").strip()
         }
-        return match_qq_intel_control_request(
+        return shared_match_admin_qq_intel_control_request(
             source=source,
             body=body,
             admin_ids_configured=bool(self.owner._configured_admin_user_ids(getattr(source, "platform", None))),
             is_admin_user=self.owner._is_admin_user(source),
             looks_like_joined_group_list_query=self.owner._looks_like_joined_group_list_query,
-            extract_worker_name=extract_qq_worker_name,
-            looks_like_worker_context=looks_like_qq_intel_worker_context,
             known_worker_names=known_worker_names,
-            target_extractor=extract_qq_group_target,
             report_target_resolver=self._resolve_oral_report_delivery_target,
-            hire_objective_extractor=extract_qq_oral_intel_hire_objective,
         )
 
     def _format_admin_qq_intel_control_reply(self, tool_args: dict[str, Any], result: dict[str, Any]) -> str:
-        action = str(tool_args.get("action") or "").strip().lower()
-        if action == "list_joined_groups":
-            groups = list(result.get("groups") or [])
-            if not groups:
-                return "当前还没查到已加入的 QQ 群。"
-            lines = ["当前已加入的 QQ 群："]
-            for item in groups[:20]:
-                if not isinstance(item, dict):
-                    continue
-                group_id = str(item.get("group_id") or "").strip()
-                group_name = str(item.get("group_name") or group_id).strip()
-                lines.append(f"- {group_name} ({group_id})")
-            return "\n".join(lines)
-
-        worker = result.get("worker") or {}
-        worker_name = str(worker.get("worker_name") or tool_args.get("worker_name") or "").strip()
-        status_label = self.owner._format_intel_worker_status_label(worker.get("status"))
-        if action == "hire_worker":
-            target_group = str(
-                worker.get("target_group_id")
-                or worker.get("target_group_ref")
-                or tool_args.get("target_group")
-                or ""
-            ).replace("group:", "").strip()
-            return f"已安排情报员 {worker_name} 去 QQ 群 {target_group} 执行任务。当前状态：{status_label}。"
-        if action == "pause_worker":
-            return f"情报员 {worker_name} 已暂停。当前状态：{status_label}。"
-        if action == "resume_worker":
-            return f"情报员 {worker_name} 已恢复任务。当前状态：{status_label}。"
-        if action == "stop_worker":
-            return f"情报员 {worker_name} 已停用。当前状态：{status_label}。"
-        if action == "run_report_now":
-            delivery = str(
-                (result.get("delivery") or {}).get("target")
-                or tool_args.get("manual_report_target")
-                or ""
-            ).strip()
-            if delivery:
-                return f"已让情报员 {worker_name} 立即汇报，发送到 {delivery}。"
-            return f"已让情报员 {worker_name} 立即汇报。"
-
-        group_id = str(worker.get("target_group_id") or "").strip()
-        group_name = str(worker.get("target_group_name") or "").strip()
-        objective = str(worker.get("objective") or "").strip()
-        lines = [f"情报员 {worker_name} 当前状态：{status_label}。"]
-        if group_id or group_name:
-            label = group_name or group_id
-            if group_id and group_name and group_id != group_name:
-                label = f"{group_name} ({group_id})"
-            lines.append(f"目标群：{label}")
-        if objective:
-            lines.append(f"任务：{objective}")
-        daily_targets = self.owner._unique_report_targets([worker.get("daily_report_target")])
-        manual_targets = self.owner._unique_report_targets([worker.get("manual_report_target")])
-        if bool(worker.get("daily_report_enabled")) and daily_targets:
-            lines.append(f"日报目标：{', '.join(daily_targets)}")
-        if manual_targets:
-            lines.append(f"立即汇报目标：{', '.join(manual_targets)}")
-        last_error = str(worker.get("last_error") or "").strip()
-        if last_error:
-            lines.append(f"备注：{last_error}")
-        return "\n".join(lines)
+        return shared_format_admin_qq_intel_control_reply(
+            tool_args,
+            result,
+            status_label_formatter=self.owner._format_intel_worker_status_label,
+            unique_report_targets_fn=self.owner._unique_report_targets,
+        )
 
     def _try_handle_admin_qq_intel_control(self, event: MessageEvent) -> str | None:
         tool_args, shortcut_error = self._match_admin_qq_intel_control_request(event)
-        if shortcut_error:
-            return shortcut_error
-        if not tool_args:
-            return None
 
         try:
             from tools.qq_control_tool import qq_control_tool
 
-            raw = qq_control_tool(tool_args)
-            result = json.loads(raw) if isinstance(raw, str) else (raw or {})
+            return run_admin_qq_intel_control_shortcut(
+                tool_args=tool_args,
+                shortcut_error=shortcut_error,
+                tool_runner=lambda current_tool_args: (
+                    (lambda raw: json.loads(raw) if isinstance(raw, str) else (raw or {}))(
+                        qq_control_tool(current_tool_args)
+                    )
+                ),
+                reply_formatter=self._format_admin_qq_intel_control_reply,
+                logger=logger,
+            )
         except Exception as exc:
-            logger.warning("Admin QQ oral intel control shortcut failed: %s", exc)
+            logger.warning("Admin QQ oral intel control shortcut bootstrap failed: %s", exc)
             return f"QQ 情报员控制执行失败：{exc}"
-
-        if result.get("error"):
-            return str(result["error"])
-        return self._format_admin_qq_intel_control_reply(tool_args, result)
 
     def _load_qq_group_runtime_status_details(self, target: str) -> dict[str, Any]:
         return build_qq_group_runtime_status_details(
@@ -723,91 +656,35 @@ class DirectControlRouter:
             event,
             platform=Platform.QQ_NAPCAT,
         )
-        if source is None:
-            return None, None
-        return match_qq_social_control_request(
+        return shared_match_admin_qq_social_control_request(
             source=source,
             body=body,
             admin_ids_configured=bool(self.owner._configured_admin_user_ids(getattr(source, "platform", None))),
             is_admin_user=self.owner._is_admin_user(source),
             admin_only_message=self.owner._admin_only_message(source, "处理 QQ 社交请求"),
-            looks_like_request_list_query=_looks_like_qq_social_request_list_query,
-            looks_like_policy_candidate=_looks_like_qq_social_policy_candidate,
-            looks_like_policy_query=looks_like_qq_social_policy_query,
-            request_type_matcher=match_qq_social_request_type,
-            notify_target_resolver=qq_social_policy_notify_target,
         )
 
     @staticmethod
     def _format_admin_qq_social_control_reply(tool_args: dict[str, Any], result: dict[str, Any]) -> str:
-        action = str(tool_args.get("action") or "").strip().lower()
-        if action == "list_requests":
-            requests = list(result.get("requests") or [])
-            request_type = str(tool_args.get("request_type") or "").strip().lower()
-            if not requests:
-                if request_type == "friend":
-                    return "当前没有待处理的 QQ 好友申请。"
-                if request_type == "group":
-                    return "当前没有待处理的 QQ 加群/邀请申请。"
-                return "当前没有待处理的 QQ 社交申请。"
-
-            if request_type == "friend":
-                lines = ["当前待处理的 QQ 好友申请："]
-            elif request_type == "group":
-                lines = ["当前待处理的 QQ 加群/邀请申请："]
-            else:
-                lines = ["当前待处理的 QQ 社交申请："]
-            for item in requests[:10]:
-                if not isinstance(item, dict):
-                    continue
-                key = str(item.get("request_key") or "").strip()
-                user_id = str(item.get("user_id") or "").strip()
-                group_id = str(item.get("group_id") or "").strip()
-                comment = str(item.get("comment") or "").strip()
-                line = f"- {key}"
-                if user_id:
-                    line += f" | 用户 {user_id}"
-                if group_id:
-                    line += f" | 群 {group_id}"
-                if comment:
-                    line += f" | 备注：{comment}"
-                lines.append(line)
-            return "\n".join(lines)
-
-        policy = result.get("policy") or {}
-        lines = ["QQ 社交自动处理策略已更新：" if action == "set_social_policy" else "QQ 社交自动处理策略："]
-        enabled_label = "已开启" if action == "set_social_policy" else "开"
-        disabled_label = "已关闭" if action == "set_social_policy" else "关"
-        lines.append(
-            f"- 好友申请自动通过：{enabled_label if bool(policy.get('auto_approve_friend_requests')) else disabled_label}"
-        )
-        lines.append(
-            f"- 加群申请自动通过：{enabled_label if bool(policy.get('auto_approve_group_add_requests')) else disabled_label}"
-        )
-        lines.append(
-            f"- 群邀请自动通过：{enabled_label if bool(policy.get('auto_approve_group_invites')) else disabled_label}"
-        )
-        notify_target = str(policy.get("notify_target") or "").strip()
-        if notify_target:
-            lines.append(f"- 通知目标：{notify_target}")
-        return "\n".join(lines)
+        return shared_format_admin_qq_social_control_reply(tool_args, result)
 
     def _try_handle_admin_qq_social_control(self, event: MessageEvent) -> str | None:
         tool_args, shortcut_error = self._match_admin_qq_social_control_request(event)
-        if shortcut_error:
-            return shortcut_error
-        if not tool_args:
-            return None
 
         try:
             from tools.qq_social_tool import qq_social_tool
 
-            raw = qq_social_tool(tool_args)
-            result = json.loads(raw) if isinstance(raw, str) else (raw or {})
+            return run_admin_qq_social_control_shortcut(
+                tool_args=tool_args,
+                shortcut_error=shortcut_error,
+                tool_runner=lambda current_tool_args: (
+                    (lambda raw: json.loads(raw) if isinstance(raw, str) else (raw or {}))(
+                        qq_social_tool(current_tool_args)
+                    )
+                ),
+                reply_formatter=self._format_admin_qq_social_control_reply,
+                logger=logger,
+            )
         except Exception as exc:
-            logger.warning("Admin QQ social shortcut failed: %s", exc)
+            logger.warning("Admin QQ social shortcut bootstrap failed: %s", exc)
             return f"QQ 社交控制执行失败：{exc}"
-
-        if result.get("error"):
-            return str(result["error"])
-        return self._format_admin_qq_social_control_reply(tool_args, result)

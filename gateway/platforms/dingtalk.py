@@ -238,18 +238,35 @@ class DingTalkAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _extract_text(message: "ChatbotMessage") -> str:
-        """Extract plain text from a DingTalk chatbot message."""
-        text = getattr(message, "text", None) or ""
-        if isinstance(text, dict):
-            content = text.get("content", "").strip()
-        else:
-            content = str(text).strip()
+        """Extract plain text from a DingTalk chatbot message.
 
-        # Fall back to rich text if present
+        Handles both legacy and current dingtalk-stream SDK payload shapes:
+          * legacy: ``message.text`` was a dict ``{"content": "..."}``
+          * >= 0.20: ``message.text`` is a ``TextContent`` dataclass whose
+            ``__str__`` returns ``"TextContent(content=...)"`` — never fall
+            back to ``str(text)`` without extracting ``.content`` first.
+          * rich text moved from ``message.rich_text`` (list) to
+            ``message.rich_text_content.rich_text_list`` (list of dicts).
+        """
+        text = getattr(message, "text", None)
+        content = ""
+        if text is not None:
+            if isinstance(text, dict):
+                content = (text.get("content") or "").strip()
+            elif hasattr(text, "content"):
+                content = str(text.content or "").strip()
+            else:
+                content = str(text).strip()
+
         if not content:
-            rich_text = getattr(message, "rich_text", None)
-            if rich_text and isinstance(rich_text, list):
-                parts = [item["text"] for item in rich_text
+            rich_list = None
+            rtc = getattr(message, "rich_text_content", None)
+            if rtc is not None and hasattr(rtc, "rich_text_list"):
+                rich_list = rtc.rich_text_list
+            if rich_list is None:
+                rich_list = getattr(message, "rich_text", None)
+            if rich_list and isinstance(rich_list, list):
+                parts = [item["text"] for item in rich_list
                          if isinstance(item, dict) and item.get("text")]
                 content = " ".join(parts).strip()
         return content

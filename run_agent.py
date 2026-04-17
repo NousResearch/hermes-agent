@@ -1674,11 +1674,25 @@ class AIAgent:
         turn-scoped).
         """
         import logging
+        import re as _re
         from hermes_cli.providers import determine_api_mode
 
         # ── Determine api_mode if not provided ──
         if not api_mode:
             api_mode = determine_api_mode(new_provider, base_url)
+
+        # Defense-in-depth: ensure OpenCode base_url doesn't carry a trailing
+        # /v1 into the anthropic_messages client, which would cause the SDK to
+        # hit /v1/v1/messages.  `model_switch.switch_model()` already strips
+        # this, but we guard here so any direct callers (future code paths,
+        # tests) can't reintroduce the double-/v1 404 bug.
+        if (
+            api_mode == "anthropic_messages"
+            and new_provider in ("opencode-zen", "opencode-go")
+            and isinstance(base_url, str)
+            and base_url
+        ):
+            base_url = _re.sub(r"/v1/?$", "", base_url)
 
         old_model = self.model
         old_provider = self.provider

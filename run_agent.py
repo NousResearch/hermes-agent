@@ -236,6 +236,9 @@ def _routermint_headers() -> dict:
     }
 
 
+_CUSTOM_ENDPOINT_COMPAT_UA = "Mozilla/5.0 HermesCompat"
+
+
 def _pool_may_recover_from_rate_limit(
     pool, *, provider: str | None = None, base_url: str | None = None
 ) -> bool:
@@ -321,6 +324,11 @@ class _StreamErrorEvent(Exception):
                 "type": "error",
             }
         }
+
+
+def _custom_endpoint_headers() -> dict:
+    """Neutral User-Agent for OpenAI-compatible proxies that block SDK defaults."""
+    return {"User-Agent": _CUSTOM_ENDPOINT_COMPAT_UA}
 
 
 class AIAgent:

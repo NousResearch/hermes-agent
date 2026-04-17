@@ -1,13 +1,13 @@
 import type { ScrollBoxHandle } from '@hermes/ink'
 import {
+  type RefObject,
   useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
   useState,
-  useSyncExternalStore,
-  type RefObject
+  useSyncExternalStore
 } from 'react'
 
 const ESTIMATE = 4

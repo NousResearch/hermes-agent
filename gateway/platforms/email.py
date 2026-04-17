@@ -79,9 +79,8 @@ def check_email_requirements() -> bool:
     """Check if email platform dependencies are available."""
     addr = os.getenv("EMAIL_ADDRESS")
     pwd = os.getenv("EMAIL_PASSWORD")
-    imap = os.getenv("EMAIL_IMAP_HOST")
     smtp = os.getenv("EMAIL_SMTP_HOST")
-    if not all([addr, pwd, imap, smtp]):
+    if not all([addr, pwd, smtp]):
         return False
     return True
 
@@ -219,7 +218,7 @@ def _extract_attachments(
 
 
 class EmailAdapter(BasePlatformAdapter):
-    """Email gateway adapter using IMAP (receive) and SMTP (send)."""
+    """Email gateway adapter using optional IMAP receive and SMTP send."""
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.EMAIL)
@@ -230,6 +229,7 @@ class EmailAdapter(BasePlatformAdapter):
         self._imap_port = int(os.getenv("EMAIL_IMAP_PORT", "993"))
         self._smtp_host = os.getenv("EMAIL_SMTP_HOST", "")
         self._smtp_port = int(os.getenv("EMAIL_SMTP_PORT", "587"))
+        self._smtp_username = os.getenv("EMAIL_SMTP_USERNAME") or self._address
         self._poll_interval = int(os.getenv("EMAIL_POLL_INTERVAL", "15"))
 
         # Skip attachments — configured via config.yaml:
@@ -270,21 +270,32 @@ class EmailAdapter(BasePlatformAdapter):
             self._seen_uids = set(list(self._seen_uids)[-self._seen_uids_max // 2:])
 
     async def connect(self) -> bool:
-        """Connect to the IMAP server and start polling for new messages."""
+        """Connect the SMTP sender and, if configured, start IMAP polling."""
         try:
-            # Test IMAP connection
-            imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
-            imap.login(self._address, self._password)
-            # Mark all existing messages as seen so we only process new ones
-            imap.select("INBOX")
-            status, data = imap.uid("search", None, "ALL")
-            if status == "OK" and data and data[0]:
-                for uid in data[0].split():
-                    self._seen_uids.add(uid)
-            # Keep only the most recent UIDs to prevent unbounded growth
-            self._trim_seen_uids()
-            imap.logout()
-            logger.info("[Email] IMAP connection test passed. %d existing messages skipped.", len(self._seen_uids))
+            if self._imap_host:
+                # Test IMAP connection when inbound mail ingestion is enabled
+                imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
+                try:
+                    imap.login(self._address, self._password)
+                    # Mark all existing messages as seen so we only process new ones
+                    imap.select("INBOX")
+                    status, data = imap.uid("search", None, "ALL")
+                    if status == "OK" and data and data[0]:
+                        for uid in data[0].split():
+                            self._seen_uids.add(uid)
+                    # Keep only the most recent UIDs to prevent unbounded growth
+                    self._trim_seen_uids()
+                    logger.info(
+                        "[Email] IMAP connection test passed. %d existing messages skipped.",
+                        len(self._seen_uids),
+                    )
+                finally:
+                    try:
+                        imap.logout()
+                    except Exception:
+                        pass
+            else:
+                logger.info("[Email] IMAP disabled; running in SMTP-only mode.")
         except Exception as e:
             logger.error("[Email] IMAP connection failed: %s", e)
             return False
@@ -293,7 +304,7 @@ class EmailAdapter(BasePlatformAdapter):
             # Test SMTP connection
             smtp = smtplib.SMTP(self._smtp_host, self._smtp_port, timeout=30)
             smtp.starttls(context=ssl.create_default_context())
-            smtp.login(self._address, self._password)
+            smtp.login(self._smtp_username, self._password)
             smtp.quit()
             logger.info("[Email] SMTP connection test passed.")
         except Exception as e:
@@ -301,7 +312,8 @@ class EmailAdapter(BasePlatformAdapter):
             return False
 
         self._running = True
-        self._poll_task = asyncio.create_task(self._poll_loop())
+        if self._imap_host:
+            self._poll_task = asyncio.create_task(self._poll_loop())
         print(f"[Email] Connected as {self._address}")
         return True
 
@@ -512,7 +524,7 @@ class EmailAdapter(BasePlatformAdapter):
         smtp = smtplib.SMTP(self._smtp_host, self._smtp_port, timeout=30)
         try:
             smtp.starttls(context=ssl.create_default_context())
-            smtp.login(self._address, self._password)
+            smtp.login(self._smtp_username, self._password)
             smtp.send_message(msg)
         finally:
             try:
@@ -604,7 +616,7 @@ class EmailAdapter(BasePlatformAdapter):
         smtp = smtplib.SMTP(self._smtp_host, self._smtp_port, timeout=30)
         try:
             smtp.starttls(context=ssl.create_default_context())
-            smtp.login(self._address, self._password)
+            smtp.login(self._smtp_username, self._password)
             smtp.send_message(msg)
         finally:
             try:

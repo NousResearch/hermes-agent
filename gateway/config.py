@@ -312,7 +312,7 @@ class GatewayConfig:
                 config.extra.get("client_id") or os.getenv("DINGTALK_CLIENT_ID")
             ) and (
                 config.extra.get("client_secret") or os.getenv("DINGTALK_CLIENT_SECRET")
-            ):                                                                                                                                                                                    
+            ):
                 connected.append(platform)
         
         return connected

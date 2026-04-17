@@ -70,6 +70,7 @@ AUTHOR_MAP = {
     "27917469+nosleepcassette@users.noreply.github.com": "nosleepcassette",
     "241404605+MestreY0d4-Uninter@users.noreply.github.com": "MestreY0d4-Uninter",
     "109555139+davetist@users.noreply.github.com": "davetist",
+    "39405770+yyq4193@users.noreply.github.com": "yyq4193",
     "Asunfly@users.noreply.github.com": "Asunfly",
     # contributors (manual mapping from git names)
     "ahmedsherif95@gmail.com": "asheriif",
@@ -181,6 +182,7 @@ AUTHOR_MAP = {
     "juan.ovalle@mistral.ai": "jjovalle99",
     "julien.talbot@ergonomia.re": "Julientalbot",
     "kagura.chen28@gmail.com": "kagura-agent",
+    "1342088860@qq.com": "youngDoo",
     "kamil@gwozdz.me": "kamil-gwozdz",
     "karamusti912@gmail.com": "MustafaKara7",
     "kira@ariaki.me": "kira-ariaki",

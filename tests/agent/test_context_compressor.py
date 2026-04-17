@@ -352,8 +352,10 @@ class TestCompressWithClient:
         assert len(summary_msg) == 1
         assert summary_msg[0]["role"] == "user"
 
-    def test_summary_role_avoids_consecutive_user_when_head_ends_with_user(self):
-        """When last head message is 'user', summary must be 'assistant' to avoid two consecutive user messages."""
+    def test_double_collision_when_head_ends_with_user_preserves_tail(self):
+        """If the head ends with user and the tail also starts with assistant,
+        the compressor should preserve the tail message and merge the summary
+        back into the head side instead."""
         mock_client = MagicMock()
         mock_response = MagicMock()
         mock_response.choices = [MagicMock()]
@@ -363,7 +365,8 @@ class TestCompressWithClient:
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=3, protect_last_n=2)
 
-        # Last head message (index 2) is "user" → summary should be "assistant"
+        # Last head message (index 2) is "user" and the first tail message is
+        # assistant, so both standalone summary roles would collide.
         msgs = [
             {"role": "system", "content": "system prompt"},
             {"role": "user", "content": "msg 1"},
@@ -376,11 +379,13 @@ class TestCompressWithClient:
         ]
         with patch("agent.context_compressor.call_llm", return_value=mock_response):
             result = c.compress(msgs)
-        summary_msg = [
-            m for m in result if (m.get("content") or "").startswith(SUMMARY_PREFIX)
-        ]
-        assert len(summary_msg) == 1
-        assert summary_msg[0]["role"] == "assistant"
+
+        merged_head = [m for m in result if "msg 2" in (m.get("content") or "")]
+        assert len(merged_head) == 1
+        assert SUMMARY_PREFIX in merged_head[0]["content"]
+
+        first_tail = [m for m in result if (m.get("content") or "") == "msg 5"]
+        assert len(first_tail) == 1
 
     def test_summary_role_flips_to_avoid_tail_collision(self):
         """When summary role collides with the first tail message but flipping
@@ -416,10 +421,13 @@ class TestCompressWithClient:
             if r1 in ("user", "assistant") and r2 in ("user", "assistant"):
                 assert r1 != r2, f"consecutive {r1} at indices {i-1},{i}"
 
-    def test_double_collision_merges_summary_into_tail(self):
-        """When neither role avoids collision with both neighbors, the summary
-        should be merged into the first tail message rather than creating a
-        standalone message that breaks role alternation.
+    def test_double_collision_merges_summary_into_head_to_preserve_tail(self):
+        """When neither role avoids collision with both neighbors, merge the
+        summary into the last head message instead of prepending it to the tail.
+
+        This preserves the most recent tail message (often the current user ask)
+        as a clean standalone message rather than polluting it with the full
+        compaction handoff block.
 
         Common scenario: head ends with 'assistant', tail starts with 'user'.
         summary='user' collides with tail, summary='assistant' collides with head.
@@ -455,14 +463,22 @@ class TestCompressWithClient:
             if r1 in ("user", "assistant") and r2 in ("user", "assistant"):
                 assert r1 != r2, f"consecutive {r1} at indices {i-1},{i}"
 
-        # The summary text should be merged into the first tail message
-        first_tail = [m for m in result if "msg 6" in (m.get("content") or "")]
-        assert len(first_tail) == 1
-        assert "summary text" in first_tail[0]["content"]
+        # The summary text should be merged into the last head message instead
+        # of contaminating the first tail / latest user message.
+        merged_head = [m for m in result if "msg 2" in (m.get("content") or "")]
+        assert len(merged_head) == 1
+        assert "summary text" in merged_head[0]["content"]
 
-    def test_double_collision_user_head_assistant_tail(self):
-        """Reverse double collision: head ends with 'user', tail starts with 'assistant'.
-        summary='assistant' collides with tail, 'user' collides with head → merge."""
+        first_tail = [m for m in result if (m.get("content") or "") == "msg 6"]
+        assert len(first_tail) == 1
+
+    def test_double_collision_user_head_assistant_tail_preserves_tail(self):
+        """Reverse double collision: merge into the last head message so the
+        first tail assistant message stays clean.
+
+        head ends with 'user', tail starts with 'assistant'.
+        summary='assistant' collides with tail, 'user' collides with head.
+        """
         mock_response = MagicMock()
         mock_response.choices = [MagicMock()]
         mock_response.choices[0].message.content = "summary text"
@@ -495,10 +511,116 @@ class TestCompressWithClient:
             if r1 in ("user", "assistant") and r2 in ("user", "assistant"):
                 assert r1 != r2, f"consecutive {r1} at indices {i-1},{i}"
 
-        # The summary should be merged into the first tail message (assistant at index 5)
-        first_tail = [m for m in result if "msg 5" in (m.get("content") or "")]
+        # The summary should be merged into the last head message (user at index 1)
+        # rather than the first tail assistant message.
+        merged_head = [m for m in result if "msg 1" in (m.get("content") or "")]
+        assert len(merged_head) == 1
+        assert "summary text" in merged_head[0]["content"]
+
+        first_tail = [m for m in result if (m.get("content") or "") == "msg 5"]
         assert len(first_tail) == 1
-        assert "summary text" in first_tail[0]["content"]
+
+    def test_double_collision_with_no_protected_head_uses_standalone_summary(self):
+        """If protect_first_n=0, there is no head message to merge into.
+
+        The compressor should emit a standalone summary with the role opposite
+        the first tail message instead of recreating a same-role boundary.
+        """
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "summary text"
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=0, protect_last_n=2)
+
+        msgs = [
+            {"role": "assistant", "content": "msg 1"},
+            {"role": "user", "content": "msg 2"},
+            {"role": "assistant", "content": "msg 3"},
+            {"role": "user", "content": "msg 4"},
+            {"role": "assistant", "content": "msg 5"},  # first tail
+            {"role": "user", "content": "msg 6"},
+            {"role": "assistant", "content": "msg 7"},
+        ]
+        with patch("agent.context_compressor.call_llm", return_value=mock_response):
+            result = c.compress(msgs)
+
+        summary_msgs = [m for m in result if (m.get("content") or "").startswith(SUMMARY_PREFIX)]
+        assert len(summary_msgs) == 1
+        assert summary_msgs[0]["role"] == "user"
+
+        for i in range(1, len(result)):
+            r1 = result[i - 1].get("role")
+            r2 = result[i].get("role")
+            if r1 in ("user", "assistant") and r2 in ("user", "assistant"):
+                assert r1 != r2, f"consecutive {r1} at indices {i-1},{i}"
+
+    def test_double_collision_merges_into_list_content_head(self):
+        """Head merge should support list-based content, not just strings."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "summary text"
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=3, protect_last_n=3)
+
+        msgs = [
+            {"role": "system", "content": "system prompt"},
+            {"role": "user", "content": "msg 1"},
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "msg 2"},
+                    {"type": "text", "text": "extra block"},
+                ],
+            },
+            {"role": "user", "content": "msg 3"},
+            {"role": "assistant", "content": "msg 4"},
+            {"role": "user", "content": "msg 5"},
+            {"role": "user", "content": "msg 6"},
+            {"role": "assistant", "content": "msg 7"},
+            {"role": "user", "content": "msg 8"},
+        ]
+        with patch("agent.context_compressor.call_llm", return_value=mock_response):
+            result = c.compress(msgs)
+
+        merged_head = [m for m in result if m.get("role") == "assistant" and isinstance(m.get("content"), list)]
+        assert len(merged_head) == 1
+        blocks = merged_head[0]["content"]
+        assert any(block.get("type") == "text" and block.get("text") == "msg 2" for block in blocks)
+        assert any(block.get("type") == "text" and SUMMARY_PREFIX in block.get("text", "") for block in blocks)
+
+    def test_repeated_double_collision_replaces_embedded_summary_in_head(self):
+        """Repeated compressions should replace the embedded head summary,
+        not accumulate multiple handoff blocks in a protected message."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "summary text"
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=3, protect_last_n=3)
+
+        msgs = [
+            {"role": "system", "content": "system prompt"},
+            {"role": "user", "content": "msg 1"},
+            {"role": "assistant", "content": "msg 2"},
+            {"role": "user", "content": "msg 3"},
+            {"role": "assistant", "content": "msg 4"},
+            {"role": "user", "content": "msg 5"},
+            {"role": "user", "content": "msg 6"},
+            {"role": "assistant", "content": "msg 7"},
+            {"role": "user", "content": "msg 8"},
+        ]
+        with patch("agent.context_compressor.call_llm", return_value=mock_response):
+            first = c.compress(msgs)
+            second = c.compress(first + [
+                {"role": "assistant", "content": "msg 9"},
+                {"role": "user", "content": "msg 10"},
+            ])
+
+        merged_head = [m for m in second if "msg 2" in (m.get("content") or "")]
+        assert len(merged_head) == 1
+        assert merged_head[0]["content"].count(SUMMARY_PREFIX) == 1
 
     def test_no_collision_scenarios_still_work(self):
         """Verify that the common no-collision cases (head=assistant/tail=assistant,

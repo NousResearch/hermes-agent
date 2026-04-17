@@ -765,7 +765,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 f"recent messages below and the current state of any files or resources."
             )
 
-        _merge_summary_into_tail = False
+        _merge_summary_into_head = False
         last_head_role = messages[compress_start - 1].get("role", "user") if compress_start > 0 else "user"
         first_tail_role = messages[compress_end].get("role", "user") if compress_end < n_messages else "user"
         # Pick a role that avoids consecutive same-role with both neighbors.
@@ -783,23 +783,30 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             else:
                 # Both roles would create consecutive same-role messages
                 # (e.g. head=assistant, tail=user — neither role works).
-                # Merge the summary into the first tail message instead
-                # of inserting a standalone message that breaks alternation.
-                _merge_summary_into_tail = True
-        if not _merge_summary_into_tail:
+                # Merge the summary into the last head message instead of the
+                # first tail message.  Prepending the handoff block to the
+                # tail can contaminate the latest live user ask (or latest
+                # assistant message) with the entire compaction summary,
+                # which in practice causes stale-task fixation and visible
+                # prompt regurgitation.
+                _merge_summary_into_head = True
+        if _merge_summary_into_head and compressed:
+            compressed[-1]["content"] = self._merge_summary_text_into_content(
+                compressed[-1].get("content"),
+                summary,
+                prepend=False,
+            )
+        elif _merge_summary_into_head:
+            # No protected head exists (e.g. protect_first_n=0), so the
+            # head-collision was synthetic. Emit a standalone summary using
+            # the role opposite the first tail message.
+            summary_role = "assistant" if first_tail_role == "user" else "user"
+            compressed.append({"role": summary_role, "content": summary})
+        else:
             compressed.append({"role": summary_role, "content": summary})
 
         for i in range(compress_end, n_messages):
             msg = messages[i].copy()
-            if _merge_summary_into_tail and i == compress_end:
-                original = msg.get("content") or ""
-                msg["content"] = (
-                    summary
-                    + "\n\n--- END OF CONTEXT SUMMARY — "
-                    "respond to the message below, not the summary above ---\n\n"
-                    + original
-                )
-                _merge_summary_into_tail = False
             compressed.append(msg)
 
         self.compression_count += 1
@@ -818,3 +825,60 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             logger.info("Compression #%d complete", self.compression_count)
 
         return compressed
+
+    @staticmethod
+    def _merge_summary_text_into_content(
+        original_content: Any,
+        summary_text: str,
+        *,
+        prepend: bool = False,
+    ) -> Any:
+        """Merge summary text into a message content payload.
+
+        Supports both plain-string content and list-based multimodal content.
+        Replaces any previously embedded compaction summary instead of
+        accumulating multiple handoff blocks across repeated compressions.
+        """
+        if isinstance(original_content, str):
+            original_text = original_content
+            marker = "\n\n" + SUMMARY_PREFIX
+            if marker in original_text:
+                original_text = original_text.split(marker, 1)[0]
+            elif original_text.startswith(SUMMARY_PREFIX):
+                original_text = ""
+            if not original_text:
+                return summary_text
+            return (
+                summary_text + "\n\n" + original_text
+                if prepend
+                else original_text + "\n\n" + summary_text
+            )
+
+        summary_block = {"type": "text", "text": summary_text}
+
+        if isinstance(original_content, list):
+            cleaned_blocks = []
+            for block in original_content:
+                if isinstance(block, dict) and block.get("type") == "text" and SUMMARY_PREFIX in block.get("text", ""):
+                    continue
+                cleaned_blocks.append(block)
+            if not cleaned_blocks:
+                return [summary_block]
+            return [summary_block, *cleaned_blocks] if prepend else [*cleaned_blocks, summary_block]
+
+        if original_content is None:
+            return summary_text
+
+        original_text = str(original_content)
+        marker = "\n\n" + SUMMARY_PREFIX
+        if marker in original_text:
+            original_text = original_text.split(marker, 1)[0]
+        elif original_text.startswith(SUMMARY_PREFIX):
+            original_text = ""
+        if not original_text:
+            return summary_text
+        return (
+            summary_text + "\n\n" + original_text
+            if prepend
+            else original_text + "\n\n" + summary_text
+        )

@@ -3120,7 +3120,11 @@ def _update_via_zip(args):
             print("  ✓ Skills are up to date")
     except Exception:
         pass
-    
+
+    # Invalidate the update-check cache so the banner doesn't show stale
+    # "commits behind" for up to 6 hours after a successful ZIP update.
+    _invalidate_update_cache()
+
     print()
     print("✓ Update complete!")
 

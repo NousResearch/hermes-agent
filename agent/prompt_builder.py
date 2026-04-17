@@ -170,6 +170,27 @@ SKILLS_GUIDANCE = (
     "Skills that aren't maintained become liabilities."
 )
 
+REASONING_EFFORT_GUIDANCE = (
+    "You MUST manage reasoning effort actively. Lower it before trivial or routine turns; raise it for ambiguity, debugging, risky changes, or multi-step synthesis.\n"
+    "Reassess at turn start, after meaningful new evidence, and when the task shifts. NEVER leave the current level unchanged by inertia, and NEVER reply to a trivial turn before considering a downshift."
+)
+
+
+def format_reasoning_effort_status(reasoning_config: Optional[dict]) -> str:
+    """Return a concise live-status line for the current reasoning effort."""
+    if isinstance(reasoning_config, dict):
+        if reasoning_config.get("enabled") is False:
+            level = "none"
+        else:
+            level = str(reasoning_config.get("effort") or "medium").lower()
+    else:
+        level = "medium"
+
+    return (
+        f"Current reasoning effort: {level}. "
+        "Change it if the task becomes materially simpler or more complex."
+    )
+
 TOOL_USE_ENFORCEMENT_GUIDANCE = (
     "# Tool-use enforcement\n"
     "You MUST use your tools to take action — do not describe what you would do "

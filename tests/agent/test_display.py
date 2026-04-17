@@ -8,6 +8,7 @@ from agent.display import (
     build_tool_preview,
     capture_local_edit_snapshot,
     extract_edit_diff,
+    format_reasoning_effort_preview,
     _render_inline_unified_diff,
     _summarize_rendered_diff_sections,
     render_edit_diff_with_delta,
@@ -87,6 +88,29 @@ class TestBuildToolPreview:
         result = build_tool_preview("session_search", {"query": "find something"})
         assert result is not None
         assert "find something" in result
+
+    def test_format_reasoning_effort_preview_returns_target_level(self):
+        assert format_reasoning_effort_preview(None, "high") == "high"
+
+    def test_format_reasoning_effort_preview_ignores_current_state(self):
+        preview = format_reasoning_effort_preview({"enabled": False}, "low")
+        assert preview == "low"
+
+    def test_reasoning_effort_preview(self):
+        result = build_tool_preview(
+            "reasoning_effort",
+            {"level": "high"},
+            current_reasoning_config={"enabled": True, "effort": "low"},
+        )
+        assert result == "high"
+
+    def test_reasoning_effort_preview_with_persist(self):
+        result = build_tool_preview(
+            "reasoning_effort",
+            {"level": "low", "persist": True},
+            current_reasoning_config={"enabled": False},
+        )
+        assert result == "low (persist)"
 
     def test_false_like_args_zero(self):
         """Non-dict falsy values should return None, not crash."""

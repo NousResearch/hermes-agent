@@ -1106,19 +1106,22 @@ The `web_search`, `web_extract`, and `web_crawl` tools support four backend prov
 
 ```yaml
 web:
-  backend: firecrawl    # firecrawl | parallel | tavily | exa
+  backend: firecrawl    # firecrawl | parallel | tavily | exa | searxng
 ```
 
 | Backend | Env Var | Search | Extract | Crawl |
 |---------|---------|--------|---------|-------|
-| **Firecrawl** (default) | `FIRECRAWL_API_KEY` | ✔ | ✔ | ✔ |
+| **Firecrawl** (default) | `FIRECRAWL_API_KEY` / `FIRECRAWL_API_URL` | ✔ | ✔ | ✔ |
 | **Parallel** | `PARALLEL_API_KEY` | ✔ | ✔ | — |
 | **Tavily** | `TAVILY_API_KEY` | ✔ | ✔ | ✔ |
 | **Exa** | `EXA_API_KEY` | ✔ | ✔ | — |
+| **SearXNG** | `SEARXNG_URL` | ✔ | — | — |
 
-**Backend selection:** If `web.backend` is not set, the backend is auto-detected from available API keys. If only `EXA_API_KEY` is set, Exa is used. If only `TAVILY_API_KEY` is set, Tavily is used. If only `PARALLEL_API_KEY` is set, Parallel is used. Otherwise Firecrawl is the default.
+**Backend selection:** If `web.backend` is not set, the backend is auto-detected from available API keys/URLs. If only `SEARXNG_URL` is set, SearXNG is used. If full-featured providers are also configured, Hermes prefers those over SearXNG in fallback mode; set `web.backend: searxng` to force direct SearXNG search.
 
 **Self-hosted Firecrawl:** Set `FIRECRAWL_API_URL` to point at your own instance. When a custom URL is set, the API key becomes optional (set `USE_DB_AUTHENTICATION=false` on the server to disable auth).
+
+**Self-hosted SearXNG:** Set `SEARXNG_URL` to your instance base URL (for example `https://search.example.com` or `http://localhost:8080`). Hermes uses the `/search?format=json` API directly. `SEARXNG_ENDPOINT` is also accepted as a compatibility alias. This backend is search-only; `web_extract` and `web_crawl` still require Firecrawl, Tavily, Parallel, or Exa.
 
 **Parallel search modes:** Set `PARALLEL_SEARCH_MODE` to control search behavior — `fast`, `one-shot`, or `agentic` (default: `agentic`).
 

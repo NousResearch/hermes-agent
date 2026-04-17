@@ -35,10 +35,10 @@ Quick setup example:
 
 ```yaml
 web:
-  backend: firecrawl    # firecrawl | parallel | tavily | exa
+  backend: firecrawl    # firecrawl | parallel | tavily | exa | searxng
 ```
 
-If `web.backend` is not set, the backend is auto-detected from whichever API key is available. Self-hosted Firecrawl is also supported via `FIRECRAWL_API_URL`.
+If `web.backend` is not set, the backend is auto-detected from whichever API key or URL is available. Self-hosted Firecrawl is supported via `FIRECRAWL_API_URL`, and direct self-hosted SearXNG search is supported via `SEARXNG_URL`.
 
 ## Browser Automation
 

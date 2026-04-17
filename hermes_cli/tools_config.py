@@ -61,6 +61,7 @@ CONFIGURABLE_TOOLSETS = [
     ("memory",          "💾 Memory",                    "persistent memory across sessions"),
     ("session_search",  "🔎 Session Search",            "search past conversations"),
     ("clarify",         "❓ Clarifying Questions",      "clarify"),
+    ("reasoning",       "🧠 Reasoning Effort",          "reasoning_effort"),
     ("delegation",      "👥 Task Delegation",           "delegate_task"),
     ("cronjob",         "⏰ Cron Jobs",                 "create/list/update/pause/resume/run, with optional attached skills"),
     ("messaging",       "📨 Cross-Platform Messaging",  "send_message"),
@@ -242,6 +243,14 @@ TOOL_CATEGORIES = {
                 "web_backend": "firecrawl",
                 "env_vars": [
                     {"key": "FIRECRAWL_API_URL", "prompt": "Your Firecrawl instance URL (e.g., http://localhost:3002)"},
+                ],
+            },
+            {
+                "name": "SearXNG Self-Hosted",
+                "tag": "Free - search only via your own SearXNG instance",
+                "web_backend": "searxng",
+                "env_vars": [
+                    {"key": "SEARXNG_URL", "prompt": "Your SearXNG instance URL (e.g., https://search.example.com or http://localhost:8080)"},
                 ],
             },
         ],

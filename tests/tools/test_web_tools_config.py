@@ -258,6 +258,8 @@ class TestBackendSelection:
         "TOOL_GATEWAY_DOMAIN",
         "TOOL_GATEWAY_SCHEME",
         "TOOL_GATEWAY_USER_TOKEN",
+        "SEARXNG_URL",
+        "SEARXNG_ENDPOINT",
         "TAVILY_API_KEY",
     )
 
@@ -324,6 +326,18 @@ class TestBackendSelection:
         with patch("tools.web_tools._load_web_config", return_value={"backend": "Tavily"}):
             assert _get_backend() == "tavily"
 
+    def test_config_searxng(self):
+        """web.backend=searxng in config → 'searxng'."""
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={"backend": "searxng"}):
+            assert _get_backend() == "searxng"
+
+    def test_config_searxng_case_insensitive(self):
+        """web.backend=SearXNG (mixed case) → 'searxng'."""
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={"backend": "SearXNG"}):
+            assert _get_backend() == "searxng"
+
     # ── Fallback (no web.backend in config) ───────────────────────────
 
     def test_fallback_parallel_only_key(self):
@@ -354,11 +368,32 @@ class TestBackendSelection:
              patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test"}):
             assert _get_backend() == "tavily"
 
+    def test_fallback_searxng_only_url(self):
+        """Only SEARXNG_URL set → 'searxng'."""
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={}), \
+             patch.dict(os.environ, {"SEARXNG_URL": "https://search.example.com"}):
+            assert _get_backend() == "searxng"
+
+    def test_fallback_searxng_endpoint_compat(self):
+        """Legacy SEARXNG_ENDPOINT also enables the searxng backend."""
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={}), \
+             patch.dict(os.environ, {"SEARXNG_ENDPOINT": "http://searxng:8080"}):
+            assert _get_backend() == "searxng"
+
     def test_fallback_tavily_with_firecrawl_prefers_firecrawl(self):
         """Tavily + Firecrawl keys, no config → 'firecrawl' (backward compat)."""
         from tools.web_tools import _get_backend
         with patch("tools.web_tools._load_web_config", return_value={}), \
              patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test", "FIRECRAWL_API_KEY": "fc-test"}):
+            assert _get_backend() == "firecrawl"
+
+    def test_fallback_firecrawl_with_searxng_prefers_firecrawl(self):
+        """Firecrawl + SearXNG configured, no explicit backend → 'firecrawl'."""
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={}), \
+             patch.dict(os.environ, {"SEARXNG_URL": "https://search.example.com", "FIRECRAWL_API_KEY": "fc-test"}):
             assert _get_backend() == "firecrawl"
 
     def test_fallback_tavily_with_parallel_prefers_parallel(self):
@@ -476,6 +511,52 @@ class TestWebSearchErrorHandling:
         assert "traceback" not in result
 
 
+class TestSearxngWebSearch:
+    """Test suite for native SearXNG web search support."""
+
+    def test_search_results_are_normalized(self):
+        import tools.web_tools
+
+        response = MagicMock()
+        response.json.return_value = {
+            "results": [
+                {
+                    "title": "Example Result",
+                    "url": "https://example.com/result",
+                    "content": "Short summary",
+                },
+                {
+                    "title": "Second Result",
+                    "url": "https://example.com/second",
+                    "content": "Another summary",
+                },
+            ]
+        }
+
+        with patch("tools.web_tools._get_backend", return_value="searxng"), \
+             patch.dict(os.environ, {"SEARXNG_URL": "https://search.example.com"}, clear=False), \
+             patch("tools.web_tools.httpx.get", return_value=response) as mock_get, \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch.object(tools.web_tools._debug, "log_call"), \
+             patch.object(tools.web_tools._debug, "save"):
+            result = json.loads(tools.web_tools.web_search_tool("example query", limit=1))
+
+        assert result == {
+            "success": True,
+            "data": {
+                "web": [
+                    {
+                        "title": "Example Result",
+                        "url": "https://example.com/result",
+                        "description": "Short summary",
+                        "position": 1,
+                    }
+                ]
+            }
+        }
+        mock_get.assert_called_once()
+
+
 class TestCheckWebApiKey:
     """Test suite for check_web_api_key() unified availability check."""
 
@@ -488,6 +569,8 @@ class TestCheckWebApiKey:
         "TOOL_GATEWAY_DOMAIN",
         "TOOL_GATEWAY_SCHEME",
         "TOOL_GATEWAY_USER_TOKEN",
+        "SEARXNG_URL",
+        "SEARXNG_ENDPOINT",
         "TAVILY_API_KEY",
     )
 
@@ -532,6 +615,11 @@ class TestCheckWebApiKey:
             from tools.web_tools import check_web_api_key
             assert check_web_api_key() is True
 
+    def test_searxng_url_only(self):
+        with patch.dict(os.environ, {"SEARXNG_URL": "https://search.example.com"}):
+            from tools.web_tools import check_web_api_key
+            assert check_web_api_key() is True
+
     def test_no_keys_returns_false(self):
         from tools.web_tools import check_web_api_key
         assert check_web_api_key() is False
@@ -571,6 +659,12 @@ class TestCheckWebApiKey:
                 with patch.dict(os.environ, {"FIRECRAWL_GATEWAY_URL": "http://127.0.0.1:3002"}, clear=False):
                     from tools.web_tools import check_web_api_key
                     assert check_web_api_key() is True
+
+    def test_configured_searxng_backend_requires_searxng_env(self):
+        with patch("tools.web_tools._load_web_config", return_value={"backend": "searxng"}):
+            with patch.dict(os.environ, {"FIRECRAWL_API_URL": "http://127.0.0.1:3002"}, clear=False):
+                from tools.web_tools import check_web_api_key
+                assert check_web_api_key() is False
 
 
 def test_web_requires_env_includes_exa_key():

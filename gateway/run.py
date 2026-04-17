@@ -5736,6 +5736,7 @@ class GatewayRunner:
                     verbose_logging=False,
                     enabled_toolsets=enabled_toolsets,
                     reasoning_config=reasoning_config,
+                    reasoning_update_callback=self._save_reasoning_config_value,
                     service_tier=self._service_tier,
                     request_overrides=turn_route.get("request_overrides"),
                     providers_allowed=pr.get("only"),
@@ -5918,6 +5919,7 @@ class GatewayRunner:
                     verbose_logging=False,
                     enabled_toolsets=[],
                     reasoning_config=reasoning_config,
+                    reasoning_update_callback=self._save_reasoning_config_value,
                     service_tier=self._service_tier,
                     request_overrides=turn_route.get("request_overrides"),
                     providers_allowed=pr.get("only"),
@@ -6078,6 +6080,29 @@ class GatewayRunner:
             return f"🧠 ✓ Reasoning effort set to `{effort}` (saved to config)\n_(takes effect on next message)_"
         else:
             return f"🧠 ✓ Reasoning effort set to `{effort}` (this session only)"
+
+    def _save_reasoning_config_value(self, level: str, parsed_config: dict) -> bool:
+        """Persist runtime reasoning-effort updates from tools."""
+        del parsed_config
+        config_path = _hermes_home / "config.yaml"
+        try:
+            import yaml
+
+            user_config = {}
+            if config_path.exists():
+                with open(config_path, encoding="utf-8") as f:
+                    user_config = yaml.safe_load(f) or {}
+            current = user_config
+            for key in ("agent",):
+                if key not in current or not isinstance(current[key], dict):
+                    current[key] = {}
+                current = current[key]
+            current["reasoning_effort"] = level
+            atomic_yaml_write(config_path, user_config)
+            return True
+        except Exception as e:
+            logger.error("Failed to save reasoning_effort from tool: %s", e)
+            return False
 
     async def _handle_fast_command(self, event: MessageEvent) -> str:
         """Handle /fast — mirror the CLI Priority Processing toggle in gateway chats."""
@@ -7829,7 +7854,7 @@ class GatewayRunner:
         subsequent messages.  Fields with ``None`` values are skipped so
         partial overrides don't clobber valid config defaults.
         """
-        override = self._session_model_overrides.get(session_key)
+        override = getattr(self, "_session_model_overrides", {}).get(session_key)
         if not override:
             return model, runtime_kwargs
         model = override.get("model", model)
@@ -7841,7 +7866,7 @@ class GatewayRunner:
 
     def _is_intentional_model_switch(self, session_key: str, agent_model: str) -> bool:
         """Return True if *agent_model* matches an active /model session override."""
-        override = self._session_model_overrides.get(session_key)
+        override = getattr(self, "_session_model_overrides", {}).get(session_key)
         return override is not None and override.get("model") == agent_model
 
     def _evict_cached_agent(self, session_key: str) -> None:
@@ -8638,6 +8663,7 @@ class GatewayRunner:
                     ephemeral_system_prompt=combined_ephemeral or None,
                     prefill_messages=self._prefill_messages or None,
                     reasoning_config=reasoning_config,
+                    reasoning_update_callback=self._save_reasoning_config_value,
                     service_tier=self._service_tier,
                     request_overrides=turn_route.get("request_overrides"),
                     providers_allowed=pr.get("only"),

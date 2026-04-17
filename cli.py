@@ -131,6 +131,11 @@ def _parse_service_tier_config(raw: str) -> str | None:
     return None
 
 
+def _save_reasoning_config_value(level: str, parsed_config: dict) -> bool:
+    """Persist runtime reasoning-effort updates from tools."""
+    del parsed_config
+    return save_config_value("agent.reasoning_effort", level)
+
 
 def _get_chrome_debug_candidates(system: str) -> list[str]:
     """Return likely browser executables for local CDP auto-launch."""
@@ -2908,6 +2913,7 @@ class HermesCLI:
                 ephemeral_system_prompt=self.system_prompt if self.system_prompt else None,
                 prefill_messages=self.prefill_messages or None,
                 reasoning_config=self.reasoning_config,
+                reasoning_update_callback=_save_reasoning_config_value,
                 service_tier=self.service_tier,
                 request_overrides=request_overrides,
                 providers_allowed=self._providers_only,
@@ -5767,6 +5773,7 @@ class HermesCLI:
                     platform="cli",
                     session_db=self._session_db,
                     reasoning_config=self.reasoning_config,
+                    reasoning_update_callback=_save_reasoning_config_value,
                     service_tier=self.service_tier,
                     request_overrides=turn_route.get("request_overrides"),
                     providers_allowed=self._providers_only,
@@ -5904,6 +5911,7 @@ class HermesCLI:
                     session_id=task_id,
                     platform="cli",
                     reasoning_config=self.reasoning_config,
+                    reasoning_update_callback=_save_reasoning_config_value,
                     service_tier=self.service_tier,
                     request_overrides=turn_route.get("request_overrides"),
                     providers_allowed=self._providers_only,

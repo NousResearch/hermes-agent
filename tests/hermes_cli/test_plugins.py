@@ -256,7 +256,7 @@ class TestPluginHooks:
         """invoke_hook() excludes None returns from the result list."""
         plugins_dir = tmp_path / "hermes_test" / "plugins"
         _make_plugin_dir(
-            plugins_dir, "none_hook",
+            plugins_dir, "none_plugin",
             register_body='ctx.register_hook("post_llm_call", lambda **kw: None)',
         )
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
@@ -267,6 +267,58 @@ class TestPluginHooks:
         results = mgr.invoke_hook("post_llm_call", session_id="s1",
                                   user_message="hi", assistant_response="bye", model="test")
         assert results == []
+
+    def test_plugin_tool_handler_only_receives_dispatch_kwargs_not_agent(self, tmp_path, monkeypatch):
+        """Tool handlers get registry dispatch kwargs, but no live agent object by default."""
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        register_body = (
+            'import json; '
+            'schema = {"name": "kwarg_probe", "description": "probe", '
+            '"parameters": {"type": "object", "properties": {}}}; '
+            'ctx.register_tool("kwarg_probe", "testing", schema, '
+            'lambda args, **kwargs: json.dumps({'
+            '"kwarg_keys": sorted(kwargs.keys()), '
+            '"has_agent": "agent" in kwargs, '
+            '"has_session_id": "session_id" in kwargs, '
+            '"has_task_id": "task_id" in kwargs'
+            '}))'
+        )
+        _make_plugin_dir(plugins_dir, "kwarg_probe_plugin", register_body=register_body)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        from tools.registry import registry
+        result = registry.dispatch("kwarg_probe", {}, task_id="t1", session_id="s1")
+
+        import json
+        parsed = json.loads(result)
+        assert parsed["has_agent"] is False
+        assert parsed["has_session_id"] is True
+        assert parsed["has_task_id"] is True
+
+    def test_pre_api_request_hook_returns_data_but_does_not_mutate_request_by_contract(self, tmp_path, monkeypatch):
+        """Plugin hooks can return values, but invoke_hook itself only collects them."""
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        register_body = (
+            'ctx.register_hook("pre_api_request", '
+            'lambda **kw: {"reasoning_config": {"enabled": True, "effort": "high"}})'
+        )
+        _make_plugin_dir(plugins_dir, "api_hook_plugin", register_body=register_body)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        results = mgr.invoke_hook(
+            "pre_api_request",
+            session_id="s1",
+            task_id="t1",
+            model="test",
+            provider="test",
+        )
+        assert results == [{"reasoning_config": {"enabled": True, "effort": "high"}}]
 
     def test_request_hooks_are_invokeable(self, tmp_path, monkeypatch):
         plugins_dir = tmp_path / "hermes_test" / "plugins"

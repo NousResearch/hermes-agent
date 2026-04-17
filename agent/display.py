@@ -167,7 +167,18 @@ def _oneline(text: str) -> str:
     return " ".join(text.split())
 
 
-def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -> str | None:
+def format_reasoning_effort_preview(current_reasoning_config: dict | None, next_level: str) -> str:
+    """Format a reasoning-effort preview for tool progress UI."""
+    return next_level
+
+
+
+def build_tool_preview(
+    tool_name: str,
+    args: dict,
+    max_len: int | None = None,
+    current_reasoning_config: dict | None = None,
+) -> str | None:
     """Build a short preview of a tool call's primary argument for display.
 
     *max_len* controls truncation.  ``None`` (default) defers to the global
@@ -217,6 +228,15 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
     if tool_name == "session_search":
         query = _oneline(args.get("query", ""))
         return f"recall: \"{query[:25]}{'...' if len(query) > 25 else ''}\""
+
+    if tool_name == "reasoning_effort":
+        level = _oneline(str(args.get("level", "")).strip().lower())
+        if not level:
+            return None
+        preview = format_reasoning_effort_preview(current_reasoning_config, level)
+        if args.get("persist"):
+            preview += " (persist)"
+        return preview
 
     if tool_name == "memory":
         action = args.get("action", "")

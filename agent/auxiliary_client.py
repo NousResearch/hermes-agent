@@ -82,6 +82,8 @@ _PROVIDER_ALIASES = {
     "moonshot": "kimi-coding",
     "kimi-cn": "kimi-coding-cn",
     "moonshot-cn": "kimi-coding-cn",
+    "gmi-cloud": "gmi",
+    "gmicloud": "gmi",
     "minimax-china": "minimax-cn",
     "minimax_cn": "minimax-cn",
     "claude": "anthropic",
@@ -155,6 +157,7 @@ _API_KEY_PROVIDER_AUX_MODELS: Dict[str, str] = {
     "kimi-coding": "kimi-k2-turbo-preview",
     "stepfun": "step-3.5-flash",
     "kimi-coding-cn": "kimi-k2-turbo-preview",
+    "gmi": "anthropic/claude-opus-4.6",
     "minimax": "MiniMax-M2.7",
     "minimax-cn": "MiniMax-M2.7",
     "anthropic": "claude-haiku-4-5-20251001",
@@ -2558,12 +2561,19 @@ def _is_openrouter_client(client: Any) -> bool:
     return False
 
 
+def _cached_client_accepts_slash_models(client: Any, cached_default: Optional[str]) -> bool:
+    """Best-effort check for cached clients that accept ``vendor/model`` IDs."""
+    if _is_openrouter_client(client):
+        return True
+    return bool(cached_default and "/" in cached_default)
+
+
 def _compat_model(client: Any, model: Optional[str], cached_default: Optional[str]) -> Optional[str]:
-    """Drop OpenRouter-format model slugs (with '/') for non-OpenRouter clients.
+    """Keep slash-bearing model IDs only for cached clients that support them.
 
     Mirrors the guard in resolve_provider_client() which is skipped on cache hits.
     """
-    if model and "/" in model and not _is_openrouter_client(client):
+    if model and "/" in model and not _cached_client_accepts_slash_models(client, cached_default):
         return cached_default
     return model or cached_default
 

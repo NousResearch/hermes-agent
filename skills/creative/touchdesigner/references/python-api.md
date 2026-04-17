@@ -7,7 +7,7 @@ TouchDesigner's Python environment auto-imports the `td` module. All TD-specific
 When using the MCP `execute_python_script` tool, these globals are pre-loaded:
 - `op` — shortcut for `td.op()`, finds operators by path
 - `ops` — shortcut for `td.ops()`, finds multiple operators by pattern
-- `me` — the operator running the script (not meaningful via MCP — will be the WebServer DAT)
+- `me` — the operator running the script (via MCP this is the twozero internal executor)
 - `parent` — shortcut for `me.parent()`
 - `project` — the root project component
 - `td` — the full td module
@@ -432,7 +432,7 @@ for path, params in settings.items():
 
 ## Python Version and Packages
 
-TouchDesigner bundles Python 3.11+ (as of TD 2024) with these pre-installed:
+TouchDesigner bundles Python 3.11+ with these pre-installed:
 - **numpy** — array operations, fast math
 - **scipy** — signal processing, FFT
 - **OpenCV** (cv2) — computer vision
@@ -440,4 +440,24 @@ TouchDesigner bundles Python 3.11+ (as of TD 2024) with these pre-installed:
 - **requests** — HTTP client
 - **json**, **re**, **os**, **sys** — standard library
 
+**IMPORTANT:** Parameter names in examples below are illustrative. Always run discovery (SKILL.md Step 0) to get actual names for your TD version. Do NOT copy param names from these examples verbatim.
+
 Custom packages can be installed to TD's Python site-packages directory. See TD documentation for the exact path per platform.
+
+## SOP Vertex/Point Access (TD 2025.32)
+
+In TD 2025.32, `td.Vertex` does NOT have `.x`, `.y`, `.z` attributes. Use index access:
+
+```python
+# WRONG — crashes in TD 2025.32:
+vertex.x, vertex.y, vertex.z
+
+# CORRECT — index/attribute access:
+pt = sop.points()[i]
+pos = pt.P          # Position object
+x, y, z = pos[0], pos[1], pos[2]
+
+# Always introspect first:
+dir(sop.points()[0])   # see what attributes actually exist
+dir(sop.points()[0].P) # see Position object interface
+```

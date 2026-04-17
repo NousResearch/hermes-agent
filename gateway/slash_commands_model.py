@@ -15,6 +15,7 @@ import logging
 from typing import Any, Optional
 
 from agent.i18n import t
+from gateway.config import Platform
 from gateway.platforms.event import MessageEvent
 from hermes_cli.config import atomic_config_write
 from utils import base_url_host_matches
@@ -962,7 +963,11 @@ class GatewayModelCommandsMixin:
 
     async def _handle_reasoning_command(self, event: MessageEvent) -> Optional[str]:
         """Handle /reasoning command — manage reasoning effort and display toggle."""
-        from gateway.run import _platform_config_key
+        from gateway.run import (
+            _load_gateway_config,
+            _platform_config_key,
+            _resolve_gateway_display_bool,
+        )
         from hermes_constants import VALID_REASONING_EFFORTS
 
         raw_args = event.get_command_args().strip()
@@ -974,6 +979,7 @@ class GatewayModelCommandsMixin:
         # See #30479.
         _reasoning_source = await asyncio.to_thread(self._normalize_source_for_session_key, event.source)
         session_key = self._session_key_for_source(_reasoning_source)
+        platform_key = _platform_config_key(event.source.platform)
         self._show_reasoning = self._load_show_reasoning()
         from gateway.session_setting_commands import local_live
         if (_live := local_live(self, event.source)) is not None:
@@ -985,14 +991,27 @@ class GatewayModelCommandsMixin:
         self._reasoning_config = self._resolve_session_reasoning_config(
             source=event.source, session_key=session_key, model=_session_model,
         )
-        platform_key = _platform_config_key(event.source.platform)
+        try:
+            show_reasoning = _resolve_gateway_display_bool(
+                _load_gateway_config(),
+                platform_key,
+                "show_reasoning",
+                default=bool(getattr(self, "_show_reasoning", False)),
+                platform=event.source.platform,
+                require_platform_override_for={Platform.MATTERMOST},
+            )
+        except Exception:
+            show_reasoning = (
+                False
+                if event.source.platform == Platform.MATTERMOST
+                else bool(getattr(self, "_show_reasoning", False))
+            )
         if args:  # typed path — same applier the picker uses
             return self._apply_reasoning_selection(session_key, platform_key, args, persist_global=persist_global)
         rc = self._reasoning_config
         # Labels tell the truth about the route: a Hermes-internal step (``ultra``) that the wire
         # clamps is shown as "ultra (sends max on this route)" instead of a distinct level (#61634).
         from agent.reasoning_effort import effort_display_label
-        from gateway.run import _load_gateway_config
         from hermes_cli.codex_runtime_switch import get_current_runtime
         _session_route = ((getattr(self, "_session_model_overrides", {}) or {}).get(session_key) or {})
         _model_cfg = {}
@@ -1010,7 +1029,7 @@ class GatewayModelCommandsMixin:
         else:
             current_effort = rc.get("effort", "medium")
             level = effort_display_label(current_effort, *_route)
-        display_state = t("gateway.reasoning.display_on") if self._show_reasoning else t("gateway.reasoning.display_off")
+        display_state = t("gateway.reasoning.display_on") if show_reasoning else t("gateway.reasoning.display_off")
         _rs_state = self._peek_session_state(session_key)
         has_session_override = _rs_state is not None and _rs_state.conversation.reasoning_override is not None
         scope = t("gateway.reasoning.scope_session") if has_session_override else t("gateway.reasoning.scope_global")

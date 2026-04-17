@@ -684,6 +684,51 @@ def do_uninstall(name: str, console: Optional[Console] = None,
         c.print(f"[bold red]Error:[/] {msg}\n")
 
 
+def do_reset(name: str, restore: bool = False,
+             console: Optional[Console] = None,
+             skip_confirm: bool = False,
+             invalidate_cache: bool = True) -> None:
+    """Reset a bundled skill's manifest tracking (+ optionally restore from bundled)."""
+    from tools.skills_sync import reset_bundled_skill
+
+    c = console or _console
+
+    if not skip_confirm and restore:
+        c.print(f"\n[bold]Restore '{name}' from bundled source?[/]")
+        c.print("[dim]This will DELETE your current copy and re-copy the bundled version.[/]")
+        try:
+            answer = input("Confirm [y/N]: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            answer = "n"
+        if answer not in ("y", "yes"):
+            c.print("[dim]Cancelled.[/]\n")
+            return
+
+    result = reset_bundled_skill(name, restore=restore)
+
+    if not result["ok"]:
+        c.print(f"[bold red]Error:[/] {result['message']}\n")
+        return
+
+    c.print(f"[bold green]{result['message']}[/]")
+    synced = result.get("synced") or {}
+    if synced.get("copied"):
+        c.print(f"[dim]Copied: {', '.join(synced['copied'])}[/]")
+    if synced.get("updated"):
+        c.print(f"[dim]Updated: {', '.join(synced['updated'])}[/]")
+    c.print()
+
+    if invalidate_cache:
+        try:
+            from agent.prompt_builder import clear_skills_system_prompt_cache
+            clear_skills_system_prompt_cache(clear_snapshot=True)
+        except Exception:
+            pass
+    else:
+        c.print("[dim]Change will take effect in your next session.[/]")
+        c.print("[dim]Use /reset to start a new session now, or --now to apply immediately (invalidates prompt cache).[/]\n")
+
+
 def do_tap(action: str, repo: str = "", console: Optional[Console] = None) -> None:
     """Manage taps (custom GitHub repo sources)."""
     from tools.skills_hub import TapsManager
@@ -1007,6 +1052,9 @@ def skills_command(args) -> None:
         do_audit(name=getattr(args, "name", None))
     elif action == "uninstall":
         do_uninstall(args.name)
+    elif action == "reset":
+        do_reset(args.name, restore=getattr(args, "restore", False),
+                 skip_confirm=getattr(args, "yes", False))
     elif action == "publish":
         do_publish(
             args.skill_path,
@@ -1029,7 +1077,7 @@ def skills_command(args) -> None:
             return
         do_tap(tap_action, repo=repo)
     else:
-        _console.print("Usage: hermes skills [browse|search|install|inspect|list|check|update|audit|uninstall|publish|snapshot|tap]\n")
+        _console.print("Usage: hermes skills [browse|search|install|inspect|list|check|update|audit|uninstall|reset|publish|snapshot|tap]\n")
         _console.print("Run 'hermes skills <command> --help' for details.\n")
 
 
@@ -1175,6 +1223,19 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
         do_uninstall(args[0], console=c, skip_confirm=skip_confirm,
                      invalidate_cache=invalidate_cache)
 
+    elif action == "reset":
+        if not args:
+            c.print("[bold red]Usage:[/] /skills reset <name> [--restore] [--now]\n")
+            c.print("[dim]Clears the bundled-skills manifest entry so future updates stop marking it as user-modified.[/]")
+            c.print("[dim]Pass --restore to also replace the current copy with the bundled version.[/]\n")
+            return
+        name = args[0]
+        restore = "--restore" in args
+        invalidate_cache = "--now" in args
+        # Slash commands can't prompt — --restore in slash mode is implicit consent.
+        do_reset(name, restore=restore, console=c, skip_confirm=True,
+                 invalidate_cache=invalidate_cache)
+
     elif action == "publish":
         if not args:
             c.print("[bold red]Usage:[/] /skills publish <skill-path> [--to github] [--repo owner/repo]\n")
@@ -1231,6 +1292,7 @@ def _print_skills_help(console: Console) -> None:
         "  [cyan]update[/] [name]               Update hub skills with upstream changes\n"
         "  [cyan]audit[/] [name]                Re-scan hub skills for security\n"
         "  [cyan]uninstall[/] <name>            Remove a hub-installed skill\n"
+        "  [cyan]reset[/] <name> [--restore]    Reset bundled-skill tracking (fix 'user-modified' flag)\n"
         "  [cyan]publish[/] <path> --repo <r>   Publish a skill to GitHub via PR\n"
         "  [cyan]snapshot[/] export|import      Export/import skill configurations\n"
         "  [cyan]tap[/] list|add|remove         Manage skill sources\n",

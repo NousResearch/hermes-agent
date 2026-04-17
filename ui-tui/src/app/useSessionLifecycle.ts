@@ -1,5 +1,5 @@
 import type { ScrollBoxHandle } from '@hermes/ink'
-import { type RefObject, useCallback } from 'react'
+import { useCallback, type RefObject } from 'react'
 
 import { buildSetupRequiredSections, SETUP_REQUIRED_TITLE } from '../content/setup.js'
 import { introMsg, toTranscriptMessages } from '../domain/messages.js'

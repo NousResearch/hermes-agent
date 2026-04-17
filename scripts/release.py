@@ -85,6 +85,7 @@ AUTHOR_MAP = {
     "lovre.pesut@gmail.com": "rovle",
     "kevinskysunny@gmail.com": "kevinskysunny",
     "xiewenxuan462@gmail.com": "yule975",
+    "yiweimeng.dlut@hotmail.com": "meng93",
     "hakanerten02@hotmail.com": "teyrebaz33",
     "ruzzgarcn@gmail.com": "Ruzzgar",
     "alireza78.crypto@gmail.com": "alireza78a",

@@ -816,6 +816,42 @@ class TestTranscribeAudioDispatch:
 
         assert mock_openai.call_args[0][1] == "gpt-4o-transcribe"
 
+    def test_cloud_model_name_normalized_for_local_provider(self, sample_ogg):
+        """Regression test for #2544: whisper-1 (cloud-only) should normalize to 'base' for local provider."""
+        with patch("tools.transcription_tools._load_stt_config", return_value={}), \
+             patch("tools.transcription_tools._get_provider", return_value="local"), \
+             patch("tools.transcription_tools._transcribe_local",
+                   return_value={"success": True, "transcript": "hi"}) as mock_local:
+            from tools.transcription_tools import transcribe_audio, DEFAULT_LOCAL_MODEL
+            transcribe_audio(sample_ogg, model="whisper-1")
+
+        # whisper-1 should be normalized to DEFAULT_LOCAL_MODEL ('base')
+        assert mock_local.call_args[0][1] == DEFAULT_LOCAL_MODEL
+
+    def test_config_cloud_model_normalized_for_local_provider(self, sample_ogg):
+        """Regression test for #2544: config with whisper-1 should normalize to 'base' for local."""
+        config = {"local": {"model": "whisper-1"}}  # Invalid cloud-only name
+        with patch("tools.transcription_tools._load_stt_config", return_value=config), \
+             patch("tools.transcription_tools._get_provider", return_value="local"), \
+             patch("tools.transcription_tools._transcribe_local",
+                   return_value={"success": True, "transcript": "hi"}) as mock_local:
+            from tools.transcription_tools import transcribe_audio, DEFAULT_LOCAL_MODEL
+            transcribe_audio(sample_ogg, model=None)
+
+        # whisper-1 from config should be normalized to DEFAULT_LOCAL_MODEL ('base')
+        assert mock_local.call_args[0][1] == DEFAULT_LOCAL_MODEL
+
+    def test_groq_model_name_normalized_for_local_provider(self, sample_ogg):
+        """Regression test: Groq model names should also normalize for local provider."""
+        with patch("tools.transcription_tools._load_stt_config", return_value={}), \
+             patch("tools.transcription_tools._get_provider", return_value="local"), \
+             patch("tools.transcription_tools._transcribe_local",
+                   return_value={"success": True, "transcript": "hi"}) as mock_local:
+            from tools.transcription_tools import transcribe_audio, DEFAULT_LOCAL_MODEL
+            transcribe_audio(sample_ogg, model="whisper-large-v3-turbo")
+
+        assert mock_local.call_args[0][1] == DEFAULT_LOCAL_MODEL
+
 
 # ============================================================================
 # _transcribe_mistral

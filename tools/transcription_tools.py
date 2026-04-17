@@ -154,10 +154,25 @@ def _has_local_command() -> bool:
     return _get_local_command_template() is not None
 
 
-def _normalize_local_command_model(model_name: Optional[str]) -> str:
+def _normalize_local_model(model_name: Optional[str]) -> str:
+    """Normalize STT model name for local providers (faster-whisper, whisper CLI).
+
+    Cloud-only model names like 'whisper-1' (OpenAI) or 'whisper-large-v3' (Groq)
+    are invalid for local faster-whisper and would cause a ValueError.
+    This function maps them to DEFAULT_LOCAL_MODEL ('base').
+
+    Args:
+        model_name: The model name from config or user input.
+
+    Returns:
+        A valid local model name (e.g., 'tiny', 'base', 'small', 'medium', 'large').
+    """
     if not model_name or model_name in OPENAI_MODELS or model_name in GROQ_MODELS:
         return DEFAULT_LOCAL_MODEL
     return model_name
+
+# Keep legacy name for backward compatibility with any external callers
+_normalize_local_command_model = _normalize_local_model
 
 
 def _get_provider(stt_config: dict) -> str:
@@ -596,7 +611,15 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
 
     if provider == "local":
         local_cfg = stt_config.get("local", {})
-        model_name = model or local_cfg.get("model", DEFAULT_LOCAL_MODEL)
+        raw_model = model or local_cfg.get("model", DEFAULT_LOCAL_MODEL)
+        model_name = _normalize_local_model(raw_model)
+        if model_name != raw_model:
+            logger.warning(
+                "Local STT model '%s' is invalid for faster-whisper (cloud-only name), "
+                "using '%s' instead. Set stt.local.model to a valid local model "
+                "(tiny, base, small, medium, large) in config.yaml.",
+                raw_model, model_name
+            )
         return _transcribe_local(file_path, model_name)
 
     if provider == "local_command":

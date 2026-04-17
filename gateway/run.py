@@ -306,6 +306,9 @@ from gateway.agent_prelude_runtime_service import (
 from gateway.agent_response_runtime_service import (
     normalize_gateway_agent_response as shared_normalize_gateway_agent_response,
 )
+from gateway.agent_delivery_runtime_service import (
+    finalize_gateway_agent_delivery as shared_finalize_gateway_agent_delivery,
+)
 from gateway.transcript_persistence_runtime_service import (
     persist_gateway_agent_transcript as shared_persist_gateway_agent_transcript,
 )
@@ -4554,31 +4557,18 @@ class GatewayRunner:
                 logger=logger,
             )
 
-            # Auto voice reply: send TTS audio before the text response
-            _already_sent = bool(agent_result.get("already_sent"))
-            if (not suppress_reply
-                    and self._should_send_voice_reply(event, response, agent_messages, already_sent=_already_sent)):
-                await self._send_voice_reply(event, response)
-
-            # If streaming already delivered the response, extract and
-            # deliver any MEDIA: files before returning None.  Streaming
-            # sends raw text chunks that include MEDIA: tags — the normal
-            # post-processing in _process_message_background is skipped
-            # when already_sent is True, so media files would never be
-            # delivered without this.
-            if agent_result.get("already_sent"):
-                if response:
-                    _media_adapter = self.adapters.get(source.platform)
-                    if _media_adapter:
-                        await self._deliver_media_from_response(
-                            response, event, _media_adapter,
-                        )
-                return None
-
-            if suppress_reply:
-                return None
-
-            return response
+            return await shared_finalize_gateway_agent_delivery(
+                agent_result=agent_result,
+                suppress_reply=suppress_reply,
+                response=response,
+                agent_messages=agent_messages,
+                event=event,
+                platform=source.platform,
+                adapters=self.adapters,
+                should_send_voice_reply=self._should_send_voice_reply,
+                send_voice_reply=self._send_voice_reply,
+                deliver_media_from_response=self._deliver_media_from_response,
+            )
             
         except Exception as e:
             # Stop typing indicator on error too

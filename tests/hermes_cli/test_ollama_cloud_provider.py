@@ -57,13 +57,16 @@ class TestOllamaCloudAliases:
         assert resolve_provider("ollama_cloud") == "ollama-cloud"
 
     def test_bare_ollama_stays_local(self):
-        """Bare 'ollama' alias routes to 'custom' (local) — not cloud."""
-        assert resolve_provider("ollama") == "custom"
+        """Bare 'ollama' alias routes to native local provider — not cloud."""
+        assert resolve_provider("ollama") == "ollama"
 
     def test_models_py_aliases(self):
         assert _PROVIDER_ALIASES.get("ollama_cloud") == "ollama-cloud"
         # bare "ollama" stays local
-        assert _PROVIDER_ALIASES.get("ollama") == "custom"
+        assert _PROVIDER_ALIASES.get("ollama") == "ollama"
+        assert _PROVIDER_ALIASES.get("ollama-launch") == "ollama"
+        assert _PROVIDER_ALIASES.get("ollama_launch") == "ollama"
+        assert _PROVIDER_ALIASES.get("ollama-local") == "ollama"
 
     def test_normalize_provider(self):
         assert normalize_provider("ollama-cloud") == "ollama-cloud"
@@ -74,6 +77,14 @@ class TestOllamaCloudAliases:
 class TestOllamaCloudAutoDetection:
     def test_auto_detects_ollama_api_key(self, monkeypatch):
         monkeypatch.setenv("OLLAMA_API_KEY", "test-ollama-key")
+        assert resolve_provider("auto") == "ollama-cloud"
+
+    def test_auto_detects_ollama_api_key_from_env_file(self, monkeypatch):
+        monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
+        monkeypatch.setattr(
+            "hermes_cli.auth.get_env_value",
+            lambda key: "test-ollama-key-from-file" if key == "OLLAMA_API_KEY" else "",
+        )
         assert resolve_provider("auto") == "ollama-cloud"
 
 
@@ -92,6 +103,23 @@ class TestOllamaCloudCredentials:
         monkeypatch.setenv("OLLAMA_BASE_URL", "https://custom.ollama/v1")
         creds = resolve_api_key_provider_credentials("ollama-cloud")
         assert creds["base_url"] == "https://custom.ollama/v1"
+
+    def test_resolve_with_env_file_base_url(self, monkeypatch):
+        monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
+        monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)
+        monkeypatch.setattr(
+            "hermes_cli.auth.get_env_value",
+            lambda key: (
+                "test-ollama-key-from-file"
+                if key == "OLLAMA_API_KEY"
+                else "https://from-file.ollama/v1"
+                if key == "OLLAMA_BASE_URL"
+                else ""
+            ),
+        )
+        creds = resolve_api_key_provider_credentials("ollama-cloud")
+        assert creds["api_key"] == "test-ollama-key-from-file"
+        assert creds["base_url"] == "https://from-file.ollama/v1"
 
     def test_runtime_ollama_cloud(self, monkeypatch):
         monkeypatch.setenv("OLLAMA_API_KEY", "ollama-key")
@@ -382,7 +410,7 @@ class TestOllamaCloudProvidersNew:
 
     def test_alias_resolves(self):
         from hermes_cli.providers import normalize_provider as np
-        assert np("ollama") == "custom"  # bare "ollama" = local
+        assert np("ollama") == "ollama"  # bare "ollama" = local
         assert np("ollama-cloud") == "ollama-cloud"
 
     def test_label_override(self):

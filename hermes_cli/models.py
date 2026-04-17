@@ -15,6 +15,7 @@ import time
 from difflib import get_close_matches
 from pathlib import Path
 from typing import Any, NamedTuple, Optional
+from urllib.parse import urlparse
 
 COPILOT_BASE_URL = "https://api.githubcopilot.com"
 COPILOT_MODELS_URL = f"{COPILOT_BASE_URL}/models"
@@ -549,6 +550,8 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("openrouter",     "OpenRouter",               "OpenRouter (100+ models, pay-per-use)"),
     ProviderEntry("anthropic",      "Anthropic",                "Anthropic (Claude models — API key or Claude Code)"),
     ProviderEntry("openai-codex",   "OpenAI Codex",             "OpenAI Codex"),
+    ProviderEntry("ollama",         "Ollama",                   "Ollama (local and cloud models)"),
+    ProviderEntry("ollama-cloud",   "Ollama Cloud",             "Ollama Cloud (cloud-hosted open models — ollama.com)"),
     ProviderEntry("xiaomi",         "Xiaomi MiMo",              "Xiaomi MiMo (MiMo-V2 models — pro, omni, flash)"),
     ProviderEntry("nvidia",         "NVIDIA NIM",               "NVIDIA NIM (Nemotron models — build.nvidia.com or local NIM)"),
     ProviderEntry("qwen-oauth",     "Qwen OAuth (Portal)",      "Qwen OAuth (reuses local Qwen CLI login)"),
@@ -565,7 +568,6 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("minimax",        "MiniMax",                  "MiniMax (global direct API)"),
     ProviderEntry("minimax-cn",     "MiniMax (China)",          "MiniMax China (domestic direct API)"),
     ProviderEntry("alibaba",        "Alibaba Cloud (DashScope)","Alibaba Cloud / DashScope Coding (Qwen + multi-provider)"),
-    ProviderEntry("ollama-cloud",   "Ollama Cloud",             "Ollama Cloud (cloud-hosted open models — ollama.com)"),
     ProviderEntry("arcee",          "Arcee AI",                 "Arcee AI (Trinity models — direct API)"),
     ProviderEntry("kilocode",       "Kilo Code",                "Kilo Code (Kilo Gateway API)"),
     ProviderEntry("opencode-zen",   "OpenCode Zen",             "OpenCode Zen (35+ curated models, pay-as-you-go)"),
@@ -637,7 +639,10 @@ _PROVIDER_ALIASES = {
     "nvidia-nim": "nvidia",
     "build-nvidia": "nvidia",
     "nemotron": "nvidia",
-    "ollama": "custom",  # bare "ollama" = local; use "ollama-cloud" for cloud
+    "ollama": "ollama",  # bare "ollama" = local native provider; cloud models can be selected via the local daemon too
+    "ollama-launch": "ollama",
+    "ollama_launch": "ollama",
+    "ollama-local": "ollama",
     "ollama_cloud": "ollama-cloud",
 }
 
@@ -1321,6 +1326,15 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         live = fetch_ollama_cloud_models(force_refresh=force_refresh)
         if live:
             return live
+    if normalized == "ollama":
+        base_url = _get_custom_base_url() or "http://localhost:11434/v1"
+        live = fetch_api_models("", base_url)
+        if live:
+            return live
+        native_live = fetch_ollama_native_models(base_url)
+        if native_live:
+            return native_live
+        return ollama_seed_models()
     if normalized == "custom":
         base_url = _get_custom_base_url()
         if base_url:
@@ -1806,6 +1820,129 @@ def probe_api_models(
     }
 
 
+_LOCAL_OLLAMA_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "::1"}
+_OLLAMA_SEED_MODELS = ["kimi-k2.5:cloud", "glm-5.1:cloud"]
+
+
+def ollama_seed_models() -> list[str]:
+    """Return baseline models when local Ollama discovery yields none."""
+    return list(_OLLAMA_SEED_MODELS)
+
+
+def is_local_ollama_base_url(base_url: Optional[str]) -> bool:
+    """Return True when a URL clearly targets a local Ollama daemon."""
+    raw = (base_url or "").strip()
+    if not raw:
+        return False
+
+    candidate = raw if "://" in raw else f"http://{raw}"
+    try:
+        parsed = urlparse(candidate)
+    except Exception:
+        return False
+
+    host = (parsed.hostname or "").strip().lower()
+    if host not in _LOCAL_OLLAMA_HOSTS:
+        return False
+
+    try:
+        port = parsed.port
+    except ValueError:
+        return False
+
+    return port == 11434
+
+
+def _extract_ollama_native_model_ids(payload: Any) -> list[str]:
+    """Extract ordered model IDs from an Ollama-native /api/tags payload."""
+    if not isinstance(payload, dict):
+        return []
+    items = payload.get("models")
+    if not isinstance(items, list):
+        return []
+
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        model_id = str(item.get("model") or item.get("name") or "").strip()
+        if not model_id or model_id in seen:
+            continue
+        seen.add(model_id)
+        out.append(model_id)
+    return out
+
+
+def probe_ollama_native_models(
+    base_url: Optional[str],
+    timeout: float = 5.0,
+) -> dict[str, Any]:
+    """Probe Ollama-native ``/api/tags`` with the same base URL heuristics as /models."""
+    normalized = (base_url or "").strip().rstrip("/")
+    if not normalized:
+        return {
+            "models": None,
+            "probed_url": None,
+            "resolved_base_url": "",
+            "native_base_url": None,
+            "used_fallback": False,
+        }
+
+    if normalized.endswith("/v1"):
+        alternate_base = normalized[:-3].rstrip("/")
+    else:
+        alternate_base = normalized + "/v1"
+
+    openai_candidates: list[tuple[str, bool]] = [(normalized, False)]
+    if alternate_base and alternate_base != normalized:
+        openai_candidates.append((alternate_base, True))
+
+    # /api/tags lives on the native root (no /v1).
+    native_candidates: list[tuple[str, str, bool]] = []
+    seen_native: set[str] = set()
+    for candidate_base, is_fallback in openai_candidates:
+        native_base = candidate_base[:-3].rstrip("/") if candidate_base.endswith("/v1") else candidate_base
+        if not native_base or native_base in seen_native:
+            continue
+        seen_native.add(native_base)
+        native_candidates.append((candidate_base, native_base, is_fallback))
+
+    tried: list[str] = []
+    for candidate_base, native_base, is_fallback in native_candidates:
+        url = native_base.rstrip("/") + "/api/tags"
+        tried.append(url)
+        req = urllib.request.Request(url)
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                data = json.loads(resp.read().decode())
+            return {
+                "models": _extract_ollama_native_model_ids(data),
+                "probed_url": url,
+                "resolved_base_url": candidate_base.rstrip("/"),
+                "native_base_url": native_base.rstrip("/"),
+                "used_fallback": is_fallback,
+            }
+        except Exception:
+            continue
+
+    return {
+        "models": None,
+        "probed_url": tried[0] if tried else normalized.rstrip("/") + "/api/tags",
+        "resolved_base_url": normalized,
+        "native_base_url": None,
+        "used_fallback": False,
+    }
+
+
+def fetch_ollama_native_models(
+    base_url: Optional[str],
+    timeout: float = 5.0,
+) -> Optional[list[str]]:
+    """Fetch model IDs from Ollama-native ``/api/tags``."""
+    return probe_ollama_native_models(base_url, timeout=timeout).get("models")
+
+
 def _fetch_ai_gateway_models(timeout: float = 5.0) -> Optional[list[str]]:
     """Fetch available language models with tool-use from AI Gateway."""
     api_key = os.getenv("AI_GATEWAY_API_KEY", "").strip()
@@ -2069,6 +2206,63 @@ def validate_requested_model(
             "persist": True,
             "recognized": False,
             "message": message,
+        }
+
+    if normalized == "ollama":
+        effective_base = (base_url or _get_custom_base_url() or "http://localhost:11434/v1").strip()
+
+        probe = probe_api_models("", effective_base)
+        api_models = probe.get("models")
+        if api_models is None:
+            probe = probe_ollama_native_models(effective_base)
+            api_models = probe.get("models")
+
+        if api_models is not None:
+            if requested_for_lookup in set(api_models):
+                return {
+                    "accepted": True,
+                    "persist": True,
+                    "recognized": True,
+                    "message": None,
+                }
+
+            auto = get_close_matches(requested_for_lookup, api_models, n=1, cutoff=0.9)
+            if auto:
+                return {
+                    "accepted": True,
+                    "persist": True,
+                    "recognized": True,
+                    "corrected_model": auto[0],
+                    "message": f"Auto-corrected `{requested}` → `{auto[0]}`",
+                }
+
+            suggestions = get_close_matches(requested, api_models, n=3, cutoff=0.5)
+            suggestion_text = ""
+            if suggestions:
+                suggestion_text = "\n  Similar models: " + ", ".join(f"`{s}`" for s in suggestions)
+
+            return {
+                "accepted": True,
+                "persist": True,
+                "recognized": False,
+                "message": (
+                    f"Note: `{requested}` was not found in Ollama's model listing "
+                    f"({probe.get('probed_url')}). It may still work if the daemon "
+                    f"supports aliases not returned by discovery. "
+                    f"Make sure Ollama is running and has models pulled."
+                    f"{suggestion_text}"
+                ),
+            }
+
+        return {
+            "accepted": True,
+            "persist": True,
+            "recognized": False,
+            "message": (
+                f"Note: could not reach Ollama model discovery at `{probe.get('probed_url')}`. "
+                f"Hermes will still save `{requested}`. "
+                f"Make sure Ollama is running (ollama serve)."
+            ),
         }
 
     # OpenAI Codex has its own catalog path; /v1/models probing is not the right validation path.

@@ -1207,6 +1207,36 @@ def test_custom_provider_no_key_gets_placeholder(monkeypatch):
     assert resolved["base_url"] == "http://localhost:8080/v1"
 
 
+def test_ollama_provider_no_key_gets_placeholder(monkeypatch):
+    """Native ollama provider should resolve with no-key-required."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "ollama")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "ollama",
+            "base_url": "http://localhost:11434/v1",
+            "default": "qwen3:latest",
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "resolve_api_key_provider_credentials",
+        lambda provider: {
+            "provider": provider,
+            "api_key": "",
+            "base_url": "http://localhost:11434/v1",
+            "source": "default",
+        },
+    )
+    monkeypatch.setattr(rp, "load_pool", lambda p: type("P", (), {"has_credentials": lambda self: False})())
+
+    resolved = rp.resolve_runtime_provider(requested="ollama")
+    assert resolved["provider"] == "ollama"
+    assert resolved["base_url"] == "http://localhost:11434/v1"
+    assert resolved["api_key"] == "no-key-required"
+
+
 def test_auto_detected_nous_auth_failure_falls_through_to_openrouter(monkeypatch):
     """When auto-detect picks Nous but credentials are revoked, fall through to OpenRouter."""
     from hermes_cli.auth import AuthError

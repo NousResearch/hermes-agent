@@ -819,10 +819,41 @@ def list_authenticated_providers(
 
     # Build curated model lists keyed by hermes provider ID
     curated: dict[str, list[str]] = dict(_PROVIDER_MODELS)
+    ollama_warning: str = ""
     curated["openrouter"] = [mid for mid, _ in OPENROUTER_MODELS]
     # "nous" shares OpenRouter's curated list if not separately defined
     if "nous" not in curated:
         curated["nous"] = curated["openrouter"]
+    # Native local Ollama has dynamic discovery (OpenAI-compatible /models,
+    # then /api/tags, then baseline fallback when discovery is empty).
+    if "ollama" not in curated:
+        from hermes_cli.models import (
+            fetch_api_models as _fetch_api_models,
+            fetch_ollama_native_models as _fetch_ollama_native_models,
+            ollama_seed_models as _ollama_seed_models,
+        )
+
+        _ollama_cfg = PROVIDER_REGISTRY.get("ollama")
+        ollama_base_url = (
+            (_ollama_cfg.inference_base_url if _ollama_cfg else "")
+            or "http://localhost:11434/v1"
+        ).strip().rstrip("/")
+        api_models = _fetch_api_models("", ollama_base_url)
+        if api_models:
+            curated["ollama"] = api_models
+        else:
+            native_models = _fetch_ollama_native_models(ollama_base_url)
+            if native_models:
+                curated["ollama"] = native_models
+            else:
+                curated["ollama"] = _ollama_seed_models()
+                if api_models is None and native_models is None:
+                    ollama_warning = "Ollama was not reachable. Make sure Ollama is running (ollama serve)."
+                else:
+                    ollama_warning = (
+                        "No local Ollama models found. Pull/start a local model, "
+                        "or use cloud-backed models via Ollama Launch."
+                    )
     # Ollama Cloud uses dynamic discovery (no static curated list)
     if "ollama-cloud" not in curated:
         from hermes_cli.models import fetch_ollama_cloud_models
@@ -896,6 +927,9 @@ def list_authenticated_providers(
 
         # Check if credentials exist
         has_creds = False
+        # Native local Ollama is keyless and should appear in /model picker.
+        if hermes_slug == "ollama":
+            has_creds = True
         if overlay.extra_env_vars:
             has_creds = any(os.environ.get(ev) for ev in overlay.extra_env_vars)
         # Also check api_key_env_vars from PROVIDER_REGISTRY for api_key auth_type
@@ -963,7 +997,7 @@ def list_authenticated_providers(
         total = len(model_ids)
         top = model_ids[:max_models]
 
-        results.append({
+        row = {
             "slug": hermes_slug,
             "name": get_label(hermes_slug),
             "is_current": hermes_slug == current_provider or pid == current_provider,
@@ -971,7 +1005,10 @@ def list_authenticated_providers(
             "models": top,
             "total_models": total,
             "source": "hermes",
-        })
+        }
+        if hermes_slug == "ollama" and ollama_warning:
+            row["warning"] = ollama_warning
+        results.append(row)
         seen_slugs.add(pid.lower())
         seen_slugs.add(hermes_slug.lower())
 
@@ -991,6 +1028,8 @@ def list_authenticated_providers(
         # Check credentials via PROVIDER_REGISTRY (auth.py)
         _cp_config = _auth_registry.get(_cp.slug)
         _cp_has_creds = False
+        if _cp.slug == "ollama":
+            _cp_has_creds = True
         if _cp_config and _cp_config.api_key_env_vars:
             _cp_has_creds = any(os.environ.get(ev) for ev in _cp_config.api_key_env_vars)
         # Also check auth store and credential pool
@@ -1023,7 +1062,7 @@ def list_authenticated_providers(
         _cp_total = len(_cp_model_ids)
         _cp_top = _cp_model_ids[:max_models]
 
-        results.append({
+        row = {
             "slug": _cp.slug,
             "name": _cp.label,
             "is_current": _cp.slug == current_provider,
@@ -1031,7 +1070,10 @@ def list_authenticated_providers(
             "models": _cp_top,
             "total_models": _cp_total,
             "source": "canonical",
-        })
+        }
+        if _cp.slug == "ollama" and ollama_warning:
+            row["warning"] = ollama_warning
+        results.append(row)
         seen_slugs.add(_cp.slug.lower())
 
     # --- 3. User-defined endpoints from config ---

@@ -37,7 +37,7 @@ from typing import Any, Dict, List, Optional
 import httpx
 import yaml
 
-from hermes_cli.config import get_hermes_home, get_config_path, read_raw_config
+from hermes_cli.config import get_hermes_home, get_config_path, get_env_value, read_raw_config
 from hermes_constants import OPENROUTER_BASE_URL
 
 logger = logging.getLogger(__name__)
@@ -70,6 +70,7 @@ DEFAULT_CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
 DEFAULT_QWEN_BASE_URL = "https://portal.qwen.ai/v1"
 DEFAULT_GITHUB_MODELS_BASE_URL = "https://api.githubcopilot.com"
 DEFAULT_COPILOT_ACP_BASE_URL = "acp://copilot"
+DEFAULT_OLLAMA_BASE_URL = "http://localhost:11434/v1"
 DEFAULT_OLLAMA_CLOUD_BASE_URL = "https://ollama.com/v1"
 CODEX_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 CODEX_OAUTH_TOKEN_URL = "https://auth.openai.com/oauth/token"
@@ -293,6 +294,13 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("XIAOMI_API_KEY",),
         base_url_env_var="XIAOMI_BASE_URL",
     ),
+    "ollama": ProviderConfig(
+        id="ollama",
+        name="Ollama",
+        auth_type="api_key",
+        inference_base_url=DEFAULT_OLLAMA_BASE_URL,
+        api_key_env_vars=(),
+    ),
     "ollama-cloud": ProviderConfig(
         id="ollama-cloud",
         name="Ollama Cloud",
@@ -404,9 +412,12 @@ def _resolve_api_key_provider_secret(
         return "", ""
 
     for env_var in pconfig.api_key_env_vars:
-        val = os.getenv(env_var, "").strip()
-        if has_usable_secret(val):
-            return val, env_var
+        env_val = os.getenv(env_var, "").strip()
+        if has_usable_secret(env_val):
+            return env_val, env_var
+        file_val = (get_env_value(env_var) or "").strip()
+        if has_usable_secret(file_val):
+            return file_val, f".env:{env_var}"
 
     return "", ""
 
@@ -860,7 +871,9 @@ def is_provider_explicitly_configured(provider_id: str) -> bool:
         for env_var in pconfig.api_key_env_vars:
             if env_var in _IMPLICIT_ENV_VARS:
                 continue
-            if has_usable_secret(os.getenv(env_var, "")):
+            env_val = os.getenv(env_var, "")
+            file_val = get_env_value(env_var) or ""
+            if has_usable_secret(env_val) or has_usable_secret(file_val):
                 return True
 
     return False
@@ -985,9 +998,10 @@ def resolve_provider(
         "aws": "bedrock", "aws-bedrock": "bedrock", "amazon-bedrock": "bedrock", "amazon": "bedrock",
         "go": "opencode-go", "opencode-go-sub": "opencode-go",
         "kilo": "kilocode", "kilo-code": "kilocode", "kilo-gateway": "kilocode",
-        # Local server aliases — route through the generic custom provider
+        # Local server aliases — route through custom except native local Ollama
         "lmstudio": "custom", "lm-studio": "custom", "lm_studio": "custom",
-        "ollama": "custom", "ollama_cloud": "ollama-cloud",
+        "ollama": "ollama", "ollama_cloud": "ollama-cloud",
+        "ollama-launch": "ollama", "ollama_launch": "ollama", "ollama-local": "ollama",
         "vllm": "custom", "llamacpp": "custom",
         "llama.cpp": "custom", "llama-cpp": "custom",
     }
@@ -1024,7 +1038,12 @@ def resolve_provider(
     except Exception as e:
         logger.debug("Could not detect active auth provider: %s", e)
 
-    if has_usable_secret(os.getenv("OPENAI_API_KEY")) or has_usable_secret(os.getenv("OPENROUTER_API_KEY")):
+    if (
+        has_usable_secret(os.getenv("OPENAI_API_KEY"))
+        or has_usable_secret(get_env_value("OPENAI_API_KEY"))
+        or has_usable_secret(os.getenv("OPENROUTER_API_KEY"))
+        or has_usable_secret(get_env_value("OPENROUTER_API_KEY"))
+    ):
         return "openrouter"
 
     # Auto-detect API-key providers by checking their env vars
@@ -1037,7 +1056,9 @@ def resolve_provider(
         if pid == "copilot":
             continue
         for env_var in pconfig.api_key_env_vars:
-            if has_usable_secret(os.getenv(env_var, "")):
+            env_val = os.getenv(env_var, "")
+            file_val = get_env_value(env_var) or ""
+            if has_usable_secret(env_val) or has_usable_secret(file_val):
                 return pid
 
     # AWS Bedrock — detect via boto3 credential chain (IAM roles, SSO, env vars).
@@ -1052,7 +1073,7 @@ def resolve_provider(
     raise AuthError(
         "No inference provider configured. Run 'hermes model' to choose a "
         "provider and model, or set an API key (OPENROUTER_API_KEY, "
-        "OPENAI_API_KEY, etc.) in ~/.hermes/.env.",
+        "OPENAI_API_KEY, OLLAMA_API_KEY, etc.) in ~/.hermes/.env.",
         code="no_provider_configured",
     )
 
@@ -2528,7 +2549,10 @@ def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
 
     env_url = ""
     if pconfig.base_url_env_var:
-        env_url = os.getenv(pconfig.base_url_env_var, "").strip()
+        env_url = (
+            os.getenv(pconfig.base_url_env_var, "").strip()
+            or (get_env_value(pconfig.base_url_env_var) or "").strip()
+        )
 
     if provider_id in ("kimi-coding", "kimi-coding-cn"):
         base_url = _resolve_kimi_base_url(api_key, pconfig.inference_base_url, env_url)
@@ -2623,7 +2647,10 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
 
     env_url = ""
     if pconfig.base_url_env_var:
-        env_url = os.getenv(pconfig.base_url_env_var, "").strip()
+        env_url = (
+            os.getenv(pconfig.base_url_env_var, "").strip()
+            or (get_env_value(pconfig.base_url_env_var) or "").strip()
+        )
 
     if provider_id in ("kimi-coding", "kimi-coding-cn"):
         base_url = _resolve_kimi_base_url(api_key, pconfig.inference_base_url, env_url)

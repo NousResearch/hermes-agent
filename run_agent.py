@@ -37,6 +37,7 @@ import time
 import threading
 from types import SimpleNamespace
 import uuid
+from urllib.parse import urlparse
 from typing import List, Dict, Any, Optional
 from openai import OpenAI
 import fire
@@ -1052,7 +1053,15 @@ class AIAgent:
                     # but no credentials were found, fail fast with a clear
                     # message instead of silently routing through OpenRouter.
                     _explicit = (self.provider or "").strip().lower()
-                    if _explicit and _explicit not in ("auto", "openrouter", "custom"):
+                    if _explicit and _explicit not in (
+                        "auto",
+                        "openrouter",
+                        "custom",
+                        "ollama",
+                        "ollama-launch",
+                        "ollama_launch",
+                        "ollama-local",
+                    ):
                         # Look up the actual env var name from the provider
                         # config — some providers use non-standard names
                         # (e.g. alibaba → DASHSCOPE_API_KEY, not ALIBABA_API_KEY).
@@ -2083,6 +2092,38 @@ class AIAgent:
     def _is_openrouter_url(self) -> bool:
         """Return True when the base URL targets OpenRouter."""
         return "openrouter" in self._base_url_lower
+
+    @staticmethod
+    def _is_local_ollama_base_url(base_url: Optional[str]) -> bool:
+        """Return True when URL clearly points at a local Ollama daemon."""
+        raw = (base_url or "").strip()
+        if not raw:
+            return False
+
+        candidate = raw if "://" in raw else f"http://{raw}"
+        try:
+            parsed = urlparse(candidate)
+        except Exception:
+            return False
+
+        host = (parsed.hostname or "").strip().lower()
+        if host not in {"localhost", "127.0.0.1", "0.0.0.0", "::1"}:
+            return False
+
+        try:
+            port = parsed.port
+        except ValueError:
+            return False
+        return port == 11434
+
+    def _is_ollama_reasoning_route(self) -> bool:
+        """Detect routes where Ollama-native ``think=false`` should be used."""
+        provider_lower = (self.provider or "").strip().lower()
+        if provider_lower in {"ollama", "ollama-launch", "ollama_launch", "ollama-local"}:
+            return True
+
+        base = self.base_url or ""
+        return self._is_local_ollama_base_url(base)
 
     @staticmethod
     def _model_requires_responses_api(model: str) -> bool:
@@ -6880,13 +6921,18 @@ class AIAgent:
             options["num_ctx"] = self._ollama_num_ctx
             extra_body["options"] = options
 
-        # Ollama / custom provider: pass think=false when reasoning is disabled.
+        # Ollama routes: pass think=false when reasoning is disabled.
         # Ollama does not recognise the OpenRouter-style `reasoning` extra_body
         # field, so we use its native `think` parameter instead.
-        # This prevents thinking-capable models (Qwen3, etc.) from generating
-        # <think> blocks and producing empty-response errors when the user has
-        # set reasoning_effort: none.
-        if self.provider == "custom" and self.reasoning_config and isinstance(self.reasoning_config, dict):
+        # Applies to native "ollama" routes while preserving existing
+        # compatibility behavior for all custom endpoints. This prevents thinking-capable
+        # models (Qwen3, etc.) from generating <think> blocks and producing
+        # empty-response errors when reasoning is disabled.
+        if (
+            (self.provider == "custom" or self._is_ollama_reasoning_route())
+            and self.reasoning_config
+            and isinstance(self.reasoning_config, dict)
+        ):
             _effort = (self.reasoning_config.get("effort") or "").strip().lower()
             _enabled = self.reasoning_config.get("enabled", True)
             if _effort == "none" or _enabled is False:

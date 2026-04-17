@@ -1023,8 +1023,9 @@ def select_provider_and_model(args=None):
     try:
         active = resolve_provider(effective_provider)
     except AuthError as exc:
-        warning = format_auth_error(exc)
-        print(f"Warning: {warning} Falling back to auto provider detection.")
+        if exc.code != "no_provider_configured":
+            warning = format_auth_error(exc)
+            print(f"Warning: {warning} Falling back to auto provider detection.")
         try:
             active = resolve_provider("auto")
         except AuthError:
@@ -1143,7 +1144,7 @@ def select_provider_and_model(args=None):
         _model_flow_kimi(config, current_model)
     elif selected_provider == "bedrock":
         _model_flow_bedrock(config, current_model)
-    elif selected_provider in ("gemini", "deepseek", "xai", "zai", "kimi-coding-cn", "minimax", "minimax-cn", "kilocode", "opencode-zen", "opencode-go", "ai-gateway", "alibaba", "huggingface", "xiaomi", "arcee", "nvidia", "ollama-cloud"):
+    elif selected_provider in ("gemini", "deepseek", "xai", "zai", "kimi-coding-cn", "minimax", "minimax-cn", "kilocode", "opencode-zen", "opencode-go", "ai-gateway", "alibaba", "huggingface", "xiaomi", "arcee", "nvidia", "ollama", "ollama-cloud"):
         _model_flow_api_key_provider(config, selected_provider, current_model)
 
     # ── Post-switch cleanup: clear stale OPENAI_BASE_URL ──────────────
@@ -2765,20 +2766,29 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
         deactivate_provider,
     )
     from hermes_cli.config import get_env_value, save_env_value, load_config, save_config
-    from hermes_cli.models import fetch_api_models, opencode_model_api_mode, normalize_opencode_model_id
+    from hermes_cli.models import (
+        fetch_api_models,
+        normalize_opencode_model_id,
+        ollama_seed_models,
+        opencode_model_api_mode,
+        probe_api_models,
+        probe_ollama_native_models,
+    )
 
     pconfig = PROVIDER_REGISTRY[provider_id]
     key_env = pconfig.api_key_env_vars[0] if pconfig.api_key_env_vars else ""
     base_url_env = pconfig.base_url_env_var or ""
+    keyless_provider = provider_id == "ollama"
 
     # Check / prompt for API key
     existing_key = ""
-    for ev in pconfig.api_key_env_vars:
-        existing_key = get_env_value(ev) or os.getenv(ev, "")
-        if existing_key:
-            break
+    if not keyless_provider:
+        for ev in pconfig.api_key_env_vars:
+            existing_key = get_env_value(ev) or os.getenv(ev, "")
+            if existing_key:
+                break
 
-    if not existing_key:
+    if not keyless_provider and not existing_key:
         print(f"No {pconfig.name} API key configured.")
         if key_env:
             try:
@@ -2793,6 +2803,9 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
             save_env_value(key_env, new_key)
             print("API key saved.")
             print()
+    elif keyless_provider:
+        print(f"  {pconfig.name} runs locally and does not require an API key.")
+        print()
     else:
         print(f"  {pconfig.name} API key: {existing_key[:8]}... ✓")
         print()
@@ -2820,8 +2833,41 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
     #   2. Curated static fallback list (offline insurance)
     #   3. Live /models endpoint probe (small providers without models.dev data)
     #
+    # Ollama local: OpenAI-compatible /models first, then native /api/tags.
+    if provider_id == "ollama":
+        used_seed_models = False
+        local_not_reachable = False
+        probe = probe_api_models("", effective_base)
+        api_probe_models = probe.get("models")
+        model_list = probe.get("models") or []
+        if probe.get("used_fallback") and probe.get("resolved_base_url"):
+            effective_base = probe["resolved_base_url"]
+
+        native_probe_models = None
+        if not model_list:
+            native_probe = probe_ollama_native_models(effective_base)
+            native_probe_models = native_probe.get("models")
+            model_list = native_probe.get("models") or []
+            if native_probe.get("used_fallback") and native_probe.get("resolved_base_url"):
+                effective_base = native_probe["resolved_base_url"]
+
+        if not model_list:
+            model_list = ollama_seed_models()
+            used_seed_models = True
+            local_not_reachable = api_probe_models is None and native_probe_models is None
+            if local_not_reachable:
+                print("  Ollama was not reachable. Make sure Ollama is running (ollama serve).")
+            else:
+                print("  No local Ollama models were discovered.")
+                print("  Pull/start a local model, or use cloud-backed models via Ollama Launch.")
+
+        if model_list:
+            if used_seed_models:
+                print(f"  Showing {len(model_list)} fallback model option(s)")
+            else:
+                print(f"  Found {len(model_list)} model(s) from local Ollama")
     # Ollama Cloud: dedicated merged discovery (live API + models.dev + disk cache)
-    if provider_id == "ollama-cloud":
+    elif provider_id == "ollama-cloud":
         from hermes_cli.models import fetch_ollama_cloud_models
         api_key_for_probe = existing_key or (get_env_value(key_env) if key_env else "")
         model_list = fetch_ollama_cloud_models(api_key=api_key_for_probe, base_url=effective_base)
@@ -4954,7 +5000,7 @@ For more help on a command:
     )
     chat_parser.add_argument(
         "--provider",
-        choices=["auto", "openrouter", "nous", "openai-codex", "copilot-acp", "copilot", "anthropic", "gemini", "xai", "ollama-cloud", "huggingface", "zai", "kimi-coding", "kimi-coding-cn", "minimax", "minimax-cn", "kilocode", "xiaomi", "arcee", "nvidia"],
+        choices=["auto", "openrouter", "nous", "openai-codex", "ollama", "ollama-cloud", "copilot-acp", "copilot", "anthropic", "gemini", "xai", "huggingface", "zai", "kimi-coding", "kimi-coding-cn", "minimax", "minimax-cn", "kilocode", "xiaomi", "arcee", "nvidia"],
         default=None,
         help="Inference provider (default: auto)"
     )

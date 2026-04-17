@@ -73,6 +73,9 @@ _PROVIDER_ALIASES = {
     "minimax_cn": "minimax-cn",
     "claude": "anthropic",
     "claude-code": "anthropic",
+    "ollama-launch": "ollama",
+    "ollama_launch": "ollama",
+    "ollama-local": "ollama",
 }
 
 
@@ -1569,6 +1572,8 @@ def resolve_provider_client(
 
         creds = resolve_api_key_provider_credentials(provider)
         api_key = str(creds.get("api_key", "")).strip()
+        if provider == "ollama" and not api_key:
+            api_key = "no-key-required"
         if not api_key:
             tried_sources = list(pconfig.api_key_env_vars)
             if provider == "copilot":
@@ -1583,6 +1588,8 @@ def resolve_provider_client(
         )
 
         default_model = _API_KEY_PROVIDER_AUX_MODELS.get(provider, "")
+        if provider == "ollama":
+            default_model = _read_main_model() or default_model or "qwen3:latest"
         final_model = _normalize_resolved_model(model or default_model, provider)
 
         # Provider-specific headers

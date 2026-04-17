@@ -151,6 +151,10 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         base_url_override="https://api.arcee.ai/api/v1",
         base_url_env_var="ARCEE_BASE_URL",
     ),
+    "ollama": HermesOverlay(
+        transport="openai_chat",
+        base_url_override="http://localhost:11434/v1",
+    ),
     "ollama-cloud": HermesOverlay(
         transport="openai_chat",
         base_url_env_var="OLLAMA_BASE_URL",
@@ -276,7 +280,11 @@ ALIASES: Dict[str, str] = {
     "lmstudio": "lmstudio",
     "lm-studio": "lmstudio",
     "lm_studio": "lmstudio",
-    "ollama": "custom",  # bare "ollama" = local; use "ollama-cloud" for cloud
+    "ollama": "ollama",  # bare "ollama" = local instance
+    "ollama-launch": "ollama",
+    "ollama_launch": "ollama",
+    "ollama-local": "ollama",
+    "ollama_cloud": "ollama-cloud",
     "vllm": "local",
     "llamacpp": "local",
     "llama.cpp": "local",
@@ -295,6 +303,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "xiaomi": "Xiaomi MiMo",
     "local": "Local endpoint",
     "bedrock": "AWS Bedrock",
+    "ollama": "Ollama",
     "ollama-cloud": "Ollama Cloud",
 }
 

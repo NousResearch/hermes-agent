@@ -66,6 +66,10 @@ class TestNormalizeVisionProvider:
         from agent.auxiliary_client import _normalize_vision_provider
         assert _normalize_vision_provider("codex") == "openai-codex"
 
+    def test_ollama_launch_alias_normalizes(self):
+        from agent.auxiliary_client import _normalize_vision_provider
+        assert _normalize_vision_provider("ollama-launch") == "ollama"
+
     def test_auto_unchanged(self):
         from agent.auxiliary_client import _normalize_vision_provider
         assert _normalize_vision_provider("auto") == "auto"

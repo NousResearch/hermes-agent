@@ -632,6 +632,10 @@ def _resolve_explicit_runtime(
             api_key = creds.get("api_key", "")
             if not base_url:
                 base_url = creds.get("base_url", "").rstrip("/")
+        if provider == "ollama" and not has_usable_secret(api_key):
+            # Local Ollama does not require authentication, but the OpenAI SDK
+            # requires a non-empty api_key string.
+            api_key = "no-key-required"
 
         api_mode = "chat_completions"
         if provider == "copilot":
@@ -972,11 +976,14 @@ def resolve_runtime_provider(
         # Strip trailing /v1 for OpenCode Anthropic models (see comment above).
         if api_mode == "anthropic_messages" and provider in ("opencode-zen", "opencode-go"):
             base_url = re.sub(r"/v1/?$", "", base_url)
+        api_key = creds.get("api_key", "")
+        if provider == "ollama" and not has_usable_secret(api_key):
+            api_key = "no-key-required"
         return {
             "provider": provider,
             "api_mode": api_mode,
             "base_url": base_url,
-            "api_key": creds.get("api_key", ""),
+            "api_key": api_key,
             "source": creds.get("source", "env"),
             "requested_provider": requested_provider,
         }

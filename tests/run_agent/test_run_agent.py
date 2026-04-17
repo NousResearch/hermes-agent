@@ -1025,6 +1025,26 @@ class TestBuildApiKwargs:
         kwargs = agent._build_api_kwargs(messages)
         assert kwargs.get("extra_body", {}).get("think") is None
 
+    def test_native_ollama_think_false_on_effort_none(self, agent):
+        """Native ollama provider with effort=none should inject think=false."""
+        agent.provider = "ollama"
+        agent.base_url = "http://localhost:11434/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.reasoning_config = {"effort": "none"}
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        assert kwargs.get("extra_body", {}).get("think") is False
+
+    def test_non_ollama_custom_provider_preserves_legacy_think_false(self, agent):
+        """Non-Ollama custom endpoints keep legacy think=false behavior."""
+        agent.provider = "custom"
+        agent.base_url = "http://localhost:8000/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.reasoning_config = {"effort": "none"}
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        assert kwargs.get("extra_body", {}).get("think") is False
+
     def test_non_custom_provider_unaffected(self, agent):
         """OpenRouter provider with effort=none should NOT inject think=false."""
         agent.provider = "openrouter"

@@ -540,6 +540,32 @@ def test_cmd_model_falls_back_to_auto_on_invalid_provider(monkeypatch, capsys):
     assert "No change." in output
 
 
+def test_cmd_model_suppresses_warning_when_no_provider_configured(monkeypatch, capsys):
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"model": {"default": "gpt-5"}},
+    )
+    monkeypatch.setattr("hermes_cli.config.save_config", lambda cfg: None)
+    monkeypatch.setattr("hermes_cli.config.get_env_value", lambda key: "")
+    monkeypatch.setattr("hermes_cli.config.save_env_value", lambda key, value: None)
+
+    def _resolve_provider(requested, **kwargs):
+        raise AuthError(
+            "No inference provider configured.",
+            code="no_provider_configured",
+        )
+
+    monkeypatch.setattr("hermes_cli.auth.resolve_provider", _resolve_provider)
+    monkeypatch.setattr(hermes_main, "_prompt_provider_choice", lambda choices, **kwargs: len(choices) - 1)
+    monkeypatch.setattr("sys.stdin", type("FakeTTY", (), {"isatty": lambda self: True})())
+
+    hermes_main.cmd_model(SimpleNamespace())
+    output = capsys.readouterr().out
+
+    assert "Warning:" not in output
+    assert "No change." in output
+
+
 def test_model_flow_custom_saves_verified_v1_base_url(monkeypatch, capsys):
     monkeypatch.setattr(
         "hermes_cli.config.get_env_value",
@@ -581,6 +607,149 @@ def test_model_flow_custom_saves_verified_v1_base_url(monkeypatch, capsys):
     # OPENAI_BASE_URL is no longer saved to .env — config.yaml is authoritative
     assert "OPENAI_BASE_URL" not in saved_env
     assert saved_env["MODEL"] == "llm"
+
+
+def test_model_flow_api_key_provider_ollama_discovers_and_persists(monkeypatch):
+    saved_cfg = {}
+    saved_model = {}
+
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"model": {"default": "", "provider": "ollama", "base_url": "http://localhost:11434/v1"}},
+    )
+    monkeypatch.setattr("hermes_cli.config.save_config", lambda cfg: saved_cfg.update(cfg))
+    monkeypatch.setattr("hermes_cli.auth._save_model_choice", lambda model: saved_model.setdefault("model", model))
+    monkeypatch.setattr("hermes_cli.auth.deactivate_provider", lambda: None)
+    monkeypatch.setattr(
+        "hermes_cli.auth._prompt_model_selection",
+        lambda model_list, current_model="": model_list[0] if model_list else None,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.models.probe_api_models",
+        lambda api_key, base_url: {
+            "models": ["qwen3:latest"],
+            "probed_url": "http://localhost:11434/v1/models",
+            "resolved_base_url": "http://localhost:11434/v1",
+            "suggested_base_url": None,
+            "used_fallback": False,
+        },
+    )
+    monkeypatch.setattr(
+        "hermes_cli.models.probe_ollama_native_models",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("native probe should not run when /models succeeds")),
+    )
+    monkeypatch.setattr("builtins.input", lambda _prompt="": "")
+
+    hermes_main._model_flow_api_key_provider(
+        {"model": {"default": "", "provider": "ollama", "base_url": "http://localhost:11434/v1"}},
+        "ollama",
+        "",
+    )
+
+    assert saved_model["model"] == "qwen3:latest"
+    assert saved_cfg["model"]["provider"] == "ollama"
+    assert saved_cfg["model"]["base_url"] == "http://localhost:11434/v1"
+
+
+def test_model_flow_api_key_provider_ollama_uses_seed_models_when_discovery_empty(monkeypatch):
+    saved_cfg = {}
+    captured = {}
+    saved_model = {}
+
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"model": {"default": "", "provider": "ollama", "base_url": "http://localhost:11434/v1"}},
+    )
+    monkeypatch.setattr("hermes_cli.config.save_config", lambda cfg: saved_cfg.update(cfg))
+    monkeypatch.setattr("hermes_cli.auth._save_model_choice", lambda model: saved_model.setdefault("model", model))
+    monkeypatch.setattr("hermes_cli.auth.deactivate_provider", lambda: None)
+
+    def _capture_prompt(model_list, current_model=""):
+        captured["model_list"] = list(model_list)
+        return model_list[0] if model_list else None
+
+    monkeypatch.setattr("hermes_cli.auth._prompt_model_selection", _capture_prompt)
+    monkeypatch.setattr(
+        "hermes_cli.models.probe_api_models",
+        lambda api_key, base_url: {
+            "models": None,
+            "probed_url": "http://localhost:11434/v1/models",
+            "resolved_base_url": "http://localhost:11434/v1",
+            "suggested_base_url": None,
+            "used_fallback": False,
+        },
+    )
+    monkeypatch.setattr(
+        "hermes_cli.models.probe_ollama_native_models",
+        lambda *args, **kwargs: {
+            "models": [],
+            "probed_url": "http://localhost:11434/api/tags",
+            "resolved_base_url": "http://localhost:11434/v1",
+            "native_base_url": "http://localhost:11434",
+            "used_fallback": False,
+        },
+    )
+    monkeypatch.setattr("builtins.input", lambda _prompt="": "")
+
+    hermes_main._model_flow_api_key_provider(
+        {"model": {"default": "", "provider": "ollama", "base_url": "http://localhost:11434/v1"}},
+        "ollama",
+        "",
+    )
+
+    assert captured["model_list"] == ["kimi-k2.5:cloud", "glm-5.1:cloud"]
+    assert saved_model["model"] == "kimi-k2.5:cloud"
+    assert saved_cfg["model"]["provider"] == "ollama"
+    assert saved_cfg["model"]["base_url"] == "http://localhost:11434/v1"
+
+
+def test_model_flow_api_key_provider_ollama_prints_running_warning_when_unreachable(monkeypatch, capsys):
+    saved_cfg = {}
+    saved_model = {}
+
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"model": {"default": "", "provider": "ollama", "base_url": "http://localhost:11434/v1"}},
+    )
+    monkeypatch.setattr("hermes_cli.config.save_config", lambda cfg: saved_cfg.update(cfg))
+    monkeypatch.setattr("hermes_cli.auth._save_model_choice", lambda model: saved_model.setdefault("model", model))
+    monkeypatch.setattr("hermes_cli.auth.deactivate_provider", lambda: None)
+    monkeypatch.setattr(
+        "hermes_cli.auth._prompt_model_selection",
+        lambda model_list, current_model="": model_list[0] if model_list else None,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.models.probe_api_models",
+        lambda api_key, base_url: {
+            "models": None,
+            "probed_url": "http://localhost:11434/v1/models",
+            "resolved_base_url": "http://localhost:11434/v1",
+            "suggested_base_url": None,
+            "used_fallback": False,
+        },
+    )
+    monkeypatch.setattr(
+        "hermes_cli.models.probe_ollama_native_models",
+        lambda *args, **kwargs: {
+            "models": None,
+            "probed_url": "http://localhost:11434/api/tags",
+            "resolved_base_url": "http://localhost:11434/v1",
+            "native_base_url": "http://localhost:11434",
+            "used_fallback": False,
+        },
+    )
+    monkeypatch.setattr("builtins.input", lambda _prompt="": "")
+
+    hermes_main._model_flow_api_key_provider(
+        {"model": {"default": "", "provider": "ollama", "base_url": "http://localhost:11434/v1"}},
+        "ollama",
+        "",
+    )
+    out = capsys.readouterr().out
+
+    assert "Ollama was not reachable. Make sure Ollama is running (ollama serve)." in out
+    assert saved_model["model"] == "kimi-k2.5:cloud"
+    assert saved_cfg["model"]["provider"] == "ollama"
 
 
 def test_cmd_model_forwards_nous_login_tls_options(monkeypatch):

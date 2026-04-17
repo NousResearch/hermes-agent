@@ -10,6 +10,7 @@ Uses python-telegram-bot library for:
 import asyncio
 import json
 import logging
+import mimetypes
 import os
 import html as _html
 import re
@@ -990,11 +991,20 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             
         except Exception as e:
+            err_str = str(e).lower()
+            if "chat not found" in err_str:
+                logger.warning(
+                    "[%s] Chat not found for chat_id=%s%s: %s",
+                    self.name,
+                    chat_id,
+                    f" thread_id={thread_id}" if thread_id else "",
+                    e,
+                )
+                return SendResult(success=False, error=str(e), retryable=False)
             logger.error("[%s] Failed to send Telegram message: %s", self.name, e, exc_info=True)
             # TimedOut means the request may have reached Telegram —
             # mark as non-retryable so _send_with_retry() doesn't re-send.
             _to = locals().get("_TimedOut")
-            err_str = str(e).lower()
             is_timeout = (_to and isinstance(e, _to)) or "timed out" in err_str
             return SendResult(success=False, error=str(e), retryable=not is_timeout)
 
@@ -2510,28 +2520,22 @@ class TelegramAdapter(BasePlatformAdapter):
         elif msg.document:
             doc = msg.document
             try:
-                # Determine file extension
+                # Determine filename/extension/MIME as best effort, but do not
+                # reject arbitrary Telegram documents solely because the suffix
+                # is outside our small explicit allowlist.
                 ext = ""
                 original_filename = doc.file_name or ""
+                detected_mime = (doc.mime_type or "").strip().lower()
                 if original_filename:
                     _, ext = os.path.splitext(original_filename)
                     ext = ext.lower()
 
-                # If no extension from filename, reverse-lookup from MIME type
-                if not ext and doc.mime_type:
+                # If no extension from filename, try MIME lookup.
+                if not ext and detected_mime:
                     mime_to_ext = {v: k for k, v in SUPPORTED_DOCUMENT_TYPES.items()}
-                    ext = mime_to_ext.get(doc.mime_type, "")
+                    ext = mime_to_ext.get(detected_mime, "") or (mimetypes.guess_extension(detected_mime) or "")
 
-                # Check if supported
-                if ext not in SUPPORTED_DOCUMENT_TYPES:
-                    supported_list = ", ".join(sorted(SUPPORTED_DOCUMENT_TYPES.keys()))
-                    event.text = (
-                        f"Unsupported document type '{ext or 'unknown'}'. "
-                        f"Supported types: {supported_list}"
-                    )
-                    logger.info("[Telegram] Unsupported document type: %s", ext or "unknown")
-                    await self.handle_message(event)
-                    return
+                display_name = original_filename or f"document{ext or '.bin'}"
 
                 # Check file size (Telegram Bot API limit: 20 MB)
                 MAX_DOC_BYTES = 20 * 1024 * 1024
@@ -2548,20 +2552,25 @@ class TelegramAdapter(BasePlatformAdapter):
                 file_obj = await doc.get_file()
                 doc_bytes = await file_obj.download_as_bytearray()
                 raw_bytes = bytes(doc_bytes)
-                cached_path = cache_document_from_bytes(raw_bytes, original_filename or f"document{ext}")
-                mime_type = SUPPORTED_DOCUMENT_TYPES[ext]
+                cached_path = cache_document_from_bytes(raw_bytes, display_name)
+                mime_type = (
+                    detected_mime
+                    or mimetypes.guess_type(display_name)[0]
+                    or SUPPORTED_DOCUMENT_TYPES.get(ext)
+                    or "application/octet-stream"
+                )
                 event.media_urls = [cached_path]
                 event.media_types = [mime_type]
                 logger.info("[Telegram] Cached user document at %s", cached_path)
 
-                # For text files, inject content into event.text (capped at 100 KB)
+                # For reasonably small text files, inject UTF-8 content into
+                # event.text so the model can act on drag-and-drop docs directly.
                 MAX_TEXT_INJECT_BYTES = 100 * 1024
-                if ext in (".md", ".txt") and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
+                if (mime_type.startswith("text/") or ext in (".md", ".txt", ".log")) and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
                     try:
                         text_content = raw_bytes.decode("utf-8")
-                        display_name = original_filename or f"document{ext}"
-                        display_name = re.sub(r'[^\w.\- ]', '_', display_name)
-                        injection = f"[Content of {display_name}]:\n{text_content}"
+                        safe_display_name = re.sub(r'[^\w.\- ]', '_', display_name)
+                        injection = f"[Content of {safe_display_name}]:\n{text_content}"
                         if event.text:
                             event.text = f"{injection}\n\n{event.text}"
                         else:

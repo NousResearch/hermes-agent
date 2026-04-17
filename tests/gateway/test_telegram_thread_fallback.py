@@ -210,8 +210,8 @@ async def test_send_retries_without_thread_on_thread_not_found():
 
 
 @pytest.mark.asyncio
-async def test_send_raises_on_other_bad_request():
-    """Non-thread BadRequest errors should NOT be retried — they fail immediately."""
+async def test_send_raises_on_other_bad_request(caplog):
+    """Non-thread BadRequest errors should fail immediately without stack-noise."""
     adapter = _make_adapter()
 
     async def mock_send_message(**kwargs):
@@ -227,6 +227,8 @@ async def test_send_raises_on_other_bad_request():
 
     assert result.success is False
     assert "Chat not found" in result.error
+    assert "Failed to send Telegram message" not in caplog.text
+    assert "Chat not found for chat_id=123" in caplog.text
 
 
 @pytest.mark.asyncio

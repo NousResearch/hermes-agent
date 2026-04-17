@@ -21,6 +21,7 @@ const sidebars: SidebarsConfig = {
       collapsed: true,
       items: [
         'user-guide/cli',
+        'user-guide/windows-wsl-quickstart',
         'user-guide/configuration',
         'user-guide/sessions',
         'user-guide/profiles',

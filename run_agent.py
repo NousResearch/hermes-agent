@@ -6643,6 +6643,13 @@ class AIAgent:
         if self.provider_data_collection:
             provider_preferences["data_collection"] = self.provider_data_collection
 
+        _assistant_prefill_continuation = bool(
+            sanitized_messages
+            and isinstance(sanitized_messages[-1], dict)
+            and sanitized_messages[-1].get("role") == "assistant"
+            and not sanitized_messages[-1].get("tool_calls")
+        )
+
         api_kwargs = {
             "model": self.model,
             "messages": sanitized_messages,
@@ -6749,10 +6756,27 @@ class AIAgent:
         if extra_body:
             api_kwargs["extra_body"] = extra_body
 
+        # Assistant-prefill continuations ask the model to continue an
+        # already-started assistant turn. Explicit reasoning/thinking flags can
+        # conflict with that on OpenAI-compatible local backends (e.g. Gemma 4
+        # via llama.cpp forks), so strip them on the continuation request.
+        if _assistant_prefill_continuation:
+            _extra_body = api_kwargs.setdefault("extra_body", {})
+            if isinstance(_extra_body, dict):
+                _extra_body.pop("reasoning", None)
+                if self.provider == "custom":
+                    _extra_body["think"] = False
+
         # Priority Processing / generic request overrides (e.g. service_tier).
         # Applied last so overrides win over any defaults set above.
         if self.request_overrides:
             api_kwargs.update(self.request_overrides)
+            if _assistant_prefill_continuation:
+                _extra_body = api_kwargs.get("extra_body")
+                if isinstance(_extra_body, dict):
+                    _extra_body.pop("reasoning", None)
+                    if self.provider == "custom":
+                        _extra_body["think"] = False
 
         return api_kwargs
 

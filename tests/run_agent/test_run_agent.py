@@ -1024,6 +1024,26 @@ class TestBuildApiKwargs:
         kwargs = agent._build_api_kwargs(messages)
         assert kwargs.get("extra_body", {}).get("think") is None
 
+    def test_assistant_prefill_continuation_strips_reasoning_extra_body(self, agent):
+        """Trailing assistant prefill should not keep explicit reasoning enabled."""
+        agent.base_url = "https://openrouter.ai/api/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.model = "qwen/qwen3.5-plus-02-15"
+        agent.reasoning_config = {"enabled": True, "effort": "high"}
+        messages = [{"role": "assistant", "content": "Let me think this through..."}]
+        kwargs = agent._build_api_kwargs(messages)
+        assert "reasoning" not in kwargs.get("extra_body", {})
+
+    def test_custom_assistant_prefill_continuation_forces_think_false(self, agent):
+        """Custom backends should disable thinking on assistant-prefill continuation."""
+        agent.provider = "custom"
+        agent.base_url = "http://localhost:11434/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.reasoning_config = {"enabled": True, "effort": "medium"}
+        messages = [{"role": "assistant", "content": "Structured reasoning only"}]
+        kwargs = agent._build_api_kwargs(messages)
+        assert kwargs.get("extra_body", {}).get("think") is False
+
 
 
 class TestBuildAssistantMessage:

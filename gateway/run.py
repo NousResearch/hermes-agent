@@ -196,12 +196,10 @@ from gateway.config import (
     _coerce_list,
 )
 from gateway.agent_execution_service import (
-    collect_history_media_paths,
     create_gateway_agent,
-    finalize_gateway_agent_conversation_result as shared_finalize_gateway_agent_conversation_result,
+    execute_gateway_sync_turn as shared_execute_gateway_sync_turn,
     gateway_approval_context,
-    normalize_conversation_history,
-    run_gateway_approved_conversation as shared_run_gateway_approved_conversation,
+    setup_gateway_stream_consumer as shared_setup_gateway_stream_consumer,
 )
 from gateway.agent_followup_runtime_service import (
     clear_gateway_pending_interrupt as shared_clear_gateway_pending_interrupt,
@@ -8445,34 +8443,14 @@ class GatewayRunner:
                     "tools": [],
                 }
 
-            # Set up streaming consumer if enabled
-            _stream_consumer = None
-            _stream_delta_cb = None
-            _scfg = getattr(getattr(self, 'config', None), 'streaming', None)
-            if _scfg is None:
-                from gateway.config import StreamingConfig
-                _scfg = StreamingConfig()
-
-            if _scfg.enabled and _scfg.transport != "off":
-                try:
-                    from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
-                    _adapter = self.adapters.get(source.platform)
-                    if _adapter:
-                        _consumer_cfg = StreamConsumerConfig(
-                            edit_interval=_scfg.edit_interval,
-                            buffer_threshold=_scfg.buffer_threshold,
-                            cursor=_scfg.cursor,
-                        )
-                        _stream_consumer = GatewayStreamConsumer(
-                            adapter=_adapter,
-                            chat_id=source.chat_id,
-                            config=_consumer_cfg,
-                            metadata={"thread_id": _progress_thread_id} if _progress_thread_id else None,
-                        )
-                        _stream_delta_cb = _stream_consumer.on_delta
-                        stream_consumer_holder[0] = _stream_consumer
-                except Exception as _sc_err:
-                    logger.debug("Could not set up stream consumer: %s", _sc_err)
+            _stream_consumer, _stream_delta_cb = shared_setup_gateway_stream_consumer(
+                streaming_config=getattr(getattr(self, "config", None), "streaming", None),
+                adapter=self.adapters.get(source.platform),
+                chat_id=source.chat_id,
+                thread_metadata={"thread_id": _progress_thread_id} if _progress_thread_id else None,
+                stream_consumer_holder=stream_consumer_holder,
+                logger=logger,
+            )
 
             turn_route = runtime_spec.turn_route
 
@@ -8524,18 +8502,12 @@ class GatewayRunner:
             agent_holder[0] = agent
             # Capture the full tool definitions for transcript logging
             tools_holder[0] = agent.tools if hasattr(agent, 'tools') else None
-            
-            agent_history = normalize_conversation_history(history)
-            _history_media_paths = collect_history_media_paths(agent_history)
-            
-            _pending_notes = getattr(self, '_pending_model_notes', {})
-            _msn = _pending_notes.pop(session_key, None) if session_key else None
-            result = shared_run_gateway_approved_conversation(
+
+            outcome = shared_execute_gateway_sync_turn(
                 agent=agent,
                 message=message,
-                pending_model_note=_msn,
-                conversation_history=agent_history,
-                task_id=session_id,
+                history=history,
+                session_id=session_id,
                 session_key=session_key,
                 admin_user_ids=admin_user_ids,
                 is_admin_user=is_admin_user,
@@ -8548,24 +8520,9 @@ class GatewayRunner:
                     source,
                     action,
                 ),
-            )
-            result_holder[0] = result
-
-            # Signal the stream consumer that the agent is done
-            if _stream_consumer is not None:
-                _stream_consumer.finish()
-            return shared_finalize_gateway_agent_conversation_result(
-                result=result,
-                agent=agent_holder[0],
-                tools=tools_holder[0] or [],
-                message=message,
-                session_id=session_id,
-                session_key=session_key,
-                history_media_paths=_history_media_paths,
-                agent_history_len=len(agent_history),
+                stream_consumer=_stream_consumer,
                 session_store=getattr(self, "session_store", None),
                 session_db=self._session_db,
-                logger=logger,
                 empty_response_fallback=lambda empty_kind: _empty_response_fallback(
                     source,
                     message,
@@ -8574,7 +8531,10 @@ class GatewayRunner:
                     raw_message=raw_message,
                     event=event,
                 ),
+                pending_model_notes=getattr(self, "_pending_model_notes", {}),
             )
+            result_holder[0] = outcome.result
+            return outcome.final_result
         
         runtime_tasks = shared_start_gateway_agent_runtime_tasks(
             tool_progress_enabled=tool_progress_enabled,

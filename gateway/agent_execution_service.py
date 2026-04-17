@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import contextmanager
+from dataclasses import dataclass
 import logging
 import re
 from typing import Any, Callable, Iterator
@@ -12,6 +13,15 @@ from gateway.agent_runtime import GatewayAgentRuntimeSpec
 
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(slots=True)
+class GatewaySyncTurnOutcome:
+    """Normalized output from one sync gateway agent turn."""
+
+    result: dict[str, Any]
+    final_result: dict[str, Any]
+    tools: list[dict[str, Any]] | None
 
 
 def create_gateway_agent(
@@ -63,6 +73,50 @@ def create_gateway_agent(
     if persist_session is not None:
         agent_kwargs["persist_session"] = persist_session
     return AIAgent(**agent_kwargs)
+
+
+def setup_gateway_stream_consumer(
+    *,
+    streaming_config: Any,
+    adapter: Any,
+    chat_id: str | None,
+    thread_metadata: dict[str, Any] | None,
+    stream_consumer_holder: list[Any | None] | None,
+    logger,
+) -> tuple[Any | None, Callable[[str | None], None] | None]:
+    """Create the per-turn stream consumer if gateway streaming is enabled."""
+
+    stream_consumer = None
+    stream_delta_callback = None
+    streaming_cfg = streaming_config
+    if streaming_cfg is None:
+        from gateway.config import StreamingConfig
+
+        streaming_cfg = StreamingConfig()
+
+    if getattr(streaming_cfg, "enabled", False) and getattr(streaming_cfg, "transport", "") != "off":
+        try:
+            from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+
+            if adapter:
+                consumer_cfg = StreamConsumerConfig(
+                    edit_interval=streaming_cfg.edit_interval,
+                    buffer_threshold=streaming_cfg.buffer_threshold,
+                    cursor=streaming_cfg.cursor,
+                )
+                stream_consumer = GatewayStreamConsumer(
+                    adapter=adapter,
+                    chat_id=chat_id,
+                    config=consumer_cfg,
+                    metadata=thread_metadata,
+                )
+                stream_delta_callback = stream_consumer.on_delta
+                if stream_consumer_holder is not None:
+                    stream_consumer_holder[0] = stream_consumer
+        except Exception as exc:
+            logger.debug("Could not set up stream consumer: %s", exc)
+
+    return stream_consumer, stream_delta_callback
 
 
 def normalize_conversation_history(history: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
@@ -250,6 +304,77 @@ def run_gateway_approved_conversation(
                 unregister_gateway_notify(approval_session_key, approval_notify_handle)
             except TypeError:
                 unregister_gateway_notify(approval_session_key)
+
+
+def execute_gateway_sync_turn(
+    *,
+    agent: Any,
+    message: str,
+    history: list[dict[str, Any]] | None,
+    session_id: str,
+    session_key: str | None,
+    admin_user_ids: list[str] | None,
+    is_admin_user: bool | None,
+    status_adapter: Any,
+    status_chat_id: str,
+    status_thread_metadata: dict[str, Any] | None,
+    loop_for_step: Any,
+    logger,
+    admin_only_message_builder: Callable[[str], str | None],
+    stream_consumer: Any | None,
+    session_store: Any | None,
+    session_db: Any = None,
+    empty_response_fallback: Callable[[str], str | None] | None = None,
+    pending_model_notes: dict[str, str] | None = None,
+) -> GatewaySyncTurnOutcome:
+    """Run one fully wired sync gateway turn and normalize its output."""
+
+    tools = agent.tools if hasattr(agent, "tools") else None
+    agent_history = normalize_conversation_history(history)
+    history_media_paths = collect_history_media_paths(agent_history)
+    pending_model_note = (
+        pending_model_notes.pop(session_key, None)
+        if pending_model_notes is not None and session_key
+        else None
+    )
+    result = run_gateway_approved_conversation(
+        agent=agent,
+        message=message,
+        pending_model_note=pending_model_note,
+        conversation_history=agent_history,
+        task_id=session_id,
+        session_key=session_key,
+        admin_user_ids=admin_user_ids,
+        is_admin_user=is_admin_user,
+        status_adapter=status_adapter,
+        status_chat_id=status_chat_id,
+        status_thread_metadata=status_thread_metadata,
+        loop_for_step=loop_for_step,
+        logger=logger,
+        admin_only_message_builder=admin_only_message_builder,
+    )
+
+    if stream_consumer is not None:
+        stream_consumer.finish()
+
+    return GatewaySyncTurnOutcome(
+        result=result,
+        final_result=finalize_gateway_agent_conversation_result(
+            result=result,
+            agent=agent,
+            tools=tools or [],
+            message=message,
+            session_id=session_id,
+            session_key=session_key,
+            history_media_paths=history_media_paths,
+            agent_history_len=len(agent_history),
+            session_store=session_store,
+            session_db=session_db,
+            logger=logger,
+            empty_response_fallback=empty_response_fallback,
+        ),
+        tools=tools,
+    )
 
 
 def extract_gateway_agent_token_counts(agent: Any) -> tuple[int, int, int, str | None]:

@@ -7,11 +7,13 @@ from unittest.mock import AsyncMock, MagicMock
 from gateway.agent_execution_service import (
     append_missing_media_tags_to_response,
     collect_history_media_paths,
+    execute_gateway_sync_turn,
     finalize_gateway_agent_conversation_result,
     gateway_approval_context,
     normalize_conversation_history,
     prepend_pending_model_switch_note,
     run_gateway_approved_conversation,
+    setup_gateway_stream_consumer,
     sync_gateway_execution_session_split,
 )
 
@@ -314,3 +316,112 @@ def test_run_gateway_approved_conversation_prepends_pending_note_and_registers_n
     assert calls[0][0] == "approval_context"
     assert calls[1] == ("register", "key-1")
     assert calls[2] == ("unregister", ("key-1", "handle-1"))
+
+
+def test_setup_gateway_stream_consumer_builds_consumer_and_callback(monkeypatch):
+    fake_consumer = MagicMock()
+    fake_consumer.on_delta = object()
+
+    monkeypatch.setattr(
+        "gateway.stream_consumer.StreamConsumerConfig",
+        lambda edit_interval, buffer_threshold, cursor: {
+            "edit_interval": edit_interval,
+            "buffer_threshold": buffer_threshold,
+            "cursor": cursor,
+        },
+    )
+    monkeypatch.setattr(
+        "gateway.stream_consumer.GatewayStreamConsumer",
+        lambda adapter, chat_id, config, metadata=None: fake_consumer,
+    )
+
+    holder = [None]
+    stream_consumer, stream_delta_cb = setup_gateway_stream_consumer(
+        streaming_config=SimpleNamespace(
+            enabled=True,
+            transport="edit",
+            edit_interval=0.25,
+            buffer_threshold=10,
+            cursor="▉",
+        ),
+        adapter=object(),
+        chat_id="chat-1",
+        thread_metadata={"thread_id": "t1"},
+        stream_consumer_holder=holder,
+        logger=MagicMock(),
+    )
+
+    assert stream_consumer is fake_consumer
+    assert stream_delta_cb is fake_consumer.on_delta
+    assert holder[0] is fake_consumer
+
+
+def test_setup_gateway_stream_consumer_returns_none_when_disabled():
+    holder = [None]
+    stream_consumer, stream_delta_cb = setup_gateway_stream_consumer(
+        streaming_config=SimpleNamespace(enabled=False, transport="off"),
+        adapter=object(),
+        chat_id="chat-1",
+        thread_metadata=None,
+        stream_consumer_holder=holder,
+        logger=MagicMock(),
+    )
+
+    assert stream_consumer is None
+    assert stream_delta_cb is None
+    assert holder[0] is None
+
+
+def test_execute_gateway_sync_turn_runs_conversation_and_finalizes(monkeypatch):
+    agent = SimpleNamespace(tools=[{"name": "terminal"}])
+    stream_consumer = MagicMock()
+    pending_notes = {"key-1": "switch note"}
+
+    monkeypatch.setattr(
+        "gateway.agent_execution_service.run_gateway_approved_conversation",
+        lambda **kwargs: {
+            "final_response": kwargs["message"],
+            "messages": kwargs["conversation_history"],
+            "api_calls": 2,
+        },
+    )
+
+    finalized_calls = {}
+
+    def _fake_finalize(**kwargs):
+        finalized_calls.update(kwargs)
+        return {"final_response": "finalized", "messages": kwargs["result"]["messages"]}
+
+    monkeypatch.setattr(
+        "gateway.agent_execution_service.finalize_gateway_agent_conversation_result",
+        _fake_finalize,
+    )
+
+    outcome = execute_gateway_sync_turn(
+        agent=agent,
+        message="hello",
+        history=[{"role": "user", "content": "hi"}],
+        session_id="sess-1",
+        session_key="key-1",
+        admin_user_ids=["179033731"],
+        is_admin_user=True,
+        status_adapter=SimpleNamespace(),
+        status_chat_id="chat-1",
+        status_thread_metadata={"thread_id": "t1"},
+        loop_for_step="loop",
+        logger=MagicMock(),
+        admin_only_message_builder=lambda action: None,
+        stream_consumer=stream_consumer,
+        session_store=SimpleNamespace(_entries={}, _save=MagicMock()),
+        session_db=object(),
+        empty_response_fallback=lambda kind: "fallback",
+        pending_model_notes=pending_notes,
+    )
+
+    assert outcome.result["api_calls"] == 2
+    assert outcome.final_result["final_response"] == "finalized"
+    assert outcome.tools == [{"name": "terminal"}]
+    assert "key-1" not in pending_notes
+    stream_consumer.finish.assert_called_once_with()
+    assert finalized_calls["message"] == "hello"
+    assert finalized_calls["history_media_paths"] == set()

@@ -1319,3 +1319,44 @@ class TestBedrockModelPickerDetection:
 
         bedrock = next((p for p in providers if p["slug"] == "bedrock"), None)
         assert bedrock is None, "bedrock should not appear without AWS credentials"
+
+
+class TestBedrockAuxiliaryClient:
+    """Test that Bedrock auxiliary client resolves correctly for context compression."""
+
+    def test_bedrock_auxiliary_client_resolves(self):
+        """resolve_provider_client('bedrock') should return an AnthropicAuxiliaryClient."""
+        from agent.auxiliary_client import resolve_provider_client, AnthropicAuxiliaryClient
+
+        mock_anthropic_client = MagicMock()
+        with patch("agent.anthropic_adapter.build_anthropic_bedrock_client", return_value=mock_anthropic_client), \
+             patch("agent.bedrock_adapter.resolve_bedrock_region", return_value="us-east-1"), \
+             patch("hermes_cli.config.load_config", return_value={"bedrock": {"region": "us-east-1"}}):
+            client, model = resolve_provider_client("bedrock")
+
+        assert client is not None, "bedrock auxiliary client should resolve"
+        assert isinstance(client, AnthropicAuxiliaryClient)
+        assert "claude-haiku" in model
+
+    def test_bedrock_auxiliary_preserves_dots_in_model_id(self):
+        """Bedrock auxiliary adapter must pass preserve_dots=True to avoid mangling model IDs."""
+        from agent.auxiliary_client import _AnthropicCompletionsAdapter
+
+        adapter = _AnthropicCompletionsAdapter(
+            MagicMock(), "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+            preserve_dots=True,
+        )
+        assert adapter._preserve_dots is True
+
+    def test_bedrock_auxiliary_fails_gracefully_without_boto3(self):
+        """resolve_provider_client('bedrock') should return (None, None) when boto3 is missing."""
+        from agent.auxiliary_client import resolve_provider_client
+
+        with patch("agent.anthropic_adapter.build_anthropic_bedrock_client",
+                   side_effect=ImportError("No module named 'anthropic'")), \
+             patch("agent.bedrock_adapter.resolve_bedrock_region", return_value="us-east-1"), \
+             patch("hermes_cli.config.load_config", return_value={"bedrock": {}}):
+            client, model = resolve_provider_client("bedrock")
+
+        assert client is None
+        assert model is None

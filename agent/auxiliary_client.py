@@ -96,6 +96,7 @@ def _normalize_aux_provider(provider: Optional[str]) -> str:
 
 # Default auxiliary models for direct API-key providers (cheap/fast for side tasks)
 _API_KEY_PROVIDER_AUX_MODELS: Dict[str, str] = {
+    "bedrock": "global.anthropic.claude-haiku-4-5-20251001-v1:0",
     "gemini": "gemini-3-flash-preview",
     "zai": "glm-4.5-flash",
     "kimi-coding": "kimi-k2-turbo-preview",
@@ -484,10 +485,11 @@ class AsyncCodexAuxiliaryClient:
 class _AnthropicCompletionsAdapter:
     """OpenAI-client-compatible adapter for Anthropic Messages API."""
 
-    def __init__(self, real_client: Any, model: str, is_oauth: bool = False):
+    def __init__(self, real_client: Any, model: str, is_oauth: bool = False, preserve_dots: bool = False):
         self._client = real_client
         self._model = model
         self._is_oauth = is_oauth
+        self._preserve_dots = preserve_dots
 
     def create(self, **kwargs) -> Any:
         from agent.anthropic_adapter import build_anthropic_kwargs, normalize_anthropic_response
@@ -517,6 +519,7 @@ class _AnthropicCompletionsAdapter:
             reasoning_config=None,
             tool_choice=normalized_tool_choice,
             is_oauth=self._is_oauth,
+            preserve_dots=self._preserve_dots,
         )
         if temperature is not None:
             anthropic_kwargs["temperature"] = temperature
@@ -555,9 +558,9 @@ class _AnthropicChatShim:
 class AnthropicAuxiliaryClient:
     """OpenAI-client-compatible wrapper over a native Anthropic client."""
 
-    def __init__(self, real_client: Any, model: str, api_key: str, base_url: str, is_oauth: bool = False):
+    def __init__(self, real_client: Any, model: str, api_key: str, base_url: str, is_oauth: bool = False, preserve_dots: bool = False):
         self._real_client = real_client
-        adapter = _AnthropicCompletionsAdapter(real_client, model, is_oauth=is_oauth)
+        adapter = _AnthropicCompletionsAdapter(real_client, model, is_oauth=is_oauth, preserve_dots=preserve_dots)
         self.chat = _AnthropicChatShim(adapter)
         self.api_key = api_key
         self.base_url = base_url
@@ -1616,6 +1619,33 @@ def resolve_provider_client(
         logger.debug("resolve_provider_client: %s (%s)", provider, final_model)
         return (_to_async_client(client, final_model) if async_mode
                 else (client, final_model))
+
+    # ── AWS Bedrock (aws_sdk auth via AnthropicBedrock SDK) ──────────
+    if pconfig.auth_type == "aws_sdk":
+        try:
+            from agent.anthropic_adapter import build_anthropic_bedrock_client
+            from agent.bedrock_adapter import resolve_bedrock_region
+            from hermes_cli.config import load_config as _load_br_cfg
+
+            _br_cfg = _load_br_cfg()
+            _bedrock_cfg = _br_cfg.get("bedrock", {})
+            region = (_bedrock_cfg.get("region") or "").strip() or resolve_bedrock_region()
+            # Resolve auxiliary model: explicit arg > global auxiliary config > default
+            global_aux_model = str((_br_cfg.get("auxiliary") or {}).get("model") or "").strip()
+            aux_model = model or global_aux_model or _API_KEY_PROVIDER_AUX_MODELS.get(
+                "bedrock", "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+            )
+            real_client = build_anthropic_bedrock_client(region)
+            base_url = f"https://bedrock-runtime.{region}.amazonaws.com"
+            client = AnthropicAuxiliaryClient(
+                real_client, aux_model, "aws-sdk", base_url, preserve_dots=True,
+            )
+            logger.debug("resolve_provider_client: bedrock auxiliary (%s) at %s", aux_model, base_url)
+            return (_to_async_client(client, aux_model) if async_mode
+                    else (client, aux_model))
+        except (ImportError, Exception) as exc:
+            logger.warning("resolve_provider_client: bedrock auxiliary failed: %s", exc)
+            return None, None
 
     if pconfig.auth_type == "external_process":
         creds = resolve_external_process_provider_credentials(provider)

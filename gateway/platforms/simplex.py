@@ -770,6 +770,67 @@ class SimplexAdapter(BasePlatformAdapter):
 
         return text_result
 
+    @staticmethod
+    def _prepare_image(file_path: str) -> tuple[str, str]:
+        """Ensure *file_path* is a PNG and return ``(png_path, thumb_data_uri)``.
+
+        SimpleX clients cannot display WebP (and some other formats) inline.
+        This converts to PNG when needed and generates a small JPEG thumbnail
+        for the ``image`` field in the ``/_send`` payload so the chat shows an
+        inline preview.
+
+        Uses Pillow when available, falls back to ImageMagick ``convert``.
+        Returns the (possibly new) PNG path and a ``data:image/jpg;base64,…``
+        string for the thumbnail.
+        """
+        import subprocess
+        import tempfile
+
+        p = Path(file_path)
+        png_path = file_path
+        thumb_uri = ""
+
+        try:
+            from PIL import Image
+
+            img = Image.open(file_path)
+            # Convert to PNG if not already PNG or JPEG
+            if p.suffix.lower() not in (".png", ".jpg", ".jpeg"):
+                png_path = str(p.with_suffix(".png"))
+                img.save(png_path, "PNG")
+            # Thumbnail
+            thumb = img.copy()
+            thumb.thumbnail((128, 128))
+            import io
+            buf = io.BytesIO()
+            thumb.save(buf, "JPEG", quality=70)
+            thumb_uri = "data:image/jpg;base64," + base64.b64encode(buf.getvalue()).decode()
+        except ImportError:
+            # Pillow not available — try ImageMagick
+            try:
+                if p.suffix.lower() not in (".png", ".jpg", ".jpeg"):
+                    png_path = str(p.with_suffix(".png"))
+                    subprocess.run(
+                        ["convert", file_path, png_path],
+                        check=True, capture_output=True, timeout=30,
+                    )
+                # Thumbnail
+                with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+                    tmp_path = tmp.name
+                subprocess.run(
+                    ["convert", file_path, "-resize", "128x128",
+                     "-quality", "70", tmp_path],
+                    check=True, capture_output=True, timeout=30,
+                )
+                with open(tmp_path, "rb") as f:
+                    thumb_uri = "data:image/jpg;base64," + base64.b64encode(f.read()).decode()
+                os.remove(tmp_path)
+            except (FileNotFoundError, subprocess.SubprocessError) as exc:
+                logger.warning("SimpleX: image conversion unavailable: %s", exc)
+                # Fall through — send original file without thumbnail
+
+        return png_path, thumb_uri
+
     async def send_image(
         self,
         chat_id: str,
@@ -794,16 +855,20 @@ class SimplexAdapter(BasePlatformAdapter):
         if not file_path or not Path(file_path).exists():
             return SendResult(success=False, error="Image file not found")
 
+        # Convert to PNG (SimpleX can't display WebP inline) and
+        # generate a JPEG thumbnail for the inline preview.
+        png_path, thumb_uri = self._prepare_image(file_path)
+
         # Use /_send with filePath and msgContent type "image" so we can
         # address the chat by numeric ID (the /f command only accepts
         # display names, which breaks for group IDs).
         composed = json.dumps(
             [
                 {
-                    "filePath": file_path,
+                    "filePath": png_path,
                     "msgContent": {
                         "type": "image",
-                        "image": "",
+                        "image": thumb_uri,
                         "text": caption or "",
                     },
                 }

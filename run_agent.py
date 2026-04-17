@@ -6786,7 +6786,14 @@ class AIAgent:
         # This prevents thinking-capable models (Qwen3, etc.) from generating
         # <think> blocks and producing empty-response errors when the user has
         # set reasoning_effort: none.
-        if self.provider == "custom" and self.reasoning_config and isinstance(self.reasoning_config, dict):
+        # Only send think=false to Ollama — other custom providers
+        # (Mistral, Fireworks, Together.ai, vLLM) reject unknown params. (#11237)
+        _is_ollama = bool(
+            self._ollama_num_ctx
+            or "ollama" in self._base_url_lower
+            or ":11434" in self._base_url_lower
+        )
+        if _is_ollama and self.provider == "custom" and self.reasoning_config and isinstance(self.reasoning_config, dict):
             _effort = (self.reasoning_config.get("effort") or "").strip().lower()
             _enabled = self.reasoning_config.get("enabled", True)
             if _effort == "none" or _enabled is False:

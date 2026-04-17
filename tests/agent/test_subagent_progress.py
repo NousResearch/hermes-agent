@@ -78,8 +78,8 @@ class TestBuildChildProgressCallback:
         parent = MagicMock()
         parent._delegate_spinner = None
         parent.tool_progress_callback = None
-        
-        cb = _build_child_progress_callback(0, parent)
+
+        cb = _build_child_progress_callback(0, "test-goal", parent)
         assert cb is None
 
     def test_cli_spinner_tool_event(self):
@@ -88,14 +88,14 @@ class TestBuildChildProgressCallback:
         spinner = KawaiiSpinner("delegating")
         spinner._out = buf
         spinner.running = True
-        
+
         parent = MagicMock()
         parent._delegate_spinner = spinner
         parent.tool_progress_callback = None
-        
-        cb = _build_child_progress_callback(0, parent)
+
+        cb = _build_child_progress_callback(0, "test-goal", parent)
         assert cb is not None
-        
+
         cb("tool.started", "web_search", "quantum computing", {})
         output = buf.getvalue()
         assert "web_search" in output
@@ -108,14 +108,14 @@ class TestBuildChildProgressCallback:
         spinner = KawaiiSpinner("delegating")
         spinner._out = buf
         spinner.running = True
-        
+
         parent = MagicMock()
         parent._delegate_spinner = spinner
         parent.tool_progress_callback = None
-        
-        cb = _build_child_progress_callback(0, parent)
+
+        cb = _build_child_progress_callback(0, "test-goal", parent)
         cb("_thinking", "I'll search for papers first")
-        
+
         output = buf.getvalue()
         assert "💭" in output
         assert "search for papers" in output
@@ -126,14 +126,14 @@ class TestBuildChildProgressCallback:
         parent._delegate_spinner = None
         parent_cb = MagicMock()
         parent.tool_progress_callback = parent_cb
-        
-        cb = _build_child_progress_callback(0, parent)
-        
+
+        cb = _build_child_progress_callback(0, "test-goal", parent)
+
         # Send 4 tool calls — shouldn't flush yet (BATCH_SIZE = 5)
         for i in range(4):
             cb("tool.started", f"tool_{i}", f"arg_{i}", {})
         parent_cb.assert_not_called()
-        
+
         # 5th call should trigger flush
         cb("tool.started", "tool_4", "arg_4", {})
         parent_cb.assert_called_once()
@@ -147,10 +147,10 @@ class TestBuildChildProgressCallback:
         parent._delegate_spinner = None
         parent_cb = MagicMock()
         parent.tool_progress_callback = parent_cb
-        
-        cb = _build_child_progress_callback(0, parent)
+
+        cb = _build_child_progress_callback(0, "test-goal", parent)
         cb("_thinking", "some reasoning text")
-        
+
         parent_cb.assert_not_called()
 
     def test_parallel_callbacks_independent(self):
@@ -159,15 +159,15 @@ class TestBuildChildProgressCallback:
         parent._delegate_spinner = None
         parent_cb = MagicMock()
         parent.tool_progress_callback = parent_cb
-        
-        cb0 = _build_child_progress_callback(0, parent)
-        cb1 = _build_child_progress_callback(1, parent)
-        
+
+        cb0 = _build_child_progress_callback(0, "test-goal", parent)
+        cb1 = _build_child_progress_callback(1, "test-goal", parent)
+
         # Send 3 calls to each — neither should flush (batch size = 5)
         for i in range(3):
             cb0(f"tool_{i}")
             cb1(f"other_{i}")
-        
+
         parent_cb.assert_not_called()
 
     def test_task_index_prefix_in_batch_mode(self):
@@ -176,13 +176,13 @@ class TestBuildChildProgressCallback:
         spinner = KawaiiSpinner("delegating")
         spinner._out = buf
         spinner.running = True
-        
+
         parent = MagicMock()
         parent._delegate_spinner = spinner
         parent.tool_progress_callback = None
-        
+
         # task_index=0 in a batch of 3 → prefix "[1]"
-        cb0 = _build_child_progress_callback(0, parent, task_count=3)
+        cb0 = _build_child_progress_callback(0, "test-goal", parent, task_count=3)
         cb0("web_search", "test")
         output = buf.getvalue()
         assert "[1]" in output
@@ -190,7 +190,7 @@ class TestBuildChildProgressCallback:
         # task_index=2 in a batch of 3 → prefix "[3]"
         buf.truncate(0)
         buf.seek(0)
-        cb2 = _build_child_progress_callback(2, parent, task_count=3)
+        cb2 = _build_child_progress_callback(2, "test-goal", parent, task_count=3)
         cb2("web_search", "test")
         output = buf.getvalue()
         assert "[3]" in output
@@ -201,14 +201,14 @@ class TestBuildChildProgressCallback:
         spinner = KawaiiSpinner("delegating")
         spinner._out = buf
         spinner.running = True
-        
+
         parent = MagicMock()
         parent._delegate_spinner = spinner
         parent.tool_progress_callback = None
-        
-        cb = _build_child_progress_callback(0, parent, task_count=1)
+
+        cb = _build_child_progress_callback(0, "test-goal", parent, task_count=1)
         cb("tool.started", "web_search", "test", {})
-        
+
         output = buf.getvalue()
         assert "[" not in output
 
@@ -327,7 +327,7 @@ class TestBatchFlush:
         parent_cb = MagicMock()
         parent.tool_progress_callback = parent_cb
 
-        cb = _build_child_progress_callback(0, parent)
+        cb = _build_child_progress_callback(0, "test-goal", parent)
 
         # Send 3 tools (below batch size of 5)
         cb("tool.started", "web_search", "query1", {})
@@ -349,7 +349,7 @@ class TestBatchFlush:
         parent_cb = MagicMock()
         parent.tool_progress_callback = parent_cb
 
-        cb = _build_child_progress_callback(0, parent)
+        cb = _build_child_progress_callback(0, "test-goal", parent)
         cb._flush()
         parent_cb.assert_not_called()
 
@@ -364,7 +364,7 @@ class TestBatchFlush:
         parent._delegate_spinner = spinner
         parent.tool_progress_callback = None
 
-        cb = _build_child_progress_callback(0, parent)
+        cb = _build_child_progress_callback(0, "test-goal", parent)
         cb("tool.started", "web_search", "test", {})
         cb._flush()  # Should not crash
 

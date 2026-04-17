@@ -197,7 +197,7 @@ from gateway.config import (
 from gateway.agent_execution_service import (
     create_gateway_agent,
     execute_gateway_sync_turn as shared_execute_gateway_sync_turn,
-    gateway_approval_context,
+    run_gateway_approved_conversation as shared_run_gateway_approved_conversation,
 )
 from gateway.agent_followup_runtime_service import (
     process_gateway_pending_followup as shared_process_gateway_pending_followup,
@@ -6117,60 +6117,25 @@ class GatewayRunner:
                     enabled_toolsets=runtime_spec.enabled_toolsets,
                 )
                 self._managed_background_job_agents[task_id] = agent
-
-                from tools.approval import (
-                    build_gateway_approval_message,
-                    register_gateway_notify,
-                    unregister_gateway_notify,
-                )
-                approval_session_key = session_key or task_id
-                approval_thread_meta = {"thread_id": source.thread_id} if source.thread_id else None
-
-                def _approval_notify_sync(approval_data: dict) -> None:
-                    cmd = approval_data.get("command", "")
-                    desc = approval_data.get("description", "dangerous command")
-                    title = approval_data.get("prompt_title", "Dangerous command requires approval")
-                    approver_name = approval_data.get("approver_name", "管理员")
-                    allow_persistence = bool(approval_data.get("allow_persistence", True))
-                    msg = build_gateway_approval_message(
-                        command=cmd,
-                        description=desc,
-                        prompt_title=title,
-                        approver_name=approver_name,
-                        allow_persistence=allow_persistence,
-                    )
-                    admin_note = self._admin_only_message(source, "approve dangerous commands")
-                    if admin_note:
-                        msg = f"{msg}\n\n{admin_note}"
-                    try:
-                        asyncio.run_coroutine_threadsafe(
-                            adapter.send(
-                                source.chat_id,
-                                msg,
-                                metadata=approval_thread_meta,
-                            ),
-                            event_loop,
-                        ).result(timeout=15)
-                    except Exception as exc:
-                        logger.error("Failed to send background approval request: %s", exc)
-
-                with gateway_approval_context(
-                    session_key=approval_session_key,
+                return shared_run_gateway_approved_conversation(
+                    agent=agent,
+                    message=prompt,
+                    pending_model_note=None,
+                    conversation_history=bg_history or None,
+                    task_id=task_id,
+                    session_key=session_key or task_id,
                     admin_user_ids=list(admin_user_ids or []),
                     is_admin_user=is_admin_user,
-                ):
-                    approval_notify_handle = register_gateway_notify(
-                        approval_session_key,
-                        _approval_notify_sync,
-                    )
-                    try:
-                        return agent.run_conversation(
-                            user_message=prompt,
-                            conversation_history=bg_history or None,
-                            task_id=task_id,
-                        )
-                    finally:
-                        unregister_gateway_notify(approval_session_key, approval_notify_handle)
+                    status_adapter=adapter,
+                    status_chat_id=source.chat_id,
+                    status_thread_metadata=_thread_metadata,
+                    loop_for_step=event_loop,
+                    logger=logger,
+                    admin_only_message_builder=lambda action: self._admin_only_message(
+                        source,
+                        action,
+                    ),
+                )
 
             loop = asyncio.get_event_loop()
             result = await loop.run_in_executor(None, run_sync)

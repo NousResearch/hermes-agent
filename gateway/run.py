@@ -203,6 +203,12 @@ from gateway.agent_execution_service import (
     normalize_conversation_history,
     run_gateway_approved_conversation as shared_run_gateway_approved_conversation,
 )
+from gateway.agent_lifecycle_runtime_service import (
+    cleanup_gateway_agent_runtime_tasks as shared_cleanup_gateway_agent_runtime_tasks,
+    mark_gateway_streaming_delivery_state as shared_mark_gateway_streaming_delivery_state,
+    start_gateway_agent_runtime_tasks as shared_start_gateway_agent_runtime_tasks,
+    wait_for_gateway_agent_result as shared_wait_for_gateway_agent_result,
+)
 from gateway.agent_runtime import (
     agent_config_signature as shared_agent_config_signature,
     build_gateway_agent_runtime,
@@ -8818,198 +8824,29 @@ class GatewayRunner:
                 ),
             )
         
-        # Start progress message sender if enabled
-        progress_task = None
-        if tool_progress_enabled:
-            progress_task = asyncio.create_task(send_progress_messages())
-
-        # Start stream consumer task — polls for consumer creation since it
-        # happens inside run_sync (thread pool) after the agent is constructed.
-        stream_task = None
-
-        async def _start_stream_consumer():
-            """Wait for the stream consumer to be created, then run it."""
-            for _ in range(200):  # Up to 10s wait
-                if stream_consumer_holder[0] is not None:
-                    await stream_consumer_holder[0].run()
-                    return
-                await asyncio.sleep(0.05)
-
-        stream_task = asyncio.create_task(_start_stream_consumer())
-        
-        # Track this agent as running for this session (for interrupt support)
-        # We do this in a callback after the agent is created
-        async def track_agent():
-            # Wait for agent to be created
-            while agent_holder[0] is None:
-                await asyncio.sleep(0.05)
-            if session_key:
-                self._running_agents[session_key] = agent_holder[0]
-        
-        tracking_task = asyncio.create_task(track_agent())
-        
-        # Monitor for interrupts from the adapter (new messages arriving)
-        async def monitor_for_interrupt():
-            adapter = self.adapters.get(source.platform)
-            if not adapter or not session_key:
-                return
-            
-            while True:
-                await asyncio.sleep(0.2)  # Check every 200ms
-                # Check if adapter has a pending interrupt for this session.
-                # Must use session_key (build_session_key output) — NOT
-                # source.chat_id — because the adapter stores interrupt events
-                # under the full session key.
-                if hasattr(adapter, 'has_pending_interrupt') and adapter.has_pending_interrupt(session_key):
-                    agent = agent_holder[0]
-                    if agent:
-                        pending_event = adapter.get_pending_message(session_key)
-                        pending_text = pending_event.text if pending_event else None
-                        logger.debug("Interrupt detected from adapter, signaling agent...")
-                        agent.interrupt(pending_text)
-                        break
-        
-        interrupt_monitor = asyncio.create_task(monitor_for_interrupt())
-
-        # Periodic "still working" notifications for long-running tasks.
-        # Fires every 10 minutes so the user knows the agent hasn't died.
-        _NOTIFY_INTERVAL = 600  # 10 minutes
-        _notify_start = time.time()
-
-        async def _notify_long_running():
-            _notify_adapter = self.adapters.get(source.platform)
-            if not _notify_adapter:
-                return
-            while True:
-                await asyncio.sleep(_NOTIFY_INTERVAL)
-                _elapsed_mins = int((time.time() - _notify_start) // 60)
-                # Include agent activity context if available.
-                _agent_ref = agent_holder[0]
-                _status_detail = _build_long_running_status_detail(
-                    _agent_ref,
-                    session_key,
-                )
-                try:
-                    await _notify_adapter.send(
-                        source.chat_id,
-                        f"⏳ Still working... ({_elapsed_mins} min elapsed{_status_detail})",
-                        metadata=_status_thread_metadata,
-                    )
-                except Exception as _ne:
-                    logger.debug("Long-running notification error: %s", _ne)
-
-        _notify_task = asyncio.create_task(_notify_long_running())
+        runtime_tasks = shared_start_gateway_agent_runtime_tasks(
+            tool_progress_enabled=tool_progress_enabled,
+            send_progress_messages=send_progress_messages,
+            stream_consumer_holder=stream_consumer_holder,
+            agent_holder=agent_holder,
+            running_agents=self._running_agents,
+            session_key=session_key,
+            adapter=self.adapters.get(source.platform),
+            chat_id=source.chat_id,
+            notify_metadata=_status_thread_metadata,
+            long_running_detail_builder=_build_long_running_status_detail,
+            logger=logger,
+        )
 
         try:
-            # Run in thread pool to not block.  Use an *inactivity*-based
-            # timeout instead of a wall-clock limit: the agent can run for
-            # hours if it's actively calling tools / receiving stream tokens,
-            # but a hung API call or stuck tool with no activity for the
-            # configured duration is caught and killed.  (#4815)
-            #
-            # Config: agent.gateway_timeout in config.yaml, or
-            # HERMES_AGENT_TIMEOUT env var (env var takes precedence).
-            # Default 1800s (30 min inactivity).  0 = unlimited.
-            _agent_timeout_raw = float(os.getenv("HERMES_AGENT_TIMEOUT", 1800))
-            _agent_timeout = _agent_timeout_raw if _agent_timeout_raw > 0 else None
-            loop = asyncio.get_event_loop()
-            _executor_task = asyncio.ensure_future(
-                loop.run_in_executor(None, run_sync)
+            response = await shared_wait_for_gateway_agent_result(
+                run_sync=run_sync,
+                agent_holder=agent_holder,
+                result_holder=result_holder,
+                tools_holder=tools_holder,
+                session_key=session_key,
+                logger=logger,
             )
-
-            _inactivity_timeout = False
-            _POLL_INTERVAL = 5.0
-
-            if _agent_timeout is None:
-                # Unlimited — just await the result.
-                response = await _executor_task
-            else:
-                # Poll loop: check the agent's built-in activity tracker
-                # (updated by _touch_activity() on every tool call, API
-                # call, and stream delta) every few seconds.
-                response = None
-                while True:
-                    done, _ = await asyncio.wait(
-                        {_executor_task}, timeout=_POLL_INTERVAL
-                    )
-                    if done:
-                        response = _executor_task.result()
-                        break
-                    # Agent still running — check inactivity.
-                    _agent_ref = agent_holder[0]
-                    _idle_secs = 0.0
-                    if _agent_ref and hasattr(_agent_ref, "get_activity_summary"):
-                        try:
-                            _act = _agent_ref.get_activity_summary()
-                            _idle_secs = _act.get("seconds_since_activity", 0.0)
-                        except Exception:
-                            pass
-                    if _idle_secs >= _agent_timeout:
-                        _inactivity_timeout = True
-                        break
-
-            if _inactivity_timeout:
-                # Build a diagnostic summary from the agent's activity tracker.
-                _timed_out_agent = agent_holder[0]
-                _activity = {}
-                if _timed_out_agent and hasattr(_timed_out_agent, "get_activity_summary"):
-                    try:
-                        _activity = _timed_out_agent.get_activity_summary()
-                    except Exception:
-                        pass
-
-                _last_desc = _activity.get("last_activity_desc", "unknown")
-                _secs_ago = _activity.get("seconds_since_activity", 0)
-                _cur_tool = _activity.get("current_tool")
-                _iter_n = _activity.get("api_call_count", 0)
-                _iter_max = _activity.get("max_iterations", 0)
-
-                logger.error(
-                    "Agent idle for %.0fs (timeout %.0fs) in session %s "
-                    "| last_activity=%s | iteration=%s/%s | tool=%s",
-                    _secs_ago, _agent_timeout, session_key,
-                    _last_desc, _iter_n, _iter_max,
-                    _cur_tool or "none",
-                )
-
-                # Interrupt the agent if it's still running so the thread
-                # pool worker is freed.
-                if _timed_out_agent and hasattr(_timed_out_agent, "interrupt"):
-                    _timed_out_agent.interrupt("Execution timed out (inactivity)")
-
-                _timeout_mins = int(_agent_timeout // 60) or 1
-
-                # Construct a user-facing message with diagnostic context.
-                _diag_lines = [
-                    f"⏱️ Agent inactive for {_timeout_mins} min — no tool calls "
-                    f"or API responses."
-                ]
-                if _cur_tool:
-                    _diag_lines.append(
-                        f"The agent appears stuck on tool `{_cur_tool}` "
-                        f"({_secs_ago:.0f}s since last activity, "
-                        f"iteration {_iter_n}/{_iter_max})."
-                    )
-                else:
-                    _diag_lines.append(
-                        f"Last activity: {_last_desc} ({_secs_ago:.0f}s ago, "
-                        f"iteration {_iter_n}/{_iter_max}). "
-                        "The agent may have been waiting on an API response."
-                    )
-                _diag_lines.append(
-                    "To increase the limit, set agent.gateway_timeout in config.yaml "
-                    "(value in seconds, 0 = no limit) and restart the gateway.\n"
-                    "Try again, or use /reset to start fresh."
-                )
-
-                response = {
-                    "final_response": "\n".join(_diag_lines),
-                    "messages": result_holder[0].get("messages", []) if result_holder[0] else [],
-                    "api_calls": _iter_n,
-                    "tools": tools_holder[0] or [],
-                    "history_offset": 0,
-                    "failed": True,
-                }
 
             # Track fallback model state: if the agent switched to a
             # fallback model during this run, persist it so /model shows
@@ -9138,45 +8975,17 @@ class GatewayRunner:
                     raw_message=getattr(pending_event, "raw_message", None),
                 )
         finally:
-            # Stop progress sender, interrupt monitor, and notification task
-            if progress_task:
-                progress_task.cancel()
-            interrupt_monitor.cancel()
-            _notify_task.cancel()
+            await shared_cleanup_gateway_agent_runtime_tasks(
+                tasks=runtime_tasks,
+                session_key=session_key,
+                running_agents=self._running_agents,
+                running_agents_ts=self._running_agents_ts,
+            )
 
-            # Wait for stream consumer to finish its final edit
-            if stream_task:
-                try:
-                    await asyncio.wait_for(stream_task, timeout=5.0)
-                except (asyncio.TimeoutError, asyncio.CancelledError):
-                    stream_task.cancel()
-                    try:
-                        await stream_task
-                    except asyncio.CancelledError:
-                        pass
-            
-            # Clean up tracking
-            tracking_task.cancel()
-            if session_key and session_key in self._running_agents:
-                del self._running_agents[session_key]
-            if session_key:
-                self._running_agents_ts.pop(session_key, None)
-            
-            # Wait for cancelled tasks
-            for task in [progress_task, interrupt_monitor, tracking_task, _notify_task]:
-                if task:
-                    try:
-                        await task
-                    except asyncio.CancelledError:
-                        pass
-
-        # If streaming already delivered the response, mark it so the
-        # caller's send() is skipped (avoiding duplicate messages).
-        _sc = stream_consumer_holder[0]
-        if _sc and _sc.already_sent and isinstance(response, dict):
-            response["already_sent"] = True
-        
-        return response
+        return shared_mark_gateway_streaming_delivery_state(
+            response=response,
+            stream_consumer=stream_consumer_holder[0],
+        )
 
 
 def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, interval: int = 60):

@@ -105,9 +105,14 @@ def _make_discord_adapter(reply_to_mode: str = "first"):
     config = PlatformConfig(enabled=True, token="test-token", reply_to_mode=reply_to_mode)
     adapter = DiscordAdapter(config)
 
-    # Mock the Discord client and channel
+    # Mock the Discord client and channel.
+    # ref_message.to_reference() → a distinct sentinel: the adapter now wraps
+    # the fetched Message via to_reference(fail_if_not_exists=False) so a
+    # deleted target degrades to "send without reply chip" instead of a 400.
     mock_channel = AsyncMock()
     ref_message = MagicMock()
+    ref_reference = MagicMock(name="MessageReference")
+    ref_message.to_reference = MagicMock(return_value=ref_reference)
     mock_channel.fetch_message = AsyncMock(return_value=ref_message)
 
     sent_msg = MagicMock()
@@ -118,7 +123,9 @@ def _make_discord_adapter(reply_to_mode: str = "first"):
     mock_client.get_channel = MagicMock(return_value=mock_channel)
 
     adapter._client = mock_client
-    return adapter, mock_channel, ref_message
+    # Return the reference sentinel alongside so tests can assert identity.
+    adapter._test_expected_reference = ref_reference
+    return adapter, mock_channel, ref_reference
 
 
 class TestSendWithReplyToMode:

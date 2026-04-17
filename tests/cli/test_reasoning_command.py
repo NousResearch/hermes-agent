@@ -473,7 +473,7 @@ class TestInlineThinkBlockExtraction(unittest.TestCase):
         agent.verbose_logging = False
         agent.reasoning_callback = None
         agent.stream_delta_callback = None  # non-streaming by default
-        agent._stream_callback = None  # non-TTS by default
+        agent._stream_callback = None
         return agent
 
     def test_single_think_block_extracted(self):

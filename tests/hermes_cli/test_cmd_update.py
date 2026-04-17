@@ -124,30 +124,23 @@ class TestCmdUpdateBranchFallback:
             if call.args and call.args[0][0] == "/usr/bin/npm"
         ]
 
-        assert npm_calls == [
-            (
-                [
-                    "/usr/bin/npm",
-                    "install",
-                    "--silent",
-                    "--no-fund",
-                    "--no-audit",
-                    "--progress=false",
-                ],
-                PROJECT_ROOT,
-            ),
-            (
-                [
-                    "/usr/bin/npm",
-                    "install",
-                    "--silent",
-                    "--no-fund",
-                    "--no-audit",
-                    "--progress=false",
-                ],
-                PROJECT_ROOT / "ui-tui",
-            ),
+        # npm install must run at least in the repo root and in ui-tui.
+        # (The web/ build step also runs npm install; we assert the two that
+        # matter for the "Node.js dependencies" refresh step.)
+        cwds = [cwd for (_, cwd) in npm_calls]
+        assert PROJECT_ROOT in cwds
+        assert PROJECT_ROOT / "ui-tui" in cwds
+
+        full_install = [
+            "/usr/bin/npm",
+            "install",
+            "--silent",
+            "--no-fund",
+            "--no-audit",
+            "--progress=false",
         ]
+        assert (full_install, PROJECT_ROOT) in npm_calls
+        assert (full_install, PROJECT_ROOT / "ui-tui") in npm_calls
 
     def test_update_non_interactive_skips_migration_prompt(self, mock_args, capsys):
         """When stdin/stdout aren't TTYs, config migration prompt is skipped."""

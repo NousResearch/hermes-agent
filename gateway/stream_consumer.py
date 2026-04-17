@@ -44,6 +44,7 @@ class StreamConsumerConfig:
     buffer_threshold: int = 40
     cursor: str = " ▉"
     buffer_only: bool = False
+    no_edit_mode: bool = False  # When True, only emit on newlines or completion
 
 
 class GatewayStreamConsumer:
@@ -100,6 +101,10 @@ class GatewayStreamConsumer:
         self._flood_strikes = 0         # Consecutive flood-control edit failures
         self._current_edit_interval = self.cfg.edit_interval  # Adaptive backoff
         self._final_response_sent = False
+        self._no_edit_mode = self.cfg.no_edit_mode  # Platforms that can't edit (Signal, etc.)
+        # Minimum chars before first send on no-edit platforms — prevents
+        # fragmenting short responses into multiple messages.
+        self._no_edit_min_buffer = 200
 
         # Think-block filter state (mirrors CLI's _stream_delta tag suppression)
         self._in_think_block = False
@@ -292,20 +297,57 @@ class GatewayStreamConsumer:
                 # Decide whether to flush an edit
                 now = time.monotonic()
                 elapsed = now - self._last_edit_time
-                should_edit = (
-                    got_done
-                    or got_segment_break
-                    or commentary_text is not None
-                )
-                if not self.cfg.buffer_only:
-                    should_edit = should_edit or (
-                        (elapsed >= self._current_edit_interval
-                            and self._accumulated)
-                        or len(self._accumulated) >= self.cfg.buffer_threshold
+
+                # No-edit platforms (Signal, etc.): only flush on stream
+                # completion, segment breaks, commentary, or when the buffer
+                # contains a complete paragraph (double-newline boundary) and
+                # has reached the minimum size.  This prevents fragmenting
+                # short responses into multiple messages.
+                if self._no_edit_mode:
+                    _has_paragraph_break = "\n\n" in self._accumulated
+                    _above_min = len(self._accumulated) >= self._no_edit_min_buffer
+                    should_edit = (
+                        got_done
+                        or got_segment_break
+                        or commentary_text is not None
+                        or (_has_paragraph_break and _above_min)
+                        or len(self._accumulated) > _safe_limit
                     )
+                else:
+                    should_edit = (
+                        got_done
+                        or got_segment_break
+                        or commentary_text is not None
+                    )
+                    if not self.cfg.buffer_only:
+                        should_edit = should_edit or (
+                            (elapsed >= self._current_edit_interval
+                            and self._accumulated)
+                            or len(self._accumulated) >= self.cfg.buffer_threshold
+                        )
 
                 current_update_visible = False
                 if should_edit and self._accumulated:
+                    # No-edit mode paragraph splitting: when flushing on a
+                    # paragraph break (not on done/segment), send up to the
+                    # last double-newline and keep the trailing partial
+                    # paragraph buffered for the next flush.
+                    if (
+                        self._no_edit_mode
+                        and not got_done
+                        and not got_segment_break
+                        and commentary_text is None
+                        and "\n\n" in self._accumulated
+                        and len(self._accumulated) <= _safe_limit
+                    ):
+                        _last_break = self._accumulated.rfind("\n\n")
+                        _to_send = self._accumulated[:_last_break]
+                        self._accumulated = self._accumulated[_last_break + 2:]
+                        if _to_send.strip():
+                            await self._send_new_chunk(_to_send, self._message_id)
+                            self._last_edit_time = time.monotonic()
+                        continue
+
                     # Split overflow: if accumulated text exceeds the platform
                     # limit, split into properly sized chunks.
                     if (

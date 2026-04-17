@@ -538,6 +538,28 @@ class TestSegmentBreakOnToolBoundary:
         assert adapter.send.call_count == 1
 
     @pytest.mark.asyncio
+    async def test_no_message_id_first_send_does_not_show_cursor_when_cursor_disabled(self):
+        """Non-edit platforms like Signal should be able to stream without sending
+        a visible cursor glyph in the first bubble."""
+        adapter = MagicMock()
+        adapter.send = AsyncMock(return_value=SimpleNamespace(success=True, message_id=None))
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True))
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        config = StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5, cursor="")
+        consumer = GatewayStreamConsumer(adapter, "chat_123", config)
+
+        consumer.on_delta("I found that MessageEvent")
+        consumer.finish()
+
+        await consumer.run()
+
+        assert adapter.send.call_count == 1
+        first_text = adapter.send.call_args_list[0][1]["content"]
+        assert first_text == "I found that MessageEvent"
+        assert "▉" not in first_text
+
+    @pytest.mark.asyncio
     async def test_no_message_id_segment_breaks_do_not_resend(self):
         """On a platform that never returns a message_id (e.g. webhook with
         github_comment delivery), tool-call segment breaks must NOT trigger

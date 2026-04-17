@@ -1283,7 +1283,7 @@ class BasePlatformAdapter(ABC):
         # Extract MEDIA:<path> tags, allowing optional whitespace after the colon
         # and quoted/backticked paths for LLM-formatted outputs.
         media_pattern = re.compile(
-            r'''[`"']?MEDIA:\s*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|(?:~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:png|jpe?g|gif|webp|mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a)(?=[\s`"',;:)\]}]|$)|\S+)[`"']?'''
+            r'''[`"']?MEDIA:\s*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|(?:~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:png|jpe?g|gif|webp|mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|pdf|txt|md|yaml|yml|json|csv|py|js|ts|sh|log|xml|html|css|zip|tar|gz|doc|docx|xls|xlsx|pptx|rtf|toml|cfg|ini|conf|sql|rb|go|rs|java|c|cpp|h|hpp)(?=[\s`"',;:)\]}]|$)|\S+)[`"']?'''
         )
         for match in media_pattern.finditer(content):
             path = match.group("path").strip()
@@ -1318,8 +1318,24 @@ class BasePlatformAdapter(ABC):
             raw path strings removed).
         """
         _LOCAL_MEDIA_EXTS = (
+            # Images
             '.png', '.jpg', '.jpeg', '.gif', '.webp',
+            # Video
             '.mp4', '.mov', '.avi', '.mkv', '.webm',
+            # Documents
+            '.pdf', '.txt', '.md', '.csv', '.rtf',
+            '.doc', '.docx', '.xls', '.xlsx', '.pptx',
+            # Config/data
+            '.json', '.yaml', '.yml', '.toml', '.xml',
+            '.ini', '.cfg', '.conf',
+            # Code
+            '.py', '.js', '.ts', '.sh', '.rb', '.go',
+            '.rs', '.java', '.c', '.cpp', '.h', '.hpp',
+            '.sql', '.html', '.css',
+            # Archives
+            '.zip', '.tar', '.gz',
+            # Logs
+            '.log',
         )
         ext_part = '|'.join(e.lstrip('.') for e in _LOCAL_MEDIA_EXTS)
 

@@ -1711,8 +1711,50 @@ class GatewayRunner:
 
         current_pid = os.getpid()
         cmd = " ".join(shlex.quote(part) for part in hermes_cmd)
+
+        # Build the path to gateway_state.json for health-aware watchdog.
+        # The watchdog checks two conditions (whichever fires first):
+        #   1. PID death  (original fast check)
+        #   2. Unhealthy state — gateway_state.json reports a terminal state
+        #      (startup_failed, stopped) or updated_at goes stale for >120s,
+        #      meaning the process is alive but not functioning.
+        try:
+            from gateway.status import _get_runtime_status_path
+            state_file = str(_get_runtime_status_path())
+        except Exception:
+            state_file = os.path.expanduser("~/.hermes/gateway_state.json")
+
+        # Write a small health-check script that the watchdog calls each tick.
+        # Exits 0 = healthy, 1 = unhealthy.  Avoids gnarly nested quoting.
+        import tempfile
+        health_script = os.path.join(
+            tempfile.gettempdir(),
+            f"hermes-watchdog-health-{current_pid}.py",
+        )
+        with open(health_script, "w") as f:
+            f.write(
+                "import json, sys\n"
+                "from datetime import datetime, timezone\n"
+                "try:\n"
+                f"    d = json.load(open({state_file!r}))\n"
+                "    s = d.get('gateway_state', '')\n"
+                "    if s in ('startup_failed', 'stopped'):\n"
+                "        sys.exit(1)\n"
+                "    t = d.get('updated_at', '')\n"
+                "    if t:\n"
+                "        ut = datetime.fromisoformat(t)\n"
+                "        age = (datetime.now(timezone.utc) - ut).total_seconds()\n"
+                "        if age > 120:\n"
+                "            sys.exit(1)\n"
+                "except Exception:\n"
+                "    pass\n"
+            )
+
+        quoted_health = shlex.quote(health_script)
         shell_cmd = (
-            f"while kill -0 {current_pid} 2>/dev/null; do sleep 0.2; done; "
+            f"while kill -0 {current_pid} 2>/dev/null && python3 {quoted_health} 2>/dev/null; "
+            f"do sleep 2; done; "
+            f"sleep 2; rm -f {quoted_health}; "
             f"{cmd} gateway restart"
         )
         setsid_bin = shutil.which("setsid")
@@ -8288,23 +8330,18 @@ class GatewayRunner:
             if not adapter:
                 return
 
-            # Skip tool progress for platforms that don't support message
-            # editing (e.g. iMessage/BlueBubbles) — each progress update
-            # would become a separate message bubble, which is noisy.
+            # Check if this platform supports message editing.  Platforms
+            # without edit support (Signal, iMessage/BlueBubbles) send each
+            # progress update as a separate message instead, with a longer
+            # throttle interval to avoid spam.
             from gateway.platforms.base import BasePlatformAdapter as _BaseAdapter
-            if type(adapter).edit_message is _BaseAdapter.edit_message:
-                while not progress_queue.empty():
-                    try:
-                        progress_queue.get_nowait()
-                    except Exception:
-                        break
-                return
+            _has_edit = type(adapter).edit_message is not _BaseAdapter.edit_message
 
             progress_lines = []      # Accumulated tool lines
             progress_msg_id = None   # ID of the progress message to edit
-            can_edit = True          # False once an edit fails (platform doesn't support it)
+            can_edit = _has_edit     # False from the start for non-edit platforms
             _last_edit_ts = 0.0      # Throttle edits to avoid Telegram flood control
-            _PROGRESS_EDIT_INTERVAL = 1.5  # Minimum seconds between edits
+            _PROGRESS_EDIT_INTERVAL = 1.5 if _has_edit else 5.0  # Longer interval for non-edit platforms
 
             while True:
                 try:
@@ -8359,8 +8396,12 @@ class GatewayRunner:
                             full_text = "\n".join(progress_lines)
                             result = await adapter.send(chat_id=source.chat_id, content=full_text, metadata=_progress_metadata)
                         else:
-                            # Editing unsupported: send just this line
-                            result = await adapter.send(chat_id=source.chat_id, content=msg, metadata=_progress_metadata)
+                            # Editing unsupported (Signal, etc.): batch all
+                            # accumulated lines since the last send into one
+                            # message to reduce spam.
+                            full_text = "\n".join(progress_lines)
+                            result = await adapter.send(chat_id=source.chat_id, content=full_text, metadata=_progress_metadata)
+                            progress_lines.clear()
                         if result.success and result.message_id:
                             progress_msg_id = result.message_id
 
@@ -8565,6 +8606,7 @@ class GatewayRunner:
                             buffer_threshold=_scfg.buffer_threshold,
                             cursor=_effective_cursor,
                             buffer_only=_buffer_only,
+                            no_edit_mode=not _adapter_supports_edit,
                         )
                         _stream_consumer = GatewayStreamConsumer(
                             adapter=_adapter,

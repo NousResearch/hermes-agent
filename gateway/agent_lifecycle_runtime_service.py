@@ -20,6 +20,15 @@ class GatewayAgentRuntimeTasks:
     long_running_notify_task: asyncio.Task[Any] | None
 
 
+@dataclass(frozen=True)
+class GatewayEffectiveModelState:
+    """Post-turn effective model state derived from the agent's resolved model."""
+
+    effective_model: str | None
+    effective_provider: str | None
+    should_evict_cached_agent: bool
+
+
 def _read_gateway_agent_activity(agent_ref: Any) -> dict[str, Any]:
     """Best-effort read of the agent activity tracker."""
 
@@ -244,6 +253,37 @@ def build_gateway_inactivity_timeout_response(
         "history_offset": 0,
         "failed": True,
     }
+
+
+def resolve_gateway_effective_model_state(
+    *,
+    agent: Any | None,
+    configured_model: str,
+    should_evict_cached_agent_after_turn: Callable[[Any, str], bool],
+) -> GatewayEffectiveModelState:
+    """Resolve the effective foreground model state after a completed turn."""
+
+    if agent is None or not hasattr(agent, "model"):
+        return GatewayEffectiveModelState(
+            effective_model=None,
+            effective_provider=None,
+            should_evict_cached_agent=False,
+        )
+
+    if agent.model != configured_model:
+        return GatewayEffectiveModelState(
+            effective_model=agent.model,
+            effective_provider=getattr(agent, "provider", None),
+            should_evict_cached_agent=bool(
+                should_evict_cached_agent_after_turn(agent, configured_model)
+            ),
+        )
+
+    return GatewayEffectiveModelState(
+        effective_model=None,
+        effective_provider=None,
+        should_evict_cached_agent=False,
+    )
 
 
 async def wait_for_gateway_agent_result(

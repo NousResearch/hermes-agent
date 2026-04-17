@@ -209,6 +209,7 @@ from gateway.agent_followup_runtime_service import (
 from gateway.agent_lifecycle_runtime_service import (
     cleanup_gateway_agent_runtime_tasks as shared_cleanup_gateway_agent_runtime_tasks,
     mark_gateway_streaming_delivery_state as shared_mark_gateway_streaming_delivery_state,
+    resolve_gateway_effective_model_state as shared_resolve_gateway_effective_model_state,
     start_gateway_agent_runtime_tasks as shared_start_gateway_agent_runtime_tasks,
     wait_for_gateway_agent_result as shared_wait_for_gateway_agent_result,
 )
@@ -8519,22 +8520,16 @@ class GatewayRunner:
                 logger=logger,
             )
 
-            # Track fallback model state: if the agent switched to a
-            # fallback model during this run, persist it so /model shows
-            # the actually-active model instead of the config default.
-            _agent = agent_holder[0]
-            if _agent is not None and hasattr(_agent, 'model'):
-                _cfg_model = _resolve_gateway_model()
-                if _agent.model != _cfg_model:
-                    self._effective_model = _agent.model
-                    self._effective_provider = getattr(_agent, 'provider', None)
-                    if self._should_evict_cached_agent_after_turn(_agent, _cfg_model):
-                        # Unpinned fallback: next message should try the primary again.
-                        self._evict_cached_agent(session_key)
-                else:
-                    # Primary model worked — clear any stale fallback state
-                    self._effective_model = None
-                    self._effective_provider = None
+            effective_model_state = shared_resolve_gateway_effective_model_state(
+                agent=agent_holder[0],
+                configured_model=_resolve_gateway_model(),
+                should_evict_cached_agent_after_turn=self._should_evict_cached_agent_after_turn,
+            )
+            self._effective_model = effective_model_state.effective_model
+            self._effective_provider = effective_model_state.effective_provider
+            if effective_model_state.should_evict_cached_agent:
+                # Unpinned fallback: next message should try the primary again.
+                self._evict_cached_agent(session_key)
 
             result = result_holder[0]
             adapter = self.adapters.get(source.platform)

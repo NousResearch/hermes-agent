@@ -11,6 +11,7 @@ from gateway.agent_lifecycle_runtime_service import (
     GatewayAgentRuntimeTasks,
     cleanup_gateway_agent_runtime_tasks,
     mark_gateway_streaming_delivery_state,
+    resolve_gateway_effective_model_state,
     wait_for_gateway_agent_result,
 )
 
@@ -126,3 +127,33 @@ def test_mark_gateway_streaming_delivery_state_sets_already_sent():
     )
 
     assert marked["already_sent"] is True
+
+
+def test_resolve_gateway_effective_model_state_tracks_fallback_and_eviction():
+    agent = SimpleNamespace(model="gpt-fallback", provider="custom")
+
+    state = resolve_gateway_effective_model_state(
+        agent=agent,
+        configured_model="gpt-primary",
+        should_evict_cached_agent_after_turn=lambda current, configured: (
+            current is agent and configured == "gpt-primary"
+        ),
+    )
+
+    assert state.effective_model == "gpt-fallback"
+    assert state.effective_provider == "custom"
+    assert state.should_evict_cached_agent is True
+
+
+def test_resolve_gateway_effective_model_state_clears_when_primary_model_used():
+    agent = SimpleNamespace(model="gpt-primary", provider="custom")
+
+    state = resolve_gateway_effective_model_state(
+        agent=agent,
+        configured_model="gpt-primary",
+        should_evict_cached_agent_after_turn=lambda *_: True,
+    )
+
+    assert state.effective_model is None
+    assert state.effective_provider is None
+    assert state.should_evict_cached_agent is False

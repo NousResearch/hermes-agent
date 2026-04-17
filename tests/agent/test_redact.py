@@ -56,7 +56,7 @@ class TestKnownPrefixes:
 
     def test_short_token_fully_masked(self):
         result = redact_sensitive_text("key=sk-short1234567")
-        assert "***" in result
+        assert "[REDACTED]" in result
 
 
 class TestEnvAssignments:
@@ -150,7 +150,7 @@ class TestTelegramTokens:
         text = "bot123456789:ABCDEfghij-KLMNopqrst_UVWXyz12345"
         result = redact_sensitive_text(text)
         assert "ABCDEfghij" not in result
-        assert "123456789:***" in result
+        assert "123456789:[REDACTED]" in result
 
     def test_raw_token(self):
         text = "12345678901:ABCDEfghijKLMNopqrstUVWXyz1234567890"
@@ -348,12 +348,12 @@ class TestDiscordMentions:
     def test_normal_mention(self):
         result = redact_sensitive_text("Hello <@222589316709220353>")
         assert "222589316709220353" not in result
-        assert "<@***>" in result
+        assert "<@[REDACTED]>" in result
 
     def test_nickname_mention(self):
         result = redact_sensitive_text("Ping <@!1331549159177846844>")
         assert "1331549159177846844" not in result
-        assert "<@!***>" in result
+        assert "<@![REDACTED]>" in result
 
     def test_multiple_mentions(self):
         text = "<@111111111111111111> and <@222222222222222222>"
@@ -376,3 +376,80 @@ class TestDiscordMentions:
         result = redact_sensitive_text(text)
         assert result.startswith("User ")
         assert result.endswith(" said hello")
+
+
+class TestUnambiguousMarker:
+    """Every mask must be unambiguously distinguishable from literal file
+    content. The prior ``***`` marker caused an observed agent loop where
+    ``cat ~/.hermes/.env`` returned ``MINIMAX_API_KEY=***`` and the agent
+    concluded its own API key was literally three asterisks — spending
+    55 API calls across 30 minutes debugging a non-existent problem.
+
+    These tests lock in the ``[REDACTED`` prefix so no future masker
+    can silently regress back to an ambiguous form.
+    """
+
+    _MARKER = "[REDACTED"
+
+    def test_short_token_uses_marker(self):
+        result = redact_sensitive_text("key=sk-short1234567")
+        assert self._MARKER in result
+        assert "***" not in result
+
+    def test_long_token_uses_marker(self):
+        result = redact_sensitive_text("sk-proj-abc123def456ghi789jkl012")
+        assert self._MARKER in result
+        assert "***" not in result
+
+    def test_env_assignment_uses_marker(self):
+        result = redact_sensitive_text("MINIMAX_API_KEY=sk-cp-h8giiBWtPNGEl6nIulUT_sIe8ihCuA8Lj0FZ")
+        assert "MINIMAX_API_KEY=" in result
+        assert self._MARKER in result
+        assert "***" not in result
+
+    def test_telegram_uses_marker(self):
+        result = redact_sensitive_text("bot123456789:ABCDEfghij-KLMNopqrst_UVWXyz12345")
+        assert self._MARKER in result
+        assert ":***" not in result
+
+    def test_db_password_uses_marker(self):
+        result = redact_sensitive_text("postgres://user:hunter2@db.example.com/prod")
+        assert self._MARKER in result
+        assert ":***@" not in result
+
+    def test_discord_mention_uses_marker(self):
+        result = redact_sensitive_text("ping <@222589316709220353>")
+        assert self._MARKER in result
+        assert "<@***>" not in result
+
+    def test_bearer_uses_marker(self):
+        result = redact_sensitive_text("Authorization: Bearer sk-proj-abc123def456ghi789jkl")
+        assert self._MARKER in result
+
+    def test_private_key_uses_marker(self):
+        text = (
+            "-----BEGIN RSA PRIVATE KEY-----\nMIIE...\n-----END RSA PRIVATE KEY-----"
+        )
+        result = redact_sensitive_text(text)
+        assert self._MARKER in result
+        assert "MIIE" not in result
+
+    def test_env_dump_distinguishes_secrets_from_content(self):
+        """The specific failure mode: an LLM-readable env dump must make
+        every mask unambiguous, so the agent cannot mistake a redacted
+        value for a literal placeholder."""
+        env_dump = (
+            "HOME=/home/user\n"
+            "MINIMAX_API_KEY=sk-cp-h8giiBWtPNGEl6nIulUT_sIe8ihCuA8Lj0FZ\n"
+            "ELEVENLABS_API_KEY=sk_abc123def456ghi789jklmnopqrstu\n"
+            "TELEGRAM_BOT_TOKEN=859176123:AAEfoo-BarBaz_QuxQuuxCorgeGraultGa\n"
+            "SHELL=/bin/bash\n"
+        )
+        result = redact_sensitive_text(env_dump)
+        # Every masked line carries the unambiguous marker
+        for line in result.splitlines():
+            if line.startswith(("HOME=", "SHELL=")):
+                continue
+            assert self._MARKER in line, f"line missing redaction marker: {line!r}"
+        # And the bare ``***`` form never appears
+        assert "***" not in result

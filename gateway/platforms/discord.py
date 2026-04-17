@@ -80,6 +80,41 @@ def check_discord_requirements() -> bool:
     return DISCORD_AVAILABLE
 
 
+def _build_allowed_mentions():
+    """Build Discord ``AllowedMentions`` with safe defaults, overridable via env.
+
+    Discord bots default to parsing ``@everyone``, ``@here``, role pings, and
+    user pings when ``allowed_mentions`` is unset on the client — any LLM
+    output or echoed user content that contains ``@everyone`` would therefore
+    ping the whole server. We explicitly deny ``@everyone`` and role pings
+    by default and keep user / replied-user pings enabled so normal
+    conversation still works.
+
+    Override via environment variables (or ``discord.allow_mentions.*`` in
+    config.yaml):
+
+        DISCORD_ALLOW_MENTION_EVERYONE      default false  — @everyone + @here
+        DISCORD_ALLOW_MENTION_ROLES         default false  — @role pings
+        DISCORD_ALLOW_MENTION_USERS         default true   — @user pings
+        DISCORD_ALLOW_MENTION_REPLIED_USER  default true   — reply-ping author
+    """
+    if not DISCORD_AVAILABLE:
+        return None
+
+    def _b(name: str, default: bool) -> bool:
+        raw = os.getenv(name, "").strip().lower()
+        if not raw:
+            return default
+        return raw in ("true", "1", "yes", "on")
+
+    return discord.AllowedMentions(
+        everyone=_b("DISCORD_ALLOW_MENTION_EVERYONE", False),
+        roles=_b("DISCORD_ALLOW_MENTION_ROLES", False),
+        users=_b("DISCORD_ALLOW_MENTION_USERS", True),
+        replied_user=_b("DISCORD_ALLOW_MENTION_REPLIED_USER", True),
+    )
+
+
 class VoiceReceiver:
     """Captures and decodes voice audio from a Discord voice channel.
 
@@ -556,10 +591,15 @@ class DiscordAdapter(BasePlatformAdapter):
             if proxy_url:
                 logger.info("[%s] Using proxy for Discord: %s", self.name, proxy_url)
 
-            # Create bot — proxy= for HTTP, connector= for SOCKS
+            # Create bot — proxy= for HTTP, connector= for SOCKS.
+            # allowed_mentions is set with safe defaults (no @everyone/roles)
+            # so LLM output or echoed user content can't ping the whole
+            # server; override per DISCORD_ALLOW_MENTION_* env vars or the
+            # discord.allow_mentions.* block in config.yaml.
             self._client = commands.Bot(
                 command_prefix="!",  # Not really used, we handle raw messages
                 intents=intents,
+                allowed_mentions=_build_allowed_mentions(),
                 **proxy_kwargs_for_bot(proxy_url),
             )
             adapter_self = self  # capture for closure

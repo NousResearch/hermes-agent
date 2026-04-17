@@ -2216,6 +2216,29 @@ def _setup_linear():
         except ValueError:
             print_warning("Invalid port number, using default 8646")
 
+    max_concurrent = prompt("Max concurrent Linear sessions (default 3)")
+    if max_concurrent:
+        try:
+            save_env_value("LINEAR_MAX_CONCURRENT_SESSIONS", str(max(1, int(max_concurrent))))
+            print_success(f"Linear max concurrent sessions set to {max(1, int(max_concurrent))}")
+        except ValueError:
+            print_warning("Invalid max concurrency, using default 3")
+
+    default_execution_mode = prompt("Default execution mode (autonomous_with_testing/human_gate/autonomous_dev/manual_only)")
+    if default_execution_mode:
+        save_env_value("LINEAR_DEFAULT_EXECUTION_MODE", default_execution_mode.strip().lower())
+        print_success(f"Linear default execution mode set to {default_execution_mode.strip().lower()}")
+
+    supported_task_types = prompt("Supported task types for current Jax executor (comma-separated, e.g. engineering,ops,research)")
+    if supported_task_types:
+        save_env_value("LINEAR_SUPPORTED_TASK_TYPES", supported_task_types)
+        print_success("Saved LINEAR_SUPPORTED_TASK_TYPES")
+
+    project_execution_modes = prompt("Project execution modes JSON (optional, e.g. {\"Jax Control Plane\":\"autonomous_with_testing\"})")
+    if project_execution_modes:
+        save_env_value("LINEAR_PROJECT_EXECUTION_MODES", project_execution_modes)
+        print_success("Saved LINEAR_PROJECT_EXECUTION_MODES")
+
     save_env_value("LINEAR_ENABLED", "true")
     print()
     print_success("Linear integration enabled! Next steps:")

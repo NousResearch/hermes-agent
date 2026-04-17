@@ -28,7 +28,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 try:
     from aiohttp import web
@@ -54,12 +54,31 @@ DEFAULT_PORT = 8646
 DEFAULT_WEBHOOK_PATH = "/linear/webhook"
 DEFAULT_AUTHORIZE_PATH = "/linear/oauth/authorize"
 DEFAULT_CALLBACK_PATH = "/linear/oauth/callback"
-DEFAULT_SCOPES = ["read", "comments:create", "app:mentionable", "app:assignable"]
+DEFAULT_SCOPES = ["read", "write", "app:mentionable", "app:assignable"]
 STATE_TTL_SECONDS = 1800
-TOKEN_REFRESH_SKEW_SECONDS = 60
+TOKEN_REFRESH_SKEW_SECONDS = 300
 MAX_BODY_BYTES = 1_048_576
-_TOKEN_STORE_FILENAME = "linear_oauth_tokens.json"
+_TOKEN_STORE_FILENAME="linear...json"
 _STATE_STORE_FILENAME = "linear_oauth_states.json"
+_LINEAR_APP_LOCK_SCOPE = "linear_app"
+DEFAULT_MAX_CONCURRENT_SESSIONS = 3
+DEFAULT_EXECUTION_MODE = "autonomous_with_testing"
+SUPPORTED_EXECUTION_MODES = {
+    "autonomous_dev",
+    "autonomous_with_testing",
+    "human_gate",
+    "manual_only",
+}
+DEFAULT_SUPPORTED_TASK_TYPES = ["engineering", "ops", "research", "product", "admin"]
+DEFAULT_TASK_TYPE = "engineering"
+DEFAULT_TASK_TYPE_LABEL_PREFIX = "type:"
+DEFAULT_EXECUTION_MODE_LABEL_PREFIX = "mode:"
+DEFAULT_IN_PROGRESS_STATE_NAME = "In Progress"
+DEFAULT_BLOCKED_STATE_NAME = "Blocked"
+DEFAULT_TESTING_STATE_NAME = "Testing"
+DEFAULT_TESTING_FALLBACK_STATE_NAME = "In Review"
+DEFAULT_IN_REVIEW_STATE_NAME = "In Review"
+DEFAULT_DONE_STATE_NAME = "Done"
 
 
 def check_linear_requirements() -> bool:
@@ -90,9 +109,143 @@ class LinearAdapter(BasePlatformAdapter):
         self._runner: Optional["web.AppRunner"] = None
         self._site: Optional["web.TCPSite"] = None
         self._max_body_bytes = int(extra.get("max_body_bytes") or MAX_BODY_BYTES)
+        self._max_concurrent_sessions = max(1, int(extra.get("max_concurrent_sessions") or DEFAULT_MAX_CONCURRENT_SESSIONS))
+        self._default_execution_mode = self._normalize_execution_mode(extra.get("default_execution_mode"))
+        raw_project_modes = extra.get("project_execution_modes") or {}
+        self._project_execution_modes = {
+            str(key).strip(): self._normalize_execution_mode(value)
+            for key, value in raw_project_modes.items()
+            if str(key).strip()
+        } if isinstance(raw_project_modes, dict) else {}
+        raw_supported_task_types = extra.get("supported_task_types") or DEFAULT_SUPPORTED_TASK_TYPES
+        if isinstance(raw_supported_task_types, str):
+            self._supported_task_types = {
+                task_type.strip().lower()
+                for task_type in raw_supported_task_types.replace(" ", ",").split(",")
+                if task_type.strip()
+            }
+        else:
+            self._supported_task_types = {
+                str(task_type).strip().lower()
+                for task_type in raw_supported_task_types
+                if str(task_type).strip()
+            }
+        if not self._supported_task_types:
+            self._supported_task_types = {DEFAULT_TASK_TYPE}
+        self._task_type_label_prefix = str(extra.get("task_type_label_prefix") or DEFAULT_TASK_TYPE_LABEL_PREFIX).strip().lower()
+        self._execution_mode_label_prefix = str(extra.get("execution_mode_label_prefix") or DEFAULT_EXECUTION_MODE_LABEL_PREFIX).strip().lower()
+        self._in_progress_state_name = str(extra.get("in_progress_state_name") or DEFAULT_IN_PROGRESS_STATE_NAME)
+        self._blocked_state_name = str(extra.get("blocked_state_name") or DEFAULT_BLOCKED_STATE_NAME)
+        self._testing_state_name = str(extra.get("testing_state_name") or DEFAULT_TESTING_STATE_NAME)
+        self._testing_fallback_state_name = str(extra.get("testing_fallback_state_name") or DEFAULT_TESTING_FALLBACK_STATE_NAME)
+        self._in_review_state_name = str(extra.get("in_review_state_name") or DEFAULT_IN_REVIEW_STATE_NAME)
+        self._done_state_name = str(extra.get("done_state_name") or DEFAULT_DONE_STATE_NAME)
+        self._session_semaphore = asyncio.Semaphore(self._max_concurrent_sessions)
+        self._session_counter_lock = asyncio.Lock()
+        self._running_session_count = 0
+        self._queued_session_count = 0
         self._session_info: Dict[str, Dict[str, Any]] = {}
+        self._issue_state_cache: Dict[str, List[Dict[str, Any]]] = {}
         self._tokens_path = get_hermes_home() / _TOKEN_STORE_FILENAME
         self._states_path = get_hermes_home() / _STATE_STORE_FILENAME
+
+    @staticmethod
+    def _normalize_execution_mode(value: Any) -> str:
+        mode = str(value or DEFAULT_EXECUTION_MODE).strip().lower()
+        return mode if mode in SUPPORTED_EXECUTION_MODES else DEFAULT_EXECUTION_MODE
+
+    def _extract_label_names(self, issue: Dict[str, Any]) -> List[str]:
+        labels = issue.get("labels") or issue.get("labelIds") or []
+        if isinstance(labels, dict):
+            labels = labels.get("nodes") or labels.get("items") or []
+        names: List[str] = []
+        for label in labels:
+            if isinstance(label, dict):
+                name = str(label.get("name") or label.get("label") or "").strip()
+            else:
+                name = str(label).strip()
+            if name:
+                names.append(name)
+        return names
+
+    def _derive_task_type(self, issue: Dict[str, Any]) -> str:
+        for label in self._extract_label_names(issue):
+            lowered = label.lower()
+            if lowered.startswith(self._task_type_label_prefix):
+                task_type = lowered[len(self._task_type_label_prefix):].strip()
+                if task_type:
+                    return task_type
+        return DEFAULT_TASK_TYPE
+
+    def _derive_execution_mode(self, issue: Dict[str, Any]) -> str:
+        for label in self._extract_label_names(issue):
+            lowered = label.lower()
+            if lowered.startswith(self._execution_mode_label_prefix):
+                mode = lowered[len(self._execution_mode_label_prefix):].strip()
+                return self._normalize_execution_mode(mode)
+
+        project = issue.get("project") or {}
+        project_name = str(project.get("name") or "").strip()
+        project_id = str(project.get("id") or "").strip()
+        if project_id and project_id in self._project_execution_modes:
+            return self._project_execution_modes[project_id]
+        if project_name and project_name in self._project_execution_modes:
+            return self._project_execution_modes[project_name]
+        return self._default_execution_mode
+
+    def _build_execution_policy(self, issue: Dict[str, Any]) -> Dict[str, Any]:
+        task_type = self._derive_task_type(issue)
+        execution_mode = self._derive_execution_mode(issue)
+        can_execute = execution_mode != "manual_only" and task_type in self._supported_task_types
+        block_reason = None
+        if execution_mode == "manual_only":
+            block_reason = "Project is configured for manual_only execution mode."
+        elif task_type not in self._supported_task_types:
+            block_reason = f"Task type '{task_type}' is not executable by the current Jax executor."
+        return {
+            "task_type": task_type,
+            "execution_mode": execution_mode,
+            "can_execute": can_execute,
+            "block_reason": block_reason,
+        }
+
+    def _store_session_metadata(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        agent_session = payload.get("agentSession") or {}
+        issue = agent_session.get("issue") or {}
+        chat_id = f"linear:{agent_session.get('id') or ''}"
+        policy = self._build_execution_policy(issue)
+        project = issue.get("project") or {}
+        creator = agent_session.get("creator") or {}
+        assignee = issue.get("assignee") or {}
+        session = {
+            "agent_session_id": str(agent_session.get("id") or ""),
+            "app_user_id": str(payload.get("appUserId") or agent_session.get("appUserId") or ""),
+            "organization_id": str(payload.get("organizationId") or agent_session.get("organizationId") or ""),
+            "chat_name": issue.get("identifier") or issue.get("title") or agent_session.get("url") or chat_id,
+            "issue_id": str(issue.get("id") or issue.get("identifier") or ""),
+            "issue_identifier": str(issue.get("identifier") or issue.get("id") or ""),
+            "issue_title": str(issue.get("title") or ""),
+            "team_id": str((issue.get("team") or {}).get("id") or issue.get("teamId") or ""),
+            "team_name": str((issue.get("team") or {}).get("name") or issue.get("team") or ""),
+            "project_id": str(project.get("id") or ""),
+            "project_name": str(project.get("name") or ""),
+            "label_names": self._extract_label_names(issue),
+            "creator_id": str(agent_session.get("creatorId") or creator.get("id") or ""),
+            "creator_name": str(creator.get("name") or ""),
+            "current_assignee_id": str(assignee.get("id") or issue.get("assigneeId") or "") or None,
+            "current_assignee_name": str(assignee.get("name") or issue.get("assignee") or "") or None,
+            "updated_at": time.time(),
+            **policy,
+        }
+        self._session_info[chat_id] = session
+        return session
+
+    def _determine_handoff_assignee(self, session: Dict[str, Any]) -> Optional[str]:
+        current_assignee = session.get("current_assignee_id")
+        if current_assignee and current_assignee != session.get("app_user_id"):
+            return current_assignee
+        creator_id = session.get("creator_id")
+        return creator_id or None
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -110,6 +263,13 @@ class LinearAdapter(BasePlatformAdapter):
             logger.error("[linear] Missing required config: %s", ", ".join(missing))
             return False
 
+        if not self._acquire_platform_lock(
+            _LINEAR_APP_LOCK_SCOPE,
+            self._client_id,
+            "Linear app credentials",
+        ):
+            return False
+
         app = web.Application()
         app.router.add_get("/health", self._handle_health)
         app.router.add_get(self._authorize_path, self._handle_authorize)
@@ -117,34 +277,40 @@ class LinearAdapter(BasePlatformAdapter):
         app.router.add_post(self._webhook_path, self._handle_webhook)
 
         try:
-            with _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM) as sock:
-                sock.settimeout(1)
-                sock.connect(("127.0.0.1", self._port))
-            logger.error("[linear] Port %d already in use", self._port)
-            return False
-        except (ConnectionRefusedError, OSError):
-            pass
+            try:
+                with _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM) as sock:
+                    sock.settimeout(1)
+                    sock.connect(("127.0.0.1", self._port))
+                logger.error("[linear] Port %d already in use", self._port)
+                self._release_platform_lock()
+                return False
+            except (ConnectionRefusedError, OSError):
+                pass
 
-        self._runner = web.AppRunner(app)
-        await self._runner.setup()
-        self._site = web.TCPSite(self._runner, self._host, self._port)
-        await self._site.start()
-        self._mark_connected()
-        logger.info(
-            "[linear] Listening on %s:%d (authorize=%s callback=%s webhook=%s)",
-            self._host,
-            self._port,
-            self._authorize_path,
-            self._callback_path,
-            self._webhook_path,
-        )
-        return True
+            self._runner = web.AppRunner(app)
+            await self._runner.setup()
+            self._site = web.TCPSite(self._runner, self._host, self._port)
+            await self._site.start()
+            self._mark_connected()
+            logger.info(
+                "[linear] Listening on %s:%d (authorize=%s callback=%s webhook=%s)",
+                self._host,
+                self._port,
+                self._authorize_path,
+                self._callback_path,
+                self._webhook_path,
+            )
+            return True
+        except Exception:
+            self._release_platform_lock()
+            raise
 
     async def disconnect(self) -> None:
         if self._runner is not None:
             await self._runner.cleanup()
             self._runner = None
             self._site = None
+        self._release_platform_lock()
         self._mark_disconnected()
         logger.info("[linear] Disconnected")
 
@@ -282,13 +448,8 @@ class LinearAdapter(BasePlatformAdapter):
         chat_id = f"linear:{agent_session_id}"
         issue = agent_session.get("issue") or {}
         chat_name = issue.get("identifier") or issue.get("title") or agent_session.get("url") or chat_id
-        self._session_info[chat_id] = {
-            "agent_session_id": agent_session_id,
-            "app_user_id": app_user_id,
-            "organization_id": str(payload.get("organizationId") or agent_session.get("organizationId") or ""),
-            "chat_name": chat_name,
-            "updated_at": time.time(),
-        }
+        session = self._store_session_metadata(payload)
+        session["chat_name"] = chat_name
 
         try:
             await self._create_activity(
@@ -332,6 +493,66 @@ class LinearAdapter(BasePlatformAdapter):
             status=202,
         )
 
+    async def _process_message_background(self, event: MessageEvent, session_key: str) -> None:
+        session = self._session_info.get(event.source.chat_id) or {}
+        if session and not session.get("can_execute", True):
+            reason = session.get("block_reason") or "Task is not executable automatically."
+            assignee_id = self._determine_handoff_assignee(session)
+            await self._transition_issue_for_session(
+                session,
+                self._blocked_state_name,
+                assignee_id=assignee_id,
+                comment=f"Jax cannot execute this issue automatically: {reason}",
+            )
+            await self._maybe_send_queue_activity(
+                event.source.chat_id,
+                f"Jax cannot execute this task automatically and moved it to {self._blocked_state_name} for Pablo. Reason: {reason}",
+            )
+            return
+
+        queue_notice_needed = False
+
+        async with self._session_counter_lock:
+            if self._running_session_count >= self._max_concurrent_sessions:
+                self._queued_session_count += 1
+                queue_notice_needed = True
+
+        if queue_notice_needed:
+            await self._maybe_send_queue_activity(
+                event.source.chat_id,
+                f"Jax queued this session and will pick it up once one of the {self._max_concurrent_sessions} active slots frees up.",
+            )
+
+        acquired = False
+        counted_running = False
+        queued_count_decremented = not queue_notice_needed
+        try:
+            await self._session_semaphore.acquire()
+            acquired = True
+
+            async with self._session_counter_lock:
+                if queue_notice_needed and self._queued_session_count > 0:
+                    self._queued_session_count -= 1
+                    queued_count_decremented = True
+                self._running_session_count += 1
+                counted_running = True
+
+            if queue_notice_needed:
+                await self._maybe_send_queue_activity(
+                    event.source.chat_id,
+                    "Jax is starting work on this session now.",
+                )
+
+            await super()._process_message_background(event, session_key)
+        finally:
+            async with self._session_counter_lock:
+                if not queued_count_decremented and self._queued_session_count > 0:
+                    self._queued_session_count -= 1
+                if counted_running and self._running_session_count > 0:
+                    self._running_session_count -= 1
+            if acquired:
+                self._session_semaphore.release()
+
     # ------------------------------------------------------------------
     # Prompt rendering
     # ------------------------------------------------------------------
@@ -345,6 +566,12 @@ class LinearAdapter(BasePlatformAdapter):
         issue_title = issue.get("title") or ""
         guidance = payload.get("guidance") or []
         guidance_text = json.dumps(guidance, indent=2)[:3000] if guidance else "[]"
+        session = self._session_info.get(f"linear:{agent_session.get('id') or ''}", {})
+        flow_context = (
+            f"Task type: {session.get('task_type', DEFAULT_TASK_TYPE)}\n"
+            f"Project execution mode: {session.get('execution_mode', self._default_execution_mode)}\n"
+            f"Auto-executable by current Jax executor: {'yes' if session.get('can_execute', True) else 'no'}\n"
+        )
 
         if action == "created":
             prompt_context = payload.get("promptContext") or ""
@@ -353,6 +580,7 @@ class LinearAdapter(BasePlatformAdapter):
                 "Reply as Jax in the Linear session.\n\n"
                 f"Session URL: {session_url or '(unknown)'}\n"
                 f"Issue: {issue_identifier} {issue_title}\n"
+                f"{flow_context}"
                 f"Guidance:\n```json\n{guidance_text}\n```\n\n"
                 "Use the following Linear-provided promptContext as the authoritative context:\n\n"
                 f"```text\n{prompt_context[:12000]}\n```"
@@ -530,6 +758,192 @@ class LinearAdapter(BasePlatformAdapter):
         if not create_payload.get("success"):
             raise RuntimeError(f"agentActivityCreate failed: {result}")
         return (result.get("data") or {})
+
+    async def _maybe_send_queue_activity(self, chat_id: str, body: str) -> None:
+        session = self._session_info.get(chat_id)
+        if not session:
+            return
+        try:
+            await self._create_activity(
+                app_user_id=session["app_user_id"],
+                agent_session_id=session["agent_session_id"],
+                activity_type="thought",
+                body=body,
+                ephemeral=True,
+            )
+        except Exception:
+            logger.debug("[linear] Queue status activity failed for %s", chat_id, exc_info=True)
+
+    async def on_processing_start(self, event: MessageEvent) -> None:
+        session = self._session_info.get(event.source.chat_id)
+        if not session or not session.get("can_execute", True):
+            return
+        await self._transition_issue_for_session(
+            session,
+            self._in_progress_state_name,
+            assignee_id=session.get("current_assignee_id"),
+            comment=(
+                "Jax started working on this issue automatically "
+                f"(task type: {session.get('task_type', DEFAULT_TASK_TYPE)}, "
+                f"mode: {session.get('execution_mode', self._default_execution_mode)})."
+            ),
+        )
+
+    async def on_processing_complete(self, event: MessageEvent, outcome) -> None:
+        session = self._session_info.get(event.source.chat_id)
+        if not session or not session.get("can_execute", True):
+            return
+
+        assignee_id = session.get("current_assignee_id")
+        execution_mode = session.get("execution_mode", self._default_execution_mode)
+        if outcome.name == "SUCCESS":
+            if execution_mode == "autonomous_dev":
+                await self._transition_issue_for_session(
+                    session,
+                    self._done_state_name,
+                    assignee_id=assignee_id,
+                    comment="Jax finished implementation work and marked this issue Done automatically.",
+                )
+                return
+
+            if execution_mode == "human_gate":
+                await self._transition_issue_for_session(
+                    session,
+                    self._in_review_state_name,
+                    assignee_id=assignee_id,
+                    comment="Jax finished implementation work and left this issue in In Review for human approval.",
+                )
+                return
+
+            target_state = self._testing_state_name
+            comment = (
+                "Jax finished implementation work and moved this issue to "
+                f"{self._testing_state_name} (task type: {session.get('task_type', DEFAULT_TASK_TYPE)}, "
+                f"mode: {execution_mode})."
+            )
+            if not await self._state_name_exists(session.get("team_id"), self._testing_state_name, session.get("app_user_id")):
+                target_state = self._testing_fallback_state_name
+                comment = (
+                    "Jax finished implementation work and moved this issue to "
+                    f"{self._testing_fallback_state_name} because the team has no {self._testing_state_name} state configured."
+                )
+            await self._transition_issue_for_session(
+                session,
+                target_state,
+                assignee_id=assignee_id,
+                comment=comment,
+            )
+            return
+
+        await self._transition_issue_for_session(
+            session,
+            self._blocked_state_name,
+            assignee_id=assignee_id,
+            comment="Jax could not finish this issue and moved it to Blocked for follow-up.",
+        )
+
+    async def _transition_issue_for_session(
+        self,
+        session: Dict[str, Any],
+        target_state: str,
+        *,
+        assignee_id: Optional[str] = None,
+        comment: Optional[str] = None,
+    ) -> None:
+        issue_id = str(session.get("issue_id") or session.get("issue_identifier") or "")
+        team_id = str(session.get("team_id") or "")
+        app_user_id = str(session.get("app_user_id") or "")
+        if issue_id and team_id and target_state:
+            await self._update_issue_state(issue_id, team_id, app_user_id, target_state, assignee_id=assignee_id)
+        if comment and session.get("agent_session_id"):
+            try:
+                await self._create_activity(
+                    app_user_id=app_user_id,
+                    agent_session_id=str(session.get("agent_session_id") or ""),
+                    activity_type="thought",
+                    body=comment,
+                    ephemeral=False,
+                )
+            except Exception:
+                logger.debug("[linear] Issue transition activity failed for %s", issue_id, exc_info=True)
+
+    async def _state_name_exists(self, team_id: str, state_name: str, app_user_id: Optional[str] = None) -> bool:
+        if not team_id or not app_user_id:
+            return False
+        states = await self._list_issue_states(team_id, app_user_id)
+        target = state_name.strip().lower()
+        return any(str(state.get("name") or "").strip().lower() == target for state in states)
+
+    async def _list_issue_states(self, team_id: str, app_user_id: str) -> List[Dict[str, Any]]:
+        if not team_id:
+            return []
+        if team_id in self._issue_state_cache:
+            return self._issue_state_cache[team_id]
+        access_token = await self._ensure_access_token(app_user_id)
+        payload = {
+            "query": (
+                "query { workflowStates(filter: { team: { id: { eq: \""
+                + team_id
+                + "\" } } }) { nodes { id name type } } }"
+            )
+        }
+        result = await asyncio.to_thread(
+            self._http_json,
+            "https://api.linear.app/graphql",
+            payload,
+            {
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json",
+            },
+        )
+        states = ((result.get("data") or {}).get("workflowStates") or {}).get("nodes") or []
+        self._issue_state_cache[team_id] = states
+        return states
+
+    async def _update_issue_state(
+        self,
+        issue_id: str,
+        team_id: str,
+        app_user_id: str,
+        state_name: str,
+        *,
+        assignee_id: Optional[str] = None,
+    ) -> None:
+        states = await self._list_issue_states(team_id, app_user_id)
+        target_state = next(
+            (state for state in states if str(state.get("name") or "").strip().lower() == state_name.strip().lower()),
+            None,
+        )
+        if not target_state:
+            raise RuntimeError(f"Linear state '{state_name}' not found for team {team_id}")
+        access_token = await self._ensure_access_token(app_user_id)
+        input_parts = [f'stateId: "{target_state["id"]}"']
+        if assignee_id:
+            input_parts.append(f'assigneeId: "{assignee_id}"')
+        payload = {
+            "query": (
+                "mutation { issueUpdate(id: \""
+                + issue_id
+                + "\", input: { "
+                + ", ".join(input_parts)
+                + " }) { success issue { id identifier state { name type } assignee { id name } } } }"
+            )
+        }
+        result = await asyncio.to_thread(
+            self._http_json,
+            "https://api.linear.app/graphql",
+            payload,
+            {
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json",
+            },
+        )
+        errors = result.get("errors") or []
+        if errors:
+            raise RuntimeError(errors[0].get("message") or str(errors[0]))
+        update_payload = ((result.get("data") or {}).get("issueUpdate") or {})
+        if not update_payload.get("success"):
+            raise RuntimeError(f"issueUpdate failed: {result}")
 
     async def _revoke_token(self, access_token: str) -> None:
         if not access_token:

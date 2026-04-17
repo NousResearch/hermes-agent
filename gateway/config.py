@@ -1037,6 +1037,10 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     linear_host = os.getenv("LINEAR_HOST", "")
     linear_port = os.getenv("LINEAR_PORT", "")
     linear_scopes = os.getenv("LINEAR_SCOPES", "")
+    linear_max_concurrent_sessions = os.getenv("LINEAR_MAX_CONCURRENT_SESSIONS", "")
+    linear_default_execution_mode = os.getenv("LINEAR_DEFAULT_EXECUTION_MODE", "")
+    linear_project_execution_modes = os.getenv("LINEAR_PROJECT_EXECUTION_MODES", "")
+    linear_supported_task_types = os.getenv("LINEAR_SUPPORTED_TASK_TYPES", "")
     if linear_enabled or linear_client_id or linear_client_secret or linear_webhook_secret:
         if Platform.LINEAR not in config.platforms:
             config.platforms[Platform.LINEAR] = PlatformConfig()
@@ -1059,6 +1063,22 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 pass
         if linear_scopes:
             linear_extra["scopes"] = [scope.strip() for scope in linear_scopes.split(",") if scope.strip()]
+        if linear_max_concurrent_sessions:
+            try:
+                linear_extra["max_concurrent_sessions"] = max(1, int(linear_max_concurrent_sessions))
+            except ValueError:
+                pass
+        if linear_default_execution_mode:
+            linear_extra["default_execution_mode"] = linear_default_execution_mode.strip().lower()
+        if linear_project_execution_modes:
+            try:
+                loaded_modes = json.loads(linear_project_execution_modes)
+                if isinstance(loaded_modes, dict):
+                    linear_extra["project_execution_modes"] = loaded_modes
+            except Exception:
+                pass
+        if linear_supported_task_types:
+            linear_extra["supported_task_types"] = [task_type.strip() for task_type in linear_supported_task_types.split(",") if task_type.strip()]
 
     # Feishu / Lark
     feishu_app_id = os.getenv("FEISHU_APP_ID")

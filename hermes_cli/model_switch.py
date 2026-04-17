@@ -692,12 +692,12 @@ def switch_model(
             api_key=api_key,
             base_url=base_url,
         )
-    except Exception:
+    except Exception as e:
         validation = {
-            "accepted": True,
-            "persist": True,
+            "accepted": False,
+            "persist": False,
             "recognized": False,
-            "message": None,
+            "message": f"Could not validate `{new_model}`: {e}",
         }
 
     if not validation.get("accepted"):

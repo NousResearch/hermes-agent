@@ -78,10 +78,15 @@ You can switch providers at any time with `hermes model` — no code changes, no
 ## 3. Start Chatting
 
 ```bash
-hermes
+hermes            # classic CLI
+hermes --tui      # modern TUI (recommended)
 ```
 
 That's it! You'll see a welcome banner with your model, available tools, and skills. Type a message and press Enter.
+
+:::tip Pick your interface
+Hermes ships with two terminal interfaces: the classic `prompt_toolkit` CLI and a newer [TUI](../user-guide/tui.md) with modal overlays, mouse selection, and non-blocking input. Both share the same sessions, slash commands, and config — try each with `hermes` vs `hermes --tui`.
+:::
 
 ```
 ❯ What can you help me with?

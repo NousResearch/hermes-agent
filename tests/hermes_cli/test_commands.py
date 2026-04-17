@@ -93,6 +93,8 @@ class TestResolveCommand:
     def test_canonical_name_resolves(self):
         assert resolve_command("help").name == "help"
         assert resolve_command("background").name == "background"
+        assert resolve_command("copy").name == "copy"
+        assert resolve_command("agents").name == "agents"
 
     def test_alias_resolves_to_canonical(self):
         assert resolve_command("bg").name == "background"
@@ -102,6 +104,7 @@ class TestResolveCommand:
         assert resolve_command("gateway").name == "platforms"
         assert resolve_command("set-home").name == "sethome"
         assert resolve_command("reload_mcp").name == "reload-mcp"
+        assert resolve_command("tasks").name == "agents"
 
     def test_leading_slash_stripped(self):
         assert resolve_command("/help").name == "help"

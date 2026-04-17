@@ -3029,6 +3029,10 @@ class GatewayRunner:
                     return await self._handle_approve_command(event)
                 return await self._handle_deny_command(event)
 
+            # /agents (/tasks alias) should be query-only and never interrupt.
+            if _cmd_def_inner and _cmd_def_inner.name == "agents":
+                return await self._handle_agents_command(event)
+
             # /background must bypass the running-agent guard — it starts a
             # parallel task and must never interrupt the active conversation.
             if _cmd_def_inner and _cmd_def_inner.name == "background":
@@ -3135,6 +3139,9 @@ class GatewayRunner:
 
         if canonical == "status":
             return await self._handle_status_command(event)
+
+        if canonical == "agents":
+            return await self._handle_agents_command(event)
 
         if canonical == "restart":
             return await self._handle_restart_command(event)
@@ -4589,6 +4596,96 @@ class GatewayRunner:
             "",
             f"**Connected Platforms:** {', '.join(connected_platforms)}",
         ])
+
+        return "\n".join(lines)
+
+    async def _handle_agents_command(self, event: MessageEvent) -> str:
+        """Handle /agents command - list active agents and running tasks."""
+        from tools.process_registry import format_uptime_short, process_registry
+
+        now = time.time()
+        current_session_key = self._session_key_for_source(event.source)
+
+        running_agents: dict = getattr(self, "_running_agents", {}) or {}
+        running_started: dict = getattr(self, "_running_agents_ts", {}) or {}
+
+        agent_rows: list[dict] = []
+        for session_key, agent in running_agents.items():
+            started = float(running_started.get(session_key, now))
+            elapsed = max(0, int(now - started))
+            is_pending = agent is _AGENT_PENDING_SENTINEL
+            agent_rows.append(
+                {
+                    "session_key": session_key,
+                    "elapsed": elapsed,
+                    "state": "starting" if is_pending else "running",
+                    "session_id": "" if is_pending else str(getattr(agent, "session_id", "") or ""),
+                    "model": "" if is_pending else str(getattr(agent, "model", "") or ""),
+                }
+            )
+
+        agent_rows.sort(key=lambda row: row["elapsed"], reverse=True)
+
+        running_processes: list[dict] = []
+        try:
+            running_processes = [
+                p for p in process_registry.list_sessions()
+                if p.get("status") == "running"
+            ]
+        except Exception:
+            running_processes = []
+
+        background_tasks = [
+            t for t in (getattr(self, "_background_tasks", set()) or set())
+            if hasattr(t, "done") and not t.done()
+        ]
+
+        lines = [
+            "🤖 **Active Agents & Tasks**",
+            "",
+            f"**Active agents:** {len(agent_rows)}",
+        ]
+
+        if agent_rows:
+            for idx, row in enumerate(agent_rows[:12], 1):
+                current = " · this chat" if row["session_key"] == current_session_key else ""
+                sid = f" · `{row['session_id']}`" if row["session_id"] else ""
+                model = f" · `{row['model']}`" if row["model"] else ""
+                lines.append(
+                    f"{idx}. `{row['session_key']}` · {row['state']} · "
+                    f"{format_uptime_short(row['elapsed'])}{sid}{model}{current}"
+                )
+            if len(agent_rows) > 12:
+                lines.append(f"... and {len(agent_rows) - 12} more")
+
+        lines.extend(
+            [
+                "",
+                f"**Running background processes:** {len(running_processes)}",
+            ]
+        )
+        if running_processes:
+            for proc in running_processes[:12]:
+                cmd = " ".join(str(proc.get("command", "")).split())
+                if len(cmd) > 90:
+                    cmd = cmd[:87] + "..."
+                lines.append(
+                    f"- `{proc.get('session_id', '?')}` · "
+                    f"{format_uptime_short(int(proc.get('uptime_seconds', 0)))} · `{cmd}`"
+                )
+            if len(running_processes) > 12:
+                lines.append(f"... and {len(running_processes) - 12} more")
+
+        lines.extend(
+            [
+                "",
+                f"**Gateway async jobs:** {len(background_tasks)}",
+            ]
+        )
+
+        if not agent_rows and not running_processes and not background_tasks:
+            lines.append("")
+            lines.append("No active agents or running tasks.")
 
         return "\n".join(lines)
     

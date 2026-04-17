@@ -32,7 +32,9 @@ const StreamingAssistant = memo(function StreamingAssistant({
   progress: AppLayoutProgressProps
   t: Theme
 }) {
-  if (!progress.showProgressArea && !progress.showStreamingArea) return null
+  if (!progress.showProgressArea && !progress.showStreamingArea) {
+    return null
+  }
 
   return (
     <Box flexDirection="column">
@@ -117,7 +119,6 @@ const TranscriptPane = memo(function TranscriptPane({
             progress={progress}
             t={ui.theme}
           />
-
         </Box>
       </ScrollBox>
 

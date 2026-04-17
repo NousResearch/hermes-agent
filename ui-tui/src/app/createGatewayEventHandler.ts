@@ -169,7 +169,6 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         }
 
         return
-
       case 'session.info': {
         const info = ev.payload
 

@@ -383,7 +383,10 @@ export function useMainApp(gw: GatewayClient) {
     }
 
     const next = composerActions.dequeue()
-    if (next) sendQueued(next)
+
+    if (next) {
+      sendQueued(next)
+    }
   }, [ui.sid, ui.busy, composerActions, composerRefs, sendQueued])
 
   const { pagerPageSize } = useInputHandlers({

@@ -468,6 +468,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 }
                 if is_audio_message:
                     data["isAudioMessage"] = "true"
+                    data["method"] = "private-api"
                 res = await self.client.post(
                     self._api_url("/api/v1/message/attachment"),
                     files=files,

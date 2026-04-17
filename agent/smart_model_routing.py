@@ -8,6 +8,32 @@ from typing import Any, Dict, Optional
 
 from utils import is_truthy_value
 
+_OPUS_KEYWORD_MARKERS = {"[OPUS]", "[HEAVY]", "[CRÍTICO]", "[CRITICO]", "[ARCHITECTURE]"}
+_CONTINUATION_MARKERS_ES = {"continúa", "continua", "sigue", "resume", "dale", "mismo tema"}
+
+
+def has_opus_keyword(message: str) -> bool:
+    if not message:
+        return False
+    upper = message.upper()
+    return any(marker in upper for marker in _OPUS_KEYWORD_MARKERS)
+
+
+def is_continuation_turn(message: str) -> bool:
+    if not message:
+        return False
+    lowered = message.lower().strip()
+    import re
+    for marker in _CONTINUATION_MARKERS_ES:
+        if " " in marker:
+            if marker in lowered:
+                return True
+        else:
+            if re.search(rf"\b{re.escape(marker)}\b", lowered):
+                return True
+    return False
+
+
 _COMPLEX_KEYWORDS = {
     "debug",
     "debugging",
@@ -79,6 +105,12 @@ def choose_cheap_model_route(user_message: str, routing_config: Optional[Dict[st
 
     text = (user_message or "").strip()
     if not text:
+        return None
+
+    # OPUS keyword and continuation turn bail-outs
+    if has_opus_keyword(text):
+        return None
+    if is_continuation_turn(text):
         return None
 
     max_chars = _coerce_int(cfg.get("max_simple_chars"), 160)
@@ -193,3 +225,38 @@ def resolve_turn_route(user_message: str, routing_config: Optional[Dict[str, Any
             tuple(runtime.get("args") or ()),
         ),
     }
+
+
+# ─────────────────────────────────────────────────────────────
+# Optional telemetry instrumentation (opt-in via env var)
+# ─────────────────────────────────────────────────────────────
+
+def instrument_resolve_turn_route(store=None):
+    """Instrument resolve_turn_route with telemetry wrapping.
+    
+    This function is idempotent: if resolve_turn_route is already
+    instrumented (has _routing_instrumented=True attribute), it's a no-op.
+    
+    Args:
+        store: Optional Path for telemetry store. If None, uses DEFAULT_STORE.
+    """
+    # Check if already instrumented
+    if getattr(resolve_turn_route, "_routing_instrumented", False):
+        return
+    
+    # Lazy import to avoid circular deps
+    from routing_telemetry import wrap_resolve_turn_route
+    
+    # Apply the decorator
+    wrapped = wrap_resolve_turn_route(store=store)(resolve_turn_route)
+    wrapped._routing_instrumented = True
+    
+    # Replace the module-level symbol
+    globals()["resolve_turn_route"] = wrapped
+
+
+# Auto-instrumentation at import time if env var is set
+if os.getenv("HERMES_ROUTING_TELEMETRY"):
+    from utils import is_truthy_value
+    if is_truthy_value(os.getenv("HERMES_ROUTING_TELEMETRY")):
+        instrument_resolve_turn_route()

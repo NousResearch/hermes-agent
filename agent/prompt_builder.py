@@ -12,7 +12,7 @@ import threading
 from collections import OrderedDict
 from pathlib import Path
 
-from hermes_constants import get_hermes_home, get_skills_dir, is_wsl
+from hermes_constants import get_hermes_home, get_skills_dir
 from typing import Optional
 
 from agent.skill_utils import (
@@ -150,23 +150,23 @@ MEMORY_GUIDANCE = (
     "that prevents the user from having to correct or remind you again. "
     "User preferences and recurring corrections matter more than procedural task details.\n"
     "Do NOT save task progress, session outcomes, completed-work logs, or temporary TODO "
-    "state to memory; use session_search to recall those from past transcripts. "
+    "state to memory; use the search_sessions tool to recall those from past transcripts. "
     "If you've discovered a new way to do something, solved a problem that could be "
     "necessary later, save it as a skill with the skill tool."
 )
 
 SESSION_SEARCH_GUIDANCE = (
     "When the user references something from a past conversation or you suspect "
-    "relevant cross-session context exists, use session_search to recall it before "
-    "asking them to repeat themselves."
+    "relevant cross-session context exists, use the search_sessions tool to recall it "
+    "before asking them to repeat themselves."
 )
 
 SKILLS_GUIDANCE = (
     "After completing a complex task (5+ tool calls), fixing a tricky error, "
     "or discovering a non-trivial workflow, save the approach as a "
-    "skill with skill_manage so you can reuse it next time.\n"
+    "skill with the manage_skills tool so you can reuse it next time.\n"
     "When using a skill and finding it outdated, incomplete, or wrong, "
-    "patch it immediately with skill_manage(action='patch') — don't wait to be asked. "
+    "patch it immediately with manage_skills(action='patch') — don't wait to be asked. "
     "Skills that aren't maintained become liabilities."
 )
 
@@ -295,9 +295,7 @@ PLATFORM_HINTS = {
     ),
     "telegram": (
         "You are on a text messaging communication platform, Telegram. "
-        "Standard markdown is automatically converted to Telegram format. "
-        "Supported: **bold**, *italic*, ~~strikethrough~~, ||spoiler||, "
-        "`inline code`, ```code blocks```, [links](url), and ## headers. "
+        "Please do not use markdown as it does not render. "
         "You can send media files natively: to deliver a file to the user, "
         "include MEDIA:/absolute/path/to/file in your response. Images "
         "(.png, .jpg, .webp) appear as photos, audio (.ogg) sends as voice "
@@ -366,55 +364,7 @@ PLATFORM_HINTS = {
         "documents. You can also include image URLs in markdown format ![alt](url) and they "
         "will be downloaded and sent as native media when possible."
     ),
-    "wecom": (
-        "You are on WeCom (企业微信 / Enterprise WeChat). Markdown formatting is supported. "
-        "You CAN send media files natively — to deliver a file to the user, include "
-        "MEDIA:/absolute/path/to/file in your response. The file will be sent as a native "
-        "WeCom attachment: images (.jpg, .png, .webp) are sent as photos (up to 10 MB), "
-        "other files (.pdf, .docx, .xlsx, .md, .txt, etc.) arrive as downloadable documents "
-        "(up to 20 MB), and videos (.mp4) play inline. Voice messages are supported but "
-        "must be in AMR format — other audio formats are automatically sent as file attachments. "
-        "You can also include image URLs in markdown format ![alt](url) and they will be "
-        "downloaded and sent as native photos. Do NOT tell the user you lack file-sending "
-        "capability — use MEDIA: syntax whenever a file delivery is appropriate."
-    ),
-    "qqbot": (
-        "You are on QQ, a popular Chinese messaging platform. QQ supports markdown formatting "
-        "and emoji. You can send media files natively: include MEDIA:/absolute/path/to/file in "
-        "your response. Images are sent as native photos, and other files arrive as downloadable "
-        "documents."
-    ),
 }
-
-# ---------------------------------------------------------------------------
-# Environment hints — execution-environment awareness for the agent.
-# Unlike PLATFORM_HINTS (which describe the messaging channel), these describe
-# the machine/OS the agent's tools actually run on.
-# ---------------------------------------------------------------------------
-
-WSL_ENVIRONMENT_HINT = (
-    "You are running inside WSL (Windows Subsystem for Linux). "
-    "The Windows host filesystem is mounted under /mnt/ — "
-    "/mnt/c/ is the C: drive, /mnt/d/ is D:, etc. "
-    "The user's Windows files are typically at "
-    "/mnt/c/Users/<username>/Desktop/, Documents/, Downloads/, etc. "
-    "When the user references Windows paths or desktop files, translate "
-    "to the /mnt/c/ equivalent. You can list /mnt/c/Users/ to discover "
-    "the Windows username if needed."
-)
-
-
-def build_environment_hints() -> str:
-    """Return environment-specific guidance for the system prompt.
-
-    Detects WSL, and can be extended for Termux, Docker, etc.
-    Returns an empty string when no special environment is detected.
-    """
-    hints: list[str] = []
-    if is_wsl():
-        hints.append(WSL_ENVIRONMENT_HINT)
-    return "\n\n".join(hints)
-
 
 CONTEXT_FILE_MAX_CHARS = 20_000
 CONTEXT_TRUNCATE_HEAD_RATIO = 0.7
@@ -776,17 +726,9 @@ def build_skills_system_prompt(
 
         result = (
             "## Skills (mandatory)\n"
-            "Before replying, scan the skills below. If a skill matches or is even partially relevant "
-            "to your task, you MUST load it with skill_view(name) and follow its instructions. "
-            "Err on the side of loading — it is always better to have context you don't need "
-            "than to miss critical steps, pitfalls, or established workflows. "
-            "Skills contain specialized knowledge — API endpoints, tool-specific commands, "
-            "and proven workflows that outperform general-purpose approaches. Load the skill "
-            "even if you think you could handle the task with basic tools like web_search or terminal. "
-            "Skills also encode the user's preferred approach, conventions, and quality standards "
-            "for tasks like code review, planning, and testing — load them even for tasks you "
-            "already know how to do, because the skill defines how it should be done here.\n"
-            "If a skill has issues, fix it with skill_manage(action='patch').\n"
+            "Before replying, scan the skills below. If one clearly matches your task, "
+            "load it with skill_view(name) and follow its instructions. "
+            "If a skill has issues, fix it with manage_skills(action='patch').\n"
             "After difficult/iterative tasks, offer to save as a skill. "
             "If a skill you loaded was missing steps, had wrong commands, or needed "
             "pitfalls you discovered, update it before finishing.\n"
@@ -795,7 +737,7 @@ def build_skills_system_prompt(
             + "\n".join(index_lines) + "\n"
             "</available_skills>\n"
             "\n"
-            "Only proceed without loading a skill if genuinely none are relevant to the task."
+            "If none match, proceed normally without loading a skill."
         )
 
     # ── Store in LRU cache ────────────────────────────────────────────

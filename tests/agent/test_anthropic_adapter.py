@@ -66,7 +66,7 @@ class TestBuildAnthropicClient:
             assert "claude-code-20250219" in betas
             assert "interleaved-thinking-2025-05-14" in betas
             assert "fine-grained-tool-streaming-2025-05-14" in betas
-            assert "api_key" not in kwargs
+            assert kwargs.get("api_key") is None
 
     def test_api_key_uses_api_key(self):
         with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
@@ -97,7 +97,7 @@ class TestBuildAnthropicClient:
             )
             kwargs = mock_sdk.Anthropic.call_args[1]
             assert kwargs["auth_token"] == "minimax-secret-123"
-            assert "api_key" not in kwargs
+            assert kwargs.get("api_key") is None
             assert kwargs["default_headers"] == {
                 "anthropic-beta": "interleaved-thinking-2025-05-14"
             }
@@ -110,7 +110,7 @@ class TestBuildAnthropicClient:
             )
             kwargs = mock_sdk.Anthropic.call_args[1]
             assert kwargs["auth_token"] == "minimax-cn-secret-123"
-            assert "api_key" not in kwargs
+            assert kwargs.get("api_key") is None
             assert kwargs["default_headers"] == {
                 "anthropic-beta": "interleaved-thinking-2025-05-14"
             }

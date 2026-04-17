@@ -215,27 +215,22 @@ def _get_claude_code_version() -> str:
 
 
 def _is_oauth_token(key: str) -> bool:
-    """Check if the key is an Anthropic OAuth/setup token.
+    """Check if the key is an OAuth/setup token (not a regular Console API key).
 
-    Positively identifies Anthropic OAuth tokens by their key format:
-    - ``sk-ant-`` prefix (but NOT ``sk-ant-api``) → setup tokens, managed keys
-    - ``eyJ`` prefix → JWTs from the Anthropic OAuth flow
-
-    Non-Anthropic keys (MiniMax, Alibaba, etc.) don't match either pattern
-    and correctly return False.
+    For direct Anthropic usage, anything other than a Console API key
+    (``sk-ant-api*``) should be treated as Bearer/OAuth-style auth.  Third-party
+    Anthropic-compatible endpoints are handled earlier via base-URL checks in
+    ``build_anthropic_client()``, so their non-Anthropic keys never rely on this
+    token-shape heuristic.
     """
     if not key:
         return False
-    # Regular Anthropic Console API keys — x-api-key auth, never OAuth
+    # Regular Console API keys use x-api-key header.
     if key.startswith("sk-ant-api"):
         return False
-    # Anthropic-issued tokens (setup-tokens sk-ant-oat-*, managed keys)
-    if key.startswith("sk-ant-"):
-        return True
-    # JWTs from Anthropic OAuth flow
-    if key.startswith("eyJ"):
-        return True
-    return False
+    # Everything else (setup-tokens, managed keys, JWTs, Claude Code env tokens)
+    # uses Bearer auth for direct Anthropic endpoints.
+    return True
 
 
 def _normalize_base_url_text(base_url) -> str:
@@ -320,6 +315,7 @@ def build_anthropic_client(api_key: str, base_url: str = None):
         # not use Anthropic's sk-ant-api prefix and would otherwise be misread as
         # Anthropic OAuth/setup tokens.
         kwargs["auth_token"] = api_key
+        kwargs["api_key"] = None  # Prevent SDK from reading ANTHROPIC_API_KEY env var
         if common_betas:
             kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
     elif _is_third_party_anthropic_endpoint(base_url):
@@ -336,9 +332,15 @@ def build_anthropic_client(api_key: str, base_url: str = None):
         # without Claude Code's fingerprint, requests get intermittent 500s.
         all_betas = common_betas + _OAUTH_ONLY_BETAS
         kwargs["auth_token"] = api_key
+        # Explicitly set api_key=None to prevent the SDK from reading
+        # ANTHROPIC_API_KEY from the environment.  When both auth_token and
+        # api_key are set, the SDK sends both X-Api-Key and Authorization
+        # headers — the empty X-Api-Key from .env overrides the valid Bearer
+        # token, causing Anthropic to reject the request as unauthenticated.
+        kwargs["api_key"] = None
         kwargs["default_headers"] = {
             "anthropic-beta": ",".join(all_betas),
-            "user-agent": f"claude-cli/{_get_claude_code_version()} (external, cli)",
+            "User-Agent": f"claude-cli/{_get_claude_code_version()} (external, cli)",
             "x-app": "cli",
         }
     else:
@@ -347,7 +349,14 @@ def build_anthropic_client(api_key: str, base_url: str = None):
         if common_betas:
             kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
 
-    return _anthropic_sdk.Anthropic(**kwargs)
+    client = _anthropic_sdk.Anthropic(**kwargs)
+    # When using Bearer auth (auth_token), ensure api_key is None so the SDK
+    # does not also send an X-Api-Key header.  The SDK's constructor reads
+    # ANTHROPIC_API_KEY from the environment when api_key is not passed,
+    # which can produce an empty-string api_key that overrides valid OAuth.
+    if kwargs.get("auth_token") and not kwargs.get("api_key"):
+        client.api_key = None
+    return client
 
 
 def build_anthropic_bedrock_client(region: str):

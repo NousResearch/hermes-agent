@@ -15,21 +15,14 @@ import { patchUiState } from './uiStore.js'
 const MTIME_POLL_MS = 5000
 
 const applyDisplay = (cfg: ConfigFullResponse | null, setBell: (v: boolean) => void) => {
-  const display = cfg?.config?.display ?? {}
+  const d = cfg?.config?.display ?? {}
 
-  setBell(!!display.bell_on_complete)
+  setBell(!!d.bell_on_complete)
   patchUiState({
-    compact: !!display.tui_compact,
-    detailsMode: resolveDetailsMode(display),
-    statusBar: display.tui_statusbar !== false
+    compact: !!d.tui_compact,
+    detailsMode: resolveDetailsMode(d),
+    statusBar: d.tui_statusbar !== false
   })
-}
-
-export interface UseConfigSyncOptions {
-  rpc: GatewayRpc
-  setBellOnComplete: (v: boolean) => void
-  setVoiceEnabled: (v: boolean) => void
-  sid: null | string
 }
 
 export function useConfigSync({ rpc, setBellOnComplete, setVoiceEnabled, sid }: UseConfigSyncOptions) {
@@ -45,8 +38,7 @@ export function useConfigSync({ rpc, setBellOnComplete, setVoiceEnabled, sid }: 
       mtimeRef.current = Number(r?.mtime ?? 0)
     })
     rpc<ConfigFullResponse>('config.get', { key: 'full' }).then(r => applyDisplay(r, setBellOnComplete))
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rpc, sid])
+  }, [rpc, setBellOnComplete, setVoiceEnabled, sid])
 
   useEffect(() => {
     if (!sid) {
@@ -79,6 +71,12 @@ export function useConfigSync({ rpc, setBellOnComplete, setVoiceEnabled, sid }: 
     }, MTIME_POLL_MS)
 
     return () => clearInterval(id)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rpc, sid])
+  }, [rpc, setBellOnComplete, sid])
+}
+
+export interface UseConfigSyncOptions {
+  rpc: GatewayRpc
+  setBellOnComplete: (v: boolean) => void
+  setVoiceEnabled: (v: boolean) => void
+  sid: null | string
 }

@@ -2,40 +2,25 @@ import { atom, computed } from 'nanostores'
 
 import type { OverlayState } from './interfaces.js'
 
-function buildOverlayState(): OverlayState {
-  return {
-    approval: null,
-    clarify: null,
-    modelPicker: false,
-    pager: null,
-    picker: false,
-    secret: null,
-    sudo: null
-  }
-}
+const buildOverlayState = (): OverlayState => ({
+  approval: null,
+  clarify: null,
+  modelPicker: false,
+  pager: null,
+  picker: false,
+  secret: null,
+  sudo: null
+})
 
 export const $overlayState = atom<OverlayState>(buildOverlayState())
 
-export const $isBlocked = computed($overlayState, state =>
-  Boolean(
-    state.approval || state.clarify || state.modelPicker || state.pager || state.picker || state.secret || state.sudo
-  )
+export const $isBlocked = computed($overlayState, ({ approval, clarify, modelPicker, pager, picker, secret, sudo }) =>
+  Boolean(approval || clarify || modelPicker || pager || picker || secret || sudo)
 )
 
-export function getOverlayState() {
-  return $overlayState.get()
-}
+export const getOverlayState = () => $overlayState.get()
 
-export function patchOverlayState(next: Partial<OverlayState> | ((state: OverlayState) => OverlayState)) {
-  if (typeof next === 'function') {
-    $overlayState.set(next($overlayState.get()))
+export const patchOverlayState = (next: Partial<OverlayState> | ((state: OverlayState) => OverlayState)) =>
+  $overlayState.set(typeof next === 'function' ? next($overlayState.get()) : { ...$overlayState.get(), ...next })
 
-    return
-  }
-
-  $overlayState.set({ ...$overlayState.get(), ...next })
-}
-
-export function resetOverlayState() {
-  $overlayState.set(buildOverlayState())
-}
+export const resetOverlayState = () => $overlayState.set(buildOverlayState())

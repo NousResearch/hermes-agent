@@ -6,7 +6,9 @@ import type { SessionListItem, SessionListResponse } from '../gatewayTypes.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
 import type { Theme } from '../theme.js'
 
-function age(ts: number): string {
+const VISIBLE = 15
+
+const age = (ts: number) => {
   const d = (Date.now() / 1000 - ts) / 86400
 
   if (d < 1) {
@@ -20,19 +22,7 @@ function age(ts: number): string {
   return `${Math.floor(d)}d ago`
 }
 
-const VISIBLE = 15
-
-export function SessionPicker({
-  gw,
-  onCancel,
-  onSelect,
-  t
-}: {
-  gw: GatewayClient
-  onCancel: () => void
-  onSelect: (id: string) => void
-  t: Theme
-}) {
+export function SessionPicker({ gw, onCancel, onSelect, t }: SessionPickerProps) {
   const [items, setItems] = useState<SessionListItem[]>([])
   const [err, setErr] = useState('')
   const [sel, setSel] = useState(0)
@@ -107,36 +97,48 @@ export function SessionPicker({
   }
 
   const off = Math.max(0, Math.min(sel - Math.floor(VISIBLE / 2), items.length - VISIBLE))
-  const visible = items.slice(off, off + VISIBLE)
 
   return (
     <Box flexDirection="column">
       <Text bold color={t.color.amber}>
         Resume Session
       </Text>
+
       {off > 0 && <Text color={t.color.dim}> ↑ {off} more</Text>}
-      {visible.map((s, vi) => {
+
+      {items.slice(off, off + VISIBLE).map((s, vi) => {
         const i = off + vi
 
         return (
           <Box key={s.id}>
             <Text color={sel === i ? t.color.label : t.color.dim}>{sel === i ? '▸ ' : '  '}</Text>
+
             <Box width={30}>
               <Text color={sel === i ? t.color.cornsilk : t.color.dim}>
                 {String(i + 1).padStart(2)}. [{s.id}]
               </Text>
             </Box>
+
             <Box width={30}>
               <Text color={t.color.dim}>
                 ({s.message_count} msgs, {age(s.started_at)}, {s.source || 'tui'})
               </Text>
             </Box>
+
             <Text color={sel === i ? t.color.cornsilk : t.color.dim}>{s.title || s.preview || '(untitled)'}</Text>
           </Box>
         )
       })}
+
       {off + VISIBLE < items.length && <Text color={t.color.dim}> ↓ {items.length - off - VISIBLE} more</Text>}
       <Text color={t.color.dim}>↑/↓ select · Enter resume · 1-9 quick · Esc cancel</Text>
     </Box>
   )
+}
+
+interface SessionPickerProps {
+  gw: GatewayClient
+  onCancel: () => void
+  onSelect: (id: string) => void
+  t: Theme
 }

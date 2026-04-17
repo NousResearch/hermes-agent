@@ -8,9 +8,10 @@ can invoke skills via /skill-name commands and prompt-only built-ins like
 import json
 import logging
 import re
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Literal, Optional
 
 from hermes_constants import display_hermes_home
 
@@ -21,6 +22,25 @@ _PLAN_SLUG_RE = re.compile(r"[^a-z0-9]+")
 # Patterns for sanitizing skill names into clean hyphen-separated slugs.
 _SKILL_INVALID_CHARS = re.compile(r"[^a-z0-9-]")
 _SKILL_MULTI_HYPHEN = re.compile(r"-{2,}")
+
+
+@dataclass(frozen=True)
+class SkillInvocationResult:
+    """Explicit outcome for slash-command skill loading."""
+
+    status: Literal["ok", "unknown_command", "load_failed"]
+    command: str
+    message: str | None = None
+    skill_name: str | None = None
+
+    @property
+    def ok(self) -> bool:
+        return self.status == "ok"
+
+    def __bool__(self) -> bool:
+        raise TypeError(
+            "SkillInvocationResult does not support truthiness; use .ok or .status."
+        )
 
 
 def build_plan_path(
@@ -302,7 +322,7 @@ def build_skill_invocation_message(
     user_instruction: str = "",
     task_id: str | None = None,
     runtime_note: str = "",
-) -> Optional[str]:
+) -> SkillInvocationResult:
     """Build the user message content for a skill slash command invocation.
 
     Args:
@@ -310,28 +330,40 @@ def build_skill_invocation_message(
         user_instruction: Optional text the user typed after the command.
 
     Returns:
-        The formatted message string, or None if the skill wasn't found.
+        A structured result describing whether the command was found and loaded.
     """
     commands = get_skill_commands()
     skill_info = commands.get(cmd_key)
     if not skill_info:
-        return None
+        return SkillInvocationResult(
+            status="unknown_command",
+            command=cmd_key,
+        )
 
     loaded = _load_skill_payload(skill_info["skill_dir"], task_id=task_id)
     if not loaded:
-        return f"[Failed to load skill: {skill_info['name']}]"
+        return SkillInvocationResult(
+            status="load_failed",
+            command=cmd_key,
+            skill_name=str(skill_info.get("name") or cmd_key.lstrip("/")),
+        )
 
     loaded_skill, skill_dir, skill_name = loaded
     activation_note = (
         f'[SYSTEM: The user has invoked the "{skill_name}" skill, indicating they want '
         "you to follow its instructions. The full skill content is loaded below.]"
     )
-    return _build_skill_message(
-        loaded_skill,
-        skill_dir,
-        activation_note,
-        user_instruction=user_instruction,
-        runtime_note=runtime_note,
+    return SkillInvocationResult(
+        status="ok",
+        command=cmd_key,
+        message=_build_skill_message(
+            loaded_skill,
+            skill_dir,
+            activation_note,
+            user_instruction=user_instruction,
+            runtime_note=runtime_note,
+        ),
+        skill_name=skill_name,
     )
 
 

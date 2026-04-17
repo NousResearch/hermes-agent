@@ -5,8 +5,10 @@ from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 import tools.skills_tool as skills_tool_module
 from agent.skill_commands import (
+    SkillInvocationResult,
     build_plan_path,
     build_preloaded_skills_prompt,
     build_skill_invocation_message,
@@ -238,26 +240,46 @@ Generate some audio.
 
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
             scan_skill_commands()
-            msg = build_skill_invocation_message("/audiocraft-audio-generation", "compose")
+            result = build_skill_invocation_message("/audiocraft-audio-generation", "compose")
 
-        assert msg is not None
-        assert "AudioCraft" in msg
-        assert "compose" in msg
+        assert result.ok
+        assert result.message is not None
+        assert "AudioCraft" in result.message
+        assert "compose" in result.message
 
     def test_builds_message(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
             _make_skill(tmp_path, "test-skill")
             scan_skill_commands()
-            msg = build_skill_invocation_message("/test-skill", "do stuff")
-        assert msg is not None
-        assert "test-skill" in msg
-        assert "do stuff" in msg
+            result = build_skill_invocation_message("/test-skill", "do stuff")
+        assert result.ok
+        assert result.message is not None
+        assert "test-skill" in result.message
+        assert "do stuff" in result.message
 
     def test_returns_none_for_unknown(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
             scan_skill_commands()
-            msg = build_skill_invocation_message("/nonexistent")
-        assert msg is None
+            result = build_skill_invocation_message("/nonexistent")
+        assert result.status == "unknown_command"
+        assert result.message is None
+
+    def test_bool_is_not_allowed_for_explicit_result_contract(self):
+        result = SkillInvocationResult(status="ok", command="/test-skill", message="prompt")
+
+        with pytest.raises(TypeError, match="use \\.ok or \\.status"):
+            bool(result)
+
+    def test_returns_load_failed_for_post_scan_failure(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            skill_dir = _make_skill(tmp_path, "test-skill")
+            scan_skill_commands()
+            (skill_dir / "SKILL.md").unlink()
+            result = build_skill_invocation_message("/test-skill", "do stuff")
+
+        assert result.status == "load_failed"
+        assert result.skill_name == "test-skill"
+        assert result.message is None
 
     def test_uses_shared_skill_loader_for_secure_setup(self, tmp_path, monkeypatch):
         monkeypatch.delenv("TENOR_API_KEY", raising=False)
@@ -291,10 +313,11 @@ Generate some audio.
                 ),
             )
             scan_skill_commands()
-            msg = build_skill_invocation_message("/test-skill", "do stuff")
+            result = build_skill_invocation_message("/test-skill", "do stuff")
 
-        assert msg is not None
-        assert "test-skill" in msg
+        assert result.ok
+        assert result.message is not None
+        assert "test-skill" in result.message
         assert len(calls) == 1
         assert calls[0][0] == "TENOR_API_KEY"
 
@@ -329,10 +352,11 @@ Generate some audio.
                     ),
                 )
                 scan_skill_commands()
-                msg = build_skill_invocation_message("/test-skill", "do stuff")
+                result = build_skill_invocation_message("/test-skill", "do stuff")
 
-        assert msg is not None
-        assert "local cli" in msg.lower()
+        assert result.ok
+        assert result.message is not None
+        assert "local cli" in result.message.lower()
 
     def test_preserves_remaining_remote_setup_warning(self, tmp_path, monkeypatch):
         monkeypatch.setenv("TERMINAL_ENV", "ssh")
@@ -355,10 +379,11 @@ Generate some audio.
                 ),
             )
             scan_skill_commands()
-            msg = build_skill_invocation_message("/test-skill", "do stuff")
+            result = build_skill_invocation_message("/test-skill", "do stuff")
 
-        assert msg is not None
-        assert "remote environment" in msg.lower()
+        assert result.ok
+        assert result.message is not None
+        assert "remote environment" in result.message.lower()
 
     def test_supporting_file_hint_uses_file_path_argument(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
@@ -367,10 +392,11 @@ Generate some audio.
             references.mkdir()
             (references / "api.md").write_text("reference")
             scan_skill_commands()
-            msg = build_skill_invocation_message("/test-skill", "do stuff")
+            result = build_skill_invocation_message("/test-skill", "do stuff")
 
-        assert msg is not None
-        assert 'file_path="<path>"' in msg
+        assert result.ok
+        assert result.message is not None
+        assert 'file_path="<path>"' in result.message
 
 
 class TestPlanSkillHelpers:
@@ -390,7 +416,7 @@ class TestPlanSkillHelpers:
                 body="Save plans under .hermes/plans in the active workspace and do not execute the work.",
             )
             scan_skill_commands()
-            msg = build_skill_invocation_message(
+            result = build_skill_invocation_message(
                 "/plan",
                 "Add a /plan command",
                 runtime_note=(
@@ -399,9 +425,10 @@ class TestPlanSkillHelpers:
                 ),
             )
 
-        assert msg is not None
-        assert "Save plans under $HERMES_HOME/plans" not in msg
-        assert ".hermes/plans" in msg
-        assert "Add a /plan command" in msg
-        assert ".hermes/plans/plan.md" in msg
-        assert "Runtime note:" in msg
+        assert result.ok
+        assert result.message is not None
+        assert "Save plans under $HERMES_HOME/plans" not in result.message
+        assert ".hermes/plans" in result.message
+        assert "Add a /plan command" in result.message
+        assert ".hermes/plans/plan.md" in result.message
+        assert "Runtime note:" in result.message

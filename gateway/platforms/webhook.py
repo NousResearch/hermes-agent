@@ -381,12 +381,17 @@ class WebhookAdapter(BasePlatformAdapter):
                 for skill_name in skills:
                     cmd_key = f"/{skill_name}"
                     if cmd_key in skill_cmds:
-                        skill_content = build_skill_invocation_message(
+                        invocation = build_skill_invocation_message(
                             cmd_key, user_instruction=prompt
                         )
-                        if skill_content:
-                            prompt = skill_content
+                        if invocation.ok:
+                            prompt = invocation.message
                             break  # Load the first matching skill
+                        if invocation.status == "load_failed":
+                            logger.warning(
+                                "[webhook] Failed to load skill '%s' after discovery",
+                                invocation.skill_name or skill_name,
+                            )
                     else:
                         logger.warning(
                             "[webhook] Skill '%s' not found", skill_name

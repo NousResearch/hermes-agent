@@ -3066,7 +3066,7 @@ class GatewayRunner:
 
                 user_instruction = event.get_command_args().strip()
                 plan_path = build_plan_path(user_instruction)
-                event.text = build_skill_invocation_message(
+                invocation = build_skill_invocation_message(
                     "/plan",
                     user_instruction,
                     task_id=_quick_key,
@@ -3075,8 +3075,9 @@ class GatewayRunner:
                         f"inside the active workspace/backend cwd: {plan_path}"
                     ),
                 )
-                if not event.text:
+                if not invocation.ok:
                     return "Failed to load the bundled /plan skill."
+                event.text = invocation.message
                 canonical = None
             except Exception as e:
                 logger.exception("Failed to prepare /plan command")
@@ -3227,12 +3228,24 @@ class GatewayRunner:
                                 f"Enable it with: `hermes skills config`"
                             )
                     user_instruction = event.get_command_args().strip()
-                    msg = build_skill_invocation_message(
+                    invocation = build_skill_invocation_message(
                         cmd_key, user_instruction, task_id=_quick_key
                     )
-                    if msg:
-                        event.text = msg
+                    if invocation.ok:
+                        event.text = invocation.message
                         # Fall through to normal message processing with skill content
+                    elif invocation.status == "load_failed":
+                        return (
+                            f"Failed to load the **{invocation.skill_name or cmd_key.lstrip('/')}** "
+                            "skill."
+                        )
+                    else:
+                        return (
+                            f"Unknown command `/{command}`. "
+                            f"Type /commands to see what's available, "
+                            f"or resend without the leading slash to send "
+                            f"as a regular message."
+                        )
                 else:
                     # Not an active skill — check if it's a known-but-disabled or
                     # uninstalled skill and give actionable guidance.

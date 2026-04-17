@@ -4,6 +4,25 @@ from unittest.mock import MagicMock, patch, AsyncMock
 from rich.text import Text
 import pytest
 
+from agent.skill_commands import scan_skill_commands
+
+
+def _make_skill(skills_dir, name, body="Do the thing."):
+    skill_dir = skills_dir / name
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text(
+        f"""---
+name: {name}
+description: Description for {name}.
+---
+
+# {name}
+
+{body}
+"""
+    )
+    return skill_dir
+
 
 # ── CLI tests ──────────────────────────────────────────────────────────────
 
@@ -23,6 +42,8 @@ class TestCLIQuickCommands:
         cli.console = MagicMock()
         cli.agent = None
         cli.conversation_history = []
+        cli.session_id = "sess-123"
+        cli._pending_input = MagicMock()
         return cli
 
     def test_exec_command_runs_and_prints_output(self):
@@ -91,6 +112,22 @@ class TestCLIQuickCommands:
         cli.console.print.assert_called_once()
         printed = self._printed_plain(cli.console.print.call_args[0][0])
         assert printed == "overridden"
+
+    def test_skill_load_failure_after_scan_does_not_queue_placeholder(self, tmp_path):
+        cli = self._make_cli({})
+
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            skill_dir = _make_skill(tmp_path, "test-skill")
+            skill_commands = scan_skill_commands()
+            (skill_dir / "SKILL.md").unlink()
+            with patch("cli._skill_commands", skill_commands), patch("cli.ChatConsole") as mock_console:
+                result = cli.process_command("/test-skill do stuff")
+
+        assert result is True
+        cli._pending_input.put.assert_not_called()
+        mock_console.return_value.print.assert_called_once()
+        printed = str(mock_console.return_value.print.call_args[0][0])
+        assert "Failed to load skill for /test-skill" in printed
 
     def test_unknown_command_still_shows_error(self):
         cli = self._make_cli({})

@@ -17,6 +17,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+from agent.skill_commands import SkillInvocationResult
 from gateway.config import (
     GatewayConfig,
     HomeChannel,
@@ -180,7 +181,12 @@ class TestSkillsInjection:
         # The imports are lazy (inside the handler), so patch the source module
         with patch(
             "agent.skill_commands.build_skill_invocation_message",
-            return_value=skill_content,
+            return_value=SkillInvocationResult(
+                status="ok",
+                command="/code-review",
+                message=skill_content,
+                skill_name="code-review",
+            ),
         ) as mock_build, patch(
             "agent.skill_commands.get_skill_commands",
             return_value={"/code-review": {"name": "code-review"}},
@@ -204,6 +210,56 @@ class TestSkillsInjection:
             # The prompt should be the skill content, not the raw template
             assert "You are a code reviewer" in event.text
             mock_build.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_skill_load_failure_keeps_rendered_prompt(self):
+        """A configured webhook skill that fails to load should not inject a
+        bogus placeholder prompt into the downstream agent event."""
+        routes = {
+            "pr-review": {
+                "secret": _INSECURE_NO_AUTH,
+                "events": ["pull_request"],
+                "prompt": "Review this PR: {pull_request.title}",
+                "skills": ["code-review"],
+            }
+        }
+        adapter = _make_adapter(routes)
+
+        captured_events: list[MessageEvent] = []
+
+        async def _capture(event: MessageEvent):
+            captured_events.append(event)
+
+        adapter.handle_message = _capture
+
+        with patch(
+            "agent.skill_commands.build_skill_invocation_message",
+            return_value=SkillInvocationResult(
+                status="load_failed",
+                command="/code-review",
+                skill_name="code-review",
+            ),
+        ), patch(
+            "agent.skill_commands.get_skill_commands",
+            return_value={"/code-review": {"name": "code-review"}},
+        ):
+            app = _create_app(adapter)
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post(
+                    "/webhooks/pr-review",
+                    json=GITHUB_PR_PAYLOAD,
+                    headers={
+                        "X-GitHub-Event": "pull_request",
+                        "X-GitHub-Delivery": "skill-failure-001",
+                    },
+                )
+                assert resp.status == 202
+
+            await asyncio.sleep(0.05)
+
+        assert len(captured_events) == 1
+        event = captured_events[0]
+        assert event.text == "Review this PR: Add webhook adapter"
 
 
 # ===================================================================

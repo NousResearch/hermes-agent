@@ -7,10 +7,11 @@ delegate_task call instead of telling the user the command doesn't exist).
 
 from datetime import datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from agent.skill_commands import scan_skill_commands
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent
 from gateway.session import SessionEntry, SessionSource, build_session_key
@@ -28,6 +29,23 @@ def _make_source() -> SessionSource:
 
 def _make_event(text: str) -> MessageEvent:
     return MessageEvent(text=text, source=_make_source(), message_id="m1")
+
+
+def _make_skill(skills_dir, name, body="Do the thing."):
+    skill_dir = skills_dir / name
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text(
+        f"""---
+name: {name}
+description: Description for {name}.
+---
+
+# {name}
+
+{body}
+"""
+    )
+    return skill_dir
 
 
 def _make_runner():
@@ -140,6 +158,35 @@ async def test_known_slash_command_not_flagged_as_unknown(monkeypatch):
 
     assert result is not None
     assert "Unknown command" not in result
+
+
+@pytest.mark.asyncio
+async def test_known_skill_load_failure_not_flagged_as_unknown(monkeypatch, tmp_path):
+    """A discovered skill that fails to load later should return a load error,
+    not the unknown-command guard or a forwarded agent turn."""
+    import gateway.run as gateway_run
+
+    runner = _make_runner()
+    runner._run_agent = AsyncMock(
+        side_effect=AssertionError(
+            "failed skill command should not be forwarded to the agent"
+        )
+    )
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        skill_dir = _make_skill(tmp_path, "test-skill")
+        scan_skill_commands()
+        (skill_dir / "SKILL.md").unlink()
+        result = await runner._handle_message(_make_event("/test-skill do stuff"))
+
+    assert result is not None
+    assert "Failed to load" in result
+    assert "Unknown command" not in result
+    runner._run_agent.assert_not_called()
 
 
 @pytest.mark.asyncio

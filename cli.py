@@ -5640,14 +5640,14 @@ class HermesCLI:
             # Check for skill slash commands (/gif-search, /axolotl, etc.)
             elif base_cmd in _skill_commands:
                 user_instruction = cmd_original[len(base_cmd):].strip()
-                msg = build_skill_invocation_message(
+                invocation = build_skill_invocation_message(
                     base_cmd, user_instruction, task_id=self.session_id
                 )
-                if msg:
-                    skill_name = _skill_commands[base_cmd]["name"]
+                if invocation.ok:
+                    skill_name = invocation.skill_name or _skill_commands[base_cmd]["name"]
                     print(f"\n⚡ Loading skill: {skill_name}")
                     if hasattr(self, '_pending_input'):
-                        self._pending_input.put(msg)
+                        self._pending_input.put(invocation.message)
                 else:
                     ChatConsole().print(f"[bold red]Failed to load skill for {base_cmd}[/]")
             else:
@@ -5699,7 +5699,7 @@ class HermesCLI:
         user_instruction = parts[1].strip() if len(parts) > 1 else ""
 
         plan_path = build_plan_path(user_instruction)
-        msg = build_skill_invocation_message(
+        invocation = build_skill_invocation_message(
             "/plan",
             user_instruction,
             task_id=self.session_id,
@@ -5709,13 +5709,13 @@ class HermesCLI:
             ),
         )
 
-        if not msg:
+        if not invocation.ok:
             ChatConsole().print("[bold red]Failed to load the bundled /plan skill[/]")
             return
 
         _cprint(f"  📝 Plan mode queued via skill. Markdown plan target: {plan_path}")
         if hasattr(self, '_pending_input'):
-            self._pending_input.put(msg)
+            self._pending_input.put(invocation.message)
         else:
             ChatConsole().print("[bold red]Plan mode unavailable: input queue not initialized[/]")
     

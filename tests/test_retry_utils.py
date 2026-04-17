@@ -3,7 +3,8 @@
 import threading
 
 import agent.retry_utils as retry_utils
-from agent.retry_utils import jittered_backoff
+from agent.error_classifier import FailoverReason
+from agent.retry_utils import jittered_backoff, select_retry_wait_time
 
 
 def test_backoff_is_exponential():
@@ -115,3 +116,22 @@ def test_backoff_uses_locked_tick_for_seed(monkeypatch):
 
     assert len(recorded_seeds) == 2
     assert len(set(recorded_seeds)) == 2, f"Expected unique seeds, got {recorded_seeds}"
+
+
+def test_select_retry_wait_time_uses_longer_backoff_for_overloaded(monkeypatch):
+    monkeypatch.setattr(retry_utils, "jittered_backoff", lambda attempt, **kwargs: kwargs["base_delay"])
+
+    overloaded = select_retry_wait_time(1, reason=FailoverReason.overloaded)
+    generic = select_retry_wait_time(1, reason=FailoverReason.timeout)
+
+    assert overloaded > generic
+    assert overloaded == 8.0
+    assert generic == 2.0
+
+
+def test_select_retry_wait_time_prefers_retry_after_for_overloaded():
+    assert select_retry_wait_time(2, reason=FailoverReason.overloaded, retry_after=95) == 95
+
+
+def test_select_retry_wait_time_caps_retry_after_for_overloaded():
+    assert select_retry_wait_time(2, reason=FailoverReason.overloaded, retry_after=999) == 180.0

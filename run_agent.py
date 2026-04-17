@@ -76,7 +76,7 @@ from hermes_constants import OPENROUTER_BASE_URL
 
 # Agent internals extracted to agent/ package for modularity
 from agent.memory_manager import build_memory_context_block, sanitize_context
-from agent.retry_utils import jittered_backoff
+from agent.retry_utils import jittered_backoff, select_retry_wait_time
 from agent.error_classifier import classify_api_error, FailoverReason
 from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY, PLATFORM_HINTS,
@@ -5122,6 +5122,34 @@ class AIAgent:
             self._try_refresh_anthropic_client_credentials()
         return self._anthropic_client.messages.create(**api_kwargs)
 
+    def _estimate_request_context_tokens(self, api_kwargs: dict) -> int:
+        """Roughly estimate request size for stale-timeout heuristics/logging.
+
+        Chat Completions requests carry context in ``messages``.
+        Codex/Responses API requests carry most of it in ``input`` plus
+        ``instructions``.  Using only ``messages`` underestimates large Codex
+        requests as zero, which can trigger the default 300s stale timeout even
+        when the request is legitimately huge.
+        """
+
+        pieces = []
+        for key in ("messages", "input", "instructions", "tools"):
+            value = api_kwargs.get(key)
+            if value is None:
+                continue
+            try:
+                pieces.append(json.dumps(value, ensure_ascii=False, separators=(",", ":")))
+            except Exception:
+                pieces.append(str(value))
+
+        if not pieces:
+            try:
+                return len(json.dumps(api_kwargs, ensure_ascii=False, separators=(",", ":"))) // 4
+            except Exception:
+                return len(str(api_kwargs)) // 4
+
+        return sum(len(piece) for piece in pieces) // 4
+
     def _interruptible_api_call(self, api_kwargs: dict):
         """
         Run the API call in a background thread so the main conversation loop
@@ -5182,7 +5210,7 @@ class AIAgent:
         if _stale_base == 300.0 and _base_url and is_local_endpoint(_base_url):
             _stale_timeout = float("inf")
         else:
-            _est_tokens = sum(len(str(v)) for v in api_kwargs.get("messages", [])) // 4
+            _est_tokens = self._estimate_request_context_tokens(api_kwargs)
             if _est_tokens > 100_000:
                 _stale_timeout = max(_stale_base, 600.0)
             elif _est_tokens > 50_000:
@@ -5212,7 +5240,7 @@ class AIAgent:
             # arrives within the configured timeout.
             _elapsed = time.time() - _call_start
             if _elapsed > _stale_timeout:
-                _est_ctx = sum(len(str(v)) for v in api_kwargs.get("messages", [])) // 4
+                _est_ctx = self._estimate_request_context_tokens(api_kwargs)
                 logger.warning(
                     "Non-streaming API call stale for %.0fs (threshold %.0fs). "
                     "model=%s context=~%s tokens. Killing connection.",
@@ -5897,7 +5925,7 @@ class AIAgent:
             # when the context is large.  Without this, the stale detector kills
             # healthy connections during the model's thinking phase, producing
             # spurious RemoteProtocolError ("peer closed connection").
-            _est_tokens = sum(len(str(v)) for v in api_kwargs.get("messages", [])) // 4
+            _est_tokens = self._estimate_request_context_tokens(api_kwargs)
             if _est_tokens > 100_000:
                 _stream_stale_timeout = max(_stream_stale_timeout_base, 300.0)
             elif _est_tokens > 50_000:
@@ -5933,7 +5961,7 @@ class AIAgent:
             # inner retry loop can start a fresh connection.
             _stale_elapsed = time.time() - last_chunk_time["t"]
             if _stale_elapsed > _stream_stale_timeout:
-                _est_ctx = sum(len(str(v)) for v in api_kwargs.get("messages", [])) // 4
+                _est_ctx = self._estimate_request_context_tokens(api_kwargs)
                 logger.warning(
                     "Stream stale for %.0fs (threshold %.0fs) — no chunks received. "
                     "model=%s context=~%s tokens. Killing connection.",
@@ -10331,20 +10359,30 @@ class AIAgent:
                             "error": _final_summary,
                         }
 
-                    # For rate limits, respect the Retry-After header if present
+                    # For rate limits and overloads, respect Retry-After when present.
                     _retry_after = None
-                    if is_rate_limited:
+                    if classified.reason in (
+                        FailoverReason.rate_limit,
+                        FailoverReason.billing,
+                        FailoverReason.overloaded,
+                    ):
                         _resp_headers = getattr(getattr(api_error, "response", None), "headers", None)
                         if _resp_headers and hasattr(_resp_headers, "get"):
                             _ra_raw = _resp_headers.get("retry-after") or _resp_headers.get("Retry-After")
                             if _ra_raw:
                                 try:
-                                    _retry_after = min(int(_ra_raw), 120)  # Cap at 2 minutes
+                                    _retry_after = float(_ra_raw)
                                 except (TypeError, ValueError):
                                     pass
-                    wait_time = _retry_after if _retry_after else jittered_backoff(retry_count, base_delay=2.0, max_delay=60.0)
+                    wait_time = select_retry_wait_time(
+                        retry_count,
+                        reason=classified.reason,
+                        retry_after=_retry_after,
+                    )
                     if is_rate_limited:
                         self._emit_status(f"⏱️ Rate limit reached. Waiting {wait_time}s before retry (attempt {retry_count + 1}/{max_retries})...")
+                    elif classified.reason == FailoverReason.overloaded:
+                        self._emit_status(f"🧯 Provider overloaded. Waiting {wait_time}s before retry (attempt {retry_count}/{max_retries})...")
                     else:
                         self._emit_status(f"⏳ Retrying in {wait_time}s (attempt {retry_count}/{max_retries})...")
                     logger.warning(

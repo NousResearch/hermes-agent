@@ -9,6 +9,8 @@ import random
 import threading
 import time
 
+from agent.error_classifier import FailoverReason
+
 # Monotonic counter for jitter seed uniqueness within the same process.
 # Protected by a lock to avoid race conditions in concurrent retry paths
 # (e.g. multiple gateway sessions retrying simultaneously).
@@ -55,3 +57,39 @@ def jittered_backoff(
     jitter = rng.uniform(0, jitter_ratio * delay)
 
     return delay + jitter
+
+
+def select_retry_wait_time(
+    attempt: int,
+    *,
+    reason: FailoverReason | str | None = None,
+    retry_after: float | int | None = None,
+) -> float:
+    """Choose a retry delay tuned to the failure class.
+
+    Overload errors (503/529) need a noticeably longer cool-down than generic
+    transport failures; otherwise Hermes can burn through retries before the
+    upstream cluster has time to recover.  Retry-After, when present, wins.
+    """
+
+    normalized_reason = getattr(reason, "value", reason) or ""
+
+    if normalized_reason == FailoverReason.overloaded.value:
+        max_delay = 180.0
+        if retry_after is not None:
+            try:
+                return min(float(retry_after), max_delay)
+            except (TypeError, ValueError):
+                pass
+        return jittered_backoff(attempt, base_delay=8.0, max_delay=max_delay)
+
+    if normalized_reason in (FailoverReason.rate_limit.value, FailoverReason.billing.value):
+        max_delay = 120.0
+        if retry_after is not None:
+            try:
+                return min(float(retry_after), max_delay)
+            except (TypeError, ValueError):
+                pass
+        return jittered_backoff(attempt, base_delay=2.0, max_delay=60.0)
+
+    return jittered_backoff(attempt, base_delay=2.0, max_delay=60.0)

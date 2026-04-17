@@ -3545,6 +3545,28 @@ class TestAnthropicCredentialRefresh:
         assert result is response
 
 
+class TestRequestContextTokenEstimate:
+    def test_uses_messages_payload_for_chat_completions(self, agent):
+        api_kwargs = {
+            "messages": [
+                {"role": "system", "content": "x" * 400},
+                {"role": "user", "content": "y" * 400},
+            ]
+        }
+
+        assert agent._estimate_request_context_tokens(api_kwargs) >= 200
+
+    def test_counts_codex_input_and_instructions(self, agent):
+        api_kwargs = {
+            "input": [{"role": "user", "content": [{"type": "input_text", "text": "z" * 410000}]}],
+            "instructions": "i" * 2000,
+        }
+
+        # Regression: Codex/Responses requests do not use `messages`, so the
+        # old estimator returned 0 and kept the stale timeout at 300s.
+        assert agent._estimate_request_context_tokens(api_kwargs) > 100_000
+
+
 # ===================================================================
 # _streaming_api_call tests
 # ===================================================================

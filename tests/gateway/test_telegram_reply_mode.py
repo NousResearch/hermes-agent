@@ -133,7 +133,9 @@ class TestSendWithReplyToMode:
         adapter = adapter_factory(reply_to_mode="first")
         adapter._bot = MagicMock()
         adapter._bot.send_message = AsyncMock(return_value=MagicMock(message_id=1))
-        adapter.truncate_message = lambda content, max_len, **kw: ["chunk1", "chunk2", "chunk3"]
+        adapter._truncate_with_entities = lambda text, entities, max_len: [
+            ("chunk1", []), ("chunk2", []), ("chunk3", [])
+        ]
 
         await adapter.send("12345", "test content", reply_to="999")
 
@@ -148,7 +150,9 @@ class TestSendWithReplyToMode:
         adapter = adapter_factory(reply_to_mode="all")
         adapter._bot = MagicMock()
         adapter._bot.send_message = AsyncMock(return_value=MagicMock(message_id=1))
-        adapter.truncate_message = lambda content, max_len, **kw: ["chunk1", "chunk2", "chunk3"]
+        adapter._truncate_with_entities = lambda text, entities, max_len: [
+            ("chunk1", []), ("chunk2", []), ("chunk3", [])
+        ]
 
         await adapter.send("12345", "test content", reply_to="999")
 

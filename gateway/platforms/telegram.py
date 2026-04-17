@@ -118,6 +118,105 @@ def _strip_mdv2(text: str) -> str:
     return cleaned
 
 
+def _split_table_row(line: str) -> List[str]:
+    row = line.strip()
+    if row.startswith("|"):
+        row = row[1:]
+    if row.endswith("|"):
+        row = row[:-1]
+    return [cell.strip() for cell in row.split("|")]
+
+
+def _rewrite_table_block_for_telegram(lines: List[str]) -> str:
+    if len(lines) < 2:
+        return "\n".join(lines)
+    headers = _split_table_row(lines[0])
+    body_rows = [_split_table_row(line) for line in lines[2:] if line.strip()]
+    if not headers or not body_rows:
+        return "\n".join(lines)
+
+    formatted_rows: List[str] = []
+    for row in body_rows:
+        pairs = []
+        for idx, header in enumerate(headers):
+            if idx >= len(row):
+                break
+            label = header or f"Column {idx + 1}"
+            value = row[idx].strip()
+            if value:
+                pairs.append((label, value))
+        if not pairs:
+            continue
+        if len(pairs) == 1:
+            label, value = pairs[0]
+            formatted_rows.append(f"{label}: {value}")
+            continue
+        summary = "  ".join(f"{label}: {value}" for label, value in pairs)
+        formatted_rows.append(summary)
+    return "\n".join(formatted_rows) if formatted_rows else "\n".join(lines)
+
+
+_TABLE_RULE_RE = re.compile(r"^\s*\|?(?:\s*:?-+:?\s*\|)+\s*:?-+:?\s*\|?\s*$")
+_FENCE_RE = re.compile(r"^```\s*([\w+-]*)$")
+
+
+def _rewrite_list_line(line: str) -> str:
+    # Dash list → bullet
+    if re.match(r"^\s*-\s+", line):
+        return re.sub(r"^(\s*)-\s+", r"\1• ", line)
+    # Asterisk list → bullet (avoid touching **bold** or *italic* mid-line)
+    if re.match(r"^\s*\*\s+", line):
+        return re.sub(r"^(\s*)\*\s+", r"\1• ", line)
+    # Numbered list → (number)
+    m = re.match(r"^(\s*)(\d+)\.\s+", line)
+    if m:
+        return f"{m.group(1)}({m.group(2)}) {line[m.end():]}"
+    return line
+
+
+def _normalize_markdown_for_telegram(content: str) -> str:
+    lines = content.splitlines()
+    result: List[str] = []
+    i = 0
+    in_code_block = False
+
+    while i < len(lines):
+        line = lines[i].rstrip()
+        fence_match = _FENCE_RE.match(line.strip())
+        if fence_match:
+            in_code_block = not in_code_block
+            result.append(line)
+            i += 1
+            continue
+
+        if in_code_block:
+            result.append(line)
+            i += 1
+            continue
+
+        # Table block detection
+        if (
+            i + 1 < len(lines)
+            and "|" in lines[i]
+            and _TABLE_RULE_RE.match(lines[i + 1].rstrip())
+        ):
+            table_lines = [lines[i].rstrip(), lines[i + 1].rstrip()]
+            i += 2
+            while i < len(lines) and "|" in lines[i]:
+                table_lines.append(lines[i].rstrip())
+                i += 1
+            result.append(_rewrite_table_block_for_telegram(table_lines))
+            continue
+
+        # List rewriting
+        result.append(_rewrite_list_line(line))
+        i += 1
+
+    normalized = "\n".join(item.rstrip() for item in result)
+    normalized = re.sub(r"\n{3,}", "\n\n", normalized)
+    return normalized.strip()
+
+
 class TelegramAdapter(BasePlatformAdapter):
     """
     Telegram bot adapter.
@@ -859,23 +958,14 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(success=True, message_id=None)
         
         try:
-            # Format and split message if needed
-            formatted = self.format_message(content)
-            chunks = self.truncate_message(
-                formatted, self.MAX_MESSAGE_LENGTH, len_fn=utf16_len,
+            plain_text, entities = self._extract_entities(content)
+            chunks = self._truncate_with_entities(
+                plain_text, entities, self.MAX_MESSAGE_LENGTH
             )
-            if len(chunks) > 1:
-                # truncate_message appends a raw " (1/2)" suffix. Escape the
-                # MarkdownV2-special parentheses so Telegram doesn't reject the
-                # chunk and fall back to plain text.
-                chunks = [
-                    re.sub(r" \((\d+)/(\d+)\)$", r" \\(\1/\2\\)", chunk)
-                    for chunk in chunks
-                ]
-            
+
             message_ids = []
             thread_id = self._metadata_thread_id(metadata)
-            
+
             try:
                 from telegram.error import NetworkError as _NetErr
             except ImportError:
@@ -891,50 +981,47 @@ class TelegramAdapter(BasePlatformAdapter):
             except (ImportError, AttributeError):
                 _TimedOut = None  # type: ignore[assignment,misc]
 
-            for i, chunk in enumerate(chunks):
+            try:
+                from telegram import MessageEntity
+            except ImportError:
+                MessageEntity = None  # type: ignore[misc,assignment]
+
+            for i, (chunk_text, chunk_entities) in enumerate(chunks):
                 should_thread = self._should_thread_reply(reply_to, i)
                 reply_to_id = int(reply_to) if should_thread else None
                 effective_thread_id = self._message_thread_id_for_send(thread_id)
 
+                if MessageEntity is not None and chunk_entities:
+                    chunk_entities = [
+                        MessageEntity(
+                            type=e["type"],
+                            offset=e["offset"],
+                            length=e["length"],
+                            url=e.get("url"),
+                            language=e.get("language"),
+                        )
+                        for e in chunk_entities
+                    ]
+                    chunk_entities = list(
+                        MessageEntity.adjust_message_entities_to_utf_16(chunk_text, chunk_entities)
+                    )
+
                 msg = None
                 for _send_attempt in range(3):
                     try:
-                        # Try Markdown first, fall back to plain text if it fails
-                        try:
-                            msg = await self._bot.send_message(
-                                chat_id=int(chat_id),
-                                text=chunk,
-                                parse_mode=ParseMode.MARKDOWN_V2,
-                                reply_to_message_id=reply_to_id,
-                                message_thread_id=effective_thread_id,
-                                **self._link_preview_kwargs(),
-                            )
-                        except Exception as md_error:
-                            # Markdown parsing failed, try plain text
-                            if "parse" in str(md_error).lower() or "markdown" in str(md_error).lower():
-                                logger.warning("[%s] MarkdownV2 parse failed, falling back to plain text: %s", self.name, md_error)
-                                plain_chunk = _strip_mdv2(chunk)
-                                msg = await self._bot.send_message(
-                                    chat_id=int(chat_id),
-                                    text=plain_chunk,
-                                    parse_mode=None,
-                                    reply_to_message_id=reply_to_id,
-                                    message_thread_id=effective_thread_id,
-                                    **self._link_preview_kwargs(),
-                                )
-                            else:
-                                raise
+                        msg = await self._bot.send_message(
+                            chat_id=int(chat_id),
+                            text=chunk_text,
+                            parse_mode=None,
+                            entities=chunk_entities or None,
+                            reply_to_message_id=reply_to_id,
+                            message_thread_id=effective_thread_id,
+                            **self._link_preview_kwargs(),
+                        )
                         break  # success
                     except _NetErr as send_err:
-                        # BadRequest is a subclass of NetworkError in
-                        # python-telegram-bot but represents permanent errors
-                        # (not transient network issues). Detect and handle
-                        # specific cases instead of blindly retrying.
                         if _BadReq and isinstance(send_err, _BadReq):
                             if self._is_thread_not_found_error(send_err) and effective_thread_id is not None:
-                                # Thread doesn't exist — retry without
-                                # message_thread_id so the message still
-                                # reaches the chat.
                                 logger.warning(
                                     "[%s] Thread %s not found, retrying without message_thread_id",
                                     self.name, effective_thread_id,
@@ -943,20 +1030,13 @@ class TelegramAdapter(BasePlatformAdapter):
                                 continue
                             err_lower = str(send_err).lower()
                             if "message to be replied not found" in err_lower and reply_to_id is not None:
-                                # Original message was deleted before we
-                                # could reply — clear reply target and retry
-                                # so the response is still delivered.
                                 logger.warning(
                                     "[%s] Reply target deleted, retrying without reply_to: %s",
                                     self.name, send_err,
                                 )
                                 reply_to_id = None
                                 continue
-                            # Other BadRequest errors are permanent — don't retry
                             raise
-                        # TimedOut is also a subclass of NetworkError but
-                        # indicates the request may have reached the server —
-                        # retrying risks duplicate message delivery.
                         if _TimedOut and isinstance(send_err, _TimedOut):
                             raise
                         if _send_attempt < 2:
@@ -982,7 +1062,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                 continue
                         raise
                 message_ids.append(str(msg.message_id))
-            
+
             return SendResult(
                 success=True,
                 message_id=message_ids[0] if message_ids else None,
@@ -2059,6 +2139,300 @@ class TelegramAdapter(BasePlatformAdapter):
         text = ''.join(_safe_parts)
 
         return text
+
+    def _extract_entities(self, content: str):
+        """
+        Extract Telegram MessageEntity-like dicts from markdown content.
+
+        Returns plain text and a list of dicts with keys:
+        type, offset, length, and optionally url / language.
+        Offsets are calculated in Unicode code points.
+        Callers must convert to UTF-16 via
+        MessageEntity.adjust_message_entities_to_utf_16() before sending.
+        """
+        if not content:
+            return content, []
+
+        text = content
+        # Normalize tables and lists for Telegram entities mode before extracting entities.
+        text = _normalize_markdown_for_telegram(text)
+        # Replace Markdown horizontal rules with a plain-text divider that works
+        # in Telegram entities mode (Telegram has no native hr entity).
+        text = re.sub(r'^\s*(?:-{3,}|={3,}|_{3,})\s*$', '────────', text, flags=re.MULTILINE)
+        marks = []
+
+        def _is_protected(s, e, protected):
+            for ps, pe in protected:
+                if s >= ps and e <= pe:
+                    return True
+            return False
+
+        # 1) Fenced code blocks
+        for m in re.finditer(r'(```(?:[^\n]*\n)?[\s\S]*?```)', text):
+            raw = m.group(0)
+            open_end = raw.index('\n') + 1 if '\n' in raw[3:] else 3
+            lang = raw[3:open_end].strip()
+            body = raw[open_end:-3]
+            content_start = m.start() + open_end
+            content_end = content_start + len(body)
+            marks.append({
+                'start': m.start(),
+                'end': m.end(),
+                'content_start': content_start,
+                'content_end': content_end,
+                'type': 'pre',
+                'language': lang if lang else None,
+            })
+
+        protected = [(m['start'], m['end']) for m in marks]
+
+        # 2) Inline code
+        for m in re.finditer(r'`([^`]+)`', text):
+            if _is_protected(m.start(), m.end(), protected):
+                continue
+            marks.append({
+                'start': m.start(),
+                'end': m.end(),
+                'content_start': m.start(1),
+                'content_end': m.end(1),
+                'type': 'code',
+            })
+
+        protected = [(m['start'], m['end']) for m in marks]
+
+        # 3) Links [text](url)
+        for m in re.finditer(r'\[([^\]]+)\]\(([^)]+)\)', text):
+            if _is_protected(m.start(), m.end(), protected):
+                continue
+            marks.append({
+                'start': m.start(),
+                'end': m.end(),
+                'content_start': m.start(1),
+                'content_end': m.end(1),
+                'type': 'text_link',
+                'url': m.group(2),
+            })
+
+        protected = [(m['start'], m['end']) for m in marks]
+
+        # 4) Headers -> bold
+        for m in re.finditer(r'^#{1,6}\s+(.+)$', text, flags=re.MULTILINE):
+            if _is_protected(m.start(), m.end(), protected):
+                continue
+            marks.append({
+                'start': m.start(),
+                'end': m.end(),
+                'content_start': m.start(1),
+                'content_end': m.end(1),
+                'type': 'bold',
+            })
+
+        protected = [(m['start'], m['end']) for m in marks]
+
+        # 5) Bold **text**
+        for m in re.finditer(r'\*\*(.*?)\*\*', text):
+            if _is_protected(m.start(), m.end(), protected):
+                continue
+            marks.append({
+                'start': m.start(),
+                'end': m.end(),
+                'content_start': m.start(1),
+                'content_end': m.end(1),
+                'type': 'bold',
+            })
+
+        protected = [(m['start'], m['end']) for m in marks]
+
+        # 6) Italic *text* (but not **)
+        for m in re.finditer(r'\*([^*\n]+)\*', text):
+            if _is_protected(m.start(), m.end(), protected):
+                continue
+            marks.append({
+                'start': m.start(),
+                'end': m.end(),
+                'content_start': m.start(1),
+                'content_end': m.end(1),
+                'type': 'italic',
+            })
+
+        protected = [(m['start'], m['end']) for m in marks]
+
+        # 7) Strikethrough ~~text~~
+        for m in re.finditer(r'~~(.*?)~~', text):
+            if _is_protected(m.start(), m.end(), protected):
+                continue
+            marks.append({
+                'start': m.start(),
+                'end': m.end(),
+                'content_start': m.start(1),
+                'content_end': m.end(1),
+                'type': 'strikethrough',
+            })
+
+        protected = [(m['start'], m['end']) for m in marks]
+
+        # 8) Spoiler ||text||
+        for m in re.finditer(r'\|\|(.*?)\|\|', text):
+            if _is_protected(m.start(), m.end(), protected):
+                continue
+            marks.append({
+                'start': m.start(),
+                'end': m.end(),
+                'content_start': m.start(1),
+                'content_end': m.end(1),
+                'type': 'spoiler',
+            })
+
+        protected = [(m['start'], m['end']) for m in marks]
+
+        # 9) Blockquotes
+        for m in re.finditer(r'^((?:\*\*)?>{1,3}) (.+)$', text, flags=re.MULTILINE):
+            if _is_protected(m.start(), m.end(), protected):
+                continue
+            prefix = m.group(1)
+            line_content = m.group(2)
+            if prefix.startswith('**') and line_content.endswith('||'):
+                line_content = line_content[:-2]
+                marks.append({
+                    'start': m.start(),
+                    'end': m.end(),
+                    'content_start': m.start(2),
+                    'content_end': m.start(2) + len(line_content),
+                    'type': 'expandable_blockquote',
+                })
+            else:
+                marks.append({
+                    'start': m.start(),
+                    'end': m.end(),
+                    'content_start': m.start(2),
+                    'content_end': m.end(2),
+                    'type': 'blockquote',
+                })
+
+        marks.sort(key=lambda x: x['start'])
+
+        plain_parts = []
+        entities = []
+        pos = 0
+        plain_pos = 0
+
+        for mark in marks:
+            if mark['start'] > pos:
+                before = text[pos:mark['start']]
+                plain_parts.append(before)
+                plain_pos += len(before)
+
+            content = text[mark['content_start']:mark['content_end']]
+            plain_parts.append(content)
+
+            ent = {
+                'type': mark['type'],
+                'offset': plain_pos,
+                'length': len(content),
+            }
+            if mark.get('url'):
+                ent['url'] = mark['url']
+            if mark.get('language'):
+                ent['language'] = mark['language']
+            entities.append(ent)
+
+            plain_pos += len(content)
+            pos = mark['end']
+
+        if pos < len(text):
+            plain_parts.append(text[pos:])
+
+        plain_text = ''.join(plain_parts)
+        return plain_text, entities
+
+    def _truncate_with_entities(
+        self,
+        text: str,
+        entities,
+        max_length: int,
+    ):
+        """
+        Split text and entity dicts into chunks that fit within max_length UTF-16 units.
+
+        Entity offsets must be in Unicode code points.  The returned chunks still
+        contain dict entities; callers that need UTF-16 offsets should convert
+        them with MessageEntity.adjust_message_entities_to_utf_16() before sending.
+        """
+        _len = utf16_len
+        if _len(text) <= max_length:
+            return [(text, list(entities))]
+
+        INDICATOR_RESERVE = 10
+        chunks = []
+        remaining = text
+        remaining_entities = list(entities)
+
+        while remaining:
+            budget = max_length - INDICATOR_RESERVE
+            if _len(remaining) <= budget:
+                chunks.append((remaining, remaining_entities))
+                break
+
+            cp_limit = 0
+            acc = 0
+            for i, ch in enumerate(remaining):
+                acc += _len(ch)
+                if acc > budget:
+                    cp_limit = i
+                    break
+            else:
+                cp_limit = len(remaining)
+
+            split_at = remaining.rfind('\n', 0, cp_limit)
+            if split_at < cp_limit // 2:
+                split_at = remaining.rfind(' ', 0, cp_limit)
+            if split_at < 1:
+                split_at = cp_limit
+
+            chunk_text = remaining[:split_at]
+            rest_text = remaining[split_at:]
+            chunk_len = len(chunk_text)
+
+            chunk_entities = []
+            rest_entities = []
+            for ent in remaining_entities:
+                ent_end = ent['offset'] + ent['length']
+                if ent['offset'] >= chunk_len:
+                    rest_entities.append({
+                        **ent,
+                        'offset': ent['offset'] - chunk_len,
+                    })
+                elif ent_end <= chunk_len:
+                    chunk_entities.append(ent)
+                else:
+                    trim_len = chunk_len - ent['offset']
+                    if trim_len > 0:
+                        chunk_entities.append({
+                            **ent,
+                            'length': trim_len,
+                        })
+                    rest_len = ent_end - chunk_len
+                    if rest_len > 0:
+                        rest_entities.append({
+                            **ent,
+                            'offset': 0,
+                            'length': rest_len,
+                        })
+
+            chunks.append((chunk_text, chunk_entities))
+            remaining = rest_text
+            remaining_entities = rest_entities
+
+        if len(chunks) > 1:
+            total = len(chunks)
+            result = []
+            for i, (chunk_text, chunk_entities) in enumerate(chunks):
+                indicator = f" ({i + 1}/{total})"
+                new_text = chunk_text + indicator
+                result.append((new_text, chunk_entities))
+            chunks = result
+
+        return chunks
     
     # ── Group mention gating ──────────────────────────────────────────────
 

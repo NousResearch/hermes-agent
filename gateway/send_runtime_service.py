@@ -2,14 +2,33 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any, Callable
 
+from gateway.group_target_intents import extract_recent_target_from_history
 from gateway.send_intents import (
     extract_send_confirmation_message,
     looks_like_send_confirmation,
     looks_like_send_query,
 )
 from gateway.send_requests import match_send_request
+
+
+def extract_recent_send_target_from_history(
+    source: Any,
+    conversation_history: list[dict[str, Any]] | None,
+    *,
+    target_extractor,
+) -> str:
+    return extract_recent_target_from_history(
+        source,
+        conversation_history,
+        extractor=target_extractor,
+        predicate=lambda item, content: (
+            str(item.get("role") or "").strip().lower() == "user"
+            and looks_like_send_query(content)
+        ),
+    )
 
 
 def match_admin_platform_send_request(
@@ -41,6 +60,25 @@ def match_admin_platform_send_request(
         extract_send_confirmation_message=extract_send_confirmation_message,
         query_prompt_formatter=query_prompt_formatter,
     )
+
+
+def execute_send_shortcut_tool(
+    tool_args: dict[str, Any],
+    *,
+    target_formatter,
+) -> dict[str, Any]:
+    from tools.send_message_tool import send_message_tool
+
+    target = str(tool_args.get("target") or "").strip()
+    message = str(tool_args.get("message") or "").strip()
+    raw = send_message_tool(
+        {
+            "action": "send",
+            "target": target_formatter(target),
+            "message": message,
+        }
+    )
+    return json.loads(raw) if isinstance(raw, str) else (raw or {})
 
 
 def run_admin_send_shortcut(

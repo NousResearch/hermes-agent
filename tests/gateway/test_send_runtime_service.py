@@ -43,6 +43,25 @@ def test_match_admin_platform_send_request_returns_none_for_non_admin():
     assert error is None
 
 
+def test_extract_recent_send_target_from_history_uses_send_query_predicate():
+    from gateway.send_runtime_service import extract_recent_send_target_from_history
+
+    source = _make_source()
+    history = [
+        {"role": "user", "content": "这个群现在谁在监听"},
+        {"role": "user", "content": "往 QQ 群 192903718 发条消息"},
+        {"role": "assistant", "content": "已发到 QQ 群 192903718：绿帽哥！"},
+    ]
+
+    target = extract_recent_send_target_from_history(
+        source,
+        history,
+        target_extractor=lambda current_source, content: "group:192903718" if "192903718" in content else "",
+    )
+
+    assert target == "group:192903718"
+
+
 def test_match_admin_platform_send_request_passes_expected_context():
     from gateway.send_runtime_service import match_admin_platform_send_request
 
@@ -78,6 +97,28 @@ def test_match_admin_platform_send_request_passes_expected_context():
         looks_like_send_confirmation=matcher.call_args.kwargs["looks_like_send_confirmation"],
         extract_send_confirmation_message=matcher.call_args.kwargs["extract_send_confirmation_message"],
         query_prompt_formatter=matcher.call_args.kwargs["query_prompt_formatter"],
+    )
+
+
+def test_execute_send_shortcut_tool_formats_send_message_request():
+    from gateway.send_runtime_service import execute_send_shortcut_tool
+
+    with patch(
+        "tools.send_message_tool.send_message_tool",
+        return_value={"success": True},
+    ) as tool:
+        result = execute_send_shortcut_tool(
+            {"target": "group:192903718", "message": "绿帽哥！"},
+            target_formatter=lambda target: f"qq_napcat:{target}",
+        )
+
+    assert result == {"success": True}
+    tool.assert_called_once_with(
+        {
+            "action": "send",
+            "target": "qq_napcat:group:192903718",
+            "message": "绿帽哥！",
+        }
     )
 
 

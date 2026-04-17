@@ -50,13 +50,14 @@ from gateway.qq_social_runtime_service import (
     run_admin_qq_social_control_shortcut,
 )
 from gateway.send_runtime_service import (
+    execute_send_shortcut_tool,
+    extract_recent_send_target_from_history as shared_extract_recent_send_target_from_history,
     match_admin_platform_send_request as shared_match_admin_platform_send_request,
     run_admin_send_shortcut,
 )
 from gateway.send_intents import (
     extract_qq_inline_send_target_and_message,
     extract_weixin_inline_send_target_and_message,
-    looks_like_send_query,
 )
 from gateway.session import SessionSource
 from gateway.weixin_group_archive import WeixinGroupArchiveStore
@@ -104,23 +105,6 @@ class DirectControlRouter:
             extractor=extractor,
         )
 
-    def _extract_recent_send_target_from_history(
-        self,
-        source: SessionSource,
-        conversation_history: Optional[list[dict[str, Any]]],
-        *,
-        target_extractor,
-    ) -> str:
-        return extract_recent_target_from_history(
-            source,
-            conversation_history,
-            extractor=target_extractor,
-            predicate=lambda item, content: (
-                str(item.get("role") or "").strip().lower() == "user"
-                and looks_like_send_query(content)
-            ),
-        )
-
     @staticmethod
     def _resolve_oral_report_delivery_target(
         source: SessionSource,
@@ -130,29 +114,6 @@ class DirectControlRouter:
     ) -> str:
         del source
         return resolve_oral_report_delivery_target(message_text, prefer_dm=prefer_dm)
-
-    def _match_admin_send_request_common(
-        self,
-        *,
-        source: SessionSource,
-        body: str,
-        conversation_history: Optional[list[dict[str, Any]]],
-        inline_extractor,
-        history_target_extractor,
-        direct_target_extractor,
-        query_prompt_formatter,
-    ) -> tuple[dict[str, Any] | None, str | None]:
-        return shared_match_admin_platform_send_request(
-            source=source,
-            body=body,
-            conversation_history=conversation_history,
-            admin_ids_configured=True,
-            is_admin_user=True,
-            inline_extractor=inline_extractor,
-            history_target_extractor=history_target_extractor,
-            direct_target_extractor=direct_target_extractor,
-            query_prompt_formatter=query_prompt_formatter,
-        )
 
     def _match_admin_platform_send_request(
         self,
@@ -195,7 +156,7 @@ class DirectControlRouter:
             conversation_history=conversation_history,
             platform=Platform.QQ_NAPCAT,
             inline_extractor=extract_qq_inline_send_target_and_message,
-            history_target_extractor=lambda source, history: self._extract_recent_send_target_from_history(
+            history_target_extractor=lambda source, history: shared_extract_recent_send_target_from_history(
                 source,
                 history,
                 target_extractor=extract_qq_group_target,
@@ -228,7 +189,7 @@ class DirectControlRouter:
             conversation_history=conversation_history,
             platform=Platform.WEIXIN,
             inline_extractor=extract_weixin_inline_send_target_and_message,
-            history_target_extractor=lambda source, history: self._extract_recent_send_target_from_history(
+            history_target_extractor=lambda source, history: shared_extract_recent_send_target_from_history(
                 source,
                 history,
                 target_extractor=extract_weixin_group_target,
@@ -247,21 +208,6 @@ class DirectControlRouter:
             target_normalizer=lambda value: str(value or "").replace("weixin:", "").strip(),
         )
 
-    @staticmethod
-    def _run_send_shortcut_tool(tool_args: dict[str, Any], *, target_formatter):
-        from tools.send_message_tool import send_message_tool
-
-        target = str(tool_args.get("target") or "").strip()
-        message = str(tool_args.get("message") or "").strip()
-        raw = send_message_tool(
-            {
-                "action": "send",
-                "target": target_formatter(target),
-                "message": message,
-            }
-        )
-        return json.loads(raw) if isinstance(raw, str) else (raw or {})
-
     def _try_handle_admin_send_shortcut_common(
         self,
         event: MessageEvent,
@@ -276,7 +222,7 @@ class DirectControlRouter:
         return run_admin_send_shortcut(
             tool_args=tool_args,
             shortcut_error=shortcut_error,
-            tool_runner=lambda current_tool_args: self._run_send_shortcut_tool(
+            tool_runner=lambda current_tool_args: execute_send_shortcut_tool(
                 current_tool_args,
                 target_formatter=target_formatter,
             ),

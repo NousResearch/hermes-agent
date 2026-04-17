@@ -1295,6 +1295,25 @@ class TestAdversarialEdgeCases:
         result = classify_api_error(e)
         assert result.reason == FailoverReason.billing
 
+    def test_400_anthropic_extra_usage_exhausted(self):
+        """Anthropic returns 400 with 'out of extra usage' when the user's
+        extra-usage allowance is depleted. Must classify as billing so the
+        fallback chain engages (with credential rotation) instead of the
+        generic format_error path, which never rotates. (#11736, #13170)"""
+        e = MockAPIError(
+            "You're out of extra usage. Add more at claude.ai/settings/usage and keep going.",
+            status_code=400,
+            body={"error": {
+                "type": "invalid_request_error",
+                "message": "You're out of extra usage. Add more at claude.ai/settings/usage and keep going.",
+            }},
+        )
+        result = classify_api_error(e, provider="anthropic")
+        assert result.reason == FailoverReason.billing
+        assert result.should_fallback is True
+        assert result.retryable is False
+        assert result.should_rotate_credential is True
+
     def test_200_with_error_body(self):
         """200 status with error in body — should be unknown, not crash."""
         class WeirdSuccess(Exception):

@@ -318,6 +318,65 @@ def test_run_gateway_approved_conversation_prepends_pending_note_and_registers_n
     assert calls[2] == ("unregister", ("key-1", "handle-1"))
 
 
+def test_run_gateway_approved_conversation_passes_external_backend(monkeypatch):
+    calls: list[tuple[str, object]] = []
+    backend = object()
+
+    @contextmanager
+    def _fake_approval_context(**kwargs):
+        calls.append(("approval_context", kwargs))
+        yield
+
+    monkeypatch.setattr(
+        "gateway.agent_execution_service.gateway_approval_context",
+        _fake_approval_context,
+    )
+    monkeypatch.setattr(
+        "tools.approval.register_gateway_notify",
+        lambda session_key, callback: calls.append(("register", session_key)) or "handle-1",
+    )
+    monkeypatch.setattr(
+        "tools.approval.unregister_gateway_notify",
+        lambda session_key, handle=None: calls.append(("unregister", (session_key, handle))),
+    )
+
+    agent = SimpleNamespace(
+        run_conversation=lambda message, conversation_history=None, task_id=None: {
+            "message": message,
+            "task_id": task_id,
+        }
+    )
+
+    result = run_gateway_approved_conversation(
+        agent=agent,
+        message="hello",
+        pending_model_note=None,
+        conversation_history=None,
+        task_id="bg-1",
+        session_key="bg-1",
+        admin_user_ids=["179033731"],
+        is_admin_user=True,
+        status_adapter=None,
+        status_chat_id="chat-1",
+        status_thread_metadata=None,
+        loop_for_step=None,
+        logger=MagicMock(),
+        admin_only_message_builder=lambda action: None,
+        external_backend=backend,
+    )
+
+    assert result["message"] == "hello"
+    assert calls[0] == (
+        "approval_context",
+        {
+            "session_key": "bg-1",
+            "admin_user_ids": ["179033731"],
+            "is_admin_user": True,
+            "external_backend": backend,
+        },
+    )
+
+
 def test_setup_gateway_stream_consumer_builds_consumer_and_callback(monkeypatch):
     fake_consumer = MagicMock()
     fake_consumer.on_delta = object()

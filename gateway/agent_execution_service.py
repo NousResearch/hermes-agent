@@ -264,6 +264,7 @@ def run_gateway_approved_conversation(
     loop_for_step: Any,
     logger,
     admin_only_message_builder: Callable[[str], str | None],
+    external_backend: Any = None,
 ) -> dict[str, Any]:
     """Run one gateway foreground conversation under approval wiring."""
 
@@ -288,6 +289,7 @@ def run_gateway_approved_conversation(
         session_key=approval_session_key,
         admin_user_ids=list(admin_user_ids or []),
         is_admin_user=is_admin_user,
+        external_backend=external_backend,
     ):
         approval_notify_handle = register_gateway_notify(
             approval_session_key,

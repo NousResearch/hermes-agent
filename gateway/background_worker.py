@@ -9,7 +9,10 @@ import signal
 import sys
 import threading
 
-from gateway.agent_execution_service import create_gateway_agent, gateway_approval_context
+from gateway.agent_execution_service import (
+    create_gateway_agent,
+    run_gateway_approved_conversation,
+)
 from gateway.agent_runtime import build_gateway_agent_runtime
 from gateway.background_jobs import BackgroundJobStore, ExternalApprovalBridge
 from gateway.session import SessionSource
@@ -153,17 +156,23 @@ def run_background_job(task_id: str) -> int:
                 verbose_logging=False,
                 enabled_toolsets=runtime_spec.enabled_toolsets,
             )
-            with gateway_approval_context(
+            result = run_gateway_approved_conversation(
+                agent=agent,
+                message=str(job.get("prompt") or ""),
+                pending_model_note=None,
+                conversation_history=list(job.get("conversation_history") or []) or None,
+                task_id=task_id,
                 session_key=str(job.get("session_key") or task_id),
                 admin_user_ids=list(job.get("admin_user_ids") or []),
                 is_admin_user=job.get("is_admin_user"),
+                status_adapter=None,
+                status_chat_id=getattr(source, "chat_id", None),
+                status_thread_metadata={"thread_id": source.thread_id} if getattr(source, "thread_id", None) else None,
+                loop_for_step=None,
+                logger=logger,
+                admin_only_message_builder=lambda action: None,
                 external_backend=approval_bridge,
-            ):
-                result = agent.run_conversation(
-                    user_message=str(job.get("prompt") or ""),
-                    conversation_history=list(job.get("conversation_history") or []) or None,
-                    task_id=task_id,
-                )
+            )
         response = ""
         if result:
             response = str(result.get("final_response") or "")

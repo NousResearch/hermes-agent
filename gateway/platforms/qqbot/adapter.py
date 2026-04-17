@@ -833,7 +833,7 @@ class QQAdapter(BasePlatformAdapter):
         attachments_raw = d.get("attachments")
         logger.info(
             "[%s] C2C message: id=%s content=%r attachments=%s",
-            "QQBot",
+            self._log_tag,
             msg_id,
             content[:50] if content else "",
             (
@@ -846,8 +846,8 @@ class QQAdapter(BasePlatformAdapter):
             for _i, _att in enumerate(attachments_raw):
                 if isinstance(_att, dict):
                     logger.info(
-                        "[%s]   attachment[%d]: content_type=%s url=%s filename=%s",
-                        "QQBot",
+                        "[%s] attachment[%d]: content_type=%s url=%s filename=%s",
+                        self._log_tag,
                         _i,
                         _att.get("content_type", ""),
                         str(_att.get("url", ""))[:80],
@@ -877,7 +877,7 @@ class QQAdapter(BasePlatformAdapter):
 
         logger.info(
             "[%s] After processing: images=%d, voice=%d",
-            "QQBot",
+            self._log_tag,
             len(image_urls),
             len(voice_transcripts),
         )
@@ -1072,8 +1072,7 @@ class QQAdapter(BasePlatformAdapter):
     # Attachment processing
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _detect_message_type(media_urls: list, media_types: list):
+    def _detect_message_type(self, media_urls: list, media_types: list):
         """Determine MessageType from attachment content types."""
         if not media_urls:
             return MessageType.TEXT
@@ -1090,7 +1089,7 @@ class QQAdapter(BasePlatformAdapter):
         # to prevent non-image files from being sent to vision analysis.
         logger.debug(
             "[%s] Unknown media content_type '%s', defaulting to TEXT",
-            "QQBot",
+            self._log_tag,
             first_type,
         )
         return MessageType.TEXT
@@ -1140,7 +1139,7 @@ class QQAdapter(BasePlatformAdapter):
 
             logger.debug(
                 "[%s] Processing attachment: content_type=%s, url=%s, filename=%s",
-                "QQBot",
+                self._log_tag,
                 ct,
                 url[:80],
                 filename,
@@ -1168,9 +1167,9 @@ class QQAdapter(BasePlatformAdapter):
                 )
                 if transcript:
                     voice_transcripts.append(f"[Voice] {transcript}")
-                    logger.info("[%s] Voice transcript: %s", "QQBot", transcript)
+                    logger.debug("[%s] Voice transcript: %s", self._log_tag, transcript)
                 else:
-                    logger.warning("[%s] Voice STT failed for %s", "QQBot", url[:60])
+                    logger.warning("[%s] Voice STT failed for %s", self._log_tag, url[:60])
                     voice_transcripts.append("[Voice] [语音识别失败]")
             elif ct.startswith("image/"):
                 # Image: download and cache locally.
@@ -1182,11 +1181,11 @@ class QQAdapter(BasePlatformAdapter):
                     elif cached_path:
                         logger.warning(
                             "[%s] Cached image path does not exist: %s",
-                            "QQBot",
+                            self._log_tag,
                             cached_path,
                         )
                 except Exception as exc:
-                    logger.debug("[%s] Failed to cache image: %s", "QQBot", exc)
+                    logger.debug("[%s] Failed to cache image: %s", self._log_tag, exc)
             else:
                 # Other attachments (video, file, etc.): record as text.
                 try:
@@ -1194,7 +1193,7 @@ class QQAdapter(BasePlatformAdapter):
                     if cached_path:
                         other_attachments.append(f"[Attachment: {filename or ct}]")
                 except Exception as exc:
-                    logger.debug("[%s] Failed to cache attachment: %s", "QQBot", exc)
+                    logger.debug("[%s] Failed to cache attachment: %s", self._log_tag, exc)
 
         attachment_info = "\n".join(other_attachments) if other_attachments else ""
         return {
@@ -1292,8 +1291,8 @@ class QQAdapter(BasePlatformAdapter):
         """
         # 1. Use QQ's built-in ASR text if available
         if asr_refer_text:
-            logger.info(
-                "[%s] STT: using QQ asr_refer_text: %r", "QQBot", asr_refer_text[:100]
+            logger.debug(
+                "[%s] STT: using QQ asr_refer_text: %r", self._log_tag, asr_refer_text[:100]
             )
             return asr_refer_text
 
@@ -1305,7 +1304,7 @@ class QQAdapter(BasePlatformAdapter):
                 voice_wav_url = f"https:{voice_wav_url}"
             download_url = voice_wav_url
             is_pre_wav = True
-            logger.info("[%s] STT: using voice_wav_url (pre-converted WAV)", "QQBot")
+            logger.debug("[%s] STT: using voice_wav_url (pre-converted WAV)", self._log_tag)
 
         from tools.url_safety import is_safe_url
         if not is_safe_url(download_url):
@@ -1315,13 +1314,13 @@ class QQAdapter(BasePlatformAdapter):
         try:
             # 2. Download audio (QQ CDN requires Authorization header)
             if not self._http_client:
-                logger.warning("[%s] STT: no HTTP client", "QQBot")
+                logger.warning("[%s] STT: no HTTP client", self._log_tag)
                 return None
 
             download_headers = self._qq_media_headers()
-            logger.info(
+            logger.debug(
                 "[%s] STT: downloading voice from %s (pre_wav=%s, headers=%s)",
-                "QQBot",
+                self._log_tag,
                 download_url[:80],
                 is_pre_wav,
                 bool(download_headers),
@@ -1334,9 +1333,9 @@ class QQAdapter(BasePlatformAdapter):
             )
             resp.raise_for_status()
             audio_data = resp.content
-            logger.info(
+            logger.debug(
                 "[%s] STT: downloaded %d bytes, content_type=%s",
-                "QQBot",
+                self._log_tag,
                 len(audio_data),
                 resp.headers.get("content-type", "unknown"),
             )
@@ -1344,7 +1343,7 @@ class QQAdapter(BasePlatformAdapter):
             if len(audio_data) < 10:
                 logger.warning(
                     "[%s] STT: downloaded data too small (%d bytes), skipping",
-                    "QQBot",
+                    self._log_tag,
                     len(audio_data),
                 )
                 return None
@@ -1356,24 +1355,24 @@ class QQAdapter(BasePlatformAdapter):
                 with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
                     tmp.write(audio_data)
                     wav_path = tmp.name
-                logger.info(
+                logger.debug(
                     "[%s] STT: using pre-converted WAV directly (%d bytes)",
-                    "QQBot",
+                    self._log_tag,
                     len(audio_data),
                 )
             else:
-                logger.info(
-                    "[%s] STT: converting to wav, filename=%r", "QQBot", filename
+                logger.debug(
+                    "[%s] STT: converting to wav, filename=%r", self._log_tag, filename
                 )
                 wav_path = await self._convert_audio_to_wav_file(audio_data, filename)
                 if not wav_path or not Path(wav_path).exists():
                     logger.warning(
-                        "[%s] STT: ffmpeg conversion produced no output", "QQBot"
+                        "[%s] STT: ffmpeg conversion produced no output", self._log_tag
                     )
                     return None
 
             # 4. Call STT API
-            logger.info("[%s] STT: calling ASR on %s", "QQBot", wav_path)
+            logger.debug("[%s] STT: calling ASR on %s", self._log_tag, wav_path)
             transcript = await self._call_stt(wav_path)
 
             # 5. Cleanup temp file
@@ -1383,14 +1382,14 @@ class QQAdapter(BasePlatformAdapter):
                 pass
 
             if transcript:
-                logger.info("[%s] STT success: %r", "QQBot", transcript[:100])
+                logger.debug("[%s] STT success: %r", self._log_tag, transcript[:100])
             else:
-                logger.warning("[%s] STT: ASR returned empty transcript", "QQBot")
+                logger.warning("[%s] STT: ASR returned empty transcript", self._log_tag)
             return transcript
         except (httpx.HTTPStatusError, httpx.TransportError, IOError) as exc:
             logger.warning(
                 "[%s] STT failed for voice attachment: %s: %s",
-                "QQBot",
+                self._log_tag,
                 type(exc).__name__,
                 exc,
             )
@@ -1471,8 +1470,7 @@ class QQAdapter(BasePlatformAdapter):
         """Check if bytes look like a SILK audio file."""
         return data[:4] == b"#!SILK" or data[:2] == b"\x02!" or data[:9] == b"#!SILK_V3"
 
-    @staticmethod
-    async def _convert_silk_to_wav(src_path: str, wav_path: str) -> Optional[str]:
+    async def _convert_silk_to_wav(self, src_path: str, wav_path: str) -> Optional[str]:
         """Convert audio file to WAV using the pilk library.
 
         Tries the file as-is first, then as .silk if the extension differs.
@@ -1483,7 +1481,7 @@ class QQAdapter(BasePlatformAdapter):
         except ImportError:
             logger.warning(
                 "[%s] pilk not installed — cannot decode SILK audio. Run: pip install pilk",
-                "QQBot",
+                self._log_tag,
             )
             return None
 
@@ -1491,15 +1489,15 @@ class QQAdapter(BasePlatformAdapter):
         try:
             pilk.silk_to_wav(src_path, wav_path, rate=16000)
             if Path(wav_path).exists() and Path(wav_path).stat().st_size > 44:
-                logger.info(
+                logger.debug(
                     "[%s] pilk converted %s to wav (%d bytes)",
-                    "QQBot",
+                    self._log_tag,
                     Path(src_path).name,
                     Path(wav_path).stat().st_size,
                 )
                 return wav_path
         except Exception as exc:
-            logger.debug("[%s] pilk direct conversion failed: %s", "QQBot", exc)
+            logger.debug("[%s] pilk direct conversion failed: %s", self._log_tag, exc)
 
         # Try renaming to .silk and converting (pilk checks the extension)
         silk_path = src_path.rsplit(".", 1)[0] + ".silk"
@@ -1509,15 +1507,15 @@ class QQAdapter(BasePlatformAdapter):
             shutil.copy2(src_path, silk_path)
             pilk.silk_to_wav(silk_path, wav_path, rate=16000)
             if Path(wav_path).exists() and Path(wav_path).stat().st_size > 44:
-                logger.info(
+                logger.debug(
                     "[%s] pilk converted %s (as .silk) to wav (%d bytes)",
-                    "QQBot",
+                    self._log_tag,
                     Path(src_path).name,
                     Path(wav_path).stat().st_size,
                 )
                 return wav_path
         except Exception as exc:
-            logger.debug("[%s] pilk .silk conversion failed: %s", "QQBot", exc)
+            logger.debug("[%s] pilk .silk conversion failed: %s", self._log_tag, exc)
         finally:
             try:
                 os.unlink(silk_path)
@@ -1526,8 +1524,7 @@ class QQAdapter(BasePlatformAdapter):
 
         return None
 
-    @staticmethod
-    async def _convert_raw_to_wav(audio_data: bytes, wav_path: str) -> Optional[str]:
+    async def _convert_raw_to_wav(self, audio_data: bytes, wav_path: str) -> Optional[str]:
         """Last resort: try writing audio data as raw PCM 16-bit mono 16kHz WAV.
 
         This will produce garbage if the data isn't raw PCM, but at least
@@ -1543,11 +1540,10 @@ class QQAdapter(BasePlatformAdapter):
                 wf.writeframes(audio_data)
             return wav_path
         except Exception as exc:
-            logger.debug("[%s] raw PCM fallback failed: %s", "QQBot", exc)
+            logger.debug("[%s] raw PCM fallback failed: %s", self._log_tag, exc)
             return None
 
-    @staticmethod
-    async def _convert_ffmpeg_to_wav(src_path: str, wav_path: str) -> Optional[str]:
+    async def _convert_ffmpeg_to_wav(self, src_path: str, wav_path: str) -> Optional[str]:
         """Convert audio file to WAV using ffmpeg."""
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -1568,25 +1564,25 @@ class QQAdapter(BasePlatformAdapter):
                 stderr = await proc.stderr.read() if proc.stderr else b""
                 logger.warning(
                     "[%s] ffmpeg failed for %s: %s",
-                    "QQBot",
+                    self._log_tag,
                     Path(src_path).name,
                     stderr[:200].decode(errors="replace"),
                 )
                 return None
         except (asyncio.TimeoutError, FileNotFoundError) as exc:
-            logger.warning("[%s] ffmpeg conversion error: %s", "QQBot", exc)
+            logger.warning("[%s] ffmpeg conversion error: %s", self._log_tag, exc)
             return None
 
         if not Path(wav_path).exists() or Path(wav_path).stat().st_size <= 44:
             logger.warning(
                 "[%s] ffmpeg produced no/small output for %s",
-                "QQBot",
+                self._log_tag,
                 Path(src_path).name,
             )
             return None
-        logger.info(
+        logger.debug(
             "[%s] ffmpeg converted %s to wav (%d bytes)",
-            "QQBot",
+            self._log_tag,
             Path(src_path).name,
             Path(wav_path).stat().st_size,
         )

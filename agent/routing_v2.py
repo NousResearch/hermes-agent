@@ -3,11 +3,23 @@
 This is intentionally small and self-contained: pure-Python logic used by
 tests in tests/routing/v2. It implements select_model, escalate and
 maybe_downscale according to the test contract.
+
+Also exposes DEFAULT_TIERS so smart_model_routing can pick sane defaults
+when no explicit tier map is provided.
 """
 from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
-_CONTINUATION_MARKERS = {"continúa", "continua", "sigue", "resume", "dale", "ok", "mismo tema", "dale"}
+try:
+    from agent import task_state as _ts  # continuation detection lives here
+except Exception:  # pragma: no cover
+    _ts = None  # fallback for early boot
+
+_CONTINUATION_MARKERS = {
+    "continúa", "continua", "sigue", "resume", "dale", "ok",
+    "mismo tema", "hazlo", "haz lo tuyo", "hazlo ya", "continue",
+    "go on", "keep going", "proceed", "ya",
+}
 
 _CODE_KEYWORDS = {"refactor", "pytest", "stacktrace", "debug", "implement", "bug", "patch", "traceback"}
 _RESEARCH_KEYWORDS = {"investiga", "investigar", "noticias", "fuente", "fuentes", "resume", "resumen", "investigate", "research"}
@@ -70,8 +82,13 @@ def select_model(prompt: str, benchmarks: Dict[str, Dict[str, float]], tiers: Li
     if task_state and task_state.get("active_task"):
         last_tier = int(task_state.get("last_tier", 0))
         last_model = task_state.get("last_model")
-        # if continuation marker or empty prompt -> preserve
-        if (not prompt) or any(m for m in _CONTINUATION_MARKERS if m in (prompt or "").lower()):
+        low = (prompt or "").lower().strip()
+        is_cont = False
+        if _ts is not None:
+            is_cont = _ts.is_continuation(prompt) or _ts.is_silence(prompt)
+        else:
+            is_cont = (not prompt) or any(m in low for m in _CONTINUATION_MARKERS)
+        if is_cont:
             return {
                 "category": task_state.get("last_category", "unknown"),
                 "model": last_model,
@@ -128,3 +145,14 @@ def maybe_downscale(state: Dict[str, Any], tiers: List[List[str]]) -> Dict[str, 
     if easy_streak >= 2 and last_tier > 1:
         return {"tier": last_tier - 1}
     return {"tier": last_tier}
+
+
+# Default tier ladder used when caller does not supply one.
+# T1 cheapest/simplest -> T5 heaviest / multimodal.
+DEFAULT_TIERS: List[List[str]] = [
+    ["glm-5.1"],
+    ["gpt-5-mini"],
+    ["kimi-k2.5"],
+    ["deepseek-v3.2", "qwen3-coder-next"],
+    ["qwen3.5:397b", "mistral-large-3:675b", "minimax-m2.7", "qwen3-vl:235b-instruct"],
+]

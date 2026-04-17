@@ -307,8 +307,11 @@ export function TextInput({
   const raw = self.current ? vRef.current : value
   const display = mask ? raw.replace(/[^\n]/g, mask[0] ?? '*') : raw
 
-  const selected =
-    sel && sel.start !== sel.end ? { end: Math.max(sel.start, sel.end), start: Math.min(sel.start, sel.end) } : null
+  const selected = useMemo(
+    () =>
+      sel && sel.start !== sel.end ? { end: Math.max(sel.start, sel.end), start: Math.min(sel.start, sel.end) } : null,
+    [sel]
+  )
 
   const layout = useMemo(() => cursorLayout(display, cur, columns), [columns, cur, display])
 

@@ -11,6 +11,7 @@ Uses discord.py library for:
 
 import asyncio
 import logging
+import math
 import os
 import struct
 import subprocess
@@ -78,6 +79,233 @@ def _clean_discord_id(entry: str) -> str:
 def check_discord_requirements() -> bool:
     """Check if Discord dependencies are available."""
     return DISCORD_AVAILABLE
+
+
+# Discord voice-message waveform: base64-encoded uint8 bytearray,
+# at most one sample per 100ms, capped at 256 datapoints.
+# See https://docs.discord.com/developers/resources/message#attachment-object
+_VOICE_WAVEFORM_MAX_SAMPLES = 256
+_VOICE_WAVEFORM_SAMPLES_PER_SEC = 10  # "at most once per 100ms" per spec
+# Perceptual floor for the dBFS → uint8 mapping. Anything below this maps to 0.
+# -60 dBFS is a common "near-silence" floor for voice-message UIs.
+_VOICE_WAVEFORM_FLOOR_DBFS = -60.0
+# Cap input duration we're willing to fully decode to PCM into memory.
+# 10 min at 48 kHz mono s16le ≈ 57 MB — well within reason, and voice
+# messages past this length are already unusual. Longer clips fall back
+# to a flat waveform (Discord still accepts the message).
+_VOICE_WAVEFORM_MAX_DURATION_SECS = 600.0
+
+
+def _probe_audio_duration_seconds(audio_path: str) -> Optional[float]:
+    """Probe an audio file's duration with ``ffprobe``.
+
+    Discord's voice-message UI renders ``duration_secs`` from the REST
+    payload immediately, then silently corrects it once its backend
+    decodes the audio. A wrong initial value shows up as e.g. "1:04" on
+    a clip that's really 14 seconds long — visually jarring.
+
+    mutagen's ``OggOpus.info.length`` is unreliable for our input
+    because:
+      - Hermes voice flows sometimes hand ``send_voice`` an MP3 / WAV /
+        other container (Edge TTS, OpenAI TTS, ElevenLabs non-Opus),
+        and ``OggOpus(non_ogg_file)`` raises — we fall through to the
+        rough ``len(file_data) / 2000`` formula which can easily land
+        several x off.
+      - Some encoders leave trailing silence in the OGG granule span
+        beyond what actually plays, so ``info.length`` reports padded
+        duration.
+
+    ``ffprobe`` demuxes the container through the real codec pipeline
+    and reports a duration that matches what Discord's backend will
+    eventually derive, so the UI value stays stable.
+
+    Returns ``None`` if ffprobe is unavailable or fails, so callers
+    can fall back to mutagen / byte-rate heuristics.
+    """
+    try:
+        proc = subprocess.run(
+            [
+                "ffprobe",
+                "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                "-i", "file:" + audio_path,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=True,
+        )
+    except FileNotFoundError:
+        # ffprobe not installed; voice path can still work, duration
+        # just won't be authoritative.
+        return None
+    except subprocess.TimeoutExpired:
+        logger.warning("ffprobe duration probe timed out after 10s on %s", audio_path)
+        return None
+    except subprocess.CalledProcessError as exc:
+        logger.debug(
+            "ffprobe duration probe failed (rc=%s): %s",
+            exc.returncode,
+            (exc.stderr or "").strip()[:200],
+        )
+        return None
+    except Exception as exc:
+        logger.debug("ffprobe duration probe unexpected failure: %s", exc)
+        return None
+
+    raw = (proc.stdout or "").strip()
+    try:
+        value = float(raw)
+    except (ValueError, TypeError):
+        return None
+    if not math.isfinite(value) or value <= 0:
+        return None
+    return value
+
+
+def _voice_message_waveform_enabled() -> bool:
+    """Read the operator-facing toggle for real waveform computation.
+
+    Set ``DISCORD_VOICE_MESSAGE_WAVEFORM=false`` (or ``0`` / ``no`` / ``off``)
+    to skip the ffmpeg + numpy work entirely and always ship a flat
+    128-byte waveform. Useful for tight-budget deployments or when
+    ffmpeg / numpy aren't worth the cycles per voice message.  Default
+    is ``true`` — real waveform rendered.
+    """
+    raw = os.getenv("DISCORD_VOICE_MESSAGE_WAVEFORM", "").strip().lower()
+    if not raw:
+        return True
+    return raw not in ("false", "0", "no", "off")
+
+
+def _compute_voice_message_waveform(audio_path: str, duration_secs: float) -> bytes:
+    """Compute a Discord voice-message waveform.
+
+    Discord's voice-message bubble renders ``waveform`` (a base64-encoded
+    ``uint8`` bytearray, max 256 samples, at most one sample per 100ms) as
+    a loudness bar graph next to the play button. A flat array looks like
+    a featureless line; a real one lets the recipient see the shape of
+    speech before pressing play.
+
+    We decode the file to mono 48 kHz ``s16le`` via ffmpeg (already a
+    Hermes voice dependency), window into ``target_samples`` buckets,
+    compute RMS per bucket, and map RMS → dBFS → uint8 so speech and
+    silence are visually distinguishable. Any failure (missing ffmpeg,
+    decode error, empty audio, numpy unavailable) falls back to a flat
+    128-waveform — Discord accepts it and the voice message still sends.
+
+    Operators can also opt out entirely via
+    ``DISCORD_VOICE_MESSAGE_WAVEFORM=false`` to skip the ffmpeg / numpy
+    work and always return the flat fallback.
+
+    Args:
+        audio_path: Local path to the audio file (typically ``.ogg`` Opus).
+        duration_secs: Duration in seconds, used to size the waveform.
+
+    Returns:
+        Raw bytes (``len <= 256``) ready to base64-encode for the payload.
+    """
+    # Normalize duration — caller may hand us a NaN/inf/negative from a
+    # corrupt mutagen probe; don't let that throw from int(round(...)).
+    try:
+        if not math.isfinite(duration_secs) or duration_secs <= 0:
+            duration_secs = 1.0
+    except TypeError:
+        duration_secs = 1.0
+
+    target_samples = min(
+        _VOICE_WAVEFORM_MAX_SAMPLES,
+        max(1, int(round(duration_secs * _VOICE_WAVEFORM_SAMPLES_PER_SEC))),
+    )
+    fallback = bytes([128] * target_samples)
+
+    # Operator opt-out: skip the whole ffmpeg + numpy pipeline.
+    if not _voice_message_waveform_enabled():
+        return fallback
+
+    # Skip very long clips — don't want to buffer hundreds of MB of PCM
+    # just to draw a bar graph. Discord accepts a flat waveform.
+    if duration_secs > _VOICE_WAVEFORM_MAX_DURATION_SECS:
+        logger.debug(
+            "voice message waveform: duration %.1fs > cap %.0fs, using flat fallback",
+            duration_secs, _VOICE_WAVEFORM_MAX_DURATION_SECS,
+        )
+        return fallback
+
+    try:
+        import numpy as _np
+    except ImportError:
+        logger.debug("voice message waveform: numpy unavailable, using flat fallback")
+        return fallback
+
+    try:
+        proc = subprocess.run(
+            [
+                "ffmpeg",
+                "-nostdin",           # don't read from stdin (prevents hang)
+                "-i", "file:" + audio_path,  # file: prefix guards against leading-dash argv injection
+                "-ac", "1",           # mono
+                "-ar", "48000",       # 48 kHz
+                "-f", "s16le",        # signed 16-bit little-endian PCM
+                "-loglevel", "error",
+                "-",                  # stdout
+            ],
+            capture_output=True,
+            timeout=30,
+            check=True,
+        )
+    except FileNotFoundError:
+        logger.debug("voice message waveform: ffmpeg not found, using flat fallback")
+        return fallback
+    except subprocess.TimeoutExpired:
+        logger.warning("voice message waveform: ffmpeg decode timed out after 30s, using flat fallback")
+        return fallback
+    except subprocess.CalledProcessError as exc:
+        logger.warning(
+            "voice message waveform: ffmpeg decode failed (rc=%s): %s",
+            exc.returncode,
+            (exc.stderr or b"").decode("utf-8", "replace")[:200],
+        )
+        return fallback
+    except Exception as exc:
+        # Broad catch — any unexpected failure (PermissionError on the
+        # ffmpeg binary, OSError on fork, etc.) must not break the
+        # voice-message send.  The outer send_voice has its own fallback,
+        # but we preserve the voice-bubble format here if at all possible.
+        logger.warning("voice message waveform: unexpected ffmpeg failure: %s", exc)
+        return fallback
+
+    try:
+        pcm = _np.frombuffer(proc.stdout, dtype=_np.int16)
+        if pcm.size == 0:
+            return fallback
+
+        # Handle clips shorter than target_samples (e.g. a 50-sample PCM
+        # blob with target_samples=100): shrink target_samples to match
+        # rather than fail the reshape. Discord accepts fewer samples.
+        if pcm.size < target_samples:
+            target_samples = max(1, int(pcm.size))
+
+        # Window into target_samples buckets, then per-bucket RMS.
+        window_size = max(1, pcm.size // target_samples)
+        usable = pcm[: window_size * target_samples]
+        if usable.size == 0:
+            return fallback
+        buckets = usable.reshape(target_samples, window_size).astype(_np.float64)
+        rms = _np.sqrt(_np.mean(buckets ** 2, axis=1))
+
+        # RMS → dBFS → uint8. int16 full-scale peak is 32767.
+        dbfs = 20.0 * _np.log10(_np.maximum(rms, 1.0) / 32767.0)
+        # Map [FLOOR, 0] → [0, 255] linearly, clamp. Any residual NaN/inf
+        # (shouldn't happen given maximum(rms,1)) is also clamped by nan_to_num.
+        normalized = ((dbfs - _VOICE_WAVEFORM_FLOOR_DBFS) / (-_VOICE_WAVEFORM_FLOOR_DBFS)) * 255.0
+        normalized = _np.nan_to_num(normalized, nan=0.0, posinf=255.0, neginf=0.0)
+        waveform = _np.clip(normalized, 0, 255).astype(_np.uint8)
+        return bytes(waveform)
+    except Exception as exc:
+        logger.warning("voice message waveform: post-decode numeric failure: %s", exc)
+        return fallback
 
 
 class VoiceReceiver:
@@ -972,15 +1200,31 @@ class DiscordAdapter(BasePlatformAdapter):
             try:
                 import base64
 
-                duration_secs = 5.0
-                try:
-                    from mutagen.oggopus import OggOpus
-                    info = OggOpus(audio_path)
-                    duration_secs = info.info.length
-                except Exception:
-                    duration_secs = max(1.0, len(file_data) / 2000.0)
+                # Probe duration with ffprobe first — matches what Discord's
+                # own backend will derive, so the voice-message UI doesn't
+                # first render a wrong value and then silently correct it a
+                # second later. mutagen is a fallback because it misreports
+                # non-OGG inputs (Edge TTS / OpenAI TTS can ship MP3), and
+                # the byte-rate formula is a last resort.
+                duration_secs = await asyncio.to_thread(
+                    _probe_audio_duration_seconds, audio_path
+                )
+                if duration_secs is None:
+                    try:
+                        from mutagen.oggopus import OggOpus
+                        info = OggOpus(audio_path)
+                        duration_secs = info.info.length
+                    except Exception:
+                        duration_secs = max(1.0, len(file_data) / 2000.0)
 
-                waveform_bytes = bytes([128] * 256)
+                # Offload ffmpeg decode + numpy RMS to a thread so a slow
+                # decode (or the 30s timeout) never blocks the Discord
+                # event loop and stalls unrelated bot activity.  Matches
+                # the existing asyncio.to_thread pattern used elsewhere
+                # in this file for voice-side work (pcm_to_wav, STT).
+                waveform_bytes = await asyncio.to_thread(
+                    _compute_voice_message_waveform, audio_path, duration_secs
+                )
                 waveform_b64 = base64.b64encode(waveform_bytes).decode()
 
                 import json as _json

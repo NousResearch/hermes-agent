@@ -283,6 +283,7 @@ Discord behavior is controlled through two files: **`~/.hermes/.env`** for crede
 | `DISCORD_IGNORED_CHANNELS` | No | — | Comma-separated channel IDs where the bot **never** responds, even when `@mentioned`. Takes priority over all other channel settings. |
 | `DISCORD_NO_THREAD_CHANNELS` | No | — | Comma-separated channel IDs where the bot responds directly in the channel instead of creating a thread. Only relevant when `DISCORD_AUTO_THREAD` is `true`. |
 | `DISCORD_REPLY_TO_MODE` | No | `"first"` | Controls reply-reference behavior: `"off"` — never reply to the original message, `"first"` — reply-reference on the first message chunk only (default), `"all"` — reply-reference on every chunk. |
+| `DISCORD_VOICE_MESSAGE_WAVEFORM` | No | `true` | When `true` (default), voice-message bubbles get a real loudness waveform computed via ffmpeg + numpy (decoded in a worker thread). Set to `false` to skip the work and ship a flat waveform instead — saves cycles if you send lots of voice messages or your host doesn't have ffmpeg. |
 
 ### Config File (`config.yaml`)
 
@@ -297,6 +298,7 @@ discord:
   reactions: true                 # Add emoji reactions during processing
   ignored_channels: []            # Channel IDs where bot never responds
   no_thread_channels: []          # Channel IDs where bot responds without threading
+  voice_message_waveform: true    # false = flat 128 waveform, skip ffmpeg/numpy
   channel_prompts: {}             # Per-channel ephemeral system prompts
 
 # Session isolation (applies to all gateway platforms, not just Discord)

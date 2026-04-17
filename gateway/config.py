@@ -617,6 +617,11 @@ def load_gateway_config() -> GatewayConfig:
                     if isinstance(ntc, list):
                         ntc = ",".join(str(v) for v in ntc)
                     os.environ["DISCORD_NO_THREAD_CHANNELS"] = str(ntc)
+                # voice_message_waveform: compute a real loudness waveform for
+                # voice messages (default true). Set false to skip ffmpeg +
+                # numpy work and always ship a flat 128-byte waveform.
+                if "voice_message_waveform" in discord_cfg and not os.getenv("DISCORD_VOICE_MESSAGE_WAVEFORM"):
+                    os.environ["DISCORD_VOICE_MESSAGE_WAVEFORM"] = str(discord_cfg["voice_message_waveform"]).lower()
 
             # Telegram settings → env vars (env vars take precedence)
             telegram_cfg = yaml_cfg.get("telegram", {})

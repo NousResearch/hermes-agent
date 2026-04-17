@@ -304,12 +304,12 @@ from gateway.agent_prelude_runtime_service import (
     build_agent_start_hook_context as shared_build_agent_start_hook_context,
 )
 from gateway.agent_completion_runtime_service import (
-    apply_gateway_reasoning_display as shared_apply_gateway_reasoning_display,
+    prepare_gateway_agent_completion as shared_prepare_gateway_agent_completion,
     drain_pending_process_watchers as shared_drain_pending_process_watchers,
+    stop_gateway_typing_indicator as shared_stop_gateway_typing_indicator,
 )
 from gateway.agent_response_runtime_service import (
     build_gateway_exception_response as shared_build_gateway_exception_response,
-    normalize_gateway_agent_response as shared_normalize_gateway_agent_response,
 )
 from gateway.agent_delivery_runtime_service import (
     finalize_gateway_agent_delivery as shared_finalize_gateway_agent_delivery,
@@ -4467,15 +4467,19 @@ class GatewayRunner:
                 raw_message=event.raw_message,
             )
 
-            # Stop persistent typing indicator now that the agent is done
-            try:
-                _typing_adapter = self.adapters.get(source.platform)
-                if _typing_adapter and hasattr(_typing_adapter, "stop_typing"):
-                    await _typing_adapter.stop_typing(source.chat_id)
-            except Exception:
-                pass
+            await shared_stop_gateway_typing_indicator(
+                adapters=self.adapters,
+                platform=source.platform,
+                chat_id=source.chat_id,
+            )
 
-            normalized_response = shared_normalize_gateway_agent_response(
+            _process_registry = None
+            try:
+                from tools.process_registry import process_registry as _process_registry
+            except Exception as e:
+                logger.error("Process watcher setup error: %s", e)
+
+            prepared_completion = await shared_prepare_gateway_agent_completion(
                 agent_result=agent_result,
                 history_len=len(history),
                 empty_response_fallback=lambda empty_kind: _empty_response_fallback(
@@ -4486,47 +4490,21 @@ class GatewayRunner:
                     raw_message=event.raw_message,
                     event=event,
                 ),
-            )
-            response = normalized_response.response
-            suppress_reply = normalized_response.suppress_reply
-            response_state = normalized_response.response_state
-            agent_messages = agent_result.get("messages", [])
-            _response_time = time.time() - _msg_start_time
-            _api_calls = agent_result.get("api_calls", 0)
-            _resp_len = len(response)
-            logger.info(
-                "response ready: platform=%s chat=%s time=%.1fs api_calls=%d response=%d chars state=%s",
-                _platform_name, source.chat_id or "unknown",
-                _response_time, _api_calls, _resp_len, response_state,
-            )
-
-            # If the agent's session_id changed during compression, update
-            # session_entry so transcript writes below go to the right session.
-            if agent_result.get("session_id") and agent_result["session_id"] != session_entry.session_id:
-                session_entry.session_id = agent_result["session_id"]
-
-            response = shared_apply_gateway_reasoning_display(
-                response=response,
+                session_entry=session_entry,
                 show_reasoning=bool(getattr(self, "_show_reasoning", False)),
-                last_reasoning=agent_result.get("last_reasoning"),
+                hook_ctx=hook_ctx,
+                hooks=self.hooks,
+                logger=logger,
+                platform_name=_platform_name,
+                chat_id=source.chat_id,
+                msg_start_time=_msg_start_time,
+                process_registry=_process_registry,
+                run_process_watcher=self._run_process_watcher,
+                create_task=asyncio.create_task,
             )
-
-            # Emit agent:end hook
-            await self.hooks.emit("agent:end", {
-                **hook_ctx,
-                "response": (response or "")[:500],
-            })
-            
-            # Check for pending process watchers (check_interval on background processes)
-            try:
-                from tools.process_registry import process_registry
-                shared_drain_pending_process_watchers(
-                    process_registry=process_registry,
-                    run_process_watcher=self._run_process_watcher,
-                    create_task=asyncio.create_task,
-                )
-            except Exception as e:
-                logger.error("Process watcher setup error: %s", e)
+            response = prepared_completion.response
+            suppress_reply = prepared_completion.suppress_reply
+            agent_messages = prepared_completion.agent_messages
 
             # NOTE: Dangerous command approvals are now handled inline by the
             # blocking gateway approval mechanism in tools/approval.py.  The agent
@@ -4574,13 +4552,11 @@ class GatewayRunner:
             )
             
         except Exception as e:
-            # Stop typing indicator on error too
-            try:
-                _err_adapter = self.adapters.get(source.platform)
-                if _err_adapter and hasattr(_err_adapter, "stop_typing"):
-                    await _err_adapter.stop_typing(source.chat_id)
-            except Exception:
-                pass
+            await shared_stop_gateway_typing_indicator(
+                adapters=self.adapters,
+                platform=source.platform,
+                chat_id=source.chat_id,
+            )
             logger.exception("Agent error in session %s", session_key)
             _hist_len = len(history) if 'history' in locals() else 0
             return shared_build_gateway_exception_response(

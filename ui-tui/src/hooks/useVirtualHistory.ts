@@ -37,9 +37,17 @@ export function useVirtualHistory(
   const heights = useRef(new Map<string, number>())
   const refs = useRef(new Map<string, (el: unknown) => void>())
   const [ver, setVer] = useState(0)
+  const [hasScrollRef, setHasScrollRef] = useState(false)
+
+  useLayoutEffect(() => {
+    setHasScrollRef(Boolean(scrollRef.current))
+  }, [scrollRef])
 
   useSyncExternalStore(
-    useCallback((cb: () => void) => scrollRef.current?.subscribe(cb) ?? (() => () => {}), [scrollRef]),
+    useCallback(
+      (cb: () => void) => (hasScrollRef ? scrollRef.current?.subscribe(cb) : null) ?? (() => () => {}),
+      [hasScrollRef, scrollRef]
+    ),
     () => {
       const s = scrollRef.current
 

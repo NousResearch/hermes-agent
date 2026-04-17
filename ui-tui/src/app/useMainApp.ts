@@ -272,6 +272,7 @@ export function useMainApp(gw: GatewayClient) {
     gw,
     panel,
     rpc,
+    scrollRef,
     setHistoryItems,
     setLastUserMsg,
     setSessionStartedAt,

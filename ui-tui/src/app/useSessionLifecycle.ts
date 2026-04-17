@@ -1,4 +1,5 @@
-import { useCallback } from 'react'
+import type { ScrollBoxHandle } from '@hermes/ink'
+import { type RefObject, useCallback } from 'react'
 
 import { buildSetupRequiredSections, SETUP_REQUIRED_TITLE } from '../content/setup.js'
 import { introMsg, toTranscriptMessages } from '../domain/messages.js'
@@ -41,6 +42,7 @@ export interface UseSessionLifecycleOptions {
   gw: GatewayClient
   panel: (title: string, sections: PanelSection[]) => void
   rpc: GatewayRpc
+  scrollRef: RefObject<null | ScrollBoxHandle>
   setHistoryItems: StateSetter<Msg[]>
   setLastUserMsg: StateSetter<string>
   setSessionStartedAt: StateSetter<number>
@@ -57,6 +59,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
     gw,
     panel,
     rpc,
+    scrollRef,
     setHistoryItems,
     setLastUserMsg,
     setSessionStartedAt,
@@ -183,6 +186,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
                 status: 'ready',
                 usage: usageFrom(r.info ?? null)
               })
+              queueMicrotask(() => scrollRef.current?.scrollToBottom())
             })
             .catch((e: Error) => {
               sys(`error: ${e.message}`)
@@ -191,7 +195,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
         )
       })
     },
-    [closeSession, colsRef, gw, panel, resetSession, rpc, setHistoryItems, setSessionStartedAt, sys]
+    [closeSession, colsRef, gw, panel, resetSession, rpc, scrollRef, setHistoryItems, setSessionStartedAt, sys]
   )
 
   const guardBusySessionSwitch = useCallback(

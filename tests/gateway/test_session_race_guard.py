@@ -288,6 +288,38 @@ async def test_command_messages_do_not_leave_sentinel():
     )
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("command_text", "handler_attr", "handler_result"),
+    [
+        ("/help", "_handle_help_command", "Help text"),
+        ("/commands", "_handle_commands_command", "Commands text"),
+        ("/update", "_handle_update_command", "Update text"),
+        ("/profile", "_handle_profile_command", "Profile text"),
+    ],
+)
+async def test_active_session_bypass_commands_dispatch_without_interrupt(
+    command_text,
+    handler_attr,
+    handler_result,
+):
+    """Gateway-handled bypass commands must return directly while an agent runs."""
+    runner = _make_runner()
+    event = _make_event(text=command_text)
+    session_key = build_session_key(event.source)
+
+    fake_agent = MagicMock()
+    fake_agent.get_activity_summary.return_value = {"seconds_since_activity": 0}
+    runner._running_agents[session_key] = fake_agent
+    setattr(runner, handler_attr, AsyncMock(return_value=handler_result))
+
+    result = await runner._handle_message(event)
+
+    assert result == handler_result
+    fake_agent.interrupt.assert_not_called()
+    assert session_key not in runner.adapters[Platform.TELEGRAM]._pending_messages
+
+
 # ------------------------------------------------------------------
 # Test 6: /stop during sentinel force-cleans and unlocks session
 # ------------------------------------------------------------------

@@ -8556,6 +8556,7 @@ class HermesCLI:
             # --- /model picker modal ---
             if self._model_picker_state:
                 self._handle_model_picker_selection()
+                event.app.current_buffer.reset()
                 event.app.invalidate()
                 return
 

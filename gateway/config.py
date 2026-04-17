@@ -258,6 +258,13 @@ class GatewayConfig:
     # Streaming configuration
     streaming: StreamingConfig = field(default_factory=StreamingConfig)
 
+    # Session store pruning: drop SessionEntry records older than this many
+    # days from the in-memory dict and sessions.json.  Keeps the store from
+    # growing unbounded in gateways serving many chats/threads/users over
+    # months.  Pruning is invisible to users — if they resume, they get a
+    # fresh session exactly as if the reset policy had fired.  0 = disabled.
+    session_store_max_age_days: int = 90
+
     def get_connected_platforms(self) -> List[Platform]:
         """Return list of platforms that are enabled and configured."""
         connected = []
@@ -365,6 +372,7 @@ class GatewayConfig:
             "thread_sessions_per_user": self.thread_sessions_per_user,
             "unauthorized_dm_behavior": self.unauthorized_dm_behavior,
             "streaming": self.streaming.to_dict(),
+            "session_store_max_age_days": self.session_store_max_age_days,
         }
     
     @classmethod
@@ -412,6 +420,13 @@ class GatewayConfig:
             "pair",
         )
 
+        try:
+            session_store_max_age_days = int(data.get("session_store_max_age_days", 90))
+            if session_store_max_age_days < 0:
+                session_store_max_age_days = 0
+        except (TypeError, ValueError):
+            session_store_max_age_days = 90
+
         return cls(
             platforms=platforms,
             default_reset_policy=default_policy,
@@ -426,6 +441,7 @@ class GatewayConfig:
             thread_sessions_per_user=_coerce_bool(thread_sessions_per_user, False),
             unauthorized_dm_behavior=unauthorized_dm_behavior,
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
+            session_store_max_age_days=session_store_max_age_days,
         )
 
     def get_unauthorized_dm_behavior(self, platform: Optional[Platform] = None) -> str:

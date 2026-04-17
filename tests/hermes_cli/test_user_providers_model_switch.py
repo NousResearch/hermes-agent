@@ -116,6 +116,127 @@ def test_list_authenticated_providers_fallback_to_default_only(monkeypatch):
     assert user_prov["models"] == ["single-model"]
 
 
+def test_list_authenticated_providers_supports_v12_provider_shape(monkeypatch):
+    """providers.<name> should support base_url + model + models(dict)."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+
+    user_providers = {
+        "custom": {
+            "name": "custom",
+            "base_url": "http://example.com/v1",
+            "model": "gpt-5.4",
+            "models": {
+                "gpt-5.4": {},
+                "grok-4.20-beta": {},
+                "minimax-m2.7": {},
+            },
+        }
+    }
+
+    providers = list_authenticated_providers(
+        current_provider="custom",
+        user_providers=user_providers,
+        custom_providers=[],
+        max_models=50,
+    )
+
+    user_prov = next((p for p in providers if p["slug"] == "custom"), None)
+
+    assert user_prov is not None
+    assert user_prov["api_url"] == "http://example.com/v1"
+    assert user_prov["total_models"] == 3
+    assert user_prov["models"] == ["gpt-5.4", "grok-4.20-beta", "minimax-m2.7"]
+
+
+def test_list_authenticated_providers_dedupes_compatible_custom_view_for_same_provider(monkeypatch):
+    """Don't show both providers.custom and its compatibility-layer custom_providers clone."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+
+    user_providers = {
+        "custom": {
+            "name": "custom",
+            "base_url": "http://example.com/v1",
+            "model": "gpt-5.4",
+            "models": {
+                "gpt-5.4": {},
+                "grok-4.20-beta": {},
+            },
+        }
+    }
+    custom_providers = [
+        {
+            "name": "custom",
+            "base_url": "http://example.com/v1",
+            "model": "gpt-5.4",
+            "models": {
+                "gpt-5.4": {},
+                "grok-4.20-beta": {},
+            },
+            "provider_key": "custom",
+        }
+    ]
+
+    providers = list_authenticated_providers(
+        current_provider="custom",
+        user_providers=user_providers,
+        custom_providers=custom_providers,
+        max_models=50,
+    )
+
+    matching = [p for p in providers if p["slug"] == "custom"]
+    assert len(matching) == 1
+    assert matching[0]["models"] == ["gpt-5.4", "grok-4.20-beta"]
+    assert matching[0]["total_models"] == 2
+
+
+def test_list_authenticated_providers_keeps_distinct_custom_provider_same_name_different_url(monkeypatch):
+    """Keep distinct custom providers when only the display name matches."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+
+    user_providers = {
+        "custom": {
+            "name": "custom",
+            "base_url": "http://example.com/v1",
+            "model": "gpt-5.4",
+            "models": {
+                "gpt-5.4": {},
+            },
+        }
+    }
+    custom_providers = [
+        {
+            "name": "custom",
+            "base_url": "http://other.example.com/v1",
+            "model": "grok-4.20-beta",
+            "models": {
+                "grok-4.20-beta": {},
+            },
+            "provider_key": "custom-secondary",
+        }
+    ]
+
+    providers = list_authenticated_providers(
+        current_provider="custom",
+        user_providers=user_providers,
+        custom_providers=custom_providers,
+        max_models=50,
+    )
+
+    matching = [p for p in providers if p["name"] == "custom"]
+    assert len(matching) == 2
+    assert {p["api_url"] for p in matching} == {
+        "http://example.com/v1",
+        "http://other.example.com/v1",
+    }
+    assert {tuple(p["models"]) for p in matching} == {
+        ("gpt-5.4",),
+        ("grok-4.20-beta",),
+    }
+
+
 # =============================================================================
 # Tests for _get_named_custom_provider with providers: dict
 # =============================================================================

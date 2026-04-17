@@ -814,6 +814,15 @@ def list_authenticated_providers(
     results: List[dict] = []
     seen_slugs: set = set()  # lowercase-normalized to catch case variants (#9545)
     seen_mdev_ids: set = set()  # prevent duplicate entries for aliases (e.g. kimi-coding + kimi-coding-cn)
+    seen_user_provider_keys: set = set()
+    seen_user_provider_name_urls: set = set()
+
+    def _normalize_provider_name_url(name: str, api_url: str) -> tuple[str, str] | None:
+        normalized_name = (name or "").strip().lower()
+        normalized_url = (api_url or "").strip().rstrip("/").lower()
+        if not normalized_name or not normalized_url:
+            return None
+        return (normalized_name, normalized_url)
 
     data = fetch_models_dev()
 
@@ -1040,19 +1049,28 @@ def list_authenticated_providers(
             if not isinstance(ep_cfg, dict):
                 continue
             display_name = ep_cfg.get("name", "") or ep_name
-            api_url = ep_cfg.get("api", "") or ep_cfg.get("url", "") or ""
-            default_model = ep_cfg.get("default_model", "")
+            api_url = (
+                ep_cfg.get("api", "")
+                or ep_cfg.get("url", "")
+                or ep_cfg.get("base_url", "")
+                or ""
+            )
+            default_model = ep_cfg.get("default_model", "") or ep_cfg.get("model", "")
 
-            # Build models list from both default_model and full models array
+            # Build models list from both default_model and full models array/dict
             models_list = []
-            if default_model:
+            if isinstance(default_model, str) and default_model:
                 models_list.append(default_model)
-            # Also include the full models list from config
             cfg_models = ep_cfg.get("models", [])
             if isinstance(cfg_models, list):
-                for m in cfg_models:
-                    if m and m not in models_list:
-                        models_list.append(m)
+                iterable_models = cfg_models
+            elif isinstance(cfg_models, dict):
+                iterable_models = list(cfg_models.keys())
+            else:
+                iterable_models = []
+            for m in iterable_models:
+                if isinstance(m, str) and m and m not in models_list:
+                    models_list.append(m)
 
             # Try to probe /v1/models if URL is set (but don't block on it)
             # For now just show what we know from config
@@ -1066,6 +1084,13 @@ def list_authenticated_providers(
                 "source": "user-config",
                 "api_url": api_url,
             })
+            ep_name_normalized = str(ep_name).strip().lower()
+            if ep_name_normalized:
+                seen_slugs.add(ep_name_normalized)
+                seen_user_provider_keys.add(ep_name_normalized)
+            name_url_pair = _normalize_provider_name_url(display_name, api_url)
+            if name_url_pair is not None:
+                seen_user_provider_name_urls.add(name_url_pair)
 
     # --- 4. Saved custom providers from config ---
     # Each ``custom_providers`` entry represents one model under a named
@@ -1104,9 +1129,25 @@ def list_authenticated_providers(
             if default_model and default_model not in groups[slug]["models"]:
                 groups[slug]["models"].append(default_model)
 
+            cfg_models = entry.get("models")
+            if isinstance(cfg_models, list):
+                iterable_models = cfg_models
+            elif isinstance(cfg_models, dict):
+                iterable_models = list(cfg_models.keys())
+            else:
+                iterable_models = []
+            for model_name in iterable_models:
+                if isinstance(model_name, str) and model_name and model_name not in groups[slug]["models"]:
+                    groups[slug]["models"].append(model_name)
+
         for slug, grp in groups.items():
-            if slug.lower() in seen_slugs:
-                continue
+            normalized_slug = slug.lower()
+            normalized_pair = _normalize_provider_name_url(grp["name"], grp["api_url"])
+            if normalized_slug in seen_slugs:
+                if normalized_slug not in seen_user_provider_keys:
+                    continue
+                if normalized_pair is not None and normalized_pair in seen_user_provider_name_urls:
+                    continue
             results.append({
                 "slug": slug,
                 "name": grp["name"],

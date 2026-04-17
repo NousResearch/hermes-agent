@@ -238,3 +238,29 @@ class TestFlushPromptStructure:
         assert "Save any important facts" in flush_prompt
         assert "consider saving it as a skill" in flush_prompt
         assert "Do NOT respond to the user" in flush_prompt
+
+
+class TestSessionEndHooks:
+    """Gateway session expiry/reset should dispatch live memory hooks."""
+
+    def test_live_memory_manager_receives_on_session_end(self, tmp_path, monkeypatch):
+        runner, tmp_agent, _ = _make_flush_context(monkeypatch)
+
+        live_agent = MagicMock()
+        live_agent._memory_manager = MagicMock()
+
+        import threading
+
+        runner._agent_cache_lock = threading.Lock()
+        runner._agent_cache = {"session-key": (live_agent, "sig")}
+        runner._running_agents = {}
+
+        with (
+            patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "k"}),
+            patch("gateway.run._resolve_gateway_model", return_value="test-model"),
+            patch.dict("sys.modules", {"tools.memory_tool": MagicMock(get_memory_dir=lambda: tmp_path)}),
+        ):
+            runner._flush_memories_for_session("session_hooked", session_key="session-key")
+
+        live_agent._memory_manager.on_session_end.assert_called_once_with(_TRANSCRIPT_4_MSGS)
+        tmp_agent.run_conversation.assert_called_once()

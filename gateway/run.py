@@ -740,6 +740,47 @@ class GatewayRunner:
 
     # -----------------------------------------------------------------
 
+    def _notify_session_end_memory_hooks(
+        self,
+        history: list[dict[str, Any]],
+        *,
+        old_session_id: str,
+        session_key: Optional[str] = None,
+    ) -> None:
+        """Dispatch gateway session-end hooks to the live cached agent, if any."""
+        if not history or not session_key:
+            return
+
+        live_agent = None
+        _cache_lock = getattr(self, "_agent_cache_lock", None)
+        _agent_cache = getattr(self, "_agent_cache", None)
+        if _cache_lock is not None and _agent_cache is not None:
+            with _cache_lock:
+                _cached = _agent_cache.get(session_key)
+                live_agent = (
+                    _cached[0]
+                    if isinstance(_cached, tuple)
+                    else _cached if _cached else None
+                )
+
+        if live_agent is None:
+            _running_agents = getattr(self, "_running_agents", None)
+            if isinstance(_running_agents, dict):
+                live_agent = _running_agents.get(session_key)
+
+        _memory_manager = getattr(live_agent, "_memory_manager", None)
+        if _memory_manager is None:
+            return
+
+        try:
+            _memory_manager.on_session_end(history)
+        except Exception as exc:
+            logger.warning(
+                "Gateway on_session_end dispatch failed for session %s: %s",
+                old_session_id,
+                exc,
+            )
+
     def _flush_memories_for_session(
         self,
         old_session_id: str,
@@ -758,6 +799,11 @@ class GatewayRunner:
 
         try:
             history = self.session_store.load_transcript(old_session_id)
+            self._notify_session_end_memory_hooks(
+                history or [],
+                old_session_id=old_session_id,
+                session_key=session_key,
+            )
             if not history or len(history) < 4:
                 return
 

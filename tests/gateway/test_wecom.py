@@ -44,6 +44,7 @@ class TestWeComAdapterInit:
             extra={
                 "bot_id": "cfg-bot",
                 "secret": "cfg-secret",
+                "bot_display_name": "Hermes",
                 "websocket_url": "wss://custom.wecom.example/ws",
                 "group_policy": "allowlist",
                 "group_allow_from": ["group-1"],
@@ -53,6 +54,7 @@ class TestWeComAdapterInit:
 
         assert adapter._bot_id == "cfg-bot"
         assert adapter._secret == "cfg-secret"
+        assert adapter._bot_display_name == "Hermes"
         assert adapter._ws_url == "wss://custom.wecom.example/ws"
         assert adapter._group_policy == "allowlist"
         assert adapter._group_allow_from == ["group-1"]
@@ -60,12 +62,14 @@ class TestWeComAdapterInit:
     def test_falls_back_to_env_vars(self, monkeypatch):
         monkeypatch.setenv("WECOM_BOT_ID", "env-bot")
         monkeypatch.setenv("WECOM_SECRET", "env-secret")
+        monkeypatch.setenv("WECOM_BOT_DISPLAY_NAME", "Env Hermes")
         monkeypatch.setenv("WECOM_WEBSOCKET_URL", "wss://env.example/ws")
         from gateway.platforms.wecom import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         assert adapter._bot_id == "env-bot"
         assert adapter._secret == "env-secret"
+        assert adapter._bot_display_name == "Env Hermes"
         assert adapter._ws_url == "wss://env.example/ws"
 
 
@@ -211,6 +215,14 @@ class TestExtractText:
         assert text == "spoken text"
         assert reply_text == "quoted"
 
+    def test_strip_bot_mention_prefix_only_for_configured_name(self):
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True, extra={"bot_display_name": "Hermes"}))
+
+        assert adapter._strip_bot_mention_prefix("@Hermes /reset") == "/reset"
+        assert adapter._strip_bot_mention_prefix("@Other /reset") == "@Other /reset"
+
 
 class TestCallbackDispatch:
     @pytest.mark.asyncio
@@ -293,6 +305,21 @@ class TestMediaHelpers:
         encrypted = encryptor.update(padded) + encryptor.finalize()
 
         decrypted = WeComAdapter._decrypt_file_bytes(encrypted, base64.b64encode(key).decode("ascii"))
+
+        assert decrypted == plaintext
+
+    def test_decrypt_file_bytes_accepts_hex_aes_key(self):
+        from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+        from gateway.platforms.wecom import WeComAdapter
+
+        plaintext = b"wecom-hex-secret"
+        key = os.urandom(32)
+        pad_len = 32 - (len(plaintext) % 32)
+        padded = plaintext + bytes([pad_len]) * pad_len
+        encryptor = Cipher(algorithms.AES(key), modes.CBC(key[:16])).encryptor()
+        encrypted = encryptor.update(padded) + encryptor.finalize()
+
+        decrypted = WeComAdapter._decrypt_file_bytes(encrypted, key.hex())
 
         assert decrypted == plaintext
 
@@ -565,6 +592,34 @@ class TestInboundMessages:
         assert event.reply_to_message_id == "quote:msg-1"
 
     @pytest.mark.asyncio
+    async def test_on_message_strips_group_mention_prefix_for_commands(self):
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True, extra={"bot_display_name": "Hermes"}))
+        adapter._text_batch_delay_seconds = 0  # disable batching for tests
+        adapter.handle_message = AsyncMock()
+        adapter._extract_media = AsyncMock(return_value=([], []))
+
+        payload = {
+            "cmd": "aibot_msg_callback",
+            "headers": {"req_id": "req-1"},
+            "body": {
+                "msgid": "msg-2",
+                "chatid": "group-1",
+                "chattype": "group",
+                "from": {"userid": "user-1"},
+                "msgtype": "text",
+                "text": {"content": "@Hermes /reset"},
+            },
+        }
+
+        await adapter._on_message(payload)
+
+        event = adapter.handle_message.await_args.args[0]
+        assert event.text == "/reset"
+        assert event.is_command() is True
+
+    @pytest.mark.asyncio
     async def test_on_message_respects_group_policy(self):
         from gateway.platforms.wecom import WeComAdapter
 
@@ -592,4 +647,3 @@ class TestInboundMessages:
 
         await adapter._on_message(payload)
         adapter.handle_message.assert_not_awaited()
-

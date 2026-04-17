@@ -17,6 +17,7 @@ Configuration in config.yaml:
         extra:
           bot_id: "your-bot-id"          # or WECOM_BOT_ID env var
           secret: "your-secret"          # or WECOM_SECRET env var
+          bot_display_name: "Hermes"     # or WECOM_BOT_DISPLAY_NAME env var
           websocket_url: "wss://openws.work.weixin.qq.com"
           dm_policy: "open"              # open | allowlist | disabled | pairing
           allow_from: ["user_id_1"]
@@ -152,6 +153,11 @@ class WeComAdapter(BasePlatformAdapter):
         extra = config.extra or {}
         self._bot_id = str(extra.get("bot_id") or os.getenv("WECOM_BOT_ID", "")).strip()
         self._secret = str(extra.get("secret") or os.getenv("WECOM_SECRET", "")).strip()
+        self._bot_display_name = str(
+            extra.get("bot_display_name")
+            or extra.get("botDisplayName")
+            or os.getenv("WECOM_BOT_DISPLAY_NAME", "")
+        ).strip()
         self._ws_url = str(
             extra.get("websocket_url")
             or extra.get("websocketUrl")
@@ -497,6 +503,8 @@ class WeComAdapter(BasePlatformAdapter):
             return
 
         text, reply_text = self._extract_text(body)
+        if is_group and text:
+            text = self._strip_bot_mention_prefix(text)
         media_urls, media_types = await self._extract_media(body)
         message_type = self._derive_message_type(body, text, media_types)
         has_reply_context = bool(reply_text and (text or media_urls))
@@ -652,6 +660,15 @@ class WeComAdapter(BasePlatformAdapter):
             reply_text = str(quote_voice.get("content") or "").strip() or None
 
         return "\n".join(part for part in text_parts if part).strip(), reply_text
+
+    def _strip_bot_mention_prefix(self, text: str) -> str:
+        """Strip the plain-text @mention WeCom prepends in group chats."""
+        content = str(text or "").strip()
+        if not content or not self._bot_display_name:
+            return content
+
+        pattern = rf"^\s*[@＠]{re.escape(self._bot_display_name)}(?:[\s\u00a0\u2005]+|$)"
+        return re.sub(pattern, "", content, count=1).lstrip()
 
     async def _extract_media(self, body: Dict[str, Any]) -> Tuple[List[str], List[str]]:
         """Best-effort extraction of inbound media to local cache paths."""
@@ -972,7 +989,10 @@ class WeComAdapter(BasePlatformAdapter):
         if not aes_key:
             raise ValueError("aes_key is required")
 
-        key = base64.b64decode(aes_key)
+        if re.fullmatch(r"[0-9a-fA-F]{64}", aes_key):
+            key = bytes.fromhex(aes_key)
+        else:
+            key = base64.b64decode(aes_key)
         if len(key) != 32:
             raise ValueError(f"Invalid WeCom AES key length: expected 32 bytes, got {len(key)}")
 

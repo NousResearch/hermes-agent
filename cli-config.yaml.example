@@ -571,6 +571,9 @@ platform_toolsets:
 #     reply_to_mode: "first"  # off | first | all
 #     extra:
 #       disable_link_previews: false  # Set true to suppress Telegram URL previews in bot messages
+#   wecom:
+#     extra:
+#       bot_display_name: "Hermes"  # Strip plain-text group prefixes such as "@Hermes /reset"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Available toolsets (use these names in platform_toolsets or the toolsets list)

@@ -1103,6 +1103,9 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             "bot_id": wecom_bot_id,
             "secret": wecom_secret,
         })
+        wecom_bot_display_name = os.getenv("WECOM_BOT_DISPLAY_NAME", "")
+        if wecom_bot_display_name:
+            config.platforms[Platform.WECOM].extra["bot_display_name"] = wecom_bot_display_name
         wecom_ws_url = os.getenv("WECOM_WEBSOCKET_URL", "")
         if wecom_ws_url:
             config.platforms[Platform.WECOM].extra["websocket_url"] = wecom_ws_url

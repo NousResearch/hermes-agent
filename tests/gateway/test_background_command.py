@@ -189,6 +189,43 @@ class TestHandleBackgroundCommand:
         assert len(jobs) == 1
         assert jobs[0]["kind"] == "btw"
 
+    @pytest.mark.asyncio
+    async def test_btw_reuses_stored_transcript_snapshot(self):
+        """When the chat is idle, /btw should snapshot the stored transcript into the durable job."""
+        runner = _make_runner()
+        event = _make_event(text="/btw summarize the current thread")
+        runner.session_store.load_transcript.return_value = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+        ]
+
+        result = await runner._handle_btw_command(event)
+
+        assert "Reply will appear here shortly" in result
+        runner.session_store.get_or_create_session.assert_called_once()
+        runner.session_store.load_transcript.assert_called_once()
+        jobs = runner._background_jobs_for_source(event.source)
+        assert len(jobs) == 1
+        assert jobs[0]["conversation_history"] == [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+        ]
+
+    @pytest.mark.asyncio
+    async def test_btw_rejects_second_active_job_for_same_chat(self):
+        """A second /btw should be rejected while the first durable BTW job is still active."""
+        runner = _make_runner()
+        event = _make_event(text="/btw first question")
+
+        first = await runner._handle_btw_command(event)
+        second = await runner._handle_btw_command(_make_event(text="/btw second question"))
+
+        assert "Reply will appear here shortly" in first
+        assert second == "A /btw is already running for this chat. Wait for it to finish."
+        runner._launch_background_worker.assert_called_once()
+        jobs = runner._background_jobs_for_source(event.source)
+        assert len(jobs) == 1
+
 
 # ---------------------------------------------------------------------------
 # _run_background_task

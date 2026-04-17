@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from gateway.background_worker import run_background_job
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.session import SessionEntry, SessionSource, build_session_key
 
@@ -138,6 +139,71 @@ async def test_delivery_tick_sends_manual_completion_with_concise_template(tmp_p
     assert "任务：手工补一版对外说明" in content
     assert "说明已经整理好了" in content
     assert "Background task complete" not in content
+
+
+@pytest.mark.asyncio
+async def test_btw_job_runs_through_worker_and_delivery(tmp_path, monkeypatch):
+    runner = _make_runner(tmp_path)
+    store = runner._background_job_store
+    source = _make_source()
+    task_id = "bg_200020_abcd12"
+
+    store.create_job(
+        task_id=task_id,
+        prompt="what changed in this chat?",
+        source=source,
+        session_key="qq_napcat:dm:179033731",
+        job_kind="btw",
+        conversation_history=[{"role": "user", "content": "hello"}],
+    )
+
+    heartbeat_stop = MagicMock()
+    heartbeat_thread = MagicMock()
+    worker_calls = {}
+
+    monkeypatch.setattr(
+        "gateway.background_worker.BackgroundJobStore",
+        lambda: store,
+    )
+    monkeypatch.setattr(
+        "gateway.background_worker._start_job_heartbeat",
+        lambda _store, _task_id: (heartbeat_stop, heartbeat_thread),
+    )
+    monkeypatch.setattr(
+        "gateway.background_worker._build_agent_runtime",
+        lambda job: {
+            "source": source,
+            "runtime_spec": SimpleNamespace(
+                loaded_skills=[],
+                missing_skills=[],
+            ),
+            "loaded_skills": [],
+            "missing_skills": [],
+        },
+    )
+    monkeypatch.setattr(
+        "gateway.background_worker.run_gateway_btw_conversation",
+        lambda **kwargs: worker_calls.update(kwargs) or {"final_response": "side answer"},
+    )
+
+    exit_code = run_background_job(task_id)
+
+    assert exit_code == 0
+    assert worker_calls["session_id"] == task_id
+    assert worker_calls["source"] == source
+    assert worker_calls["question"] == "what changed in this chat?"
+    assert worker_calls["conversation_history"] == [{"role": "user", "content": "hello"}]
+    job = store.get_job(task_id)
+    assert job["status"] == "completed"
+    assert job["raw_response"] == "side answer"
+
+    await runner._deliver_background_job_updates_once()
+
+    content = runner.adapters[Platform.QQ_NAPCAT].send.await_args.kwargs["content"]
+    assert '💬 /btw: "what changed in this chat?"' in content
+    assert "side answer" in content
+    heartbeat_stop.set.assert_called_once()
+    heartbeat_thread.join.assert_called_once_with(timeout=1.0)
 
 
 @pytest.mark.asyncio

@@ -756,6 +756,46 @@ class GatewayRunner:
             logger.debug("Skipping memory flush for cron session: %s", old_session_id)
             return
 
+        # Fire MemoryProvider.on_session_end() on the live cached agent's
+        # memory manager BEFORE the bespoke flush agent runs.  The graceful
+        # CLI shutdown path (run_agent.py:shutdown_memory_provider) calls
+        # this hook at session boundaries; gateway sessions need the same
+        # contract so plugin providers get their documented final-pass
+        # extraction opportunity (idle expiry, scheduled reset, /reset).
+        # Wrapped in try/except so a misbehaving provider can't block the
+        # rest of the flush path (matches the per-provider error tolerance
+        # in MemoryManager.on_session_end itself).
+        try:
+            cached_agent = None
+            cache_lock = getattr(self, "_agent_cache_lock", None)
+            if cache_lock is not None and session_key:
+                with cache_lock:
+                    _cached = self._agent_cache.get(session_key)
+                    cached_agent = (
+                        _cached[0] if isinstance(_cached, tuple)
+                        else _cached if _cached
+                        else None
+                    )
+            if cached_agent is None and session_key:
+                _running = self._running_agents.get(session_key)
+                if _running is not None and _running is not _AGENT_PENDING_SENTINEL:
+                    cached_agent = _running
+            if cached_agent is not None:
+                _mm = getattr(cached_agent, "_memory_manager", None)
+                if _mm is not None:
+                    _history = self.session_store.load_transcript(old_session_id) or []
+                    _msgs = [
+                        {"role": m.get("role"), "content": m.get("content")}
+                        for m in _history
+                        if m.get("role") in ("user", "assistant") and m.get("content")
+                    ]
+                    _mm.on_session_end(_msgs)
+        except Exception as exc:
+            logger.warning(
+                "MemoryProvider.on_session_end dispatch failed for session %s: %s",
+                old_session_id, exc,
+            )
+
         try:
             history = self.session_store.load_transcript(old_session_id)
             if not history or len(history) < 4:

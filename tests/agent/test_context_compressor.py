@@ -93,6 +93,45 @@ class TestCompress:
         assert msgs[-2]["content"] in result[-2]["content"]
 
 
+class TestSummaryFailurePreservesMessages:
+    def test_preserves_all_messages_when_generate_summary_returns_none(self, compressor):
+        msgs = [{"role": "system", "content": "System prompt"}] + [
+            {"role": "user" if i % 2 == 0 else "assistant", "content": f"msg {i}"}
+            for i in range(10)
+        ]
+
+        with patch.object(compressor, "_generate_summary", return_value=None):
+            result = compressor.compress(msgs)
+
+        assert result == msgs
+        assert result[0]["content"] == "System prompt"
+        assert all(not (m.get("content") or "").startswith(SUMMARY_PREFIX) for m in result)
+        assert compressor.compression_count == 0
+
+    def test_summary_failure_restores_pre_prune_messages(self, compressor):
+        msgs = [
+            {"role": "system", "content": "System prompt"},
+            {"role": "user", "content": "msg 0"},
+            {"role": "assistant", "content": "msg 1"},
+            {"role": "tool", "content": "full tool output"},
+            {"role": "user", "content": "msg 2"},
+            {"role": "assistant", "content": "msg 3"},
+            {"role": "user", "content": "msg 4"},
+        ]
+        pruned_msgs = [m.copy() for m in msgs]
+        pruned_msgs[3]["content"] = "[pruned tool output]"
+
+        with (
+            patch.object(compressor, "_prune_old_tool_results", return_value=(pruned_msgs, 1)),
+            patch.object(compressor, "_generate_summary", return_value=None),
+        ):
+            result = compressor.compress(msgs)
+
+        assert result == msgs
+        assert result[3]["content"] == "full tool output"
+        assert compressor.compression_count == 0
+
+
 class TestGenerateSummaryNoneContent:
     """Regression: content=None (from tool-call-only assistant messages) must not crash."""
 

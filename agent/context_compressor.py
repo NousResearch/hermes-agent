@@ -609,9 +609,9 @@ class ContextCompressor(ContextEngine):
                 related to this topic and is more aggressive about compressing
                 everything else.  Inspired by Claude Code's ``/compact``.
 
-        Returns None if all attempts fail — the caller should drop
-        the middle turns without a summary rather than inject a useless
-        placeholder.
+        Returns None if all attempts fail — the caller should preserve
+        the original messages unchanged rather than drop the middle turns
+        or inject a useless placeholder.
         """
         now = time.monotonic()
         if now < self._summary_failure_cooldown_until:
@@ -763,8 +763,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             # No provider configured — long cooldown, unlikely to self-resolve
             self._summary_failure_cooldown_until = time.monotonic() + _SUMMARY_FAILURE_COOLDOWN_SECONDS
             logging.warning("Context compression: no provider available for "
-                            "summary. Middle turns will be dropped without summary "
-                            "for %d seconds.",
+                            "summary. Original messages will be preserved for %d seconds.",
                             _SUMMARY_FAILURE_COOLDOWN_SECONDS)
             return None
         except Exception as e:
@@ -1069,6 +1068,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 everything else.  Inspired by Claude Code's ``/compact``.
         """
         n_messages = len(messages)
+        original_messages = messages
         # Only need head + 3 tail messages minimum (token budget decides the real tail size)
         _min_for_compress = self.protect_first_n + 3 + 1
         if n_messages <= _min_for_compress:
@@ -1137,8 +1137,15 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                     msg["content"] = existing + "\n\n" + _compression_note
             compressed.append(msg)
 
-        # If LLM summary failed, insert a static fallback so the model
-        # knows context was lost rather than silently dropping everything.
+        # If summary generation failed, preserve the original conversation
+        # unchanged instead of deleting the middle turns or mutating the
+        # system prompt with a misleading compaction note.
+        if summary is None:
+            if not self.quiet_mode:
+                logger.warning("Summary generation failed — preserving original messages unchanged")
+            return original_messages
+
+        # Keep an explicit fallback for unexpected empty-string summaries.
         if not summary:
             if not self.quiet_mode:
                 logger.warning("Summary generation failed — inserting static fallback context marker")

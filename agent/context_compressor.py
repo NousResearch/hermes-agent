@@ -20,8 +20,8 @@ Improvements over v2:
 import hashlib
 import json
 import logging
-import re
 import time
+import re
 from typing import Any, Dict, List, Optional
 
 from agent.auxiliary_client import call_llm
@@ -313,6 +313,19 @@ class ContextCompressor(ContextEngine):
         """
         tokens = prompt_tokens if prompt_tokens is not None else self.last_prompt_tokens
         if tokens < self.threshold_tokens:
+            return False
+        # Do not trigger compression while the summary LLM is in cooldown.
+        # Without this guard, every agent turn fires _compress_context(),
+        # which calls _generate_summary(), which returns None (cooldown),
+        # inserts a static fallback marker, and re-enters the loop — causing
+        # the CLI to appear frozen until the cooldown expires (issue #11529).
+        _cooldown_remaining = self._summary_failure_cooldown_until - time.monotonic()
+        if _cooldown_remaining > 0:
+            if not self.quiet_mode:
+                logger.debug(
+                    "Compression deferred — summary LLM in cooldown for %.0fs more",
+                    _cooldown_remaining,
+                )
             return False
         # Anti-thrashing: back off if recent compressions were ineffective
         if self._ineffective_compression_count >= 2:

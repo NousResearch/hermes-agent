@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 from gateway.agent_execution_service import (
     append_missing_media_tags_to_response,
+    build_gateway_btw_prompt,
     collect_history_media_paths,
     execute_gateway_sync_turn,
     finalize_gateway_agent_conversation_result,
@@ -13,6 +14,8 @@ from gateway.agent_execution_service import (
     normalize_conversation_history,
     prepend_pending_model_switch_note,
     run_gateway_approved_conversation,
+    run_gateway_background_conversation,
+    run_gateway_btw_conversation,
     setup_gateway_stream_consumer,
     sync_gateway_execution_session_split,
 )
@@ -136,6 +139,14 @@ def test_gateway_approval_context_sets_and_resets_context(monkeypatch):
 def test_prepend_pending_model_switch_note_only_when_present():
     assert prepend_pending_model_switch_note("hello", None) == "hello"
     assert prepend_pending_model_switch_note("hello", "switch note") == "switch note\n\nhello"
+
+
+def test_build_gateway_btw_prompt_wraps_question_in_ephemeral_instruction():
+    assert build_gateway_btw_prompt("what changed?") == (
+        "[Ephemeral /btw side question. Answer using the conversation "
+        "context. No tools available. Be direct and concise.]\n\n"
+        "what changed?"
+    )
 
 
 def test_append_missing_media_tags_to_response_dedupes_and_preserves_voice_directive():
@@ -375,6 +386,129 @@ def test_run_gateway_approved_conversation_passes_external_backend(monkeypatch):
             "external_backend": backend,
         },
     )
+
+
+def test_run_gateway_background_conversation_creates_agent_triggers_callback_and_forwards_backend(
+    monkeypatch,
+):
+    created_calls = {}
+    approved_calls = {}
+    created_agents = []
+    agent = SimpleNamespace(name="bg-agent")
+    backend = object()
+    source = SimpleNamespace(platform=None)
+
+    def _fake_create_gateway_agent(**kwargs):
+        created_calls.update(kwargs)
+        return agent
+
+    def _fake_run_gateway_approved_conversation(**kwargs):
+        approved_calls.update(kwargs)
+        return {"final_response": "background done"}
+
+    monkeypatch.setattr(
+        "gateway.agent_execution_service.create_gateway_agent",
+        _fake_create_gateway_agent,
+    )
+    monkeypatch.setattr(
+        "gateway.agent_execution_service.run_gateway_approved_conversation",
+        _fake_run_gateway_approved_conversation,
+    )
+
+    runtime_spec = SimpleNamespace(max_iterations=14, enabled_toolsets=["core", "web"])
+
+    result = run_gateway_background_conversation(
+        runtime_spec=runtime_spec,
+        session_id="sess-bg",
+        source=source,
+        message="hello from bg",
+        conversation_history=[{"role": "user", "content": "hi"}],
+        session_key="key-bg",
+        admin_user_ids=["179033731"],
+        is_admin_user=True,
+        status_adapter=SimpleNamespace(),
+        status_chat_id="chat-bg",
+        status_thread_metadata={"thread_id": "thread-bg"},
+        loop_for_step="loop-bg",
+        logger=MagicMock(),
+        admin_only_message_builder=lambda action: None,
+        session_db="db-handle",
+        external_backend=backend,
+        on_agent_created=created_agents.append,
+    )
+
+    assert result == {"final_response": "background done"}
+    assert created_calls == {
+        "runtime_spec": runtime_spec,
+        "session_id": "sess-bg",
+        "source": source,
+        "session_db": "db-handle",
+        "max_iterations": 14,
+        "quiet_mode": True,
+        "verbose_logging": False,
+        "enabled_toolsets": ["core", "web"],
+    }
+    assert created_agents == [agent]
+    assert approved_calls["agent"] is agent
+    assert approved_calls["message"] == "hello from bg"
+    assert approved_calls["pending_model_note"] is None
+    assert approved_calls["conversation_history"] == [{"role": "user", "content": "hi"}]
+    assert approved_calls["task_id"] == "sess-bg"
+    assert approved_calls["session_key"] == "key-bg"
+    assert approved_calls["admin_user_ids"] == ["179033731"]
+    assert approved_calls["is_admin_user"] is True
+    assert approved_calls["status_chat_id"] == "chat-bg"
+    assert approved_calls["status_thread_metadata"] == {"thread_id": "thread-bg"}
+    assert approved_calls["loop_for_step"] == "loop-bg"
+    assert approved_calls["external_backend"] is backend
+
+
+def test_run_gateway_btw_conversation_uses_ephemeral_agent_settings(monkeypatch):
+    created_calls = {}
+    run_calls = {}
+
+    def _fake_create_gateway_agent(**kwargs):
+        created_calls.update(kwargs)
+        return SimpleNamespace(
+            run_conversation=lambda **call_kwargs: run_calls.update(call_kwargs)
+            or {"final_response": "btw answer"}
+        )
+
+    monkeypatch.setattr(
+        "gateway.agent_execution_service.create_gateway_agent",
+        _fake_create_gateway_agent,
+    )
+
+    runtime_spec = SimpleNamespace(max_iterations=25)
+    conversation_history = [{"role": "assistant", "content": "earlier"}]
+    source = SimpleNamespace(platform=None)
+
+    result = run_gateway_btw_conversation(
+        runtime_spec=runtime_spec,
+        session_id="sess-btw",
+        source=source,
+        question="what changed?",
+        conversation_history=conversation_history,
+    )
+
+    assert result == {"final_response": "btw answer"}
+    assert created_calls == {
+        "runtime_spec": runtime_spec,
+        "session_id": "sess-btw",
+        "source": source,
+        "max_iterations": 8,
+        "enabled_toolsets": [],
+        "quiet_mode": True,
+        "verbose_logging": False,
+        "skip_memory": True,
+        "skip_context_files": True,
+        "persist_session": False,
+    }
+    assert run_calls == {
+        "user_message": build_gateway_btw_prompt("what changed?"),
+        "conversation_history": conversation_history,
+        "task_id": "sess-btw",
+    }
 
 
 def test_setup_gateway_stream_consumer_builds_consumer_and_callback(monkeypatch):

@@ -981,7 +981,14 @@ class GatewayRunner:
 
         return model, runtime_kwargs
 
-    def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict) -> dict:
+    def _resolve_turn_agent_config(
+        self,
+        user_message: str,
+        model: str,
+        runtime_kwargs: dict,
+        *,
+        skill_runtime_defaults: Optional[dict] = None,
+    ) -> dict:
         from agent.smart_model_routing import resolve_turn_route
         from hermes_cli.models import resolve_fast_mode_overrides
 
@@ -996,6 +1003,39 @@ class GatewayRunner:
             "credential_pool": runtime_kwargs.get("credential_pool"),
         }
         route = resolve_turn_route(user_message, getattr(self, "_smart_model_routing", {}), primary)
+
+        # Apply per-skill runtime defaults (reasoning_effort in v1; model in v2).
+        # Reasoning overrides do NOT participate in the cache signature — they
+        # are applied post-lookup via the existing per-message refresh block
+        # at gateway/run.py:8885-8894.
+        route["hard_fail"] = None
+        route["skill_reasoning_config"] = None
+        if skill_runtime_defaults:
+            try:
+                from agent.turn_runtime_overrides import (
+                    merge_turn_runtime_defaults,
+                    emit_events,
+                )
+
+                session_default_reasoning = getattr(self, "_reasoning_config", None)
+                merge_res = merge_turn_runtime_defaults(
+                    {},
+                    skill_runtime_defaults,
+                    skill_name=skill_runtime_defaults.get("skill_name", ""),
+                    session_default_reasoning=session_default_reasoning,
+                )
+                emit_events(merge_res.events)
+                if merge_res.hard_fail is not None:
+                    route["hard_fail"] = merge_res.hard_fail
+                    return route
+                if "reasoning_config" in merge_res.merged:
+                    route["skill_reasoning_config"] = merge_res.merged[
+                        "reasoning_config"
+                    ]
+            except Exception:
+                logger.debug(
+                    "skill_runtime_defaults merge failed", exc_info=True
+                )
 
         service_tier = getattr(self, "_service_tier", None)
         if not service_tier:
@@ -2977,6 +3017,7 @@ class GatewayRunner:
                         source=event.source,
                         message_id=event.message_id,
                         channel_prompt=event.channel_prompt,
+                        turn_runtime_defaults=event.turn_runtime_defaults,
                     )
                     adapter._pending_messages[_quick_key] = queued_event
                 return "Queued for the next turn."
@@ -3131,11 +3172,14 @@ class GatewayRunner:
 
         if canonical == "plan":
             try:
-                from agent.skill_commands import build_plan_path, build_skill_invocation_message
+                from agent.skill_commands import (
+                    build_plan_path,
+                    build_skill_invocation_payload,
+                )
 
                 user_instruction = event.get_command_args().strip()
                 plan_path = build_plan_path(user_instruction)
-                event.text = build_skill_invocation_message(
+                payload = build_skill_invocation_payload(
                     "/plan",
                     user_instruction,
                     task_id=_quick_key,
@@ -3144,8 +3188,11 @@ class GatewayRunner:
                         f"inside the active workspace/backend cwd: {plan_path}"
                     ),
                 )
-                if not event.text:
+                if not payload or not payload.get("message"):
                     return "Failed to load the bundled /plan skill."
+                event.text = payload["message"]
+                if payload.get("runtime_defaults"):
+                    event.turn_runtime_defaults = payload["runtime_defaults"]
                 canonical = None
             except Exception as e:
                 logger.exception("Failed to prepare /plan command")
@@ -3296,11 +3343,16 @@ class GatewayRunner:
                                 f"Enable it with: `hermes skills config`"
                             )
                     user_instruction = event.get_command_args().strip()
-                    msg = build_skill_invocation_message(
+                    # Build structured payload so turn_runtime_defaults ride
+                    # alongside the rendered text — see Design Rule 1.
+                    from agent.skill_commands import build_skill_invocation_payload
+                    payload = build_skill_invocation_payload(
                         cmd_key, user_instruction, task_id=_quick_key
                     )
-                    if msg:
-                        event.text = msg
+                    if payload and payload.get("message"):
+                        event.text = payload["message"]
+                        if payload.get("runtime_defaults"):
+                            event.turn_runtime_defaults = payload["runtime_defaults"]
                         # Fall through to normal message processing with skill content
                 else:
                     # Not an active skill — check if it's a known-but-disabled or
@@ -3990,6 +4042,7 @@ class GatewayRunner:
                 session_key=session_key,
                 event_message_id=event.message_id,
                 channel_prompt=event.channel_prompt,
+                turn_runtime_defaults=getattr(event, "turn_runtime_defaults", None),
             )
 
             # Stop persistent typing indicator now that the agent is done
@@ -8338,6 +8391,7 @@ class GatewayRunner:
         _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None,
         channel_prompt: Optional[str] = None,
+        turn_runtime_defaults: Optional[dict] = None,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -8815,7 +8869,23 @@ class GatewayRunner:
                 except Exception as _e:
                     logger.debug("interim_assistant_callback error: %s", _e)
 
-            turn_route = self._resolve_turn_agent_config(message, model, runtime_kwargs)
+            turn_route = self._resolve_turn_agent_config(
+                message,
+                model,
+                runtime_kwargs,
+                skill_runtime_defaults=turn_runtime_defaults,
+            )
+            if turn_route.get("hard_fail"):
+                hf = turn_route["hard_fail"]
+                err = (
+                    f"Skill '{hf.skill_name}' requires {hf.failing_field} "
+                    f"but it could not be applied ({hf.reason})."
+                )
+                return {
+                    "final_response": err,
+                    "messages": history,
+                    "failed": True,
+                }
 
             # Check agent cache — reuse the AIAgent from the previous message
             # in this session to preserve the frozen system prompt and tool
@@ -8889,7 +8959,16 @@ class GatewayRunner:
             agent.stream_delta_callback = _stream_delta_cb
             agent.interim_assistant_callback = _interim_assistant_cb if _want_interim_messages else None
             agent.status_callback = _status_callback_sync
-            agent.reasoning_config = reasoning_config
+            # Per-turn skill reasoning override: apply skill-declared
+            # reasoning_config for this turn only; next plain turn reverts to
+            # the session default (`reasoning_config` here comes from
+            # `_build_reasoning_config_for_turn`).  Reasoning is deliberately
+            # excluded from `_agent_config_signature` so mutating it in place
+            # does not thrash the cache (Design Rule 5).
+            _skill_reasoning = turn_route.get("skill_reasoning_config")
+            agent.reasoning_config = (
+                _skill_reasoning if _skill_reasoning is not None else reasoning_config
+            )
             agent.service_tier = self._service_tier
             agent.request_overrides = turn_route.get("request_overrides")
 
@@ -9692,6 +9771,7 @@ class GatewayRunner:
                 next_message = pending
                 next_message_id = None
                 next_channel_prompt = None
+                next_turn_runtime_defaults = None
                 if pending_event is not None:
                     next_source = getattr(pending_event, "source", None) or source
                     next_message = await self._prepare_inbound_message_text(
@@ -9703,6 +9783,12 @@ class GatewayRunner:
                         return result
                     next_message_id = getattr(pending_event, "message_id", None)
                     next_channel_prompt = getattr(pending_event, "channel_prompt", None)
+                    # Re-read turn_runtime_defaults from the pending_event so a
+                    # skill invocation that arrived during an interrupt still
+                    # shapes the follow-up turn (mirrors channel_prompt).
+                    next_turn_runtime_defaults = getattr(
+                        pending_event, "turn_runtime_defaults", None
+                    )
 
                 # Restart typing indicator so the user sees activity while
                 # the follow-up turn runs.  The outer _process_message_background
@@ -9727,6 +9813,7 @@ class GatewayRunner:
                     _interrupt_depth=_interrupt_depth + 1,
                     event_message_id=next_message_id,
                     channel_prompt=next_channel_prompt,
+                    turn_runtime_defaults=next_turn_runtime_defaults,
                 )
         finally:
             # Stop progress sender, interrupt monitor, and notification task

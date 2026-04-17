@@ -44,7 +44,8 @@ _EXTRA_ENV_KEYS = frozenset({
     "WEIXIN_HOME_CHANNEL", "WEIXIN_HOME_CHANNEL_NAME", "WEIXIN_DM_POLICY", "WEIXIN_GROUP_POLICY",
     "WEIXIN_ALLOWED_USERS", "WEIXIN_GROUP_ALLOWED_USERS", "WEIXIN_ALLOW_ALL_USERS",
     "BLUEBUBBLES_SERVER_URL", "BLUEBUBBLES_PASSWORD",
-    "QQ_APP_ID", "QQ_CLIENT_SECRET", "QQ_HOME_CHANNEL", "QQ_HOME_CHANNEL_NAME",
+    "QQ_APP_ID", "QQ_CLIENT_SECRET", "QQBOT_HOME_CHANNEL", "QQBOT_HOME_CHANNEL_NAME",
+    "QQ_HOME_CHANNEL", "QQ_HOME_CHANNEL_NAME",  # legacy aliases (pre-rename, still read for back-compat)
     "QQ_ALLOWED_USERS", "QQ_GROUP_ALLOWED_USERS", "QQ_ALLOW_ALL_USERS", "QQ_MARKDOWN_SUPPORT",
     "QQ_STT_API_KEY", "QQ_STT_BASE_URL", "QQ_STT_MODEL",
     "TERMINAL_ENV", "TERMINAL_SSH_KEY", "TERMINAL_SSH_PORT",
@@ -861,6 +862,22 @@ OPTIONAL_ENV_VARS = {
         "category": "provider",
         "advanced": True,
     },
+    "NVIDIA_API_KEY": {
+        "description": "NVIDIA NIM API key (build.nvidia.com or local NIM endpoint)",
+        "prompt": "NVIDIA NIM API key",
+        "url": "https://build.nvidia.com/",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "NVIDIA_BASE_URL": {
+        "description": "NVIDIA NIM base URL override (e.g. http://localhost:8000/v1 for local NIM)",
+        "prompt": "NVIDIA NIM base URL (leave empty for default)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
     "GLM_API_KEY": {
         "description": "Z.AI / GLM API key (also recognized as ZAI_API_KEY / Z_AI_API_KEY)",
         "prompt": "Z.AI / GLM API key",
@@ -1518,12 +1535,12 @@ OPTIONAL_ENV_VARS = {
         "prompt": "Allow All QQ Users",
         "category": "messaging",
     },
-    "QQ_HOME_CHANNEL": {
+    "QQBOT_HOME_CHANNEL": {
         "description": "Default QQ channel/group for cron delivery and notifications",
         "prompt": "QQ Home Channel",
         "category": "messaging",
     },
-    "QQ_HOME_CHANNEL_NAME": {
+    "QQBOT_HOME_CHANNEL_NAME": {
         "description": "Display name for the QQ home channel",
         "prompt": "QQ Home Channel Name",
         "category": "messaging",

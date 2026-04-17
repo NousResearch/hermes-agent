@@ -11,6 +11,16 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from run_agent import AIAgent
+import run_agent
+
+
+@pytest.fixture(autouse=True)
+def _no_fallback_wait(monkeypatch):
+    """Short-circuit time.sleep in fallback/recovery paths so tests don't
+    block on the ``min(3 + retry_count, 8)`` wait before a primary retry."""
+    import time as _time
+    monkeypatch.setattr(_time, "sleep", lambda *_a, **_k: None)
+    monkeypatch.setattr(run_agent, "jittered_backoff", lambda *a, **k: 0.0)
 
 
 def _make_tool_defs(*names: str) -> list:

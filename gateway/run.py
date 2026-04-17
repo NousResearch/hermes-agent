@@ -235,6 +235,11 @@ from gateway.auto_background_runtime_service import (
     resolve_employee_background_dispatch as shared_resolve_employee_background_dispatch,
     should_auto_background_message as shared_should_auto_background_message,
 )
+from gateway.attachment_message_runtime_service import (
+    collect_audio_paths as shared_collect_audio_paths,
+    has_visible_image_attachments as shared_has_visible_image_attachments,
+    prepend_document_context_notes as shared_prepend_document_context_notes,
+)
 from gateway.auto_vision_runtime_service import (
     auto_vision_cache_key as shared_auto_vision_cache_key,
     auto_vision_cooldown_remaining as shared_auto_vision_cooldown_remaining,
@@ -521,6 +526,37 @@ def _prepend_shared_thread_sender(
             source=source,
             thread_sessions_per_user=thread_sessions_per_user,
         ),
+    )
+
+
+def _has_visible_image_attachments(attachments: List[Any]) -> bool:
+    return shared_has_visible_image_attachments(attachments)
+
+
+def _collect_audio_paths(
+    attachments: List[Any],
+    *,
+    message_type: MessageType,
+) -> List[str]:
+    return shared_collect_audio_paths(
+        attachments,
+        message_type=message_type,
+        voice_type=MessageType.VOICE,
+        audio_type=MessageType.AUDIO,
+    )
+
+
+def _prepend_document_context_notes(
+    message_text: str,
+    *,
+    attachments: List[Any],
+    message_type: MessageType,
+) -> str:
+    return shared_prepend_document_context_notes(
+        message_text,
+        attachments=attachments,
+        message_type=message_type,
+        document_type=MessageType.DOCUMENT,
     )
 
 
@@ -4200,13 +4236,8 @@ class GatewayRunner:
             ),
         )
         attachments = event.ensure_attachments()
-        image_attachments = [
-            attachment
-            for attachment in attachments
-            if attachment.kind == "image" and not bool(attachment.is_animated)
-        ]
 
-        if image_attachments:
+        if _has_visible_image_attachments(attachments):
             image_paths = _image_vision_inputs_from_event(event)
             if image_paths:
                 message_text = await self._enrich_message_with_vision(
@@ -4221,16 +4252,10 @@ class GatewayRunner:
         # Auto-transcribe voice/audio messages sent by the user
         # -----------------------------------------------------------------
         if attachments:
-            audio_paths = []
-            for attachment in attachments:
-                path = str(attachment.local_path or attachment.analysis_ref or "").strip()
-                mtype = str(attachment.mime_type or "").strip()
-                is_audio = (
-                    mtype.startswith("audio/")
-                    or event.message_type in (MessageType.VOICE, MessageType.AUDIO)
-                )
-                if is_audio and path:
-                    audio_paths.append(path)
+            audio_paths = _collect_audio_paths(
+                attachments,
+                message_type=event.message_type,
+            )
             if audio_paths:
                 message_text = await self._enrich_message_with_transcription(
                     message_text, audio_paths
@@ -4270,49 +4295,11 @@ class GatewayRunner:
         # -----------------------------------------------------------------
         # Enrich document messages with context notes for the agent
         # -----------------------------------------------------------------
-        if attachments and event.message_type == MessageType.DOCUMENT:
-            import mimetypes as _mimetypes
-            _TEXT_EXTENSIONS = {".txt", ".md", ".csv", ".log", ".json", ".xml", ".yaml", ".yml", ".toml", ".ini", ".cfg"}
-            for attachment in attachments:
-                path = str(attachment.local_path or attachment.analysis_ref or "").strip()
-                if not path:
-                    continue
-                mtype = str(attachment.mime_type or "").strip()
-                # Fall back to extension-based detection when MIME type is unreliable.
-                if mtype in ("", "application/octet-stream"):
-                    import os as _os2
-                    _ext = _os2.path.splitext(path)[1].lower()
-                    if _ext in _TEXT_EXTENSIONS:
-                        mtype = "text/plain"
-                    else:
-                        guessed, _ = _mimetypes.guess_type(path)
-                        if guessed:
-                            mtype = guessed
-                if not mtype.startswith(("application/", "text/")):
-                    continue
-                # Extract display filename by stripping the doc_{uuid12}_ prefix
-                import os as _os
-                basename = _os.path.basename(path)
-                # Format: doc_<12hex>_<original_filename>
-                parts = basename.split("_", 2)
-                display_name = parts[2] if len(parts) >= 3 else basename
-                # Sanitize to prevent prompt injection via filenames
-                import re as _re
-                display_name = _re.sub(r'[^\w.\- ]', '_', display_name)
-
-                if mtype.startswith("text/"):
-                    context_note = (
-                        f"[The user sent a text document: '{display_name}'. "
-                        f"Its content has been included below. "
-                        f"The file is also saved at: {path}]"
-                    )
-                else:
-                    context_note = (
-                        f"[The user sent a document: '{display_name}'. "
-                        f"The file is saved at: {path}. "
-                        f"Ask the user what they'd like you to do with it.]"
-                    )
-                message_text = f"{context_note}\n\n{message_text}"
+        message_text = _prepend_document_context_notes(
+            message_text,
+            attachments=attachments,
+            message_type=event.message_type,
+        )
 
         # -----------------------------------------------------------------
         # Inject reply context when user replies to a message not in history.

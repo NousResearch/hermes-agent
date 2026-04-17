@@ -258,6 +258,13 @@ class GatewayConfig:
     # Streaming configuration
     streaming: StreamingConfig = field(default_factory=StreamingConfig)
 
+    # Session store pruning: drop SessionEntry records older than this many
+    # days from the in-memory dict and sessions.json.  Keeps the store from
+    # growing unbounded in gateways serving many chats/threads/users over
+    # months.  Pruning is invisible to users — if they resume, they get a
+    # fresh session exactly as if the reset policy had fired.  0 = disabled.
+    session_store_max_age_days: int = 90
+
     def get_connected_platforms(self) -> List[Platform]:
         """Return list of platforms that are enabled and configured."""
         connected = []
@@ -365,6 +372,7 @@ class GatewayConfig:
             "thread_sessions_per_user": self.thread_sessions_per_user,
             "unauthorized_dm_behavior": self.unauthorized_dm_behavior,
             "streaming": self.streaming.to_dict(),
+            "session_store_max_age_days": self.session_store_max_age_days,
         }
     
     @classmethod
@@ -412,6 +420,13 @@ class GatewayConfig:
             "pair",
         )
 
+        try:
+            session_store_max_age_days = int(data.get("session_store_max_age_days", 90))
+            if session_store_max_age_days < 0:
+                session_store_max_age_days = 0
+        except (TypeError, ValueError):
+            session_store_max_age_days = 90
+
         return cls(
             platforms=platforms,
             default_reset_policy=default_policy,
@@ -426,6 +441,7 @@ class GatewayConfig:
             thread_sessions_per_user=_coerce_bool(thread_sessions_per_user, False),
             unauthorized_dm_behavior=unauthorized_dm_behavior,
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
+            session_store_max_age_days=session_store_max_age_days,
         )
 
     def get_unauthorized_dm_behavior(self, platform: Optional[Platform] = None) -> str:
@@ -1213,12 +1229,24 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         qq_group_allowed = os.getenv("QQ_GROUP_ALLOWED_USERS", "").strip()
         if qq_group_allowed:
             extra["group_allow_from"] = qq_group_allowed
-        qq_home = os.getenv("QQ_HOME_CHANNEL", "").strip()
+        qq_home = os.getenv("QQBOT_HOME_CHANNEL", "").strip()
+        qq_home_name_env = "QQBOT_HOME_CHANNEL_NAME"
+        if not qq_home:
+            # Back-compat: accept the pre-rename name and log a one-time warning.
+            legacy_home = os.getenv("QQ_HOME_CHANNEL", "").strip()
+            if legacy_home:
+                qq_home = legacy_home
+                qq_home_name_env = "QQ_HOME_CHANNEL_NAME"
+                import logging
+                logging.getLogger(__name__).warning(
+                    "QQ_HOME_CHANNEL is deprecated; rename to QQBOT_HOME_CHANNEL "
+                    "in your .env for consistency with the platform key."
+                )
         if qq_home:
             config.platforms[Platform.QQBOT].home_channel = HomeChannel(
                 platform=Platform.QQBOT,
                 chat_id=qq_home,
-                name=os.getenv("QQ_HOME_CHANNEL_NAME", "Home"),
+                name=os.getenv("QQBOT_HOME_CHANNEL_NAME") or os.getenv(qq_home_name_env, "Home"),
             )
 
     # Session settings

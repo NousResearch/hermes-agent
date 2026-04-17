@@ -1532,6 +1532,7 @@ def select_provider_and_model(args=None):
         "huggingface",
         "xiaomi",
         "arcee",
+        "nvidia",
         "ollama-cloud",
     ):
         _model_flow_api_key_provider(config, selected_provider, current_model)
@@ -5875,6 +5876,7 @@ For more help on a command:
             "kilocode",
             "xiaomi",
             "arcee",
+            "nvidia",
         ],
         default=None,
         help="Inference provider (default: auto)",

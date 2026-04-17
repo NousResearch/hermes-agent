@@ -13,7 +13,27 @@ from unittest.mock import patch, MagicMock
 import pytest
 
 import hermes_cli.gateway as gateway_cli
+import hermes_cli.main as cli_main
 from hermes_cli.main import cmd_update
+
+
+# ---------------------------------------------------------------------------
+# Skip the real-time sleeps inside cmd_update's restart-verification path
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _no_restart_verify_sleep(monkeypatch):
+    """hermes_cli/main.py uses time.sleep(3) after systemctl restart to
+    verify the service survived. Tests mock subprocess.run — nothing
+    actually restarts — so the 3s wait is dead time.
+
+    main.py does ``import time as _time`` at both module level (line 167)
+    and inside functions (lines 3281, 4384, 4401). Patching the global
+    ``time.sleep`` affects only the duration of this test.
+    """
+    import time as _real_time
+    monkeypatch.setattr(_real_time, "sleep", lambda *_a, **_k: None)
 
 
 # ---------------------------------------------------------------------------

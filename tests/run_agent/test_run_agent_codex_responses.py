@@ -12,6 +12,15 @@ sys.modules.setdefault("fal_client", types.SimpleNamespace())
 import run_agent
 
 
+@pytest.fixture(autouse=True)
+def _no_codex_backoff(monkeypatch):
+    """Short-circuit retry backoff so Codex retry tests don't block on real
+    wall-clock waits (5s jittered_backoff base delay + tight time.sleep loop)."""
+    import time as _time
+    monkeypatch.setattr(run_agent, "jittered_backoff", lambda *a, **k: 0.0)
+    monkeypatch.setattr(_time, "sleep", lambda *_a, **_k: None)
+
+
 def _patch_agent_bootstrap(monkeypatch):
     monkeypatch.setattr(
         run_agent,

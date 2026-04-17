@@ -94,6 +94,17 @@ def _normalize_aux_provider(provider: Optional[str]) -> str:
         return "custom"
     return _PROVIDER_ALIASES.get(normalized, normalized)
 
+
+_FIXED_TEMPERATURE_MODELS: Dict[str, float] = {
+    "kimi-for-coding": 0.6,
+}
+
+
+def _fixed_temperature_for_model(model: Optional[str]) -> Optional[float]:
+    """Return a required temperature override for models with strict contracts."""
+    normalized = (model or "").strip().lower()
+    return _FIXED_TEMPERATURE_MODELS.get(normalized)
+
 # Default auxiliary models for direct API-key providers (cheap/fast for side tasks)
 _API_KEY_PROVIDER_AUX_MODELS: Dict[str, str] = {
     "gemini": "gemini-3-flash-preview",
@@ -2292,6 +2303,10 @@ def _build_call_kwargs(
         "messages": messages,
         "timeout": timeout,
     }
+
+    fixed_temperature = _fixed_temperature_for_model(model)
+    if fixed_temperature is not None:
+        temperature = fixed_temperature
 
     # Opus 4.7+ rejects any non-default temperature/top_p/top_k — silently
     # drop here so auxiliary callers that hardcode temperature (e.g. 0.3 on

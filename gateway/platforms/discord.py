@@ -477,6 +477,10 @@ class DiscordAdapter(BasePlatformAdapter):
         # in those threads don't require @mention.  Persisted to disk so the
         # set survives gateway restarts.
         self._threads = ThreadParticipationTracker("discord")
+        # Discord server mentions can target the bot's managed role instead of
+        # the bot user. Cache the bot role IDs we discover so role mentions can
+        # satisfy DISCORD_REQUIRE_MENTION too.
+        self._bot_role_ids: set[str] = set()
         # Persistent typing indicator loops per channel (DMs don't reliably
         # show the standard typing gateway event for bots)
         self._typing_tasks: Dict[str, asyncio.Task] = {}
@@ -607,7 +611,7 @@ class DiscordAdapter(BasePlatformAdapter):
                     if allow_bots == "none":
                         return
                     elif allow_bots == "mentions":
-                        if not self._client.user or self._client.user not in message.mentions:
+                        if not adapter_self._message_mentions_self(message):
                             return
                     # "all" falls through to handle_message
                 
@@ -620,11 +624,8 @@ class DiscordAdapter(BasePlatformAdapter):
                 # This replaces the older DISCORD_IGNORE_NO_MENTION logic
                 # with bot-aware filtering that works correctly when multiple
                 # agents share a channel.
-                if not isinstance(message.channel, discord.DMChannel) and message.mentions:
-                    _self_mentioned = (
-                        self._client.user is not None
-                        and self._client.user in message.mentions
-                    )
+                if not isinstance(message.channel, discord.DMChannel) and (message.mentions or getattr(message, "role_mentions", None)):
+                    _self_mentioned = adapter_self._message_mentions_self(message)
                     _other_bots_mentioned = any(
                         m.bot and m != self._client.user
                         for m in message.mentions
@@ -2440,6 +2441,53 @@ class DiscordAdapter(BasePlatformAdapter):
             return f"{parent_name} / {thread_name}"
         return thread_name
 
+    def _get_bot_role_ids_from_message(self, message: DiscordMessage) -> set[str]:
+        """Return Discord role IDs assigned to this bot in the message's guild."""
+        role_ids = set(self._bot_role_ids)
+        guild = getattr(message, "guild", None) or getattr(message.channel, "guild", None)
+        member = None
+
+        if guild is not None:
+            member = getattr(guild, "me", None)
+            if member is None and self._client and self._client.user is not None:
+                get_member = getattr(guild, "get_member", None)
+                if callable(get_member):
+                    try:
+                        member = get_member(self._client.user.id)
+                    except Exception:
+                        member = None
+
+        for role in getattr(member, "roles", []) or []:
+            role_id = getattr(role, "id", None)
+            if role_id is not None:
+                role_ids.add(str(role_id))
+
+        self._bot_role_ids = role_ids
+        return role_ids
+
+    def _message_mentions_self(self, message: DiscordMessage) -> bool:
+        """True if the message mentions the bot directly or via a managed role."""
+        if self._client and self._client.user is not None and self._client.user in getattr(message, "mentions", []):
+            return True
+
+        role_mentions = getattr(message, "role_mentions", []) or []
+        if not role_mentions:
+            return False
+
+        bot_role_ids = self._get_bot_role_ids_from_message(message)
+        return any(str(getattr(role, "id", "")) in bot_role_ids for role in role_mentions)
+
+    def _strip_self_mentions(self, content: str, message: DiscordMessage) -> str:
+        """Remove direct bot mentions and bot-role mentions from the message text."""
+        if self._client and self._client.user is not None:
+            content = content.replace(f"<@{self._client.user.id}>", "")
+            content = content.replace(f"<@!{self._client.user.id}>", "")
+
+        for role_id in self._get_bot_role_ids_from_message(message):
+            content = content.replace(f"<@&{role_id}>", "")
+
+        return content.strip()
+
     async def _handle_message(self, message: DiscordMessage) -> None:
         """Handle incoming Discord messages."""
         # In server channels (not DMs), require the bot to be @mentioned
@@ -2500,12 +2548,11 @@ class DiscordAdapter(BasePlatformAdapter):
             in_bot_thread = is_thread and thread_id in self._threads
 
             if require_mention and not is_free_channel and not in_bot_thread:
-                if self._client.user not in message.mentions:
+                if not self._message_mentions_self(message):
                     return
 
-            if self._client.user and self._client.user in message.mentions:
-                message.content = message.content.replace(f"<@{self._client.user.id}>", "").strip()
-                message.content = message.content.replace(f"<@!{self._client.user.id}>", "").strip()
+            if self._message_mentions_self(message):
+                message.content = self._strip_self_mentions(message.content, message)
 
         # Auto-thread: when enabled, automatically create a thread for every
         # @mention in a text channel so each conversation is isolated (like Slack).

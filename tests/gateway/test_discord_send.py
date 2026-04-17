@@ -48,7 +48,8 @@ from gateway.platforms.discord import DiscordAdapter  # noqa: E402
 async def test_send_retries_without_reference_when_reply_target_is_system_message():
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
 
-    ref_msg = SimpleNamespace(id=99)
+    reference_obj = object()
+    ref_msg = SimpleNamespace(id=99, to_reference=MagicMock(return_value=reference_obj))
     sent_msg = SimpleNamespace(id=1234)
     send_calls = []
 
@@ -76,5 +77,45 @@ async def test_send_retries_without_reference_when_reply_target_is_system_messag
     assert result.message_id == "1234"
     assert channel.fetch_message.await_count == 1
     assert channel.send.await_count == 2
-    assert send_calls[0]["reference"] is ref_msg
+    ref_msg.to_reference.assert_called_once_with(fail_if_not_exists=False)
+    assert send_calls[0]["reference"] is reference_obj
     assert send_calls[1]["reference"] is None
+
+
+@pytest.mark.asyncio
+async def test_send_retries_without_reference_when_reply_target_is_deleted():
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+
+    reference_obj = object()
+    ref_msg = SimpleNamespace(id=99, to_reference=MagicMock(return_value=reference_obj))
+    sent_msgs = [SimpleNamespace(id=1001), SimpleNamespace(id=1002)]
+    send_calls = []
+
+    async def fake_send(*, content, reference=None):
+        send_calls.append({"content": content, "reference": reference})
+        if len(send_calls) == 1:
+            raise RuntimeError(
+                "400 Bad Request (error code: 10008): Unknown Message"
+            )
+        return sent_msgs[len(send_calls) - 2]
+
+    channel = SimpleNamespace(
+        fetch_message=AsyncMock(return_value=ref_msg),
+        send=AsyncMock(side_effect=fake_send),
+    )
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _chat_id: channel,
+        fetch_channel=AsyncMock(),
+    )
+
+    long_text = "A" * (adapter.MAX_MESSAGE_LENGTH + 50)
+    result = await adapter.send("555", long_text, reply_to="99")
+
+    assert result.success is True
+    assert result.message_id == "1001"
+    assert channel.fetch_message.await_count == 1
+    assert channel.send.await_count == 3
+    ref_msg.to_reference.assert_called_once_with(fail_if_not_exists=False)
+    assert send_calls[0]["reference"] is reference_obj
+    assert send_calls[1]["reference"] is None
+    assert send_calls[2]["reference"] is None

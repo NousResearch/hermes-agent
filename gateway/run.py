@@ -6887,12 +6887,37 @@ class GatewayRunner:
                 sessions = self._session_db.list_sessions_rich(
                     source=user_source, limit=30, include_children=True
                 )
-                # Filter: not current session, message_count >= 3, dedup compression leaves
+                # Filter: not current session, not ancestor of current session,
+                # message_count >= 3, dedup compression leaves
                 candidates = []
                 seen_ids = set()
+
+                # Build set of ancestor session IDs to exclude
+                # (current session's parent chain — their content is already
+                # reachable via the current session)
+                ancestor_ids = set()
+                try:
+                    ancestor_cursor = self._session_db._conn.execute(
+                        "SELECT id, parent_session_id FROM sessions WHERE id = ?",
+                        (current_sid,)
+                    )
+                    ancestor_row = ancestor_cursor.fetchone()
+                    while ancestor_row and ancestor_row["parent_session_id"]:
+                        pid = ancestor_row["parent_session_id"]
+                        ancestor_ids.add(pid)
+                        ancestor_cursor = self._session_db._conn.execute(
+                            "SELECT id, parent_session_id FROM sessions WHERE id = ?",
+                            (pid,)
+                        )
+                        ancestor_row = ancestor_cursor.fetchone()
+                except Exception:
+                    pass
+
                 for s in sessions:
                     sid = s.get("id")
                     if not sid or sid == current_sid:
+                        continue
+                    if sid in ancestor_ids:
                         continue
                     if sid in seen_ids:
                         continue

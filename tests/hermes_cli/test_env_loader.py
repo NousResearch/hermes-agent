@@ -68,3 +68,28 @@ def test_main_import_applies_user_env_over_shell_values(tmp_path, monkeypatch):
 
     assert os.getenv("OPENAI_BASE_URL") == "https://new.example/v1"
     assert os.getenv("HERMES_INFERENCE_PROVIDER") == "custom"
+
+
+def test_main_import_applies_config_redaction_before_logging(tmp_path, monkeypatch):
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "security:\n  redact_secrets: false\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("HERMES_REDACT_SECRETS", raising=False)
+
+    for module_name in ("hermes_cli.main", "hermes_logging", "agent.redact"):
+        sys.modules.pop(module_name, None)
+
+    try:
+        importlib.import_module("hermes_cli.main")
+        import agent.redact as redact_mod
+
+        assert os.getenv("HERMES_REDACT_SECRETS") == "false"
+        assert redact_mod._REDACT_ENABLED is False
+    finally:
+        for module_name in ("hermes_cli.main", "hermes_logging", "agent.redact"):
+            sys.modules.pop(module_name, None)

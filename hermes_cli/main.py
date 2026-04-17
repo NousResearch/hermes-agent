@@ -143,6 +143,20 @@ from hermes_cli.config import get_hermes_home
 from hermes_cli.env_loader import load_hermes_dotenv
 load_hermes_dotenv(project_env=PROJECT_ROOT / '.env')
 
+# Apply config-backed security env before logging imports.  setup_logging()
+# imports agent.redact, which snapshots HERMES_REDACT_SECRETS at import time.
+_early_cfg = None
+try:
+    from hermes_cli.config import load_config as _load_config_early
+    _early_cfg = _load_config_early()
+    _security_cfg = _early_cfg.get("security", {})
+    if isinstance(_security_cfg, dict):
+        _redact = _security_cfg.get("redact_secrets")
+        if _redact is not None:
+            os.environ["HERMES_REDACT_SECRETS"] = str(_redact).lower()
+except Exception:
+    _early_cfg = None
+
 # Initialize centralized file logging early — all `hermes` subcommands
 # (chat, setup, gateway, config, etc.) write to agent.log + errors.log.
 try:
@@ -153,15 +167,15 @@ except Exception:
 
 # Apply IPv4 preference early, before any HTTP clients are created.
 try:
-    from hermes_cli.config import load_config as _load_config_early
     from hermes_constants import apply_ipv4_preference as _apply_ipv4
-    _early_cfg = _load_config_early()
     _net = _early_cfg.get("network", {})
     if isinstance(_net, dict) and _net.get("force_ipv4"):
         _apply_ipv4(force=True)
-    del _early_cfg, _net
+    del _net
 except Exception:
     pass  # best-effort — don't crash if config isn't available yet
+finally:
+    del _early_cfg
 
 import logging
 import time as _time

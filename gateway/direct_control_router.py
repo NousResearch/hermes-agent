@@ -7,6 +7,14 @@ import logging
 from typing import Any, Optional
 
 from gateway.config import Platform
+from gateway.direct_control_platform_specs import (
+    AdminGroupControlPlatformSpec,
+    AdminSendPlatformSpec,
+    QQ_ADMIN_GROUP_CONTROL_SPEC,
+    QQ_ADMIN_SEND_SPEC,
+    WEIXIN_ADMIN_GROUP_CONTROL_SPEC,
+    WEIXIN_ADMIN_SEND_SPEC,
+)
 from gateway.direct_control_event_runtime_service import (
     build_admin_platform_text_context,
     extract_platform_text_event_context,
@@ -55,13 +63,8 @@ from gateway.qq_social_runtime_service import (
 )
 from gateway.send_runtime_service import (
     execute_send_shortcut_tool,
-    extract_recent_send_target_from_history as shared_extract_recent_send_target_from_history,
     match_admin_platform_send_request as shared_match_admin_platform_send_request,
     run_admin_send_shortcut,
-)
-from gateway.send_intents import (
-    extract_qq_inline_send_target_and_message,
-    extract_weixin_inline_send_target_and_message,
 )
 from gateway.session import SessionSource
 from gateway.weixin_group_archive import WeixinGroupArchiveStore
@@ -152,15 +155,11 @@ class DirectControlRouter:
         event: MessageEvent,
         *,
         conversation_history: Optional[list[dict[str, Any]]] = None,
-        platform: Platform,
-        inline_extractor,
-        history_target_extractor,
-        direct_target_extractor,
-        query_prompt_formatter,
+        spec: AdminSendPlatformSpec,
     ) -> tuple[dict[str, Any] | None, str | None]:
         context = build_admin_platform_text_context(
             event,
-            platform=platform,
+            platform=spec.platform,
             configured_admin_user_ids_fn=self.owner._configured_admin_user_ids,
             is_admin_user_fn=self.owner._is_admin_user,
         )
@@ -178,10 +177,10 @@ class DirectControlRouter:
             conversation_history=conversation_history,
             admin_ids_configured=True,
             is_admin_user=True,
-            inline_extractor=inline_extractor,
-            history_target_extractor=history_target_extractor,
-            direct_target_extractor=direct_target_extractor,
-            query_prompt_formatter=query_prompt_formatter,
+            inline_extractor=spec.inline_extractor,
+            history_target_extractor=spec.history_target_extractor,
+            direct_target_extractor=spec.direct_target_extractor,
+            query_prompt_formatter=spec.query_prompt_formatter,
         )
 
     def _match_admin_qq_send_request(
@@ -193,29 +192,24 @@ class DirectControlRouter:
         return self._match_admin_platform_send_request(
             event,
             conversation_history=conversation_history,
-            platform=Platform.QQ_NAPCAT,
-            inline_extractor=extract_qq_inline_send_target_and_message,
-            history_target_extractor=lambda source, history: shared_extract_recent_send_target_from_history(
-                source,
-                history,
-                target_extractor=extract_qq_group_target,
-            ),
-            direct_target_extractor=extract_qq_group_target,
-            query_prompt_formatter=lambda target_label: (
-                f"可以。把要发的内容直接发我，或者一句话说“往 QQ 群 {target_label} 发：xxx”。"
-            ),
+            spec=QQ_ADMIN_SEND_SPEC,
+        )
+
+    @staticmethod
+    def _format_admin_send_reply(
+        tool_args: dict[str, Any],
+        *,
+        spec: AdminSendPlatformSpec,
+    ) -> str:
+        return format_admin_send_reply(
+            tool_args,
+            platform_label=spec.platform_label,
+            target_normalizer=spec.reply_target_normalizer,
         )
 
     @staticmethod
     def _format_admin_qq_send_reply(tool_args: dict[str, Any]) -> str:
-        return format_admin_send_reply(
-            tool_args,
-            platform_label="QQ 群",
-            target_normalizer=lambda value: str(value or "")
-            .replace("qq_napcat:group:", "")
-            .replace("group:", "")
-            .strip(),
-        )
+        return DirectControlRouter._format_admin_send_reply(tool_args, spec=QQ_ADMIN_SEND_SPEC)
 
     def _match_admin_weixin_send_request(
         self,
@@ -226,26 +220,12 @@ class DirectControlRouter:
         return self._match_admin_platform_send_request(
             event,
             conversation_history=conversation_history,
-            platform=Platform.WEIXIN,
-            inline_extractor=extract_weixin_inline_send_target_and_message,
-            history_target_extractor=lambda source, history: shared_extract_recent_send_target_from_history(
-                source,
-                history,
-                target_extractor=extract_weixin_group_target,
-            ),
-            direct_target_extractor=extract_weixin_group_target,
-            query_prompt_formatter=lambda target_label: (
-                f"可以。把要发的内容直接发我，或者一句话说“往 微信群 {target_label} 发：xxx”。"
-            ),
+            spec=WEIXIN_ADMIN_SEND_SPEC,
         )
 
     @staticmethod
     def _format_admin_weixin_send_reply(tool_args: dict[str, Any]) -> str:
-        return format_admin_send_reply(
-            tool_args,
-            platform_label="微信群",
-            target_normalizer=lambda value: str(value or "").replace("weixin:", "").strip(),
-        )
+        return DirectControlRouter._format_admin_send_reply(tool_args, spec=WEIXIN_ADMIN_SEND_SPEC)
 
     def _try_handle_admin_send_shortcut_common(
         self,
@@ -280,10 +260,8 @@ class DirectControlRouter:
             event,
             conversation_history=conversation_history,
             matcher=self._match_admin_qq_send_request,
-            target_formatter=lambda target: (
-                f"qq_napcat:{target}" if str(target).startswith("group:") else str(target)
-            ),
-            error_prefix="QQ 发消息执行失败",
+            target_formatter=QQ_ADMIN_SEND_SPEC.target_formatter,
+            error_prefix=QQ_ADMIN_SEND_SPEC.error_prefix,
             reply_formatter=self._format_admin_qq_send_reply,
         )
 
@@ -297,10 +275,8 @@ class DirectControlRouter:
             event,
             conversation_history=conversation_history,
             matcher=self._match_admin_weixin_send_request,
-            target_formatter=lambda target: (
-                str(target) if str(target).startswith("weixin:") else f"weixin:{str(target)}"
-            ),
-            error_prefix="微信发消息执行失败",
+            target_formatter=WEIXIN_ADMIN_SEND_SPEC.target_formatter,
+            error_prefix=WEIXIN_ADMIN_SEND_SPEC.error_prefix,
             reply_formatter=self._format_admin_weixin_send_reply,
         )
 
@@ -444,16 +420,11 @@ class DirectControlRouter:
         self,
         event: MessageEvent,
         *,
-        platform: Platform,
-        target_extractor,
-        missing_target_message: str,
-        admin_action_label: str,
-        collect_only_action: str,
-        unresolved_target_guard=None,
+        spec: AdminGroupControlPlatformSpec,
     ) -> tuple[dict[str, Any] | None, str | None]:
         context = build_admin_platform_text_context(
             event,
-            platform=platform,
+            platform=spec.platform,
             configured_admin_user_ids_fn=self.owner._configured_admin_user_ids,
             is_admin_user_fn=self.owner._is_admin_user,
         )
@@ -462,18 +433,18 @@ class DirectControlRouter:
         return match_admin_platform_group_control_request(
             source=source,
             body=body,
-            target_extractor=target_extractor,
+            target_extractor=spec.target_extractor,
             admin_ids_configured=context["admin_ids_configured"],
             is_admin_user=context["is_admin_user"],
-            missing_target_message=missing_target_message,
+            missing_target_message=spec.missing_target_message,
             admin_only_message=(
-                self.owner._admin_only_message(source, admin_action_label)
+                self.owner._admin_only_message(source, spec.admin_action_label)
                 if source is not None
                 else ""
             ),
-            collect_only_action=collect_only_action,
+            collect_only_action=spec.collect_only_action,
             report_target_resolver=self._resolve_oral_report_delivery_target,
-            unresolved_target_guard=unresolved_target_guard,
+            unresolved_target_guard=spec.unresolved_target_guard,
         )
 
     def _match_admin_qq_group_control_request(
@@ -482,23 +453,31 @@ class DirectControlRouter:
     ) -> tuple[dict[str, Any] | None, str | None]:
         return self._match_admin_platform_group_control_request(
             event,
-            platform=Platform.QQ_NAPCAT,
-            target_extractor=extract_qq_group_target,
-            missing_target_message="要切群监听/日报，请直接说清群号，或者在目标群里明确说“这个群”。",
-            admin_action_label="调整 QQ 群监听/日报策略",
-            collect_only_action="enable_collect_only",
-            unresolved_target_guard=lambda body: any(marker in body for marker in ("情报员", "员工")),
+            spec=QQ_ADMIN_GROUP_CONTROL_SPEC,
+        )
+
+    @staticmethod
+    def _format_admin_group_control_reply(
+        tool_args: dict[str, Any],
+        result: dict[str, Any],
+        *,
+        spec: AdminGroupControlPlatformSpec,
+    ) -> str:
+        return format_admin_group_control_reply(
+            tool_args,
+            result,
+            platform_label=spec.platform_label,
+            target_key=spec.target_key,
+            collect_only_action=spec.collect_only_action,
+            strip_group_prefix=spec.strip_group_prefix,
         )
 
     @staticmethod
     def _format_admin_qq_group_control_reply(tool_args: dict[str, Any], result: dict[str, Any]) -> str:
-        return format_admin_group_control_reply(
+        return DirectControlRouter._format_admin_group_control_reply(
             tool_args,
             result,
-            platform_label="QQ 群",
-            target_key="group_id",
-            collect_only_action="enable_collect_only",
-            strip_group_prefix=True,
+            spec=QQ_ADMIN_GROUP_CONTROL_SPEC,
         )
 
     def _match_admin_weixin_group_control_request(
@@ -507,22 +486,15 @@ class DirectControlRouter:
     ) -> tuple[dict[str, Any] | None, str | None]:
         return self._match_admin_platform_group_control_request(
             event,
-            platform=Platform.WEIXIN,
-            target_extractor=extract_weixin_group_target,
-            missing_target_message="要切微信群监听/日报，请直接说清 chatroom，或者在目标群里明确说“这个群”。",
-            admin_action_label="调整微信群监听/日报策略",
-            collect_only_action="collect_only",
+            spec=WEIXIN_ADMIN_GROUP_CONTROL_SPEC,
         )
 
     @staticmethod
     def _format_admin_weixin_group_control_reply(tool_args: dict[str, Any], result: dict[str, Any]) -> str:
-        return format_admin_group_control_reply(
+        return DirectControlRouter._format_admin_group_control_reply(
             tool_args,
             result,
-            platform_label="微信群",
-            target_key="chat_id",
-            collect_only_action="collect_only",
-            strip_group_prefix=False,
+            spec=WEIXIN_ADMIN_GROUP_CONTROL_SPEC,
         )
 
     @staticmethod
@@ -563,7 +535,7 @@ class DirectControlRouter:
             event,
             matcher=self._match_admin_qq_group_control_request,
             tool_runner=self._run_qq_group_control_tool,
-            error_prefix="QQ 群监听控制执行失败",
+            error_prefix=QQ_ADMIN_GROUP_CONTROL_SPEC.error_prefix,
             reply_formatter=self._format_admin_qq_group_control_reply,
         )
 
@@ -572,7 +544,7 @@ class DirectControlRouter:
             event,
             matcher=self._match_admin_weixin_group_control_request,
             tool_runner=self._run_weixin_group_control_tool,
-            error_prefix="微信群监听控制执行失败",
+            error_prefix=WEIXIN_ADMIN_GROUP_CONTROL_SPEC.error_prefix,
             reply_formatter=self._format_admin_weixin_group_control_reply,
         )
 

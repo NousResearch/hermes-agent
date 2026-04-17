@@ -341,8 +341,24 @@ def resolve_alias(
 
     vendor, family = identity
 
-    # Search the provider's catalog from models.dev
-    catalog = list_provider_models(current_provider)
+    # Prefer the provider's curated/live model ordering over raw models.dev key
+    # order. Raw dict insertion order can surface stale versions first, causing
+    # aliases like "sonnet" to resolve to an older family member.
+    try:
+        from hermes_cli.models import provider_model_ids
+        preferred_catalog = provider_model_ids(current_provider)
+    except Exception:
+        preferred_catalog = []
+
+    fallback_catalog = list_provider_models(current_provider)
+    catalog: list[str] = []
+    seen: set[str] = set()
+    for model_id in [*preferred_catalog, *fallback_catalog]:
+        if model_id in seen:
+            continue
+        seen.add(model_id)
+        catalog.append(model_id)
+
     if not catalog:
         return None
 

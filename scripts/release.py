@@ -70,6 +70,7 @@ AUTHOR_MAP = {
     "27917469+nosleepcassette@users.noreply.github.com": "nosleepcassette",
     "241404605+MestreY0d4-Uninter@users.noreply.github.com": "MestreY0d4-Uninter",
     "109555139+davetist@users.noreply.github.com": "davetist",
+    "39405770+yyq4193@users.noreply.github.com": "yyq4193",
     "Asunfly@users.noreply.github.com": "Asunfly",
     # contributors (manual mapping from git names)
     "ahmedsherif95@gmail.com": "asheriif",
@@ -85,6 +86,7 @@ AUTHOR_MAP = {
     "lovre.pesut@gmail.com": "rovle",
     "kevinskysunny@gmail.com": "kevinskysunny",
     "xiewenxuan462@gmail.com": "yule975",
+    "yiweimeng.dlut@hotmail.com": "meng93",
     "hakanerten02@hotmail.com": "teyrebaz33",
     "ruzzgarcn@gmail.com": "Ruzzgar",
     "alireza78.crypto@gmail.com": "alireza78a",
@@ -180,6 +182,7 @@ AUTHOR_MAP = {
     "juan.ovalle@mistral.ai": "jjovalle99",
     "julien.talbot@ergonomia.re": "Julientalbot",
     "kagura.chen28@gmail.com": "kagura-agent",
+    "1342088860@qq.com": "youngDoo",
     "kamil@gwozdz.me": "kamil-gwozdz",
     "karamusti912@gmail.com": "MustafaKara7",
     "kira@ariaki.me": "kira-ariaki",
@@ -235,6 +238,8 @@ AUTHOR_MAP = {
     "zhiheng.liu@bytedance.com": "ZaynJarvis",
     "mbelleau@Michels-MacBook-Pro.local": "malaiwah",
     "michel.belleau@malaiwah.com": "malaiwah",
+    "gnanasekaran.sekareee@gmail.com": "gnanam1990",
+    "jz.pentest@gmail.com": "0xyg3n",
     "dhandhalyabhavik@gmail.com": "v1k22",
     "rucchizhao@zhaochenfeideMacBook-Pro.local": "RucchiZ",
     "lehaolin98@outlook.com": "LehaoLin",
@@ -242,6 +247,8 @@ AUTHOR_MAP = {
     "1736355688@qq.com": "hedgeho9X",
     "bernylinville@devopsthink.org": "bernylinville",
     "code@booze.dog": "boozedog",
+    "brian@bde.io": "briandevans",
+    "hubin_ll@qq.com": "LLQWQ",
 }
 
 

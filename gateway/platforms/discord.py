@@ -495,6 +495,7 @@ class DiscordAdapter(BasePlatformAdapter):
         self._client: Optional[commands.Bot] = None
         self._ready_event = asyncio.Event()
         self._allowed_user_ids: set = set()  # For button approval authorization
+        self._allowed_role_ids: set = set()  # For DISCORD_ALLOWED_ROLES filtering
         # Voice channel state (per-guild)
         self._voice_clients: Dict[int, Any] = {}  # guild_id -> VoiceClient
         # Text batching: merge rapid successive messages (Telegram-style)
@@ -573,6 +574,15 @@ class DiscordAdapter(BasePlatformAdapter):
                     if uid.strip()
                 }
 
+            # Parse DISCORD_ALLOWED_ROLES — comma-separated role IDs.
+            # Users with ANY of these roles can interact with the bot.
+            roles_env = os.getenv("DISCORD_ALLOWED_ROLES", "")
+            if roles_env:
+                self._allowed_role_ids = {
+                    int(rid.strip()) for rid in roles_env.split(",")
+                    if rid.strip().isdigit()
+                }
+
             # Set up intents.
             # Message Content is required for normal text replies.
             # Server Members is only needed when the allowlist contains usernames
@@ -584,7 +594,10 @@ class DiscordAdapter(BasePlatformAdapter):
             intents.message_content = True
             intents.dm_messages = True
             intents.guild_messages = True
-            intents.members = any(not entry.isdigit() for entry in self._allowed_user_ids)
+            intents.members = (
+                any(not entry.isdigit() for entry in self._allowed_user_ids)
+                or bool(self._allowed_role_ids)  # Need members intent for role lookup
+            )
             intents.voice_states = True
 
             # Resolve proxy (DISCORD_PROXY > generic env vars > macOS system proxy)
@@ -636,14 +649,13 @@ class DiscordAdapter(BasePlatformAdapter):
                 if message.type not in (discord.MessageType.default, discord.MessageType.reply):
                     return
 
-                # Check if the message author is in the allowed user list
-                if not self._is_allowed_user(str(message.author.id)):
-                    return
-
                 # Bot message filtering (DISCORD_ALLOW_BOTS):
                 #   "none"     — ignore all other bots (default)
                 #   "mentions" — accept bot messages only when they @mention us
                 #   "all"      — accept all bot messages
+                # Must run BEFORE the user allowlist check so that bots
+                # permitted by DISCORD_ALLOW_BOTS are not rejected for
+                # not being in DISCORD_ALLOWED_USERS (fixes #4466).
                 if getattr(message.author, "bot", False):
                     allow_bots = os.getenv("DISCORD_ALLOW_BOTS", "none").lower().strip()
                     if allow_bots == "none":
@@ -651,7 +663,12 @@ class DiscordAdapter(BasePlatformAdapter):
                     elif allow_bots == "mentions":
                         if not self._client.user or self._client.user not in message.mentions:
                             return
-                    # "all" falls through to handle_message
+                    # "all" falls through; bot is permitted — skip the
+                    # human-user allowlist below (bots aren't in it).
+                else:
+                    # Non-bot: enforce the configured user/role allowlists.
+                    if not self._is_allowed_user(str(message.author.id), message.author):
+                        return
                 
                 # Multi-agent filtering: if the message mentions specific bots
                 # but NOT this bot, the sender is talking to another agent —
@@ -1361,11 +1378,48 @@ class DiscordAdapter(BasePlatformAdapter):
             except OSError:
                 pass
 
-    def _is_allowed_user(self, user_id: str) -> bool:
-        """Check if user is in DISCORD_ALLOWED_USERS."""
-        if not self._allowed_user_ids:
+    def _is_allowed_user(self, user_id: str, author=None) -> bool:
+        """Check if user is allowed via DISCORD_ALLOWED_USERS or DISCORD_ALLOWED_ROLES.
+
+        Uses OR semantics: if the user matches EITHER allowlist, they're allowed.
+        If both allowlists are empty, everyone is allowed (backwards compatible).
+        When author is a Member, checks .roles directly; otherwise falls back
+        to scanning the bot's mutual guilds for a Member record.
+        """
+        # ``getattr`` fallbacks here guard against test fixtures that build
+        # an adapter via ``object.__new__(DiscordAdapter)`` and skip __init__
+        # (see AGENTS.md pitfall #17 — same pattern as gateway.run).
+        allowed_users = getattr(self, "_allowed_user_ids", set())
+        allowed_roles = getattr(self, "_allowed_role_ids", set())
+        has_users = bool(allowed_users)
+        has_roles = bool(allowed_roles)
+        if not has_users and not has_roles:
             return True
-        return user_id in self._allowed_user_ids
+        # Check user ID allowlist
+        if has_users and user_id in allowed_users:
+            return True
+        # Check role allowlist
+        if has_roles:
+            # Try direct role check from Member object
+            direct_roles = getattr(author, "roles", None) if author is not None else None
+            if direct_roles:
+                if any(getattr(r, "id", None) in allowed_roles for r in direct_roles):
+                    return True
+            # Fallback: scan mutual guilds for member's roles
+            if self._client is not None:
+                try:
+                    uid_int = int(user_id)
+                except (TypeError, ValueError):
+                    uid_int = None
+                if uid_int is not None:
+                    for guild in self._client.guilds:
+                        m = guild.get_member(uid_int)
+                        if m is None:
+                            continue
+                        m_roles = getattr(m, "roles", None) or []
+                        if any(getattr(r, "id", None) in allowed_roles for r in m_roles):
+                            return True
+        return False
 
     async def send_image_file(
         self,
@@ -1955,12 +2009,23 @@ class DiscordAdapter(BasePlatformAdapter):
         self._register_skill_group(tree)
 
     def _register_skill_group(self, tree) -> None:
-        """Register a ``/skill`` command group with category subcommand groups.
+        """Register a single ``/skill`` command with autocomplete on the name.
 
-        Skills are organized by their directory category under ``SKILLS_DIR``.
-        Each category becomes a subcommand group; root-level skills become
-        direct subcommands.  Discord supports 25 subcommand groups × 25
-        subcommands each = 625 skills — well beyond the old 100-command cap.
+        Discord enforces an ~8000-byte per-command payload limit. The older
+        nested layout (``/skill <category> <name>``) registered one giant
+        command whose serialized payload grew linearly with the skill
+        catalog — with the default ~75 skills the payload was ~14 KB and
+        ``tree.sync()`` rejected the entire slash-command batch (issues
+        #11321, #10259, #11385, #10261, #10214).
+
+        Autocomplete options are fetched dynamically by Discord when the
+        user types — they do NOT count against the per-command registration
+        budget. So we register ONE flat ``/skill`` command with
+        ``name: str`` (autocompleted) and ``args: str = ""``. This scales
+        to thousands of skills with no size math, no splitting, and no
+        hidden skills. The slash picker also becomes more discoverable —
+        Discord live-filters by the user's typed prefix against both the
+        skill name and its description.
         """
         try:
             from hermes_cli.commands import discord_skill_commands_by_category
@@ -1971,68 +2036,97 @@ class DiscordAdapter(BasePlatformAdapter):
             except Exception:
                 pass
 
+            # Reuse the existing collector for consistent filtering
+            # (per-platform disabled, hub-excluded, name clamping), then
+            # flatten — the category grouping was only useful for the
+            # nested layout.
             categories, uncategorized, hidden = discord_skill_commands_by_category(
                 reserved_names=existing_names,
             )
+            entries: list[tuple[str, str, str]] = list(uncategorized)
+            for cat_skills in categories.values():
+                entries.extend(cat_skills)
 
-            if not categories and not uncategorized:
+            if not entries:
                 return
 
-            skill_group = discord.app_commands.Group(
+            # Stable alphabetical order so the autocomplete suggestion
+            # list is predictable across restarts.
+            entries.sort(key=lambda t: t[0])
+
+            # name -> (description, cmd_key) — used by both the autocomplete
+            # callback and the handler for O(1) dispatch.
+            skill_lookup: dict[str, tuple[str, str]] = {
+                n: (d, k) for n, d, k in entries
+            }
+
+            async def _autocomplete_name(
+                interaction: "discord.Interaction", current: str,
+            ) -> list:
+                """Filter skills by the user's typed prefix.
+
+                Matches both the skill name and its description so
+                "/skill pdf" surfaces skills whose description mentions
+                PDFs even if the name doesn't. Discord caps this list at
+                25 entries per query.
+                """
+                q = (current or "").strip().lower()
+                choices: list = []
+                for name, desc, _key in entries:
+                    if not q or q in name.lower() or (desc and q in desc.lower()):
+                        if desc:
+                            label = f"{name} — {desc}"
+                        else:
+                            label = name
+                        # Discord's Choice.name is capped at 100 chars.
+                        if len(label) > 100:
+                            label = label[:97] + "..."
+                        choices.append(
+                            discord.app_commands.Choice(name=label, value=name)
+                        )
+                        if len(choices) >= 25:
+                            break
+                return choices
+
+            @discord.app_commands.describe(
+                name="Which skill to run",
+                args="Optional arguments for the skill",
+            )
+            @discord.app_commands.autocomplete(name=_autocomplete_name)
+            async def _skill_handler(
+                interaction: "discord.Interaction", name: str, args: str = "",
+            ):
+                entry = skill_lookup.get(name)
+                if not entry:
+                    await interaction.response.send_message(
+                        f"Unknown skill: `{name}`. Start typing for "
+                        f"autocomplete suggestions.",
+                        ephemeral=True,
+                    )
+                    return
+                _desc, cmd_key = entry
+                await self._run_simple_slash(
+                    interaction, f"{cmd_key} {args}".strip()
+                )
+
+            cmd = discord.app_commands.Command(
                 name="skill",
                 description="Run a Hermes skill",
+                callback=_skill_handler,
             )
+            tree.add_command(cmd)
 
-            # ── Helper: build a callback for a skill command key ──
-            def _make_handler(_key: str):
-                @discord.app_commands.describe(args="Optional arguments for the skill")
-                async def _handler(interaction: discord.Interaction, args: str = ""):
-                    await self._run_simple_slash(interaction, f"{_key} {args}".strip())
-                _handler.__name__ = f"skill_{_key.lstrip('/').replace('-', '_')}"
-                return _handler
-
-            # ── Uncategorized (root-level) skills → direct subcommands ──
-            for discord_name, description, cmd_key in uncategorized:
-                cmd = discord.app_commands.Command(
-                    name=discord_name,
-                    description=description or f"Run the {discord_name} skill",
-                    callback=_make_handler(cmd_key),
-                )
-                skill_group.add_command(cmd)
-
-            # ── Category subcommand groups ──
-            for cat_name in sorted(categories):
-                cat_desc = f"{cat_name.replace('-', ' ').title()} skills"
-                if len(cat_desc) > 100:
-                    cat_desc = cat_desc[:97] + "..."
-                cat_group = discord.app_commands.Group(
-                    name=cat_name,
-                    description=cat_desc,
-                    parent=skill_group,
-                )
-                for discord_name, description, cmd_key in categories[cat_name]:
-                    cmd = discord.app_commands.Command(
-                        name=discord_name,
-                        description=description or f"Run the {discord_name} skill",
-                        callback=_make_handler(cmd_key),
-                    )
-                    cat_group.add_command(cmd)
-
-            tree.add_command(skill_group)
-
-            total = sum(len(v) for v in categories.values()) + len(uncategorized)
             logger.info(
-                "[%s] Registered /skill group: %d skill(s) across %d categories"
-                " + %d uncategorized",
-                self.name, total, len(categories), len(uncategorized),
+                "[%s] Registered /skill command with %d skill(s) via autocomplete",
+                self.name, len(entries),
             )
             if hidden:
-                logger.warning(
-                    "[%s] %d skill(s) not registered (Discord subcommand limits)",
+                logger.info(
+                    "[%s] %d skill(s) filtered out of /skill (name clamp / reserved)",
                     self.name, hidden,
                 )
         except Exception as exc:
-            logger.warning("[%s] Failed to register /skill group: %s", self.name, exc)
+            logger.warning("[%s] Failed to register /skill command: %s", self.name, exc)
 
     def _build_slash_event(self, interaction: discord.Interaction, text: str) -> MessageEvent:
         """Build a MessageEvent from a Discord slash command interaction."""
@@ -2747,6 +2841,7 @@ class DiscordAdapter(BasePlatformAdapter):
             user_name=message.author.display_name,
             thread_id=thread_id,
             chat_topic=chat_topic,
+            is_bot=getattr(message.author, "bot", False),
         )
 
         # Build media URLs -- download image attachments to local cache so the

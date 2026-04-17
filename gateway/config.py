@@ -307,6 +307,14 @@ class GatewayConfig:
             # QQBot uses extra dict for app credentials
             elif platform == Platform.QQBOT and config.extra.get("app_id") and config.extra.get("client_secret"):
                 connected.append(platform)
+            # DingTalk uses client_id/client_secret from config.extra or env vars
+            elif platform == Platform.DINGTALK and (
+                config.extra.get("client_id") or os.getenv("DINGTALK_CLIENT_ID")
+            ) and (
+                config.extra.get("client_secret") or os.getenv("DINGTALK_CLIENT_SECRET")
+            ):
+                connected.append(platform)
+        
         return connected
     
     def get_home_channel(self, platform: Platform) -> Optional[HomeChannel]:
@@ -1037,6 +1045,25 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 pass
         if webhook_secret:
             config.platforms[Platform.WEBHOOK].extra["secret"] = webhook_secret
+
+    # DingTalk
+    dingtalk_client_id = os.getenv("DINGTALK_CLIENT_ID")
+    dingtalk_client_secret = os.getenv("DINGTALK_CLIENT_SECRET")
+    if dingtalk_client_id and dingtalk_client_secret:
+        if Platform.DINGTALK not in config.platforms:
+            config.platforms[Platform.DINGTALK] = PlatformConfig()
+        config.platforms[Platform.DINGTALK].enabled = True
+        config.platforms[Platform.DINGTALK].extra.update({
+            "client_id": dingtalk_client_id,
+            "client_secret": dingtalk_client_secret,
+        })
+        dingtalk_home = os.getenv("DINGTALK_HOME_CHANNEL")
+        if dingtalk_home:
+            config.platforms[Platform.DINGTALK].home_channel = HomeChannel(
+                platform=Platform.DINGTALK,
+                chat_id=dingtalk_home,
+                name=os.getenv("DINGTALK_HOME_CHANNEL_NAME", "Home"),
+            )
 
     # Feishu / Lark
     feishu_app_id = os.getenv("FEISHU_APP_ID")

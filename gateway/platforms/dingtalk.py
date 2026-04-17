@@ -483,13 +483,39 @@ class _IncomingHandler(ChatbotHandler if DINGTALK_STREAM_AVAILABLE else object):
         """Called by dingtalk-stream when a message arrives.
 
         dingtalk-stream >= 0.24 passes a CallbackMessage whose `.data` contains
-        the chatbot payload. Convert it to ChatbotMessage and await the adapter
-        handler directly on the main event loop.
+        the chatbot payload. Convert it to ChatbotMessage via
+        ``ChatbotMessage.from_dict()``.
+
+        Message processing is dispatched as a background task so that this
+        method returns the ACK immediately — blocking here would prevent the
+        SDK from sending heartbeats, eventually causing a disconnect.
         """
         try:
-            chatbot_msg = ChatbotMessage.from_dict(callback_message.data)
+            data = callback_message.data
+            chatbot_msg = ChatbotMessage.from_dict(data)
+
+            # Ensure session_webhook is populated even if the SDK's
+            # from_dict() did not map it (field name mismatch across
+            # SDK versions).
+            if not getattr(chatbot_msg, "session_webhook", None):
+                webhook = (
+                    data.get("sessionWebhook")
+                    or data.get("session_webhook")
+                    or ""
+                )
+                if webhook:
+                    chatbot_msg.session_webhook = webhook
+
+            # Fire-and-forget: return ACK immediately, process in background.
+            asyncio.create_task(self._safe_on_message(chatbot_msg))
+        except Exception:
+            logger.exception("[DingTalk] Error preparing incoming message")
+
+        return dingtalk_stream.AckMessage.STATUS_OK, "OK"
+
+    async def _safe_on_message(self, chatbot_msg: "ChatbotMessage") -> None:
+        """Wrapper that catches exceptions from _on_message."""
+        try:
             await self._adapter._on_message(chatbot_msg)
         except Exception:
             logger.exception("[DingTalk] Error processing incoming message")
-
-        return dingtalk_stream.AckMessage.STATUS_OK, "OK"

@@ -15,6 +15,7 @@ import logging
 from typing import Any, Optional
 
 from agent.i18n import t
+from gateway.config import Platform
 from gateway.platforms.base import MessageEvent
 from hermes_cli.config import atomic_config_write, clear_model_endpoint_credentials
 from utils import base_url_host_matches
@@ -658,7 +659,11 @@ class GatewayModelCommandsMixin:
 
     async def _handle_reasoning_command(self, event: MessageEvent) -> Optional[str]:
         """Handle /reasoning command — manage reasoning effort and display toggle."""
-        from gateway.run import _platform_config_key
+        from gateway.run import (
+            _load_gateway_config,
+            _platform_config_key,
+            _resolve_gateway_display_bool,
+        )
         from hermes_constants import VALID_REASONING_EFFORTS
 
         raw_args = event.get_command_args().strip()
@@ -667,7 +672,7 @@ class GatewayModelCommandsMixin:
         # See #30479.
         _reasoning_source = await asyncio.to_thread(self._normalize_source_for_session_key, event.source)
         session_key = self._session_key_for_source(_reasoning_source)
-        self._show_reasoning = self._load_show_reasoning()
+        platform_key = _platform_config_key(event.source.platform)
         # Effective model (session /model override wins) so per-model reasoning_overrides display.
         _session_model = str(
             ((getattr(self, "_session_model_overrides", {}) or {}).get(session_key) or {}).get("model") or ""
@@ -675,7 +680,21 @@ class GatewayModelCommandsMixin:
         self._reasoning_config = self._resolve_session_reasoning_config(
             source=event.source, session_key=session_key, model=_session_model,
         )
-        platform_key = _platform_config_key(event.source.platform)
+        try:
+            show_reasoning = _resolve_gateway_display_bool(
+                _load_gateway_config(),
+                platform_key,
+                "show_reasoning",
+                default=bool(getattr(self, "_show_reasoning", False)),
+                platform=event.source.platform,
+                require_platform_override_for={Platform.MATTERMOST},
+            )
+        except Exception:
+            show_reasoning = (
+                False
+                if event.source.platform == Platform.MATTERMOST
+                else bool(getattr(self, "_show_reasoning", False))
+            )
         if raw_args:  # typed path — same applier the picker uses
             return self._apply_reasoning_selection(session_key, platform_key, args, persist_global=persist_global)
         rc = self._reasoning_config
@@ -685,7 +704,7 @@ class GatewayModelCommandsMixin:
             level, current_effort = t("gateway.reasoning.level_disabled"), "none"
         else:
             level = current_effort = rc.get("effort", "medium")
-        display_state = t("gateway.reasoning.display_on") if self._show_reasoning else t("gateway.reasoning.display_off")
+        display_state = t("gateway.reasoning.display_on") if show_reasoning else t("gateway.reasoning.display_off")
         has_session_override = session_key in (getattr(self, "_session_reasoning_overrides", {}) or {})
         scope = t("gateway.reasoning.scope_session") if has_session_override else t("gateway.reasoning.scope_global")
 

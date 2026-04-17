@@ -16,6 +16,11 @@ from gateway.group_control_runtime_service import (
     match_admin_platform_group_control_request,
     run_admin_group_control_shortcut,
 )
+from gateway.group_moderation_runtime_service import (
+    format_admin_qq_group_moderation_reply,
+    match_admin_qq_group_moderation_request as shared_match_admin_qq_group_moderation_request,
+    run_admin_qq_group_moderation_shortcut,
+)
 from gateway.group_reply_formatters import (
     format_admin_group_control_reply,
     format_admin_send_reply,
@@ -32,13 +37,6 @@ from gateway.group_target_intents import (
     extract_weixin_group_target,
 )
 from gateway.platforms.base import MessageEvent, MessageType
-from gateway.qq_group_moderation_requests import (
-    extract_qq_oral_moderation_duration_seconds,
-    extract_qq_oral_moderation_reason,
-    extract_qq_oral_moderation_user_query,
-    match_qq_group_moderation_action,
-    match_qq_group_moderation_request,
-)
 from gateway.qq_group_policies import get_group_policy
 from gateway.qq_intel_assignments import get_group_monitoring_overlay, list_intel_workers
 from gateway.qq_intel_control_requests import (
@@ -685,60 +683,37 @@ class DirectControlRouter:
             event,
             platform=Platform.QQ_NAPCAT,
         )
-        if source is None:
-            return None, None
-        return match_qq_group_moderation_request(
+        return shared_match_admin_qq_group_moderation_request(
             source=source,
             body=body,
             admin_ids_configured=bool(self.owner._configured_admin_user_ids(getattr(source, "platform", None))),
             is_admin_user=self.owner._is_admin_user(source),
             admin_only_message=self.owner._admin_only_message(source, "操作 QQ 群禁言/踢人"),
-            action_matcher=match_qq_group_moderation_action,
-            target_extractor=extract_qq_group_target,
-            user_query_extractor=extract_qq_oral_moderation_user_query,
-            reason_extractor=extract_qq_oral_moderation_reason,
-            duration_extractor=extract_qq_oral_moderation_duration_seconds,
         )
 
     @staticmethod
     def _format_admin_qq_group_moderation_reply(tool_args: dict[str, Any], result: dict[str, Any]) -> str:
-        action = str(result.get("action") or tool_args.get("action") or "").strip().lower()
-        group_id = str(result.get("group_id") or tool_args.get("target") or "").replace("group:", "").strip()
-        member_name = str(
-            result.get("member_name")
-            or tool_args.get("user_query")
-            or result.get("user_id")
-            or "目标成员"
-        ).strip()
-        reason = str(result.get("reason") or tool_args.get("reason") or "").strip()
-        if action == "mute_user":
-            duration_seconds = int(result.get("duration_seconds") or tool_args.get("duration_seconds") or 0)
-            line = f"已把 QQ 群 {group_id} 的 {member_name} 禁言 {duration_seconds} 秒。"
-        else:
-            line = f"已把 QQ 群 {group_id} 的 {member_name} 踢出。"
-        if reason:
-            line += f" 原因：{reason}。"
-        return line
+        return format_admin_qq_group_moderation_reply(tool_args, result)
 
     def _try_handle_admin_qq_group_moderation(self, event: MessageEvent) -> str | None:
         tool_args, shortcut_error = self._match_admin_qq_group_moderation_request(event)
-        if shortcut_error:
-            return shortcut_error
-        if not tool_args:
-            return None
 
         try:
             from tools.qq_control_tool import qq_control_tool
 
-            raw = qq_control_tool(tool_args)
-            result = json.loads(raw) if isinstance(raw, str) else (raw or {})
+            return run_admin_qq_group_moderation_shortcut(
+                tool_args=tool_args,
+                shortcut_error=shortcut_error,
+                tool_runner=lambda current_tool_args: (
+                    (lambda raw: json.loads(raw) if isinstance(raw, str) else (raw or {}))(
+                        qq_control_tool(current_tool_args)
+                    )
+                ),
+                logger=logger,
+            )
         except Exception as exc:
-            logger.warning("Admin QQ oral moderation shortcut failed: %s", exc)
+            logger.warning("Admin QQ oral moderation shortcut bootstrap failed: %s", exc)
             return f"QQ 群管理执行失败：{exc}"
-
-        if result.get("error"):
-            return str(result["error"])
-        return self._format_admin_qq_group_moderation_reply(tool_args, result)
 
     def _match_admin_qq_social_control_request(
         self,

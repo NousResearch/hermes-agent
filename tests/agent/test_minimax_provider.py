@@ -332,6 +332,18 @@ class TestMinimaxPreserveDots:
         from run_agent import AIAgent
         assert AIAgent._anthropic_preserve_dots(agent) is True
 
+    def test_bedrock_provider_preserves_dots(self):
+        from types import SimpleNamespace
+        agent = SimpleNamespace(provider="bedrock", base_url="")
+        from run_agent import AIAgent
+        assert AIAgent._anthropic_preserve_dots(agent) is True
+
+    def test_bedrock_runtime_url_preserves_dots(self):
+        from types import SimpleNamespace
+        agent = SimpleNamespace(provider="custom", base_url="https://bedrock-runtime.us-east-1.amazonaws.com")
+        from run_agent import AIAgent
+        assert AIAgent._anthropic_preserve_dots(agent) is True
+
     def test_normalize_preserves_m25_free_dot(self):
         from agent.anthropic_adapter import normalize_model_name
         assert normalize_model_name("minimax-m2.5-free", preserve_dots=True) == "minimax-m2.5-free"

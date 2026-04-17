@@ -150,6 +150,21 @@ class TestRuntimeProvider:
         assert "bedrock-runtime.eu-west-1.amazonaws.com" in result["base_url"]
         assert result["api_key"] == "aws-sdk"
 
+    def test_bedrock_claude_runtime_uses_anthropic_messages(self, monkeypatch):
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIAIOSFODNN7EXAMPLE")
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+
+        with patch("hermes_cli.runtime_provider.resolve_provider", return_value="bedrock"), \
+             patch("hermes_cli.runtime_provider._get_model_config", return_value={"provider": "bedrock", "default": "us.anthropic.claude-sonnet-4-6"}):
+            result = resolve_runtime_provider(requested="bedrock")
+
+        assert result["provider"] == "bedrock"
+        assert result["api_mode"] == "anthropic_messages"
+        assert result["bedrock_anthropic"] is True
+
     def test_bedrock_runtime_default_region(self, monkeypatch):
         from hermes_cli.runtime_provider import resolve_runtime_provider
 

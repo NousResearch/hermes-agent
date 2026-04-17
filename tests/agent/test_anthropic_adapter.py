@@ -481,6 +481,12 @@ class TestNormalizeModelName:
         assert normalize_model_name("anthropic/qwen3.5-plus", preserve_dots=True) == "qwen3.5-plus"
         assert normalize_model_name("qwen3.5-flash", preserve_dots=True) == "qwen3.5-flash"
 
+    def test_preserve_dots_for_bedrock_inference_profile(self):
+        assert normalize_model_name("us.anthropic.claude-sonnet-4-6", preserve_dots=True) == "us.anthropic.claude-sonnet-4-6"
+
+    def test_preserve_dots_for_bedrock_versioned_model(self):
+        assert normalize_model_name("us.anthropic.claude-opus-4-6-v1", preserve_dots=True) == "us.anthropic.claude-opus-4-6-v1"
+
 
 # ---------------------------------------------------------------------------
 # Tool conversion

@@ -58,6 +58,9 @@ _PROVIDER_ALIASES = {
     "google": "gemini",
     "google-gemini": "gemini",
     "google-ai-studio": "gemini",
+    "x-ai": "xai",
+    "x.ai": "xai",
+    "grok": "xai",
     "glm": "zai",
     "z-ai": "zai",
     "z.ai": "zai",
@@ -104,6 +107,7 @@ _API_KEY_PROVIDER_AUX_MODELS: Dict[str, str] = {
     "opencode-zen": "gemini-3-flash",
     "opencode-go": "glm-5",
     "kilocode": "google/gemini-3-flash-preview",
+    "ollama-cloud": "nemotron-3-nano:30b",
 }
 
 # Vision-specific model overrides for direct providers.
@@ -514,8 +518,13 @@ class _AnthropicCompletionsAdapter:
             tool_choice=normalized_tool_choice,
             is_oauth=self._is_oauth,
         )
+        # Opus 4.7+ rejects any non-default temperature/top_p/top_k; only set
+        # temperature for models that still accept it. build_anthropic_kwargs
+        # additionally strips these keys as a safety net — keep both layers.
         if temperature is not None:
-            anthropic_kwargs["temperature"] = temperature
+            from agent.anthropic_adapter import _forbids_sampling_params
+            if not _forbids_sampling_params(model):
+                anthropic_kwargs["temperature"] = temperature
 
         response = self._client.messages.create(**anthropic_kwargs)
         assistant_message, finish_reason = normalize_anthropic_response(response)
@@ -775,6 +784,21 @@ def _try_openrouter() -> Tuple[Optional[OpenAI], Optional[str]]:
 
 
 def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
+    # Check cross-session rate limit guard before attempting Nous —
+    # if another session already recorded a 429, skip Nous entirely
+    # to avoid piling more requests onto the tapped RPH bucket.
+    try:
+        from agent.nous_rate_guard import nous_rate_limit_remaining
+        _remaining = nous_rate_limit_remaining()
+        if _remaining is not None and _remaining > 0:
+            logger.debug(
+                "Auxiliary: skipping Nous Portal (rate-limited, resets in %.0fs)",
+                _remaining,
+            )
+            return None, None
+    except Exception:
+        pass
+
     nous = _read_nous_auth()
     if not nous:
         return None, None
@@ -897,6 +921,51 @@ def _resolve_custom_runtime() -> Tuple[Optional[str], Optional[str], Optional[st
 def _current_custom_base_url() -> str:
     custom_base, _, _ = _resolve_custom_runtime()
     return custom_base or ""
+
+
+def _validate_proxy_env_urls() -> None:
+    """Fail fast with a clear error when proxy env vars have malformed URLs.
+
+    Common cause: shell config (e.g. .zshrc) with a typo like
+    ``export HTTP_PROXY=http://127.0.0.1:6153export NEXT_VAR=...``
+    which concatenates 'export' into the port number.  Without this
+    check the OpenAI/httpx client raises a cryptic ``Invalid port``
+    error that doesn't name the offending env var.
+    """
+    from urllib.parse import urlparse
+
+    for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
+                "https_proxy", "http_proxy", "all_proxy"):
+        value = str(os.environ.get(key) or "").strip()
+        if not value:
+            continue
+        try:
+            parsed = urlparse(value)
+            if parsed.scheme:
+                _ = parsed.port          # raises ValueError for e.g. '6153export'
+        except ValueError as exc:
+            raise RuntimeError(
+                f"Malformed proxy environment variable {key}={value!r}. "
+                "Fix or unset your proxy settings and try again."
+            ) from exc
+
+
+def _validate_base_url(base_url: str) -> None:
+    """Reject obviously broken custom endpoint URLs before they reach httpx."""
+    from urllib.parse import urlparse
+
+    candidate = str(base_url or "").strip()
+    if not candidate or candidate.startswith("acp://"):
+        return
+    try:
+        parsed = urlparse(candidate)
+        if parsed.scheme in {"http", "https"}:
+            _ = parsed.port              # raises ValueError for malformed ports
+    except ValueError as exc:
+        raise RuntimeError(
+            f"Malformed custom endpoint URL: {candidate!r}. "
+            "Run `hermes setup` or `hermes model` and enter a valid http(s) base URL."
+        ) from exc
 
 
 def _try_custom_endpoint() -> Tuple[Optional[OpenAI], Optional[str]]:
@@ -1299,6 +1368,7 @@ def resolve_provider_client(
     Returns:
         (client, resolved_model) or (None, None) if auth is unavailable.
     """
+    _validate_proxy_env_urls()
     # Normalise aliases
     provider = _normalize_aux_provider(provider)
 
@@ -1835,9 +1905,15 @@ def auxiliary_max_tokens_param(value: int) -> dict:
 # Every auxiliary LLM consumer should use these instead of manually
 # constructing clients and calling .chat.completions.create().
 
-# Client cache: (provider, async_mode, base_url, api_key) -> (client, default_model)
+# Client cache: (provider, async_mode, base_url, api_key, api_mode, runtime_key) -> (client, default_model, loop)
+# NOTE: loop identity is NOT part of the key.  On async cache hits we check
+# whether the cached loop is the *current* loop; if not, the stale entry is
+# replaced in-place.  This bounds cache growth to one entry per unique
+# provider config rather than one per (config × event-loop), which previously
+# caused unbounded fd accumulation in long-running gateway processes (#10200).
 _client_cache: Dict[tuple, tuple] = {}
 _client_cache_lock = threading.Lock()
+_CLIENT_CACHE_MAX_SIZE = 64  # safety belt — evict oldest when exceeded
 
 
 def neuter_async_httpx_del() -> None:
@@ -1970,39 +2046,49 @@ def _get_cached_client(
     Async clients (AsyncOpenAI) use httpx.AsyncClient internally, which
     binds to the event loop that was current when the client was created.
     Using such a client on a *different* loop causes deadlocks or
-    RuntimeError.  To prevent cross-loop issues (especially in gateway
-    mode where _run_async() may spawn fresh loops in worker threads), the
-    cache key for async clients includes the current event loop's identity
-    so each loop gets its own client instance.
+    RuntimeError.  To prevent cross-loop issues, the cache validates on
+    every async hit that the cached loop is the *current, open* loop.
+    If the loop changed (e.g. a new gateway worker-thread loop), the stale
+    entry is replaced in-place rather than creating an additional entry.
+
+    This keeps cache size bounded to one entry per unique provider config,
+    preventing the fd-exhaustion that previously occurred in long-running
+    gateways where recycled worker threads created unbounded entries (#10200).
     """
-    # Include loop identity for async clients to prevent cross-loop reuse.
-    # httpx.AsyncClient (inside AsyncOpenAI) is bound to the loop where it
-    # was created — reusing it on a different loop causes deadlocks (#2681).
-    loop_id = 0
+    # Resolve the current event loop for async clients so we can validate
+    # cached entries.  Loop identity is NOT in the cache key — instead we
+    # check at hit time whether the cached loop is still current and open.
+    # This prevents unbounded cache growth from recycled worker-thread loops
+    # while still guaranteeing we never reuse a client on the wrong loop
+    # (which causes deadlocks, see #2681).
     current_loop = None
     if async_mode:
         try:
             import asyncio as _aio
             current_loop = _aio.get_event_loop()
-            loop_id = id(current_loop)
         except RuntimeError:
             pass
     runtime = _normalize_main_runtime(main_runtime)
     runtime_key = tuple(runtime.get(field, "") for field in _MAIN_RUNTIME_FIELDS) if provider == "auto" else ()
-    cache_key = (provider, async_mode, base_url or "", api_key or "", api_mode or "", loop_id, runtime_key)
+    cache_key = (provider, async_mode, base_url or "", api_key or "", api_mode or "", runtime_key)
     with _client_cache_lock:
         if cache_key in _client_cache:
             cached_client, cached_default, cached_loop = _client_cache[cache_key]
             if async_mode:
-                # A cached async client whose loop has been closed will raise
-                # "Event loop is closed" when httpx tries to clean up its
-                # transport.  Discard the stale client and create a fresh one.
-                if cached_loop is not None and cached_loop.is_closed():
-                    _force_close_async_httpx(cached_client)
-                    del _client_cache[cache_key]
-                else:
+                # Validate: the cached client must be bound to the CURRENT,
+                # OPEN loop.  If the loop changed or was closed, the httpx
+                # transport inside is dead — force-close and replace.
+                loop_ok = (
+                    cached_loop is not None
+                    and cached_loop is current_loop
+                    and not cached_loop.is_closed()
+                )
+                if loop_ok:
                     effective = _compat_model(cached_client, model, cached_default)
                     return cached_client, effective
+                # Stale — evict and fall through to create a new client.
+                _force_close_async_httpx(cached_client)
+                del _client_cache[cache_key]
             else:
                 effective = _compat_model(cached_client, model, cached_default)
                 return cached_client, effective
@@ -2022,6 +2108,12 @@ def _get_cached_client(
         bound_loop = current_loop
         with _client_cache_lock:
             if cache_key not in _client_cache:
+                # Safety belt: if the cache has grown beyond the max, evict
+                # the oldest entries (FIFO — dict preserves insertion order).
+                while len(_client_cache) >= _CLIENT_CACHE_MAX_SIZE:
+                    evict_key, evict_entry = next(iter(_client_cache.items()))
+                    _force_close_async_httpx(evict_entry[0])
+                    del _client_cache[evict_key]
                 _client_cache[cache_key] = (client, default_model, bound_loop)
             else:
                 client, default_model, _ = _client_cache[cache_key]
@@ -2201,6 +2293,15 @@ def _build_call_kwargs(
         "timeout": timeout,
     }
 
+    # Opus 4.7+ rejects any non-default temperature/top_p/top_k — silently
+    # drop here so auxiliary callers that hardcode temperature (e.g. 0.3 on
+    # flush_memories, 0 on structured-JSON extraction) don't 400 the moment
+    # the aux model is flipped to 4.7.
+    if temperature is not None:
+        from agent.anthropic_adapter import _forbids_sampling_params
+        if _forbids_sampling_params(model):
+            temperature = None
+
     if temperature is not None:
         kwargs["temperature"] = temperature
 
@@ -2304,10 +2405,10 @@ def call_llm(
 
     if task == "vision":
         effective_provider, client, final_model = resolve_vision_provider_client(
-            provider=provider,
-            model=model,
-            base_url=base_url,
-            api_key=api_key,
+            provider=resolved_provider if resolved_provider != "auto" else provider,
+            model=resolved_model or model,
+            base_url=resolved_base_url or base_url,
+            api_key=resolved_api_key or api_key,
             async_mode=False,
         )
         if client is None and resolved_provider != "auto" and not resolved_base_url:
@@ -2512,10 +2613,10 @@ async def async_call_llm(
 
     if task == "vision":
         effective_provider, client, final_model = resolve_vision_provider_client(
-            provider=provider,
-            model=model,
-            base_url=base_url,
-            api_key=api_key,
+            provider=resolved_provider if resolved_provider != "auto" else provider,
+            model=resolved_model or model,
+            base_url=resolved_base_url or base_url,
+            api_key=resolved_api_key or api_key,
             async_mode=True,
         )
         if client is None and resolved_provider != "auto" and not resolved_base_url:

@@ -27,6 +27,110 @@ _DPASTE_COM_URL = "https://dpaste.com/api/"
 # paste.rs caps at ~1 MB; we stay under that with headroom.
 _MAX_LOG_BYTES = 512_000
 
+# Auto-delete pastes after this many seconds (6 hours).
+_AUTO_DELETE_SECONDS = 21600
+
+
+# ---------------------------------------------------------------------------
+# Privacy / delete helpers
+# ---------------------------------------------------------------------------
+
+_PRIVACY_NOTICE = """\
+⚠️  This will upload the following to a public paste service:
+  • System info (OS, Python version, Hermes version, provider, which API keys
+    are configured — NOT the actual keys)
+  • Recent log lines (agent.log, errors.log, gateway.log — may contain
+    conversation fragments and file paths)
+  • Full agent.log and gateway.log (up to 512 KB each — likely contains
+    conversation content, tool outputs, and file paths)
+
+Pastes auto-delete after 6 hours.
+"""
+
+_GATEWAY_PRIVACY_NOTICE = (
+    "⚠️ **Privacy notice:** This uploads system info + recent log tails "
+    "(may contain conversation fragments) to a public paste service. "
+    "Full logs are NOT included from the gateway — use `hermes debug share` "
+    "from the CLI for full log uploads.\n"
+    "Pastes auto-delete after 6 hours."
+)
+
+
+def _extract_paste_id(url: str) -> Optional[str]:
+    """Extract the paste ID from a paste.rs or dpaste.com URL.
+
+    Returns the ID string, or None if the URL doesn't match a known service.
+    """
+    url = url.strip().rstrip("/")
+    for prefix in ("https://paste.rs/", "http://paste.rs/"):
+        if url.startswith(prefix):
+            return url[len(prefix):]
+    return None
+
+
+def delete_paste(url: str) -> bool:
+    """Delete a paste from paste.rs.  Returns True on success.
+
+    Only paste.rs supports unauthenticated DELETE.  dpaste.com pastes
+    expire automatically but cannot be deleted via API.
+    """
+    paste_id = _extract_paste_id(url)
+    if not paste_id:
+        raise ValueError(
+            f"Cannot delete: only paste.rs URLs are supported.  Got: {url}"
+        )
+
+    target = f"{_PASTE_RS_URL}{paste_id}"
+    req = urllib.request.Request(
+        target, method="DELETE",
+        headers={"User-Agent": "hermes-agent/debug-share"},
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        return 200 <= resp.status < 300
+
+
+def _schedule_auto_delete(urls: list[str], delay_seconds: int = _AUTO_DELETE_SECONDS):
+    """Spawn a detached process to delete paste.rs pastes after *delay_seconds*.
+
+    The child process is fully detached (``start_new_session=True``) so it
+    survives the parent exiting (important for CLI mode).  Only paste.rs
+    URLs are attempted — dpaste.com pastes auto-expire on their own.
+    """
+    import subprocess
+
+    paste_rs_urls = [u for u in urls if _extract_paste_id(u)]
+    if not paste_rs_urls:
+        return
+
+    # Build a tiny inline Python script.  No imports beyond stdlib.
+    url_list = ", ".join(f'"{u}"' for u in paste_rs_urls)
+    script = (
+        "import time, urllib.request; "
+        f"time.sleep({delay_seconds}); "
+        f"[urllib.request.urlopen(urllib.request.Request(u, method='DELETE', "
+        f"headers={{'User-Agent': 'hermes-agent/auto-delete'}}), timeout=15) "
+        f"for u in [{url_list}]]"
+    )
+
+    try:
+        subprocess.Popen(
+            [sys.executable, "-c", script],
+            start_new_session=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        pass  # Best-effort; manual delete still available.
+
+
+def _delete_hint(url: str) -> str:
+    """Return a one-liner delete command for the given paste URL."""
+    paste_id = _extract_paste_id(url)
+    if paste_id:
+        return f"hermes debug delete {url}"
+    # dpaste.com — no API delete, expires on its own.
+    return "(auto-expires per dpaste.com policy)"
+
 
 def _upload_paste_rs(content: str) -> str:
     """Upload to paste.rs.  Returns the paste URL.
@@ -250,6 +354,9 @@ def run_debug_share(args):
     expiry = getattr(args, "expire", 7)
     local_only = getattr(args, "local", False)
 
+    if not local_only:
+        print(_PRIVACY_NOTICE)
+
     print("Collecting debug report...")
 
     # Capture dump once — prepended to every paste for context.
@@ -315,7 +422,35 @@ def run_debug_share(args):
     if failures:
         print(f"\n  (failed to upload: {', '.join(failures)})")
 
+    # Schedule auto-deletion after 6 hours
+    _schedule_auto_delete(list(urls.values()))
+    print(f"\n⏱  Pastes will auto-delete in 6 hours.")
+
+    # Manual delete fallback
+    print(f"To delete now:  hermes debug delete <url>")
+
     print(f"\nShare these links with the Hermes team for support.")
+
+
+def run_debug_delete(args):
+    """Delete one or more paste URLs uploaded by /debug."""
+    urls = getattr(args, "urls", [])
+    if not urls:
+        print("Usage: hermes debug delete <url> [<url> ...]")
+        print("  Deletes paste.rs pastes uploaded by 'hermes debug share'.")
+        return
+
+    for url in urls:
+        try:
+            ok = delete_paste(url)
+            if ok:
+                print(f"  ✓ Deleted: {url}")
+            else:
+                print(f"  ✗ Failed to delete: {url} (unexpected response)")
+        except ValueError as exc:
+            print(f"  ✗ {exc}")
+        except Exception as exc:
+            print(f"  ✗ Could not delete {url}: {exc}")
 
 
 def run_debug(args):
@@ -323,14 +458,20 @@ def run_debug(args):
     subcmd = getattr(args, "debug_command", None)
     if subcmd == "share":
         run_debug_share(args)
+    elif subcmd == "delete":
+        run_debug_delete(args)
     else:
         # Default: show help
-        print("Usage: hermes debug share [--lines N] [--expire N] [--local]")
+        print("Usage: hermes debug <command>")
         print()
         print("Commands:")
         print("  share    Upload debug report to a paste service and print URL")
+        print("  delete   Delete a previously uploaded paste")
         print()
-        print("Options:")
+        print("Options (share):")
         print("  --lines N    Number of log lines to include (default: 200)")
         print("  --expire N   Paste expiry in days (default: 7)")
         print("  --local      Print report locally instead of uploading")
+        print()
+        print("Options (delete):")
+        print("  <url> ...    One or more paste URLs to delete")

@@ -109,22 +109,31 @@ hermes chat --worktree -q "Review this repo and open a PR"
 
 ## `hermes model`
 
-Interactive provider + model selector.
+Interactive provider + model selector. **This is the command for adding new providers, setting up API keys, and running OAuth flows.** Run it from your terminal — not from inside an active Hermes chat session.
 
 ```bash
 hermes model
 ```
 
 Use this when you want to:
-- switch default providers
-- log into OAuth-backed providers during model selection
+- **add a new provider** (OpenRouter, Anthropic, Copilot, DeepSeek, custom, etc.)
+- log into OAuth-backed providers (Anthropic, Copilot, Codex, Nous Portal)
+- enter or update API keys
 - pick from provider-specific model lists
 - configure a custom/self-hosted endpoint
 - save the new default into config
 
+:::warning hermes model vs /model — know the difference
+**`hermes model`** (run from your terminal, outside any Hermes session) is the **full provider setup wizard**. It can add new providers, run OAuth flows, prompt for API keys, and configure endpoints.
+
+**`/model`** (typed inside an active Hermes chat session) can only **switch between providers and models you've already set up**. It cannot add new providers, run OAuth, or prompt for API keys.
+
+**If you need to add a new provider:** Exit your Hermes session first (`Ctrl+C` or `/quit`), then run `hermes model` from your terminal prompt.
+:::
+
 ### `/model` slash command (mid-session)
 
-Switch models without leaving a session:
+Switch between already-configured models without leaving a session:
 
 ```
 /model                              # Show current model and available options
@@ -135,6 +144,16 @@ Switch models without leaving a session:
 /model custom:local:qwen-2.5        # Use a named custom provider
 /model openrouter:anthropic/claude-sonnet-4  # Switch back to cloud
 ```
+
+By default, `/model` changes apply **to the current session only**. Add `--global` to persist the change to `config.yaml`:
+
+```
+/model claude-sonnet-4 --global     # Switch and save as new default
+```
+
+:::info What if I only see OpenRouter models?
+If you've only configured OpenRouter, `/model` will only show OpenRouter models. To add another provider (Anthropic, DeepSeek, Copilot, etc.), exit your session and run `hermes model` from the terminal.
+:::
 
 Provider and base URL changes are persisted to `config.yaml` automatically. When switching away from a custom endpoint, the stale base URL is cleared to prevent it leaking into other providers.
 

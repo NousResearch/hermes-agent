@@ -274,6 +274,11 @@ def parse_model_flags(raw_args: str) -> tuple[str, str, bool]:
     is_global = False
     explicit_provider = ""
 
+    # Normalize Unicode dashes (Telegram/iOS auto-converts -- to em/en dash)
+    # A single Unicode dash before a flag keyword becomes "--"
+    import re as _re
+    raw_args = _re.sub(r'[\u2012\u2013\u2014\u2015](provider|global)', r'--\1', raw_args)
+
     # Extract --global
     if "--global" in raw_args:
         is_global = True
@@ -452,6 +457,7 @@ def switch_model(
         ModelSwitchResult with all information the caller needs.
     """
     from hermes_cli.models import (
+        copilot_model_api_mode,
         detect_provider_for_model,
         validate_requested_model,
         opencode_model_api_mode,
@@ -709,8 +715,12 @@ def switch_model(
     if validation.get("corrected_model"):
         new_model = validation["corrected_model"]
 
+    # --- Copilot api_mode override ---
+    if target_provider in {"copilot", "github-copilot"}:
+        api_mode = copilot_model_api_mode(new_model, api_key=api_key)
+
     # --- OpenCode api_mode override ---
-    if target_provider in {"opencode-zen", "opencode-go", "opencode", "opencode-go"}:
+    if target_provider in {"opencode-zen", "opencode-go", "opencode"}:
         api_mode = opencode_model_api_mode(target_provider, new_model)
 
     # --- Determine api_mode if not already set ---
@@ -786,7 +796,8 @@ def list_authenticated_providers(
     from hermes_cli.models import OPENROUTER_MODELS, _PROVIDER_MODELS
 
     results: List[dict] = []
-    seen_slugs: set = set()
+    seen_slugs: set = set()  # lowercase-normalized to catch case variants (#9545)
+    seen_mdev_ids: set = set()  # prevent duplicate entries for aliases (e.g. kimi-coding + kimi-coding-cn)
 
     data = fetch_models_dev()
 
@@ -796,9 +807,18 @@ def list_authenticated_providers(
     # "nous" shares OpenRouter's curated list if not separately defined
     if "nous" not in curated:
         curated["nous"] = curated["openrouter"]
+    # Ollama Cloud uses dynamic discovery (no static curated list)
+    if "ollama-cloud" not in curated:
+        from hermes_cli.models import fetch_ollama_cloud_models
+        curated["ollama-cloud"] = fetch_ollama_cloud_models()
 
     # --- 1. Check Hermes-mapped providers ---
     for hermes_id, mdev_id in PROVIDER_TO_MODELS_DEV.items():
+        # Skip aliases that map to the same models.dev provider (e.g.
+        # kimi-coding and kimi-coding-cn both → kimi-for-coding).
+        # The first one with valid credentials wins (#10526).
+        if mdev_id in seen_mdev_ids:
+            continue
         pdata = data.get(mdev_id)
         if not isinstance(pdata, dict):
             continue
@@ -837,7 +857,8 @@ def list_authenticated_providers(
             "total_models": total,
             "source": "built-in",
         })
-        seen_slugs.add(slug)
+        seen_slugs.add(slug.lower())
+        seen_mdev_ids.add(mdev_id)
 
     # --- 2. Check Hermes-only providers (nous, openai-codex, copilot, opencode-go) ---
     from hermes_cli.providers import HERMES_OVERLAYS
@@ -849,12 +870,12 @@ def list_authenticated_providers(
     _mdev_to_hermes = {v: k for k, v in PROVIDER_TO_MODELS_DEV.items()}
 
     for pid, overlay in HERMES_OVERLAYS.items():
-        if pid in seen_slugs:
+        if pid.lower() in seen_slugs:
             continue
 
         # Resolve Hermes slug — e.g. "github-copilot" → "copilot"
         hermes_slug = _mdev_to_hermes.get(pid, pid)
-        if hermes_slug in seen_slugs:
+        if hermes_slug.lower() in seen_slugs:
             continue
 
         # Check if credentials exist
@@ -935,8 +956,8 @@ def list_authenticated_providers(
             "total_models": total,
             "source": "hermes",
         })
-        seen_slugs.add(pid)
-        seen_slugs.add(hermes_slug)
+        seen_slugs.add(pid.lower())
+        seen_slugs.add(hermes_slug.lower())
 
     # --- 2b. Cross-check canonical provider list ---
     # Catches providers that are in CANONICAL_PROVIDERS but weren't found
@@ -948,7 +969,7 @@ def list_authenticated_providers(
         _canon_provs = []
 
     for _cp in _canon_provs:
-        if _cp.slug in seen_slugs:
+        if _cp.slug.lower() in seen_slugs:
             continue
 
         # Check credentials via PROVIDER_REGISTRY (auth.py)
@@ -995,7 +1016,7 @@ def list_authenticated_providers(
             "total_models": _cp_total,
             "source": "canonical",
         })
-        seen_slugs.add(_cp.slug)
+        seen_slugs.add(_cp.slug.lower())
 
     # --- 3. User-defined endpoints from config ---
     if user_providers and isinstance(user_providers, dict):
@@ -1068,7 +1089,7 @@ def list_authenticated_providers(
                 groups[slug]["models"].append(default_model)
 
         for slug, grp in groups.items():
-            if slug in seen_slugs:
+            if slug.lower() in seen_slugs:
                 continue
             results.append({
                 "slug": slug,
@@ -1080,11 +1101,9 @@ def list_authenticated_providers(
                 "source": "user-config",
                 "api_url": grp["api_url"],
             })
-            seen_slugs.add(slug)
+            seen_slugs.add(slug.lower())
 
     # Sort: current provider first, then by model count descending
     results.sort(key=lambda r: (not r["is_current"], -r["total_models"]))
 
     return results
-
-

@@ -23,7 +23,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
 
-from tools.tool_backend_helpers import managed_nous_tools_enabled as _managed_nous_tools_enabled
 
 _IS_WINDOWS = platform.system() == "Windows"
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -241,13 +240,41 @@ def _secure_dir(path):
         pass
 
 
+def _is_container() -> bool:
+    """Detect if we're running inside a Docker/Podman/LXC container.
+
+    When Hermes runs in a container with volume-mounted config files, forcing
+    0o600 permissions breaks multi-process setups where the gateway and
+    dashboard run as different UIDs or the volume mount requires broader
+    permissions.
+    """
+    # Explicit opt-out
+    if os.environ.get("HERMES_CONTAINER") or os.environ.get("HERMES_SKIP_CHMOD"):
+        return True
+    # Docker / Podman marker file
+    if os.path.exists("/.dockerenv"):
+        return True
+    # LXC / cgroup-based detection
+    try:
+        with open("/proc/1/cgroup", "r") as f:
+            cgroup_content = f.read()
+        if "docker" in cgroup_content or "lxc" in cgroup_content or "kubepods" in cgroup_content:
+            return True
+    except (OSError, IOError):
+        pass
+    return False
+
+
 def _secure_file(path):
     """Set file to owner-only read/write (0600). No-op on Windows.
 
     Skipped in managed mode — the NixOS activation script sets
     group-readable permissions (0640) on config files.
+
+    Skipped in containers — Docker/Podman volume mounts often need broader
+    permissions.  Set HERMES_SKIP_CHMOD=1 to force-skip on other systems.
     """
-    if is_managed():
+    if is_managed() or _is_container():
         return
     try:
         if os.path.exists(str(path)):
@@ -392,8 +419,7 @@ DEFAULT_CONFIG = {
         "allow_private_urls": False,  # Allow navigating to private/internal IPs (localhost, 192.168.x.x, etc.)
         "camofox": {
             # When true, Hermes sends a stable profile-scoped userId to Camofox
-            # so the server can map it to a persistent browser profile directory.
-            # Requires Camofox server to be configured with CAMOFOX_PROFILE_DIR.
+            # so the server maps it to a persistent Firefox profile automatically.
             # When false (default), each session gets a random userId (ephemeral).
             "managed_persistence": False,
         },
@@ -419,6 +445,27 @@ DEFAULT_CONFIG = {
         "protect_last_n": 20,         # minimum recent messages to keep uncompressed
 
     },
+
+    # AWS Bedrock provider configuration.
+    # Only used when model.provider is "bedrock".
+    "bedrock": {
+        "region": "",  # AWS region for Bedrock API calls (empty = AWS_REGION env var → us-east-1)
+        "discovery": {
+            "enabled": True,           # Auto-discover models via ListFoundationModels
+            "provider_filter": [],     # Only show models from these providers (e.g. ["anthropic", "amazon"])
+            "refresh_interval": 3600,  # Cache discovery results for this many seconds
+        },
+        "guardrail": {
+            # Amazon Bedrock Guardrails — content filtering and safety policies.
+            # Create a guardrail in the Bedrock console, then set the ID and version here.
+            # See: https://docs.aws.amazon.com/bedrock/latest/userguide/guardrails.html
+            "guardrail_identifier": "",  # e.g. "abc123def456"
+            "guardrail_version": "",     # e.g. "1" or "DRAFT"
+            "stream_processing_mode": "async",  # "sync" or "async"
+            "trace": "disabled",         # "enabled", "disabled", or "enabled_full"
+        },
+    },
+
     "smart_model_routing": {
         "enabled": False,
         "max_simple_chars": 160,
@@ -510,6 +557,11 @@ DEFAULT_CONFIG = {
         "platforms": {},  # Per-platform display overrides: {"telegram": {"tool_progress": "all"}, "slack": {"tool_progress": "off"}}
     },
 
+    # Web dashboard settings
+    "dashboard": {
+        "theme": "default",  # Dashboard visual theme: "default", "midnight", "ember", "mono", "cyberpunk", "rose"
+    },
+
     # Privacy settings
     "privacy": {
         "redact_pii": False,  # When True, hash user IDs and strip phone numbers from LLM context
@@ -517,7 +569,7 @@ DEFAULT_CONFIG = {
     
     # Text-to-speech configuration
     "tts": {
-        "provider": "edge",  # "edge" (free) | "elevenlabs" (premium) | "openai" | "minimax" | "mistral" | "neutts" (local)
+        "provider": "edge",  # "edge" (free) | "elevenlabs" (premium) | "openai" | "xai" | "minimax" | "mistral" | "neutts" (local)
         "edge": {
             "voice": "en-US-AriaNeural",
             # Popular: AriaNeural, JennyNeural, AndrewNeural, BrianNeural, SoniaNeural
@@ -530,6 +582,12 @@ DEFAULT_CONFIG = {
             "model": "gpt-4o-mini-tts",
             "voice": "alloy",
             # Voices: alloy, echo, fable, onyx, nova, shimmer
+        },
+        "xai": {
+            "voice_id": "eve",
+            "language": "en",
+            "sample_rate": 24000,
+            "bit_rate": 128000,
         },
         "mistral": {
             "model": "voxtral-mini-tts-2603",
@@ -638,6 +696,7 @@ DEFAULT_CONFIG = {
         "allowed_channels": "",        # If set, bot ONLY responds in these channel IDs (whitelist)
         "auto_thread": True,           # Auto-create threads on @mention in channels (like Slack)
         "reactions": True,             # Add 👀/✅/❌ reactions to messages during processing
+        "channel_prompts": {},         # Per-channel ephemeral system prompts (forum parents apply to child threads)
     },
 
     # WhatsApp platform settings (gateway mode)
@@ -646,6 +705,21 @@ DEFAULT_CONFIG = {
         # Default (None) uses the built-in "⚕ *Hermes Agent*" header.
         # Set to "" (empty string) to disable the header entirely.
         # Supports \n for newlines, e.g. "🤖 *My Bot*\n──────\n"
+    },
+
+    # Telegram platform settings (gateway mode)
+    "telegram": {
+        "channel_prompts": {},         # Per-chat/topic ephemeral system prompts (topics inherit from parent group)
+    },
+
+    # Slack platform settings (gateway mode)
+    "slack": {
+        "channel_prompts": {},         # Per-channel ephemeral system prompts
+    },
+
+    # Mattermost platform settings (gateway mode)
+    "mattermost": {
+        "channel_prompts": {},         # Per-channel ephemeral system prompts
     },
 
     # Approval mode for dangerous commands:
@@ -703,7 +777,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 17,
+    "_config_version": 18,
 }
 
 # =============================================================================
@@ -766,6 +840,22 @@ OPTIONAL_ENV_VARS = {
     "GEMINI_BASE_URL": {
         "description": "Google AI Studio base URL override",
         "prompt": "Gemini base URL (leave empty for default)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
+    "XAI_API_KEY": {
+        "description": "xAI API key",
+        "prompt": "xAI API key",
+        "url": "https://console.x.ai/",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "XAI_BASE_URL": {
+        "description": "xAI base URL override",
+        "prompt": "xAI base URL (leave empty for default)",
         "url": None,
         "password": False,
         "category": "provider",
@@ -912,6 +1002,30 @@ OPTIONAL_ENV_VARS = {
         "category": "provider",
         "advanced": True,
     },
+    "HERMES_GEMINI_CLIENT_ID": {
+        "description": "Google OAuth client ID for google-gemini-cli (optional; defaults to Google's public gemini-cli client)",
+        "prompt": "Google OAuth client ID (optional — leave empty to use the public default)",
+        "url": "https://console.cloud.google.com/apis/credentials",
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
+    "HERMES_GEMINI_CLIENT_SECRET": {
+        "description": "Google OAuth client secret for google-gemini-cli (optional)",
+        "prompt": "Google OAuth client secret (optional)",
+        "url": "https://console.cloud.google.com/apis/credentials",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "HERMES_GEMINI_PROJECT_ID": {
+        "description": "GCP project ID for paid Gemini tiers (free tier auto-provisions)",
+        "prompt": "GCP project ID for Gemini OAuth (leave empty for free tier)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
     "OPENCODE_ZEN_API_KEY": {
         "description": "OpenCode Zen API key (pay-as-you-go access to curated models)",
         "prompt": "OpenCode Zen API key",
@@ -959,6 +1073,22 @@ OPTIONAL_ENV_VARS = {
         "category": "provider",
         "advanced": True,
     },
+    "OLLAMA_API_KEY": {
+        "description": "Ollama Cloud API key (ollama.com — cloud-hosted open models)",
+        "prompt": "Ollama Cloud API key",
+        "url": "https://ollama.com/settings",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "OLLAMA_BASE_URL": {
+        "description": "Ollama Cloud base URL override (default: https://ollama.com/v1)",
+        "prompt": "Ollama base URL (leave empty for default)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
     "XIAOMI_API_KEY": {
         "description": "Xiaomi MiMo API key for MiMo models (mimo-v2-pro, mimo-v2-omni, mimo-v2-flash)",
         "prompt": "Xiaomi MiMo API Key",
@@ -969,6 +1099,22 @@ OPTIONAL_ENV_VARS = {
     "XIAOMI_BASE_URL": {
         "description": "Xiaomi MiMo base URL override (default: https://api.xiaomimimo.com/v1)",
         "prompt": "Xiaomi base URL (leave empty for default)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
+    "AWS_REGION": {
+        "description": "AWS region for Bedrock API calls (e.g. us-east-1, eu-central-1)",
+        "prompt": "AWS Region",
+        "url": "https://docs.aws.amazon.com/bedrock/latest/userguide/bedrock-regions.html",
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
+    "AWS_PROFILE": {
+        "description": "AWS named profile for Bedrock authentication (from ~/.aws/credentials)",
+        "prompt": "AWS Profile",
         "url": None,
         "password": False,
         "category": "provider",
@@ -1168,6 +1314,12 @@ OPTIONAL_ENV_VARS = {
         "description": "Comma-separated Telegram user IDs allowed to use the bot (get ID from @userinfobot)",
         "prompt": "Allowed Telegram user IDs (comma-separated)",
         "url": "https://t.me/userinfobot",
+        "password": False,
+        "category": "messaging",
+    },
+    "TELEGRAM_PROXY": {
+        "description": "Proxy URL for Telegram connections (overrides HTTPS_PROXY). Supports http://, https://, socks5://",
+        "prompt": "Telegram proxy URL (optional)",
         "password": False,
         "category": "messaging",
     },
@@ -1468,13 +1620,8 @@ OPTIONAL_ENV_VARS = {
     },
 
     # ── Agent settings ──
-    "MESSAGING_CWD": {
-        "description": "Working directory for terminal commands via messaging",
-        "prompt": "Messaging working directory (default: home)",
-        "url": None,
-        "password": False,
-        "category": "setting",
-    },
+    # NOTE: MESSAGING_CWD was removed here — use terminal.cwd in config.yaml
+    # instead.  The gateway reads TERMINAL_CWD (bridged from terminal.cwd).
     "SUDO_PASSWORD": {
         "description": "Sudo password for terminal commands requiring root access; set to an explicit empty string to try empty without prompting",
         "prompt": "Sudo password",
@@ -1522,14 +1669,8 @@ OPTIONAL_ENV_VARS = {
     },
 }
 
-if not _managed_nous_tools_enabled():
-    for _hidden_var in (
-        "FIRECRAWL_GATEWAY_URL",
-        "TOOL_GATEWAY_DOMAIN",
-        "TOOL_GATEWAY_SCHEME",
-        "TOOL_GATEWAY_USER_TOKEN",
-    ):
-        OPTIONAL_ENV_VARS.pop(_hidden_var, None)
+# Tool Gateway env vars are always visible — they're useful for
+# self-hosted / custom gateway setups regardless of subscription state.
 
 
 def get_missing_env_vars(required_only: bool = False) -> List[Dict[str, Any]]:
@@ -1951,6 +2092,52 @@ def print_config_warnings(config: Optional[Dict[str, Any]] = None) -> None:
         lines.append(f"  {marker} {ci.message}")
     lines.append("  \033[2mRun 'hermes doctor' for fix suggestions.\033[0m")
     sys.stderr.write("\n".join(lines) + "\n\n")
+
+
+def warn_deprecated_cwd_env_vars(config: Optional[Dict[str, Any]] = None) -> None:
+    """Warn if MESSAGING_CWD or TERMINAL_CWD is set in .env instead of config.yaml.
+
+    These env vars are deprecated — the canonical setting is terminal.cwd
+    in config.yaml.  Prints a migration hint to stderr.
+    """
+    import os, sys
+    messaging_cwd = os.environ.get("MESSAGING_CWD")
+    terminal_cwd_env = os.environ.get("TERMINAL_CWD")
+
+    if config is None:
+        try:
+            config = load_config()
+        except Exception:
+            return
+
+    terminal_cfg = config.get("terminal", {})
+    config_cwd = terminal_cfg.get("cwd", ".") if isinstance(terminal_cfg, dict) else "."
+    # Only warn if config.yaml doesn't have an explicit path
+    config_has_explicit_cwd = config_cwd not in (".", "auto", "cwd", "")
+
+    lines: list[str] = []
+    if messaging_cwd:
+        lines.append(
+            f"  \033[33m⚠\033[0m MESSAGING_CWD={messaging_cwd} found in .env — "
+            f"this is deprecated."
+        )
+    if terminal_cwd_env and not config_has_explicit_cwd:
+        # TERMINAL_CWD in env but not from config bridge — likely from .env
+        lines.append(
+            f"  \033[33m⚠\033[0m TERMINAL_CWD={terminal_cwd_env} found in .env — "
+            f"this is deprecated."
+        )
+    if lines:
+        hint_path = os.environ.get("HERMES_HOME", "~/.hermes")
+        lines.insert(0, "\033[33m⚠ Deprecated .env settings detected:\033[0m")
+        lines.append(
+            f"  \033[2mMove to config.yaml instead:  "
+            f"terminal:\\n    cwd: /your/project/path\033[0m"
+        )
+        lines.append(
+            f"  \033[2mThen remove the old entries from {hint_path}/.env\033[0m"
+        )
+        sys.stderr.write("\n".join(lines) + "\n\n")
 
 
 def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, Any]:
@@ -2847,12 +3034,25 @@ def save_env_value(key: str, value: str):
         lines.append(f"{key}={value}\n")
     
     fd, tmp_path = tempfile.mkstemp(dir=str(env_path.parent), suffix='.tmp', prefix='.env_')
+    # Preserve original permissions so Docker volume mounts aren't clobbered.
+    original_mode = None
+    if env_path.exists():
+        try:
+            original_mode = stat.S_IMODE(env_path.stat().st_mode)
+        except OSError:
+            pass
     try:
         with os.fdopen(fd, 'w', **write_kw) as f:
             f.writelines(lines)
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp_path, env_path)
+        # Restore original permissions before _secure_file may tighten them.
+        if original_mode is not None:
+            try:
+                os.chmod(env_path, original_mode)
+            except OSError:
+                pass
     except BaseException:
         try:
             os.unlink(tmp_path)
@@ -2862,13 +3062,6 @@ def save_env_value(key: str, value: str):
     _secure_file(env_path)
 
     os.environ[key] = value
-
-    # Restrict .env permissions to owner-only (contains API keys)
-    if not _IS_WINDOWS:
-        try:
-            os.chmod(env_path, stat.S_IRUSR | stat.S_IWUSR)
-        except OSError:
-            pass
 
 
 def remove_env_value(key: str) -> bool:
@@ -2898,12 +3091,23 @@ def remove_env_value(key: str) -> bool:
 
     if found:
         fd, tmp_path = tempfile.mkstemp(dir=str(env_path.parent), suffix='.tmp', prefix='.env_')
+        # Preserve original permissions so Docker volume mounts aren't clobbered.
+        original_mode = None
+        try:
+            original_mode = stat.S_IMODE(env_path.stat().st_mode)
+        except OSError:
+            pass
         try:
             with os.fdopen(fd, 'w', **write_kw) as f:
                 f.writelines(new_lines)
                 f.flush()
                 os.fsync(f.fileno())
             os.replace(tmp_path, env_path)
+            if original_mode is not None:
+                try:
+                    os.chmod(env_path, original_mode)
+                except OSError:
+                    pass
         except BaseException:
             try:
                 os.unlink(tmp_path)

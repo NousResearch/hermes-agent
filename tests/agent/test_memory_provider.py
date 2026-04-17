@@ -396,6 +396,108 @@ class TestPluginMemoryDiscovery:
         assert load_memory_provider("nonexistent_provider") is None
 
 
+class TestUserInstalledProviderDiscovery:
+    """Memory providers installed to $HERMES_HOME/plugins/ should be found.
+
+    Regression test for issues #4956 and #9099: load_memory_provider() and
+    discover_memory_providers() only scanned the bundled plugins/memory/
+    directory, ignoring user-installed plugins.
+    """
+
+    def _make_user_memory_plugin(self, tmp_path, name="myprovider"):
+        """Create a minimal user memory provider plugin."""
+        plugin_dir = tmp_path / "plugins" / name
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "__init__.py").write_text(
+            "from agent.memory_provider import MemoryProvider\n"
+            "class MyProvider(MemoryProvider):\n"
+            f"    @property\n"
+            f"    def name(self): return {name!r}\n"
+            "    def is_available(self): return True\n"
+            "    def initialize(self, **kw): pass\n"
+            "    def sync_turn(self, *a, **kw): pass\n"
+            "    def get_tool_schemas(self): return []\n"
+            "    def handle_tool_call(self, *a, **kw): return '{}'\n"
+        )
+        (plugin_dir / "plugin.yaml").write_text(
+            f"name: {name}\ndescription: Test user provider\n"
+        )
+        return plugin_dir
+
+    def test_discover_finds_user_plugins(self, tmp_path, monkeypatch):
+        """discover_memory_providers() includes user-installed plugins."""
+        from plugins.memory import discover_memory_providers, _get_user_plugins_dir
+        self._make_user_memory_plugin(tmp_path, "myexternal")
+        monkeypatch.setattr(
+            "plugins.memory._get_user_plugins_dir",
+            lambda: tmp_path / "plugins",
+        )
+        providers = discover_memory_providers()
+        names = [n for n, _, _ in providers]
+        assert "myexternal" in names
+        assert "holographic" in names  # bundled still found
+
+    def test_load_user_plugin(self, tmp_path, monkeypatch):
+        """load_memory_provider() can load from $HERMES_HOME/plugins/."""
+        from plugins.memory import load_memory_provider
+        self._make_user_memory_plugin(tmp_path, "myexternal")
+        monkeypatch.setattr(
+            "plugins.memory._get_user_plugins_dir",
+            lambda: tmp_path / "plugins",
+        )
+        p = load_memory_provider("myexternal")
+        assert p is not None
+        assert p.name == "myexternal"
+        assert p.is_available()
+
+    def test_bundled_takes_precedence(self, tmp_path, monkeypatch):
+        """Bundled provider wins when user plugin has the same name."""
+        from plugins.memory import load_memory_provider, discover_memory_providers
+        # Create user plugin named "holographic" (same as bundled)
+        plugin_dir = tmp_path / "plugins" / "holographic"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "__init__.py").write_text(
+            "from agent.memory_provider import MemoryProvider\n"
+            "class Fake(MemoryProvider):\n"
+            "    @property\n"
+            "    def name(self): return 'holographic-FAKE'\n"
+            "    def is_available(self): return True\n"
+            "    def initialize(self, **kw): pass\n"
+            "    def sync_turn(self, *a, **kw): pass\n"
+            "    def get_tool_schemas(self): return []\n"
+            "    def handle_tool_call(self, *a, **kw): return '{}'\n"
+        )
+        monkeypatch.setattr(
+            "plugins.memory._get_user_plugins_dir",
+            lambda: tmp_path / "plugins",
+        )
+        # Load should return bundled (name "holographic"), not user (name "holographic-FAKE")
+        p = load_memory_provider("holographic")
+        assert p is not None
+        assert p.name == "holographic"  # bundled wins
+
+        # discover should not duplicate
+        providers = discover_memory_providers()
+        holo_count = sum(1 for n, _, _ in providers if n == "holographic")
+        assert holo_count == 1
+
+    def test_non_memory_user_plugins_excluded(self, tmp_path, monkeypatch):
+        """User plugins that don't reference MemoryProvider are skipped."""
+        from plugins.memory import discover_memory_providers
+        plugin_dir = tmp_path / "plugins" / "notmemory"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "__init__.py").write_text(
+            "def register(ctx):\n    ctx.register_tool('foo', 'bar', {}, lambda: None)\n"
+        )
+        monkeypatch.setattr(
+            "plugins.memory._get_user_plugins_dir",
+            lambda: tmp_path / "plugins",
+        )
+        providers = discover_memory_providers()
+        names = [n for n, _, _ in providers]
+        assert "notmemory" not in names
+
+
 # ---------------------------------------------------------------------------
 # Sequential dispatch routing tests
 # ---------------------------------------------------------------------------
@@ -695,3 +797,216 @@ class TestMemoryContextFencing:
         fence_end = combined.index("</memory-context>")
         assert "Alice" in combined[fence_start:fence_end]
         assert combined.index("weather") < fence_start
+
+
+# ---------------------------------------------------------------------------
+# AIAgent.commit_memory_session — routes to MemoryManager.on_session_end
+# ---------------------------------------------------------------------------
+
+
+class _CommitRecorder(FakeMemoryProvider):
+    """Provider that records on_session_end calls for assertions."""
+
+    def __init__(self, name="recorder"):
+        super().__init__(name)
+        self.end_calls = []
+
+    def on_session_end(self, messages):
+        self.end_calls.append(list(messages or []))
+
+
+class TestCommitMemorySessionRouting:
+    def test_on_session_end_fans_out(self):
+        mgr = MemoryManager()
+        builtin = _CommitRecorder("builtin")
+        external = _CommitRecorder("openviking")
+        mgr.add_provider(builtin)
+        mgr.add_provider(external)
+
+        msgs = [{"role": "user", "content": "hi"}]
+        mgr.on_session_end(msgs)
+
+        assert builtin.end_calls == [msgs]
+        assert external.end_calls == [msgs]
+
+    def test_on_session_end_tolerates_failure(self):
+        mgr = MemoryManager()
+        builtin = FakeMemoryProvider("builtin")
+        bad = _CommitRecorder("bad-provider")
+        bad.on_session_end = lambda m: (_ for _ in ()).throw(RuntimeError("boom"))
+        mgr.add_provider(builtin)
+        mgr.add_provider(bad)
+
+        mgr.on_session_end([])  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# on_memory_write bridge — must fire from both concurrent AND sequential paths
+# ---------------------------------------------------------------------------
+
+
+class TestOnMemoryWriteBridge:
+    """Verify that MemoryManager.on_memory_write is called when built-in
+    memory writes happen.  This is a regression test for #10174 where the
+    sequential tool execution path (_execute_tool_calls_sequential) was
+    missing the bridge call, so single memory tool calls never notified
+    external memory providers.
+    """
+
+    def test_on_memory_write_add(self):
+        """on_memory_write fires for 'add' actions."""
+        mgr = MemoryManager()
+        p = FakeMemoryProvider("ext")
+        mgr.add_provider(p)
+
+        mgr.on_memory_write("add", "memory", "new fact")
+        assert p.memory_writes == [("add", "memory", "new fact")]
+
+    def test_on_memory_write_replace(self):
+        """on_memory_write fires for 'replace' actions."""
+        mgr = MemoryManager()
+        p = FakeMemoryProvider("ext")
+        mgr.add_provider(p)
+
+        mgr.on_memory_write("replace", "user", "updated pref")
+        assert p.memory_writes == [("replace", "user", "updated pref")]
+
+    def test_on_memory_write_remove_not_bridged(self):
+        """The bridge intentionally skips 'remove' — only add/replace notify."""
+        # This tests the contract that run_agent.py checks:
+        #   function_args.get("action") in ("add", "replace")
+        mgr = MemoryManager()
+        p = FakeMemoryProvider("ext")
+        mgr.add_provider(p)
+
+        # Manager itself doesn't filter — run_agent.py does.
+        # But providers should handle remove gracefully.
+        mgr.on_memory_write("remove", "memory", "old fact")
+        assert p.memory_writes == [("remove", "memory", "old fact")]
+
+    def test_memory_manager_tool_injection_deduplicates(self):
+        """Memory manager tools already in self.tools (from plugin registry)
+        must not be appended again.  Duplicate function names cause 400 errors
+        on providers that enforce unique names (e.g. Xiaomi MiMo via Nous Portal).
+
+        Regression test for: duplicate mnemosyne_recall / mnemosyne_remember /
+        mnemosyne_stats in tools array → 400 from Nous Portal.
+        """
+        mgr = MemoryManager()
+        p = FakeMemoryProvider("ext", tools=[
+            {"name": "ext_recall", "description": "Recall", "parameters": {}},
+            {"name": "ext_remember", "description": "Remember", "parameters": {}},
+        ])
+        mgr.add_provider(p)
+
+        # Simulate self.tools already containing one of the plugin tools
+        # (as if it was registered via ctx.register_tool → get_tool_definitions)
+        existing_tools = [
+            {"type": "function", "function": {"name": "ext_recall", "description": "Recall (from registry)", "parameters": {}}},
+            {"type": "function", "function": {"name": "web_search", "description": "Search", "parameters": {}}},
+        ]
+
+        # Apply the same dedup logic from run_agent.py __init__
+        _existing_names = {
+            t.get("function", {}).get("name")
+            for t in existing_tools
+            if isinstance(t, dict)
+        }
+        for _schema in mgr.get_all_tool_schemas():
+            _tname = _schema.get("name", "")
+            if _tname and _tname in _existing_names:
+                continue
+            existing_tools.append({"type": "function", "function": _schema})
+            if _tname:
+                _existing_names.add(_tname)
+
+        # ext_recall should NOT be duplicated; ext_remember should be added
+        tool_names = [t["function"]["name"] for t in existing_tools]
+        assert tool_names.count("ext_recall") == 1, f"ext_recall duplicated: {tool_names}"
+        assert tool_names.count("ext_remember") == 1
+        assert tool_names.count("web_search") == 1
+        assert len(existing_tools) == 3  # web_search + ext_recall + ext_remember
+
+    def test_on_memory_write_tolerates_provider_failure(self):
+        """If a provider's on_memory_write raises, others still get notified."""
+        mgr = MemoryManager()
+        bad = FakeMemoryProvider("builtin")
+        bad.on_memory_write = MagicMock(side_effect=RuntimeError("boom"))
+        good = FakeMemoryProvider("good")
+        mgr.add_provider(bad)
+        mgr.add_provider(good)
+
+        mgr.on_memory_write("add", "user", "test")
+        # Good provider still received the call despite bad provider crashing
+        assert good.memory_writes == [("add", "user", "test")]
+
+
+class TestHonchoCadenceTracking:
+    """Verify Honcho provider cadence gating depends on on_turn_start().
+
+    Bug: _turn_count was never updated because on_turn_start() was not called
+    from run_conversation(). This meant cadence checks always passed (every
+    turn fired both context refresh and dialectic). Fixed by calling
+    on_turn_start(self._user_turn_count, msg) before prefetch_all().
+    """
+
+    def test_turn_count_updates_on_turn_start(self):
+        """on_turn_start sets _turn_count, enabling cadence math."""
+        from plugins.memory.honcho import HonchoMemoryProvider
+        p = HonchoMemoryProvider()
+        assert p._turn_count == 0
+        p.on_turn_start(1, "hello")
+        assert p._turn_count == 1
+        p.on_turn_start(5, "world")
+        assert p._turn_count == 5
+
+    def test_queue_prefetch_respects_dialectic_cadence(self):
+        """With dialecticCadence=3, dialectic should skip turns 2 and 3."""
+        from plugins.memory.honcho import HonchoMemoryProvider
+        p = HonchoMemoryProvider()
+        p._dialectic_cadence = 3
+        p._recall_mode = "context"
+        p._session_key = "test-session"
+        # Simulate a manager that records prefetch calls
+        class FakeManager:
+            def prefetch_context(self, key, query=None):
+                pass
+            def prefetch_dialectic(self, key, query):
+                pass
+
+        p._manager = FakeManager()
+
+        # Simulate turn 1: last_dialectic_turn = -999, so (1 - (-999)) >= 3 -> fires
+        p.on_turn_start(1, "turn 1")
+        p._last_dialectic_turn = 1  # simulate it fired
+        p._last_context_turn = 1
+
+        # Simulate turn 2: (2 - 1) = 1 < 3 -> should NOT fire dialectic
+        p.on_turn_start(2, "turn 2")
+        assert (p._turn_count - p._last_dialectic_turn) < p._dialectic_cadence
+
+        # Simulate turn 3: (3 - 1) = 2 < 3 -> should NOT fire dialectic
+        p.on_turn_start(3, "turn 3")
+        assert (p._turn_count - p._last_dialectic_turn) < p._dialectic_cadence
+
+        # Simulate turn 4: (4 - 1) = 3 >= 3 -> should fire dialectic
+        p.on_turn_start(4, "turn 4")
+        assert (p._turn_count - p._last_dialectic_turn) >= p._dialectic_cadence
+
+    def test_injection_frequency_first_turn_with_1indexed(self):
+        """injection_frequency='first-turn' must inject on turn 1 (1-indexed)."""
+        from plugins.memory.honcho import HonchoMemoryProvider
+        p = HonchoMemoryProvider()
+        p._injection_frequency = "first-turn"
+
+        # Turn 1 should inject (not skip)
+        p.on_turn_start(1, "first message")
+        assert p._turn_count == 1
+        # The guard is `_turn_count > 1`, so turn 1 passes through
+        should_skip = p._injection_frequency == "first-turn" and p._turn_count > 1
+        assert not should_skip, "First turn (turn 1) should NOT be skipped"
+
+        # Turn 2 should skip
+        p.on_turn_start(2, "second message")
+        should_skip = p._injection_frequency == "first-turn" and p._turn_count > 1
+        assert should_skip, "Second turn (turn 2) SHOULD be skipped"

@@ -561,8 +561,59 @@ After registration, users can run `hermes my-plugin status`, `hermes my-plugin c
 
 **Active-provider gating:** Memory plugin CLI commands only appear when their provider is the active `memory.provider` in config. If a user hasn't set up your provider, your CLI commands won't clutter the help output.
 
+### Register slash commands
+
+Plugins can register in-session slash commands — commands users type during a conversation (like `/lcm status` or `/ping`). These work in both CLI and gateway (Telegram, Discord, etc.).
+
+```python
+def _handle_status(raw_args: str) -> str:
+    """Handler for /mystatus — called with everything after the command name."""
+    if raw_args.strip() == "help":
+        return "Usage: /mystatus [help|check]"
+    return "Plugin status: all systems nominal"
+
+def register(ctx):
+    ctx.register_command(
+        "mystatus",
+        handler=_handle_status,
+        description="Show plugin status",
+    )
+```
+
+After registration, users can type `/mystatus` in any session. The command appears in autocomplete, `/help` output, and the Telegram bot menu.
+
+**Signature:** `ctx.register_command(name: str, handler: Callable, description: str = "")`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `name` | `str` | Command name without the leading slash (e.g. `"lcm"`, `"mystatus"`) |
+| `handler` | `Callable[[str], str \| None]` | Called with the raw argument string. May also be `async`. |
+| `description` | `str` | Shown in `/help`, autocomplete, and Telegram bot menu |
+
+**Key differences from `register_cli_command()`:**
+
+| | `register_command()` | `register_cli_command()` |
+|---|---|---|
+| Invoked as | `/name` in a session | `hermes name` in a terminal |
+| Where it works | CLI sessions, Telegram, Discord, etc. | Terminal only |
+| Handler receives | Raw args string | argparse `Namespace` |
+| Use case | Diagnostics, status, quick actions | Complex subcommand trees, setup wizards |
+
+**Conflict protection:** If a plugin tries to register a name that conflicts with a built-in command (`help`, `model`, `new`, etc.), the registration is silently rejected with a log warning. Built-in commands always take precedence.
+
+**Async handlers:** The gateway dispatch automatically detects and awaits async handlers, so you can use either sync or async functions:
+
+```python
+async def _handle_check(raw_args: str) -> str:
+    result = await some_async_operation()
+    return f"Check result: {result}"
+
+def register(ctx):
+    ctx.register_command("check", handler=_handle_check, description="Run async check")
+```
+
 :::tip
-This guide covers **general plugins** (tools, hooks, CLI commands). For specialized plugin types, see:
+This guide covers **general plugins** (tools, hooks, slash commands, CLI commands). For specialized plugin types, see:
 - [Memory Provider Plugins](/docs/developer-guide/memory-provider-plugin) — cross-session knowledge backends
 - [Context Engine Plugins](/docs/developer-guide/context-engine-plugin) — alternative context management strategies
 :::

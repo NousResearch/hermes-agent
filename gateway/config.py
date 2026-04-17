@@ -617,6 +617,20 @@ def load_gateway_config() -> GatewayConfig:
                     if isinstance(ntc, list):
                         ntc = ",".join(str(v) for v in ntc)
                     os.environ["DISCORD_NO_THREAD_CHANNELS"] = str(ntc)
+                # allow_mentions: granular control over what the bot can ping.
+                # Safe defaults (no @everyone/roles) are applied in the adapter;
+                # these YAML keys only override when set and let users opt back
+                # into unsafe modes (e.g. roles=true) if they actually want it.
+                allow_mentions_cfg = discord_cfg.get("allow_mentions")
+                if isinstance(allow_mentions_cfg, dict):
+                    for yaml_key, env_key in (
+                        ("everyone", "DISCORD_ALLOW_MENTION_EVERYONE"),
+                        ("roles", "DISCORD_ALLOW_MENTION_ROLES"),
+                        ("users", "DISCORD_ALLOW_MENTION_USERS"),
+                        ("replied_user", "DISCORD_ALLOW_MENTION_REPLIED_USER"),
+                    ):
+                        if yaml_key in allow_mentions_cfg and not os.getenv(env_key):
+                            os.environ[env_key] = str(allow_mentions_cfg[yaml_key]).lower()
 
             # Telegram settings → env vars (env vars take precedence)
             telegram_cfg = yaml_cfg.get("telegram", {})

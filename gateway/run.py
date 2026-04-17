@@ -76,7 +76,7 @@ _ensure_ssl_certs()
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Resolve Hermes home directory (respects HERMES_HOME override)
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home, display_hermes_home
 from utils import atomic_yaml_write, is_truthy_value
 _hermes_home = get_hermes_home()
 
@@ -1748,6 +1748,28 @@ class GatewayRunner:
         task.add_done_callback(self._background_tasks.discard)
         return True
 
+    def _warn_on_ineffective_email_auth_config(self) -> None:
+        """Warn when spoofable email sender identity is configured as an auth signal."""
+        email_config = self.config.platforms.get(Platform.EMAIL)
+        if not email_config or not getattr(email_config, "enabled", False):
+            return
+
+        ineffective_vars = [
+            name
+            for name in ("EMAIL_ALLOWED_USERS", "GATEWAY_ALLOWED_USERS")
+            if os.getenv(name, "").strip()
+        ]
+        if not ineffective_vars:
+            return
+
+        verb = "is" if len(ineffective_vars) == 1 else "are"
+        logger.warning(
+            "%s %s ignored for gateway email authorization because email From headers are spoofable. "
+            "Use EMAIL_ALLOW_ALL_USERS=true or GATEWAY_ALLOW_ALL_USERS=true if you intentionally want to accept email senders.",
+            ", ".join(ineffective_vars),
+            verb,
+        )
+
     async def start(self) -> bool:
         """
         Start the gateway and all configured platform adapters.
@@ -1775,7 +1797,6 @@ class GatewayRunner:
             for v in ("TELEGRAM_ALLOWED_USERS", "DISCORD_ALLOWED_USERS",
                        "WHATSAPP_ALLOWED_USERS", "SLACK_ALLOWED_USERS",
                        "SIGNAL_ALLOWED_USERS", "SIGNAL_GROUP_ALLOWED_USERS",
-                       "EMAIL_ALLOWED_USERS",
                        "SMS_ALLOWED_USERS", "MATTERMOST_ALLOWED_USERS",
                        "MATRIX_ALLOWED_USERS", "DINGTALK_ALLOWED_USERS",
                        "FEISHU_ALLOWED_USERS",
@@ -1803,9 +1824,12 @@ class GatewayRunner:
         if not _any_allowlist and not _allow_all:
             logger.warning(
                 "No user allowlists configured. All unauthorized users will be denied. "
-                "Set GATEWAY_ALLOW_ALL_USERS=true in ~/.hermes/.env to allow open access, "
-                "or configure platform allowlists (e.g., TELEGRAM_ALLOWED_USERS=your_id)."
+                "Set GATEWAY_ALLOW_ALL_USERS=true in %s/.env to allow open access, "
+                "or configure platform allowlists for non-email platforms "
+                "(e.g., TELEGRAM_ALLOWED_USERS=your_id).",
+                display_hermes_home(),
             )
+        self._warn_on_ineffective_email_auth_config()
         
         # Discover and load event hooks
         self.hooks.discover_and_load()
@@ -2583,10 +2607,14 @@ class GatewayRunner:
         
         Checks in order:
         1. Per-platform allow-all flag (e.g., DISCORD_ALLOW_ALL_USERS=true)
-        2. Environment variable allowlists (TELEGRAM_ALLOWED_USERS, etc.)
-        3. DM pairing approved list
+        2. Environment variable allowlists (TELEGRAM_ALLOWED_USERS, etc.) for non-email platforms
+        3. DM pairing approved list for non-email platforms
         4. Global allow-all (GATEWAY_ALLOW_ALL_USERS=true)
         5. Default: deny
+
+        Email is an exception: SMTP/IMAP From headers are spoofable, so email
+        senders are never authorized via allowlists or pairing based on
+        source.user_id. Email only honors explicit allow-all flags.
         """
         # Home Assistant events are system-generated (state changes), not
         # user-initiated messages.  The HASS_TOKEN already authenticates the
@@ -2606,7 +2634,6 @@ class GatewayRunner:
             Platform.WHATSAPP: "WHATSAPP_ALLOWED_USERS",
             Platform.SLACK: "SLACK_ALLOWED_USERS",
             Platform.SIGNAL: "SIGNAL_ALLOWED_USERS",
-            Platform.EMAIL: "EMAIL_ALLOWED_USERS",
             Platform.SMS: "SMS_ALLOWED_USERS",
             Platform.MATTERMOST: "MATTERMOST_ALLOWED_USERS",
             Platform.MATRIX: "MATRIX_ALLOWED_USERS",
@@ -2641,6 +2668,13 @@ class GatewayRunner:
         platform_allow_all_var = platform_allow_all_map.get(source.platform, "")
         if platform_allow_all_var and os.getenv(platform_allow_all_var, "").lower() in ("true", "1", "yes"):
             return True
+
+        # Email identities are derived from the SMTP/IMAP "From" header,
+        # which is unauthenticated and can be spoofed. Never authorize email
+        # senders via allowlists or pairing based on source.user_id. Email
+        # only honors explicit allow-all flags.
+        if source.platform == Platform.EMAIL:
+            return os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in ("true", "1", "yes")
 
         # Check pairing store (always checked, regardless of allowlists)
         platform_name = source.platform.value if source.platform else ""
@@ -2688,6 +2722,10 @@ class GatewayRunner:
 
     def _get_unauthorized_dm_behavior(self, platform: Optional[Platform]) -> str:
         """Return how unauthorized DMs should be handled for a platform."""
+        if platform == Platform.EMAIL:
+            # Email sender identity comes from a spoofable From header, so do
+            # not advertise pairing for a channel we intentionally do not trust.
+            return "ignore"
         config = getattr(self, "config", None)
         if config and hasattr(config, "get_unauthorized_dm_behavior"):
             return config.get_unauthorized_dm_behavior(platform)
@@ -2721,7 +2759,8 @@ class GatewayRunner:
             return None
         elif not self._is_user_authorized(source):
             logger.warning("Unauthorized user: %s (%s) on %s", source.user_id, source.user_name, source.platform.value)
-            # In DMs: offer pairing code. In groups: silently ignore.
+            # Pairing is only offered in DMs that allow pairing; otherwise
+            # unauthorized messages are silently ignored.
             if source.chat_type == "dm" and self._get_unauthorized_dm_behavior(source.platform) == "pair":
                 platform_name = source.platform.value if source.platform else "unknown"
                 # Rate-limit ALL pairing responses (code or rejection) to

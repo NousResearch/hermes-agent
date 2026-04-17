@@ -253,3 +253,24 @@ async def test_global_ignore_suppresses_pairing_reply(monkeypatch):
     assert result is None
     runner.pairing_store.generate_code.assert_not_called()
     adapter.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_unauthorized_email_dm_is_silently_ignored(monkeypatch):
+    _clear_auth_env(monkeypatch)
+    config = GatewayConfig(
+        platforms={Platform.EMAIL: PlatformConfig(enabled=True)},
+    )
+    runner, adapter = _make_runner(Platform.EMAIL, config)
+
+    result = await runner._handle_message(
+        _make_event(
+            Platform.EMAIL,
+            "spoofed@example.com",
+            "spoofed@example.com",
+        )
+    )
+
+    assert result is None
+    runner.pairing_store.generate_code.assert_not_called()
+    adapter.send.assert_not_awaited()

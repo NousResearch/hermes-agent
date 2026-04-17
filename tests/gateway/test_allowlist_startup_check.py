@@ -4,6 +4,9 @@ import os
 from unittest.mock import patch
 
 
+_TRUTHY = ("true", "1", "yes")
+
+
 def _would_warn():
     """Replicate the startup allowlist warning logic. Returns True if warning fires."""
     _any_allowlist = any(
@@ -11,18 +14,23 @@ def _would_warn():
         for v in ("TELEGRAM_ALLOWED_USERS", "DISCORD_ALLOWED_USERS",
                    "WHATSAPP_ALLOWED_USERS", "SLACK_ALLOWED_USERS",
                    "SIGNAL_ALLOWED_USERS", "SIGNAL_GROUP_ALLOWED_USERS",
-                   "EMAIL_ALLOWED_USERS",
                    "SMS_ALLOWED_USERS", "MATTERMOST_ALLOWED_USERS",
-                   "MATRIX_ALLOWED_USERS", "DINGTALK_ALLOWED_USERS", "FEISHU_ALLOWED_USERS", "WECOM_ALLOWED_USERS",
+                   "MATRIX_ALLOWED_USERS", "DINGTALK_ALLOWED_USERS",
+                   "FEISHU_ALLOWED_USERS", "WECOM_ALLOWED_USERS",
+                   "WECOM_CALLBACK_ALLOWED_USERS", "WEIXIN_ALLOWED_USERS",
+                   "BLUEBUBBLES_ALLOWED_USERS", "QQ_ALLOWED_USERS",
                    "GATEWAY_ALLOWED_USERS")
     )
-    _allow_all = os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in ("true", "1", "yes") or any(
-        os.getenv(v, "").lower() in ("true", "1", "yes")
+    _allow_all = os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in _TRUTHY or any(
+        os.getenv(v, "").lower() in _TRUTHY
         for v in ("TELEGRAM_ALLOW_ALL_USERS", "DISCORD_ALLOW_ALL_USERS",
                    "WHATSAPP_ALLOW_ALL_USERS", "SLACK_ALLOW_ALL_USERS",
                    "SIGNAL_ALLOW_ALL_USERS", "EMAIL_ALLOW_ALL_USERS",
                    "SMS_ALLOW_ALL_USERS", "MATTERMOST_ALLOW_ALL_USERS",
-                   "MATRIX_ALLOW_ALL_USERS", "DINGTALK_ALLOW_ALL_USERS", "FEISHU_ALLOW_ALL_USERS", "WECOM_ALLOW_ALL_USERS")
+                   "MATRIX_ALLOW_ALL_USERS", "DINGTALK_ALLOW_ALL_USERS",
+                   "FEISHU_ALLOW_ALL_USERS", "WECOM_ALLOW_ALL_USERS",
+                   "WECOM_CALLBACK_ALLOW_ALL_USERS", "WEIXIN_ALLOW_ALL_USERS",
+                   "BLUEBUBBLES_ALLOW_ALL_USERS", "QQ_ALLOW_ALL_USERS")
     )
     return not _any_allowlist and not _allow_all
 
@@ -37,8 +45,16 @@ class TestAllowlistStartupCheck:
         with patch.dict(os.environ, {"SIGNAL_GROUP_ALLOWED_USERS": "user1"}, clear=True):
             assert _would_warn() is False
 
+    def test_email_allowed_users_does_not_suppress_warning(self):
+        with patch.dict(os.environ, {"EMAIL_ALLOWED_USERS": "spoofable@example.com"}, clear=True):
+            assert _would_warn() is True
+
     def test_telegram_allow_all_users_suppresses_warning(self):
         with patch.dict(os.environ, {"TELEGRAM_ALLOW_ALL_USERS": "true"}, clear=True):
+            assert _would_warn() is False
+
+    def test_email_allow_all_users_suppresses_warning(self):
+        with patch.dict(os.environ, {"EMAIL_ALLOW_ALL_USERS": "true"}, clear=True):
             assert _would_warn() is False
 
     def test_gateway_allow_all_users_suppresses_warning(self):

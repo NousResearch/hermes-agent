@@ -3157,6 +3157,9 @@ class GatewayRunner:
         if canonical == "undo":
             return await self._handle_undo_command(event)
         
+        if canonical == "start":
+            return await self._handle_start_command(event)
+
         if canonical == "sethome":
             return await self._handle_set_home_command(event)
 
@@ -5219,6 +5222,67 @@ class GatewayRunner:
         preview = removed_msg[:40] + "..." if len(removed_msg) > 40 else removed_msg
         return f"↩️ Undid {removed_count} message(s).\nRemoved: \"{preview}\""
     
+    async def _handle_start_command(self, event: MessageEvent) -> str:
+        """Handle /start command.
+
+        MD10 deploy fix: Telegram mandates /start as the first message
+        from a new user. Previously this fell through to the
+        "unknown command" notice, which broke the first-contact UX.
+        This handler returns a welcome message, lists the available
+        slash commands, and reports whether a home channel is set.
+        Idempotent and safe to call any time.
+        """
+        source = event.source
+        platform_name = source.platform.value if source.platform else "unknown"
+        env_key = f"{platform_name.upper()}_HOME_CHANNEL"
+
+        # Read home channel from config.yaml (same source /sethome writes to).
+        current_home = None
+        try:
+            import yaml
+            config_path = _hermes_home / "config.yaml"
+            if config_path.exists():
+                with open(config_path, encoding="utf-8") as f:
+                    user_config = yaml.safe_load(f) or {}
+                current_home = user_config.get(env_key)
+        except Exception:
+            current_home = None
+        # Also check the running process environment (if /sethome ran this
+        # session but the file read failed for some reason).
+        if not current_home:
+            current_home = os.environ.get(env_key)
+
+        chat_id = str(source.chat_id) if source.chat_id is not None else None
+
+        lines: list[str] = [
+            "👋 **Hermes Quant — autonomous crypto research**",
+            "",
+            "**Available commands:**",
+            "• `/sethome` — set the current chat as the home channel for cron digests + checkpoint pings.",
+            "• `/status` — show session info + active-hypothesis count.",
+            "• `/help` — list every slash command with descriptions.",
+        ]
+
+        if not current_home:
+            lines.append("")
+            lines.append(
+                "⚠ No home channel set yet. Send `/sethome` in your "
+                "preferred channel to start receiving digests.")
+        elif chat_id and str(current_home) != chat_id:
+            lines.append("")
+            lines.append(
+                f"✅ Bot is active. Home channel is already set "
+                f"(ID `{current_home}`). Cron digests and pings are "
+                f"delivered there. `/sethome` here would reassign it "
+                f"to this chat.")
+        else:
+            lines.append("")
+            lines.append(
+                f"✅ Bot is active. This chat **is** the home channel "
+                f"(ID `{current_home}`).")
+
+        return "\n".join(lines)
+
     async def _handle_set_home_command(self, event: MessageEvent) -> str:
         """Handle /sethome command -- set the current chat as the platform's home channel."""
         source = event.source

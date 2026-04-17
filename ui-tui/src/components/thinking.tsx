@@ -695,7 +695,8 @@ export const ToolTrail = memo(function ToolTrail({
   const hasThinking = !!cot || reasoningActive || busy
   const thinkingLive = reasoningActive || reasoningStreaming
 
-  const tokenCount = reasoningTokens !== undefined ? reasoningTokens : reasoning ? estimateTokensRough(reasoning) : 0
+  const tokenCount =
+    reasoningTokens && reasoningTokens > 0 ? reasoningTokens : reasoning ? estimateTokensRough(reasoning) : 0
 
   const toolTokenCount = toolTokens ?? 0
   const totalTokenCount = tokenCount + toolTokenCount

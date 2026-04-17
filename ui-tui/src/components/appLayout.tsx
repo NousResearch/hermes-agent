@@ -2,10 +2,12 @@ import { AlternateScreen, Box, NoSelect, ScrollBox, Text } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
 import { memo } from 'react'
 
-import type { AppLayoutProps } from '../app/interfaces.js'
+import type { AppLayoutProgressProps, AppLayoutProps } from '../app/interfaces.js'
 import { $isBlocked } from '../app/overlayStore.js'
 import { $uiState } from '../app/uiStore.js'
 import { PLACEHOLDER } from '../content/placeholders.js'
+import type { Theme } from '../theme.js'
+import type { DetailsMode } from '../types.js'
 
 import { GoodVibesHeart, StatusRule, StickyPromptTracker, TranscriptScrollbar } from './appChrome.js'
 import { AppOverlays } from './appOverlays.js'
@@ -14,6 +16,58 @@ import { MessageLine } from './messageLine.js'
 import { QueuedMessages } from './queuedMessages.js'
 import { TextInput } from './textInput.js'
 import { ToolTrail } from './thinking.js'
+
+const StreamingAssistant = memo(function StreamingAssistant({
+  busy,
+  cols,
+  compact,
+  detailsMode,
+  progress,
+  t
+}: {
+  busy: boolean
+  cols: number
+  compact?: boolean
+  detailsMode: DetailsMode
+  progress: AppLayoutProgressProps
+  t: Theme
+}) {
+  if (!progress.showProgressArea && !progress.showStreamingArea) return null
+
+  return (
+    <Box flexDirection="column">
+      {progress.showProgressArea && (
+        <Box flexDirection="column" marginBottom={progress.showStreamingArea ? 1 : 0}>
+          <ToolTrail
+            activity={progress.activity}
+            busy={busy}
+            detailsMode={detailsMode}
+            reasoning={progress.reasoning}
+            reasoningActive={progress.reasoningActive}
+            reasoningStreaming={progress.reasoningStreaming}
+            reasoningTokens={progress.reasoningTokens}
+            subagents={progress.subagents}
+            t={t}
+            tools={progress.tools}
+            toolTokens={progress.toolTokens}
+            trail={progress.turnTrail}
+          />
+        </Box>
+      )}
+
+      {progress.showStreamingArea && (
+        <MessageLine
+          cols={cols}
+          compact={compact}
+          detailsMode={detailsMode}
+          isStreaming
+          msg={{ role: 'assistant', text: progress.streaming }}
+          t={t}
+        />
+      )}
+    </Box>
+  )
+})
 
 const TranscriptPane = memo(function TranscriptPane({
   actions,
@@ -55,35 +109,15 @@ const TranscriptPane = memo(function TranscriptPane({
 
           {transcript.virtualHistory.bottomSpacer > 0 ? <Box height={transcript.virtualHistory.bottomSpacer} /> : null}
 
-          {progress.showProgressArea && (
-            <ToolTrail
-              activity={progress.activity}
-              busy={ui.busy}
-              detailsMode={ui.detailsMode}
-              reasoning={progress.reasoning}
-              reasoningActive={progress.reasoningActive}
-              reasoningStreaming={progress.reasoningStreaming}
-              reasoningTokens={progress.reasoningTokens}
-              subagents={progress.subagents}
-              t={ui.theme}
-              tools={progress.tools}
-              toolTokens={progress.toolTokens}
-              trail={progress.turnTrail}
-            />
-          )}
+          <StreamingAssistant
+            busy={ui.busy}
+            cols={composer.cols}
+            compact={ui.compact}
+            detailsMode={ui.detailsMode}
+            progress={progress}
+            t={ui.theme}
+          />
 
-          {progress.showStreamingArea && (
-            <Box flexDirection="column" marginTop={progress.showProgressArea ? 1 : 0}>
-              <MessageLine
-                cols={composer.cols}
-                compact={ui.compact}
-                detailsMode={ui.detailsMode}
-                isStreaming
-                msg={{ role: 'assistant', text: progress.streaming }}
-                t={ui.theme}
-              />
-            </Box>
-          )}
         </Box>
       </ScrollBox>
 

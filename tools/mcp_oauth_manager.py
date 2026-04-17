@@ -77,6 +77,66 @@ class _ProviderEntry:
 
 
 # ---------------------------------------------------------------------------
+# HermesMCPOAuthProvider — OAuthClientProvider subclass with disk-watch
+# ---------------------------------------------------------------------------
+
+
+def _make_hermes_provider_class() -> Optional[type]:
+    """Lazy-import the SDK base class and return our subclass.
+
+    Wrapped in a function so this module imports cleanly even when the
+    MCP SDK's OAuth module is unavailable (e.g. older mcp versions).
+    """
+    try:
+        from mcp.client.auth.oauth2 import OAuthClientProvider
+    except ImportError:  # pragma: no cover — SDK required in CI
+        return None
+
+    class HermesMCPOAuthProvider(OAuthClientProvider):
+        """OAuthClientProvider with pre-flow disk-mtime reload.
+
+        Before every ``async_auth_flow`` invocation, asks the manager to
+        check whether the tokens file on disk has been modified externally.
+        If so, the manager resets ``_initialized`` so the next flow
+        re-reads from storage.
+
+        This makes external-process refreshes (cron, another CLI instance)
+        visible to the running MCP session without requiring a restart.
+
+        Reference: Claude Code's ``invalidateOAuthCacheIfDiskChanged``
+        (``src/utils/auth.ts:1320``, CC-1096 / GH#24317).
+        """
+
+        def __init__(self, *args: Any, server_name: str = "", **kwargs: Any):
+            super().__init__(*args, **kwargs)
+            self._hermes_server_name = server_name
+
+        async def async_auth_flow(self, request):  # type: ignore[override]
+            # Pre-flow hook: ask the manager to refresh from disk if needed.
+            # Any failure here is non-fatal — we just log and proceed with
+            # whatever state the SDK already has.
+            try:
+                await get_manager().invalidate_if_disk_changed(
+                    self._hermes_server_name
+                )
+            except Exception as exc:  # pragma: no cover — defensive
+                logger.debug(
+                    "MCP OAuth '%s': pre-flow disk-watch failed (non-fatal): %s",
+                    self._hermes_server_name, exc,
+                )
+
+            # Delegate to the SDK's auth flow
+            async for item in super().async_auth_flow(request):
+                yield item
+
+    return HermesMCPOAuthProvider
+
+
+# Cached at import time. Tested and used by :class:`MCPOAuthManager`.
+_HERMES_PROVIDER_CLS: Optional[type] = _make_hermes_provider_class()
+
+
+# ---------------------------------------------------------------------------
 # Manager
 # ---------------------------------------------------------------------------
 

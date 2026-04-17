@@ -1,5 +1,6 @@
 """Tests for agent/context_compressor.py — compression logic, thresholds, truncation fallback."""
 
+import json
 import pytest
 from unittest.mock import patch, MagicMock
 
@@ -781,3 +782,55 @@ class TestTokenBudgetTailProtection:
         # Tool at index 2 is outside the protected tail (last 3 = indices 2,3,4)
         # so it might or might not be pruned depending on boundary
         assert isinstance(pruned, int)
+
+    def test_prune_shrinks_tool_call_arguments_as_valid_json(self, budget_compressor):
+        """Regression: shrinking keeps arguments parseable JSON."""
+        c = budget_compressor
+        original_args = json.dumps({
+            "path": "notes.txt",
+            "content": "A" * 2000,
+            "encoding": "utf-8",
+        })
+        messages = [
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{
+                    "id": "c1",
+                    "type": "function",
+                    "function": {"name": "write_file", "arguments": original_args},
+                }],
+            },
+            {"role": "tool", "content": "ok" * 800, "tool_call_id": "c1"},
+            {"role": "user", "content": "latest message"},
+        ]
+
+        result, _ = c._prune_old_tool_results(messages, protect_tail_count=1)
+        args_after = result[0]["tool_calls"][0]["function"]["arguments"]
+        parsed_after = json.loads(args_after)
+
+        assert args_after != original_args
+        assert len(args_after) < len(original_args)
+        assert parsed_after["path"] == "notes.txt"
+        assert parsed_after["content"].endswith("...[truncated]")
+
+    def test_prune_does_not_modify_invalid_tool_call_arguments(self, budget_compressor):
+        """Even pre-existing invalid args should be preserved byte-for-byte."""
+        c = budget_compressor
+        invalid_args = '{"path":"broken","content":"unterminated'
+        messages = [
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{
+                    "id": "c1",
+                    "type": "function",
+                    "function": {"name": "write_file", "arguments": invalid_args},
+                }],
+            },
+            {"role": "tool", "content": "x" * 1200, "tool_call_id": "c1"},
+            {"role": "user", "content": "recent"},
+        ]
+
+        result, _ = c._prune_old_tool_results(messages, protect_tail_count=1)
+        assert result[0]["tool_calls"][0]["function"]["arguments"] == invalid_args

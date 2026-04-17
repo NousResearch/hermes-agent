@@ -63,6 +63,57 @@ _CHARS_PER_TOKEN = 4
 _SUMMARY_FAILURE_COOLDOWN_SECONDS = 600
 
 
+def _shrink_json_for_tool_args(
+    value: Any,
+    *,
+    max_string_len: int = 200,
+    max_list_items: int = 20,
+    max_dict_items: int = 40,
+    max_depth: int = 6,
+    _depth: int = 0,
+) -> Any:
+    """Recursively shrink JSON-compatible values while preserving validity."""
+    if _depth >= max_depth:
+        return "[truncated]"
+
+    if isinstance(value, str):
+        if len(value) <= max_string_len:
+            return value
+        return value[:max_string_len] + "...[truncated]"
+
+    if isinstance(value, list):
+        trimmed = value[:max_list_items]
+        return [
+            _shrink_json_for_tool_args(
+                item,
+                max_string_len=max_string_len,
+                max_list_items=max_list_items,
+                max_dict_items=max_dict_items,
+                max_depth=max_depth,
+                _depth=_depth + 1,
+            )
+            for item in trimmed
+        ]
+
+    if isinstance(value, dict):
+        # Keep insertion order for deterministic output.
+        out: Dict[str, Any] = {}
+        for idx, (k, v) in enumerate(value.items()):
+            if idx >= max_dict_items:
+                break
+            out[k] = _shrink_json_for_tool_args(
+                v,
+                max_string_len=max_string_len,
+                max_list_items=max_list_items,
+                max_dict_items=max_dict_items,
+                max_depth=max_depth,
+                _depth=_depth + 1,
+            )
+        return out
+
+    return value
+
+
 def _summarize_tool_result(tool_name: str, tool_args: str, tool_content: str) -> str:
     """Create an informative 1-line summary of a tool call + result.
 
@@ -345,8 +396,8 @@ class ContextCompressor(ContextEngine):
             [read_file] read config.py from line 1 (3,400 chars)
 
         Also deduplicates identical tool results (e.g. reading the same file
-        5x keeps only the newest full copy) and truncates large tool_call
-        arguments in assistant messages outside the protected tail.
+        5x keeps only the newest full copy) and shrinks old assistant
+        tool_call arguments while preserving valid JSON.
 
         Walks backward from the end, protecting the most recent messages that
         fall within ``protect_tail_tokens`` (when provided) OR the last
@@ -446,9 +497,8 @@ class ContextCompressor(ContextEngine):
                 result[i] = {**msg, "content": summary}
                 pruned += 1
 
-        # Pass 3: Truncate large tool_call arguments in assistant messages
-        # outside the protected tail. write_file with 50KB content, for
-        # example, survives pruning entirely without this.
+        # Pass 3: Shrink large tool_call arguments in assistant messages
+        # outside the protected tail, while keeping arguments as valid JSON.
         for i in range(prune_boundary):
             msg = result[i]
             if msg.get("role") != "assistant" or not msg.get("tool_calls"):
@@ -457,10 +507,27 @@ class ContextCompressor(ContextEngine):
             modified = False
             for tc in msg["tool_calls"]:
                 if isinstance(tc, dict):
-                    args = tc.get("function", {}).get("arguments", "")
-                    if len(args) > 500:
-                        tc = {**tc, "function": {**tc["function"], "arguments": args[:200] + "...[truncated]"}}
-                        modified = True
+                    fn = tc.get("function") or {}
+                    args = fn.get("arguments", "")
+                    if isinstance(args, str) and len(args) > 500:
+                        try:
+                            parsed = json.loads(args)
+                        except (json.JSONDecodeError, TypeError):
+                            # Preserve pre-existing malformed args verbatim.
+                            new_tcs.append(tc)
+                            continue
+
+                        shrunk = _shrink_json_for_tool_args(parsed)
+                        new_args = json.dumps(shrunk, separators=(",", ":"))
+                        if new_args != args:
+                            tc = {
+                                **tc,
+                                "function": {
+                                    **fn,
+                                    "arguments": new_args,
+                                },
+                            }
+                            modified = True
                 new_tcs.append(tc)
             if modified:
                 result[i] = {**msg, "tool_calls": new_tcs}

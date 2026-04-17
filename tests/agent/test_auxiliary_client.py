@@ -534,6 +534,29 @@ class TestGetTextAuxiliaryClient:
         assert mock_openai.call_args.kwargs["api_key"] == "no-key-required"
         assert mock_openai.call_args.kwargs["base_url"] == "http://localhost:2345/v1"
 
+    def test_task_config_override_beats_legacy_env(self, monkeypatch):
+        config = {
+            "auxiliary": {
+                "web_extract": {
+                    "base_url": "http://config-endpoint:2345/v1",
+                    "api_key": "config-key",
+                    "model": "config-model",
+                }
+            }
+        }
+        monkeypatch.setenv("AUXILIARY_WEB_EXTRACT_BASE_URL", "http://env-endpoint:2345/v1")
+        monkeypatch.setenv("AUXILIARY_WEB_EXTRACT_API_KEY", "env-key")
+        monkeypatch.setenv("AUXILIARY_WEB_EXTRACT_MODEL", "env-model")
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: config)
+
+        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            client, model = get_text_auxiliary_client("web_extract")
+
+        assert client is not None
+        assert model == "config-model"
+        assert mock_openai.call_args.kwargs["base_url"] == "http://config-endpoint:2345/v1"
+        assert mock_openai.call_args.kwargs["api_key"] == "config-key"
+
     def test_custom_endpoint_uses_config_saved_base_url(self, monkeypatch):
         config = {
             "model": {

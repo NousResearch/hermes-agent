@@ -251,6 +251,10 @@ AUTHOR_MAP = {
     "bernylinville@devopsthink.org": "bernylinville",
     "brian@bde.io": "briandevans",
     "hubin_ll@qq.com": "LLQWQ",
+    "memosr_email@gmail.com": "memosr",
+    "anthhub@163.com": "anthhub",
+    "shenuu@gmail.com": "shenuu",
+    "xiayh17@gmail.com": "xiayh0107",
 }
 
 

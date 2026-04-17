@@ -200,11 +200,68 @@ def get_container_exec_info() -> Optional[dict]:
 # =============================================================================
 
 # Re-export from hermes_constants — canonical definition lives there.
-from hermes_constants import get_hermes_home  # noqa: F811,E402
+from hermes_constants import get_hermes_home, get_default_hermes_root  # noqa: F811,E402
 
 def get_config_path() -> Path:
     """Get the main config file path."""
     return get_hermes_home() / "config.yaml"
+
+
+def get_shared_config_path() -> Path:
+    """Return the root profile's config.yaml for cross-profile shared settings.
+
+    Use this for settings that should be inherited by auxiliary profiles unless
+    explicitly overridden locally (for example provider/model registries).
+    """
+    return get_default_hermes_root() / "config.yaml"
+
+
+def get_shared_env_path() -> Path:
+    """Return the root profile's .env for cross-profile shared secrets.
+
+    Non-default profiles inherit this file first, then overlay their local
+    ``.env`` values. This keeps shared provider keys in one place while still
+    allowing per-profile overrides like Discord bot tokens.
+    """
+    return get_default_hermes_root() / ".env"
+
+
+_PROFILE_LOCAL_ENV_PREFIXES = (
+    "DISCORD_",
+    "TELEGRAM_",
+    "SLACK_",
+    "SIGNAL_",
+    "WHATSAPP_",
+    "MATTERMOST_",
+    "MATRIX_",
+    "FEISHU_",
+    "WECOM_",
+    "DINGTALK_",
+    "WEIXIN_",
+    "BLUEBUBBLES_",
+    "IMESSAGE_",
+    "EMAIL_",
+    "SMS_",
+    "API_SERVER_",
+    "WEBHOOK_",
+)
+
+
+def filter_shared_env_vars(env_vars: "Dict[str, str]") -> "Dict[str, str]":
+    """Keep only safely shareable root .env vars for non-default profiles.
+
+    Shared root env is intended for common provider/API credentials. Platform-
+    scoped messaging vars (bot tokens, allowed channels, home channels, reply
+    rules, etc.) must stay profile-local or multi-bot setups will bleed routing
+    and delivery state across profiles.
+    """
+    filtered = {}
+    for key, value in env_vars.items():
+        if any(key.startswith(prefix) for prefix in _PROFILE_LOCAL_ENV_PREFIXES):
+            continue
+        filtered[key] = value
+    return filtered
+
 
 def get_env_path() -> Path:
     """Get the .env file path (for API keys)."""
@@ -2680,9 +2737,18 @@ def load_config() -> Dict[str, Any]:
     import copy
     ensure_hermes_home()
     config_path = get_config_path()
+    shared_config_path = get_shared_config_path()
     
     config = copy.deepcopy(DEFAULT_CONFIG)
-    
+
+    if shared_config_path.exists() and shared_config_path != config_path:
+        try:
+            with open(shared_config_path, encoding="utf-8") as f:
+                shared_config = yaml.safe_load(f) or {}
+            config = _deep_merge(config, shared_config)
+        except Exception as e:
+            print(f"Warning: Failed to load shared config: {e}")
+
     if config_path.exists():
         try:
             with open(config_path, encoding="utf-8") as f:

@@ -16,6 +16,8 @@ import logging
 import os
 import subprocess
 import sys
+import yaml
+from contextlib import contextmanager
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 try:
@@ -34,9 +36,10 @@ from typing import Optional
 # the module) fail with ModuleNotFoundError for hermes_time et al.
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from hermes_constants import get_hermes_home
+from hermes_constants import get_default_hermes_root, get_hermes_home
 from hermes_cli.config import load_config
 from hermes_time import now as _hermes_now
+from cron.cron_timeout import resolve_cron_inactivity_timeout_seconds
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +49,6 @@ _KNOWN_DELIVERY_PLATFORMS = frozenset({
     "telegram", "discord", "slack", "whatsapp", "signal",
     "matrix", "mattermost", "homeassistant", "dingtalk", "feishu",
     "wecom", "wecom_callback", "weixin", "sms", "email", "webhook", "bluebubbles",
-    "qqbot",
 })
 
 from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run
@@ -62,6 +64,25 @@ _hermes_home = get_hermes_home()
 # File-based lock prevents concurrent ticks from gateway + daemon + systemd timer
 _LOCK_DIR = _hermes_home / "cron"
 _LOCK_FILE = _LOCK_DIR / ".tick.lock"
+
+
+@contextmanager
+def _scheduler_home_env():
+    """Temporarily align HERMES_HOME lookups with this module's scheduler home."""
+    previous = os.environ.get("HERMES_HOME")
+    os.environ["HERMES_HOME"] = str(_hermes_home)
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop("HERMES_HOME", None)
+        else:
+            os.environ["HERMES_HOME"] = previous
+
+
+def _load_scheduler_config() -> dict:
+    with _scheduler_home_env():
+        return load_config() or {}
 
 
 def _resolve_origin(job: dict) -> Optional[dict]:
@@ -256,7 +277,6 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         "email": Platform.EMAIL,
         "sms": Platform.SMS,
         "bluebubbles": Platform.BLUEBUBBLES,
-        "qqbot": Platform.QQBOT,
     }
     platform = platform_map.get(platform_name.lower())
     if not platform:
@@ -282,20 +302,18 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     # in config.yaml for clean output.
     wrap_response = True
     try:
-        user_cfg = load_config()
+        user_cfg = _load_scheduler_config()
         wrap_response = user_cfg.get("cron", {}).get("wrap_response", True)
     except Exception:
         pass
 
     if wrap_response:
         task_name = job.get("name", job["id"])
-        job_id = job.get("id", "")
         delivery_content = (
             f"Cronjob Response: {task_name}\n"
-            f"(job_id: {job_id})\n"
             f"-------------\n\n"
             f"{content}\n\n"
-            f"To stop or manage this job, send me a new message (e.g. \"stop reminder {task_name}\")."
+            f"Note: The agent cannot see this message, and therefore cannot respond to it."
         )
     else:
         delivery_content = content
@@ -307,7 +325,31 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     # Prefer the live adapter when the gateway is running — this supports E2EE
     # rooms (e.g. Matrix) where the standalone HTTP path cannot encrypt.
     runtime_adapter = (adapters or {}).get(platform)
-    if runtime_adapter is not None and loop is not None and getattr(loop, "is_running", lambda: False)():
+    if runtime_adapter is None:
+        try:
+            from gateway.config import Platform as GatewayPlatform
+            runtime_adapter = (adapters or {}).get(GatewayPlatform(platform))
+        except Exception:
+            runtime_adapter = None
+    adapter_connected = bool(
+        runtime_adapter is not None
+        and getattr(runtime_adapter, "is_connected", False)
+    )
+    loop_running = bool(loop is not None and getattr(loop, "is_running", lambda: False)())
+    try:
+        adapter_keys = [getattr(k, "value", k) for k in (adapters or {}).keys()]
+    except Exception:
+        adapter_keys = [str(k) for k in (adapters or {}).keys()]
+    logger.info(
+        "Job '%s': delivery path debug platform=%s adapter_keys=%s runtime_adapter=%s adapter_connected=%s loop_running=%s",
+        job["id"],
+        platform_name,
+        adapter_keys,
+        type(runtime_adapter).__name__ if runtime_adapter is not None else None,
+        adapter_connected,
+        loop_running,
+    )
+    if adapter_connected and loop_running:
         send_metadata = {"thread_id": thread_id} if thread_id else None
         try:
             # Send cleaned text (MEDIA tags stripped) — not the raw content
@@ -327,12 +369,20 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                     )
                     adapter_ok = False  # fall through to standalone path
 
+            sent_message_id = getattr(send_result, "message_id", None) if text_to_send else None
+
             # Send extracted media files as native attachments via the live adapter
             if adapter_ok and media_files:
                 _send_media_via_adapter(runtime_adapter, chat_id, media_files, send_metadata, loop, job)
 
             if adapter_ok:
-                logger.info("Job '%s': delivered to %s:%s via live adapter", job["id"], platform_name, chat_id)
+                logger.info(
+                    "Job '%s': delivered to %s:%s via live adapter%s",
+                    job["id"],
+                    platform_name,
+                    chat_id,
+                    f" (message_id={sent_message_id})" if sent_message_id else "",
+                )
                 return None
         except Exception as e:
             logger.warning(
@@ -393,7 +443,7 @@ def _get_script_timeout() -> int:
             logger.warning("Invalid HERMES_CRON_SCRIPT_TIMEOUT=%r; using config/default", env_value)
 
     try:
-        cfg = load_config() or {}
+        cfg = _load_scheduler_config()
         cron_cfg = cfg.get("cron", {}) if isinstance(cfg, dict) else {}
         configured = cron_cfg.get("script_timeout_seconds")
         if configured is not None:
@@ -577,6 +627,133 @@ def _build_job_prompt(job: dict) -> str:
     return "\n".join(parts)
 
 
+def _format_job_output(job: dict, prompt: str, response_text: str, *, failed: bool = False, error_msg: str | None = None) -> str:
+    title = f"# Cron Job: {job.get('name', job.get('id', '?'))}"
+    if failed:
+        title += " (FAILED)"
+
+    body = [
+        title,
+        "",
+        f"**Job ID:** {job.get('id', '?')}",
+        f"**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}",
+        f"**Schedule:** {job.get('schedule_display', 'N/A')}",
+        "",
+        "## Prompt",
+        "",
+        prompt,
+        "",
+    ]
+    if failed:
+        body.extend([
+            "## Error",
+            "",
+            "```",
+            error_msg or "Unknown error",
+            "```",
+            "",
+        ])
+    else:
+        body.extend([
+            "## Response",
+            "",
+            response_text if response_text else "(No response generated)",
+            "",
+        ])
+    return "\n".join(body).rstrip() + "\n"
+
+
+def _profile_home_from_slug(profile: str) -> Path:
+    root = get_default_hermes_root()
+    if profile in {"default", "root", "main"}:
+        return root
+    return root / "profiles" / profile
+
+
+def _profile_runtime_home(profile: str) -> Path:
+    """Return the home directory cron jobs should use inside a profile subprocess.
+
+    For non-default profiles, prefer the real OS home so subprocesses reuse the
+    already-authorized live Chrome / MCP consent state. This avoids repeated
+    Chrome "Allow" prompts during X cron execution.
+    """
+    if profile in {"default", "root", "main"}:
+        return Path.home()
+    try:
+        import pwd
+        return Path(pwd.getpwuid(os.getuid()).pw_dir)
+    except Exception:
+        return Path.home()
+
+
+def _run_job_in_profile(job: dict, profile: str) -> tuple[bool, str, str, Optional[str]]:
+    """Execute a cron job inside the owning profile's isolated HERMES_HOME."""
+    profile_home = _profile_home_from_slug(profile)
+    if not profile_home.exists():
+        error_msg = f"Profile home not found for cron job profile '{profile}': {profile_home}"
+        prompt = _build_job_prompt(job)
+        return False, _format_job_output(job, prompt, "", failed=True, error_msg=error_msg), "", error_msg
+
+    prompt = _build_job_prompt(job)
+    payload = json.dumps({"job": job, "prompt": prompt}, ensure_ascii=False)
+    env = os.environ.copy()
+    env["HERMES_HOME"] = str(profile_home)
+    env["V2EX_CHROME_COOKIE_FILE"] = "/Users/zou/Library/Application Support/Google/Chrome/Profile 1/Cookies"
+    runtime_home = _profile_runtime_home(profile)
+    env["HOME"] = str(runtime_home)
+    env["MCP_QUIET"] = "1"
+    env["CHROME_DEVTOOLS_MCP_QUIET"] = "1"
+    env["PYTHONPATH"] = str(Path(__file__).parent.parent) + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+
+    try:
+        result = subprocess.run(
+            [sys.executable, str(Path(__file__).with_name("run_job_once.py"))],
+            input=payload,
+            text=True,
+            capture_output=True,
+            cwd=str(Path(__file__).parent.parent),
+            env=env,
+            timeout=None,
+        )
+    except subprocess.TimeoutExpired:
+        error_msg = f"Cron job '{job.get('name', job.get('id', '?'))}' timed out while running profile '{profile}'"
+        return False, _format_job_output(job, prompt, "", failed=True, error_msg=error_msg), "", error_msg
+    except Exception as exc:
+        error_msg = f"Failed to launch profile-scoped cron job for '{profile}': {exc}"
+        return False, _format_job_output(job, prompt, "", failed=True, error_msg=error_msg), "", error_msg
+
+    stdout = (result.stdout or "").strip()
+    stderr = (result.stderr or "").strip()
+    raw = "\n".join(part for part in (stdout, stderr) if part).strip()
+
+    parsed_payload = None
+    if raw:
+        for line in reversed([ln.strip() for ln in raw.splitlines() if ln.strip()]):
+            if not line.startswith("{"):
+                continue
+            try:
+                parsed_payload = json.loads(line)
+                break
+            except Exception:
+                continue
+
+    if parsed_payload is None and result.returncode != 0:
+        error_msg = stderr or stdout or f"Profile cron subprocess exited with code {result.returncode}"
+        return False, _format_job_output(job, prompt, "", failed=True, error_msg=error_msg), "", error_msg
+
+    if parsed_payload is None:
+        error_msg = f"Invalid cron subprocess response for profile '{profile}': no JSON payload found; raw={raw[:500]}"
+        return False, _format_job_output(job, prompt, "", failed=True, error_msg=error_msg), "", error_msg
+
+    data = parsed_payload
+
+    success = bool(data.get("success"))
+    final_response = str(data.get("final_response") or "")
+    error_msg = data.get("error")
+    output = _format_job_output(job, prompt, final_response, failed=not success, error_msg=error_msg)
+    return success, output, final_response, error_msg
+
+
 def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     """
     Execute a single cron job.
@@ -584,6 +761,17 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     Returns:
         Tuple of (success, full_output_doc, final_response, error_message)
     """
+    profile = str(job.get("profile") or "").strip()
+    if profile:
+        target_home = _profile_home_from_slug(profile)
+        current_home = _hermes_home
+        try:
+            same_profile_process = target_home.resolve() == current_home.resolve()
+        except Exception:
+            same_profile_process = str(target_home) == str(current_home)
+        if not same_profile_process:
+            return _run_job_in_profile(job, profile)
+
     from run_agent import AIAgent
     
     # Initialize SQLite session store so cron job messages are persisted
@@ -615,6 +803,13 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         # Re-read .env and config.yaml fresh every run so provider/key
         # changes take effect without a gateway restart.
         from dotenv import load_dotenv
+        from hermes_cli.config import get_shared_env_path
+        shared_env_path = get_shared_env_path()
+        if shared_env_path.exists() and shared_env_path != (_hermes_home / ".env"):
+            try:
+                load_dotenv(str(shared_env_path), override=True, encoding="utf-8")
+            except UnicodeDecodeError:
+                load_dotenv(str(shared_env_path), override=True, encoding="latin-1")
         try:
             load_dotenv(str(_hermes_home / ".env"), override=True, encoding="utf-8")
         except UnicodeDecodeError:
@@ -627,22 +822,32 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             if delivery_target.get("thread_id") is not None:
                 os.environ["HERMES_CRON_AUTO_DELIVER_THREAD_ID"] = str(delivery_target["thread_id"])
 
-        model = job.get("model") or os.getenv("HERMES_MODEL") or ""
+        model_spec = job.get("model")
+        provider_override = job.get("provider")
+        model = model_spec or os.getenv("HERMES_MODEL") or ""
+        if isinstance(model_spec, dict):
+            provider_override = model_spec.get("provider") or provider_override
+            model = model_spec.get("model") or model_spec.get("default") or ""
 
-        # Load config.yaml for model, reasoning, prefill, toolsets, provider routing
+        # Load merged config (shared root config + current profile overrides)
+        # so provider/model/fallback settings can live in one central file.
         _cfg = {}
         try:
-            import yaml
-            _cfg_path = str(_hermes_home / "config.yaml")
-            if os.path.exists(_cfg_path):
-                with open(_cfg_path) as _f:
-                    _cfg = yaml.safe_load(_f) or {}
-                _model_cfg = _cfg.get("model", {})
-                if not job.get("model"):
-                    if isinstance(_model_cfg, str):
-                        model = _model_cfg
-                    elif isinstance(_model_cfg, dict):
-                        model = _model_cfg.get("default", model)
+            _cfg_path = _hermes_home / "config.yaml"
+            if _cfg_path.exists():
+                with open(_cfg_path, encoding="utf-8") as _f:
+                    yaml.safe_load(_f)
+            _cfg = _load_scheduler_config()
+            _model_cfg = _cfg.get("model", {})
+            if not job.get("model"):
+                if isinstance(_model_cfg, str):
+                    model = _model_cfg
+                elif isinstance(_model_cfg, dict):
+                    model = _model_cfg.get("default", model)
+                elif _model_cfg:
+                    model = str(_model_cfg)
+            if not provider_override and isinstance(_model_cfg, dict):
+                provider_override = _model_cfg.get("provider") or provider_override
         except Exception as e:
             logger.warning("Job '%s': failed to load config.yaml, using defaults: %s", job_id, e)
 
@@ -691,7 +896,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         )
         try:
             runtime_kwargs = {
-                "requested": job.get("provider") or os.getenv("HERMES_INFERENCE_PROVIDER"),
+                "requested": provider_override or os.getenv("HERMES_INFERENCE_PROVIDER"),
             }
             if job.get("base_url"):
                 runtime_kwargs["explicit_base_url"] = job.get("base_url")
@@ -763,17 +968,15 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         # for hours if it's actively calling tools / receiving stream tokens,
         # but a hung API call or stuck tool with no activity for the configured
         # duration is caught and killed.  Default 600s (10 min inactivity);
-        # override via HERMES_CRON_TIMEOUT env var.  0 = unlimited.
+        # override via HERMES_CRON_TIMEOUT env or cron.inactivity_timeout_seconds.
+        # 0 = unlimited.
         #
         # Uses the agent's built-in activity tracker (updated by
         # _touch_activity() on every tool call, API call, and stream delta).
-        _cron_timeout = float(os.getenv("HERMES_CRON_TIMEOUT", 600))
+        _cron_timeout = resolve_cron_inactivity_timeout_seconds(_cfg)
         _cron_inactivity_limit = _cron_timeout if _cron_timeout > 0 else None
         _POLL_INTERVAL = 5.0
         _cron_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-        # Preserve scheduler-scoped ContextVar state (for example skill-declared
-        # env passthrough registrations) when the cron run hops into the worker
-        # thread used for inactivity timeout monitoring.
         _cron_context = contextvars.copy_context()
         _cron_future = _cron_pool.submit(_cron_context.run, agent.run_conversation, prompt)
         _inactivity_timeout = False
@@ -937,6 +1140,7 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
             lock_fd.close()
         return 0
 
+    due_jobs: list = []
     try:
         due_jobs = get_due_jobs()
 
@@ -947,53 +1151,16 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
         if verbose:
             logger.info("%s - %s job(s) due", _hermes_now().strftime('%H:%M:%S'), len(due_jobs))
 
-        executed = 0
+        # Advance schedules while holding the tick lock only — not while the
+        # agent runs.  Long profile-scoped jobs (browser / MCP) used to hold
+        # this lock for tens of minutes, blocking manual `hermes cron tick` and
+        # other gateway ticks from even starting.
         for job in due_jobs:
-            try:
-                # For recurring jobs (cron/interval), advance next_run_at to the
-                # next future occurrence BEFORE execution.  This way, if the
-                # process crashes mid-run, the job won't re-fire on restart.
-                # One-shot jobs are left alone so they can retry on restart.
-                advance_next_run(job["id"])
-
-                success, output, final_response, error = run_job(job)
-
-                output_file = save_job_output(job["id"], output)
-                if verbose:
-                    logger.info("Output saved to: %s", output_file)
-
-                # Deliver the final response to the origin/target chat.
-                # If the agent responded with [SILENT], skip delivery (but
-                # output is already saved above).  Failed jobs always deliver.
-                deliver_content = final_response if success else f"⚠️ Cron job '{job.get('name', job['id'])}' failed:\n{error}"
-                should_deliver = bool(deliver_content)
-                if should_deliver and success and SILENT_MARKER in deliver_content.strip().upper():
-                    logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
-                    should_deliver = False
-
-                delivery_error = None
-                if should_deliver:
-                    try:
-                        delivery_error = _deliver_result(job, deliver_content, adapters=adapters, loop=loop)
-                    except Exception as de:
-                        delivery_error = str(de)
-                        logger.error("Delivery failed for job %s: %s", job["id"], de)
-
-                # Treat empty final_response as a soft failure so last_status
-                # is not "ok" — the agent ran but produced nothing useful.
-                # (issue #8585)
-                if success and not final_response:
-                    success = False
-                    error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
-
-                mark_job_run(job["id"], success, error, delivery_error=delivery_error)
-                executed += 1
-
-            except Exception as e:
-                logger.error("Error processing job %s: %s", job['id'], e)
-                mark_job_run(job["id"], False, str(e))
-
-        return executed
+            # For recurring jobs (cron/interval), advance next_run_at to the
+            # next future occurrence BEFORE execution.  This way, if the
+            # process crashes mid-run, the job won't re-fire on restart.
+            # One-shot jobs are left alone so they can retry on restart.
+            advance_next_run(job["id"])
     finally:
         if fcntl:
             fcntl.flock(lock_fd, fcntl.LOCK_UN)
@@ -1003,6 +1170,48 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
             except (OSError, IOError):
                 pass
         lock_fd.close()
+
+    executed = 0
+    for job in due_jobs:
+        try:
+            success, output, final_response, error = run_job(job)
+
+            output_file = save_job_output(job["id"], output)
+            if verbose:
+                logger.info("Output saved to: %s", output_file)
+
+            # Deliver the final response to the origin/target chat.
+            # If the agent responded with [SILENT], skip delivery (but
+            # output is already saved above).  Failed jobs always deliver.
+            deliver_content = final_response if success else f"⚠️ Cron job '{job.get('name', job['id'])}' failed:\n{error}"
+            should_deliver = bool(deliver_content)
+            if should_deliver and success and SILENT_MARKER in deliver_content.strip().upper():
+                logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
+                should_deliver = False
+
+            delivery_error = None
+            if should_deliver:
+                try:
+                    delivery_error = _deliver_result(job, deliver_content, adapters=adapters, loop=loop)
+                except Exception as de:
+                    delivery_error = str(de)
+                    logger.error("Delivery failed for job %s: %s", job["id"], de)
+
+            # Treat empty final_response as a soft failure so last_status
+            # is not "ok" — the agent ran but produced nothing useful.
+            # (issue #8585)
+            if success and not final_response:
+                success = False
+                error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
+
+            mark_job_run(job["id"], success, error, delivery_error=delivery_error)
+            executed += 1
+
+        except Exception as e:
+            logger.error("Error processing job %s: %s", job['id'], e)
+            mark_job_run(job["id"], False, str(e))
+
+    return executed
 
 
 if __name__ == "__main__":

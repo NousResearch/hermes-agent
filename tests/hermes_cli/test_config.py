@@ -11,6 +11,7 @@ from hermes_cli.config import (
     get_hermes_home,
     ensure_hermes_home,
     get_compatible_custom_providers,
+    get_shared_config_path,
     load_config,
     load_env,
     migrate_config,
@@ -79,6 +80,29 @@ class TestLoadConfigDefaults:
             config = load_config()
             assert config["agent"]["max_turns"] == 42
             assert "max_turns" not in config
+
+    def test_profile_load_inherits_root_config(self, tmp_path):
+        root = tmp_path / ".hermes"
+        profile_home = root / "profiles" / "xuangu"
+        profile_home.mkdir(parents=True)
+        (root / "config.yaml").write_text("model:\n  default: gpt-5.4\n  provider: custom:railway\n")
+        (profile_home / "config.yaml").write_text("toolsets:\n  - hermes-cli\n")
+
+        with patch.object(Path, "home", lambda: tmp_path), \
+             patch.dict(os.environ, {"HERMES_HOME": str(profile_home)}):
+            config = load_config()
+
+        assert config["model"]["default"] == "gpt-5.4"
+        assert config["model"]["provider"] == "custom:railway"
+
+    def test_shared_config_path_uses_root_for_profiles(self, tmp_path):
+        root = tmp_path / ".hermes"
+        profile_home = root / "profiles" / "xuangu"
+        profile_home.mkdir(parents=True)
+
+        with patch.object(Path, "home", lambda: tmp_path), \
+             patch.dict(os.environ, {"HERMES_HOME": str(profile_home)}):
+            assert get_shared_config_path() == root / "config.yaml"
 
 
 class TestSaveAndLoadRoundtrip:

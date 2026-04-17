@@ -692,7 +692,7 @@ export const ToolTrail = memo(function ToolTrail({
   const hasTools = groups.length > 0
   const hasSubagents = subagents.length > 0
   const hasMeta = meta.length > 0
-  const hasThinking = !!cot || reasoningActive || (busy && !hasTools)
+  const hasThinking = !!cot || reasoningActive || busy
   const thinkingLive = reasoningActive || reasoningStreaming
 
   const tokenCount = reasoningTokens !== undefined ? reasoningTokens : reasoning ? estimateTokensRough(reasoning) : 0

@@ -9,17 +9,15 @@ Tests cover:
 """
 
 import concurrent.futures
-import os
+import logging
 import sys
 import time
-import threading
 from pathlib import Path
-from unittest.mock import MagicMock, patch
-
-import pytest
 
 # Ensure project root is importable
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+
+from cron.scheduler import _get_cron_inactivity_limit
 
 
 class FakeAgent:
@@ -172,18 +170,20 @@ class TestInactivityTimeout:
     def test_timeout_env_var_parsing(self, monkeypatch):
         """HERMES_CRON_TIMEOUT env var is respected."""
         monkeypatch.setenv("HERMES_CRON_TIMEOUT", "1200")
-        _cron_timeout = float(os.getenv("HERMES_CRON_TIMEOUT", 600))
-        assert _cron_timeout == 1200.0
-
-        _cron_inactivity_limit = _cron_timeout if _cron_timeout > 0 else None
-        assert _cron_inactivity_limit == 1200.0
+        assert _get_cron_inactivity_limit() == 1200.0
 
     def test_timeout_zero_means_unlimited(self, monkeypatch):
         """HERMES_CRON_TIMEOUT=0 yields None (unlimited)."""
         monkeypatch.setenv("HERMES_CRON_TIMEOUT", "0")
-        _cron_timeout = float(os.getenv("HERMES_CRON_TIMEOUT", 600))
-        _cron_inactivity_limit = _cron_timeout if _cron_timeout > 0 else None
-        assert _cron_inactivity_limit is None
+        assert _get_cron_inactivity_limit() is None
+
+    def test_invalid_timeout_env_var_falls_back_to_default(self, monkeypatch, caplog):
+        """Malformed HERMES_CRON_TIMEOUT falls back to the default timeout."""
+        monkeypatch.setenv("HERMES_CRON_TIMEOUT", "abc")
+
+        with caplog.at_level(logging.WARNING, logger="cron.scheduler"):
+            assert _get_cron_inactivity_limit() == 600.0
+        assert "Invalid HERMES_CRON_TIMEOUT" in caplog.text
 
     def test_timeout_error_includes_diagnostics(self):
         """The TimeoutError message should include last activity info."""

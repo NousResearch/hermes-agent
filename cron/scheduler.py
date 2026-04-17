@@ -486,6 +486,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
 _DEFAULT_SCRIPT_TIMEOUT = 120  # seconds
 # Backward-compatible module override used by tests and emergency monkeypatches.
 _SCRIPT_TIMEOUT = _DEFAULT_SCRIPT_TIMEOUT
+_DEFAULT_CRON_INACTIVITY_TIMEOUT = 600.0  # seconds
 
 
 def _get_script_timeout() -> int:
@@ -519,6 +520,35 @@ def _get_script_timeout() -> int:
         logger.debug("Failed to load cron script timeout from config: %s", exc)
 
     return _DEFAULT_SCRIPT_TIMEOUT
+
+
+def _get_cron_inactivity_limit() -> Optional[float]:
+    """Resolve cron inactivity timeout from env with a safe default."""
+    env_value = os.getenv("HERMES_CRON_TIMEOUT", "").strip()
+    if not env_value:
+        return _DEFAULT_CRON_INACTIVITY_TIMEOUT
+
+    try:
+        timeout = float(env_value)
+    except Exception:
+        logger.warning(
+            "Invalid HERMES_CRON_TIMEOUT=%r; using default %ss",
+            env_value,
+            int(_DEFAULT_CRON_INACTIVITY_TIMEOUT),
+        )
+        return _DEFAULT_CRON_INACTIVITY_TIMEOUT
+
+    if timeout > 0:
+        return timeout
+    if timeout == 0:
+        return None
+
+    logger.warning(
+        "Invalid HERMES_CRON_TIMEOUT=%r; using default %ss",
+        env_value,
+        int(_DEFAULT_CRON_INACTIVITY_TIMEOUT),
+    )
+    return _DEFAULT_CRON_INACTIVITY_TIMEOUT
 
 
 def _run_job_script(script_path: str) -> tuple[bool, str]:
@@ -1026,8 +1056,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         #
         # Uses the agent's built-in activity tracker (updated by
         # _touch_activity() on every tool call, API call, and stream delta).
-        _cron_timeout = float(os.getenv("HERMES_CRON_TIMEOUT", 600))
-        _cron_inactivity_limit = _cron_timeout if _cron_timeout > 0 else None
+        _cron_inactivity_limit = _get_cron_inactivity_limit()
         _POLL_INTERVAL = 5.0
         _cron_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         # Preserve scheduler-scoped ContextVar state (for example skill-declared

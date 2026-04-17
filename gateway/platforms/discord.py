@@ -2407,8 +2407,15 @@ class DiscordAdapter(BasePlatformAdapter):
 
         Returns the created thread object, or ``None`` on failure.
         """
-        # Build a short thread name from the message
+        # Build a short thread name from the message. Strip Discord mention
+        # syntax (users / roles / channels) so thread titles don't end up
+        # showing raw <@id>, <@&id>, or <#id> markers — the ID isn't
+        # meaningful to humans glancing at the thread list (#6336).
         content = (message.content or "").strip()
+        # <@123>, <@!123>, <@&123>, <#123> — collapse to empty; normalize spaces.
+        content = re.sub(r"<@[!&]?\d+>", "", content)
+        content = re.sub(r"<#\d+>", "", content)
+        content = re.sub(r"\s+", " ", content).strip()
         thread_name = content[:80] if content else "Hermes"
         if len(content) > 80:
             thread_name = thread_name[:77] + "..."

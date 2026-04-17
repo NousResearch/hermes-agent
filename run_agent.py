@@ -809,7 +809,12 @@ class AIAgent:
         # conversation prefix. Uses system_and_3 strategy (4 breakpoints).
         is_openrouter = self._is_openrouter_url()
         is_claude = "claude" in self.model.lower()
-        is_native_anthropic = self.api_mode == "anthropic_messages" and self.provider == "anthropic"
+        # Anthropic Messages API path: true for direct api.anthropic.com AND for
+        # AWS Bedrock + Claude routed through AnthropicBedrock SDK. Both flow
+        # through the same `anthropic_messages` adapter, which honours
+        # `cache_control` markers. Keeping Bedrock out of this check silently
+        # disabled prompt caching for every Bedrock+Claude deployment.
+        is_native_anthropic = self.api_mode == "anthropic_messages" and self.provider in ("anthropic", "bedrock")
         self._use_prompt_caching = (is_openrouter and is_claude) or is_native_anthropic
         self._cache_ttl = "5m"  # Default 5-minute TTL (1.25x write cost)
         
@@ -1740,7 +1745,9 @@ class AIAgent:
             )
 
         # ── Re-evaluate prompt caching ──
-        is_native_anthropic = api_mode == "anthropic_messages" and new_provider == "anthropic"
+        # Bedrock+Claude on the `anthropic_messages` path also supports caching
+        # (routed through AnthropicBedrock SDK). See init path for full context.
+        is_native_anthropic = api_mode == "anthropic_messages" and new_provider in ("anthropic", "bedrock")
         self._use_prompt_caching = (
             ("openrouter" in (self.base_url or "").lower() and "claude" in new_model.lower())
             or is_native_anthropic
@@ -6085,7 +6092,9 @@ class AIAgent:
                 }
 
             # Re-evaluate prompt caching for the new provider/model
-            is_native_anthropic = fb_api_mode == "anthropic_messages" and fb_provider == "anthropic"
+            # Bedrock+Claude on the `anthropic_messages` path also supports
+            # caching (routed through AnthropicBedrock SDK).
+            is_native_anthropic = fb_api_mode == "anthropic_messages" and fb_provider in ("anthropic", "bedrock")
             self._use_prompt_caching = (
                 ("openrouter" in fb_base_url.lower() and "claude" in fb_model.lower())
                 or is_native_anthropic

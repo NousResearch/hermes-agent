@@ -532,6 +532,57 @@ class TestInit:
             assert a.api_mode == "anthropic_messages"
             assert a._use_prompt_caching is True
 
+    def test_prompt_caching_bedrock_claude(self):
+        """Bedrock + Claude on the AnthropicBedrock SDK path should enable prompt caching.
+
+        When `provider: bedrock` is configured with a Claude model, Hermes routes
+        through `api_mode: anthropic_messages` via the AnthropicBedrock SDK (see
+        run_agent.py init path: `if is_anthropic_bedrock_model(...) → AnthropicBedrock`).
+        That path honours `cache_control` markers the same way native Anthropic does,
+        so prompt caching must be enabled for it — otherwise every Bedrock+Claude
+        deployment silently pays full input-token cost on every turn.
+        """
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("agent.anthropic_adapter._anthropic_sdk"),
+            patch("agent.anthropic_adapter.build_anthropic_bedrock_client"),
+        ):
+            a = AIAgent(
+                api_key="aws-sdk",
+                model="eu.anthropic.claude-sonnet-4-6",
+                provider="bedrock",
+                api_mode="anthropic_messages",
+                base_url="https://bedrock-runtime.eu-central-1.amazonaws.com",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            assert a.api_mode == "anthropic_messages"
+            assert a.provider == "bedrock"
+            assert a._use_prompt_caching is True
+
+    def test_prompt_caching_bedrock_non_claude(self):
+        """Bedrock + non-Claude models use the `bedrock_converse` path, which
+        does not support cache_control. Prompt caching must stay off."""
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            a = AIAgent(
+                api_key="aws-sdk",
+                model="us.amazon.nova-pro-v1:0",
+                provider="bedrock",
+                api_mode="bedrock_converse",
+                base_url="https://bedrock-runtime.us-east-1.amazonaws.com",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            assert a.api_mode == "bedrock_converse"
+            assert a._use_prompt_caching is False
+
     def test_valid_tool_names_populated(self):
         """valid_tool_names should contain names from loaded tools."""
         tools = _make_tool_defs("web_search", "terminal")

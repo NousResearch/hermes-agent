@@ -27,7 +27,6 @@ import time
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, Optional, Any, List
-from urllib.parse import urlsplit
 
 # ---------------------------------------------------------------------------
 # SSL certificate auto-detection for NixOS and other non-standard systems.
@@ -236,6 +235,21 @@ from gateway.auto_background_runtime_service import (
     resolve_employee_background_dispatch as shared_resolve_employee_background_dispatch,
     should_auto_background_message as shared_should_auto_background_message,
 )
+from gateway.auto_vision_runtime_service import (
+    auto_vision_cache_key as shared_auto_vision_cache_key,
+    auto_vision_cooldown_remaining as shared_auto_vision_cooldown_remaining,
+    auto_vision_degraded_note as shared_auto_vision_degraded_note,
+    classify_auto_vision_failure as shared_classify_auto_vision_failure,
+    clear_auto_vision_cooldown as shared_clear_auto_vision_cooldown,
+    ensure_auto_vision_state as shared_ensure_auto_vision_state,
+    get_auto_vision_cache_entry as shared_get_auto_vision_cache_entry,
+    image_vision_inputs_from_event as shared_image_vision_inputs_from_event,
+    mark_auto_vision_cooldown as shared_mark_auto_vision_cooldown,
+    media_ref_suffix as shared_media_ref_suffix,
+    prune_auto_vision_state as shared_prune_auto_vision_state,
+    should_prefer_remote_auto_vision_source as shared_should_prefer_remote_auto_vision_source,
+    should_skip_auto_vision_media as shared_should_skip_auto_vision_media,
+)
 from gateway.direct_control_router import (
     DIRECT_CONTROL_ROUTER_METHODS as SHARED_DIRECT_CONTROL_ROUTER_METHODS,
     DirectControlRouter,
@@ -421,50 +435,11 @@ def _should_forward_agent_status(
 
 
 def _image_vision_inputs_from_event(event: MessageEvent) -> List[str]:
-    """Return image analysis inputs for a message event.
-
-    ``media_urls`` stays the durable local-cache path. ``media_sources`` is an
-    optional per-item preferred analysis source, typically a preserved remote
-    URL from the adapter. For QQ/NapCat, some OpenAI-compatible vision gateways
-    accept remote image URLs but reject ``data:image/...`` payloads derived from
-    local cached files, so prefer the preserved remote URL when the currently
-    resolved vision backend is a custom OpenAI-chat endpoint and a remote source
-    is available.
-    """
-    image_inputs: List[str] = []
-    source = getattr(event, "source", None)
-    prefer_local = getattr(source, "platform", None) == Platform.QQ_NAPCAT
-
-    for attachment in event.ensure_attachments():
-        mtype = str(attachment.mime_type or "").strip()
-        if attachment.kind != "image" and not (
-            event.message_type == MessageType.PHOTO and mtype.startswith("image/")
-        ):
-            continue
-        path = str(attachment.local_path or "").strip()
-        preferred = str(attachment.analysis_ref or attachment.remote_url or "").strip()
-        if _should_skip_auto_vision_media(
-            path=path,
-            media_type=mtype,
-            preferred_source=preferred,
-        ):
-            continue
-        if prefer_local and preferred and _should_prefer_remote_auto_vision_source(preferred):
-            image_inputs.append(preferred)
-            continue
-        image_inputs.append(path if prefer_local and path else (preferred or path))
-
-    return image_inputs
+    return shared_image_vision_inputs_from_event(event)
 
 
 def _should_prefer_remote_auto_vision_source(image_ref: str) -> bool:
-    """Return True when auto-vision should preserve the remote image ref."""
-    try:
-        from tools.vision_tools import should_prefer_remote_vision_source
-
-        return should_prefer_remote_vision_source(image_ref)
-    except Exception:
-        return False
+    return shared_should_prefer_remote_auto_vision_source(image_ref)
 
 
 def _should_skip_auto_vision_media(
@@ -473,27 +448,15 @@ def _should_skip_auto_vision_media(
     media_type: str,
     preferred_source: str = "",
 ) -> bool:
-    """Drop low-signal animated media before it reaches the vision model."""
-    normalized_type = str(media_type or "").strip().lower()
-    if normalized_type == "image/gif":
-        return True
-    for ref in (preferred_source, path):
-        if _media_ref_suffix(ref) == ".gif":
-            return True
-    return False
+    return shared_should_skip_auto_vision_media(
+        path=path,
+        media_type=media_type,
+        preferred_source=preferred_source,
+    )
 
 
 def _media_ref_suffix(ref: str) -> str:
-    value = str(ref or "").strip()
-    if not value:
-        return ""
-    try:
-        parsed = urlsplit(value)
-        if parsed.scheme:
-            value = parsed.path
-    except Exception:
-        pass
-    return Path(value).suffix.lower()
+    return shared_media_ref_suffix(ref)
 
 
 def _simplify_shared_group_history_for_agent(
@@ -8091,78 +8054,23 @@ class GatewayRunner:
         return user_text
 
     def _ensure_auto_vision_state(self) -> None:
-        if not hasattr(self, "_background_tasks") or not isinstance(self._background_tasks, set):
-            self._background_tasks = set()
-        if not hasattr(self, "_auto_vision_cache") or not isinstance(self._auto_vision_cache, dict):
-            self._auto_vision_cache = {}
-        if not hasattr(self, "_auto_vision_tasks") or not isinstance(self._auto_vision_tasks, dict):
-            self._auto_vision_tasks = {}
-        if not hasattr(self, "_auto_vision_unhealthy_until"):
-            self._auto_vision_unhealthy_until = 0.0
-        if not hasattr(self, "_auto_vision_unhealthy_reason"):
-            self._auto_vision_unhealthy_reason = ""
+        shared_ensure_auto_vision_state(self)
 
     def _prune_auto_vision_state(self) -> None:
-        self._ensure_auto_vision_state()
-        now = time.time()
-
-        for cache_key, task in list(self._auto_vision_tasks.items()):
-            try:
-                done = bool(task.done())
-            except Exception:
-                done = True
-            if done:
-                self._auto_vision_tasks.pop(cache_key, None)
-
-        for cache_key, entry in list(self._auto_vision_cache.items()):
-            if not isinstance(entry, dict):
-                self._auto_vision_cache.pop(cache_key, None)
-                continue
-            expires_at = entry.get("expires_at")
-            try:
-                expires_at_value = float(expires_at) if expires_at is not None else 0.0
-            except (TypeError, ValueError):
-                expires_at_value = 0.0
-            if expires_at_value and expires_at_value <= now:
-                self._auto_vision_cache.pop(cache_key, None)
-
-        overflow = len(self._auto_vision_cache) - int(_AUTO_VISION_MAX_CACHE_ENTRIES)
-        if overflow > 0:
-            ranked_keys = sorted(
-                self._auto_vision_cache,
-                key=lambda key: float(
-                    (self._auto_vision_cache.get(key) or {}).get("updated_at") or 0.0
-                ),
-            )
-            for cache_key in ranked_keys[:overflow]:
-                self._auto_vision_cache.pop(cache_key, None)
+        shared_prune_auto_vision_state(
+            self,
+            max_cache_entries=int(_AUTO_VISION_MAX_CACHE_ENTRIES),
+        )
 
     def _auto_vision_cache_key(self, path: str) -> str:
-        candidate = Path(os.path.expanduser(str(path or "")))
-        try:
-            resolved = candidate.resolve(strict=False)
-        except Exception:
-            resolved = candidate
-        try:
-            stat = resolved.stat()
-            return f"{resolved}:{stat.st_mtime_ns}:{stat.st_size}"
-        except OSError:
-            return str(resolved)
+        return shared_auto_vision_cache_key(path)
 
     def _get_auto_vision_cache_entry(self, cache_key: str) -> Optional[Dict[str, Any]]:
-        self._prune_auto_vision_state()
-        entry = self._auto_vision_cache.get(cache_key)
-        if not isinstance(entry, dict):
-            return None
-        expires_at = entry.get("expires_at")
-        try:
-            expires_at_value = float(expires_at) if expires_at is not None else 0.0
-        except (TypeError, ValueError):
-            expires_at_value = 0.0
-        if expires_at_value and expires_at_value <= time.time():
-            self._auto_vision_cache.pop(cache_key, None)
-            return None
-        return entry
+        return shared_get_auto_vision_cache_entry(
+            self,
+            cache_key,
+            max_cache_entries=int(_AUTO_VISION_MAX_CACHE_ENTRIES),
+        )
 
     def _auto_vision_inline_wait_seconds(
         self,
@@ -8195,44 +8103,10 @@ class GatewayRunner:
         return max(0.0, wait_seconds)
 
     def _auto_vision_degraded_note(self, path: str, *, pending: bool) -> str:
-        del path
-        if pending:
-            return "[Image attached; no verified image description is available yet.]"
-        return "[Image attached; no verified image description is available for this turn.]"
+        return shared_auto_vision_degraded_note(path, pending=pending)
 
     def _classify_auto_vision_failure(self, error_text: str) -> str:
-        lowered = str(error_text or "").strip().lower()
-        if not lowered:
-            return "none"
-        deterministic_markers = (
-            "payment required",
-            "insufficient",
-            "credits",
-            "billing",
-            "does not support",
-            "not support image",
-            "content_policy",
-            "unauthorized",
-            "blocked",
-            "forbidden",
-            "no available channel",
-            "no available accounts for this model tier",
-        )
-        transient_markers = (
-            "timed out",
-            "timeout",
-            "empty content",
-            "http 5",
-            "httpx",
-            "remoteprotocolerror",
-            "connection",
-            "provider",
-        )
-        if any(marker in lowered for marker in deterministic_markers):
-            return "deterministic"
-        if any(marker in lowered for marker in transient_markers):
-            return "transient"
-        return "none"
+        return shared_classify_auto_vision_failure(error_text)
 
     async def _run_auto_vision_task(
         self,
@@ -8398,28 +8272,13 @@ class GatewayRunner:
         return timeout
 
     def _auto_vision_cooldown_remaining(self) -> tuple[float, str]:
-        until = float(getattr(self, "_auto_vision_unhealthy_until", 0.0) or 0.0)
-        reason = str(getattr(self, "_auto_vision_unhealthy_reason", "") or "").strip()
-        remaining = until - time.time()
-        if remaining <= 0:
-            self._auto_vision_unhealthy_until = 0.0
-            self._auto_vision_unhealthy_reason = ""
-            return 0.0, ""
-        return remaining, reason
+        return shared_auto_vision_cooldown_remaining(self)
 
     def _mark_auto_vision_cooldown(self, *, reason: str, seconds: float) -> None:
-        try:
-            seconds = float(seconds)
-        except (TypeError, ValueError):
-            return
-        if seconds <= 0:
-            return
-        self._auto_vision_unhealthy_until = time.time() + seconds
-        self._auto_vision_unhealthy_reason = str(reason or "").strip()
+        shared_mark_auto_vision_cooldown(self, reason=reason, seconds=seconds)
 
     def _clear_auto_vision_cooldown(self) -> None:
-        self._auto_vision_unhealthy_until = 0.0
-        self._auto_vision_unhealthy_reason = ""
+        shared_clear_auto_vision_cooldown(self)
 
     async def _enrich_message_with_transcription(
         self,

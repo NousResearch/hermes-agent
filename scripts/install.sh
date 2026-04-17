@@ -128,8 +128,9 @@ prompt_yes_no() {
     local prompt_suffix
     local answer=""
 
-    case "${default,,}" in
-        y|yes|true|1) prompt_suffix="[Y/n]" ;;
+    # Use case patterns (not ${var,,}) so this works on bash 3.2 (macOS /bin/bash).
+    case "$default" in
+        [yY]|[yY][eE][sS]|[tT][rR][uU][eE]|1) prompt_suffix="[Y/n]" ;;
         *) prompt_suffix="[y/N]" ;;
     esac
 
@@ -144,16 +145,18 @@ prompt_yes_no() {
 
     answer="${answer#"${answer%%[![:space:]]*}"}"
     answer="${answer%"${answer##*[![:space:]]}"}"
-    answer="${answer,,}"
 
     if [ -z "$answer" ]; then
-        case "${default,,}" in
-            y|yes|true|1) return 0 ;;
+        case "$default" in
+            [yY]|[yY][eE][sS]|[tT][rR][uU][eE]|1) return 0 ;;
             *) return 1 ;;
         esac
     fi
 
-    [[ "$answer" =~ ^y(es)?$ ]]
+    case "$answer" in
+        [yY]|[yY][eE][sS]) return 0 ;;
+        *) return 1 ;;
+    esac
 }
 
 is_termux() {

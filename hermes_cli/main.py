@@ -5600,6 +5600,25 @@ Examples:
     skills_uninstall = skills_subparsers.add_parser("uninstall", help="Remove a hub-installed skill")
     skills_uninstall.add_argument("name", help="Skill name to remove")
 
+    skills_reset = skills_subparsers.add_parser(
+        "reset",
+        help="Reset a bundled skill — clears 'user-modified' tracking so updates work again",
+        description=(
+            "Clear a bundled skill's entry from the sync manifest (~/.hermes/skills/.bundled_manifest) "
+            "so future 'hermes update' runs stop marking it as user-modified. Pass --restore to also "
+            "replace the current copy with the bundled version."
+        ),
+    )
+    skills_reset.add_argument("name", help="Skill name to reset (e.g. google-workspace)")
+    skills_reset.add_argument(
+        "--restore", action="store_true",
+        help="Also delete the current copy and re-copy the bundled version",
+    )
+    skills_reset.add_argument(
+        "--yes", "-y", action="store_true",
+        help="Skip confirmation prompt when using --restore",
+    )
+
     skills_publish = skills_subparsers.add_parser("publish", help="Publish a skill to a registry")
     skills_publish.add_argument("skill_path", help="Path to skill directory")
     skills_publish.add_argument("--to", default="github", choices=["github", "clawhub"], help="Target registry")

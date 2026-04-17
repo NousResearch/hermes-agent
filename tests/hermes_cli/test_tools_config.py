@@ -466,3 +466,90 @@ def test_numeric_mcp_server_name_does_not_crash_sorted():
 
     # sorted() must not raise TypeError
     sorted(enabled)
+
+
+# ─── Imagegen Backend Picker Wiring ────────────────────────────────────────
+
+class TestImagegenBackendRegistry:
+    """IMAGEGEN_BACKENDS tags drive the model picker flow in tools_config."""
+
+    def test_fal_backend_registered(self):
+        from hermes_cli.tools_config import IMAGEGEN_BACKENDS
+        assert "fal" in IMAGEGEN_BACKENDS
+
+    def test_fal_catalog_loads_lazily(self):
+        """catalog_fn should defer import to avoid import cycles."""
+        from hermes_cli.tools_config import IMAGEGEN_BACKENDS
+        catalog, default = IMAGEGEN_BACKENDS["fal"]["catalog_fn"]()
+        assert default == "fal-ai/flux-2/klein/9b"
+        assert "fal-ai/flux-2/klein/9b" in catalog
+        assert "fal-ai/flux-2-pro" in catalog
+
+    def test_image_gen_providers_tagged_with_fal_backend(self):
+        """Both Nous Subscription and FAL.ai providers must carry the
+        imagegen_backend tag so _configure_provider fires the picker."""
+        from hermes_cli.tools_config import TOOL_CATEGORIES
+        providers = TOOL_CATEGORIES["image_gen"]["providers"]
+        for p in providers:
+            assert p.get("imagegen_backend") == "fal", (
+                f"{p['name']} missing imagegen_backend tag"
+            )
+
+
+class TestImagegenModelPicker:
+    """_configure_imagegen_model writes selection to config and respects
+    curses fallback semantics (returns default when stdin isn't a TTY)."""
+
+    def test_picker_writes_chosen_model_to_config(self):
+        from hermes_cli.tools_config import _configure_imagegen_model
+        config = {}
+        # Force _prompt_choice to pick index 1 (second-in-ordered-list).
+        with patch("hermes_cli.tools_config._prompt_choice", return_value=1):
+            _configure_imagegen_model("fal", config)
+        # ordered[0] == current (default klein), ordered[1] == first non-default
+        assert config["image_gen"]["model"] != "fal-ai/flux-2/klein/9b"
+        assert config["image_gen"]["model"].startswith("fal-ai/")
+
+    def test_picker_with_gpt_image_does_not_prompt_quality(self):
+        """GPT-Image quality is pinned to medium in the tool's defaults —
+        no follow-up prompt, no config write for quality_setting."""
+        from hermes_cli.tools_config import (
+            _configure_imagegen_model,
+            IMAGEGEN_BACKENDS,
+        )
+        catalog, default_model = IMAGEGEN_BACKENDS["fal"]["catalog_fn"]()
+        model_ids = list(catalog.keys())
+        ordered = [default_model] + [m for m in model_ids if m != default_model]
+        gpt_idx = ordered.index("fal-ai/gpt-image-1.5")
+
+        # Only ONE picker call is expected (for model) — not two (model + quality).
+        call_count = {"n": 0}
+        def fake_prompt(*a, **kw):
+            call_count["n"] += 1
+            return gpt_idx
+
+        config = {}
+        with patch("hermes_cli.tools_config._prompt_choice", side_effect=fake_prompt):
+            _configure_imagegen_model("fal", config)
+
+        assert call_count["n"] == 1, (
+            f"Expected 1 picker call (model only), got {call_count['n']}"
+        )
+        assert config["image_gen"]["model"] == "fal-ai/gpt-image-1.5"
+        assert "quality_setting" not in config["image_gen"]
+
+    def test_picker_no_op_for_unknown_backend(self):
+        from hermes_cli.tools_config import _configure_imagegen_model
+        config = {}
+        _configure_imagegen_model("nonexistent-backend", config)
+        assert config == {}  # untouched
+
+    def test_picker_repairs_corrupt_config_section(self):
+        """When image_gen is a non-dict (user-edit YAML), the picker should
+        replace it with a fresh dict rather than crash."""
+        from hermes_cli.tools_config import _configure_imagegen_model
+        config = {"image_gen": "some-garbage-string"}
+        with patch("hermes_cli.tools_config._prompt_choice", return_value=0):
+            _configure_imagegen_model("fal", config)
+        assert isinstance(config["image_gen"], dict)
+        assert config["image_gen"]["model"] == "fal-ai/flux-2/klein/9b"

@@ -258,14 +258,16 @@ TOOL_CATEGORIES = {
                 "requires_nous_auth": True,
                 "managed_nous_feature": "image_gen",
                 "override_env_vars": ["FAL_KEY"],
+                "imagegen_backend": "fal",
             },
             {
                 "name": "FAL.ai",
                 "badge": "paid",
-                "tag": "FLUX 2 Pro with auto-upscaling",
+                "tag": "Pick from flux-2-klein, flux-2-pro, gpt-image, nano-banana, etc.",
                 "env_vars": [
                     {"key": "FAL_KEY", "prompt": "FAL API key", "url": "https://fal.ai/dashboard/keys"},
                 ],
+                "imagegen_backend": "fal",
             },
         ],
     },
@@ -950,6 +952,106 @@ def _detect_active_provider_index(providers: list, config: dict) -> int:
     return 0
 
 
+# ─── Image Generation Model Pickers ───────────────────────────────────────────
+#
+# IMAGEGEN_BACKENDS is a per-backend catalog. Each entry exposes:
+#   - config_key:        top-level config.yaml key for this backend's settings
+#   - model_catalog_fn:  returns an OrderedDict-like {model_id: metadata}
+#   - default_model:     fallback when nothing is configured
+#
+# This prepares for future imagegen backends (Replicate, Stability, etc.):
+# each new backend registers its own entry; the FAL provider entry in
+# TOOL_CATEGORIES tags itself with `imagegen_backend: "fal"` to select the
+# right catalog at picker time.
+
+
+def _fal_model_catalog():
+    """Lazy-load the FAL model catalog from the tool module."""
+    from tools.image_generation_tool import FAL_MODELS, DEFAULT_MODEL
+    return FAL_MODELS, DEFAULT_MODEL
+
+
+IMAGEGEN_BACKENDS = {
+    "fal": {
+        "display": "FAL.ai",
+        "config_key": "image_gen",
+        "catalog_fn": _fal_model_catalog,
+    },
+}
+
+
+def _format_imagegen_model_row(model_id: str, meta: dict, widths: dict) -> str:
+    """Format a single picker row with column-aligned speed / strengths / price."""
+    return (
+        f"{model_id:<{widths['model']}}  "
+        f"{meta.get('speed', ''):<{widths['speed']}}  "
+        f"{meta.get('strengths', ''):<{widths['strengths']}}  "
+        f"{meta.get('price', '')}"
+    )
+
+
+def _configure_imagegen_model(backend_name: str, config: dict) -> None:
+    """Prompt the user to pick a model for the given imagegen backend.
+
+    Writes selection to ``config[backend_config_key]["model"]``. Safe to
+    call even when stdin is not a TTY — curses_radiolist falls back to
+    keeping the current selection.
+    """
+    backend = IMAGEGEN_BACKENDS.get(backend_name)
+    if not backend:
+        return
+
+    catalog, default_model = backend["catalog_fn"]()
+    if not catalog:
+        return
+
+    cfg_key = backend["config_key"]
+    cur_cfg = config.setdefault(cfg_key, {})
+    if not isinstance(cur_cfg, dict):
+        cur_cfg = {}
+        config[cfg_key] = cur_cfg
+    current_model = cur_cfg.get("model") or default_model
+    if current_model not in catalog:
+        current_model = default_model
+
+    model_ids = list(catalog.keys())
+    # Put current model at the top so the cursor lands on it by default.
+    ordered = [current_model] + [m for m in model_ids if m != current_model]
+
+    # Column widths
+    widths = {
+        "model": max(len(m) for m in model_ids),
+        "speed": max((len(catalog[m].get("speed", "")) for m in model_ids), default=6),
+        "strengths": max((len(catalog[m].get("strengths", "")) for m in model_ids), default=0),
+    }
+
+    print()
+    header = (
+        f"  {'Model':<{widths['model']}}  "
+        f"{'Speed':<{widths['speed']}}  "
+        f"{'Strengths':<{widths['strengths']}}  "
+        f"Price"
+    )
+    print(color(header, Colors.CYAN))
+
+    rows = []
+    for mid in ordered:
+        row = _format_imagegen_model_row(mid, catalog[mid], widths)
+        if mid == current_model:
+            row += "  ← currently in use"
+        rows.append(row)
+
+    idx = _prompt_choice(
+        f"  Choose {backend['display']} model:",
+        rows,
+        default=0,
+    )
+
+    chosen = ordered[idx]
+    cur_cfg["model"] = chosen
+    _print_success(f"  Model set to: {chosen}")
+
+
 def _configure_provider(provider: dict, config: dict):
     """Configure a single provider - prompt for API keys and set config."""
     env_vars = provider.get("env_vars", [])
@@ -1006,6 +1108,10 @@ def _configure_provider(provider: dict, config: dict):
         _print_success(f"  {provider['name']} - no configuration needed!")
         if managed_feature:
             _print_info("  Requests for this tool will be billed to your Nous subscription.")
+        # Imagegen backends prompt for model selection after backend pick.
+        backend = provider.get("imagegen_backend")
+        if backend:
+            _configure_imagegen_model(backend, config)
         return
 
     # Prompt for each required env var
@@ -1040,6 +1146,10 @@ def _configure_provider(provider: dict, config: dict):
 
     if all_configured:
         _print_success(f"  {provider['name']} configured!")
+        # Imagegen backends prompt for model selection after env vars are in.
+        backend = provider.get("imagegen_backend")
+        if backend:
+            _configure_imagegen_model(backend, config)
 
 
 def _configure_simple_requirements(ts_key: str):
@@ -1211,6 +1321,10 @@ def _reconfigure_provider(provider: dict, config: dict):
         _print_success(f"  {provider['name']} - no configuration needed!")
         if managed_feature:
             _print_info("  Requests for this tool will be billed to your Nous subscription.")
+        # Imagegen backends prompt for model selection on reconfig too.
+        backend = provider.get("imagegen_backend")
+        if backend:
+            _configure_imagegen_model(backend, config)
         return
 
     for var in env_vars:
@@ -1227,6 +1341,11 @@ def _reconfigure_provider(provider: dict, config: dict):
             _print_success("    Updated")
         else:
             _print_info("    Kept current")
+
+    # Imagegen backends prompt for model selection on reconfig too.
+    backend = provider.get("imagegen_backend")
+    if backend:
+        _configure_imagegen_model(backend, config)
 
 
 def _reconfigure_simple_requirements(ts_key: str):

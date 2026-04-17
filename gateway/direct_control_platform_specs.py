@@ -6,7 +6,17 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from gateway.config import Platform
-from gateway.group_target_intents import extract_qq_group_target, extract_weixin_group_target
+from gateway.group_target_intents import (
+    extract_qq_group_target,
+    extract_recent_target_from_history,
+    extract_weixin_group_target,
+)
+from gateway.group_runtime_status_service import (
+    build_qq_group_runtime_status_details,
+    build_weixin_group_runtime_status_details,
+)
+from gateway.qq_group_policies import get_group_policy
+from gateway.qq_intel_assignments import get_group_monitoring_overlay
 from gateway.send_runtime_service import (
     extract_recent_send_target_from_history as shared_extract_recent_send_target_from_history,
 )
@@ -14,6 +24,8 @@ from gateway.send_intents import (
     extract_qq_inline_send_target_and_message,
     extract_weixin_inline_send_target_and_message,
 )
+from gateway.weixin_group_archive import WeixinGroupArchiveStore
+from gateway.weixin_group_policies import get_group_policy as get_weixin_group_policy
 
 
 @dataclass(frozen=True)
@@ -41,6 +53,14 @@ class AdminGroupControlPlatformSpec:
     target_key: str
     strip_group_prefix: bool
     unresolved_target_guard: Callable[[str], bool] | None = None
+
+
+@dataclass(frozen=True)
+class AdminGroupRuntimeStatusSpec:
+    platform: Platform
+    target_extractor: Callable[[Any, str], str]
+    history_target_extractor: Callable[[Any, list[dict[str, Any]] | None], str]
+    status_loader: Callable[[str], dict[str, Any]]
 
 
 QQ_ADMIN_SEND_SPEC = AdminSendPlatformSpec(
@@ -112,4 +132,36 @@ WEIXIN_ADMIN_GROUP_CONTROL_SPEC = AdminGroupControlPlatformSpec(
     collect_only_action="collect_only",
     target_key="chat_id",
     strip_group_prefix=False,
+)
+
+
+QQ_ADMIN_GROUP_RUNTIME_STATUS_SPEC = AdminGroupRuntimeStatusSpec(
+    platform=Platform.QQ_NAPCAT,
+    target_extractor=extract_qq_group_target,
+    history_target_extractor=lambda source, history: extract_recent_target_from_history(
+        source,
+        history,
+        extractor=extract_qq_group_target,
+    ),
+    status_loader=lambda target: build_qq_group_runtime_status_details(
+        target,
+        get_group_policy_fn=get_group_policy,
+        get_group_monitoring_overlay_fn=get_group_monitoring_overlay,
+    ),
+)
+
+
+WEIXIN_ADMIN_GROUP_RUNTIME_STATUS_SPEC = AdminGroupRuntimeStatusSpec(
+    platform=Platform.WEIXIN,
+    target_extractor=extract_weixin_group_target,
+    history_target_extractor=lambda source, history: extract_recent_target_from_history(
+        source,
+        history,
+        extractor=extract_weixin_group_target,
+    ),
+    status_loader=lambda target: build_weixin_group_runtime_status_details(
+        target,
+        get_group_policy_fn=get_weixin_group_policy,
+        describe_group_reporting_fn=WeixinGroupArchiveStore().describe_group_reporting,
+    ),
 )

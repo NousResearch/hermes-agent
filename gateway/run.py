@@ -230,6 +230,10 @@ from gateway.direct_control_router import (
     DIRECT_CONTROL_ROUTER_METHODS as SHARED_DIRECT_CONTROL_ROUTER_METHODS,
     DirectControlRouter,
 )
+from gateway.direct_control_platform_specs import (
+    QQ_ADMIN_GROUP_RUNTIME_STATUS_SPEC,
+    WEIXIN_ADMIN_GROUP_RUNTIME_STATUS_SPEC,
+)
 from gateway.direct_shortcuts import run_direct_shortcut_handlers
 from gateway.direct_shortcut_runtime_service import (
     get_direct_control_router as shared_get_direct_control_router,
@@ -3252,13 +3256,7 @@ class GatewayRunner:
         return self._try_handle_admin_platform_group_runtime_status(
             event,
             conversation_history=conversation_history,
-            platform=Platform.QQ_NAPCAT,
-            target_extractor=extract_qq_group_target,
-            history_target_extractor=lambda source, history: self._extract_recent_group_target_from_history(
-                source,
-                history,
-                extract_qq_group_target,
-            ),
+            spec=QQ_ADMIN_GROUP_RUNTIME_STATUS_SPEC,
             status_loader=self._load_qq_group_runtime_status_details,
         )
 
@@ -3278,13 +3276,7 @@ class GatewayRunner:
         return self._try_handle_admin_platform_group_runtime_status(
             event,
             conversation_history=conversation_history,
-            platform=Platform.WEIXIN,
-            target_extractor=extract_weixin_group_target,
-            history_target_extractor=lambda source, history: self._extract_recent_group_target_from_history(
-                source,
-                history,
-                extract_weixin_group_target,
-            ),
+            spec=WEIXIN_ADMIN_GROUP_RUNTIME_STATUS_SPEC,
             status_loader=self._load_weixin_group_runtime_status_details,
         )
 
@@ -3300,17 +3292,13 @@ class GatewayRunner:
         event: MessageEvent,
         *,
         conversation_history: Optional[List[Dict[str, Any]]] = None,
-        platform: Platform,
-        target_extractor,
-        history_target_extractor,
+        spec,
         status_loader,
     ) -> str | None:
         return self._get_direct_control_router()._try_handle_admin_platform_group_runtime_status(
             event,
             conversation_history=conversation_history,
-            platform=platform,
-            target_extractor=target_extractor,
-            history_target_extractor=history_target_extractor,
+            spec=spec,
             status_loader=status_loader,
         )
 

@@ -9,10 +9,13 @@ from typing import Any, Optional
 from gateway.config import Platform
 from gateway.direct_control_platform_specs import (
     AdminGroupControlPlatformSpec,
+    AdminGroupRuntimeStatusSpec,
     AdminSendPlatformSpec,
     QQ_ADMIN_GROUP_CONTROL_SPEC,
+    QQ_ADMIN_GROUP_RUNTIME_STATUS_SPEC,
     QQ_ADMIN_SEND_SPEC,
     WEIXIN_ADMIN_GROUP_CONTROL_SPEC,
+    WEIXIN_ADMIN_GROUP_RUNTIME_STATUS_SPEC,
     WEIXIN_ADMIN_SEND_SPEC,
 )
 from gateway.direct_control_event_runtime_service import (
@@ -39,23 +42,14 @@ from gateway.group_reply_formatters import (
 from gateway.group_runtime_status_runtime_service import (
     try_handle_admin_platform_group_runtime_status as shared_try_handle_admin_platform_group_runtime_status,
 )
-from gateway.group_runtime_status_service import (
-    build_qq_group_runtime_status_details,
-    build_weixin_group_runtime_status_details,
-)
-from gateway.group_target_intents import (
-    extract_qq_group_target,
-    extract_recent_target_from_history,
-    extract_weixin_group_target,
-)
+from gateway.group_target_intents import extract_recent_target_from_history
 from gateway.platforms.base import MessageEvent, MessageType
-from gateway.qq_group_policies import get_group_policy
 from gateway.qq_intel_runtime_service import (
     format_admin_qq_intel_control_reply as shared_format_admin_qq_intel_control_reply,
     match_admin_qq_intel_control_request as shared_match_admin_qq_intel_control_request,
     run_admin_qq_intel_control_shortcut,
 )
-from gateway.qq_intel_assignments import get_group_monitoring_overlay, list_intel_workers
+from gateway.qq_intel_assignments import list_intel_workers
 from gateway.qq_social_runtime_service import (
     format_admin_qq_social_control_reply as shared_format_admin_qq_social_control_reply,
     match_admin_qq_social_control_request as shared_match_admin_qq_social_control_request,
@@ -67,8 +61,6 @@ from gateway.send_runtime_service import (
     run_admin_send_shortcut,
 )
 from gateway.session import SessionSource
-from gateway.weixin_group_archive import WeixinGroupArchiveStore
-from gateway.weixin_group_policies import get_group_policy as get_weixin_group_policy
 
 logger = logging.getLogger(__name__)
 
@@ -337,32 +329,22 @@ class DirectControlRouter:
             return f"QQ 情报员控制执行失败：{exc}"
 
     def _load_qq_group_runtime_status_details(self, target: str) -> dict[str, Any]:
-        return build_qq_group_runtime_status_details(
-            target,
-            get_group_policy_fn=get_group_policy,
-            get_group_monitoring_overlay_fn=get_group_monitoring_overlay,
-        )
+        return QQ_ADMIN_GROUP_RUNTIME_STATUS_SPEC.status_loader(target)
 
     def _load_weixin_group_runtime_status_details(self, target: str) -> dict[str, Any]:
-        return build_weixin_group_runtime_status_details(
-            target,
-            get_group_policy_fn=get_weixin_group_policy,
-            describe_group_reporting_fn=WeixinGroupArchiveStore().describe_group_reporting,
-        )
+        return WEIXIN_ADMIN_GROUP_RUNTIME_STATUS_SPEC.status_loader(target)
 
     def _try_handle_admin_platform_group_runtime_status(
         self,
         event: MessageEvent,
         *,
         conversation_history: Optional[list[dict[str, Any]]] = None,
-        platform: Platform,
-        target_extractor,
-        history_target_extractor,
+        spec: AdminGroupRuntimeStatusSpec,
         status_loader,
     ) -> str | None:
         context = build_admin_platform_text_context(
             event,
-            platform=platform,
+            platform=spec.platform,
             configured_admin_user_ids_fn=self.owner._configured_admin_user_ids,
             is_admin_user_fn=self.owner._is_admin_user,
         )
@@ -373,8 +355,8 @@ class DirectControlRouter:
             admin_ids_configured=context["admin_ids_configured"],
             is_admin_user=context["is_admin_user"],
             looks_like_group_runtime_status_query=looks_like_shared_group_runtime_status_query,
-            target_extractor=target_extractor,
-            history_target_extractor=history_target_extractor,
+            target_extractor=spec.target_extractor,
+            history_target_extractor=spec.history_target_extractor,
             status_loader=status_loader,
         )
 
@@ -387,13 +369,7 @@ class DirectControlRouter:
         return self._try_handle_admin_platform_group_runtime_status(
             event,
             conversation_history=conversation_history,
-            platform=Platform.QQ_NAPCAT,
-            target_extractor=extract_qq_group_target,
-            history_target_extractor=lambda source, history: self._extract_recent_group_target_from_history(
-                source,
-                history,
-                extract_qq_group_target,
-            ),
+            spec=QQ_ADMIN_GROUP_RUNTIME_STATUS_SPEC,
             status_loader=self._load_qq_group_runtime_status_details,
         )
 
@@ -406,13 +382,7 @@ class DirectControlRouter:
         return self._try_handle_admin_platform_group_runtime_status(
             event,
             conversation_history=conversation_history,
-            platform=Platform.WEIXIN,
-            target_extractor=extract_weixin_group_target,
-            history_target_extractor=lambda source, history: self._extract_recent_group_target_from_history(
-                source,
-                history,
-                extract_weixin_group_target,
-            ),
+            spec=WEIXIN_ADMIN_GROUP_RUNTIME_STATUS_SPEC,
             status_loader=self._load_weixin_group_runtime_status_details,
         )
 

@@ -305,6 +305,36 @@ def _origin_from_env() -> Optional[Dict[str, str]]:
             # gateway.mirror.mirror_to_session. Harmless for DMs/shared sessions.
             "user_id": get_session_env("HERMES_SESSION_USER_ID") or None,
         }
+
+    # Fallback: reconstruct from a DM session key when the explicit routing
+    # context was lost (for example across a worker-thread boundary).  The
+    # namespace slot is a profile name, not always the historical ``main``.
+    session_key = get_session_env("HERMES_SESSION_KEY")
+    parts = session_key.split(":") if session_key else []
+    if (
+        len(parts) in (5, 6)
+        and parts[0] == "agent"
+        and parts[1]
+        and parts[2]
+        and parts[3] == "dm"
+        and parts[4]
+        and (len(parts) == 5 or parts[5])
+    ):
+        # ``build_session_key`` also emits the five-part shape
+        # ``agent:<profile>:<platform>:dm:<thread_id>`` when a source has no
+        # chat id.  When the thread context identifies that shape, do not
+        # misroute a cron delivery by treating the thread id as a chat id.
+        explicit_thread_id = get_session_env("HERMES_SESSION_THREAD_ID") or None
+        if len(parts) == 5 and explicit_thread_id == parts[4]:
+            return None
+        return {
+            "platform": parts[2],
+            "chat_id": parts[4],
+            "chat_name": get_session_env("HERMES_SESSION_CHAT_NAME") or None,
+            "thread_id": parts[5] if len(parts) == 6 else None,
+            "user_id": get_session_env("HERMES_SESSION_USER_ID") or None,
+        }
+
     return None
 
 

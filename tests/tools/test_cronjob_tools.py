@@ -4,6 +4,7 @@ import json
 import pytest
 
 from tools.cronjob_tools import (
+    _origin_from_env,
     _scan_cron_prompt,
     check_cronjob_requirements,
     cronjob,
@@ -578,6 +579,84 @@ class TestResolveModelOverride:
         )
         assert provider == "custom:cliproxy"
         assert model == "gpt-5.4"
+
+
+class TestOriginFromEnv:
+    @pytest.fixture(autouse=True)
+    def _reset_session_context(self):
+        from gateway.session_context import clear_session_vars, set_session_vars
+
+        tokens = set_session_vars()
+        yield
+        clear_session_vars(tokens)
+
+    def test_explicit_routing_context_takes_precedence_over_session_key(self):
+        from gateway.session_context import set_session_vars
+
+        set_session_vars(
+            platform="telegram",
+            chat_id="explicit-chat",
+            chat_name="Explicit chat",
+            thread_id="explicit-thread",
+            user_id="explicit-user",
+            session_key="agent:coder:weixin:dm:key-chat:key-thread",
+        )
+
+        assert _origin_from_env() == {
+            "platform": "telegram",
+            "chat_id": "explicit-chat",
+            "chat_name": "Explicit chat",
+            "thread_id": "explicit-thread",
+            "user_id": "explicit-user",
+        }
+
+    @pytest.mark.parametrize("profile", ["main", "coder"])
+    def test_standard_dm_session_key_reconstructs_origin(self, profile):
+        from gateway.session_context import set_session_vars
+
+        set_session_vars(
+            chat_name="Fallback chat",
+            user_id="fallback-user",
+            session_key=f"agent:{profile}:weixin:dm:chat-123",
+        )
+
+        assert _origin_from_env() == {
+            "platform": "weixin",
+            "chat_id": "chat-123",
+            "chat_name": "Fallback chat",
+            "thread_id": None,
+            "user_id": "fallback-user",
+        }
+
+    def test_threaded_dm_session_key_reconstructs_thread(self):
+        from gateway.session_context import set_session_vars
+
+        set_session_vars(session_key="agent:coder:telegram:dm:chat-123:topic-7")
+
+        assert _origin_from_env() == {
+            "platform": "telegram",
+            "chat_id": "chat-123",
+            "chat_name": None,
+            "thread_id": "topic-7",
+            "user_id": None,
+        }
+
+    def test_non_dm_session_key_is_not_used_as_delivery_origin(self):
+        from gateway.session_context import set_session_vars
+
+        set_session_vars(session_key="agent:main:telegram:group:chat-123")
+
+        assert _origin_from_env() is None
+
+    def test_chatless_dm_thread_key_is_not_misread_as_chat_id(self):
+        from gateway.session_context import set_session_vars
+
+        set_session_vars(
+            thread_id="topic-only",
+            session_key="agent:main:telegram:dm:topic-only",
+        )
+
+        assert _origin_from_env() is None
 
 
 class TestLocalDeliveryNotice:

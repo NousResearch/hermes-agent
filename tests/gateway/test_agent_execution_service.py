@@ -1,11 +1,18 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
 from gateway.agent_execution_service import (
+    append_missing_media_tags_to_response,
     collect_history_media_paths,
+    finalize_gateway_agent_conversation_result,
     gateway_approval_context,
     normalize_conversation_history,
+    prepend_pending_model_switch_note,
+    run_gateway_approved_conversation,
+    sync_gateway_execution_session_split,
 )
 
 
@@ -122,3 +129,188 @@ def test_gateway_approval_context_sets_and_resets_context(monkeypatch):
         ("reset_admin", "admin-token"),
         ("reset_session", "session-token"),
     ]
+
+
+def test_prepend_pending_model_switch_note_only_when_present():
+    assert prepend_pending_model_switch_note("hello", None) == "hello"
+    assert prepend_pending_model_switch_note("hello", "switch note") == "switch note\n\nhello"
+
+
+def test_append_missing_media_tags_to_response_dedupes_and_preserves_voice_directive():
+    response = append_missing_media_tags_to_response(
+        "done",
+        messages=[
+            {"role": "tool", "content": 'MEDIA:/tmp/a.png\nMEDIA:/tmp/a.png'},
+            {"role": "tool", "content": "[[audio_as_voice]]\nMEDIA:/tmp/b.ogg"},
+        ],
+        history_media_paths={"/tmp/a.png"},
+    )
+
+    assert response == "done\n[[audio_as_voice]]\nMEDIA:/tmp/b.ogg"
+
+
+def test_sync_gateway_execution_session_split_updates_store_and_resets_offset():
+    entry = SimpleNamespace(session_id="sess-old")
+    session_store = SimpleNamespace(
+        _entries={"key-1": entry},
+        _save=MagicMock(),
+    )
+    logger = MagicMock()
+    agent = SimpleNamespace(session_id="sess-new")
+
+    effective_session_id, effective_history_offset = sync_gateway_execution_session_split(
+        agent=agent,
+        session_id="sess-old",
+        session_key="key-1",
+        session_store=session_store,
+        agent_history_len=9,
+        logger=logger,
+    )
+
+    assert effective_session_id == "sess-new"
+    assert effective_history_offset == 0
+    assert entry.session_id == "sess-new"
+    session_store._save.assert_called_once()
+    logger.info.assert_called_once()
+
+
+def test_finalize_gateway_agent_conversation_result_uses_empty_fallback_and_auto_title(monkeypatch):
+    called = {}
+
+    monkeypatch.setattr(
+        "agent.title_generator.maybe_auto_title",
+        lambda db, sid, message, final, msgs: called.update(
+            db=db,
+            sid=sid,
+            message=message,
+            final=final,
+            msgs=msgs,
+        ),
+    )
+
+    agent = SimpleNamespace(
+        session_id="sess-1",
+        model="gpt-test",
+        session_prompt_tokens=11,
+        session_completion_tokens=7,
+        context_compressor=SimpleNamespace(last_prompt_tokens=19),
+    )
+    result = finalize_gateway_agent_conversation_result(
+        result={
+            "final_response": "(empty)",
+            "messages": [{"role": "assistant", "content": "(empty)"}],
+            "api_calls": 1,
+            "last_reasoning": "r",
+        },
+        agent=agent,
+        tools=[{"name": "terminal"}],
+        message="hello",
+        session_id="sess-1",
+        session_key="key-1",
+        history_media_paths=set(),
+        agent_history_len=2,
+        session_store=SimpleNamespace(_entries={}, _save=MagicMock()),
+        session_db=object(),
+        logger=MagicMock(),
+        empty_response_fallback=lambda kind: "fallback text",
+    )
+
+    assert result["final_response"] == "fallback text"
+    assert result["suppress_reply"] is False
+    assert result["history_offset"] == 2
+    assert result["last_prompt_tokens"] == 19
+    assert result["input_tokens"] == 11
+    assert result["output_tokens"] == 7
+    assert result["model"] == "gpt-test"
+    assert called["message"] == "hello"
+    assert called["final"] == "fallback text"
+
+
+def test_finalize_gateway_agent_conversation_result_resets_offset_on_session_split():
+    session_store = SimpleNamespace(
+        _entries={"key-1": SimpleNamespace(session_id="sess-old")},
+        _save=MagicMock(),
+    )
+    agent = SimpleNamespace(
+        session_id="sess-new",
+        model="gpt-test",
+        session_prompt_tokens=2,
+        session_completion_tokens=3,
+        context_compressor=SimpleNamespace(last_prompt_tokens=5),
+    )
+
+    result = finalize_gateway_agent_conversation_result(
+        result={
+            "final_response": "ok",
+            "messages": [{"role": "assistant", "content": "ok"}],
+            "api_calls": 1,
+        },
+        agent=agent,
+        tools=[],
+        message="hello",
+        session_id="sess-old",
+        session_key="key-1",
+        history_media_paths=set(),
+        agent_history_len=10,
+        session_store=session_store,
+        session_db=None,
+        logger=MagicMock(),
+        empty_response_fallback=lambda kind: None,
+    )
+
+    assert result["session_id"] == "sess-new"
+    assert result["history_offset"] == 0
+    session_store._save.assert_called_once()
+
+
+def test_run_gateway_approved_conversation_prepends_pending_note_and_registers_notify(monkeypatch):
+    calls: list[tuple[str, object]] = []
+
+    @contextmanager
+    def _fake_approval_context(**kwargs):
+        calls.append(("approval_context", kwargs))
+        yield
+
+    monkeypatch.setattr(
+        "gateway.agent_execution_service.gateway_approval_context",
+        _fake_approval_context,
+    )
+    monkeypatch.setattr(
+        "tools.approval.register_gateway_notify",
+        lambda session_key, callback: calls.append(("register", session_key)) or "handle-1",
+    )
+    monkeypatch.setattr(
+        "tools.approval.unregister_gateway_notify",
+        lambda session_key, handle=None: calls.append(("unregister", (session_key, handle))),
+    )
+
+    agent = SimpleNamespace(
+        run_conversation=lambda message, conversation_history=None, task_id=None: {
+            "message": message,
+            "conversation_history": conversation_history,
+            "task_id": task_id,
+        }
+    )
+
+    result = run_gateway_approved_conversation(
+        agent=agent,
+        message="hello",
+        pending_model_note="switch note",
+        conversation_history=[{"role": "user", "content": "hi"}],
+        task_id="sess-1",
+        session_key="key-1",
+        admin_user_ids=["179033731"],
+        is_admin_user=True,
+        status_adapter=SimpleNamespace(pause_typing_for_chat=lambda chat_id: None),
+        status_chat_id="chat-1",
+        status_thread_metadata={"thread_id": "t1"},
+        loop_for_step=None,
+        logger=MagicMock(),
+        admin_only_message_builder=lambda action: None,
+    )
+
+    assert result["message"] == "switch note\n\nhello"
+    assert result["task_id"] == "sess-1"
+    assert calls[0][0] == "approval_context"
+    assert calls[1] == ("register", "key-1")
+    assert calls[2] == ("unregister", ("key-1", "handle-1"))

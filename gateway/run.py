@@ -198,8 +198,10 @@ from gateway.config import (
 from gateway.agent_execution_service import (
     collect_history_media_paths,
     create_gateway_agent,
+    finalize_gateway_agent_conversation_result as shared_finalize_gateway_agent_conversation_result,
     gateway_approval_context,
     normalize_conversation_history,
+    run_gateway_approved_conversation as shared_run_gateway_approved_conversation,
 )
 from gateway.agent_runtime import (
     agent_config_signature as shared_agent_config_signature,
@@ -8768,265 +8770,53 @@ class GatewayRunner:
             agent_history = normalize_conversation_history(history)
             _history_media_paths = collect_history_media_paths(agent_history)
             
-            # Register per-session gateway approval callback so dangerous
-            # command approval blocks the agent thread (mirrors CLI input()).
-            # The callback bridges sync→async to send the approval request
-            # to the user immediately.
-            from tools.approval import (
-                build_gateway_approval_message,
-                register_gateway_notify,
-                unregister_gateway_notify,
-            )
-
-            def _approval_notify_sync(approval_data: dict) -> None:
-                """Send the approval request to the user from the agent thread.
-
-                If the adapter supports interactive button-based approvals
-                (e.g. Discord's ``send_exec_approval``), use that for a richer
-                UX.  Otherwise fall back to a plain text message with
-                ``/approve`` instructions.
-                """
-                # Pause the typing indicator while the agent waits for
-                # user approval.  Critical for Slack's Assistant API where
-                # assistant_threads_setStatus disables the compose box — the
-                # user literally cannot type /approve while "is thinking..."
-                # is active.  The approval message send auto-clears the Slack
-                # status; pausing prevents _keep_typing from re-setting it.
-                # Typing resumes in _handle_approve_command/_handle_deny_command.
-                _status_adapter.pause_typing_for_chat(_status_chat_id)
-
-                cmd = approval_data.get("command", "")
-                desc = approval_data.get("description", "dangerous command")
-                title = approval_data.get("prompt_title", "Dangerous command requires approval")
-                approver_name = approval_data.get("approver_name", "管理员")
-                allow_persistence = bool(approval_data.get("allow_persistence", True))
-
-                # Prefer button-based approval when the adapter supports it.
-                # Check the *class* for the method, not the instance — avoids
-                # false positives from MagicMock auto-attribute creation in tests.
-                if getattr(type(_status_adapter), "send_exec_approval", None) is not None:
-                    try:
-                        asyncio.run_coroutine_threadsafe(
-                            _status_adapter.send_exec_approval(
-                                chat_id=_status_chat_id,
-                                command=cmd,
-                                session_key=_approval_session_key,
-                                description=desc,
-                                metadata=_status_thread_metadata,
-                            ),
-                            _loop_for_step,
-                        ).result(timeout=15)
-                        return
-                    except Exception as _e:
-                        logger.warning(
-                            "Button-based approval failed, falling back to text: %s", _e
-                        )
-
-                # Fallback: plain text approval prompt
-                msg = build_gateway_approval_message(
-                    command=cmd,
-                    description=desc,
-                    prompt_title=title,
-                    approver_name=approver_name,
-                    allow_persistence=allow_persistence,
-                )
-                admin_note = self._admin_only_message(
-                    source,
-                    "approve dangerous commands",
-                )
-                if admin_note:
-                    msg = f"{msg}\n\n{admin_note}"
-                try:
-                    asyncio.run_coroutine_threadsafe(
-                        _status_adapter.send(
-                            _status_chat_id,
-                            msg,
-                            metadata=_status_thread_metadata,
-                        ),
-                        _loop_for_step,
-                    ).result(timeout=15)
-                except Exception as _e:
-                    logger.error("Failed to send approval request: %s", _e)
-
-            # Prepend pending model switch note so the model knows about the switch
             _pending_notes = getattr(self, '_pending_model_notes', {})
             _msn = _pending_notes.pop(session_key, None) if session_key else None
-            if _msn:
-                message = _msn + "\n\n" + message
-
-            _approval_session_key = session_key or ""
-            with gateway_approval_context(
-                session_key=_approval_session_key,
-                admin_user_ids=list(admin_user_ids or []),
+            result = shared_run_gateway_approved_conversation(
+                agent=agent,
+                message=message,
+                pending_model_note=_msn,
+                conversation_history=agent_history,
+                task_id=session_id,
+                session_key=session_key,
+                admin_user_ids=admin_user_ids,
                 is_admin_user=is_admin_user,
-            ):
-                _approval_notify_handle = register_gateway_notify(
-                    _approval_session_key,
-                    _approval_notify_sync,
-                )
-                try:
-                    result = agent.run_conversation(message, conversation_history=agent_history, task_id=session_id)
-                finally:
-                    try:
-                        unregister_gateway_notify(_approval_session_key, _approval_notify_handle)
-                    except TypeError:
-                        # Backward-compat for tests / older shims still exposing the
-                        # legacy single-argument unregister signature.
-                        unregister_gateway_notify(_approval_session_key)
+                status_adapter=_status_adapter,
+                status_chat_id=_status_chat_id,
+                status_thread_metadata=_status_thread_metadata,
+                loop_for_step=_loop_for_step,
+                logger=logger,
+                admin_only_message_builder=lambda action: self._admin_only_message(
+                    source,
+                    action,
+                ),
+            )
             result_holder[0] = result
 
             # Signal the stream consumer that the agent is done
             if _stream_consumer is not None:
                 _stream_consumer.finish()
-            
-            # Return final response, or a message if something went wrong
-            final_response = result.get("final_response")
-            suppress_reply = False
-            _empty_placeholder = False
-
-            # Extract actual token counts from the agent instance used for this run
-            _last_prompt_toks = 0
-            _input_toks = 0
-            _output_toks = 0
-            _agent = agent_holder[0]
-            if _agent and hasattr(_agent, "context_compressor"):
-                _last_prompt_toks = getattr(_agent.context_compressor, "last_prompt_tokens", 0)
-                _input_toks = getattr(_agent, "session_prompt_tokens", 0)
-                _output_toks = getattr(_agent, "session_completion_tokens", 0)
-            _resolved_model = getattr(_agent, "model", None) if _agent else None
-
-            if isinstance(final_response, str) and final_response.strip() in {
-                "(empty)",
-                "[[NO_REPLY]]",
-            }:
-                empty_kind = "no_reply" if final_response.strip() == "[[NO_REPLY]]" else "empty"
-                fallback = _empty_response_fallback(
+            return shared_finalize_gateway_agent_conversation_result(
+                result=result,
+                agent=agent_holder[0],
+                tools=tools_holder[0] or [],
+                message=message,
+                session_id=session_id,
+                session_key=session_key,
+                history_media_paths=_history_media_paths,
+                agent_history_len=len(agent_history),
+                session_store=getattr(self, "session_store", None),
+                session_db=self._session_db,
+                logger=logger,
+                empty_response_fallback=lambda empty_kind: _empty_response_fallback(
                     source,
                     message,
                     empty_kind=empty_kind,
                     is_admin_user=bool(is_admin_user),
                     raw_message=raw_message,
                     event=event,
-                )
-                if fallback:
-                    final_response = fallback
-                else:
-                    _empty_placeholder = True
-                    final_response = ""
-
-            if not final_response and not _empty_placeholder:
-                error_msg = f"⚠️ {result['error']}" if result.get("error") else "(No response generated)"
-                return {
-                    "final_response": error_msg,
-                    "suppress_reply": False,
-                    "messages": result.get("messages", []),
-                    "api_calls": result.get("api_calls", 0),
-                    "tools": tools_holder[0] or [],
-                    "history_offset": len(agent_history),
-                    "last_prompt_tokens": _last_prompt_toks,
-                    "input_tokens": _input_toks,
-                    "output_tokens": _output_toks,
-                    "model": _resolved_model,
-                }
-            
-            # Scan tool results for MEDIA:<path> tags that need to be delivered
-            # as native audio/file attachments.  The TTS tool embeds MEDIA: tags
-            # in its JSON response, but the model's final text reply usually
-            # doesn't include them.  We collect unique tags from tool results and
-            # append any that aren't already present in the final response, so the
-            # adapter's extract_media() can find and deliver the files exactly once.
-            #
-            # Uses path-based deduplication against _history_media_paths (collected
-            # before run_conversation) instead of index slicing. This is safe even
-            # when context compression shrinks the message list. (Fixes #160)
-            if "MEDIA:" not in final_response:
-                media_tags = []
-                has_voice_directive = False
-                for msg in result.get("messages", []):
-                    if msg.get("role") in ("tool", "function"):
-                        content = msg.get("content", "")
-                        if "MEDIA:" in content:
-                            extracted_media, _ = BasePlatformAdapter.extract_media(content)
-                            for path, is_voice in extracted_media:
-                                if path and path not in _history_media_paths:
-                                    media_tags.append(f"MEDIA:{path}")
-                                if is_voice:
-                                    has_voice_directive = True
-                        elif "[[audio_as_voice]]" in content:
-                            has_voice_directive = True
-                
-                if media_tags:
-                    seen = set()
-                    unique_tags = []
-                    for tag in media_tags:
-                        if tag not in seen:
-                            seen.add(tag)
-                            unique_tags.append(tag)
-                    if has_voice_directive:
-                        unique_tags.insert(0, "[[audio_as_voice]]")
-                    final_response = final_response + "\n" + "\n".join(unique_tags)
-
-            if isinstance(final_response, str) and final_response.strip() == "[[NO_REPLY]]":
-                suppress_reply = True
-                final_response = ""
-            elif _empty_placeholder and isinstance(final_response, str) and not final_response.strip():
-                suppress_reply = True
-            
-            # Sync session_id: the agent may have created a new session during
-            # mid-run context compression (_compress_context splits sessions).
-            # If so, update the session store entry so the NEXT message loads
-            # the compressed transcript, not the stale pre-compression one.
-            agent = agent_holder[0]
-            _session_was_split = False
-            if agent and session_key and hasattr(agent, 'session_id') and agent.session_id != session_id:
-                _session_was_split = True
-                logger.info(
-                    "Session split detected: %s → %s (compression)",
-                    session_id, agent.session_id,
-                )
-                entry = self.session_store._entries.get(session_key)
-                if entry:
-                    entry.session_id = agent.session_id
-                    self.session_store._save()
-
-            effective_session_id = getattr(agent, 'session_id', session_id) if agent else session_id
-
-            # When compression created a new session, the messages list was
-            # shortened.  Using the original history offset would produce an
-            # empty new_messages slice, causing the gateway to write only a
-            # user/assistant pair — losing the compressed summary and tail.
-            # Reset to 0 so the gateway writes ALL compressed messages.
-            _effective_history_offset = 0 if _session_was_split else len(agent_history)
-
-            # Auto-generate session title after first exchange (non-blocking)
-            if final_response and self._session_db:
-                try:
-                    from agent.title_generator import maybe_auto_title
-                    all_msgs = result_holder[0].get("messages", []) if result_holder[0] else []
-                    maybe_auto_title(
-                        self._session_db,
-                        effective_session_id,
-                        message,
-                        final_response,
-                        all_msgs,
-                    )
-                except Exception:
-                    pass
-
-            return {
-                "final_response": final_response,
-                "suppress_reply": suppress_reply,
-                "last_reasoning": result.get("last_reasoning"),
-                "messages": result_holder[0].get("messages", []) if result_holder[0] else [],
-                "api_calls": result_holder[0].get("api_calls", 0) if result_holder[0] else 0,
-                "tools": tools_holder[0] or [],
-                "history_offset": _effective_history_offset,
-                "last_prompt_tokens": _last_prompt_toks,
-                "input_tokens": _input_toks,
-                "output_tokens": _output_toks,
-                "model": _resolved_model,
-                "session_id": effective_session_id,
-            }
+                ),
+            )
         
         # Start progress message sender if enabled
         progress_task = None

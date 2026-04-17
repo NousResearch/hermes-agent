@@ -19,6 +19,7 @@ from agent.secret_scope import get_secret
 
 logger = logging.getLogger(__name__)
 
+_CURRENT_SESSION_ALIASES = frozenset({"current", "__session__", "session"})
 _TELEGRAM_TOPIC_TARGET_RE = re.compile(r"^\s*(-?\d+)(?::(\d+))?\s*$")
 _FEISHU_TARGET_RE = re.compile(r"^\s*((?:oc|ou|on|chat|open)_[-A-Za-z0-9]+)(?::([-A-Za-z0-9_]+))?\s*$")
 # Slack conversation IDs: C (public channel), G (private/group channel), D (DM).
@@ -215,7 +216,7 @@ SEND_MESSAGE_SCHEMA = {
             },
             "target": {
                 "type": "string",
-                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', 'platform:chat_id', or 'platform:chat_id:thread_id' for Telegram topics and Discord threads. Examples: 'telegram', 'telegram:-1001234567890:17585', 'discord:999888777:555444333', 'discord:#bot-home', 'slack:#engineering', 'signal:+155****4567', 'matrix:!roomid:server.org', 'matrix:@user:server.org', 'ntfy:alerts-channel' (explicit ntfy topic), 'yuanbao:direct:<account_id>' (DM), 'yuanbao:group:<group_code>' (group chat)"
+                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:current' (uses the current gateway session chat/thread), 'platform:#channel-name', 'platform:chat_id', or 'platform:chat_id:thread_id' for Telegram topics, Discord threads, and Slack threads. Examples: 'telegram', 'discord:current', 'telegram:-1001234567890:17585', 'discord:999888777:555444333', 'discord:#bot-home', 'slack:#engineering', 'signal:+155****4567', 'matrix:!roomid:server.org', 'matrix:@user:server.org', 'ntfy:alerts-channel' (explicit ntfy topic), 'yuanbao:direct:<account_id>' (DM), 'yuanbao:group:<group_code>' (group chat)"
             },
             "message": {
                 "type": "string",
@@ -364,11 +365,17 @@ def _handle_send(args):
     target_ref = parts[1].strip() if len(parts) > 1 else None
     chat_id = None
     thread_id = None
+    is_explicit = False
+    used_current_session = False
 
-    if target_ref:
+    if target_ref and target_ref.lower() in _CURRENT_SESSION_ALIASES:
+        error, chat_id, thread_id = _resolve_current_session_target(platform_name)
+        if error:
+            return json.dumps(_error(error))
+        is_explicit = True
+        used_current_session = True
+    elif target_ref:
         chat_id, thread_id, is_explicit = _parse_target_ref(platform_name, target_ref)
-    else:
-        is_explicit = False
 
     # Resolve human-friendly channel names to numeric IDs
     if target_ref and not is_explicit:
@@ -502,6 +509,12 @@ def _handle_send(args):
         )
         if used_home_channel and isinstance(result, dict) and result.get("success"):
             result["note"] = f"Sent to {platform_name} home channel (chat_id: {chat_id})"
+        elif used_current_session and isinstance(result, dict) and result.get("success"):
+            thread_suffix = f", thread_id: {thread_id}" if thread_id else ""
+            result["note"] = (
+                f"Sent to current {platform_name} session "
+                f"(chat_id: {chat_id}{thread_suffix})"
+            )
 
         # Mirror the sent message into the target's gateway session
         if isinstance(result, dict) and result.get("success") and mirror_text:
@@ -527,6 +540,51 @@ def _handle_send(args):
         return json.dumps(result)
     except Exception as e:
         return json.dumps(_error(f"Send failed: {e}"))
+
+
+def _resolve_current_session_target(platform_name: str):
+    """Resolve ``platform:current`` to the active gateway chat and thread."""
+    from gateway.session_context import get_session_env
+
+    session_platform = (
+        get_session_env("HERMES_SESSION_PLATFORM", "") or ""
+    ).strip().lower()
+    session_chat_id = (
+        get_session_env("HERMES_SESSION_CHAT_ID", "") or ""
+    ).strip()
+    session_thread_id = (
+        get_session_env("HERMES_SESSION_THREAD_ID", "") or ""
+    ).strip() or None
+
+    if not session_chat_id:
+        return (
+            f"send_message target '{platform_name}:current' requires an active "
+            "gateway session, but no HERMES_SESSION_CHAT_ID is set. Use an "
+            f"explicit target such as '{platform_name}:<chat_id>', or use "
+            f"'{platform_name}' for the home channel.",
+            None,
+            None,
+        )
+
+    if not session_platform:
+        return (
+            f"send_message target '{platform_name}:current' requires an active "
+            "gateway session with HERMES_SESSION_PLATFORM set.",
+            None,
+            None,
+        )
+
+    if session_platform != platform_name:
+        return (
+            f"send_message target '{platform_name}:current' does not match the "
+            f"current session platform ('{session_platform}'). Use "
+            f"'{session_platform}:current' to target the active conversation, "
+            "or specify an explicit channel target.",
+            None,
+            None,
+        )
+
+    return None, session_chat_id, session_thread_id
 
 
 def _parse_target_ref(platform_name: str, target_ref: str):

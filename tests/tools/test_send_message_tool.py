@@ -597,6 +597,143 @@ class TestSendMessageTool:
         assert "access_token=***" in result["error"]
 
 
+class TestSendMessageCurrentSessionTarget:
+    """Regression coverage for session-relative send targets (#5472)."""
+
+    def setup_method(self):
+        from gateway.session_context import set_session_vars
+
+        self._session_tokens = set_session_vars()
+
+    def teardown_method(self):
+        from gateway.session_context import clear_session_vars
+
+        clear_session_vars(self._session_tokens)
+
+    @staticmethod
+    def _discord_config():
+        discord_config = SimpleNamespace(enabled=True, token="***", extra={})
+
+        class Config:
+            platforms = {Platform.DISCORD: discord_config}
+
+            @staticmethod
+            def get_home_channel(_platform):
+                raise AssertionError("current-session targets must not use the home channel")
+
+        return Config(), discord_config
+
+    def test_current_routes_to_session_chat_and_thread(self):
+        from gateway.session_context import set_session_vars
+
+        set_session_vars(
+            platform="discord",
+            chat_id="999888777",
+            thread_id="555444333",
+        )
+        config, discord_config = self._discord_config()
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch(
+                 "tools.send_message_tool._send_to_platform",
+                 new=AsyncMock(return_value={"success": True}),
+             ) as send_mock, \
+             patch("gateway.mirror.mirror_to_session", return_value=True) as mirror_mock:
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "discord:current",
+                        "message": "follow-up",
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        assert result["note"] == (
+            "Sent to current discord session "
+            "(chat_id: 999888777, thread_id: 555444333)"
+        )
+        send_mock.assert_awaited_once_with(
+            Platform.DISCORD,
+            discord_config,
+            "999888777",
+            "follow-up",
+            thread_id="555444333",
+            media_files=[],
+            force_document=False,
+        )
+        mirror_mock.assert_called_once_with(
+            "discord",
+            "999888777",
+            "follow-up",
+            source_label="discord",
+            thread_id="555444333",
+            user_id=None,
+        )
+
+    @pytest.mark.parametrize("alias", ["session", "__session__", "CURRENT", "Current"])
+    def test_current_aliases_are_case_insensitive(self, alias):
+        from gateway.session_context import set_session_vars
+
+        set_session_vars(platform="discord", chat_id="222")
+        config, _discord_config = self._discord_config()
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch(
+                 "tools.send_message_tool._send_to_platform",
+                 new=AsyncMock(return_value={"success": True}),
+             ) as send_mock, \
+             patch("gateway.mirror.mirror_to_session", return_value=True):
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": f"discord:{alias}",
+                        "message": "follow-up",
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        assert send_mock.await_args.args[2] == "222"
+
+    def test_current_without_active_session_returns_error(self):
+        result = json.loads(
+            send_message_tool(
+                {
+                    "action": "send",
+                    "target": "discord:current",
+                    "message": "follow-up",
+                }
+            )
+        )
+
+        assert "active gateway session" in result["error"]
+        assert "HERMES_SESSION_CHAT_ID" in result["error"]
+
+    def test_current_rejects_platform_mismatch(self):
+        from gateway.session_context import set_session_vars
+
+        set_session_vars(platform="telegram", chat_id="-1001234")
+        result = json.loads(
+            send_message_tool(
+                {
+                    "action": "send",
+                    "target": "discord:current",
+                    "message": "follow-up",
+                }
+            )
+        )
+
+        assert "does not match" in result["error"]
+        assert "telegram" in result["error"]
+
+
 class TestSendTelegramMediaDelivery:
     def test_sends_photo_with_caption_for_media_tag(self, tmp_path, monkeypatch):
         # A single captionable image + short text now rides as the photo's

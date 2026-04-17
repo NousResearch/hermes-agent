@@ -11,7 +11,6 @@ from gateway.group_control_intents import (
     looks_like_group_runtime_status_query as looks_like_shared_group_runtime_status_query,
     resolve_oral_report_delivery_target,
 )
-from gateway.group_control_requests import match_group_control_request
 from gateway.group_control_runtime_service import (
     match_admin_platform_group_control_request,
     run_admin_group_control_shortcut,
@@ -24,13 +23,14 @@ from gateway.group_moderation_runtime_service import (
 from gateway.group_reply_formatters import (
     format_admin_group_control_reply,
     format_admin_send_reply,
-    format_group_runtime_status_reply,
+)
+from gateway.group_runtime_status_runtime_service import (
+    try_handle_admin_platform_group_runtime_status as shared_try_handle_admin_platform_group_runtime_status,
 )
 from gateway.group_runtime_status_service import (
     build_qq_group_runtime_status_details,
     build_weixin_group_runtime_status_details,
 )
-from gateway.group_runtime_status_requests import match_group_runtime_status_request
 from gateway.group_target_intents import (
     extract_qq_group_target,
     extract_recent_target_from_history,
@@ -396,9 +396,7 @@ class DirectControlRouter:
         status_loader,
     ) -> str | None:
         source, body = self._extract_platform_text_event_body(event, platform=platform)
-        if source is None:
-            return None
-        target = match_group_runtime_status_request(
+        return shared_try_handle_admin_platform_group_runtime_status(
             source=source,
             body=body,
             conversation_history=conversation_history,
@@ -407,10 +405,8 @@ class DirectControlRouter:
             looks_like_group_runtime_status_query=looks_like_shared_group_runtime_status_query,
             target_extractor=target_extractor,
             history_target_extractor=history_target_extractor,
+            status_loader=status_loader,
         )
-        if not target:
-            return None
-        return format_group_runtime_status_reply(**status_loader(target))
 
     def _try_handle_admin_qq_group_runtime_status(
         self,
@@ -448,29 +444,6 @@ class DirectControlRouter:
                 extract_weixin_group_target,
             ),
             status_loader=self._load_weixin_group_runtime_status_details,
-        )
-
-    def _match_admin_group_control_request_common(
-        self,
-        *,
-        source: SessionSource,
-        body: str,
-        target: str | None,
-        missing_target_message: str,
-        admin_action_label: str,
-        collect_only_action: str,
-        report_target_resolver,
-    ) -> tuple[dict[str, Any] | None, str | None]:
-        return match_group_control_request(
-            source=source,
-            body=body,
-            target=target,
-            admin_ids_configured=bool(self.owner._configured_admin_user_ids(getattr(source, "platform", None))),
-            is_admin_user=self.owner._is_admin_user(source),
-            missing_target_message=missing_target_message,
-            admin_only_message=self.owner._admin_only_message(source, admin_action_label),
-            collect_only_action=collect_only_action,
-            report_target_resolver=report_target_resolver,
         )
 
     def _match_admin_platform_group_control_request(

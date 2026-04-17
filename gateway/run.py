@@ -249,6 +249,12 @@ from gateway.group_control_intents import (
     looks_like_group_listen_enable_request,
     looks_like_group_runtime_status_query as looks_like_shared_group_runtime_status_query,
 )
+from gateway.group_runtime_status_service import (
+    build_qq_group_runtime_status_details as shared_build_qq_group_runtime_status_details,
+    build_weixin_group_runtime_status_details as shared_build_weixin_group_runtime_status_details,
+    unique_report_targets as shared_unique_report_targets,
+    worker_report_targets as shared_worker_report_targets,
+)
 from gateway.group_target_intents import (
     extract_qq_group_target,
     extract_weixin_group_target,
@@ -2964,15 +2970,7 @@ class GatewayRunner:
 
     @staticmethod
     def _unique_report_targets(values: list[Any]) -> list[str]:
-        targets: list[str] = []
-        seen: set[str] = set()
-        for value in values:
-            text = str(value or "").strip()
-            if not text or text in seen:
-                continue
-            seen.add(text)
-            targets.append(text)
-        return targets
+        return shared_unique_report_targets(values)
 
     @classmethod
     def _worker_report_targets(
@@ -2982,14 +2980,12 @@ class GatewayRunner:
         *,
         require_daily_enabled: bool = False,
     ) -> list[str]:
-        values: list[Any] = []
-        for item in workers:
-            if not isinstance(item, dict):
-                continue
-            if require_daily_enabled and not bool(item.get("daily_report_enabled")):
-                continue
-            values.append(item.get(key))
-        return cls._unique_report_targets(values)
+        del cls
+        return shared_worker_report_targets(
+            workers,
+            key,
+            require_daily_enabled=require_daily_enabled,
+        )
 
     @staticmethod
     def _runtime_session_metadata(session_key: str) -> dict[str, str]:
@@ -3306,45 +3302,11 @@ class GatewayRunner:
         )
 
     def _load_qq_group_runtime_status_details(self, target: str) -> dict[str, Any]:
-        group_id = str(target).replace("group:", "").strip()
-        policy = get_group_policy(group_id)
-        overlay = get_group_monitoring_overlay(group_id)
-        workers = list((overlay or {}).get("workers") or [])
-        worker_names = [str(item.get("worker_name") or "").strip() for item in workers if isinstance(item, dict)]
-        policy_mode = str(policy.get("mode") or "default").strip() or "default"
-        overlay_mode = str((overlay or {}).get("mode") or "").strip()
-        effective_mode = policy_mode
-        if policy_mode == "default" and overlay_mode:
-            effective_mode = overlay_mode
-        effective_archive_enabled = bool(policy.get("archive_enabled") or (overlay or {}).get("archive_enabled"))
-        effective_daily_enabled = bool(
-            policy.get("daily_report_enabled") or (overlay or {}).get("daily_report_enabled")
+        return shared_build_qq_group_runtime_status_details(
+            target,
+            get_group_policy_fn=get_group_policy,
+            get_group_monitoring_overlay_fn=get_group_monitoring_overlay,
         )
-        can_reply_in_group = effective_mode not in {"collect_only", "disabled"}
-        daily_targets = self._unique_report_targets(
-            [policy.get("daily_report_target")] + self._worker_report_targets(
-                workers,
-                "daily_report_target",
-                require_daily_enabled=True,
-            )
-        )
-        manual_targets = self._unique_report_targets(
-            [policy.get("manual_report_target")] + self._worker_report_targets(
-                workers,
-                "manual_report_target",
-            )
-        )
-        return {
-            "platform_label": "QQ 群",
-            "target_label": group_id,
-            "effective_mode": effective_mode,
-            "can_reply_in_group": can_reply_in_group,
-            "archive_enabled": effective_archive_enabled,
-            "daily_report_enabled": effective_daily_enabled,
-            "daily_targets": daily_targets,
-            "manual_targets": manual_targets,
-            "worker_names": worker_names,
-        }
 
     def _try_handle_admin_weixin_group_runtime_status(
         self,
@@ -3366,29 +3328,11 @@ class GatewayRunner:
         )
 
     def _load_weixin_group_runtime_status_details(self, target: str) -> dict[str, Any]:
-        policy = get_weixin_group_policy(target)
-        reporting = WeixinGroupArchiveStore().describe_group_reporting(chat_id=target)
-        effective_mode = str(policy.get("mode") or "default").strip() or "default"
-        effective_archive_enabled = bool(policy.get("archive_enabled"))
-        effective_daily_enabled = bool(policy.get("daily_report_enabled"))
-        can_reply_in_group = effective_mode not in {"collect_only", "disabled"}
-        daily_targets = self._unique_report_targets(
-            list((reporting.get("effective_targets") or {}).get("daily_report_targets") or [])
+        return shared_build_weixin_group_runtime_status_details(
+            target,
+            get_group_policy_fn=get_weixin_group_policy,
+            describe_group_reporting_fn=WeixinGroupArchiveStore().describe_group_reporting,
         )
-        manual_targets = self._unique_report_targets(
-            list((reporting.get("effective_targets") or {}).get("manual_report_targets") or [])
-        )
-        return {
-            "platform_label": "微信群",
-            "target_label": target,
-            "effective_mode": effective_mode,
-            "can_reply_in_group": can_reply_in_group,
-            "archive_enabled": effective_archive_enabled,
-            "daily_report_enabled": effective_daily_enabled,
-            "daily_targets": daily_targets,
-            "manual_targets": manual_targets,
-            "worker_names": [],
-        }
 
     def _try_handle_admin_platform_group_runtime_status(
         self,

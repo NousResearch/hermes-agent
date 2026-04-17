@@ -20,6 +20,7 @@ from .adapter import (  # noqa: F401
     QQCloseError,
     check_qq_requirements,
     _coerce_list,
+    _ssrf_redirect_guard,
 )
 
 # -- Onboard (QR-code scan-to-configure) -----------------------------------
@@ -40,6 +41,7 @@ __all__ = [
     "QQCloseError",
     "check_qq_requirements",
     "_coerce_list",
+    "_ssrf_redirect_guard",
     # onboard
     "BindStatus",
     "create_bind_task",

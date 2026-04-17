@@ -1,0 +1,12 @@
+name: agent_orchestration
+version: "0.1.0"
+description: "Multi-agent orchestration — spawn, communicate, and coordinate sub-agents via workflow patterns (parallel, sequential, map_reduce, dag)"
+provides_tools:
+  - spawn_agent
+  - agent_status
+  - send_agent_message
+  - orchestrate_task
+provides_hooks:
+  - on_session_start
+  - on_session_end
+  - pre_tool_call

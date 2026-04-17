@@ -4395,6 +4395,11 @@ class AIAgent:
                 self._client_log_context(),
             )
             return client
+        proxy_env_present = any(
+            str(os.environ.get(key) or "").strip()
+            for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy")
+        )
+
         # Inject TCP keepalives so the kernel detects dead provider connections
         # instead of letting them sit silently in CLOSE-WAIT (#10324).  Without
         # this, a peer that drops mid-stream leaves the socket in a state where
@@ -4412,7 +4417,11 @@ class AIAgent:
         # constructs a fresh one — no stale closed transport can be reused.
         # Tests in ``tests/run_agent/test_create_openai_client_reuse.py`` and
         # ``tests/run_agent/test_sequential_chats_live.py`` pin this invariant.
-        if "http_client" not in client_kwargs:
+        #
+        # If proxy env vars are set, leave the SDK to build its default httpx
+        # transport. A hand-built HTTPTransport does not pick up trust_env
+        # proxy configuration, so proxied users would silently direct-connect.
+        if "http_client" not in client_kwargs and not proxy_env_present:
             try:
                 import httpx as _httpx
                 import socket as _socket

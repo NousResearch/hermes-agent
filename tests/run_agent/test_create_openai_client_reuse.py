@@ -184,3 +184,36 @@ def test_replace_primary_openai_client_survives_repeated_rebuilds():
         "Some _create_openai_client calls returned the same object across "
         "a teardown — rebuild is not producing fresh clients"
     )
+
+
+def test_proxy_env_uses_sdk_default_transport(monkeypatch):
+    """When proxy env vars are present, do not inject a custom transport.
+
+    httpx applies HTTPS_PROXY/HTTP_PROXY through its default client transport.
+    Passing a hand-built HTTPTransport for keepalive socket options bypasses
+    that env proxy path, causing proxied Codex requests to direct-connect and
+    time out on networks that require a local proxy.
+    """
+    agent = _make_agent()
+    constructed: list = []
+    fake_openai = _make_fake_openai_factory(constructed)
+
+    agent._client_kwargs = {
+        "api_key": "test-key-value",
+        "base_url": "https://chatgpt.com/backend-api/codex",
+    }
+    # Synthetic only: the fake OpenAI client prevents network I/O. The value
+    # just needs to be a valid proxy URL so the proxy-env branch is exercised.
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example:3128")
+
+    with patch("run_agent.OpenAI", fake_openai):
+        agent._create_openai_client(
+            agent._client_kwargs, reason="proxy_env", shared=True
+        )
+
+    assert len(constructed) == 1
+    assert constructed[0]._http_client is None, (
+        "Proxy environment variables must be handled by the SDK/httpx default "
+        "transport. Injecting a custom HTTPTransport here bypasses HTTPS_PROXY "
+        "and makes Codex requests direct-connect."
+    )

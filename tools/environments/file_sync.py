@@ -95,6 +95,7 @@ def _sha256_file(path: str) -> str:
 
 _SYNC_BACK_MAX_RETRIES = 3
 _SYNC_BACK_BACKOFF = (2, 4, 8)  # seconds between retries
+_SYNC_BACK_MAX_BYTES = 2 * 1024 * 1024 * 1024  # 2 GiB — refuse to extract larger tars
 
 
 class FileSyncManager:
@@ -219,6 +220,13 @@ class FileSyncManager:
         if self._bulk_download_fn is None:
             return
 
+        # Nothing was ever committed through this manager — the initial
+        # push failed or never ran. Skip sync_back to avoid retry storms
+        # against an uninitialized remote .hermes/ directory.
+        if not self._pushed_hashes and not self._synced_files:
+            logger.debug("sync_back: no prior push state — skipping")
+            return
+
         lock_path = (hermes_home or get_hermes_home()) / ".sync.lock"
         lock_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -291,6 +299,19 @@ class FileSyncManager:
 
         with tempfile.NamedTemporaryFile(suffix=".tar") as tf:
             self._bulk_download_fn(Path(tf.name))
+
+            # Defensive size cap: a misbehaving sandbox could produce an
+            # arbitrarily large tar. Refuse to extract if it exceeds the cap.
+            try:
+                tar_size = os.path.getsize(tf.name)
+            except OSError:
+                tar_size = 0
+            if tar_size > _SYNC_BACK_MAX_BYTES:
+                logger.warning(
+                    "sync_back: remote tar is %d bytes (cap %d) — skipping extraction",
+                    tar_size, _SYNC_BACK_MAX_BYTES,
+                )
+                return
 
             with tempfile.TemporaryDirectory(prefix="hermes-sync-back-") as staging:
                 with tarfile.open(tf.name) as tar:

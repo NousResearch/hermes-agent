@@ -354,15 +354,21 @@ class TestDaytonaBulkDownload:
         assert env._sandbox.process.exec.call_count == 2
         tar_cmd = env._sandbox.process.exec.call_args_list[0][0][0]
         assert "tar cf" in tar_cmd
-        assert "/tmp/.hermes_sync.tar" in tar_cmd
+        # PID-suffixed temp path avoids collisions on sync_back retry
+        assert "/tmp/.hermes_sync." in tar_cmd
+        assert ".tar" in tar_cmd
         assert ".hermes" in tar_cmd
 
         cleanup_cmd = env._sandbox.process.exec.call_args_list[1][0][0]
-        assert "rm -f /tmp/.hermes_sync.tar" in cleanup_cmd
+        assert "rm -f" in cleanup_cmd
+        assert "/tmp/.hermes_sync." in cleanup_cmd
 
-        env._sandbox.fs.download_file.assert_called_once_with(
-            "/tmp/.hermes_sync.tar", str(dest)
-        )
+        # download_file called once with the same PID-suffixed path
+        env._sandbox.fs.download_file.assert_called_once()
+        download_args = env._sandbox.fs.download_file.call_args[0]
+        assert download_args[0].startswith("/tmp/.hermes_sync.")
+        assert download_args[0].endswith(".tar")
+        assert download_args[1] == str(dest)
 
     def test_daytona_bulk_download_uses_remote_home(self, tmp_path):
         """The tar command should use the env's _remote_home."""

@@ -411,8 +411,10 @@ class TestTerminalFormatting:
 
         assert "Input tokens" in text
         assert "Output tokens" in text
-        assert "Est. cost" in text
-        assert "$" in text
+        # Cost and cache metrics are intentionally hidden (pricing was unreliable).
+        assert "Est. cost" not in text
+        assert "Cache read" not in text
+        assert "Cache write" not in text
 
     def test_terminal_format_shows_platforms(self, populated_db):
         engine = InsightsEngine(populated_db)
@@ -431,8 +433,8 @@ class TestTerminalFormatting:
 
         assert "█" in text  # Bar chart characters
 
-    def test_terminal_format_shows_na_for_custom_models(self, db):
-        """Custom models should show N/A instead of fake cost."""
+    def test_terminal_format_hides_cost_for_custom_models(self, db):
+        """Cost display is hidden entirely — custom models no longer show 'N/A' either."""
         db.create_session(session_id="s1", source="cli", model="my-custom-model")
         db.update_token_counts("s1", input_tokens=1000, output_tokens=500)
         db._conn.commit()
@@ -441,8 +443,9 @@ class TestTerminalFormatting:
         report = engine.generate(days=30)
         text = engine.format_terminal(report)
 
-        assert "N/A" in text
-        assert "custom/self-hosted" in text
+        assert "N/A" not in text
+        assert "custom/self-hosted" not in text
+        assert "Cost" not in text
 
 
 class TestGatewayFormatting:
@@ -461,13 +464,14 @@ class TestGatewayFormatting:
 
         assert "**" in text  # Markdown bold
 
-    def test_gateway_format_shows_cost(self, populated_db):
+    def test_gateway_format_hides_cost(self, populated_db):
         engine = InsightsEngine(populated_db)
         report = engine.generate(days=30)
         text = engine.format_gateway(report)
 
-        assert "$" in text
-        assert "Est. cost" in text
+        assert "$" not in text
+        assert "Est. cost" not in text
+        assert "cache" not in text.lower()
 
     def test_gateway_format_shows_models(self, populated_db):
         engine = InsightsEngine(populated_db)

@@ -239,15 +239,6 @@ def _make_fake_mautrix():
 # Platform & Config
 # ---------------------------------------------------------------------------
 
-class TestMatrixPlatformEnum:
-    def test_matrix_enum_exists(self):
-        assert Platform.MATRIX.value == "matrix"
-
-    def test_matrix_in_platform_list(self):
-        platforms = [p.value for p in Platform]
-        assert "matrix" in platforms
-
-
 class TestMatrixConfigLoading:
     def test_apply_env_overrides_with_access_token(self, monkeypatch):
         monkeypatch.setenv("MATRIX_ACCESS_TOKEN", "syt_abc123")

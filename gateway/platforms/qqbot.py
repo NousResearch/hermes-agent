@@ -64,6 +64,7 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     SendResult,
+    _ssrf_redirect_guard,
     cache_document_from_bytes,
     cache_image_from_bytes,
 )
@@ -226,7 +227,11 @@ class QQAdapter(BasePlatformAdapter):
             return False
 
         try:
-            self._http_client = httpx.AsyncClient(timeout=30.0, follow_redirects=True)
+            self._http_client = httpx.AsyncClient(
+                timeout=30.0,
+                follow_redirects=True,
+                event_hooks={"response": [_ssrf_redirect_guard]},
+            )
 
             # 1. Get access token
             await self._ensure_token()
@@ -1101,6 +1106,11 @@ class QQAdapter(BasePlatformAdapter):
             is_pre_wav = True
             logger.info("[QQ] STT: using voice_wav_url (pre-converted WAV)")
 
+        from tools.url_safety import is_safe_url
+        if not is_safe_url(download_url):
+            logger.warning("[QQ] STT blocked unsafe URL: %s", download_url[:80])
+            return None
+
         try:
             # 2. Download audio (QQ CDN requires Authorization header)
             if not self._http_client:
@@ -1525,6 +1535,33 @@ class QQAdapter(BasePlatformAdapter):
 
         raise last_exc  # type: ignore[misc]
 
+    # Maximum time (seconds) to wait for reconnection before giving up on send.
+    _RECONNECT_WAIT_SECONDS = 15.0
+    # How often (seconds) to poll is_connected while waiting.
+    _RECONNECT_POLL_INTERVAL = 0.5
+
+    async def _wait_for_reconnection(self) -> bool:
+        """Wait for the WebSocket listener to reconnect.
+
+        The listener loop (_listen_loop) auto-reconnects on disconnect, but
+        there is a race window where send() is called right after a disconnect
+        and before the reconnect completes.  This method polls is_connected
+        for up to _RECONNECT_WAIT_SECONDS.
+
+        Returns True if reconnected, False if still disconnected.
+        """
+        logger.info("[%s] Not connected — waiting for reconnection (up to %.0fs)",
+                    self.name, self._RECONNECT_WAIT_SECONDS)
+        waited = 0.0
+        while waited < self._RECONNECT_WAIT_SECONDS:
+            await asyncio.sleep(self._RECONNECT_POLL_INTERVAL)
+            waited += self._RECONNECT_POLL_INTERVAL
+            if self.is_connected:
+                logger.info("[%s] Reconnected after %.1fs", self.name, waited)
+                return True
+        logger.warning("[%s] Still not connected after %.0fs", self.name, self._RECONNECT_WAIT_SECONDS)
+        return False
+
     async def send(
         self,
         chat_id: str,
@@ -1540,7 +1577,8 @@ class QQAdapter(BasePlatformAdapter):
         del metadata
 
         if not self.is_connected:
-            return SendResult(success=False, error="Not connected")
+            if not await self._wait_for_reconnection():
+                return SendResult(success=False, error="Not connected", retryable=True)
 
         if not content or not content.strip():
             return SendResult(success=True)
@@ -1741,7 +1779,8 @@ class QQAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Upload media and send as a native message."""
         if not self.is_connected:
-            return SendResult(success=False, error="Not connected")
+            if not await self._wait_for_reconnection():
+                return SendResult(success=False, error="Not connected", retryable=True)
 
         try:
             # Resolve media source

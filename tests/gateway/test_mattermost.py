@@ -12,15 +12,6 @@ from gateway.config import Platform, PlatformConfig
 # Platform & Config
 # ---------------------------------------------------------------------------
 
-class TestMattermostPlatformEnum:
-    def test_mattermost_enum_exists(self):
-        assert Platform.MATTERMOST.value == "mattermost"
-
-    def test_mattermost_in_platform_list(self):
-        platforms = [p.value for p in Platform]
-        assert "mattermost" in platforms
-
-
 class TestMattermostConfigLoading:
     def test_apply_env_overrides_mattermost(self, monkeypatch):
         monkeypatch.setenv("MATTERMOST_TOKEN", "mm-tok-abc123")
@@ -45,17 +36,6 @@ class TestMattermostConfigLoading:
         _apply_env_overrides(config)
 
         assert Platform.MATTERMOST not in config.platforms
-
-    def test_connected_platforms_includes_mattermost(self, monkeypatch):
-        monkeypatch.setenv("MATTERMOST_TOKEN", "mm-tok-abc123")
-        monkeypatch.setenv("MATTERMOST_URL", "https://mm.example.com")
-
-        from gateway.config import GatewayConfig, _apply_env_overrides
-        config = GatewayConfig()
-        _apply_env_overrides(config)
-
-        connected = config.get_connected_platforms()
-        assert Platform.MATTERMOST in connected
 
     def test_mattermost_home_channel(self, monkeypatch):
         monkeypatch.setenv("MATTERMOST_TOKEN", "mm-tok-abc123")

@@ -773,6 +773,28 @@ def is_source_suppressed(provider_id: str, source: str) -> bool:
         return False
 
 
+def unsuppress_credential_source(provider_id: str, source: str) -> bool:
+    """Clear a suppression marker so the source will be re-seeded on the next load.
+
+    Returns True if a marker was cleared, False if no marker existed.
+    """
+    with _auth_store_lock():
+        auth_store = _load_auth_store()
+        suppressed = auth_store.get("suppressed_sources")
+        if not isinstance(suppressed, dict):
+            return False
+        provider_list = suppressed.get(provider_id)
+        if not isinstance(provider_list, list) or source not in provider_list:
+            return False
+        provider_list.remove(source)
+        if not provider_list:
+            suppressed.pop(provider_id, None)
+        if not suppressed:
+            auth_store.pop("suppressed_sources", None)
+        _save_auth_store(auth_store)
+        return True
+
+
 def get_provider_auth_state(provider_id: str) -> Optional[Dict[str, Any]]:
     """Return persisted auth state for a provider, or None."""
     auth_store = _load_auth_store()
@@ -3297,6 +3319,14 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
 
         inference_base_url = auth_state["inference_base_url"]
 
+        # Snapshot the prior active_provider BEFORE _save_provider_state
+        # overwrites it to "nous".  If the user picks "Skip (keep current)"
+        # during model selection below, we restore this so the user's previous
+        # provider (e.g. openrouter) is preserved.
+        with _auth_store_lock():
+            _prior_store = _load_auth_store()
+            prior_active_provider = _prior_store.get("active_provider")
+
         with _auth_store_lock():
             auth_store = _load_auth_store()
             _save_provider_state(auth_store, "nous", auth_state)
@@ -3356,6 +3386,27 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
             print(f"Login succeeded, but could not fetch available models. Reason: {message}")
 
         # Write provider + model atomically so config is never mismatched.
+        # If no model was selected (user picked "Skip (keep current)",
+        # model list fetch failed, or no curated models were available),
+        # preserve the user's previous provider — don't silently switch
+        # them to Nous with a mismatched model.  The Nous OAuth tokens
+        # stay saved for future use.
+        if not selected_model:
+            # Restore the prior active_provider that _save_provider_state
+            # overwrote to "nous".  config.yaml model.provider is left
+            # untouched, so the user's previous provider is fully preserved.
+            with _auth_store_lock():
+                auth_store = _load_auth_store()
+                if prior_active_provider:
+                    auth_store["active_provider"] = prior_active_provider
+                else:
+                    auth_store.pop("active_provider", None)
+                _save_auth_store(auth_store)
+            print()
+            print("No provider change. Nous credentials saved for future use.")
+            print("  Run `hermes model` again to switch to Nous Portal.")
+            return
+
         config_path = _update_config_for_provider(
             "nous", inference_base_url, default_model=selected_model,
         )

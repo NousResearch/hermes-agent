@@ -299,3 +299,160 @@ def test_mint_retry_uses_latest_rotated_refresh_token(tmp_path, monkeypatch):
     assert creds["api_key"] == "agent-key"
     assert refresh_calls == ["refresh-old", "refresh-1"]
 
+
+# =============================================================================
+# _login_nous: "Skip (keep current)" must preserve prior provider + model
+# =============================================================================
+
+
+class TestLoginNousSkipKeepsCurrent:
+    """When a user runs `hermes model` → Nous Portal → Skip (keep current) after
+    a successful OAuth login, the prior provider and model MUST be preserved.
+
+    Regression: previously, _update_config_for_provider was called
+    unconditionally after login, which flipped model.provider to "nous" while
+    keeping the old model.default (e.g. anthropic/claude-opus-4.6 from
+    OpenRouter), leaving the user with a mismatched provider/model pair.
+    """
+
+    def _setup_home_with_openrouter(self, tmp_path, monkeypatch):
+        import yaml
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(yaml.safe_dump({
+            "model": {
+                "provider": "openrouter",
+                "default": "anthropic/claude-opus-4.6",
+            },
+        }, sort_keys=False))
+
+        auth_path = hermes_home / "auth.json"
+        auth_path.write_text(json.dumps({
+            "version": 1,
+            "active_provider": "openrouter",
+            "providers": {"openrouter": {"api_key": "sk-or-fake"}},
+        }))
+        return hermes_home, config_path, auth_path
+
+    def _patch_login_internals(self, monkeypatch, *, prompt_returns):
+        """Patch OAuth + model-list + prompt so _login_nous doesn't hit network."""
+        import hermes_cli.auth as auth_mod
+        import hermes_cli.models as models_mod
+        import hermes_cli.nous_subscription as ns
+
+        fake_auth_state = {
+            "access_token": "fake-nous-token",
+            "agent_key": "fake-agent-key",
+            "inference_base_url": "https://inference-api.nousresearch.com",
+            "portal_base_url": "https://portal.nousresearch.com",
+            "refresh_token": "fake-refresh",
+            "token_expires_at": 9999999999,
+        }
+        monkeypatch.setattr(
+            auth_mod, "_nous_device_code_login",
+            lambda **kwargs: dict(fake_auth_state),
+        )
+        monkeypatch.setattr(
+            auth_mod, "_prompt_model_selection",
+            lambda *a, **kw: prompt_returns,
+        )
+        monkeypatch.setattr(models_mod, "get_pricing_for_provider", lambda p: {})
+        monkeypatch.setattr(models_mod, "filter_nous_free_models", lambda ids, p: ids)
+        monkeypatch.setattr(models_mod, "check_nous_free_tier", lambda: None)
+        monkeypatch.setattr(
+            models_mod, "partition_nous_models_by_tier",
+            lambda ids, p, free_tier=False: (ids, []),
+        )
+        monkeypatch.setattr(ns, "prompt_enable_tool_gateway", lambda cfg: None)
+
+    def test_skip_keep_current_preserves_provider_and_model(self, tmp_path, monkeypatch):
+        """User picks Skip → config.yaml untouched, Nous creds still saved."""
+        import argparse
+        import yaml
+        from hermes_cli.auth import PROVIDER_REGISTRY, _login_nous
+
+        hermes_home, config_path, auth_path = self._setup_home_with_openrouter(
+            tmp_path, monkeypatch,
+        )
+        self._patch_login_internals(monkeypatch, prompt_returns=None)
+
+        args = argparse.Namespace(
+            portal_url=None, inference_url=None, client_id=None, scope=None,
+            no_browser=True, timeout=15.0, ca_bundle=None, insecure=False,
+        )
+        _login_nous(args, PROVIDER_REGISTRY["nous"])
+
+        # config.yaml model section must be unchanged
+        cfg_after = yaml.safe_load(config_path.read_text())
+        assert cfg_after["model"]["provider"] == "openrouter"
+        assert cfg_after["model"]["default"] == "anthropic/claude-opus-4.6"
+        assert "base_url" not in cfg_after["model"]
+
+        # auth.json: active_provider restored to openrouter, but Nous creds saved
+        auth_after = json.loads(auth_path.read_text())
+        assert auth_after["active_provider"] == "openrouter"
+        assert "nous" in auth_after["providers"]
+        assert auth_after["providers"]["nous"]["access_token"] == "fake-nous-token"
+        # Existing openrouter creds still intact
+        assert auth_after["providers"]["openrouter"]["api_key"] == "sk-or-fake"
+
+    def test_picking_model_switches_to_nous(self, tmp_path, monkeypatch):
+        """User picks a Nous model → provider flips to nous with that model."""
+        import argparse
+        import yaml
+        from hermes_cli.auth import PROVIDER_REGISTRY, _login_nous
+
+        hermes_home, config_path, auth_path = self._setup_home_with_openrouter(
+            tmp_path, monkeypatch,
+        )
+        self._patch_login_internals(
+            monkeypatch, prompt_returns="xiaomi/mimo-v2-pro",
+        )
+
+        args = argparse.Namespace(
+            portal_url=None, inference_url=None, client_id=None, scope=None,
+            no_browser=True, timeout=15.0, ca_bundle=None, insecure=False,
+        )
+        _login_nous(args, PROVIDER_REGISTRY["nous"])
+
+        cfg_after = yaml.safe_load(config_path.read_text())
+        assert cfg_after["model"]["provider"] == "nous"
+        assert cfg_after["model"]["default"] == "xiaomi/mimo-v2-pro"
+
+        auth_after = json.loads(auth_path.read_text())
+        assert auth_after["active_provider"] == "nous"
+
+    def test_skip_with_no_prior_active_provider_clears_it(self, tmp_path, monkeypatch):
+        """Fresh install (no prior active_provider) → Skip clears active_provider
+        instead of leaving it as nous."""
+        import argparse
+        import yaml
+        from hermes_cli.auth import PROVIDER_REGISTRY, _login_nous
+
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(yaml.safe_dump({"model": {}}, sort_keys=False))
+
+        # No auth.json yet — simulates first-run before any OAuth
+        self._patch_login_internals(monkeypatch, prompt_returns=None)
+
+        args = argparse.Namespace(
+            portal_url=None, inference_url=None, client_id=None, scope=None,
+            no_browser=True, timeout=15.0, ca_bundle=None, insecure=False,
+        )
+        _login_nous(args, PROVIDER_REGISTRY["nous"])
+
+        auth_path = hermes_home / "auth.json"
+        auth_after = json.loads(auth_path.read_text())
+        # active_provider should NOT be set to "nous" after Skip
+        assert auth_after.get("active_provider") in (None, "")
+        # But Nous creds are still saved
+        assert "nous" in auth_after.get("providers", {})
+
+

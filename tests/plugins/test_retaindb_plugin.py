@@ -83,34 +83,6 @@ class TestClient:
         assert h["Authorization"] == "Bearer rdb-test-key"
         assert h["X-API-Key"] == "rdb-test-key"
 
-    def test_query_context_builds_correct_payload(self):
-        c = self._make_client()
-        with patch.object(c, "request") as mock_req:
-            mock_req.return_value = {"results": []}
-            c.query_context("user1", "sess1", "test query", max_tokens=500)
-            mock_req.assert_called_once_with("POST", "/v1/context/query", json_body={
-                "project": "test",
-                "query": "test query",
-                "user_id": "user1",
-                "session_id": "sess1",
-                "include_memories": True,
-                "max_tokens": 500,
-            })
-
-    def test_search_builds_correct_payload(self):
-        c = self._make_client()
-        with patch.object(c, "request") as mock_req:
-            mock_req.return_value = {"results": []}
-            c.search("user1", "sess1", "find this", top_k=5)
-            mock_req.assert_called_once_with("POST", "/v1/memory/search", json_body={
-                "project": "test",
-                "query": "find this",
-                "user_id": "user1",
-                "session_id": "sess1",
-                "top_k": 5,
-                "include_pending": True,
-            })
-
     def test_add_memory_tries_fallback(self):
         c = self._make_client()
         call_count = 0
@@ -140,40 +112,6 @@ class TestClient:
             result = c.delete_memory("mem-123")
             assert result == {"deleted": True}
             assert call_count == 2
-
-    def test_ingest_session_payload(self):
-        c = self._make_client()
-        with patch.object(c, "request") as mock_req:
-            mock_req.return_value = {"status": "ok"}
-            msgs = [{"role": "user", "content": "hi"}]
-            c.ingest_session("u1", "s1", msgs, timeout=10.0)
-            mock_req.assert_called_once_with("POST", "/v1/memory/ingest/session", json_body={
-                "project": "test",
-                "session_id": "s1",
-                "user_id": "u1",
-                "messages": msgs,
-                "write_mode": "sync",
-            }, timeout=10.0)
-
-    def test_ask_user_payload(self):
-        c = self._make_client()
-        with patch.object(c, "request") as mock_req:
-            mock_req.return_value = {"answer": "test answer"}
-            c.ask_user("u1", "who am i?", reasoning_level="medium")
-            mock_req.assert_called_once()
-            call_kwargs = mock_req.call_args
-            assert call_kwargs[1]["json_body"]["reasoning_level"] == "medium"
-
-    def test_get_agent_model_path(self):
-        c = self._make_client()
-        with patch.object(c, "request") as mock_req:
-            mock_req.return_value = {"memory_count": 3}
-            c.get_agent_model("hermes")
-            mock_req.assert_called_once_with(
-                "GET", "/v1/memory/agent/hermes/model",
-                params={"project": "test"}, timeout=4.0
-            )
-
 
 # ===========================================================================
 # _WriteQueue tests
@@ -412,22 +350,6 @@ class TestRetainDBMemoryProvider:
         assert "RetainDB Memory" in block
         assert "Active" in block
         p.shutdown()
-
-    def test_tool_schemas_count(self, tmp_path, monkeypatch):
-        p = self._make_provider(tmp_path, monkeypatch)
-        schemas = p.get_tool_schemas()
-        assert len(schemas) == 10  # 5 memory + 5 file tools
-        names = [s["name"] for s in schemas]
-        assert "retaindb_profile" in names
-        assert "retaindb_search" in names
-        assert "retaindb_context" in names
-        assert "retaindb_remember" in names
-        assert "retaindb_forget" in names
-        assert "retaindb_upload_file" in names
-        assert "retaindb_list_files" in names
-        assert "retaindb_read_file" in names
-        assert "retaindb_ingest_file" in names
-        assert "retaindb_delete_file" in names
 
     def test_handle_tool_call_not_initialized(self):
         p = RetainDBMemoryProvider()

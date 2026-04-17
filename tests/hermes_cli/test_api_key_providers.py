@@ -1,16 +1,8 @@
 """Tests for API-key provider support (z.ai/GLM, Kimi, MiniMax, AI Gateway)."""
 
 import os
-import sys
-import types
 
 import pytest
-
-# Ensure dotenv doesn't interfere
-if "dotenv" not in sys.modules:
-    fake_dotenv = types.ModuleType("dotenv")
-    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
-    sys.modules["dotenv"] = fake_dotenv
 
 from hermes_cli.auth import (
     PROVIDER_REGISTRY,

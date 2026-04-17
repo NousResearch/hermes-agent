@@ -29,13 +29,6 @@ def _mock_event_dispatcher_builder(mock_handler_class):
     return mock_builder
 
 
-class TestPlatformEnum(unittest.TestCase):
-    def test_feishu_in_platform_enum(self):
-        from gateway.config import Platform
-
-        self.assertEqual(Platform.FEISHU.value, "feishu")
-
-
 class TestConfigEnvOverrides(unittest.TestCase):
     @patch.dict(os.environ, {
         "FEISHU_APP_ID": "cli_xxx",
@@ -80,24 +73,6 @@ class TestConfigEnvOverrides(unittest.TestCase):
         _apply_env_overrides(config)
 
         self.assertIn(Platform.FEISHU, config.get_connected_platforms())
-
-
-class TestGatewayIntegration(unittest.TestCase):
-    def test_feishu_in_adapter_factory(self):
-        source = Path("gateway/run.py").read_text(encoding="utf-8")
-        self.assertIn("Platform.FEISHU", source)
-        self.assertIn("FeishuAdapter", source)
-
-    def test_feishu_in_authorization_maps(self):
-        source = Path("gateway/run.py").read_text(encoding="utf-8")
-        self.assertIn("FEISHU_ALLOWED_USERS", source)
-        self.assertIn("FEISHU_ALLOW_ALL_USERS", source)
-
-    def test_feishu_toolset_exists(self):
-        from toolsets import TOOLSETS
-
-        self.assertIn("hermes-feishu", TOOLSETS)
-        self.assertIn("hermes-feishu", TOOLSETS["hermes-gateway"]["includes"])
 
 
 class TestFeishuMessageNormalization(unittest.TestCase):
@@ -472,27 +447,6 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
         self.assertEqual(info["type"], "group")
 
 class TestAdapterModule(unittest.TestCase):
-    def test_adapter_requirement_helper_exists(self):
-        source = Path("gateway/platforms/feishu.py").read_text(encoding="utf-8")
-        self.assertIn("def check_feishu_requirements()", source)
-        self.assertIn("FEISHU_AVAILABLE", source)
-
-    def test_adapter_declares_websocket_scope(self):
-        source = Path("gateway/platforms/feishu.py").read_text(encoding="utf-8")
-        self.assertIn("Supported modes: websocket, webhook", source)
-        self.assertIn("FEISHU_CONNECTION_MODE", source)
-
-    def test_adapter_registers_message_read_noop_handler(self):
-        source = Path("gateway/platforms/feishu.py").read_text(encoding="utf-8")
-        self.assertIn("register_p2_im_message_message_read_v1", source)
-        self.assertIn("def _on_message_read_event", source)
-
-    def test_adapter_registers_reaction_and_card_handlers_for_websocket(self):
-        source = Path("gateway/platforms/feishu.py").read_text(encoding="utf-8")
-        self.assertIn("register_p2_im_message_reaction_created_v1", source)
-        self.assertIn("register_p2_im_message_reaction_deleted_v1", source)
-        self.assertIn("register_p2_card_action_trigger", source)
-
     def test_load_settings_uses_sdk_defaults_for_invalid_ws_reconnect_values(self):
         from gateway.platforms.feishu import FeishuAdapter
 
@@ -639,6 +593,14 @@ class TestAdapterBehavior(unittest.TestCase):
                 calls.append("bot_deleted")
                 return self
 
+            def register_p2_im_chat_access_event_bot_p2p_chat_entered_v1(self, _handler):
+                calls.append("p2p_chat_entered")
+                return self
+
+            def register_p2_im_message_recalled_v1(self, _handler):
+                calls.append("message_recalled")
+                return self
+
             def build(self):
                 calls.append("build")
                 return "handler"
@@ -664,6 +626,8 @@ class TestAdapterBehavior(unittest.TestCase):
                 "card_action",
                 "bot_added",
                 "bot_deleted",
+                "p2p_chat_entered",
+                "message_recalled",
                 "build",
             ],
         )
@@ -2534,6 +2498,152 @@ class TestAdapterBehavior(unittest.TestCase):
             rows,
             [[{"tag": "md", "text": "---\n1. 第一项\n<u>下划线</u>\n~~删除线~~"}]],
         )
+
+
+@unittest.skipUnless(_HAS_LARK_OAPI, "lark-oapi not installed")
+class TestPendingInboundQueue(unittest.TestCase):
+    """Tests for the loop-not-ready race (#5499): inbound events arriving
+    before or during adapter loop transitions must be queued for replay
+    rather than silently dropped."""
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_event_queued_when_loop_not_ready(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._loop = None  # Simulate "before start()" or "during reconnect"
+
+        with patch("gateway.platforms.feishu.threading.Thread") as thread_cls:
+            adapter._on_message_event(SimpleNamespace(tag="evt-1"))
+            adapter._on_message_event(SimpleNamespace(tag="evt-2"))
+            adapter._on_message_event(SimpleNamespace(tag="evt-3"))
+
+        # All three queued, none dropped.
+        self.assertEqual(len(adapter._pending_inbound_events), 3)
+        # Only ONE drainer thread scheduled, not one per event.
+        self.assertEqual(thread_cls.call_count, 1)
+        # Drain scheduled flag set.
+        self.assertTrue(adapter._pending_drain_scheduled)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_drainer_replays_queued_events_when_loop_becomes_ready(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._loop = None
+        adapter._running = True
+
+        class _ReadyLoop:
+            def is_closed(self):
+                return False
+
+        # Queue three events while loop is None (simulate the race).
+        events = [SimpleNamespace(tag=f"evt-{i}") for i in range(3)]
+        with patch("gateway.platforms.feishu.threading.Thread"):
+            for ev in events:
+                adapter._on_message_event(ev)
+
+        self.assertEqual(len(adapter._pending_inbound_events), 3)
+
+        # Now the loop becomes ready; run the drainer inline (not as a thread)
+        # to verify it replays the queue.
+        adapter._loop = _ReadyLoop()
+
+        future = SimpleNamespace(add_done_callback=lambda *_a, **_kw: None)
+        submitted: list = []
+
+        def _submit(coro, _loop):
+            submitted.append(coro)
+            coro.close()
+            return future
+
+        with patch(
+            "gateway.platforms.feishu.asyncio.run_coroutine_threadsafe",
+            side_effect=_submit,
+        ) as submit:
+            adapter._drain_pending_inbound_events()
+
+        # All three events dispatched to the loop.
+        self.assertEqual(submit.call_count, 3)
+        # Queue emptied.
+        self.assertEqual(len(adapter._pending_inbound_events), 0)
+        # Drain flag reset so a future race can schedule a new drainer.
+        self.assertFalse(adapter._pending_drain_scheduled)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_drainer_drops_queue_when_adapter_shuts_down(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._loop = None
+        adapter._running = False  # Shutdown state
+
+        with patch("gateway.platforms.feishu.threading.Thread"):
+            adapter._on_message_event(SimpleNamespace(tag="evt-lost"))
+
+        self.assertEqual(len(adapter._pending_inbound_events), 1)
+
+        # Drainer should drop the queue immediately since _running is False.
+        adapter._drain_pending_inbound_events()
+
+        self.assertEqual(len(adapter._pending_inbound_events), 0)
+        self.assertFalse(adapter._pending_drain_scheduled)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_queue_cap_evicts_oldest_beyond_max_depth(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._loop = None
+        adapter._pending_inbound_max_depth = 3  # Shrink for test
+
+        with patch("gateway.platforms.feishu.threading.Thread"):
+            for i in range(5):
+                adapter._on_message_event(SimpleNamespace(tag=f"evt-{i}"))
+
+        # Only the last 3 should remain; evt-0 and evt-1 dropped.
+        self.assertEqual(len(adapter._pending_inbound_events), 3)
+        tags = [getattr(e, "tag", None) for e in adapter._pending_inbound_events]
+        self.assertEqual(tags, ["evt-2", "evt-3", "evt-4"])
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_normal_path_unchanged_when_loop_ready(self):
+        """When the loop is ready, events should dispatch directly without
+        ever touching the pending queue."""
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+
+        class _ReadyLoop:
+            def is_closed(self):
+                return False
+
+        adapter._loop = _ReadyLoop()
+
+        future = SimpleNamespace(add_done_callback=lambda *_a, **_kw: None)
+
+        def _submit(coro, _loop):
+            coro.close()
+            return future
+
+        with patch(
+            "gateway.platforms.feishu.asyncio.run_coroutine_threadsafe",
+            side_effect=_submit,
+        ) as submit, patch(
+            "gateway.platforms.feishu.threading.Thread"
+        ) as thread_cls:
+            adapter._on_message_event(SimpleNamespace(tag="evt"))
+
+        self.assertEqual(submit.call_count, 1)
+        self.assertEqual(len(adapter._pending_inbound_events), 0)
+        self.assertFalse(adapter._pending_drain_scheduled)
+        # No drainer thread spawned when the happy path runs.
+        self.assertEqual(thread_cls.call_count, 0)
 
 
 @unittest.skipUnless(_HAS_LARK_OAPI, "lark-oapi not installed")

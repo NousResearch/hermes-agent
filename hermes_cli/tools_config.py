@@ -512,7 +512,7 @@ def _get_platform_tools(
     """Resolve which individual toolset names are enabled for a platform."""
     from toolsets import resolve_toolset
 
-    platform_toolsets = config.get("platform_toolsets", {})
+    platform_toolsets = config.get("platform_toolsets") or {}
     toolset_names = platform_toolsets.get(platform)
 
     if toolset_names is None or not isinstance(toolset_names, list):

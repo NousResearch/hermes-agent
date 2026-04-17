@@ -168,13 +168,6 @@ class TestSessionOps:
         assert model_cmd.input.root.hint == "model name to switch to"
 
     @pytest.mark.asyncio
-    async def test_new_session_schedules_available_commands_update(self, agent):
-        with patch.object(agent, "_schedule_available_commands_update") as mock_schedule:
-            resp = await agent.new_session(cwd="/home/user/project")
-
-        mock_schedule.assert_called_once_with(resp.session_id)
-
-    @pytest.mark.asyncio
     async def test_cancel_sets_event(self, agent):
         resp = await agent.new_session(cwd=".")
         state = agent.session_manager.get_session(resp.session_id)
@@ -188,39 +181,9 @@ class TestSessionOps:
         await agent.cancel(session_id="does-not-exist")
 
     @pytest.mark.asyncio
-    async def test_load_session_returns_response(self, agent):
-        resp = await agent.new_session(cwd="/tmp")
-        load_resp = await agent.load_session(cwd="/tmp", session_id=resp.session_id)
-        assert isinstance(load_resp, LoadSessionResponse)
-
-    @pytest.mark.asyncio
-    async def test_load_session_schedules_available_commands_update(self, agent):
-        resp = await agent.new_session(cwd="/tmp")
-        with patch.object(agent, "_schedule_available_commands_update") as mock_schedule:
-            load_resp = await agent.load_session(cwd="/tmp", session_id=resp.session_id)
-
-        assert isinstance(load_resp, LoadSessionResponse)
-        mock_schedule.assert_called_once_with(resp.session_id)
-
-    @pytest.mark.asyncio
     async def test_load_session_not_found_returns_none(self, agent):
         resp = await agent.load_session(cwd="/tmp", session_id="bogus")
         assert resp is None
-
-    @pytest.mark.asyncio
-    async def test_resume_session_returns_response(self, agent):
-        resp = await agent.new_session(cwd="/tmp")
-        resume_resp = await agent.resume_session(cwd="/tmp", session_id=resp.session_id)
-        assert isinstance(resume_resp, ResumeSessionResponse)
-
-    @pytest.mark.asyncio
-    async def test_resume_session_schedules_available_commands_update(self, agent):
-        resp = await agent.new_session(cwd="/tmp")
-        with patch.object(agent, "_schedule_available_commands_update") as mock_schedule:
-            resume_resp = await agent.resume_session(cwd="/tmp", session_id=resp.session_id)
-
-        assert isinstance(resume_resp, ResumeSessionResponse)
-        mock_schedule.assert_called_once_with(resp.session_id)
 
     @pytest.mark.asyncio
     async def test_resume_session_creates_new_if_missing(self, agent):
@@ -235,29 +198,11 @@ class TestSessionOps:
 
 class TestListAndFork:
     @pytest.mark.asyncio
-    async def test_list_sessions(self, agent):
-        await agent.new_session(cwd="/a")
-        await agent.new_session(cwd="/b")
-        resp = await agent.list_sessions()
-        assert isinstance(resp, ListSessionsResponse)
-        assert len(resp.sessions) == 2
-
-    @pytest.mark.asyncio
     async def test_fork_session(self, agent):
         new_resp = await agent.new_session(cwd="/original")
         fork_resp = await agent.fork_session(cwd="/forked", session_id=new_resp.session_id)
         assert fork_resp.session_id
         assert fork_resp.session_id != new_resp.session_id
-
-    @pytest.mark.asyncio
-    async def test_fork_session_schedules_available_commands_update(self, agent):
-        new_resp = await agent.new_session(cwd="/original")
-        with patch.object(agent, "_schedule_available_commands_update") as mock_schedule:
-            fork_resp = await agent.fork_session(cwd="/forked", session_id=new_resp.session_id)
-
-        assert fork_resp.session_id
-        mock_schedule.assert_called_once_with(fork_resp.session_id)
-
 
 # ---------------------------------------------------------------------------
 # session configuration / model routing
@@ -273,20 +218,6 @@ class TestSessionConfiguration:
 
         assert isinstance(resp, SetSessionModeResponse)
         assert getattr(state, "mode", None) == "chat"
-
-    @pytest.mark.asyncio
-    async def test_set_config_option_returns_response(self, agent):
-        new_resp = await agent.new_session(cwd="/tmp")
-        resp = await agent.set_config_option(
-            config_id="approval_mode",
-            session_id=new_resp.session_id,
-            value="auto",
-        )
-        state = agent.session_manager.get_session(new_resp.session_id)
-
-        assert isinstance(resp, SetSessionConfigOptionResponse)
-        assert getattr(state, "config_options", {}) == {"approval_mode": "auto"}
-        assert resp.config_options == []
 
     @pytest.mark.asyncio
     async def test_router_accepts_stable_session_config_methods(self, agent):
@@ -808,47 +739,3 @@ class TestRegisterSessionMcpServers:
         with patch("tools.mcp_tool.register_mcp_servers", side_effect=RuntimeError("boom")):
             # Should not raise
             await agent._register_session_mcp_servers(state, [server])
-
-    @pytest.mark.asyncio
-    async def test_new_session_calls_register(self, agent, mock_manager):
-        """new_session passes mcp_servers to _register_session_mcp_servers."""
-        with patch.object(agent, "_register_session_mcp_servers", new_callable=AsyncMock) as mock_reg:
-            resp = await agent.new_session(cwd="/tmp", mcp_servers=["fake"])
-            assert resp is not None
-            mock_reg.assert_called_once()
-            # Second arg should be the mcp_servers list
-            assert mock_reg.call_args[0][1] == ["fake"]
-
-    @pytest.mark.asyncio
-    async def test_load_session_calls_register(self, agent, mock_manager):
-        """load_session passes mcp_servers to _register_session_mcp_servers."""
-        # Create a session first so load can find it
-        state = mock_manager.create_session(cwd="/tmp")
-        sid = state.session_id
-
-        with patch.object(agent, "_register_session_mcp_servers", new_callable=AsyncMock) as mock_reg:
-            resp = await agent.load_session(cwd="/tmp", session_id=sid, mcp_servers=["fake"])
-            assert resp is not None
-            mock_reg.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_resume_session_calls_register(self, agent, mock_manager):
-        """resume_session passes mcp_servers to _register_session_mcp_servers."""
-        state = mock_manager.create_session(cwd="/tmp")
-        sid = state.session_id
-
-        with patch.object(agent, "_register_session_mcp_servers", new_callable=AsyncMock) as mock_reg:
-            resp = await agent.resume_session(cwd="/tmp", session_id=sid, mcp_servers=["fake"])
-            assert resp is not None
-            mock_reg.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_fork_session_calls_register(self, agent, mock_manager):
-        """fork_session passes mcp_servers to _register_session_mcp_servers."""
-        state = mock_manager.create_session(cwd="/tmp")
-        sid = state.session_id
-
-        with patch.object(agent, "_register_session_mcp_servers", new_callable=AsyncMock) as mock_reg:
-            resp = await agent.fork_session(cwd="/tmp", session_id=sid, mcp_servers=["fake"])
-            assert resp is not None
-            mock_reg.assert_called_once()

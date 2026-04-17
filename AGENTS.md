@@ -20,6 +20,24 @@ source venv/bin/activate  # ALWAYS activate before running Python
   - a local commit on `henry/patches`, or
   - an upstream PR so it stops being a local customization.
 
+## Hermes-Native Coding Policy
+
+Use this as the default operating policy for coding and code-review tasks in this repo.
+
+- Ask only when ambiguity materially changes architecture, data model, user-visible behavior, security/privacy posture, destructive actions, or external side effects. Otherwise state the assumption briefly and proceed.
+- Prefer the smallest correct change. No speculative features, no single-use abstractions, no new config knobs, no architecture expansion unless requested.
+- Keep changes surgical. Do not refactor adjacent code, rename for taste, reformat unrelated areas, or remove unrelated dead code.
+- Every changed line should trace to one of: requested behavior, required integration, verification, or cleanup caused by your change.
+- Validate at trust boundaries. Input validation, auth checks, secrets handling, migrations, and external side effects are not “impossible scenarios.”
+- Verify before claiming success. Use the strongest affordable check available: reproducing test > relevant existing tests > typecheck/lint/build > runtime/endpoint check > browser/UI check > reasoned diff inspection.
+- Scale rigor to task size. Do not over-ceremonialize trivial fixes, but do not skip verification for non-trivial work.
+- Do not touch git history, force-push, secrets, migrations, production state, or destructive operations without explicit confirmation.
+- On failure: say what failed, show evidence, narrow the fault domain, try the next reasonable check, then stop and report if still blocked. Do not pivot into unrelated rewrites.
+- Read files before editing them. Inspect diffs before summarizing them. Run checks before declaring completion.
+- If a larger or cleaner fix exists, mention it briefly after solving the requested problem. Do not silently substitute it.
+- Report compactly: what changed, how it was verified, assumptions made, and what remains unverified or risky.
+- No fake completion, no drive-by cleanup, no high-volume low-signal output.
+
 ## Project Structure
 
 ```
@@ -438,6 +456,26 @@ in config.yaml (or `HERMES_BACKGROUND_NOTIFICATIONS` env var):
 - `result` — only the final completion message
 - `error` — only the final message when exit code != 0
 - `off` — no watcher messages at all
+
+### Memory / Knowledge Placement Policy
+
+When deciding where knowledge should live in Hermes Mesh, use this default split:
+
+- **Built-in memory (`MEMORY.md` / `USER.md`)** — small, curated facts Hermes should know every session
+- **External memory providers (for example Hindsight)** — durable cross-session recall for facts that should be rememberable but not always loaded
+- **Session history / session search** — exact narrative recall for what happened, when, and why
+- **Docs / skills** — authoritative architecture, policy, procedures, and reusable playbooks
+
+Operational rules:
+- If Hermes should know it by default every session, put it in built-in memory.
+- If Hermes should remember it across sessions, prefer external memory.
+- If the exact chronology or discussion matters, rely on session history.
+- If humans or operators need an authoritative reference, write docs or a skill instead of trusting memory alone.
+- Docs/inventory/policy beat memory when they conflict.
+- Built-in memory must stay compact; do not let it turn into a second documentation system.
+- Default Hermes Mesh v1 posture: one external memory provider per instance, built-in memory enabled, separate banks per machine/role by default, shared writable external memory only by explicit decision.
+
+See `website/docs/guides/hermes-mesh-memory-policy.md` for the operator-facing version.
 
 ---
 

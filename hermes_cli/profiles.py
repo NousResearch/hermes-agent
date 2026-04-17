@@ -433,8 +433,12 @@ def create_profile(
             )
 
     if clone_all and source_dir:
-        # Full copy of source profile
-        shutil.copytree(source_dir, profile_dir)
+        # Full copy of source profile.  symlinks=True prevents RecursionError
+        # when the source tree contains recursive or self-referential symlinks
+        # (e.g. a skills directory that links back to its parent).  With the
+        # default symlinks=False, copytree follows every symlink and can enter
+        # an infinite loop on circular ones (issue #11560).
+        shutil.copytree(source_dir, profile_dir, symlinks=True)
         # Strip runtime files
         for stale in _CLONE_ALL_STRIP:
             (profile_dir / stale).unlink(missing_ok=True)

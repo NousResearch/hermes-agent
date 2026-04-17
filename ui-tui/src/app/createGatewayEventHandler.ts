@@ -1,7 +1,7 @@
 import { STREAM_BATCH_MS } from '../config/timing.js'
-import { introMsg, toTranscriptMessages } from '../domain/messages.js'
-import type { CommandsCatalogResponse, GatewayEvent, GatewaySkin, SessionResumeResponse } from '../gatewayTypes.js'
-import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
+import { buildSetupRequiredSections, SETUP_REQUIRED_TITLE } from '../content/setup.js'
+import type { CommandsCatalogResponse, GatewayEvent, GatewaySkin } from '../gatewayTypes.js'
+import { rpcErrorMessage } from '../lib/rpc.js'
 import { formatToolCall } from '../lib/text.js'
 import { fromSkin } from '../theme.js'
 import type { SubagentProgress } from '../types.js'
@@ -12,6 +12,7 @@ import { turnController } from './turnController.js'
 import { getUiState, patchUiState } from './uiStore.js'
 
 const ERRLIKE_RE = /\b(error|traceback|exception|failed|spawn)\b/i
+const NO_PROVIDER_RE = /\bNo (?:LLM|inference) provider configured\b/i
 
 const statusFromBusy = () => (getUiState().busy ? 'running…' : 'ready')
 
@@ -46,10 +47,10 @@ const pushTool = pushUnique(8)
 
 export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev: GatewayEvent) => void {
   const { dequeue, queueEditRef, sendQueued } = ctx.composer
-  const { gw, rpc } = ctx.gateway
-  const { STARTUP_RESUME_ID, colsRef, newSession, resetSession, setCatalog } = ctx.session
+  const { rpc } = ctx.gateway
+  const { STARTUP_RESUME_ID, newSession, resumeById, setCatalog } = ctx.session
   const { bellOnComplete, stdout, sys } = ctx.system
-  const { appendMessage, setHistoryItems } = ctx.transcript
+  const { appendMessage, panel, setHistoryItems } = ctx.transcript
 
   let pendingThinkingStatus = ''
   let thinkingStatusTimer: null | ReturnType<typeof setTimeout> = null
@@ -121,30 +122,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
     }
 
     patchUiState({ status: 'resuming…' })
-    gw.request<SessionResumeResponse>('session.resume', { cols: colsRef.current, session_id: STARTUP_RESUME_ID })
-      .then(raw => {
-        const r = asRpcResult<SessionResumeResponse>(raw)
-
-        if (!r) {
-          throw new Error('invalid response: session.resume')
-        }
-
-        resetSession()
-        patchUiState({
-          info: r.info ?? null,
-          sid: r.session_id,
-          status: 'ready',
-          usage: r.info?.usage ?? getUiState().usage
-        })
-        setHistoryItems(
-          r.info ? [introMsg(r.info), ...toTranscriptMessages(r.messages)] : toTranscriptMessages(r.messages)
-        )
-      })
-      .catch((e: unknown) => {
-        sys(`resume failed: ${rpcErrorMessage(e)}`)
-        patchUiState({ status: 'forging session…' })
-        newSession('started a new session')
-      })
+    resumeById(STARTUP_RESUME_ID)
   }
 
   return (ev: GatewayEvent) => {
@@ -438,9 +416,22 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
       case 'error':
         turnController.recordError()
-        turnController.pushActivity(String(ev.payload?.message || 'unknown error'), 'error')
-        sys(`error: ${ev.payload?.message}`)
-        setStatus('ready')
+
+        {
+          const message = String(ev.payload?.message || 'unknown error')
+
+          turnController.pushActivity(message, 'error')
+
+          if (NO_PROVIDER_RE.test(message)) {
+            panel(SETUP_REQUIRED_TITLE, buildSetupRequiredSections())
+            setStatus('setup required')
+
+            return
+          }
+
+          sys(`error: ${message}`)
+          setStatus('ready')
+        }
     }
   }
 }

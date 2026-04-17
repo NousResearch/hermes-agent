@@ -80,6 +80,10 @@ export interface ConfigSetResponse {
   warning?: string
 }
 
+export interface SetupStatusResponse {
+  provider_configured?: boolean
+}
+
 // ── Session lifecycle ────────────────────────────────────────────────
 
 export interface SessionCreateResponse {

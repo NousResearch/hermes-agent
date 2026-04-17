@@ -197,6 +197,7 @@ export interface GatewayEventHandlerContext {
     colsRef: MutableRefObject<number>
     newSession: (msg?: string) => void
     resetSession: () => void
+    resumeById: (id: string) => void
     setCatalog: StateSetter<null | SlashCatalog>
   }
   system: {
@@ -206,6 +207,7 @@ export interface GatewayEventHandlerContext {
   }
   transcript: {
     appendMessage: (msg: Msg) => void
+    panel: (title: string, sections: PanelSection[]) => void
     setHistoryItems: StateSetter<Msg[]>
   }
 }

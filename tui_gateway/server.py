@@ -1878,6 +1878,15 @@ def _(rid, params: dict) -> dict:
     return _err(rid, 4002, f"unknown config key: {key}")
 
 
+@method("setup.status")
+def _(rid, params: dict) -> dict:
+    try:
+        from hermes_cli.main import _has_any_provider_configured
+        return _ok(rid, {"provider_configured": bool(_has_any_provider_configured())})
+    except Exception as e:
+        return _err(rid, 5016, str(e))
+
+
 # ── Methods: tools & system ──────────────────────────────────────────
 
 @method("process.stop")

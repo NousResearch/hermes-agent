@@ -1,4 +1,4 @@
-import { type ScrollBoxHandle, useApp, useHasSelection, useSelection, useStdout } from '@hermes/ink'
+import { useApp, useHasSelection, useSelection, useStdout, type ScrollBoxHandle } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
@@ -270,6 +270,7 @@ export function useMainApp(gw: GatewayClient) {
     colsRef,
     composerActions,
     gw,
+    panel,
     rpc,
     setHistoryItems,
     setLastUserMsg,
@@ -413,10 +414,11 @@ export function useMainApp(gw: GatewayClient) {
           colsRef,
           newSession: session.newSession,
           resetSession: session.resetSession,
+          resumeById: session.resumeById,
           setCatalog
         },
         system: { bellOnComplete, stdout, sys },
-        transcript: { appendMessage, setHistoryItems }
+        transcript: { appendMessage, panel, setHistoryItems }
       }),
     [
       appendMessage,

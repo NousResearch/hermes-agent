@@ -10,57 +10,49 @@ const OPTS = ['once', 'session', 'always', 'deny'] as const
 const LABELS = { always: 'Always allow', deny: 'Deny', once: 'Allow once', session: 'Allow this session' } as const
 
 export function ApprovalPrompt({ onChoice, req, t }: ApprovalPromptProps) {
-  const [sel, setSel] = useState(3)
+  const [sel, setSel] = useState(0)
 
   useInput((ch, key) => {
     if (key.upArrow && sel > 0) {
       setSel(s => s - 1)
     }
 
-    if (key.downArrow && sel < 3) {
+    if (key.downArrow && sel < OPTS.length - 1) {
       setSel(s => s + 1)
+    }
+
+    const n = parseInt(ch, 10)
+
+    if (n >= 1 && n <= OPTS.length) {
+      onChoice(OPTS[n - 1]!)
+
+      return
     }
 
     if (key.return) {
       onChoice(OPTS[sel]!)
     }
-
-    if (ch === 'o') {
-      onChoice('once')
-    }
-
-    if (ch === 's') {
-      onChoice('session')
-    }
-
-    if (ch === 'a') {
-      onChoice('always')
-    }
-
-    if (ch === 'd' || key.escape) {
-      onChoice('deny')
-    }
   })
 
   return (
-    <Box flexDirection="column">
+    <Box borderColor={t.color.warn} borderStyle="double" flexDirection="column" paddingX={1}>
       <Text bold color={t.color.warn}>
-        ! DANGEROUS COMMAND: {req.description}
+        ⚠ approval required · {req.description}
       </Text>
 
-      <Text color={t.color.dim}> {req.command}</Text>
+      <Text color={t.color.cornsilk}> {req.command}</Text>
       <Text />
 
       {OPTS.map((o, i) => (
         <Text key={o}>
           <Text color={sel === i ? t.color.warn : t.color.dim}>{sel === i ? '▸ ' : '  '}</Text>
           <Text color={sel === i ? t.color.cornsilk : t.color.dim}>
-            [{o[0]}] {LABELS[o]}
+            {i + 1}. {LABELS[o]}
           </Text>
         </Text>
       ))}
 
-      <Text color={t.color.dim}>↑/↓ select · Enter confirm · o/s/a/d quick pick</Text>
+      <Text color={t.color.dim}>↑/↓ select · Enter confirm · 1-4 quick pick · Ctrl+C deny</Text>
     </Box>
   )
 }

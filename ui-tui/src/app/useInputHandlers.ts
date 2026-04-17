@@ -11,6 +11,7 @@ import type {
 import type { InputHandlerContext, InputHandlerResult } from './interfaces.js'
 import { $isBlocked, $overlayState, patchOverlayState } from './overlayStore.js'
 import { turnController } from './turnController.js'
+import { patchTurnState } from './turnStore.js'
 import { getUiState, patchUiState } from './uiStore.js'
 
 const isCtrl = (key: { ctrl: boolean }, ch: string, target: string) => key.ctrl && ch.toLowerCase() === target
@@ -24,9 +25,15 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
   const pagerPageSize = Math.max(5, (terminal.stdout?.rows ?? 24) - 6)
 
   const copySelection = () => {
-    if (terminal.selection.copySelection()) {
-      actions.sys('copied selection')
+    const text = terminal.selection.copySelection()
+
+    if (text) {
+      actions.sys(`copied ${text.length} chars`)
     }
+  }
+
+  const clearSelection = () => {
+    terminal.selection.clearSelection()
   }
 
   const cancelOverlayFromCtrlC = () => {
@@ -37,7 +44,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
     if (overlay.approval) {
       return gateway
         .rpc<ApprovalRespondResponse>('approval.respond', { choice: 'deny', session_id: getUiState().sid })
-        .then(r => r && (patchOverlayState({ approval: null }), actions.sys('denied')))
+        .then(r => r && (patchOverlayState({ approval: null }), patchTurnState({ outcome: 'denied' })))
     }
 
     if (overlay.sudo) {
@@ -213,6 +220,10 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
 
     if (key.ctrl && key.shift && ch.toLowerCase() === 'c') {
       return copySelection()
+    }
+
+    if (key.escape && terminal.hasSelection) {
+      return clearSelection()
     }
 
     if (key.upArrow && !cState.inputBuf.length) {

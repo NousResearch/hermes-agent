@@ -12,31 +12,77 @@ import { ModelPicker } from './modelPicker.js'
 import { ApprovalPrompt, ClarifyPrompt } from './prompts.js'
 import { SessionPicker } from './sessionPicker.js'
 
-export function AppOverlays({
+export function PromptZone({
+  cols,
+  onApprovalChoice,
+  onClarifyAnswer,
+  onSecretSubmit,
+  onSudoSubmit
+}: Pick<AppOverlaysProps, 'cols' | 'onApprovalChoice' | 'onClarifyAnswer' | 'onSecretSubmit' | 'onSudoSubmit'>) {
+  const overlay = useStore($overlayState)
+  const ui = useStore($uiState)
+
+  if (overlay.approval) {
+    return (
+      <Box flexDirection="column" flexShrink={0} paddingX={1} paddingY={1}>
+        <ApprovalPrompt onChoice={onApprovalChoice} req={overlay.approval} t={ui.theme} />
+      </Box>
+    )
+  }
+
+  if (overlay.clarify) {
+    return (
+      <Box flexDirection="column" flexShrink={0} paddingX={1} paddingY={1}>
+        <ClarifyPrompt
+          cols={cols}
+          onAnswer={onClarifyAnswer}
+          onCancel={() => onClarifyAnswer('')}
+          req={overlay.clarify}
+          t={ui.theme}
+        />
+      </Box>
+    )
+  }
+
+  if (overlay.sudo) {
+    return (
+      <Box flexDirection="column" flexShrink={0} paddingX={1} paddingY={1}>
+        <MaskedPrompt cols={cols} icon="🔐" label="sudo password required" onSubmit={onSudoSubmit} t={ui.theme} />
+      </Box>
+    )
+  }
+
+  if (overlay.secret) {
+    return (
+      <Box flexDirection="column" flexShrink={0} paddingX={1} paddingY={1}>
+        <MaskedPrompt
+          cols={cols}
+          icon="🔑"
+          label={overlay.secret.prompt}
+          onSubmit={onSecretSubmit}
+          sub={`for ${overlay.secret.envVar}`}
+          t={ui.theme}
+        />
+      </Box>
+    )
+  }
+
+  return null
+}
+
+export function FloatingOverlays({
   cols,
   compIdx,
   completions,
-  onApprovalChoice,
-  onClarifyAnswer,
   onModelSelect,
   onPickerSelect,
-  onSecretSubmit,
-  onSudoSubmit,
   pagerPageSize
-}: AppOverlaysProps) {
+}: Pick<AppOverlaysProps, 'cols' | 'compIdx' | 'completions' | 'onModelSelect' | 'onPickerSelect' | 'pagerPageSize'>) {
   const { gw } = useGateway()
   const overlay = useStore($overlayState)
   const ui = useStore($uiState)
 
-  const hasAny =
-    overlay.approval ||
-    overlay.clarify ||
-    overlay.modelPicker ||
-    overlay.pager ||
-    overlay.picker ||
-    overlay.secret ||
-    overlay.sudo ||
-    completions.length
+  const hasAny = overlay.modelPicker || overlay.pager || overlay.picker || completions.length
 
   if (!hasAny) {
     return null
@@ -46,43 +92,6 @@ export function AppOverlays({
 
   return (
     <Box alignItems="flex-start" bottom="100%" flexDirection="column" left={0} position="absolute" right={0}>
-      {overlay.clarify && (
-        <FloatBox color={ui.theme.color.bronze}>
-          <ClarifyPrompt
-            cols={cols}
-            onAnswer={onClarifyAnswer}
-            onCancel={() => onClarifyAnswer('')}
-            req={overlay.clarify}
-            t={ui.theme}
-          />
-        </FloatBox>
-      )}
-
-      {overlay.approval && (
-        <FloatBox color={ui.theme.color.bronze}>
-          <ApprovalPrompt onChoice={onApprovalChoice} req={overlay.approval} t={ui.theme} />
-        </FloatBox>
-      )}
-
-      {overlay.sudo && (
-        <FloatBox color={ui.theme.color.bronze}>
-          <MaskedPrompt cols={cols} icon="🔐" label="sudo password required" onSubmit={onSudoSubmit} t={ui.theme} />
-        </FloatBox>
-      )}
-
-      {overlay.secret && (
-        <FloatBox color={ui.theme.color.bronze}>
-          <MaskedPrompt
-            cols={cols}
-            icon="🔑"
-            label={overlay.secret.prompt}
-            onSubmit={onSecretSubmit}
-            sub={`for ${overlay.secret.envVar}`}
-            t={ui.theme}
-          />
-        </FloatBox>
-      )}
-
       {overlay.picker && (
         <FloatBox color={ui.theme.color.bronze}>
           <SessionPicker

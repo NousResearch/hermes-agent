@@ -26,6 +26,7 @@ export interface StateSetter<T> {
 }
 
 export interface SelectionApi {
+  clearSelection: () => void
   copySelection: () => string
 }
 
@@ -275,6 +276,7 @@ export interface AppLayoutComposerProps {
 
 export interface AppLayoutProgressProps {
   activity: ActivityItem[]
+  outcome: string
   reasoning: string
   reasoningActive: boolean
   reasoningStreaming: boolean

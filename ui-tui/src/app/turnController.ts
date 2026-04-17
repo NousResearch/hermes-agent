@@ -91,7 +91,7 @@ class TurnController {
     this.idle()
     this.clearReasoning()
     this.turnTools = []
-    patchTurnState({ activity: [] })
+    patchTurnState({ activity: [], outcome: '' })
     patchUiState({ status: 'interrupted' })
     this.clearStatusTimer()
 
@@ -176,7 +176,7 @@ class TurnController {
     this.turnTools = []
     this.persistedToolLabels.clear()
     this.bufRef = ''
-    patchTurnState({ activity: [] })
+    patchTurnState({ activity: [], outcome: '' })
 
     return { finalText, savedReasoning, savedReasoningTokens, savedTools, savedToolTokens, wasInterrupted }
   }
@@ -271,7 +271,7 @@ class TurnController {
     this.turnTools = []
     this.toolTokenAcc = 0
     this.persistedToolLabels.clear()
-    patchTurnState({ activity: [] })
+    patchTurnState({ activity: [], outcome: '' })
   }
 
   fullReset() {
@@ -312,7 +312,7 @@ class TurnController {
     this.toolTokenAcc = 0
     this.persistedToolLabels.clear()
     patchUiState({ busy: true })
-    patchTurnState({ activity: [], subagents: [], toolTokens: 0, tools: [], turnTrail: [] })
+    patchTurnState({ activity: [], outcome: '', subagents: [], toolTokens: 0, tools: [], turnTrail: [] })
   }
 
   upsertSubagent(p: SubagentEventPayload, patch: (current: SubagentProgress) => Partial<SubagentProgress>) {

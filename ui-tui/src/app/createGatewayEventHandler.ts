@@ -301,12 +301,15 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         setStatus('waiting for input…')
 
         return
+      case 'approval.request': {
+        const description = String(ev.payload.description ?? 'dangerous command')
 
-      case 'approval.request':
-        patchOverlayState({ approval: { command: ev.payload.command, description: ev.payload.description } })
+        patchOverlayState({ approval: { command: String(ev.payload.command ?? ''), description } })
+        turnController.pushActivity(`approval needed · ${description}`, 'warn')
         setStatus('approval needed')
 
         return
+      }
 
       case 'sudo.request':
         patchOverlayState({ sudo: { requestId: ev.payload.request_id } })

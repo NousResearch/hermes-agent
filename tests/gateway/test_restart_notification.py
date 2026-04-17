@@ -129,6 +129,10 @@ async def test_send_restart_notification_delivers_and_cleans_up(tmp_path, monkey
 
     runner, adapter = make_restart_runner()
     adapter.send = AsyncMock()
+    entry = MagicMock()
+    entry.origin = make_restart_source(chat_id="42")
+    runner.session_store._ensure_loaded = MagicMock()
+    runner.session_store._entries = {"sess": entry}
 
     await runner._send_restart_notification()
 
@@ -154,6 +158,12 @@ async def test_send_restart_notification_with_thread(tmp_path, monkeypatch):
 
     runner, adapter = make_restart_runner()
     adapter.send = AsyncMock()
+    source = make_restart_source(chat_id="99")
+    source.thread_id = "topic_7"
+    entry = MagicMock()
+    entry.origin = source
+    runner.session_store._ensure_loaded = MagicMock()
+    runner.session_store._entries = {"sess": entry}
 
     await runner._send_restart_notification()
 
@@ -191,6 +201,28 @@ async def test_send_restart_notification_skips_when_adapter_missing(tmp_path, mo
     await runner._send_restart_notification()
 
     # File cleaned up even though we couldn't send
+    assert not notify_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_send_restart_notification_skips_stale_unknown_chat(tmp_path, monkeypatch):
+    """Stale restart-notify targets outside the session store are dropped quietly."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    notify_path = tmp_path / ".restart_notify.json"
+    notify_path.write_text(json.dumps({
+        "platform": "telegram",
+        "chat_id": "123456",
+    }))
+
+    runner, adapter = make_restart_runner()
+    adapter.send = AsyncMock()
+    runner.session_store._ensure_loaded = MagicMock()
+    runner.session_store._entries = {}
+
+    await runner._send_restart_notification()
+
+    adapter.send.assert_not_called()
     assert not notify_path.exists()
 
 

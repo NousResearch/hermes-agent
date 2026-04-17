@@ -7409,6 +7409,37 @@ class GatewayRunner:
 
         return True
 
+    def _is_known_restart_notify_target(
+        self,
+        platform: Platform,
+        chat_id: str,
+        thread_id: Optional[str] = None,
+    ) -> bool:
+        """Return whether a restart notification target matches known routing state."""
+        try:
+            self.session_store._ensure_loaded()
+            for entry in getattr(self.session_store, "_entries", {}).values():
+                origin = getattr(entry, "origin", None)
+                if not origin:
+                    continue
+                origin_platform = getattr(origin, "platform", None)
+                origin_chat_id = getattr(origin, "chat_id", None)
+                origin_thread_id = getattr(origin, "thread_id", None)
+                if origin_platform == platform and str(origin_chat_id) == str(chat_id):
+                    if thread_id is None or str(origin_thread_id or "") == str(thread_id or ""):
+                        return True
+        except Exception:
+            pass
+
+        try:
+            home = self.config.get_home_channel(platform)
+            if home and str(getattr(home, "chat_id", "")) == str(chat_id):
+                return True
+        except Exception:
+            pass
+
+        return False
+
     async def _send_restart_notification(self) -> None:
         """Notify the chat that initiated /restart that the gateway is back."""
         import json as _json
@@ -7432,6 +7463,14 @@ class GatewayRunner:
                 logger.debug(
                     "Restart notification skipped: %s adapter not connected",
                     platform_str,
+                )
+                return
+
+            if not self._is_known_restart_notify_target(platform, str(chat_id), thread_id):
+                logger.debug(
+                    "Restart notification skipped: stale target %s:%s",
+                    platform_str,
+                    chat_id,
                 )
                 return
 

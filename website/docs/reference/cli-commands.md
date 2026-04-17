@@ -50,7 +50,7 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes logs` | View, tail, and filter agent/gateway/error log files. |
 | `hermes config` | Show, edit, migrate, and query configuration files. |
 | `hermes pairing` | Approve or revoke messaging pairing codes. |
-| `hermes skills` | Browse, install, publish, audit, and configure skills. |
+| `hermes skills` | Browse, install, publish, audit, reset, and configure skills. |
 | `hermes honcho` | Manage Honcho cross-session memory integration. |
 | `hermes memory` | Configure external memory provider. |
 | `hermes acp` | Run Hermes as an ACP server for editor integration. |
@@ -561,6 +561,7 @@ Subcommands:
 | `list` | List installed skills. |
 | `check` | Check installed hub skills for upstream updates. |
 | `update` | Reinstall hub skills with upstream changes when available. |
+| `reset` | Reset a bundled skill to its bundled version, optionally restoring from bundled. |
 | `audit` | Re-scan installed hub skills. |
 | `uninstall` | Remove a hub-installed skill. |
 | `publish` | Publish a skill to a registry. |
@@ -581,6 +582,8 @@ hermes skills install official/migration/openclaw-migration
 hermes skills install skills-sh/anthropics/skills/pdf --force
 hermes skills check
 hermes skills update
+hermes skills reset google-workspace
+hermes skills reset google-workspace --restore
 hermes skills config
 ```
 

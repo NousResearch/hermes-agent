@@ -306,6 +306,9 @@ from gateway.agent_prelude_runtime_service import (
 from gateway.agent_response_runtime_service import (
     normalize_gateway_agent_response as shared_normalize_gateway_agent_response,
 )
+from gateway.transcript_persistence_runtime_service import (
+    persist_gateway_agent_transcript as shared_persist_gateway_agent_transcript,
+)
 from gateway.context_reference_runtime_service import (
     GatewayContextReferenceOutcome,
     expand_gateway_context_references as shared_expand_gateway_context_references,
@@ -4535,84 +4538,20 @@ class GatewayRunner:
             # (e.g. context-overflow 400), do NOT persist the user's message.
             # Persisting it would make the session even larger, causing the
             # same failure on the next attempt — an infinite loop. (#1630)
-            agent_failed_early = (
-                agent_result.get("failed")
-                and not agent_result.get("final_response")
-            )
-            if agent_failed_early:
-                logger.info(
-                    "Skipping transcript persistence for failed request in "
-                    "session %s to prevent session growth loop.",
-                    session_entry.session_id,
-                )
-
-            ts = datetime.now().isoformat()
-            
-            # If this is a fresh session (no history), write the full tool
-            # definitions as the first entry so the transcript is self-describing
-            # -- the same list of dicts sent as tools=[...] in the API request.
-            if agent_failed_early:
-                pass  # Skip all transcript writes — don't grow a broken session
-            elif not history:
-                tool_defs = agent_result.get("tools", [])
-                self.session_store.append_to_transcript(
-                    session_entry.session_id,
-                    {
-                        "role": "session_meta",
-                        "tools": tool_defs or [],
-                        "model": _resolve_gateway_model(),
-                        "platform": source.platform.value if source.platform else "",
-                        "timestamp": ts,
-                    }
-                )
-            
-            # Find only the NEW messages from this turn (skip history we loaded).
-            # Use the filtered history length (history_offset) that was actually
-            # passed to the agent, not len(history) which includes session_meta
-            # entries that were stripped before the agent saw them.
-            if not agent_failed_early:
-                history_len = agent_result.get("history_offset", len(history))
-                new_messages = agent_messages[history_len:] if len(agent_messages) > history_len else []
-                new_messages = _sync_visible_final_response_into_messages(
-                    new_messages,
-                    raw_final_response=agent_result.get("final_response"),
-                    visible_final_response=response,
-                )
-                
-                # If no new messages found (edge case), fall back to simple user/assistant
-                if not new_messages:
-                    self.session_store.append_to_transcript(
-                        session_entry.session_id,
-                        {"role": "user", "content": message_text, "timestamp": ts}
-                    )
-                    if response:
-                        self.session_store.append_to_transcript(
-                            session_entry.session_id,
-                            {"role": "assistant", "content": response, "timestamp": ts}
-                        )
-                else:
-                    # The agent already persisted these messages to SQLite via
-                    # _flush_messages_to_session_db(), so skip the DB write here
-                    # to prevent the duplicate-write bug (#860).  We still write
-                    # to JSONL for backward compatibility and as a backup.
-                    agent_persisted = self._session_db is not None
-                    for msg in new_messages:
-                        # Skip system messages (they're rebuilt each run)
-                        if msg.get("role") == "system":
-                            continue
-                        # Add timestamp to each message for debugging
-                        entry = {**msg, "timestamp": ts}
-                        self.session_store.append_to_transcript(
-                            session_entry.session_id, entry,
-                            skip_db=agent_persisted,
-                        )
-            
-            # Token counts and model are now persisted by the agent directly.
-            # Keep only last_prompt_tokens here for context-window tracking and
-            # compression decisions.
-            self.session_store.update_session(
-                session_entry.session_key,
-                last_prompt_tokens=agent_result.get("last_prompt_tokens", 0),
+            shared_persist_gateway_agent_transcript(
+                session_store=self.session_store,
+                session_id=session_entry.session_id,
+                session_key=session_entry.session_key,
+                platform=source.platform.value if source.platform else "",
+                history=history,
+                agent_result=agent_result,
+                agent_messages=agent_messages,
+                message_text=message_text,
+                visible_final_response=response,
+                resolve_gateway_model=_resolve_gateway_model,
+                sync_visible_final_response=_sync_visible_final_response_into_messages,
+                session_db_present=self._session_db is not None,
+                logger=logger,
             )
 
             # Auto voice reply: send TTS audio before the text response

@@ -283,6 +283,10 @@ Discord behavior is controlled through two files: **`~/.hermes/.env`** for crede
 | `DISCORD_IGNORED_CHANNELS` | No | — | Comma-separated channel IDs where the bot **never** responds, even when `@mentioned`. Takes priority over all other channel settings. |
 | `DISCORD_NO_THREAD_CHANNELS` | No | — | Comma-separated channel IDs where the bot responds directly in the channel instead of creating a thread. Only relevant when `DISCORD_AUTO_THREAD` is `true`. |
 | `DISCORD_REPLY_TO_MODE` | No | `"first"` | Controls reply-reference behavior: `"off"` — never reply to the original message, `"first"` — reply-reference on the first message chunk only (default), `"all"` — reply-reference on every chunk. |
+| `DISCORD_ALLOW_MENTION_EVERYONE` | No | `false` | When `false` (default), the bot cannot ping `@everyone` or `@here` even if its response contains those tokens. Set to `true` to opt back in. See [Mention Control](#mention-control) below. |
+| `DISCORD_ALLOW_MENTION_ROLES` | No | `false` | When `false` (default), the bot cannot ping `@role` mentions. Set to `true` to allow. |
+| `DISCORD_ALLOW_MENTION_USERS` | No | `true` | When `true` (default), the bot can ping individual users by ID. |
+| `DISCORD_ALLOW_MENTION_REPLIED_USER` | No | `true` | When `true` (default), replying to a message pings the original author. |
 
 ### Config File (`config.yaml`)
 
@@ -298,6 +302,11 @@ discord:
   ignored_channels: []            # Channel IDs where bot never responds
   no_thread_channels: []          # Channel IDs where bot responds without threading
   channel_prompts: {}             # Per-channel ephemeral system prompts
+  allow_mentions:                 # What the bot is allowed to ping (safe defaults)
+    everyone: false               # @everyone / @here pings (default: false)
+    roles: false                  # @role pings (default: false)
+    users: true                   # @user pings (default: true)
+    replied_user: true            # reply-reference pings the author (default: true)
 
 # Session isolation (applies to all gateway platforms, not just Discord)
 group_sessions_per_user: true     # Isolate sessions per user in shared channels
@@ -550,6 +559,34 @@ If you intentionally want a shared room conversation, leave it off — just expe
 
 :::warning
 Always set `DISCORD_ALLOWED_USERS` to restrict who can interact with the bot. Without it, the gateway denies all users by default as a safety measure. Only add User IDs of people you trust — authorized users have full access to the agent's capabilities, including tool use and system access.
+:::
+
+### Mention Control
+
+By default, Hermes blocks the bot from pinging `@everyone`, `@here`, and role mentions, even if its reply contains those tokens. This prevents a poorly-worded prompt or echoed user content from spamming a whole server. Individual `@user` pings and reply-reference pings (the little "replying to…" chip) stay enabled so normal conversation still works.
+
+You can relax these defaults via either env vars or `config.yaml`:
+
+```yaml
+# ~/.hermes/config.yaml
+discord:
+  allow_mentions:
+    everyone: false      # allow the bot to ping @everyone / @here
+    roles: false         # allow the bot to ping @role mentions
+    users: true          # allow the bot to ping individual @users
+    replied_user: true   # ping the author when replying to their message
+```
+
+```bash
+# ~/.hermes/.env — env vars win over config.yaml
+DISCORD_ALLOW_MENTION_EVERYONE=false
+DISCORD_ALLOW_MENTION_ROLES=false
+DISCORD_ALLOW_MENTION_USERS=true
+DISCORD_ALLOW_MENTION_REPLIED_USER=true
+```
+
+:::tip
+Leave `everyone` and `roles` at `false` unless you know exactly why you need them. It is very easy for an LLM to produce the string `@everyone` inside a normal-looking response; without this protection, that would notify every member of your server.
 :::
 
 For more information on securing your Hermes Agent deployment, see the [Security Guide](../security.md).

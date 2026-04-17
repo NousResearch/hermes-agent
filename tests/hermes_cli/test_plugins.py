@@ -644,7 +644,7 @@ class TestPluginCommands:
         manifest = PluginManifest(name="test-plugin", source="user")
         ctx = PluginContext(manifest, mgr)
 
-        with caplog.at_level(logging.WARNING):
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
             ctx.register_command("", lambda a: a)
         assert len(mgr._plugin_commands) == 0
         assert "empty name" in caplog.text
@@ -655,7 +655,7 @@ class TestPluginCommands:
         manifest = PluginManifest(name="test-plugin", source="user")
         ctx = PluginContext(manifest, mgr)
 
-        with caplog.at_level(logging.WARNING):
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
             ctx.register_command("help", lambda a: a)
         assert "help" not in mgr._plugin_commands
         assert "conflicts" in caplog.text.lower()

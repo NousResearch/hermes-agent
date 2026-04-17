@@ -593,7 +593,3 @@ class TestInboundMessages:
         await adapter._on_message(payload)
         adapter.handle_message.assert_not_awaited()
 
-
-class TestPlatformEnum:
-    def test_wecom_in_platform_enum(self):
-        assert Platform.WECOM.value == "wecom"

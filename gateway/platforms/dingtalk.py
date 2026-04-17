@@ -12,18 +12,27 @@ Configuration in config.yaml:
     platforms:
       dingtalk:
         enabled: true
+        # Optional group-chat gating (mirrors Slack/Telegram/Discord):
+        require_mention: true            # or DINGTALK_REQUIRE_MENTION env var
+        # free_response_chats:           # conversations that skip require_mention
+        #   - cidABC==
+        # mention_patterns:              # regex wake-words (e.g. Chinese bot names)
+        #   - "^小马"
+        # allowed_users:                 # staff_id or sender_id list; "*" = any
+        #   - "manager1234"
         extra:
           client_id: "your-app-key"      # or DINGTALK_CLIENT_ID env var
           client_secret: "your-secret"   # or DINGTALK_CLIENT_SECRET env var
 """
 
 import asyncio
+import json
 import logging
 import os
 import re
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Set
 
 try:
     import dingtalk_stream
@@ -54,7 +63,7 @@ logger = logging.getLogger(__name__)
 MAX_MESSAGE_LENGTH = 20000
 RECONNECT_BACKOFF = [2, 5, 10, 30, 60]
 _SESSION_WEBHOOKS_MAX = 500
-_DINGTALK_WEBHOOK_RE = re.compile(r'^https://api\.dingtalk\.com/')
+_DINGTALK_WEBHOOK_RE = re.compile(r'^https://(?:api|oapi)\.dingtalk\.com/')
 
 
 def check_dingtalk_requirements() -> bool:
@@ -92,6 +101,10 @@ class DingTalkAdapter(BasePlatformAdapter):
         # Map chat_id -> session_webhook for reply routing
         self._session_webhooks: Dict[str, str] = {}
 
+        # Group-chat gating (mirrors Slack/Telegram/Discord/WhatsApp conventions)
+        self._mention_patterns: List[re.Pattern] = self._compile_mention_patterns()
+        self._allowed_users: Set[str] = self._load_allowed_users()
+
     # -- Connection lifecycle -----------------------------------------------
 
     async def connect(self) -> bool:
@@ -128,12 +141,12 @@ class DingTalkAdapter(BasePlatformAdapter):
             return False
 
     async def _run_stream(self) -> None:
-        """Run the blocking stream client with auto-reconnection."""
+        """Run the stream client with auto-reconnection."""
         backoff_idx = 0
         while self._running:
             try:
                 logger.debug("[%s] Starting stream client...", self.name)
-                await asyncio.to_thread(self._stream_client.start)
+                await self._stream_client.start()
             except asyncio.CancelledError:
                 return
             except Exception as e:
@@ -154,12 +167,19 @@ class DingTalkAdapter(BasePlatformAdapter):
         self._running = False
         self._mark_disconnected()
 
+        websocket = getattr(self._stream_client, "websocket", None)
+        if websocket is not None:
+            try:
+                await websocket.close()
+            except Exception as e:
+                logger.debug("[%s] websocket close during disconnect failed: %s", self.name, e)
+
         if self._stream_task:
             self._stream_task.cancel()
             try:
-                await self._stream_task
-            except asyncio.CancelledError:
-                pass
+                await asyncio.wait_for(self._stream_task, timeout=2.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                logger.debug("[%s] stream task did not exit cleanly during disconnect", self.name)
             self._stream_task = None
 
         if self._http_client:
@@ -170,6 +190,118 @@ class DingTalkAdapter(BasePlatformAdapter):
         self._session_webhooks.clear()
         self._dedup.clear()
         logger.info("[%s] Disconnected", self.name)
+
+    # -- Group gating --------------------------------------------------------
+
+    def _dingtalk_require_mention(self) -> bool:
+        """Return whether group chats should require an explicit bot trigger."""
+        configured = self.config.extra.get("require_mention")
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() in ("true", "1", "yes", "on")
+            return bool(configured)
+        return os.getenv("DINGTALK_REQUIRE_MENTION", "false").lower() in ("true", "1", "yes", "on")
+
+    def _dingtalk_free_response_chats(self) -> Set[str]:
+        raw = self.config.extra.get("free_response_chats")
+        if raw is None:
+            raw = os.getenv("DINGTALK_FREE_RESPONSE_CHATS", "")
+        if isinstance(raw, list):
+            return {str(part).strip() for part in raw if str(part).strip()}
+        return {part.strip() for part in str(raw).split(",") if part.strip()}
+
+    def _compile_mention_patterns(self) -> List[re.Pattern]:
+        """Compile optional regex wake-word patterns for group triggers."""
+        patterns = self.config.extra.get("mention_patterns") if self.config.extra else None
+        if patterns is None:
+            raw = os.getenv("DINGTALK_MENTION_PATTERNS", "").strip()
+            if raw:
+                try:
+                    loaded = json.loads(raw)
+                except Exception:
+                    loaded = [part.strip() for part in raw.splitlines() if part.strip()]
+                    if not loaded:
+                        loaded = [part.strip() for part in raw.split(",") if part.strip()]
+                patterns = loaded
+
+        if patterns is None:
+            return []
+        if isinstance(patterns, str):
+            patterns = [patterns]
+        if not isinstance(patterns, list):
+            logger.warning(
+                "[%s] dingtalk mention_patterns must be a list or string; got %s",
+                self.name,
+                type(patterns).__name__,
+            )
+            return []
+
+        compiled: List[re.Pattern] = []
+        for pattern in patterns:
+            if not isinstance(pattern, str) or not pattern.strip():
+                continue
+            try:
+                compiled.append(re.compile(pattern, re.IGNORECASE))
+            except re.error as exc:
+                logger.warning("[%s] Invalid DingTalk mention pattern %r: %s", self.name, pattern, exc)
+        if compiled:
+            logger.info("[%s] Loaded %d DingTalk mention pattern(s)", self.name, len(compiled))
+        return compiled
+
+    def _load_allowed_users(self) -> Set[str]:
+        """Load allowed-users list from config.extra or env var.
+
+        IDs are matched case-insensitively against the sender's ``staff_id`` and
+        ``sender_id``. A wildcard ``*`` disables the check.
+        """
+        raw = self.config.extra.get("allowed_users") if self.config.extra else None
+        if raw is None:
+            raw = os.getenv("DINGTALK_ALLOWED_USERS", "")
+        if isinstance(raw, list):
+            items = [str(part).strip() for part in raw if str(part).strip()]
+        else:
+            items = [part.strip() for part in str(raw).split(",") if part.strip()]
+        return {item.lower() for item in items}
+
+    def _is_user_allowed(self, sender_id: str, sender_staff_id: str) -> bool:
+        if not self._allowed_users or "*" in self._allowed_users:
+            return True
+        candidates = {(sender_id or "").lower(), (sender_staff_id or "").lower()}
+        candidates.discard("")
+        return bool(candidates & self._allowed_users)
+
+    def _message_mentions_bot(self, message: "ChatbotMessage") -> bool:
+        """True if the bot was @-mentioned in a group message.
+
+        dingtalk-stream sets ``is_in_at_list`` on the incoming ChatbotMessage
+        when the bot is addressed via @-mention.
+        """
+        return bool(getattr(message, "is_in_at_list", False))
+
+    def _message_matches_mention_patterns(self, text: str) -> bool:
+        if not text or not self._mention_patterns:
+            return False
+        return any(pattern.search(text) for pattern in self._mention_patterns)
+
+    def _should_process_message(self, message: "ChatbotMessage", text: str, is_group: bool, chat_id: str) -> bool:
+        """Apply DingTalk group trigger rules.
+
+        DMs remain unrestricted (subject to ``allowed_users`` which is enforced
+        earlier). Group messages are accepted when:
+        - the chat is explicitly allowlisted in ``free_response_chats``
+        - ``require_mention`` is disabled
+        - the bot is @mentioned (``is_in_at_list``)
+        - the text matches a configured regex wake-word pattern
+        """
+        if not is_group:
+            return True
+        if chat_id and chat_id in self._dingtalk_free_response_chats():
+            return True
+        if not self._dingtalk_require_mention():
+            return True
+        if self._message_mentions_bot(message):
+            return True
+        return self._message_matches_mention_patterns(text)
 
     # -- Inbound message processing -----------------------------------------
 
@@ -195,6 +327,22 @@ class DingTalkAdapter(BasePlatformAdapter):
 
         chat_id = conversation_id or sender_id
         chat_type = "group" if is_group else "dm"
+
+        # Allowed-users gate (applies to both DM and group)
+        if not self._is_user_allowed(sender_id, sender_staff_id):
+            logger.debug(
+                "[%s] Dropping message from non-allowlisted user staff_id=%s sender_id=%s",
+                self.name, sender_staff_id, sender_id,
+            )
+            return
+
+        # Group mention/pattern gate
+        if not self._should_process_message(message, text, is_group, chat_id):
+            logger.debug(
+                "[%s] Dropping group message that failed mention gate message_id=%s chat_id=%s",
+                self.name, msg_id, chat_id,
+            )
+            return
 
         # Store session webhook for reply routing (validate origin to prevent SSRF)
         session_webhook = getattr(message, "session_webhook", None) or ""
@@ -238,18 +386,35 @@ class DingTalkAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _extract_text(message: "ChatbotMessage") -> str:
-        """Extract plain text from a DingTalk chatbot message."""
-        text = getattr(message, "text", None) or ""
-        if isinstance(text, dict):
-            content = text.get("content", "").strip()
-        else:
-            content = str(text).strip()
+        """Extract plain text from a DingTalk chatbot message.
 
-        # Fall back to rich text if present
+        Handles both legacy and current dingtalk-stream SDK payload shapes:
+          * legacy: ``message.text`` was a dict ``{"content": "..."}``
+          * >= 0.20: ``message.text`` is a ``TextContent`` dataclass whose
+            ``__str__`` returns ``"TextContent(content=...)"`` — never fall
+            back to ``str(text)`` without extracting ``.content`` first.
+          * rich text moved from ``message.rich_text`` (list) to
+            ``message.rich_text_content.rich_text_list`` (list of dicts).
+        """
+        text = getattr(message, "text", None)
+        content = ""
+        if text is not None:
+            if isinstance(text, dict):
+                content = (text.get("content") or "").strip()
+            elif hasattr(text, "content"):
+                content = str(text.content or "").strip()
+            else:
+                content = str(text).strip()
+
         if not content:
-            rich_text = getattr(message, "rich_text", None)
-            if rich_text and isinstance(rich_text, list):
-                parts = [item["text"] for item in rich_text
+            rich_list = None
+            rtc = getattr(message, "rich_text_content", None)
+            if rtc is not None and hasattr(rtc, "rich_text_list"):
+                rich_list = rtc.rich_text_list
+            if rich_list is None:
+                rich_list = getattr(message, "rich_text", None)
+            if rich_list and isinstance(rich_list, list):
+                parts = [item["text"] for item in rich_list
                          if isinstance(item, dict) and item.get("text")]
                 content = " ".join(parts).strip()
         return content
@@ -314,20 +479,43 @@ class _IncomingHandler(ChatbotHandler if DINGTALK_STREAM_AVAILABLE else object):
         self._adapter = adapter
         self._loop = loop
 
-    def process(self, message: "ChatbotMessage"):
-        """Called by dingtalk-stream in its thread when a message arrives.
+    async def process(self, callback_message):
+        """Called by dingtalk-stream when a message arrives.
 
-        Schedules the async handler on the main event loop.
+        dingtalk-stream >= 0.24 passes a CallbackMessage whose `.data` contains
+        the chatbot payload. Convert it to ChatbotMessage via
+        ``ChatbotMessage.from_dict()``.
+
+        Message processing is dispatched as a background task so that this
+        method returns the ACK immediately — blocking here would prevent the
+        SDK from sending heartbeats, eventually causing a disconnect.
         """
-        loop = self._loop
-        if loop is None or loop.is_closed():
-            logger.error("[DingTalk] Event loop unavailable, cannot dispatch message")
-            return dingtalk_stream.AckMessage.STATUS_OK, "OK"
-
-        future = asyncio.run_coroutine_threadsafe(self._adapter._on_message(message), loop)
         try:
-            future.result(timeout=60)
+            data = callback_message.data
+            chatbot_msg = ChatbotMessage.from_dict(data)
+
+            # Ensure session_webhook is populated even if the SDK's
+            # from_dict() did not map it (field name mismatch across
+            # SDK versions).
+            if not getattr(chatbot_msg, "session_webhook", None):
+                webhook = (
+                    data.get("sessionWebhook")
+                    or data.get("session_webhook")
+                    or ""
+                )
+                if webhook:
+                    chatbot_msg.session_webhook = webhook
+
+            # Fire-and-forget: return ACK immediately, process in background.
+            asyncio.create_task(self._safe_on_message(chatbot_msg))
         except Exception:
-            logger.exception("[DingTalk] Error processing incoming message")
+            logger.exception("[DingTalk] Error preparing incoming message")
 
         return dingtalk_stream.AckMessage.STATUS_OK, "OK"
+
+    async def _safe_on_message(self, chatbot_msg: "ChatbotMessage") -> None:
+        """Wrapper that catches exceptions from _on_message."""
+        try:
+            await self._adapter._on_message(chatbot_msg)
+        except Exception:
+            logger.exception("[DingTalk] Error processing incoming message")

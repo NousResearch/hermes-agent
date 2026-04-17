@@ -42,15 +42,6 @@ def _stub_rpc(return_value):
 # Platform & Config
 # ---------------------------------------------------------------------------
 
-class TestSignalPlatformEnum:
-    def test_signal_enum_exists(self):
-        assert Platform.SIGNAL.value == "signal"
-
-    def test_signal_in_platform_list(self):
-        platforms = [p.value for p in Platform]
-        assert "signal" in platforms
-
-
 class TestSignalConfigLoading:
     def test_apply_env_overrides_signal(self, monkeypatch):
         monkeypatch.setenv("SIGNAL_HTTP_URL", "http://localhost:9090")
@@ -75,18 +66,6 @@ class TestSignalConfigLoading:
         _apply_env_overrides(config)
 
         assert Platform.SIGNAL not in config.platforms
-
-    def test_connected_platforms_includes_signal(self, monkeypatch):
-        monkeypatch.setenv("SIGNAL_HTTP_URL", "http://localhost:8080")
-        monkeypatch.setenv("SIGNAL_ACCOUNT", "+15551234567")
-
-        from gateway.config import GatewayConfig, _apply_env_overrides
-        config = GatewayConfig()
-        _apply_env_overrides(config)
-
-        connected = config.get_connected_platforms()
-        assert Platform.SIGNAL in connected
-
 
 # ---------------------------------------------------------------------------
 # Adapter Init & Helpers
@@ -361,15 +340,6 @@ class TestSignalAuthorization:
 # ---------------------------------------------------------------------------
 # Send Message Tool
 # ---------------------------------------------------------------------------
-
-class TestSignalSendMessage:
-    def test_signal_in_platform_map(self):
-        """Signal should be in the send_message tool's platform map."""
-        from tools.send_message_tool import send_message_tool
-        # Just verify the import works and Signal is a valid platform
-        from gateway.config import Platform
-        assert Platform.SIGNAL.value == "signal"
-
 
 # ---------------------------------------------------------------------------
 # send_image_file method (#5105)

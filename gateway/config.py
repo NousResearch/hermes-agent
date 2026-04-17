@@ -307,6 +307,14 @@ class GatewayConfig:
             # QQBot uses extra dict for app credentials
             elif platform == Platform.QQBOT and config.extra.get("app_id") and config.extra.get("client_secret"):
                 connected.append(platform)
+            # DingTalk uses client_id/client_secret from config.extra or env vars
+            elif platform == Platform.DINGTALK and (
+                config.extra.get("client_id") or os.getenv("DINGTALK_CLIENT_ID")
+            ) and (
+                config.extra.get("client_secret") or os.getenv("DINGTALK_CLIENT_SECRET")
+            ):
+                connected.append(platform)
+        
         return connected
     
     def get_home_channel(self, platform: Platform) -> Optional[HomeChannel]:
@@ -617,6 +625,20 @@ def load_gateway_config() -> GatewayConfig:
                     if isinstance(ntc, list):
                         ntc = ",".join(str(v) for v in ntc)
                     os.environ["DISCORD_NO_THREAD_CHANNELS"] = str(ntc)
+                # allow_mentions: granular control over what the bot can ping.
+                # Safe defaults (no @everyone/roles) are applied in the adapter;
+                # these YAML keys only override when set and let users opt back
+                # into unsafe modes (e.g. roles=true) if they actually want it.
+                allow_mentions_cfg = discord_cfg.get("allow_mentions")
+                if isinstance(allow_mentions_cfg, dict):
+                    for yaml_key, env_key in (
+                        ("everyone", "DISCORD_ALLOW_MENTION_EVERYONE"),
+                        ("roles", "DISCORD_ALLOW_MENTION_ROLES"),
+                        ("users", "DISCORD_ALLOW_MENTION_USERS"),
+                        ("replied_user", "DISCORD_ALLOW_MENTION_REPLIED_USER"),
+                    ):
+                        if yaml_key in allow_mentions_cfg and not os.getenv(env_key):
+                            os.environ[env_key] = str(allow_mentions_cfg[yaml_key]).lower()
 
             # Telegram settings → env vars (env vars take precedence)
             telegram_cfg = yaml_cfg.get("telegram", {})
@@ -662,6 +684,24 @@ def load_gateway_config() -> GatewayConfig:
                     if isinstance(frc, list):
                         frc = ",".join(str(v) for v in frc)
                     os.environ["WHATSAPP_FREE_RESPONSE_CHATS"] = str(frc)
+
+            # DingTalk settings → env vars (env vars take precedence)
+            dingtalk_cfg = yaml_cfg.get("dingtalk", {})
+            if isinstance(dingtalk_cfg, dict):
+                if "require_mention" in dingtalk_cfg and not os.getenv("DINGTALK_REQUIRE_MENTION"):
+                    os.environ["DINGTALK_REQUIRE_MENTION"] = str(dingtalk_cfg["require_mention"]).lower()
+                if "mention_patterns" in dingtalk_cfg and not os.getenv("DINGTALK_MENTION_PATTERNS"):
+                    os.environ["DINGTALK_MENTION_PATTERNS"] = json.dumps(dingtalk_cfg["mention_patterns"])
+                frc = dingtalk_cfg.get("free_response_chats")
+                if frc is not None and not os.getenv("DINGTALK_FREE_RESPONSE_CHATS"):
+                    if isinstance(frc, list):
+                        frc = ",".join(str(v) for v in frc)
+                    os.environ["DINGTALK_FREE_RESPONSE_CHATS"] = str(frc)
+                allowed = dingtalk_cfg.get("allowed_users")
+                if allowed is not None and not os.getenv("DINGTALK_ALLOWED_USERS"):
+                    if isinstance(allowed, list):
+                        allowed = ",".join(str(v) for v in allowed)
+                    os.environ["DINGTALK_ALLOWED_USERS"] = str(allowed)
 
             # Matrix settings → env vars (env vars take precedence)
             matrix_cfg = yaml_cfg.get("matrix", {})
@@ -1005,6 +1045,25 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 pass
         if webhook_secret:
             config.platforms[Platform.WEBHOOK].extra["secret"] = webhook_secret
+
+    # DingTalk
+    dingtalk_client_id = os.getenv("DINGTALK_CLIENT_ID")
+    dingtalk_client_secret = os.getenv("DINGTALK_CLIENT_SECRET")
+    if dingtalk_client_id and dingtalk_client_secret:
+        if Platform.DINGTALK not in config.platforms:
+            config.platforms[Platform.DINGTALK] = PlatformConfig()
+        config.platforms[Platform.DINGTALK].enabled = True
+        config.platforms[Platform.DINGTALK].extra.update({
+            "client_id": dingtalk_client_id,
+            "client_secret": dingtalk_client_secret,
+        })
+        dingtalk_home = os.getenv("DINGTALK_HOME_CHANNEL")
+        if dingtalk_home:
+            config.platforms[Platform.DINGTALK].home_channel = HomeChannel(
+                platform=Platform.DINGTALK,
+                chat_id=dingtalk_home,
+                name=os.getenv("DINGTALK_HOME_CHANNEL_NAME", "Home"),
+            )
 
     # Feishu / Lark
     feishu_app_id = os.getenv("FEISHU_APP_ID")

@@ -539,3 +539,64 @@ class TestDispatcher:
         mcp_command(_make_args(mcp_action=None))
         out = capsys.readouterr().out
         assert "Commands:" in out or "No MCP servers" in out
+
+
+# ---------------------------------------------------------------------------
+# Tests: Task 7 consolidation — cmd_mcp_remove evicts manager cache,
+# cmd_mcp_login forces re-auth
+# ---------------------------------------------------------------------------
+
+
+class TestMcpRemoveEvictsManager:
+    def test_remove_evicts_in_memory_provider(self, tmp_path, capsys, monkeypatch):
+        """After cmd_mcp_remove, the MCPOAuthManager no longer caches the provider."""
+        _seed_config(tmp_path, {
+            "oauth-srv": {"url": "https://example.com/mcp", "auth": "oauth"},
+        })
+        monkeypatch.setattr("builtins.input", lambda _: "y")
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config.get_hermes_home", lambda: tmp_path
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        from tools.mcp_oauth_manager import get_manager, reset_manager_for_tests
+        reset_manager_for_tests()
+
+        mgr = get_manager()
+        mgr.get_or_build_provider(
+            "oauth-srv", "https://example.com/mcp", None,
+        )
+        assert "oauth-srv" in mgr._entries
+
+        from hermes_cli.mcp_config import cmd_mcp_remove
+        cmd_mcp_remove(_make_args(name="oauth-srv"))
+
+        assert "oauth-srv" not in mgr._entries
+
+
+class TestMcpLogin:
+    def test_login_rejects_unknown_server(self, tmp_path, capsys):
+        _seed_config(tmp_path, {})
+        from hermes_cli.mcp_config import cmd_mcp_login
+        cmd_mcp_login(_make_args(name="ghost"))
+        out = capsys.readouterr().out
+        assert "not found" in out
+
+    def test_login_rejects_non_oauth_server(self, tmp_path, capsys):
+        _seed_config(tmp_path, {
+            "srv": {"url": "https://example.com/mcp", "auth": "header"},
+        })
+        from hermes_cli.mcp_config import cmd_mcp_login
+        cmd_mcp_login(_make_args(name="srv"))
+        out = capsys.readouterr().out
+        assert "not configured for OAuth" in out
+
+    def test_login_rejects_stdio_server(self, tmp_path, capsys):
+        _seed_config(tmp_path, {
+            "srv": {"command": "npx", "args": ["some-server"]},
+        })
+        from hermes_cli.mcp_config import cmd_mcp_login
+        cmd_mcp_login(_make_args(name="srv"))
+        out = capsys.readouterr().out
+        assert "no URL" in out or "not an OAuth" in out
+

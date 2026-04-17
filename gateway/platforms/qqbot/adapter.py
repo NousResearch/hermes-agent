@@ -1860,15 +1860,15 @@ class QQAdapter(BasePlatformAdapter):
         Returns True if reconnected, False if still disconnected.
         """
         logger.info("[%s] Not connected — waiting for reconnection (up to %.0fs)",
-                    self.name, self._RECONNECT_WAIT_SECONDS)
+                    self._log_tag, self._RECONNECT_WAIT_SECONDS)
         waited = 0.0
         while waited < self._RECONNECT_WAIT_SECONDS:
             await asyncio.sleep(self._RECONNECT_POLL_INTERVAL)
             waited += self._RECONNECT_POLL_INTERVAL
             if self.is_connected:
-                logger.info("[%s] Reconnected after %.1fs", self.name, waited)
+                logger.info("[%s] Reconnected after %.1fs", self._log_tag, waited)
                 return True
-        logger.warning("[%s] Still not connected after %.0fs", self.name, self._RECONNECT_WAIT_SECONDS)
+        logger.warning("[%s] Still not connected after %.0fs", self._log_tag, self._RECONNECT_WAIT_SECONDS)
         return False
 
     async def send(

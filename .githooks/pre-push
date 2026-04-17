@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+  if [[ "$remote_ref" == "refs/heads/main" ]]; then
+    if [[ "${HERMES_ALLOW_MAIN_PUSH:-0}" != "1" ]]; then
+      echo "Blocked direct push to main. Use henry/patches or set HERMES_ALLOW_MAIN_PUSH=1 if intentional." >&2
+      exit 1
+    fi
+  fi
+done

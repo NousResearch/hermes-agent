@@ -58,6 +58,7 @@ def _make_event(text="hello", chat_id="123", platform_val="telegram"):
 def _make_runner():
     """Build a minimal GatewayRunner-like object for testing."""
     from gateway.run import GatewayRunner, _AGENT_PENDING_SENTINEL
+    import threading
 
     runner = object.__new__(GatewayRunner)
     runner._running_agents = {}
@@ -70,6 +71,9 @@ def _make_runner():
     runner.session_store = None
     runner.hooks = MagicMock()
     runner.hooks.emit = AsyncMock()
+    runner._pending_clarify = {}
+    runner._pending_clarify_lock = threading.Lock()
+    runner._session_key_for_source = lambda source: build_session_key(source)
     return runner, _AGENT_PENDING_SENTINEL
 
 
@@ -277,6 +281,39 @@ class TestBusySessionAck:
         assert result is True
         # Should still send ack
         adapter._send_with_retry.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_pending_clarify_text_reply_does_not_interrupt_agent(self):
+        """When clarify is awaiting typed input, consume the reply instead of busy-interrupting."""
+        runner, sentinel = _make_runner()
+        adapter = _make_adapter()
+
+        event = _make_event(text="my custom answer")
+        sk = build_session_key(event.source)
+
+        agent = MagicMock()
+        runner._running_agents[sk] = agent
+        runner._running_agents_ts[sk] = time.time()
+        runner.adapters[event.source.platform] = adapter
+        clarify_event = MagicMock()
+        runner._pending_clarify[sk] = {
+            "event": clarify_event,
+            "user_id": event.source.user_id,
+            "choices": ["Option A", "Option B"],
+            "awaiting_text": True,
+            "response": None,
+        }
+
+        result = await runner._handle_active_session_busy_message(event, sk)
+
+        assert result is True
+        agent.interrupt.assert_not_called()
+        assert sk not in adapter._pending_messages
+        adapter._send_with_retry.assert_called_once()
+        content = adapter._send_with_retry.call_args.kwargs.get("content", "")
+        assert "Clarification received" in content
+        assert runner._pending_clarify[sk]["response"] == "my custom answer"
+        clarify_event.set.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_no_adapter_falls_through(self):

@@ -641,6 +641,12 @@ class GatewayRunner:
         # Key: session_key, Value: True when a prompt is waiting for user input.
         self._update_prompt_pending: Dict[str, bool] = {}
 
+        # Track pending clarify prompts per session. Entries are mutated by the
+        # gateway event loop (Telegram callback queries / user replies) while the
+        # agent thread blocks on a threading.Event waiting for the answer.
+        self._pending_clarify: Dict[str, Dict[str, Any]] = {}
+        self._pending_clarify_lock = _threading.Lock()
+
         # Persistent Honcho managers keyed by gateway session key.
         # This preserves write_frequency="session" semantics across short-lived
         # per-message AIAgent instances.
@@ -1368,6 +1374,217 @@ class GatewayRunner:
             if agent is not _AGENT_PENDING_SENTINEL
         }
 
+    def _resolve_gateway_clarify_action(
+        self,
+        session_key: str,
+        *,
+        action: str,
+        user_id: Optional[str] = None,
+        user_name: Optional[str] = None,
+        value: Optional[str] = None,
+    ) -> str:
+        """Resolve or update a pending clarify prompt from a gateway UI event."""
+        lock = getattr(self, "_pending_clarify_lock", None)
+        pending_map = getattr(self, "_pending_clarify", None)
+        if lock is None or pending_map is None:
+            return "expired"
+
+        with lock:
+            pending = pending_map.get(session_key)
+            if not pending:
+                return "expired"
+            expected_user = pending.get("user_id")
+            if expected_user and user_id and str(expected_user) != str(user_id):
+                return "unauthorized"
+
+            pending["last_user_id"] = user_id
+            pending["last_user_name"] = user_name
+
+            if action == "other":
+                pending["awaiting_text"] = True
+                return "awaiting_text"
+
+            if action == "cancel":
+                pending["response"] = pending.get(
+                    "cancel_response",
+                    "(clarify cancelled by user — continue without more input)",
+                )
+                pending["cancelled"] = True
+                pending["resolved"] = True
+                pending.get("event").set()
+                return "cancelled"
+
+            if action != "select":
+                return "invalid"
+
+            response = value if value is not None else pending.get(
+                "default_response",
+                "(clarify resolved without explicit value)",
+            )
+            pending["response"] = response
+            pending["resolved"] = True
+            pending["event"].set()
+            return "resolved"
+
+    def _map_clarify_text_response(self, raw: str, choices: list[str]) -> Optional[str]:
+        text = (raw or "").strip()
+        if not text:
+            return None
+        if text.isdigit():
+            index = int(text) - 1
+            if 0 <= index < len(choices):
+                return choices[index]
+        lowered = text.casefold()
+        for choice in choices:
+            if lowered == str(choice).strip().casefold():
+                return choice
+        return text
+
+    def _handle_pending_clarify_response(self, event: MessageEvent) -> Optional[str]:
+        session_key = self._session_key_for_source(event.source)
+        lock = getattr(self, "_pending_clarify_lock", None)
+        pending_map = getattr(self, "_pending_clarify", None)
+        if lock is None or pending_map is None:
+            return None
+
+        with lock:
+            pending = pending_map.get(session_key)
+            if not pending:
+                return None
+            if pending.get("resolved") or pending.get("cancelled"):
+                return None
+            expected_user = pending.get("user_id")
+            actual_user = getattr(event.source, "user_id", None)
+            if expected_user and actual_user and str(expected_user) != str(actual_user):
+                return "⛔ This clarification prompt is waiting for the original requester."
+
+            raw = (event.text or "").strip()
+            if not raw:
+                return "✗ Please reply with your clarification."
+
+            choices = pending.get("choices") or []
+            response = self._map_clarify_text_response(raw, choices) if choices else raw
+            pending["response"] = response
+            pending["resolved"] = True
+            pending["awaiting_text"] = False
+            pending["last_user_id"] = actual_user
+            pending["last_user_name"] = getattr(event.source, "user_name", None)
+            pending["event"].set()
+
+        adapter = self.adapters.get(event.source.platform)
+        if adapter and hasattr(adapter, "clear_clarify"):
+            try:
+                adapter.clear_clarify(session_key)
+            except Exception as exc:
+                logger.debug("clear_clarify failed for %s: %s", session_key, exc)
+
+        preview = str(response)
+        if len(preview) > 60:
+            preview = preview[:57] + "..."
+        return f"✓ Clarification received: `{preview}`"
+
+    def _build_gateway_clarify_callback(
+        self,
+        *,
+        adapter,
+        source: SessionSource,
+        session_key: str,
+        loop: asyncio.AbstractEventLoop,
+        metadata: Optional[Dict[str, Any]] = None,
+        timeout_seconds: float = 120.0,
+    ):
+        """Return a blocking clarify callback for gateway-backed agents."""
+
+        def _clarify_sync(question: str, choices: Optional[list[str]] = None) -> str:
+            choices_list = list(choices or [])
+            response_event = threading.Event()
+            pending_entry = {
+                "event": response_event,
+                "question": question,
+                "choices": choices_list,
+                "response": None,
+                "awaiting_text": not bool(choices_list),
+                "user_id": getattr(source, "user_id", None),
+                "chat_id": getattr(source, "chat_id", None),
+                "thread_id": getattr(source, "thread_id", None),
+            }
+
+            with self._pending_clarify_lock:
+                self._pending_clarify[session_key] = pending_entry
+
+            def _on_clarify_resolved(*, action: str, value: Optional[str] = None,
+                                     user_id: Optional[str] = None,
+                                     user_name: Optional[str] = None) -> str:
+                return self._resolve_gateway_clarify_action(
+                    session_key,
+                    action=action,
+                    value=value,
+                    user_id=user_id,
+                    user_name=user_name,
+                )
+
+            prompt_sent = False
+            if choices_list and getattr(type(adapter), "send_clarify", None) is not None:
+                try:
+                    send_result = asyncio.run_coroutine_threadsafe(
+                        adapter.send_clarify(
+                            chat_id=source.chat_id,
+                            question=question,
+                            choices=choices_list,
+                            session_key=session_key,
+                            on_clarify_resolved=_on_clarify_resolved,
+                            metadata=metadata,
+                        ),
+                        loop,
+                    ).result(timeout=15)
+                    prompt_sent = bool(getattr(send_result, "success", False))
+                except Exception as exc:
+                    logger.warning("Gateway clarify prompt send_clarify failed: %s", exc)
+
+            if not prompt_sent:
+                lines = ["❓ Clarification needed", "", question]
+                if choices_list:
+                    lines.append("")
+                    lines.extend(f"{idx}. {choice}" for idx, choice in enumerate(choices_list, start=1))
+                    lines.append("")
+                    lines.append("Reply with a button choice, a number, or free text.")
+                else:
+                    lines.append("")
+                    lines.append("Reply with your answer in a new message.")
+                try:
+                    asyncio.run_coroutine_threadsafe(
+                        adapter.send(
+                            source.chat_id,
+                            "\n".join(lines),
+                            metadata=metadata,
+                        ),
+                        loop,
+                    ).result(timeout=15)
+                except Exception as exc:
+                    logger.error("Failed to send fallback clarify prompt: %s", exc)
+
+            if not response_event.wait(timeout_seconds):
+                with self._pending_clarify_lock:
+                    current = self._pending_clarify.get(session_key)
+                    if current is pending_entry:
+                        self._pending_clarify.pop(session_key, None)
+                if hasattr(adapter, "clear_clarify"):
+                    try:
+                        adapter.clear_clarify(session_key)
+                    except Exception as exc:
+                        logger.debug("clear_clarify failed for %s after timeout: %s", session_key, exc)
+                return f"(clarify timed out after {int(timeout_seconds)}s — continue with best judgment)"
+
+            with self._pending_clarify_lock:
+                current = self._pending_clarify.get(session_key)
+                response = current.get("response") if current is pending_entry else pending_entry.get("response")
+                if current is pending_entry:
+                    self._pending_clarify.pop(session_key, None)
+
+            return response or "(clarify resolved without explicit response)"
+
+        return _clarify_sync
+
     def _queue_or_replace_pending_event(self, session_key: str, event: MessageEvent) -> None:
         adapter = self.adapters.get(event.source.platform)
         if not adapter:
@@ -1407,6 +1624,23 @@ class GatewayRunner:
         adapter = self.adapters.get(event.source.platform)
         if not adapter:
             return False  # let default path handle it
+
+        # Clarify follow-up replies are expected while the agent is still blocked
+        # inside clarify(). Consume them directly instead of routing them through
+        # the generic busy-session interrupt path.
+        clarify_reply = self._handle_pending_clarify_response(event)
+        if clarify_reply is not None:
+            thread_meta = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+            try:
+                await adapter._send_with_retry(
+                    chat_id=event.source.chat_id,
+                    content=clarify_reply,
+                    reply_to=event.message_id,
+                    metadata=thread_meta,
+                )
+            except Exception as e:
+                logger.debug("Failed to send clarify reply while busy: %s", e)
+            return True
 
         # Store the message so it's processed as the next turn after the
         # interrupt causes the current run to exit.
@@ -2782,6 +3016,10 @@ class GatewayRunner:
                 _update_prompts.pop(_quick_key, None)
                 label = response_text if len(response_text) <= 20 else response_text[:20] + "…"
                 return f"✓ Sent `{label}` to the update process."
+
+        _clarify_reply = self._handle_pending_clarify_response(event)
+        if _clarify_reply is not None:
+            return _clarify_reply
 
         # PRIORITY handling when an agent is already running for this session.
         # Default behavior is to interrupt immediately so user text/stop messages
@@ -8707,6 +8945,13 @@ class GatewayRunner:
             reasoning_config = self._load_reasoning_config()
             self._reasoning_config = reasoning_config
             self._service_tier = self._load_service_tier()
+            _clarify_callback_sync = self._build_gateway_clarify_callback(
+                adapter=_status_adapter,
+                source=source,
+                session_key=session_key,
+                loop=_loop_for_step,
+                metadata=_status_thread_metadata,
+            )
             # Set up stream consumer for token streaming or interim commentary.
             _stream_consumer = None
             _stream_delta_cb = None
@@ -8843,6 +9088,7 @@ class GatewayRunner:
                     gateway_session_key=session_key,
                     session_db=self._session_db,
                     fallback_model=self._fallback_model,
+                    clarify_callback=_clarify_callback_sync,
                 )
                 if _cache_lock and _cache is not None:
                     with _cache_lock:
@@ -8856,6 +9102,7 @@ class GatewayRunner:
             agent.stream_delta_callback = _stream_delta_cb
             agent.interim_assistant_callback = _interim_assistant_cb if _want_interim_messages else None
             agent.status_callback = _status_callback_sync
+            agent.clarify_callback = _clarify_callback_sync
             agent.reasoning_config = reasoning_config
             agent.service_tier = self._service_tier
             agent.request_overrides = turn_route.get("request_overrides")

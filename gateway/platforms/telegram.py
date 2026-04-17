@@ -170,6 +170,8 @@ class TelegramAdapter(BasePlatformAdapter):
         self._model_picker_state: Dict[str, dict] = {}
         # Approval button state: message_id → session_key
         self._approval_state: Dict[int, str] = {}
+        # Clarify button state: prompt_id → payload
+        self._clarify_state: Dict[int, dict] = {}
         # Inline menu state per chat
         self._commands_menu_state: Dict[str, dict] = {}
         self._resume_menu_state: Dict[str, dict] = {}
@@ -1203,6 +1205,82 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.warning("[%s] send_exec_approval failed: %s", self.name, e)
             return SendResult(success=False, error=str(e))
 
+    async def send_clarify(
+        self,
+        chat_id: str,
+        question: str,
+        choices: list[str],
+        session_key: str,
+        on_clarify_resolved,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a Telegram-native clarify prompt with inline buttons."""
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+
+        try:
+            import itertools
+
+            if not hasattr(self, "_clarify_counter"):
+                self._clarify_counter = itertools.count(1)
+            clarify_id = next(self._clarify_counter)
+
+            prompt = question.strip()
+            lines = ["❓ <b>Clarification needed</b>", "", _html.escape(prompt)]
+            if choices:
+                lines.append("")
+                lines.extend(
+                    f"{idx}. {_html.escape(str(choice))}"
+                    for idx, choice in enumerate(choices, start=1)
+                )
+
+            keyboard_rows = []
+            for idx, choice in enumerate(choices):
+                keyboard_rows.append([
+                    InlineKeyboardButton(
+                        f"{idx + 1}. {str(choice)[:48]}",
+                        callback_data=f"cq:{clarify_id}:pick:{idx}",
+                    )
+                ])
+            keyboard_rows.append([
+                InlineKeyboardButton("✍️ Other", callback_data=f"cq:{clarify_id}:other"),
+                InlineKeyboardButton("❌ Cancel", callback_data=f"cq:{clarify_id}:cancel"),
+            ])
+
+            kwargs: Dict[str, Any] = {
+                "chat_id": int(chat_id),
+                "text": "\n".join(lines),
+                "parse_mode": ParseMode.HTML,
+                "reply_markup": InlineKeyboardMarkup(keyboard_rows),
+                **self._link_preview_kwargs(),
+            }
+            thread_id = self._metadata_thread_id(metadata)
+            message_thread_id = self._message_thread_id_for_send(thread_id)
+            if message_thread_id is not None:
+                kwargs["message_thread_id"] = message_thread_id
+
+            msg = await self._send_message_with_thread_fallback(**kwargs)
+            self._clarify_state[clarify_id] = {
+                "session_key": session_key,
+                "question": question,
+                "choices": list(choices or []),
+                "on_clarify_resolved": on_clarify_resolved,
+            }
+            return SendResult(success=True, message_id=str(msg.message_id))
+        except Exception as e:
+            logger.warning("[%s] send_clarify failed: %s", self.name, e)
+            return SendResult(success=False, error=str(e))
+
+    def clear_clarify(self, session_key: str) -> int:
+        """Drop any pending clarify button state for a gateway session."""
+        removed = 0
+        for clarify_id, state in list(self._clarify_state.items()):
+            if state.get("session_key") != session_key:
+                continue
+            self._clarify_state.pop(clarify_id, None)
+            removed += 1
+        return removed
+
     async def send_model_picker(
         self,
         chat_id: str,
@@ -1947,6 +2025,125 @@ class TelegramAdapter(BasePlatformAdapter):
                     )
                 except Exception as exc:
                     logger.error("Failed to resolve gateway approval from Telegram button: %s", exc)
+            return
+
+        # --- Clarify callbacks (cq:id:action[:value]) ---
+        if data.startswith("cq:"):
+            parts = data.split(":", 3)
+            if len(parts) < 3:
+                await query.answer(text="Invalid clarify data.")
+                return
+            try:
+                clarify_id = int(parts[1])
+            except (TypeError, ValueError):
+                await query.answer(text="Invalid clarify data.")
+                return
+
+            caller_id = str(getattr(query.from_user, "id", ""))
+            if not self._is_callback_user_authorized(caller_id):
+                await query.answer(text="⛔ You are not authorized to answer clarification prompts.")
+                return
+
+            state = self._clarify_state.get(clarify_id)
+            if not state:
+                await query.answer(text="This clarification has already been resolved.")
+                return
+
+            action = parts[2]
+            payload = parts[3] if len(parts) == 4 else None
+            on_clarify_resolved = state.get("on_clarify_resolved")
+            if not callable(on_clarify_resolved):
+                self._clarify_state.pop(clarify_id, None)
+                await query.answer(text="Clarification callback missing.")
+                return
+
+            user_display = getattr(query.from_user, "first_name", "User")
+            user_display_html = _html.escape(str(user_display))
+            if action == "pick":
+                try:
+                    choice_index = int(payload or "")
+                    choice_value = state.get("choices", [])[choice_index]
+                except (ValueError, IndexError, TypeError):
+                    await query.answer(text="Invalid clarify choice.")
+                    return
+                status = on_clarify_resolved(
+                    action="select",
+                    value=choice_value,
+                    user_id=caller_id,
+                    user_name=user_display,
+                )
+                if status == "unauthorized":
+                    await query.answer(text="⛔ This prompt is waiting for someone else.")
+                    return
+                if status == "expired":
+                    self._clarify_state.pop(clarify_id, None)
+                    await query.answer(text="This clarification has already been resolved.")
+                    return
+                self._clarify_state.pop(clarify_id, None)
+                await query.answer(text="Clarification sent.")
+                try:
+                    await query.edit_message_text(
+                        text=(
+                            f"✅ Clarification answered by {user_display_html}: "
+                            f"{_html.escape(str(choice_value))}"
+                        ),
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=None,
+                    )
+                except Exception:
+                    pass
+                return
+
+            if action == "other":
+                status = on_clarify_resolved(
+                    action="other",
+                    user_id=caller_id,
+                    user_name=user_display,
+                )
+                if status == "unauthorized":
+                    await query.answer(text="⛔ This prompt is waiting for someone else.")
+                    return
+                if status == "expired":
+                    self._clarify_state.pop(clarify_id, None)
+                    await query.answer(text="This clarification has already been resolved.")
+                    return
+                await query.answer(text="Send your answer as a new message.")
+                try:
+                    await query.edit_message_text(
+                        text="✍️ Please type your answer in a new message.",
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=None,
+                    )
+                except Exception:
+                    pass
+                return
+
+            if action == "cancel":
+                status = on_clarify_resolved(
+                    action="cancel",
+                    user_id=caller_id,
+                    user_name=user_display,
+                )
+                if status == "unauthorized":
+                    await query.answer(text="⛔ This prompt is waiting for someone else.")
+                    return
+                if status == "expired":
+                    self._clarify_state.pop(clarify_id, None)
+                    await query.answer(text="This clarification has already been resolved.")
+                    return
+                self._clarify_state.pop(clarify_id, None)
+                await query.answer(text="Clarification cancelled.")
+                try:
+                    await query.edit_message_text(
+                        text=f"❌ Clarification cancelled by {user_display_html}",
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=None,
+                    )
+                except Exception:
+                    pass
+                return
+
+            await query.answer(text="Unknown clarification action.")
             return
 
         # --- Update prompt callbacks ---

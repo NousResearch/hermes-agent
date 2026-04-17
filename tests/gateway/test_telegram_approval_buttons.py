@@ -52,6 +52,7 @@ from gateway.config import Platform, PlatformConfig
 
 def _make_adapter(extra=None):
     """Create a TelegramAdapter with mocked internals."""
+    os.environ.pop("TELEGRAM_ALLOWED_USERS", None)
     config = PlatformConfig(enabled=True, token="test-token", extra=extra or {})
     adapter = TelegramAdapter(config)
     adapter._bot = AsyncMock()
@@ -358,3 +359,147 @@ class TestTelegramApprovalCallback:
         query.answer.assert_called_once()
         query.edit_message_text.assert_called_once()
         assert (tmp_path / ".update_response").read_text() == "n"
+
+
+# ===========================================================================
+# Clarify inline keyboard prompts
+# ===========================================================================
+
+class TestTelegramClarify:
+    """Test Telegram-native clarify prompts and callbacks."""
+
+    @pytest.mark.asyncio
+    async def test_send_clarify_sends_inline_keyboard_and_stores_state(self):
+        adapter = _make_adapter()
+        mock_msg = MagicMock()
+        mock_msg.message_id = 77
+        adapter._bot.send_message = AsyncMock(return_value=mock_msg)
+
+        on_resolved = MagicMock(return_value="resolved")
+        result = await adapter.send_clarify(
+            chat_id="12345",
+            question="Pick a color",
+            choices=["Red", "Blue"],
+            session_key="clarify-session",
+            on_clarify_resolved=on_resolved,
+        )
+
+        assert result.success is True
+        assert result.message_id == "77"
+        assert len(adapter._clarify_state) == 1
+
+        state = next(iter(adapter._clarify_state.values()))
+        assert state["session_key"] == "clarify-session"
+        assert state["question"] == "Pick a color"
+        assert state["choices"] == ["Red", "Blue"]
+        assert state["on_clarify_resolved"] is on_resolved
+
+        kwargs = adapter._bot.send_message.call_args.kwargs
+        assert kwargs["chat_id"] == 12345
+        assert "Pick a color" in kwargs["text"]
+        assert kwargs["reply_markup"] is not None
+
+    @pytest.mark.asyncio
+    async def test_clarify_callback_resolves_selection_and_cleans_state(self):
+        adapter = _make_adapter()
+        adapter._clarify_state[5] = {
+            "session_key": "clarify-session",
+            "question": "Pick one",
+            "choices": ["Red", "Blue"],
+            "on_clarify_resolved": MagicMock(return_value="resolved"),
+        }
+
+        query = AsyncMock()
+        query.data = "cq:5:pick:1"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.from_user = MagicMock()
+        query.from_user.id = 123
+        query.from_user.first_name = "<Norbert&Co>"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+
+        update = MagicMock()
+        update.callback_query = query
+
+        await adapter._handle_callback_query(update, MagicMock())
+
+        assert adapter._clarify_state.get(5) is None
+        query.answer.assert_called_once()
+        query.edit_message_text.assert_called_once()
+        edit_text = query.edit_message_text.call_args.kwargs["text"]
+        assert "Blue" in edit_text
+        assert "<Norbert&Co>" not in edit_text
+        assert "&lt;Norbert&amp;Co&gt;" in edit_text
+
+    @pytest.mark.asyncio
+    async def test_clarify_callback_other_switches_to_text_mode(self):
+        on_resolved = MagicMock(return_value="awaiting_text")
+        adapter = _make_adapter()
+        adapter._clarify_state[8] = {
+            "session_key": "clarify-session",
+            "question": "Pick one",
+            "choices": ["Red", "Blue"],
+            "on_clarify_resolved": on_resolved,
+        }
+
+        query = AsyncMock()
+        query.data = "cq:8:other"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.from_user = MagicMock()
+        query.from_user.id = 123
+        query.from_user.first_name = "Norbert"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+
+        update = MagicMock()
+        update.callback_query = query
+
+        await adapter._handle_callback_query(update, MagicMock())
+
+        assert 8 in adapter._clarify_state
+        on_resolved.assert_called_once()
+        edit_text = query.edit_message_text.call_args.kwargs["text"]
+        assert "type your answer" in edit_text.lower()
+
+    @pytest.mark.asyncio
+    async def test_clarify_callback_pick_handles_expired_prompt(self):
+        adapter = _make_adapter()
+        adapter._clarify_state[9] = {
+            "session_key": "clarify-session",
+            "question": "Pick one",
+            "choices": ["Red", "Blue"],
+            "on_clarify_resolved": MagicMock(return_value="expired"),
+        }
+
+        query = AsyncMock()
+        query.data = "cq:9:pick:0"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.from_user = MagicMock()
+        query.from_user.id = 123
+        query.from_user.first_name = "Norbert"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+
+        update = MagicMock()
+        update.callback_query = query
+
+        await adapter._handle_callback_query(update, MagicMock())
+
+        assert 9 not in adapter._clarify_state
+        query.answer.assert_called_once()
+        assert "already been resolved" in query.answer.call_args.kwargs["text"]
+        query.edit_message_text.assert_not_called()
+
+    def test_clear_clarify_removes_matching_session_entries(self):
+        adapter = _make_adapter()
+        adapter._clarify_state[1] = {"session_key": "keep"}
+        adapter._clarify_state[2] = {"session_key": "drop"}
+        adapter._clarify_state[3] = {"session_key": "drop"}
+
+        removed = adapter.clear_clarify("drop")
+
+        assert removed == 2
+        assert sorted(adapter._clarify_state.keys()) == [1]

@@ -73,14 +73,16 @@ const TranscriptPane = memo(function TranscriptPane({
           )}
 
           {progress.showStreamingArea && (
-            <MessageLine
-              cols={composer.cols}
-              compact={ui.compact}
-              detailsMode={ui.detailsMode}
-              isStreaming
-              msg={{ role: 'assistant', text: progress.streaming }}
-              t={ui.theme}
-            />
+            <Box flexDirection="column" marginTop={progress.showProgressArea ? 1 : 0}>
+              <MessageLine
+                cols={composer.cols}
+                compact={ui.compact}
+                detailsMode={ui.detailsMode}
+                isStreaming
+                msg={{ role: 'assistant', text: progress.streaming }}
+                t={ui.theme}
+              />
+            </Box>
           )}
         </Box>
       </ScrollBox>

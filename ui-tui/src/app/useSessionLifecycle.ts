@@ -114,11 +114,17 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
         usage: usageFrom(info)
       })
 
-      if (info) setHistoryItems([introMsg(info)])
+      if (info) {
+        setHistoryItems([introMsg(info)])
+      }
 
-      if (info?.credential_warning) sys(`warning: ${info.credential_warning}`)
+      if (info?.credential_warning) {
+        sys(`warning: ${info.credential_warning}`)
+      }
 
-      if (msg) sys(msg)
+      if (msg) {
+        sys(msg)
+      }
     },
     [closeSession, colsRef, resetSession, rpc, setHistoryItems, setSessionStartedAt, sys]
   )

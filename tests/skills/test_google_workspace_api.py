@@ -1,5 +1,6 @@
 """Tests for Google Workspace gws bridge and CLI wrapper."""
 
+import base64
 import importlib.util
 import json
 import subprocess

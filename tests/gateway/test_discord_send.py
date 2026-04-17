@@ -119,3 +119,41 @@ async def test_send_retries_without_reference_when_reply_target_is_deleted():
     assert send_calls[0]["reference"] is reference_obj
     assert send_calls[1]["reference"] is None
     assert send_calls[2]["reference"] is None
+
+
+@pytest.mark.asyncio
+async def test_send_does_not_retry_on_unrelated_errors():
+    """Regression guard: errors unrelated to the reply reference (e.g. 50013
+    Missing Permissions) must NOT trigger the no-reference retry path — they
+    should propagate out of the per-chunk loop and surface as a failed
+    SendResult so the caller sees the real problem instead of a silent retry.
+    """
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+
+    reference_obj = object()
+    ref_msg = SimpleNamespace(id=99, to_reference=MagicMock(return_value=reference_obj))
+    send_calls = []
+
+    async def fake_send(*, content, reference=None):
+        send_calls.append({"content": content, "reference": reference})
+        raise RuntimeError(
+            "403 Forbidden (error code: 50013): Missing Permissions"
+        )
+
+    channel = SimpleNamespace(
+        fetch_message=AsyncMock(return_value=ref_msg),
+        send=AsyncMock(side_effect=fake_send),
+    )
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _chat_id: channel,
+        fetch_channel=AsyncMock(),
+    )
+
+    result = await adapter.send("555", "hello", reply_to="99")
+
+    # Outer except in adapter.send() wraps propagated errors as SendResult.
+    assert result.success is False
+    assert "50013" in (result.error or "")
+    # Only the first attempt happens — no reference-retry replay.
+    assert channel.send.await_count == 1
+    assert send_calls[0]["reference"] is reference_obj

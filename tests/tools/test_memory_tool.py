@@ -636,3 +636,211 @@ class TestLoadTimeSnapshotSanitization:
         # Block marker appears exactly once, not nested
         assert snapshot.count("[BLOCKED:") == 1
         assert "Clean fact" in snapshot
+
+
+# =========================================================================
+# Registry dispatch store resolution — regression for #11665
+# =========================================================================
+
+class TestRegistryDispatchStoreResolution:
+    """The ``memory`` tool is also reachable through ``registry.dispatch``
+    (handle_function_call path) and ``_resolve_memory_store_from_kwargs``.
+
+    Prior to #11665 that path passed ``store=None`` unconditionally, so
+    ``config.yaml``'s ``memory.memory_char_limit`` / ``memory.user_char_limit``
+    values were invisible to every dispatch site that wasn't the main
+    agent loop (code_execution sandbox, RL environments, reward verifiers,
+    and any plugin that forwarded a dispatch without an explicit store).
+
+    The resolver now walks the fallback chain:
+        explicit ``store=`` → ``parent_agent._memory_store`` → config-
+        driven module-level singleton built from ``hermes_cli.config``.
+    """
+
+    def _reset_default(self):
+        # Best-effort cache reset — absent on pre-fix revisions, which
+        # lets this helper run on either checkout so the behavioral
+        # regression test below can still exercise both branches.
+        try:
+            from tools.memory_tool import _reset_default_store_for_tests
+        except ImportError:
+            return
+        _reset_default_store_for_tests()
+
+    def test_explicit_store_kwarg_wins(self, tmp_path, monkeypatch):
+        """When a caller passes ``store=`` explicitly (main agent loop,
+        unit tests), the resolver returns it unchanged — never falls
+        through to ``parent_agent`` or the default singleton."""
+        from tools.memory_tool import _resolve_memory_store_from_kwargs
+        explicit = MemoryStore(memory_char_limit=111, user_char_limit=222)
+        decoy = MemoryStore(memory_char_limit=333, user_char_limit=444)
+        decoy_agent = type("FakeAgent", (), {"_memory_store": decoy})()
+
+        resolved = _resolve_memory_store_from_kwargs(
+            {"store": explicit, "parent_agent": decoy_agent}
+        )
+        assert resolved is explicit
+
+    def test_parent_agent_store_used_when_no_explicit_store(self, tmp_path, monkeypatch):
+        """Plugin dispatches (``hermes_cli/plugins.py`` plumbs
+        ``parent_agent`` through ``registry.dispatch``) should use the
+        parent agent's memory store so plugin-triggered memory calls
+        honor the user's configured limits."""
+        from tools.memory_tool import _resolve_memory_store_from_kwargs
+        parent_store = MemoryStore(memory_char_limit=555, user_char_limit=666)
+        agent = type("FakeAgent", (), {"_memory_store": parent_store})()
+
+        resolved = _resolve_memory_store_from_kwargs({"parent_agent": agent})
+        assert resolved is parent_store
+
+    def test_parent_agent_without_store_falls_through(self, tmp_path, monkeypatch):
+        """A subagent has ``_memory_store = None``; the resolver must keep
+        walking the chain rather than returning the None store."""
+        from tools.memory_tool import _resolve_memory_store_from_kwargs
+        self._reset_default()
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "memory:\n"
+            "  memory_enabled: true\n"
+            "  memory_char_limit: 4242\n"
+            "  user_char_limit: 3131\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: hermes_home)
+
+        subagent = type("SubAgent", (), {"_memory_store": None})()
+
+        resolved = _resolve_memory_store_from_kwargs({"parent_agent": subagent})
+        assert resolved is not None
+        # Resolver fell through to the config-driven default.
+        assert resolved.memory_char_limit == 4242
+        assert resolved.user_char_limit == 3131
+
+    def test_default_store_uses_config_yaml_values(self, tmp_path, monkeypatch):
+        """Registry dispatch with no store and no parent_agent builds the
+        default MemoryStore from ``config.yaml`` memory limits — this is
+        the regression #11665 reports."""
+        from tools.memory_tool import _resolve_memory_store_from_kwargs
+        self._reset_default()
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "memory:\n"
+            "  memory_enabled: true\n"
+            "  memory_char_limit: 9999\n"
+            "  user_char_limit: 8888\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: hermes_home)
+
+        resolved = _resolve_memory_store_from_kwargs({})
+        assert resolved is not None
+        assert resolved.memory_char_limit == 9999
+        assert resolved.user_char_limit == 8888
+
+    def test_default_store_respects_user_profile_only(self, tmp_path, monkeypatch):
+        """``user_profile_enabled: true`` alone is enough to activate the
+        default store — mirrors the main-loop gate in run_agent.py."""
+        from tools.memory_tool import _resolve_memory_store_from_kwargs
+        self._reset_default()
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "memory:\n"
+            "  memory_enabled: false\n"
+            "  user_profile_enabled: true\n"
+            "  user_char_limit: 7777\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: hermes_home)
+
+        resolved = _resolve_memory_store_from_kwargs({})
+        assert resolved is not None
+        assert resolved.user_char_limit == 7777
+
+    def test_default_store_returns_none_when_memory_disabled(self, tmp_path, monkeypatch):
+        """When both memory and user-profile are disabled in config, the
+        resolver returns ``None`` so ``memory_tool`` reports the normal
+        ``"Memory is not available"`` error instead of silently writing
+        to an on-disk file the user opted out of."""
+        from tools.memory_tool import _resolve_memory_store_from_kwargs
+        self._reset_default()
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "memory:\n"
+            "  memory_enabled: false\n"
+            "  user_profile_enabled: false\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: hermes_home)
+
+        resolved = _resolve_memory_store_from_kwargs({})
+        assert resolved is None
+
+    def test_default_store_is_singleton(self, tmp_path, monkeypatch):
+        """The default store is cached — two resolutions return the same
+        instance so repeated dispatches don't re-read config or the on-
+        disk files on every call."""
+        from tools.memory_tool import _resolve_memory_store_from_kwargs
+        self._reset_default()
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "memory:\n"
+            "  memory_enabled: true\n"
+            "  memory_char_limit: 1234\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: hermes_home)
+
+        first = _resolve_memory_store_from_kwargs({})
+        second = _resolve_memory_store_from_kwargs({})
+        assert first is second
+        assert first.memory_char_limit == 1234
+
+    def test_registry_dispatch_uses_config_memory_limit(self, tmp_path, monkeypatch):
+        """End-to-end: ``registry.dispatch("memory", ...)`` with no store
+        and no parent_agent must succeed and write through to the
+        config-driven MemoryStore — not silently return ``"Memory is not
+        available"``.
+
+        This is the exact path #11665 describes as broken. On pre-fix
+        code the registry handler passed ``store=None`` and the dispatch
+        returned ``success: false`` with ``"not available"``.  Deliberately
+        written to avoid importing the private resolver helper so the
+        behavioral regression is visible even on a pre-fix checkout."""
+        from tools.registry import registry
+        self._reset_default()
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "memory:\n"
+            "  memory_enabled: true\n"
+            "  memory_char_limit: 9999\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: hermes_home)
+
+        # Dispatch via the registry with NO store kwarg and NO parent_agent
+        # — mirrors handle_function_call's path.
+        raw = registry.dispatch(
+            "memory",
+            {"action": "add", "target": "memory", "content": "routed via registry dispatch"},
+        )
+        result = json.loads(raw)
+        # On unpatched code this fails with "Memory is not available".
+        assert result.get("success") is True, f"dispatch returned: {result}"
+
+        # The entry should have been persisted under the tmp HERMES_HOME.
+        memory_md = hermes_home / "MEMORY.md"
+        assert memory_md.exists(), "dispatch did not persist to config-driven hermes_home"
+        assert "routed via registry dispatch" in memory_md.read_text(encoding="utf-8")

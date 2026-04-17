@@ -704,6 +704,93 @@ MEMORY_SCHEMA = {
 # --- Registry ---
 from tools.registry import registry, tool_error
 
+# Module-level config-driven MemoryStore used as a last-resort fallback when
+# memory is dispatched via the registry without an explicit ``store`` kwarg
+# and no ``parent_agent`` is in the dispatch context (e.g. code_execution
+# sandboxes, RL training environments, or reward verifiers that call
+# ``handle_function_call("memory", ...)``).  Built lazily from
+# ``hermes_cli.config.load_config()`` so ``config.yaml`` values
+# (``memory.memory_char_limit``, ``memory.user_char_limit``) are honored in
+# every dispatch path, not just the main ``AIAgent.__init__`` code path.
+# Regression for #11665.
+import threading as _threading
+
+_default_store_lock = _threading.Lock()
+_default_store: Optional["MemoryStore"] = None
+
+
+def _resolve_memory_store_from_kwargs(kw: dict) -> Optional["MemoryStore"]:
+    """Resolve the MemoryStore to use for a registry-dispatched memory call.
+
+    Fallback chain:
+      1. Explicit ``store=`` kwarg (main agent loop special-case + tests).
+      2. ``kw["parent_agent"]._memory_store`` (CLI plugin dispatch —
+         ``hermes_cli/plugins.py`` plumbs ``parent_agent`` into kwargs).
+      3. A process-wide config-driven singleton, built from the current
+         ``config.yaml`` memory section.
+
+    The singleton is cached on first use and reused across calls so
+    repeated dispatches don't re-read ``config.yaml`` or re-read the on-
+    disk MEMORY.md / USER.md.  If memory is disabled in config, returns
+    ``None`` and the caller's ``memory_tool`` guard reports the usual
+    ``"Memory is not available"`` error.
+    """
+    explicit = kw.get("store")
+    if explicit is not None:
+        return explicit
+
+    parent = kw.get("parent_agent")
+    if parent is not None:
+        parent_store = getattr(parent, "_memory_store", None)
+        if parent_store is not None:
+            return parent_store
+
+    # Last resort: build (or reuse) a config-driven default store.
+    global _default_store
+    if _default_store is not None:
+        return _default_store
+
+    with _default_store_lock:
+        if _default_store is not None:
+            return _default_store
+        try:
+            from hermes_cli.config import load_config
+            cfg = load_config() or {}
+            mem_cfg = cfg.get("memory", {}) or {}
+            if not (
+                mem_cfg.get("memory_enabled", False)
+                or mem_cfg.get("user_profile_enabled", False)
+            ):
+                return None
+            store = MemoryStore(
+                memory_char_limit=int(mem_cfg.get("memory_char_limit", 2200)),
+                user_char_limit=int(mem_cfg.get("user_char_limit", 1375)),
+            )
+            try:
+                store.load_from_disk()
+            except Exception:
+                # Disk load is best-effort; a freshly-constructed store
+                # still enforces the configured limits for new entries.
+                logger.debug("Default MemoryStore load_from_disk failed", exc_info=True)
+            _default_store = store
+            return _default_store
+        except Exception:
+            logger.debug("Failed to build default MemoryStore from config", exc_info=True)
+            return None
+
+
+def _reset_default_store_for_tests() -> None:
+    """Reset the module-level default MemoryStore cache.
+
+    Intended for tests that mutate ``config.yaml`` / ``HERMES_HOME`` and
+    need the next ``_resolve_memory_store_from_kwargs`` call to rebuild
+    the singleton with the new values.  Not part of the public API.
+    """
+    global _default_store
+    with _default_store_lock:
+        _default_store = None
+
+
 registry.register(
     name="memory",
     toolset="memory",
@@ -713,7 +800,7 @@ registry.register(
         target=args.get("target", "memory"),
         content=args.get("content"),
         old_text=args.get("old_text"),
-        store=kw.get("store")),
+        store=_resolve_memory_store_from_kwargs(kw)),
     check_fn=check_memory_requirements,
     emoji="🧠",
 )

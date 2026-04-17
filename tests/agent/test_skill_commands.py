@@ -12,6 +12,7 @@ from agent.skill_commands import (
     build_plan_path,
     build_preloaded_skills_prompt,
     build_skill_invocation_message,
+    build_skill_invocation_payload,
     resolve_skill_command_key,
     scan_skill_commands,
 )
@@ -378,6 +379,125 @@ Generate some audio.
 
         assert msg is not None
         assert 'file_path="<path>"' in msg
+
+
+class TestBuildSkillInvocationPayload:
+    """Structured invocation payload — carries runtime defaults alongside msg."""
+
+    def test_payload_includes_runtime_defaults_when_flag_on(self, tmp_path):
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch(
+                "agent.skill_utils._runtime_defaults_flag_enabled",
+                return_value=True,
+            ),
+        ):
+            _make_skill(
+                tmp_path,
+                "brainstorm",
+                frontmatter_extra=(
+                    "metadata:\n"
+                    "  hermes:\n"
+                    "    runtime_defaults:\n"
+                    "      reasoning_effort: low\n"
+                ),
+            )
+            scan_skill_commands()
+            payload = build_skill_invocation_payload("/brainstorm")
+        assert payload is not None
+        assert payload["skill_name"] == "brainstorm"
+        assert payload["runtime_defaults"]["reasoning_effort"] == "low"
+        assert payload["runtime_defaults"]["reasoning_config"] == {
+            "enabled": True,
+            "effort": "low",
+        }
+        assert "brainstorm" in payload["message"]
+
+    def test_payload_has_empty_defaults_when_skill_does_not_declare(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "plain-skill")
+            scan_skill_commands()
+            payload = build_skill_invocation_payload("/plain-skill")
+        assert payload is not None
+        assert payload["runtime_defaults"] == {}
+
+    def test_wrapper_returns_same_message_as_payload(self, tmp_path):
+        """Regression: build_skill_invocation_message must match payload['message']
+        byte-for-byte so the 5 existing callers keep working."""
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch(
+                "agent.skill_utils._runtime_defaults_flag_enabled",
+                return_value=True,
+            ),
+        ):
+            _make_skill(
+                tmp_path,
+                "brainstorm",
+                frontmatter_extra=(
+                    "metadata:\n"
+                    "  hermes:\n"
+                    "    runtime_defaults:\n"
+                    "      reasoning_effort: low\n"
+                ),
+            )
+            scan_skill_commands()
+            payload = build_skill_invocation_payload(
+                "/brainstorm", "extra details", runtime_note="Keep it tight"
+            )
+            msg = build_skill_invocation_message(
+                "/brainstorm", "extra details", runtime_note="Keep it tight"
+            )
+        assert payload is not None
+        assert msg == payload["message"]
+
+    def test_builder_does_not_inject_structured_runtime_tokens(self, tmp_path):
+        """Design Rule 8 fence: the builder itself must not add machine-parseable
+        runtime tokens to the message body.  Given a skill with NO
+        runtime_defaults declared, the builder should produce a message free of
+        ``reasoning_effort:`` / ``model:`` fragments regardless of runtime_note.
+
+        Fence scope: this asserts the builder doesn't smuggle structured state.
+        A skill's own frontmatter may contain runtime_defaults YAML — that's the
+        skill's declared content, not builder injection.
+        """
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch(
+                "agent.skill_utils._runtime_defaults_flag_enabled",
+                return_value=True,
+            ),
+        ):
+            _make_skill(tmp_path, "plain", body="Do the thing.")
+            scan_skill_commands()
+            payload = build_skill_invocation_payload(
+                "/plain",
+                user_instruction="Please do it",
+                runtime_note="Note: this skill runs with reduced reasoning to stay fast",
+            )
+        assert payload is not None
+        assert "reasoning_effort:" not in payload["message"]
+        assert "model:" not in payload["message"]
+        # Human-readable prose is still allowed.
+        assert "Note:" in payload["message"]
+
+    def test_runtime_note_with_reasoning_effort_prose_is_allowed(self, tmp_path):
+        """Rule 8 fence scope is YAML/JSON fragments only — human prose OK."""
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "plain")
+            scan_skill_commands()
+            payload = build_skill_invocation_payload(
+                "/plain",
+                runtime_note="This runs with reduced reasoning",
+            )
+        assert payload is not None
+        assert "reduced reasoning" in payload["message"]
+
+    def test_returns_none_for_unknown_skill(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            scan_skill_commands()
+            payload = build_skill_invocation_payload("/nonexistent")
+        assert payload is None
 
 
 class TestPlanSkillHelpers:

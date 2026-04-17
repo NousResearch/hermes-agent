@@ -534,11 +534,42 @@ class TestGetTextAuxiliaryClient:
         assert call_kwargs.kwargs["api_key"] == "or-key"
 
     def test_nous_takes_priority_over_codex(self, monkeypatch, codex_auth_dir):
-        with patch("agent.auxiliary_client._read_nous_auth") as mock_nous, \
-             patch("agent.auxiliary_client.OpenAI") as mock_openai:
-            mock_nous.return_value = {"access_token": "nous-tok"}
+        with patch(
+            "hermes_cli.auth.resolve_nous_runtime_credentials",
+            return_value={"api_key": "fresh-nk", "base_url": "https://nous.example/v1"},
+        ), patch("agent.auxiliary_client.OpenAI") as mock_openai:
             client, model = get_text_auxiliary_client()
         assert model == "google/gemini-3-flash-preview"
+        call_kwargs = mock_openai.call_args
+        assert call_kwargs.kwargs["api_key"] == "fresh-nk"
+
+    def test_nous_aux_uses_runtime_credentials_instead_of_stale_pool_agent_key(self):
+        stale_entry = MagicMock(
+            access_token="fresh-access-token",
+            agent_key="stale-agent-key",
+            inference_base_url="https://stale.example/v1",
+            base_url="https://stale.example/v1",
+            portal_base_url="https://portal.example",
+            client_id="hermes-cli",
+            scope="openid profile email offline_access",
+            token_type="Bearer",
+        )
+
+        with patch("agent.auxiliary_client._select_pool_entry", return_value=(True, stale_entry)), \
+             patch(
+                 "hermes_cli.auth.resolve_nous_runtime_credentials",
+                 return_value={"api_key": "fresh-agent-key", "base_url": "https://fresh.example/v1"},
+             ), \
+             patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            from agent.auxiliary_client import _try_nous
+
+            client, model = _try_nous()
+
+        assert client is not None
+        assert model == "google/gemini-3-flash-preview"
+        call_kwargs = mock_openai.call_args
+        assert call_kwargs.kwargs["api_key"] == "fresh-agent-key"
+        assert call_kwargs.kwargs["base_url"] == "https://fresh.example/v1"
 
     def test_custom_endpoint_over_codex(self, monkeypatch, codex_auth_dir):
         config = {
@@ -556,8 +587,10 @@ class TestGetTextAuxiliaryClient:
             "agent.auxiliary_client._read_codex_access_token",
             lambda: "codex-test-token-abc123",
         )
-        with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
-             patch("agent.auxiliary_client.OpenAI") as mock_openai:
+        with patch(
+            "hermes_cli.auth.resolve_nous_runtime_credentials",
+            side_effect=Exception("Nous not configured"),
+        ), patch("agent.auxiliary_client.OpenAI") as mock_openai:
             client, model = get_text_auxiliary_client()
         assert model == "my-local-model"
         call_kwargs = mock_openai.call_args
@@ -575,7 +608,10 @@ class TestGetTextAuxiliaryClient:
         monkeypatch.setattr("hermes_cli.config.load_config", lambda: config)
         monkeypatch.setattr("hermes_cli.runtime_provider.load_config", lambda: config)
 
-        with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
+        with patch(
+            "hermes_cli.auth.resolve_nous_runtime_credentials",
+            side_effect=Exception("Nous not configured"),
+        ), \
              patch("agent.auxiliary_client._read_codex_access_token", return_value=None), \
              patch("agent.auxiliary_client._resolve_api_key_provider", return_value=(None, None)), \
              patch("agent.auxiliary_client.OpenAI") as mock_openai:
@@ -685,7 +721,7 @@ class TestVisionClientFallback:
 
 
 class TestAuxiliaryPoolAwareness:
-    def test_try_nous_uses_pool_entry(self):
+    def test_try_nous_uses_runtime_credentials_even_when_pool_entry_exists(self):
         class _Entry:
             access_token = "pooled-access-token"
             agent_key = "pooled-agent-key"
@@ -700,6 +736,13 @@ class TestAuxiliaryPoolAwareness:
 
         with (
             patch("agent.auxiliary_client.load_pool", return_value=_Pool()),
+            patch(
+                "hermes_cli.auth.resolve_nous_runtime_credentials",
+                return_value={
+                    "api_key": "fresh-runtime-key",
+                    "base_url": "https://runtime.pool.example/v1",
+                },
+            ),
             patch("agent.auxiliary_client.OpenAI") as mock_openai,
         ):
             from agent.auxiliary_client import _try_nous
@@ -707,10 +750,10 @@ class TestAuxiliaryPoolAwareness:
             client, model = _try_nous()
 
         assert client is not None
-        assert model == "gemini-3-flash"
+        assert model == "google/gemini-3-flash-preview"
         call_kwargs = mock_openai.call_args.kwargs
-        assert call_kwargs["api_key"] == "pooled-agent-key"
-        assert call_kwargs["base_url"] == "https://inference.pool.example/v1"
+        assert call_kwargs["api_key"] == "fresh-runtime-key"
+        assert call_kwargs["base_url"] == "https://runtime.pool.example/v1"
 
     def test_resolve_provider_client_copilot_uses_runtime_credentials(self, monkeypatch):
         monkeypatch.delenv("GITHUB_TOKEN", raising=False)

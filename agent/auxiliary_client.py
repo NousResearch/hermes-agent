@@ -799,16 +799,26 @@ def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
     except Exception:
         pass
 
-    nous = _read_nous_auth()
-    if not nous:
+    try:
+        from hermes_cli.auth import resolve_nous_runtime_credentials
+
+        creds = resolve_nous_runtime_credentials(
+            min_key_ttl_seconds=max(60, int(os.getenv("HERMES_NOUS_MIN_KEY_TTL_SECONDS", "1800"))),
+            timeout_seconds=float(os.getenv("HERMES_NOUS_TIMEOUT_SECONDS", "15")),
+        )
+    except Exception as exc:
+        logger.debug("Auxiliary client: Nous runtime credential resolution failed: %s", exc)
         return None, None
+
+    api_key = str(creds.get("api_key") or "").strip()
+    base_url = str(creds.get("base_url") or _NOUS_DEFAULT_BASE_URL).strip().rstrip("/")
+    if not api_key or not base_url:
+        return None, None
+
     global auxiliary_is_nous
     auxiliary_is_nous = True
     logger.debug("Auxiliary client: Nous Portal")
-    if nous.get("source") == "pool":
-        model = "gemini-3-flash"
-    else:
-        model = _NOUS_MODEL
+    model = _NOUS_MODEL
     # Free-tier users can't use paid auxiliary models — use the free
     # models instead: mimo-v2-omni for vision, mimo-v2-pro for text tasks.
     try:
@@ -819,13 +829,7 @@ def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
                          model, "vision" if vision else "text")
     except Exception:
         pass
-    return (
-        OpenAI(
-            api_key=_nous_api_key(nous),
-            base_url=str(nous.get("inference_base_url") or _nous_base_url()).rstrip("/"),
-        ),
-        model,
-    )
+    return OpenAI(api_key=api_key, base_url=base_url), model
 
 
 def _read_main_model() -> str:

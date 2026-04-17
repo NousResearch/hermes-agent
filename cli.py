@@ -3126,17 +3126,28 @@ class HermesCLI:
         MAX_ASST_LINES = 3           # max lines of assistant text
 
         def _strip_reasoning(text: str) -> str:
-            """Remove <REASONING_SCRATCHPAD>...</REASONING_SCRATCHPAD> blocks
-            from displayed text (reasoning model internal thoughts)."""
+            """Remove reasoning/thinking blocks from displayed text.
+
+            Handles all tag variants used by reasoning models:
+            <think>, <thinking>, <reasoning>, <REASONING_SCRATCHPAD>,
+            <thought> — both closed and unclosed (truncated) blocks.
+            """
             import re
+            # Strip closed tag pairs for all known reasoning tag variants
+            cleaned = re.sub(r"<think>.*?</think>\s*", "", text, flags=re.DOTALL)
+            cleaned = re.sub(r"<thinking>.*?</thinking>\s*", "", cleaned, flags=re.DOTALL | re.IGNORECASE)
+            cleaned = re.sub(r"<reasoning>.*?</reasoning>\s*", "", cleaned, flags=re.DOTALL)
+            cleaned = re.sub(r"<REASONING_SCRATCHPAD>.*?</REASONING_SCRATCHPAD>\s*", "", cleaned, flags=re.DOTALL)
+            cleaned = re.sub(r"<thought>.*?</thought>\s*", "", cleaned, flags=re.DOTALL | re.IGNORECASE)
+            # Strip unclosed (truncated) reasoning tags that extend to end of text
             cleaned = re.sub(
-                r"<REASONING_SCRATCHPAD>.*?</REASONING_SCRATCHPAD>\s*",
-                "", text, flags=re.DOTALL,
+                r"<(?:think|thinking|reasoning|REASONING_SCRATCHPAD|thought)>.*$",
+                "", cleaned, flags=re.DOTALL | re.IGNORECASE,
             )
-            # Also strip unclosed reasoning tags at the end
+            # Remove any leftover orphan closing tags
             cleaned = re.sub(
-                r"<REASONING_SCRATCHPAD>.*$",
-                "", cleaned, flags=re.DOTALL,
+                r"</(?:think|thinking|reasoning|REASONING_SCRATCHPAD|thought)>\s*",
+                "", cleaned, flags=re.IGNORECASE,
             )
             return cleaned.strip()
 

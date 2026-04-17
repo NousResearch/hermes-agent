@@ -580,10 +580,12 @@ _CORS_HEADERS = {
 
 
 if AIOHTTP_AVAILABLE:
+    _API_SERVER_ADAPTER_KEY = web.AppKey("api_server_adapter", object)
+
     @web.middleware
     async def cors_middleware(request, handler):
         """Add CORS headers for explicitly allowed origins; handle OPTIONS preflight."""
-        adapter = request.app.get("api_server_adapter")
+        adapter = request.app.get(_API_SERVER_ADAPTER_KEY)
         origin = request.headers.get("Origin", "")
         cors_headers = None
         if adapter is not None:
@@ -5311,10 +5313,9 @@ class APIServerAdapter(BasePlatformAdapter):
             # bootstrap shims use this key as a feature-detection hook; registering
             # native routes first lets those shims no-op instead of shadowing the
             # upstream session-control handlers.
-            self._app["api_server_adapter"] = self
+            self._app[_API_SERVER_ADAPTER_KEY] = self
             if self.gateway_runner is not None:
                 self._app["gateway_runner"] = self.gateway_runner
-
             # Start background sweep to clean up orphaned (unconsumed) run streams
             sweep_task = asyncio.create_task(self._sweep_orphaned_runs())
             try:

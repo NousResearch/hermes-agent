@@ -273,3 +273,133 @@ class TestPlatformEnum:
 
     def test_dingtalk_in_platform_enum(self):
         assert Platform.DINGTALK.value == "dingtalk"
+
+
+# ---------------------------------------------------------------------------
+# SDK compatibility regression tests (dingtalk-stream >= 0.20 / 0.24)
+# ---------------------------------------------------------------------------
+
+
+class TestWebhookDomainAllowlist:
+    """Guard the webhook origin allowlist against regression.
+
+    The SDK started returning reply webhooks on ``oapi.dingtalk.com`` in
+    addition to ``api.dingtalk.com``. Both must be accepted, and hostile
+    lookalikes must still be rejected (SSRF defence-in-depth).
+    """
+
+    def test_api_domain_accepted(self):
+        from gateway.platforms.dingtalk import _DINGTALK_WEBHOOK_RE
+        assert _DINGTALK_WEBHOOK_RE.match(
+            "https://api.dingtalk.com/robot/send?access_token=x"
+        )
+
+    def test_oapi_domain_accepted(self):
+        from gateway.platforms.dingtalk import _DINGTALK_WEBHOOK_RE
+        assert _DINGTALK_WEBHOOK_RE.match(
+            "https://oapi.dingtalk.com/robot/send?access_token=x"
+        )
+
+    def test_http_rejected(self):
+        from gateway.platforms.dingtalk import _DINGTALK_WEBHOOK_RE
+        assert not _DINGTALK_WEBHOOK_RE.match("http://api.dingtalk.com/robot/send")
+
+    def test_suffix_attack_rejected(self):
+        from gateway.platforms.dingtalk import _DINGTALK_WEBHOOK_RE
+        assert not _DINGTALK_WEBHOOK_RE.match(
+            "https://api.dingtalk.com.evil.example/"
+        )
+
+    def test_unsanctioned_subdomain_rejected(self):
+        from gateway.platforms.dingtalk import _DINGTALK_WEBHOOK_RE
+        # Only api.* and oapi.* are allowed — e.g. eapi.dingtalk.com must not slip through
+        assert not _DINGTALK_WEBHOOK_RE.match("https://eapi.dingtalk.com/robot/send")
+
+
+class TestHandlerProcessIsAsync:
+    """dingtalk-stream >= 0.20 requires ``process`` to be a coroutine."""
+
+    def test_process_is_coroutine_function(self):
+        from gateway.platforms.dingtalk import _IncomingHandler
+        assert asyncio.iscoroutinefunction(_IncomingHandler.process)
+
+
+class TestExtractText:
+    """_extract_text must handle both legacy and current SDK payload shapes.
+
+    Before SDK 0.20 ``message.text`` was a ``dict`` with a ``content`` key.
+    From 0.20 onward it is a ``TextContent`` dataclass whose ``__str__``
+    returns ``"TextContent(content=...)"`` — falling back to ``str(text)``
+    leaks that repr into the agent's input.
+    """
+
+    def test_text_as_dict_legacy(self):
+        from gateway.platforms.dingtalk import DingTalkAdapter
+        msg = MagicMock()
+        msg.text = {"content": "hello world"}
+        msg.rich_text_content = None
+        msg.rich_text = None
+        assert DingTalkAdapter._extract_text(msg) == "hello world"
+
+    def test_text_as_textcontent_object(self):
+        """SDK >= 0.20 shape: object with ``.content`` attribute."""
+        from gateway.platforms.dingtalk import DingTalkAdapter
+
+        class FakeTextContent:
+            content = "hello from new sdk"
+
+            def __str__(self):  # mimic real SDK repr
+                return f"TextContent(content={self.content})"
+
+        msg = MagicMock()
+        msg.text = FakeTextContent()
+        msg.rich_text_content = None
+        msg.rich_text = None
+        result = DingTalkAdapter._extract_text(msg)
+        assert result == "hello from new sdk"
+        assert "TextContent(" not in result
+
+    def test_text_content_attr_with_empty_string(self):
+        from gateway.platforms.dingtalk import DingTalkAdapter
+
+        class FakeTextContent:
+            content = ""
+
+        msg = MagicMock()
+        msg.text = FakeTextContent()
+        msg.rich_text_content = None
+        msg.rich_text = None
+        assert DingTalkAdapter._extract_text(msg) == ""
+
+    def test_rich_text_content_new_shape(self):
+        """SDK >= 0.20 exposes rich text as ``message.rich_text_content.rich_text_list``."""
+        from gateway.platforms.dingtalk import DingTalkAdapter
+
+        class FakeRichText:
+            rich_text_list = [{"text": "hello "}, {"text": "world"}]
+
+        msg = MagicMock()
+        msg.text = None
+        msg.rich_text_content = FakeRichText()
+        msg.rich_text = None
+        result = DingTalkAdapter._extract_text(msg)
+        assert "hello" in result and "world" in result
+
+    def test_rich_text_legacy_shape(self):
+        """Legacy ``message.rich_text`` list remains supported."""
+        from gateway.platforms.dingtalk import DingTalkAdapter
+        msg = MagicMock()
+        msg.text = None
+        msg.rich_text_content = None
+        msg.rich_text = [{"text": "legacy "}, {"text": "rich"}]
+        result = DingTalkAdapter._extract_text(msg)
+        assert "legacy" in result and "rich" in result
+
+    def test_empty_message(self):
+        from gateway.platforms.dingtalk import DingTalkAdapter
+        msg = MagicMock()
+        msg.text = None
+        msg.rich_text_content = None
+        msg.rich_text = None
+        assert DingTalkAdapter._extract_text(msg) == ""
+

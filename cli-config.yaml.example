@@ -1098,3 +1098,25 @@ display:
 #     - command: "~/.hermes/agent-hooks/log-orchestration.sh"
 #
 # hooks_auto_accept: false
+#
+# =============================================================================
+# GPU Monitoring
+# =============================================================================
+# Display live GPU utilization, memory, and temperature in the status bar and
+# via the /gpu command. Run `hermes setup gpu` for an interactive wizard.
+#
+# The provider is pluggable; each provider lives under
+# hermes_cli/gpu/providers/. Today only "dcgm" (NVIDIA DCGM Prometheus
+# exporter — https://github.com/NVIDIA/dcgm-exporter) ships in-tree.
+gpu:
+  # Registered provider name.
+  provider: "dcgm"
+  # Metrics endpoint URL. Empty string disables monitoring.
+  # DCGM default: http://localhost:9400/metrics
+  endpoint: ""
+  # Background refresh interval in seconds. Lower = fresher data, more HTTP
+  # requests to the exporter.
+  refresh_interval: 5
+  # Explicit on/off switch. Set to false to keep the endpoint configured but
+  # temporarily suppress polling.
+  enabled: true

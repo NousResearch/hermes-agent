@@ -1738,6 +1738,25 @@ DEFAULT_CONFIG = {
         "retries": 2,
     },
 
+    # GPU monitoring — pluggable metrics exporter integration.
+    # Enables real-time GPU utilization, memory, and temperature display in the
+    # CLI status bar and via the /gpu command.
+    "gpu": {
+        # Registered provider name (see hermes_cli/gpu/providers/).
+        # Currently supported: "dcgm" (NVIDIA DCGM exporter).
+        "provider": "dcgm",
+        # Metrics endpoint URL (e.g. http://localhost:9400/metrics for DCGM).
+        # Leave empty to disable GPU monitoring.
+        "endpoint": "",
+        # Background cache refresh interval in seconds (default: 5).
+        # The status bar reads from this cache — lower values = fresher data
+        # but more HTTP requests to the exporter.
+        "refresh_interval": 5,
+        # Whether GPU monitoring is enabled.  Auto-detected from endpoint
+        # being non-empty, but can be explicitly disabled here.
+        "enabled": True,
+    },
+
     # Config schema version - bump this when adding new required fields
     "_config_version": 23,
 }

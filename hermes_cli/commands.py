@@ -214,6 +214,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                cli_only=True, args_hint="<path>"),
     CommandDef("update", "Update Hermes Agent to the latest version", "Info"),
     CommandDef("debug", "Upload debug report (system info + logs) and get shareable links", "Info"),
+    CommandDef("gpu", "Show GPU utilization and memory usage (DCGM exporter)", "Info",
+               args_hint="[refresh]"),
 
     # Exit
     CommandDef("quit", "Exit the CLI (use --delete to also remove session history)", "Exit",

@@ -763,6 +763,11 @@ def _run_cleanup():
         shutdown_mcp_servers()
     except Exception:
         pass
+    try:
+        from hermes_cli.gpu import stop_gpu_cache
+        stop_gpu_cache()
+    except Exception:
+        pass
     # Close cached auxiliary LLM clients (sync + async) so that
     # AsyncHttpxClientWrapper.__del__ doesn't fire on a closed event loop
     # and trigger prompt_toolkit's "Press ENTER to continue..." handler.
@@ -3494,9 +3499,35 @@ class HermesCLI:
                 parts.append(prompt_elapsed)
             if yolo_active:
                 parts.append("⚠ YOLO")
+            gpu_text = self._get_gpu_status_text()
+            if gpu_text:
+                parts.append(gpu_text)
             return self._trim_status_bar_text(" │ ".join(parts), width)
         except Exception:
             return f"⚕ {self.model if getattr(self, 'model', None) else 'Hermes'}"
+
+    def _get_gpu_status_text(self) -> str:
+        """Return compact GPU status string for the status bar.
+
+        Reads from the background cache which refreshes at its own interval.
+        Returns empty string if GPU monitoring is disabled. Shows only the
+        first GPU to keep the status bar compact.
+        """
+        try:
+            from hermes_cli.gpu import get_gpu_cache
+            cache = get_gpu_cache()
+            if cache is None:
+                return ""
+            gpus = cache.get_cached()
+            if not gpus:
+                return ""
+            gpu = gpus[0]
+            util_str = f"{gpu.gpu_util:.0f}%" if gpu.gpu_util is not None else "?%"
+            temp_str = f"{gpu.gpu_temp:.0f}C" if gpu.gpu_temp is not None else "?C"
+            mem_str = f"{gpu.fb_used_pct:.0f}%" if gpu.fb_used_pct is not None else "?%"
+            return f"{gpu.short_model()} {util_str}U/{temp_str}/{mem_str}M"
+        except Exception:
+            return ""
 
     def _get_status_bar_fragments(self):
         if not self._status_bar_visible or getattr(self, '_model_picker_state', None):
@@ -3560,6 +3591,7 @@ class HermesCLI:
                     bar_style = self._status_bar_context_style(percent)
                     compressions = snapshot.get("compressions", 0)
                     bg_count = snapshot.get("active_background_tasks", 0)
+                    gpu_text = self._get_gpu_status_text()
                     frags = [
                         ("class:status-bar", " ⚕ "),
                         ("class:status-bar-strong", snapshot["model_short"]),
@@ -3588,6 +3620,11 @@ class HermesCLI:
                     if yolo_active:
                         frags.append(("class:status-bar-dim", " │ "))
                         frags.append(("class:status-bar-yolo", "⚠ YOLO"))
+                    if gpu_text:
+                        frags.extend([
+                            ("class:status-bar-dim", " │ "),
+                            ("class:status-bar-dim", gpu_text),
+                        ])
                     frags.append(("class:status-bar", " "))
 
             total_width = sum(self._status_bar_display_width(text) for _, text in frags)
@@ -8066,6 +8103,8 @@ class HermesCLI:
         elif canonical == "update":
             if self._handle_update_command():
                 return False
+        elif canonical == "gpu":
+            self._handle_gpu_command(cmd_original)
         elif canonical == "paste":
             self._handle_paste_command()
         elif canonical == "image":
@@ -9452,6 +9491,38 @@ class HermesCLI:
         # sys.exit inside a non-main thread does not exit the process).
         self._pending_relaunch = ["update"]
         return True
+
+    def _handle_gpu_command(self, cmd_original: str):
+        """Handle /gpu — show GPU utilization and memory usage via DCGM exporter.
+
+        Usage:
+          /gpu          Show current GPU metrics
+          /gpu refresh  Force an immediate cache refresh and display
+        """
+        from hermes_cli.gpu import (
+            display_gpu_metrics,
+            fetch_gpu_metrics,
+            get_gpu_cache,
+            is_gpu_monitoring_enabled,
+        )
+
+        if not is_gpu_monitoring_enabled():
+            _cprint("  GPU monitoring is not configured. Run `hermes setup gpu`.")
+            return
+
+        parts = cmd_original.split(maxsplit=1)
+        subcmd = parts[1].strip().lower() if len(parts) > 1 else ""
+
+        try:
+            if subcmd == "refresh":
+                cache = get_gpu_cache()
+                _cprint("  Refreshing GPU metrics...")
+                gpus = cache.force_refresh() if cache else fetch_gpu_metrics()
+            else:
+                gpus = fetch_gpu_metrics()
+            _cprint(display_gpu_metrics(gpus=gpus))
+        except Exception as e:
+            _cprint(f"  Error fetching GPU metrics: {e}")
 
     def _show_usage(self):
         """Show rate limits (if available) and session token usage."""
@@ -13774,7 +13845,7 @@ class HermesCLI:
 
         spinner_thread = threading.Thread(target=spinner_loop, daemon=True)
         spinner_thread.start()
-        
+
         # Background thread to process inputs and run agent
         def process_loop():
             while not self._should_exit:

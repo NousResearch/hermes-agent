@@ -3115,6 +3115,120 @@ def _offer_openclaw_migration(hermes_home: Path) -> bool:
 
 
 # =============================================================================
+# GPU Monitoring Setup
+# =============================================================================
+
+def setup_gpu_monitoring(config: dict):
+    """Configure GPU monitoring against one of the registered providers.
+
+    Prompts for a provider (DCGM today), endpoint, and refresh interval.
+    Validates the endpoint against the provider before saving.
+    """
+    from hermes_cli.gpu import list_providers, validate_gpu_endpoint
+
+    providers = list_providers()
+    if not providers:
+        print_warning("No GPU providers registered — cannot configure monitoring.")
+        return
+
+    print()
+    print_header("GPU Monitoring")
+    print_info("Monitor GPU utilization, memory, and temperature in the CLI")
+    print_info("status bar via a metrics exporter.")
+    print()
+
+    gpu_cfg = config.get("gpu") if isinstance(config.get("gpu"), dict) else {}
+    current_provider = gpu_cfg.get("provider", providers[0].name)
+    current_endpoint = gpu_cfg.get("endpoint", "")
+    current_interval = gpu_cfg.get("refresh_interval", 5)
+
+    if not current_endpoint:
+        print_warning("GPU monitoring is not configured.")
+        enable = prompt_yes_no("Enable GPU monitoring?", True)
+    else:
+        print_info(f"Current provider: {current_provider}")
+        print_info(f"Current endpoint: {current_endpoint}")
+        print_info(f"Refresh interval: {current_interval}s")
+        enable = prompt_yes_no("Reconfigure GPU monitoring?", True)
+
+    if not enable:
+        config.setdefault("gpu", {}).update({
+            "enabled": False,
+            "endpoint": "",
+            "refresh_interval": current_interval,
+        })
+        print_warning("GPU monitoring disabled.")
+        return
+
+    # Provider selection — skipped when there is only one registered.
+    if len(providers) == 1:
+        provider = providers[0]
+    else:
+        print()
+        labels = [f"{p.label} ({p.name})" for p in providers]
+        default_idx = next(
+            (i for i, p in enumerate(providers) if p.name == current_provider), 0
+        )
+        choice = prompt_choice("Select a GPU provider", labels, default_idx)
+        provider = providers[choice]
+
+    endpoint = ""
+    while True:
+        print()
+        endpoint = prompt(
+            f"{provider.label} endpoint",
+            default=current_endpoint or provider.default_endpoint,
+        ).strip()
+        if not endpoint:
+            print_warning("Endpoint is required — GPU monitoring disabled.")
+            config.setdefault("gpu", {}).update({
+                "enabled": False,
+                "endpoint": "",
+                "refresh_interval": current_interval,
+            })
+            return
+
+        print_info("  Validating endpoint...")
+        result = validate_gpu_endpoint(endpoint, provider_name=provider.name)
+        if result["success"]:
+            print_success(f"  ✓ Endpoint validated — {result['gpu_count']} GPU(s) found")
+            for gpu in result["gpus"]:
+                parts = [f"GPU {gpu['gpu_id']}: {gpu['model']}"]
+                if gpu.get("uuid"):
+                    parts.append(f"UUID: {gpu['uuid']}")
+                if gpu.get("util"):
+                    parts.append(f"Util: {gpu['util']}")
+                if gpu.get("temp"):
+                    parts.append(f"Temp: {gpu['temp']}")
+                if gpu.get("memory"):
+                    parts.append(f"Mem: {gpu['memory']}")
+                print_info(f"    {' | '.join(parts)}")
+            break
+
+        print_error(f"  ✗ Validation failed: {result['error']}")
+        print_info("Enter a different endpoint or press Ctrl+C to cancel.")
+
+    print()
+    interval_str = prompt(
+        "Refresh interval (seconds)",
+        default=str(current_interval),
+    )
+    try:
+        interval = max(1, int(interval_str))
+    except ValueError:
+        interval = current_interval
+        print_warning(f"Invalid interval — keeping {current_interval}s")
+
+    config.setdefault("gpu", {}).update({
+        "enabled": True,
+        "provider": provider.name,
+        "endpoint": endpoint,
+        "refresh_interval": interval,
+    })
+    print_success(f"  GPU monitoring configured: {provider.name} → {endpoint} ({interval}s)")
+
+
+# =============================================================================
 # Main Wizard Orchestrator
 # =============================================================================
 
@@ -3125,6 +3239,7 @@ SETUP_SECTIONS = [
     ("gateway", "Messaging Platforms (Gateway)", setup_gateway),
     ("tools", "Tools", setup_tools),
     ("agent", "Agent Settings", setup_agent_settings),
+    ("gpu", "GPU Monitoring", setup_gpu_monitoring),
 ]
 
 
@@ -3139,6 +3254,7 @@ def run_setup_wizard(args):
       hermes setup gateway   — just messaging platforms
       hermes setup tools     — just tool configuration
       hermes setup agent     — just agent settings
+      hermes setup gpu       — just GPU monitoring
     """
     from hermes_cli.config import is_managed, managed_error
     if is_managed():
@@ -3276,7 +3392,7 @@ def run_setup_wizard(args):
         print_info("Press Enter to keep it, or type a new value to change it.")
         print_info("")
         print_info("Tip: jump straight to a section with 'hermes setup model|terminal|")
-        print_info("     gateway|tools|agent', or fill only missing items with --quick.")
+        print_info("     gateway|tools|agent|gpu', or fill only missing items with --quick.")
         # Fall through to the "Full Setup — run all sections" block below.
         # --reconfigure is now the default on existing installs; the flag
         # is preserved for backwards compatibility but is a no-op here.
@@ -3339,6 +3455,12 @@ def run_setup_wizard(args):
     if not (migration_ran and _skip_configured_section(config, "tools", "Tools")):
         setup_tools(config, first_install=not is_existing)
 
+    # Section 6: GPU Monitoring
+    if not (migration_ran and _skip_configured_section(config, "gpu", "GPU Monitoring")):
+        gpu_cfg = config.get("gpu", {})
+        if not isinstance(gpu_cfg, dict) or not gpu_cfg.get("endpoint"):
+            setup_gpu_monitoring(config)
+
     # Save and show summary
     save_config(config)
     if _backup_path and _backup_path.exists():
@@ -3378,6 +3500,21 @@ def _run_first_time_quick_setup(config: dict, hermes_home, is_existing: bool):
 
     if gateway_choice == 0:
         setup_gateway(config)
+        save_config(config)
+
+    # Step 4: Offer GPU monitoring setup (optional)
+    print()
+    gpu_choice = prompt_choice(
+        "Configure GPU monitoring? (NVIDIA DCGM exporter)",
+        [
+            "Set up GPU monitoring now",
+            "Skip — set up later with 'hermes setup gpu'",
+        ],
+        1,
+    )
+
+    if gpu_choice == 0:
+        setup_gpu_monitoring(config)
         save_config(config)
 
     print()

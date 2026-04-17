@@ -303,6 +303,10 @@ from gateway.agent_prelude_runtime_service import (
     append_discord_voice_channel_context as shared_append_discord_voice_channel_context,
     build_agent_start_hook_context as shared_build_agent_start_hook_context,
 )
+from gateway.agent_completion_runtime_service import (
+    apply_gateway_reasoning_display as shared_apply_gateway_reasoning_display,
+    drain_pending_process_watchers as shared_drain_pending_process_watchers,
+)
 from gateway.agent_response_runtime_service import (
     build_gateway_exception_response as shared_build_gateway_exception_response,
     normalize_gateway_agent_response as shared_normalize_gateway_agent_response,
@@ -1960,10 +1964,13 @@ class GatewayRunner:
         # Drain any recovered process watchers (from crash recovery checkpoint)
         try:
             from tools.process_registry import process_registry
-            while process_registry.pending_watchers:
-                watcher = process_registry.pending_watchers.pop(0)
-                asyncio.create_task(self._run_process_watcher(watcher))
-                logger.info("Resumed watcher for recovered process %s", watcher.get("session_id"))
+            shared_drain_pending_process_watchers(
+                process_registry=process_registry,
+                run_process_watcher=self._run_process_watcher,
+                create_task=asyncio.create_task,
+                logger=logger,
+                resumed_log_template="Resumed watcher for recovered process %s",
+            )
         except Exception as e:
             logger.error("Recovered watcher setup error: %s", e)
 
@@ -4498,18 +4505,11 @@ class GatewayRunner:
             if agent_result.get("session_id") and agent_result["session_id"] != session_entry.session_id:
                 session_entry.session_id = agent_result["session_id"]
 
-            # Prepend reasoning/thinking if display is enabled
-            if getattr(self, "_show_reasoning", False) and response:
-                last_reasoning = agent_result.get("last_reasoning")
-                if last_reasoning:
-                    # Collapse long reasoning to keep messages readable
-                    lines = last_reasoning.strip().splitlines()
-                    if len(lines) > 15:
-                        display_reasoning = "\n".join(lines[:15])
-                        display_reasoning += f"\n_... ({len(lines) - 15} more lines)_"
-                    else:
-                        display_reasoning = last_reasoning.strip()
-                    response = f"💭 **Reasoning:**\n```\n{display_reasoning}\n```\n\n{response}"
+            response = shared_apply_gateway_reasoning_display(
+                response=response,
+                show_reasoning=bool(getattr(self, "_show_reasoning", False)),
+                last_reasoning=agent_result.get("last_reasoning"),
+            )
 
             # Emit agent:end hook
             await self.hooks.emit("agent:end", {
@@ -4520,9 +4520,11 @@ class GatewayRunner:
             # Check for pending process watchers (check_interval on background processes)
             try:
                 from tools.process_registry import process_registry
-                while process_registry.pending_watchers:
-                    watcher = process_registry.pending_watchers.pop(0)
-                    asyncio.create_task(self._run_process_watcher(watcher))
+                shared_drain_pending_process_watchers(
+                    process_registry=process_registry,
+                    run_process_watcher=self._run_process_watcher,
+                    create_task=asyncio.create_task,
+                )
             except Exception as e:
                 logger.error("Process watcher setup error: %s", e)
 

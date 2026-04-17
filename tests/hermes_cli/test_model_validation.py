@@ -163,7 +163,7 @@ class TestNormalizeProvider:
 class TestProviderLabel:
     def test_known_labels_and_auto(self):
         assert provider_label("anthropic") == "Anthropic"
-        assert provider_label("kimi") == "Kimi / Moonshot"
+        assert provider_label("kimi") == "Kimi / Kimi Coding Plan"
         assert provider_label("copilot") == "GitHub Copilot"
         assert provider_label("copilot-acp") == "GitHub Copilot ACP"
         assert provider_label("auto") == "Auto"
@@ -370,6 +370,8 @@ class TestCopilotNormalization:
         assert opencode_model_api_mode("opencode-zen", "minimax-m2.5") == "chat_completions"
 
     def test_opencode_go_api_modes_match_docs(self):
+        assert opencode_model_api_mode("opencode-go", "glm-5.1") == "chat_completions"
+        assert opencode_model_api_mode("opencode-go", "opencode-go/glm-5.1") == "chat_completions"
         assert opencode_model_api_mode("opencode-go", "glm-5") == "chat_completions"
         assert opencode_model_api_mode("opencode-go", "opencode-go/glm-5") == "chat_completions"
         assert opencode_model_api_mode("opencode-go", "kimi-k2.5") == "chat_completions"

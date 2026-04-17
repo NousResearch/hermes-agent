@@ -1,5 +1,11 @@
+import { useMemo } from "react";
 import { Routes, Route, NavLink, Navigate } from "react-router-dom";
-import { Activity, BarChart3, Clock, FileText, KeyRound, MessageSquare, Package, Settings } from "lucide-react";
+import {
+  Activity, BarChart3, Clock, FileText, KeyRound,
+  MessageSquare, Package, Settings, Puzzle,
+  Sparkles, Terminal, Globe, Database, Shield,
+  Wrench, Zap, Heart, Star, Code, Eye,
+} from "lucide-react";
 import StatusPage from "@/pages/StatusPage";
 import ConfigPage from "@/pages/ConfigPage";
 import EnvPage from "@/pages/EnvPage";
@@ -9,21 +15,92 @@ import AnalyticsPage from "@/pages/AnalyticsPage";
 import CronPage from "@/pages/CronPage";
 import SkillsPage from "@/pages/SkillsPage";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
+import { ThemeSwitcher } from "@/components/ThemeSwitcher";
 import { useI18n } from "@/i18n";
+import { usePlugins } from "@/plugins";
+import type { RegisteredPlugin } from "@/plugins";
 
-const NAV_ITEMS = [
-  { path: "/", labelKey: "status" as const, icon: Activity },
-  { path: "/sessions", labelKey: "sessions" as const, icon: MessageSquare },
-  { path: "/analytics", labelKey: "analytics" as const, icon: BarChart3 },
-  { path: "/logs", labelKey: "logs" as const, icon: FileText },
-  { path: "/cron", labelKey: "cron" as const, icon: Clock },
-  { path: "/skills", labelKey: "skills" as const, icon: Package },
-  { path: "/config", labelKey: "config" as const, icon: Settings },
-  { path: "/env", labelKey: "keys" as const, icon: KeyRound },
-] as const;
+// ---------------------------------------------------------------------------
+// Built-in nav items
+// ---------------------------------------------------------------------------
+
+interface NavItem {
+  path: string;
+  label: string;
+  labelKey?: string;
+  icon: React.ComponentType<{ className?: string }>;
+}
+
+const BUILTIN_NAV: NavItem[] = [
+  { path: "/", labelKey: "status", label: "Status", icon: Activity },
+  { path: "/sessions", labelKey: "sessions", label: "Sessions", icon: MessageSquare },
+  { path: "/analytics", labelKey: "analytics", label: "Analytics", icon: BarChart3 },
+  { path: "/logs", labelKey: "logs", label: "Logs", icon: FileText },
+  { path: "/cron", labelKey: "cron", label: "Cron", icon: Clock },
+  { path: "/skills", labelKey: "skills", label: "Skills", icon: Package },
+  { path: "/config", labelKey: "config", label: "Config", icon: Settings },
+  { path: "/env", labelKey: "keys", label: "Keys", icon: KeyRound },
+];
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/** Map of icon names plugins can use. Covers common choices without importing all of lucide. */
+const ICON_MAP: Record<string, React.ComponentType<{ className?: string }>> = {
+  Activity, BarChart3, Clock, FileText, KeyRound,
+  MessageSquare, Package, Settings, Puzzle,
+  Sparkles, Terminal, Globe, Database, Shield,
+  Wrench, Zap, Heart, Star, Code, Eye,
+};
+
+/** Resolve a Lucide icon name to a component, fallback to Puzzle. */
+function resolveIcon(name: string): React.ComponentType<{ className?: string }> {
+  return ICON_MAP[name] ?? Puzzle;
+}
+
+/** Insert plugin nav items at the position specified in their manifest. */
+function buildNavItems(builtIn: NavItem[], plugins: RegisteredPlugin[]): NavItem[] {
+  const items = [...builtIn];
+
+  for (const { manifest } of plugins) {
+    const pluginItem: NavItem = {
+      path: manifest.tab.path,
+      label: manifest.label,
+      icon: resolveIcon(manifest.icon),
+    };
+
+    const pos = manifest.tab.position ?? "end";
+    if (pos === "end") {
+      items.push(pluginItem);
+    } else if (pos.startsWith("after:")) {
+      const target = "/" + pos.slice(6);
+      const idx = items.findIndex((i) => i.path === target);
+      items.splice(idx >= 0 ? idx + 1 : items.length, 0, pluginItem);
+    } else if (pos.startsWith("before:")) {
+      const target = "/" + pos.slice(7);
+      const idx = items.findIndex((i) => i.path === target);
+      items.splice(idx >= 0 ? idx : items.length, 0, pluginItem);
+    } else {
+      items.push(pluginItem);
+    }
+  }
+
+  return items;
+}
+
+// ---------------------------------------------------------------------------
+// App
+// ---------------------------------------------------------------------------
 
 export default function App() {
   const { t } = useI18n();
+  const { plugins } = usePlugins();
+
+  const navItems = useMemo(
+    () => buildNavItems(BUILTIN_NAV, plugins),
+    [plugins],
+  );
 
   return (
     <div className="flex min-h-screen flex-col bg-background text-foreground overflow-x-hidden">
@@ -39,7 +116,7 @@ export default function App() {
           </div>
 
           <nav className="flex items-stretch overflow-x-auto scrollbar-none">
-            {NAV_ITEMS.map(({ path, labelKey, icon: Icon }) => (
+            {navItems.map(({ path, label, labelKey, icon: Icon }) => (
               <NavLink
                 key={path}
                 to={path}
@@ -55,7 +132,9 @@ export default function App() {
                 {({ isActive }) => (
                   <>
                     <Icon className="h-4 w-4 sm:h-3.5 sm:w-3.5 shrink-0" />
-                    <span className="hidden sm:inline">{t.app.nav[labelKey]}</span>
+                    <span className="hidden sm:inline">
+                      {labelKey ? (t.app.nav as Record<string, string>)[labelKey] ?? label : label}
+                    </span>
                     <span className="absolute inset-0 bg-foreground pointer-events-none transition-opacity duration-150 group-hover:opacity-5 opacity-0" />
                     {isActive && (
                       <span className="absolute bottom-0 left-0 right-0 h-px bg-foreground" />
@@ -67,6 +146,7 @@ export default function App() {
           </nav>
 
           <div className="ml-auto flex items-center gap-2 px-2 sm:px-4">
+            <ThemeSwitcher />
             <LanguageSwitcher />
             <span className="hidden sm:inline font-display text-[0.7rem] tracking-[0.15em] uppercase opacity-50">
               {t.app.webUi}
@@ -85,6 +165,16 @@ export default function App() {
           <Route path="/skills" element={<SkillsPage />} />
           <Route path="/config" element={<ConfigPage />} />
           <Route path="/env" element={<EnvPage />} />
+
+          {/* Plugin routes */}
+          {plugins.map(({ manifest, component: PluginComponent }) => (
+            <Route
+              key={manifest.name}
+              path={manifest.tab.path}
+              element={<PluginComponent />}
+            />
+          ))}
+
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </main>

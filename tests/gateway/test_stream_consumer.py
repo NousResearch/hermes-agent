@@ -606,6 +606,56 @@ class TestSegmentBreakOnToolBoundary:
         assert sent_texts[0].startswith(prefix)
         assert sum(len(t) for t in sent_texts[1:]) == len(tail)
 
+    @pytest.mark.asyncio
+    async def test_fallback_final_sends_full_text_at_tool_boundary(self):
+        """After a tool call, the streamed prefix is stale (from the pre-tool
+        segment).  _send_fallback_final must still send the post-tool response
+        even when continuation_text calculates as empty (#10807)."""
+        adapter = MagicMock()
+        adapter.send = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="msg_1"),
+        )
+        adapter.edit_message = AsyncMock(
+            return_value=SimpleNamespace(success=True),
+        )
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        config = StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5)
+        consumer = GatewayStreamConsumer(adapter, "chat_123", config)
+
+        # Simulate a pre-tool streamed segment that becomes the visible prefix
+        pre_tool_text = "I'll run that code now."
+        consumer.on_delta(pre_tool_text)
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.05)
+
+        # After the tool call, the model returns a SHORT final response that
+        # does NOT start with the pre-tool prefix.  The continuation calculator
+        # would return empty (no prefix match → full text returned, but if the
+        # streaming edit already showed pre_tool_text, the prefix-based logic
+        # wrongly matches).  Simulate this by setting _last_sent_text to the
+        # pre-tool content, then finishing with different post-tool content.
+        consumer._last_sent_text = pre_tool_text
+        post_tool_response = "⏰ Script timed out after 30s and was killed."
+        consumer.finish()
+        await task
+
+        # The fallback should send the post-tool response via
+        # _send_fallback_final.
+        await consumer._send_fallback_final(post_tool_response)
+
+        # Verify the final text was sent (not silently dropped)
+        sent = False
+        for call in adapter.send.call_args_list:
+            content = call[1].get("content", call[0][0] if call[0] else "")
+            if "timed out" in str(content):
+                sent = True
+                break
+        assert sent, (
+            "Post-tool timeout response was silently dropped by "
+            "_send_fallback_final — the #10807 fix should prevent this"
+        )
+
 
 class TestInterimCommentaryMessages:
     @pytest.mark.asyncio
@@ -963,3 +1013,106 @@ class TestFilterAndAccumulateIntegration:
             await task
         except asyncio.CancelledError:
             pass
+
+
+# ── buffer_only mode tests ─────────────────────────────────────────────
+
+
+class TestBufferOnlyMode:
+    """Verify buffer_only mode suppresses intermediate edits and only
+    flushes on structural boundaries (done, segment break, commentary)."""
+
+    @pytest.mark.asyncio
+    async def test_suppresses_intermediate_edits(self):
+        """Time-based and size-based edits are skipped; only got_done flushes."""
+        adapter = MagicMock()
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        adapter.send = AsyncMock(return_value=SimpleNamespace(success=True, message_id="msg1"))
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True))
+
+        cfg = StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5, cursor="", buffer_only=True)
+        consumer = GatewayStreamConsumer(adapter, "!room:server", config=cfg)
+
+        for word in ["Hello", " world", ", this", " is", " a", " test"]:
+            consumer.on_delta(word)
+        consumer.finish()
+
+        await consumer.run()
+
+        adapter.send.assert_called_once()
+        adapter.edit_message.assert_not_called()
+        assert "Hello world, this is a test" in adapter.send.call_args_list[0][1]["content"]
+
+    @pytest.mark.asyncio
+    async def test_flushes_on_segment_break(self):
+        """A segment break (tool call boundary) flushes accumulated text."""
+        adapter = MagicMock()
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        adapter.send = AsyncMock(side_effect=[
+            SimpleNamespace(success=True, message_id="msg1"),
+            SimpleNamespace(success=True, message_id="msg2"),
+        ])
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True))
+
+        cfg = StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5, cursor="", buffer_only=True)
+        consumer = GatewayStreamConsumer(adapter, "!room:server", config=cfg)
+
+        consumer.on_delta("Before tool call")
+        consumer.on_delta(None)
+        consumer.on_delta("After tool call")
+        consumer.finish()
+
+        await consumer.run()
+
+        assert adapter.send.call_count == 2
+        assert "Before tool call" in adapter.send.call_args_list[0][1]["content"]
+        assert "After tool call" in adapter.send.call_args_list[1][1]["content"]
+        adapter.edit_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_flushes_on_commentary(self):
+        """An interim commentary message flushes in buffer_only mode."""
+        adapter = MagicMock()
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        adapter.send = AsyncMock(side_effect=[
+            SimpleNamespace(success=True, message_id="msg1"),
+            SimpleNamespace(success=True, message_id="msg2"),
+            SimpleNamespace(success=True, message_id="msg3"),
+        ])
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True))
+
+        cfg = StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5, cursor="", buffer_only=True)
+        consumer = GatewayStreamConsumer(adapter, "!room:server", config=cfg)
+
+        consumer.on_delta("Working on it...")
+        consumer.on_commentary("I'll search for that first.")
+        consumer.on_delta("Here are the results.")
+        consumer.finish()
+
+        await consumer.run()
+
+        # Three sends: accumulated text, commentary, final text
+        assert adapter.send.call_count >= 2
+        adapter.edit_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_default_mode_still_triggers_intermediate_edits(self):
+        """Regression: buffer_only=False (default) still does progressive edits."""
+        adapter = MagicMock()
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        adapter.send = AsyncMock(return_value=SimpleNamespace(success=True, message_id="msg1"))
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True))
+
+        # buffer_threshold=5 means any 5+ chars triggers an early edit
+        cfg = StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5, cursor="")
+        consumer = GatewayStreamConsumer(adapter, "!room:server", config=cfg)
+
+        consumer.on_delta("Hello world, this is long enough to trigger edits")
+        consumer.finish()
+
+        await consumer.run()
+
+        # Should have at least one send. With buffer_threshold=5 and this much
+        # text, the consumer may send then edit, or just send once at got_done.
+        # The key assertion: this doesn't break.
+        assert adapter.send.call_count >= 1

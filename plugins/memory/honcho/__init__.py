@@ -160,21 +160,18 @@ CONCLUDE_SCHEMA = {
         "properties": {
             "conclusion": {
                 "type": "string",
-                "description": "A factual statement to persist. Required when not using delete_id.",
+                "description": "A factual statement to persist. Provide this when creating a conclusion. Do not send it together with delete_id.",
             },
             "delete_id": {
                 "type": "string",
-                "description": "Conclusion ID to delete (for PII removal). Required when not using conclusion.",
+                "description": "Conclusion ID to delete for PII removal. Provide this when deleting a conclusion. Do not send it together with conclusion.",
             },
             "peer": {
                 "type": "string",
                 "description": "Peer to query. Built-in aliases: 'user' (default), 'ai'. Or pass any peer ID from this workspace.",
             },
         },
-        "anyOf": [
-            {"required": ["conclusion"]},
-            {"required": ["delete_id"]},
-        ],
+        "required": [],
     },
 }
 
@@ -1011,16 +1008,20 @@ class HonchoMemoryProvider(MemoryProvider):
                 return json.dumps({"result": "\n\n".join(parts) or "No context available."})
 
             elif tool_name == "honcho_conclude":
-                delete_id = args.get("delete_id")
+                delete_id = (args.get("delete_id") or "").strip()
+                conclusion = args.get("conclusion", "").strip()
                 peer = args.get("peer", "user")
-                if delete_id:
+
+                has_delete_id = bool(delete_id)
+                has_conclusion = bool(conclusion)
+                if has_delete_id == has_conclusion:
+                    return tool_error("Exactly one of conclusion or delete_id must be provided.")
+
+                if has_delete_id:
                     ok = self._manager.delete_conclusion(self._session_key, delete_id, peer=peer)
                     if ok:
                         return json.dumps({"result": f"Conclusion {delete_id} deleted."})
                     return tool_error(f"Failed to delete conclusion {delete_id}.")
-                conclusion = args.get("conclusion", "")
-                if not conclusion:
-                    return tool_error("Missing required parameter: conclusion or delete_id")
                 ok = self._manager.create_conclusion(self._session_key, conclusion, peer=peer)
                 if ok:
                     return json.dumps({"result": f"Conclusion saved for {peer}: {conclusion}"})

@@ -58,6 +58,9 @@ _PROVIDER_ALIASES = {
     "google": "gemini",
     "google-gemini": "gemini",
     "google-ai-studio": "gemini",
+    "x-ai": "xai",
+    "x.ai": "xai",
+    "grok": "xai",
     "glm": "zai",
     "z-ai": "zai",
     "z.ai": "zai",
@@ -104,6 +107,7 @@ _API_KEY_PROVIDER_AUX_MODELS: Dict[str, str] = {
     "opencode-zen": "gemini-3-flash",
     "opencode-go": "glm-5",
     "kilocode": "google/gemini-3-flash-preview",
+    "ollama-cloud": "nemotron-3-nano:30b",
 }
 
 # Vision-specific model overrides for direct providers.
@@ -514,8 +518,13 @@ class _AnthropicCompletionsAdapter:
             tool_choice=normalized_tool_choice,
             is_oauth=self._is_oauth,
         )
+        # Opus 4.7+ rejects any non-default temperature/top_p/top_k; only set
+        # temperature for models that still accept it. build_anthropic_kwargs
+        # additionally strips these keys as a safety net — keep both layers.
         if temperature is not None:
-            anthropic_kwargs["temperature"] = temperature
+            from agent.anthropic_adapter import _forbids_sampling_params
+            if not _forbids_sampling_params(model):
+                anthropic_kwargs["temperature"] = temperature
 
         response = self._client.messages.create(**anthropic_kwargs)
         assistant_message, finish_reason = normalize_anthropic_response(response)
@@ -2284,6 +2293,15 @@ def _build_call_kwargs(
         "timeout": timeout,
     }
 
+    # Opus 4.7+ rejects any non-default temperature/top_p/top_k — silently
+    # drop here so auxiliary callers that hardcode temperature (e.g. 0.3 on
+    # flush_memories, 0 on structured-JSON extraction) don't 400 the moment
+    # the aux model is flipped to 4.7.
+    if temperature is not None:
+        from agent.anthropic_adapter import _forbids_sampling_params
+        if _forbids_sampling_params(model):
+            temperature = None
+
     if temperature is not None:
         kwargs["temperature"] = temperature
 
@@ -2387,10 +2405,10 @@ def call_llm(
 
     if task == "vision":
         effective_provider, client, final_model = resolve_vision_provider_client(
-            provider=provider,
-            model=model,
-            base_url=base_url,
-            api_key=api_key,
+            provider=resolved_provider if resolved_provider != "auto" else provider,
+            model=resolved_model or model,
+            base_url=resolved_base_url or base_url,
+            api_key=resolved_api_key or api_key,
             async_mode=False,
         )
         if client is None and resolved_provider != "auto" and not resolved_base_url:
@@ -2595,10 +2613,10 @@ async def async_call_llm(
 
     if task == "vision":
         effective_provider, client, final_model = resolve_vision_provider_client(
-            provider=provider,
-            model=model,
-            base_url=base_url,
-            api_key=api_key,
+            provider=resolved_provider if resolved_provider != "auto" else provider,
+            model=resolved_model or model,
+            base_url=resolved_base_url or base_url,
+            api_key=resolved_api_key or api_key,
             async_mode=True,
         )
         if client is None and resolved_provider != "auto" and not resolved_base_url:

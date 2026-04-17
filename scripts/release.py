@@ -84,6 +84,7 @@ AUTHOR_MAP = {
     "abdullahfarukozden@gmail.com": "Farukest",
     "lovre.pesut@gmail.com": "rovle",
     "kevinskysunny@gmail.com": "kevinskysunny",
+    "xiewenxuan462@gmail.com": "yule975",
     "hakanerten02@hotmail.com": "teyrebaz33",
     "ruzzgarcn@gmail.com": "Ruzzgar",
     "alireza78.crypto@gmail.com": "alireza78a",

@@ -783,7 +783,8 @@ class MCPServerTask:
 
     __slots__ = (
         "name", "session", "tool_timeout",
-        "_task", "_ready", "_shutdown_event", "_tools", "_error", "_config",
+        "_task", "_ready", "_shutdown_event", "_reconnect_event",
+        "_tools", "_error", "_config",
         "_sampling", "_registered_tool_names", "_auth_type", "_refresh_lock",
     )
 
@@ -794,6 +795,12 @@ class MCPServerTask:
         self._task: Optional[asyncio.Task] = None
         self._ready = asyncio.Event()
         self._shutdown_event = asyncio.Event()
+        # Set by tool handlers on auth failure after manager.handle_401()
+        # confirms recovery is viable. When set, _run_http / _run_stdio
+        # exit their async-with blocks cleanly (no exception), and the
+        # outer run() loop re-enters the transport so the MCP session is
+        # rebuilt with fresh credentials.
+        self._reconnect_event = asyncio.Event()
         self._tools: list = []
         self._error: Optional[Exception] = None
         self._config: dict = {}
@@ -887,6 +894,40 @@ class MCPServerTask:
                     self.name, len(self._registered_tool_names),
                 )
 
+    async def _wait_for_lifecycle_event(self) -> str:
+        """Block until either _shutdown_event or _reconnect_event fires.
+
+        Returns:
+            "shutdown"  if the server should exit the run loop entirely.
+            "reconnect" if the server should tear down the current MCP
+                        session and re-enter the transport (fresh OAuth
+                        tokens, new session ID, etc.). The reconnect event
+                        is cleared before return so the next cycle starts
+                        with a fresh signal.
+
+        Shutdown takes precedence if both events are set simultaneously.
+        """
+        shutdown_task = asyncio.create_task(self._shutdown_event.wait())
+        reconnect_task = asyncio.create_task(self._reconnect_event.wait())
+        try:
+            await asyncio.wait(
+                {shutdown_task, reconnect_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+        finally:
+            for t in (shutdown_task, reconnect_task):
+                if not t.done():
+                    t.cancel()
+                    try:
+                        await t
+                    except (asyncio.CancelledError, Exception):
+                        pass
+
+        if self._shutdown_event.is_set():
+            return "shutdown"
+        self._reconnect_event.clear()
+        return "reconnect"
+
     async def _run_stdio(self, config: dict):
         """Run the server using stdio transport."""
         command = config.get("command")
@@ -932,7 +973,10 @@ class MCPServerTask:
                 self.session = session
                 await self._discover_tools()
                 self._ready.set()
-                await self._shutdown_event.wait()
+                # stdio transport does not use OAuth, but we still honor
+                # _reconnect_event (e.g. future manual /mcp refresh) for
+                # consistency with _run_http.
+                await self._wait_for_lifecycle_event()
         # Context exited cleanly — subprocess was terminated by the SDK.
         if new_pids:
             with _lock:
@@ -951,16 +995,18 @@ class MCPServerTask:
         headers = dict(config.get("headers") or {})
         connect_timeout = config.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT)
 
-        # OAuth 2.1 PKCE: build httpx.Auth handler using the MCP SDK.
-        # If OAuth setup fails (e.g. non-interactive environment without
-        # cached tokens), re-raise so this server is reported as failed
-        # without blocking other MCP servers from connecting.
+        # OAuth 2.1 PKCE: route through the central MCPOAuthManager so the
+        # same provider instance is reused across reconnects, pre-flow
+        # disk-watch is active, and config-time CLI code paths share state.
+        # If OAuth setup fails (e.g. non-interactive env without cached
+        # tokens), re-raise so this server is reported as failed without
+        # blocking other MCP servers from connecting.
         _oauth_auth = None
         if self._auth_type == "oauth":
             try:
-                from tools.mcp_oauth import build_oauth_auth
-                _oauth_auth = build_oauth_auth(
-                    self.name, url, config.get("oauth")
+                from tools.mcp_oauth_manager import get_manager
+                _oauth_auth = get_manager().get_or_build_provider(
+                    self.name, url, config.get("oauth"),
                 )
             except Exception as exc:
                 logger.warning("MCP OAuth setup failed for '%s': %s", self.name, exc)
@@ -995,7 +1041,12 @@ class MCPServerTask:
                         self.session = session
                         await self._discover_tools()
                         self._ready.set()
-                        await self._shutdown_event.wait()
+                        reason = await self._wait_for_lifecycle_event()
+                        if reason == "reconnect":
+                            logger.info(
+                                "MCP server '%s': reconnect requested — "
+                                "tearing down HTTP session", self.name,
+                            )
         else:
             # Deprecated API (mcp < 1.24.0): manages httpx client internally.
             _http_kwargs: dict = {
@@ -1012,7 +1063,12 @@ class MCPServerTask:
                     self.session = session
                     await self._discover_tools()
                     self._ready.set()
-                    await self._shutdown_event.wait()
+                    reason = await self._wait_for_lifecycle_event()
+                    if reason == "reconnect":
+                        logger.info(
+                            "MCP server '%s': reconnect requested — "
+                            "tearing down legacy HTTP session", self.name,
+                        )
 
     async def _discover_tools(self):
         """Discover tools from the connected session."""
@@ -1060,8 +1116,25 @@ class MCPServerTask:
                     await self._run_http(config)
                 else:
                     await self._run_stdio(config)
-                # Normal exit (shutdown requested) -- break out
-                break
+                # Transport returned cleanly. Two cases:
+                #  - _shutdown_event was set: exit the run loop entirely.
+                #  - _reconnect_event was set (auth recovery): loop back and
+                #    rebuild the MCP session with fresh credentials. Do NOT
+                #    touch the retry counters — this is not a failure.
+                if self._shutdown_event.is_set():
+                    break
+                logger.info(
+                    "MCP server '%s': reconnecting (OAuth recovery or "
+                    "manual refresh)",
+                    self.name,
+                )
+                # Reset the session reference; _run_http/_run_stdio will
+                # repopulate it on successful re-entry.
+                self.session = None
+                # Keep _ready set across reconnects so tool handlers can
+                # still detect a transient in-flight state — it'll be
+                # re-set after the fresh session initializes.
+                continue
             except Exception as exc:
                 self.session = None
 
@@ -1141,6 +1214,12 @@ class MCPServerTask:
         from tools.registry import registry
 
         self._shutdown_event.set()
+        # Defensive: if _wait_for_lifecycle_event is blocking, we need ANY
+        # event to unblock it. _shutdown_event alone is sufficient (the
+        # helper checks shutdown first), but setting reconnect too ensures
+        # there's no race where the helper misses the shutdown flag after
+        # returning "reconnect".
+        self._reconnect_event.set()
         if self._task and not self._task.done():
             try:
                 await asyncio.wait_for(self._task, timeout=10)

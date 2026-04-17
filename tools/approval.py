@@ -700,14 +700,91 @@ def _normalize_approval_mode(mode) -> str:
 
 
 def _get_approval_config() -> dict:
-    """Read the approvals config block. Returns a dict with 'mode', 'timeout', etc."""
+    """Read the approvals config block from JSON or YAML config.
+    
+    Supports both config formats:
+    - JSON: ~/.hermes/config.json (new format)
+    - YAML: ~/.hermes/config.yaml (legacy format)
+    
+    Returns a dict with 'mode', 'timeout', 'auto_allow', 'auto_deny', etc.
+    """
     try:
-        from hermes_cli.config import load_config
-        config = load_config()
-        return config.get("approvals", {}) or {}
+        # Try JSON config first (new format)
+        from hermes_cli.config_json import config_exists_json, load_config_json
+        
+        if config_exists_json():
+            config = load_config_json()
+            # In JSON format, approvals is under 'approvals' key
+            approvals = config.get("approvals", {}) or {}
+        else:
+            # Fall back to YAML config (legacy format)
+            from hermes_cli.config import load_config
+            config = load_config()
+            approvals = config.get("approvals", {}) or {}
+        
+        # Ensure mode is properly normalized
+        if "mode" in approvals:
+            approvals["mode"] = _normalize_approval_mode(approvals["mode"])
+        
+        return approvals
     except Exception as e:
         logger.warning("Failed to load approval config: %s", e)
         return {}
+
+
+def _check_auto_allowlist(command: str, description: str) -> bool:
+    """Check if command matches auto-allow patterns.
+    
+    Returns True if command should be automatically allowed without prompting.
+    """
+    config = _get_approval_config()
+    auto_allow = config.get("auto_allow", [])
+    
+    if not auto_allow:
+        return False
+    
+    for pattern in auto_allow:
+        try:
+            if re.search(pattern, command):
+                logger.debug("Command auto-allowed by pattern '%s': %s", pattern, command[:50])
+                return True
+        except re.error:
+            logger.warning("Invalid regex in auto_allow: %s", pattern)
+    
+    return False
+
+
+def _check_auto_denylist(command: str, description: str) -> bool:
+    """Check if command matches auto-deny patterns.
+    
+    Returns True if command should be automatically denied without prompting.
+    """
+    config = _get_approval_config()
+    auto_deny = config.get("auto_deny", [])
+    
+    if not auto_deny:
+        return False
+    
+    for pattern in auto_deny:
+        try:
+            if re.search(pattern, command):
+                logger.debug("Command auto-denied by pattern '%s': %s", pattern, command[:50])
+                return True
+        except re.error:
+            logger.warning("Invalid regex in auto_deny: %s", pattern)
+    
+    return False
+
+
+def _should_block_and_wait() -> bool:
+    """Check if approval mode requires blocking wait for user response.
+    
+    Returns True when approvals.mode is 'blocking' or 'manual' (default).
+    In 'smart' mode, we still wait but try LLM approval first.
+    In 'off' mode, no waiting is needed.
+    """
+    mode = _get_approval_mode()
+    return mode in ("blocking", "manual", "smart")
 
 
 def _get_approval_mode() -> str:
@@ -982,12 +1059,35 @@ def check_all_command_guards(command: str, env_type: str,
     is_dangerous, pattern_key, description = detect_dangerous_command(command)
 
     # --- Phase 2: Decide ---
-
+    
     # Collect warnings that need approval
     warnings = []  # list of (pattern_key, description, is_tirith)
-
+    
     session_key = get_current_session_key()
-
+    
+    # Check auto-denylist first (highest priority)
+    combined_desc_check = ""
+    if is_dangerous:
+        combined_desc_check = description
+    if tirith_result["action"] in ("block", "warn"):
+        findings = tirith_result.get("findings") or []
+        tirith_desc = _format_tirith_description(tirith_result)
+        combined_desc_check = f"{combined_desc_check}; {tirith_desc}" if combined_desc_check else tirith_desc
+    
+    if combined_desc_check and _check_auto_denylist(command, combined_desc_check):
+        return {
+            "approved": False,
+            "message": f"BLOCKED: Command matches auto-deny pattern. Do NOT retry.",
+            "auto_denied": True,
+        }
+    
+    # Check auto-allowlist (but not if already session-approved)
+    if combined_desc_check and _check_auto_allowlist(command, combined_desc_check):
+        # Auto-allow but still record session approval for audit
+        if is_dangerous and not is_approved(session_key, pattern_key):
+            approve_session(session_key, pattern_key)
+        return {"approved": True, "message": None, "auto_allowed": True}
+    
     # Tirith block/warn → approvable warning with rich findings.
     # Previously, tirith "block" was a hard block with no approval prompt.
     # Now both block and warn go through the approval flow so users can
@@ -999,11 +1099,11 @@ def check_all_command_guards(command: str, env_type: str,
         tirith_desc = _format_tirith_description(tirith_result)
         if not is_approved(session_key, tirith_key):
             warnings.append((tirith_key, tirith_desc, True))
-
+    
     if is_dangerous:
         if not is_approved(session_key, pattern_key):
             warnings.append((pattern_key, description, False))
-
+    
     # Nothing to warn about
     if not warnings:
         return {"approved": True, "message": None}
@@ -1185,23 +1285,78 @@ def check_all_command_guards(command: str, env_type: str,
                     "user_approved": True, "description": combined_desc}
 
         # Fallback: no gateway callback registered (e.g. cron, batch).
-        # Return approval_required for backward compat.
-        submit_pending(session_key, {
-            "command": command,
-            "pattern_key": primary_key,
-            "pattern_keys": all_keys,
-            "description": combined_desc,
-        })
-        return {
-            "approved": False,
-            "pattern_key": primary_key,
-            "status": "approval_required",
-            "command": command,
-            "description": combined_desc,
-            "message": (
-                f"⚠️ {combined_desc}. Asking the user for approval.\n\n**Command:**\n```\n{command}\n```"
-            ),
-        }
+        # Behavior depends on approval mode:
+        # - blocking: Wait synchronously for user response via file-based IPC
+        # - manual/smart: Return approval_required for backward compat
+        # - off: Already handled above
+        if approval_mode == "blocking":
+            # In blocking mode, we MUST wait for user response
+            # Use file-based IPC to wait for approval
+            timeout = _get_approval_config().get("timeout", 300)
+            try:
+                timeout = int(timeout)
+            except (ValueError, TypeError):
+                timeout = 300
+            
+            # Store approval request
+            submit_pending(session_key, {
+                "command": command,
+                "pattern_key": primary_key,
+                "pattern_keys": all_keys,
+                "description": combined_desc,
+                "blocking": True,
+            })
+            
+            # Wait for approval using file-based IPC
+            from hermes_cli.approval_ipc import wait_for_approval_blocking
+            choice = wait_for_approval_blocking(
+                session_key=session_key,
+                command=command,
+                description=combined_desc,
+                timeout=timeout
+            )
+            
+            # Clean up
+            with _lock:
+                _pending.pop(session_key, None)
+            
+            if choice is None or choice == "deny":
+                reason = "timed out" if choice is None else "denied by user"
+                return {
+                    "approved": False,
+                    "message": f"BLOCKED: Command {reason}. Do NOT retry this command.",
+                    "pattern_key": primary_key,
+                    "description": combined_desc,
+                }
+            
+            # User approved — persist based on scope
+            for key, _, is_tirith in warnings:
+                if choice == "session":
+                    approve_session(session_key, key)
+                elif choice == "always":
+                    approve_session(session_key, key)
+                    approve_permanent(key)
+                    save_permanent_allowlist(_permanent_approved)
+            
+            return {"approved": True, "message": None, "user_approved": True}
+        else:
+            # Non-blocking mode: return approval_required for caller to handle
+            submit_pending(session_key, {
+                "command": command,
+                "pattern_key": primary_key,
+                "pattern_keys": all_keys,
+                "description": combined_desc,
+            })
+            return {
+                "approved": False,
+                "pattern_key": primary_key,
+                "status": "approval_required",
+                "command": command,
+                "description": combined_desc,
+                "message": (
+                    f"⚠️ {combined_desc}. Asking the user for approval.\n\n**Command**:\n```\n{command}\n```"
+                ),
+            }
 
     # CLI interactive: single combined prompt
     # Hide [a]lways when any tirith warning is present

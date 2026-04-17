@@ -1,0 +1,93 @@
+{
+  "$schema": "https://hermes-agent.dev/schemas/config.v1.json",
+  "_version": 1,
+  
+  "providers": {
+    "bailian": {
+      "base_url": "https://coding.dashscope.aliyuncs.com/v1",
+      "api_key": "${BAILIAN_API_KEY}",
+      "models": [
+        { "id": "qwen3.5-plus", "name": "Qwen 3.5 Plus" },
+        { "id": "qwen3.6-plus", "name": "Qwen 3.6 Plus" }
+      ]
+    }
+  },
+  
+  "defaults": {
+    "primary_model": "bailian/qwen3.5-plus",
+    "max_turns": 90,
+    "personality": "kawaii"
+  },
+  
+  "features": {
+    "vision": { "provider": "bailian", "model": "qwen3.5-plus" },
+    "compression": { "provider": "bailian", "model": "qwen3.5-plus" }
+  },
+  
+  "toolsets": ["hermes-cli"],
+  
+  "terminal": {
+    "backend": "local",
+    "timeout": 180,
+    "docker_image": "nikolaik/python-nodejs:python3.11-nodejs20"
+  },
+  
+  "display": {
+    "compact": false,
+    "streaming": true,
+    "skin": "default"
+  },
+  
+  "memory": {
+    "enabled": true,
+    "char_limit": 2200
+  },
+  
+  "security": {
+    "redact_secrets": true,
+    "tirith_enabled": true
+  },
+  
+  "approvals": {
+    "mode": "blocking",
+    "timeout": 120,
+    "gateway_timeout": 300,
+    
+    "auto_allow": [
+      "^git\\s+(status|log|diff|branch|tag|remote|fetch)",
+      "^npm\\s+install\\s+(?!-g)",
+      "^npm\\s+ci\\b",
+      "^yarn\\s+(install|add)",
+      "^cargo\\s+(build|test|check|run)",
+      "^make\\s+(build|test|all|clean)",
+      "^mkdir\\s+-p\\s+\\./",
+      "^cp\\s+\\./",
+      "^mv\\s+\\./",
+      "^rm\\s+(?!-rf)",
+      "^docker\\s+(build|run|compose)"
+    ],
+    
+    "auto_deny": [
+      "^rm\\s+-rf\\s+/",
+      "^rm\\s+-rf\\s+\\$",
+      "^rm\\s+-rf\\s+~",
+      "^chmod\\s+.*777",
+      "^chmod\\s+.*666",
+      "^echo.*>\\s+/etc/",
+      "^curl.*\\|.*sh",
+      "^wget.*\\|.*sh",
+      "^mkfs",
+      "^dd\\s+"
+    ]
+  },
+  
+  "platforms": {
+    "feishu": {
+      "enabled": true,
+      "app_id": "${FEISHU_APP_ID}",
+      "app_secret": "${FEISHU_APP_SECRET}",
+      "domain": "feishu",
+      "connection_mode": "websocket"
+    }
+  }
+}

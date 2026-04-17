@@ -1,0 +1,125 @@
+# Hermes Agent 授权配置示例
+# 复制此内容到 ~/.hermes/config.yaml 的 approvals 部分
+
+# =============================================================================
+# 授权配置
+# =============================================================================
+approvals:
+  # 授权模式: manual | blocking | smart | off
+  # - manual:  默认模式，危险命令提示用户授权 (推荐)
+  # - blocking: 强制等待用户授权，不跳过 (生产环境推荐)
+  # - smart:   AI 智能判断，低风险自动通过
+  # - off:     禁用所有授权检查 (仅限可信环境)
+  mode: blocking
+  
+  # CLI 授权超时（秒）
+  timeout: 120
+  
+  # Gateway 授权超时（秒）
+  gateway_timeout: 300
+  
+  # =========================================================================
+  # 自动允许列表 (白名单)
+  # =========================================================================
+  # 匹配的命令会自动执行，无需授权提示
+  # 使用 Python 正则表达式语法
+  auto_allow:
+    # Git 安全操作
+    - "^git\\s+(status|log|diff|branch|tag|remote|fetch)"
+    
+    # 包管理（非全局安装）
+    - "^npm\\s+install\\s+(?!-g)"
+    - "^npm\\s+ci\\b"
+    - "^yarn\\s+(install|add)"
+    - "^pnpm\\s+(install|add)"
+    - "^pip\\s+install\\s+(?!-\\-user)"
+    
+    # 构建和测试
+    - "^npm\\s+run\\s+(build|test|lint|dev)"
+    - "^yarn\\s+(build|test|lint)"
+    - "^cargo\\s+(build|test|check|run)"
+    - "^make\\s+(build|test|all|clean)"
+    - "^go\\s+(build|test|run)"
+    
+    # 文件操作（当前目录）
+    - "^mkdir\\s+-p\\s+\\./"
+    - "^cp\\s+\\./"
+    - "^mv\\s+\\./"
+    - "^touch\\s+"
+    - "^rm\\s+(?!-rf)"  # 允许 rm 但不允许 -rf
+    
+    # Docker（非特权）
+    - "^docker\\s+(build|run|compose)"
+    - "^docker\\s+ps"
+    - "^docker\\s+images"
+  
+  # =========================================================================
+  # 自动拒绝列表 (黑名单)
+  # =========================================================================
+  # 匹配的命令会自动拒绝，甚至不会提示用户
+  # 使用 Python 正则表达式语法
+  auto_deny:
+    # 系统级删除
+    - "^rm\\s+-rf\\s+/"
+    - "^rm\\s+-rf\\s+\\$"
+    - "^rm\\s+-rf\\s+~"
+    - "^rm\\s+-rf\\s+\\{HOME"
+    
+    # 危险权限
+    - "^chmod\\s+.*777"
+    - "^chmod\\s+.*666"
+    - "^chmod\\s+-R\\s+[0-9]"
+    
+    # 系统文件修改
+    - "^echo.*>\\s+/etc/"
+    - "^cat.*>\\s+/etc/"
+    - "^tee\\s+-a\\s+/etc/"
+    
+    # 远程代码执行
+    - "^curl.*\\|.*sh"
+    - "^wget.*\\|.*sh"
+    - "^curl.*\\|.*bash"
+    - "^wget.*\\|.*bash"
+    
+    # 文件系统操作
+    - "^mkfs"
+    - "^dd\\s+"
+    - "^fdisk"
+    
+    # 服务管理
+    - "^systemctl\\s+(stop|disable|mask)"
+    
+    # 进程终止
+    - "^kill\\s+-9\\s+-1"
+    - "^pkill\\s+-9"
+    
+    # 网络攻击
+    - "^nmap"
+    - "^masscan"
+
+# =============================================================================
+# 使用示例
+# =============================================================================
+#
+# 1. 生产环境（严格）:
+#    approvals:
+#      mode: blocking
+#      auto_allow: []
+#      auto_deny:
+#        - "^rm\\s+-rf\\s+/"
+#        - "^chmod\\s+.*777"
+#
+# 2. 开发环境（宽松）:
+#    approvals:
+#      mode: smart
+#      auto_allow:
+#        - "^git\\s+"
+#        - "^npm\\s+(install|run|test)"
+#      auto_deny:
+#        - "^rm\\s+-rf\\s+/"
+#
+# 3. CI/CD 环境（自动化）:
+#    approvals:
+#      mode: off
+#
+# =============================================================================

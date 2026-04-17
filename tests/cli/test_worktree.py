@@ -43,6 +43,29 @@ def git_repo(tmp_path):
     return repo
 
 
+@pytest.fixture
+def git_repo_without_remotes(tmp_path):
+    """Create a temporary git repo with no remote refs for cleanup tests."""
+    repo = tmp_path / "test-repo-no-remotes"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@test.com"],
+        cwd=repo, capture_output=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Test"],
+        cwd=repo, capture_output=True,
+    )
+    (repo / "README.md").write_text("# Test Repo\n")
+    subprocess.run(["git", "add", "."], cwd=repo, capture_output=True)
+    subprocess.run(
+        ["git", "commit", "-m", "Initial commit"],
+        cwd=repo, capture_output=True,
+    )
+    return repo
+
+
 # ---------------------------------------------------------------------------
 # Lightweight reimplementations for testing (avoid importing cli.py)
 # ---------------------------------------------------------------------------
@@ -101,11 +124,17 @@ def _cleanup_worktree(info):
         return
 
     # Check for unpushed commits
-    result = subprocess.run(
-        ["git", "log", "--oneline", "HEAD", "--not", "--remotes"],
+    remote_refs = subprocess.run(
+        ["git", "for-each-ref", "--format=%(refname)", "refs/remotes"],
         capture_output=True, text=True, timeout=10, cwd=wt_path,
     )
-    has_unpushed = bool(result.stdout.strip())
+    has_unpushed = False
+    if remote_refs.stdout.strip():
+        result = subprocess.run(
+            ["git", "log", "--oneline", "HEAD", "--not", "--remotes"],
+            capture_output=True, text=True, timeout=10, cwd=wt_path,
+        )
+        has_unpushed = bool(result.stdout.strip())
 
     if has_unpushed:
         return False  # Did not clean up — has unpushed commits
@@ -254,6 +283,17 @@ class TestWorktreeCleanup:
         result = _cleanup_worktree(info)
         assert result is False  # Kept — has unpushed commits
         assert Path(info["path"]).exists()
+
+    def test_clean_worktree_without_remotes_removed(self, git_repo_without_remotes):
+        """A local-only repo should not treat all history as unpushed."""
+        info = _setup_worktree(str(git_repo_without_remotes))
+        assert info is not None
+        assert Path(info["path"]).exists()
+
+        result = _cleanup_worktree(info)
+
+        assert result is True
+        assert not Path(info["path"]).exists()
 
     def test_branch_deleted_on_cleanup(self, git_repo):
         info = _setup_worktree(str(git_repo))

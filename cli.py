@@ -809,11 +809,16 @@ def _cleanup_worktree(info: Dict[str, str] = None) -> None:
     # but didn't push.
     has_unpushed = False
     try:
-        result = subprocess.run(
-            ["git", "log", "--oneline", "HEAD", "--not", "--remotes"],
+        remote_refs = subprocess.run(
+            ["git", "for-each-ref", "--format=%(refname)", "refs/remotes"],
             capture_output=True, text=True, timeout=10, cwd=wt_path,
         )
-        has_unpushed = bool(result.stdout.strip())
+        if remote_refs.stdout.strip():
+            result = subprocess.run(
+                ["git", "log", "--oneline", "HEAD", "--not", "--remotes"],
+                capture_output=True, text=True, timeout=10, cwd=wt_path,
+            )
+            has_unpushed = bool(result.stdout.strip())
     except Exception:
         has_unpushed = True  # Assume unpushed on error — don't delete
 

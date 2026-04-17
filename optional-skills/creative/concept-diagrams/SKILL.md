@@ -1,6 +1,6 @@
 ---
 name: concept-diagrams
-description: Generate flat, minimal SVG diagrams for explaining concepts visually — physics, chemistry, math, engineering, systems, data flows, physical objects, and anatomy. Light/dark-mode aware, self-contained HTML output, and a consistent educational visual language (inspired by clod-style diagrams). Use when the user asks to illustrate a concept, mechanism, structure, or process — physical or abstract — and wants a clean, textbook-ready visual. For strict software/infra architecture, prefer the `architecture-diagram` skill instead.
+description: Generate flat, minimal light/dark-aware SVG diagrams for educational and non-software visuals — physics setups, chemistry mechanisms, math curves, physical objects (aircraft, turbines, smartphones, mechanical watches), anatomy, floor plans, cross-sections, narrative journeys (lifecycle of X, process of Y), hub-spoke integrations (smart city, IoT), and exploded layer views. Uses 9 semantic color ramps with automatic light/dark mode and sentence-case typography. Single self-contained HTML file. Use this when the goal is explaining a concept, mechanism, or physical structure to a reader — textbook-style visuals for any domain outside software infrastructure. For software system architecture specifically (frontend/backend/database/cloud services, microservice topology, deployment diagrams), use the `architecture-diagram` skill instead — it has a darker palette and component-type color semantics tuned for software stacks.
 version: 0.1.0
 author: v1k22 (original PR), ported into hermes-agent
 license: MIT
@@ -15,16 +15,27 @@ metadata:
 
 Generate production-quality SVG diagrams with a unified flat, minimal design system. Output is a single self-contained HTML file that renders identically in any modern browser, with automatic light/dark mode.
 
-Use this skill when the user asks to explain or illustrate:
+**When to use this skill vs `architecture-diagram`:**
+
+| Use `concept-diagrams` for | Use `architecture-diagram` for |
+|----------------------------|--------------------------------|
+| Physics, chemistry, math, biology | Software system architecture |
+| Physical objects (aircraft, turbines, watches, phones) | Cloud infrastructure (VPC, regions, services) |
+| Anatomy, cross-sections, exploded views | Microservice / service mesh topology |
+| Floor plans, narrative journeys, lifecycles | Database + API layer diagrams |
+| Educational / textbook-style visuals | Security groups, message buses |
+| Flat, light/dark-adaptive aesthetic | Dark-themed tech/infra aesthetic |
+
+If in doubt: is the subject software/cloud infra? Use `architecture-diagram`. Anything else — physical, scientific, educational — this skill.
+
+Subjects this skill handles well:
 
 - physical objects (aircraft, turbines, watches, smartphones, cells)
 - scientific mechanisms (reactions, physics setups, electrical circuits)
 - processes and flows (ETL, CI/CD, workflows, narrative journeys)
-- system topologies (microservices, IoT hub-spoke, grids)
+- general system topologies when a textbook/educational style is preferred (smart city hub-spoke, grids)
 - floor plans, exploded views, cross-sections
 - quantitative charts (grouped bars, energy profiles)
-
-For a dark-themed, Cocoon-style software architecture diagram (frontend/backend/DB/cloud/security), prefer the `architecture-diagram` skill.
 
 ## Workflow
 

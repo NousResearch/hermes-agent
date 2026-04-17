@@ -16,8 +16,8 @@ def test_version_string_no_v_prefix():
     assert not __version__.startswith("v"), f"__version__ should not start with 'v', got {__version__!r}"
 
 
-def test_check_for_updates_uses_cache(tmp_path, monkeypatch):
-    """When cache is fresh, check_for_updates should return cached value without calling git."""
+def test_check_for_updates_uses_zero_cache_without_git(tmp_path, monkeypatch):
+    """Fresh zero-behind cache should return immediately without calling git."""
     from hermes_cli.banner import check_for_updates
 
     # Create a fake git repo and fresh cache
@@ -26,14 +26,34 @@ def test_check_for_updates_uses_cache(tmp_path, monkeypatch):
     (repo_dir / ".git").mkdir()
 
     cache_file = tmp_path / ".update_check"
-    cache_file.write_text(json.dumps({"ts": time.time(), "behind": 3}))
+    cache_file.write_text(json.dumps({"ts": time.time(), "behind": 0}))
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     with patch("hermes_cli.banner.subprocess.run") as mock_run:
         result = check_for_updates()
 
-    assert result == 3
+    assert result == 0
     mock_run.assert_not_called()
+
+
+def test_check_for_updates_revalidates_fresh_positive_cache(tmp_path, monkeypatch):
+    """Fresh positive cache should be corrected from local refs after an update."""
+    from hermes_cli.banner import check_for_updates
+
+    repo_dir = tmp_path / "hermes-agent"
+    repo_dir.mkdir()
+    (repo_dir / ".git").mkdir()
+
+    cache_file = tmp_path / ".update_check"
+    cache_file.write_text(json.dumps({"ts": time.time(), "behind": 3}))
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    with patch("hermes_cli.banner.subprocess.run", return_value=MagicMock(returncode=0, stdout="0\n")) as mock_run:
+        result = check_for_updates()
+
+    assert result == 0
+    assert mock_run.call_count == 1  # local git rev-list only — no fetch for fresh cache
+    assert json.loads(cache_file.read_text())["behind"] == 0
 
 
 def test_check_for_updates_expired_cache(tmp_path, monkeypatch):

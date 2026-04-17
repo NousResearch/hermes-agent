@@ -194,7 +194,8 @@ class GatewayTurnPrepareMixin:
     ) -> tuple[str, dict]:
         """Resolve model/runtime for a session.
 
-        Priority (highest first): session ``/model`` → ``channel_overrides`` → global config/env
+        Priority (highest first): session ``/model`` → ``channel_overrides`` →
+        platform ``extra`` → global config/env
         (``_resolve_gateway_model(user_config)`` and default provider resolution). ``fallback=False``
         keeps a launch-policy session on its own route (see ``_resolve_policy_agent_runtime``).
 
@@ -202,7 +203,9 @@ class GatewayTurnPrepareMixin:
         ``_pre_agent_fallback_notice`` is one turn's one-shot slot, so such a lookup must neither clear
         another chat's pending notice nor leave one of its own for the next turn to consume."""
         from gateway.run import (
-            _credential_pool_for_provider, _resolve_gateway_model, _resolve_runtime_agent_kwargs,
+            _credential_pool_for_provider, _get_platform_model_overrides, _load_gateway_config,
+            _resolve_gateway_model, _resolve_runtime_agent_kwargs,
+            _resolve_runtime_agent_kwargs_for_provider,
         )
         from gateway.session_policy import policy_for_source
         # Every exit path starts clean: a stale notice must never attach to another session's next
@@ -285,6 +288,33 @@ class GatewayTurnPrepareMixin:
                 unavailable_override["provider"], unavailable_override.get("model"), runtime_kwargs.get("provider"), model)
         if record_notice:
             self._pre_agent_fallback_notice = notice
+
+        # Platform extra (below channel and session overrides). Fail-open if
+        # provider resolution for the platform provider fails. Launch-policy
+        # sessions returned above and keep their frozen route.
+        plat_cfg = user_config if isinstance(user_config, dict) else _load_gateway_config()
+        plat = _get_platform_model_overrides(
+            plat_cfg, platform=source.platform if source is not None else None,
+        )
+        if plat:
+            if plat.get("model"):
+                model = plat["model"]
+            if plat.get("provider"):
+                try:
+                    runtime_kwargs = _resolve_runtime_agent_kwargs_for_provider(
+                        plat["provider"], target_model=plat.get("model") or None,
+                    )
+                    plat_runtime_model = runtime_kwargs.pop("model", None)
+                    if plat_runtime_model and not plat.get("model"):
+                        model = plat_runtime_model
+                except Exception:
+                    logger.debug(
+                        "Platform provider override failed for %s; keeping global runtime",
+                        plat.get("provider"), exc_info=True,
+                    )
+            for _k in ("api_key", "base_url", "api_mode"):
+                if plat.get(_k):
+                    runtime_kwargs[_k] = plat[_k]
 
         model, runtime_kwargs = _resolve_channel_runtime(self, source, model, runtime_kwargs)
 

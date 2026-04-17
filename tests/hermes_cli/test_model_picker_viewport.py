@@ -19,16 +19,15 @@ class TestPickerViewport:
         assert visible == 5
 
     def test_long_list_caps_visible_to_chrome_budget(self):
-        # 36 models, 30 terminal rows, chrome_reserve=14 → max_visible=16.
-        # Position counter lives in the bottom border, no row reserved.
+        # 30 rows minus reserved_below=6 minus panel_chrome=6 → max_visible=18.
         offset, visible = _compute(selected=0, scroll_offset=0, n=36, term_rows=30)
-        assert visible == 16
+        assert visible == 18
         assert offset == 0
 
     def test_cursor_past_window_scrolls_down(self):
-        offset, visible = _compute(selected=20, scroll_offset=0, n=36, term_rows=30)
-        assert visible == 16
-        assert 20 in range(offset, offset + visible)
+        offset, visible = _compute(selected=22, scroll_offset=0, n=36, term_rows=30)
+        assert visible == 18
+        assert 22 in range(offset, offset + visible)
 
     def test_cursor_above_window_scrolls_up(self):
         offset, visible = _compute(selected=3, scroll_offset=15, n=36, term_rows=30)
@@ -36,16 +35,16 @@ class TestPickerViewport:
         assert 3 in range(offset, offset + visible)
 
     def test_offset_clamped_to_bottom(self):
-        # Selected on last item — offset must keep visible window full, not
-        # walk past the end of the list.
+        # Selected on the last item — offset must keep the visible window
+        # full, not walk past the end of the list.
         offset, visible = _compute(selected=35, scroll_offset=0, n=36, term_rows=30)
         assert offset + visible == 36
         assert 35 in range(offset, offset + visible)
 
     def test_tiny_terminal_uses_minimum_visible(self):
-        # term_rows below chrome_reserve falls back to the floor of 3 rows.
+        # term_rows below the chrome budget falls back to the floor of 3 rows.
         _, visible = _compute(selected=0, scroll_offset=0, n=20, term_rows=10)
-        assert visible == 3  # max(3, 10 - 14) == 3
+        assert visible == 3
 
     def test_offset_recovers_after_stage_switch(self):
         # When the user backs out of the model stage and re-enters with

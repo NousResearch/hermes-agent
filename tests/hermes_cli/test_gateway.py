@@ -39,6 +39,76 @@ class TestSystemdLingerStatus:
         assert gateway.get_systemd_linger_status() == (None, "not supported in Termux")
 
 
+class TestContainerSystemdSupport:
+    def test_supports_systemd_services_in_container_with_user_manager(self, monkeypatch):
+        monkeypatch.setattr(gateway, "is_linux", lambda: True)
+        monkeypatch.setattr(gateway, "is_termux", lambda: False)
+        monkeypatch.setattr(gateway, "is_wsl", lambda: False)
+        monkeypatch.setattr(gateway, "is_container", lambda: True)
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemctl")
+        monkeypatch.setattr(gateway, "_systemd_operational", lambda system=False: not system)
+
+        assert gateway.supports_systemd_services() is True
+
+    def test_supports_systemd_services_in_container_with_system_manager(self, monkeypatch):
+        monkeypatch.setattr(gateway, "is_linux", lambda: True)
+        monkeypatch.setattr(gateway, "is_termux", lambda: False)
+        monkeypatch.setattr(gateway, "is_wsl", lambda: False)
+        monkeypatch.setattr(gateway, "is_container", lambda: True)
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemctl")
+        monkeypatch.setattr(gateway, "_systemd_operational", lambda system=False: system)
+
+        assert gateway.supports_systemd_services() is True
+
+    def test_supports_systemd_services_in_container_without_systemd(self, monkeypatch):
+        monkeypatch.setattr(gateway, "is_linux", lambda: True)
+        monkeypatch.setattr(gateway, "is_termux", lambda: False)
+        monkeypatch.setattr(gateway, "is_wsl", lambda: False)
+        monkeypatch.setattr(gateway, "is_container", lambda: True)
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemctl")
+        monkeypatch.setattr(gateway, "_systemd_operational", lambda system=False: False)
+
+        assert gateway.supports_systemd_services() is False
+
+
+def test_gateway_install_in_container_with_operational_systemd_uses_systemd(monkeypatch):
+    monkeypatch.setattr(gateway, "supports_systemd_services", lambda: True)
+    monkeypatch.setattr(gateway, "is_wsl", lambda: False)
+    monkeypatch.setattr(gateway, "is_macos", lambda: False)
+    monkeypatch.setattr(gateway, "is_managed", lambda: False)
+
+    calls = []
+    monkeypatch.setattr(
+        gateway,
+        "systemd_install",
+        lambda force=False, system=False, run_as_user=None: calls.append((force, system, run_as_user)),
+    )
+
+    args = SimpleNamespace(
+        gateway_command="install",
+        force=False,
+        system=False,
+        run_as_user=None,
+    )
+    gateway.gateway_command(args)
+
+    assert calls == [(False, False, None)]
+
+
+def test_gateway_start_in_container_with_operational_systemd_uses_systemd(monkeypatch):
+    monkeypatch.setattr(gateway, "supports_systemd_services", lambda: True)
+    monkeypatch.setattr(gateway, "is_wsl", lambda: False)
+    monkeypatch.setattr(gateway, "is_macos", lambda: False)
+
+    calls = []
+    monkeypatch.setattr(gateway, "systemd_start", lambda system=False: calls.append(system))
+
+    args = SimpleNamespace(gateway_command="start", system=False, all=False)
+    gateway.gateway_command(args)
+
+    assert calls == [False]
+
+
 def test_systemd_status_warns_when_linger_disabled(monkeypatch, tmp_path, capsys):
     unit_path = tmp_path / "hermes-gateway.service"
     unit_path.write_text("[Unit]\n")

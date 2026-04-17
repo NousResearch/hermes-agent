@@ -276,6 +276,64 @@ class TestCollectDebugReport:
         assert "(file not found)" in report
 
 
+class TestCollectHomeReport:
+    """Test the local HERMES_HOME report builder."""
+
+    def test_report_includes_profile_safe_paths_and_entries(self, tmp_path, monkeypatch):
+        from hermes_cli.debug import collect_home_report
+
+        home = tmp_path / ".hermes" / "profiles" / "coder"
+        (home / "logs").mkdir(parents=True)
+        (home / "sessions").mkdir()
+        (home / "memories").mkdir()
+        (home / "cron").mkdir()
+        (home / "home").mkdir()
+
+        (home / "config.yaml").write_text("model:\n  default: anthropic/test\n")
+        (home / ".env").write_text("OPENAI_API_KEY=test\n")
+        (home / "auth.json").write_text('{"active_provider":"openrouter"}\n')
+        (home / "state.db").write_text("")
+        (home / "SOUL.md").write_text("# Soul\n")
+        (home / "logs" / "agent.log").write_text("agent started\n")
+        (home / "logs" / "errors.log").write_text("gateway error\n")
+        (home / "logs" / "gateway.log.1").write_text("gateway rotated\n")
+
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        report = collect_home_report()
+
+        assert "Hermes Home Report" in report
+        assert "Display path:    ~/.hermes/profiles/coder" in report
+        assert f"Resolved path:   {home}" in report
+        assert "Exists:          yes" in report
+        assert "Subprocess HOME: ~/.hermes/profiles/coder/home" in report
+        assert "config.yaml" in report
+        assert "state.db" in report
+        assert "logs/" in report
+        assert "Top-level entries:" in report
+        assert "home               dir" in report
+        assert "config.yaml        file" in report
+        assert "agent.log" in report
+        assert "gateway.log.1" in report
+
+    def test_missing_home_is_reported_cleanly(self, tmp_path, monkeypatch):
+        from hermes_cli.debug import collect_home_report
+
+        home = tmp_path / ".hermes" / "profiles" / "missing"
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        report = collect_home_report()
+
+        assert "Display path:    ~/.hermes/profiles/missing" in report
+        assert "Exists:          no" in report
+        assert "Directory:       no" in report
+        assert "(directory not found)" in report
+        assert "agent.log" in report
+        assert "missing" in report
+
+
 # ---------------------------------------------------------------------------
 # CLI entry point — run_debug_share
 # ---------------------------------------------------------------------------
@@ -429,6 +487,7 @@ class TestRunDebug:
 
         out = capsys.readouterr().out
         assert "hermes debug" in out
+        assert "home" in out
         assert "share" in out
         assert "delete" in out
 
@@ -444,6 +503,18 @@ class TestRunDebug:
         with patch("hermes_cli.dump.run_dump"):
             run_debug(args)
 
+    def test_home_subcommand_routes(self, hermes_home, capsys):
+        from hermes_cli.debug import run_debug
+
+        args = MagicMock()
+        args.debug_command = "home"
+
+        run_debug(args)
+
+        out = capsys.readouterr().out
+        assert "Hermes Home Report" in out
+        assert str(hermes_home) in out
+
 
 # ---------------------------------------------------------------------------
 # Argparse integration
@@ -451,8 +522,9 @@ class TestRunDebug:
 
 class TestArgparseIntegration:
     def test_module_imports_clean(self):
-        from hermes_cli.debug import run_debug, run_debug_share
+        from hermes_cli.debug import run_debug, run_debug_home, run_debug_share
         assert callable(run_debug)
+        assert callable(run_debug_home)
         assert callable(run_debug_share)
 
     def test_cmd_debug_dispatches(self):
@@ -461,6 +533,16 @@ class TestArgparseIntegration:
         args = MagicMock()
         args.debug_command = None
         cmd_debug(args)
+
+    def test_main_parses_debug_home(self, hermes_home, monkeypatch, capsys):
+        from hermes_cli import main as cli_main
+
+        monkeypatch.setattr(sys, "argv", ["hermes", "debug", "home"])
+        cli_main.main()
+
+        out = capsys.readouterr().out
+        assert "Hermes Home Report" in out
+        assert str(hermes_home) in out
 
 
 # ---------------------------------------------------------------------------

@@ -5404,13 +5404,15 @@ For more help on a command:
     # =========================================================================
     debug_parser = subparsers.add_parser(
         "debug",
-        help="Debug tools — upload logs and system info for support",
-        description="Debug utilities for Hermes Agent. Use 'hermes debug share' to "
-                    "upload a debug report (system info + recent logs) to a paste "
+        help="Debug tools — inspect HERMES_HOME or share logs for support",
+        description="Debug utilities for Hermes Agent. Use 'hermes debug home' to "
+                    "inspect the active HERMES_HOME locally, or 'hermes debug share' "
+                    "to upload a debug report (system info + recent logs) to a paste "
                     "service and get a shareable URL.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""\
 Examples:
+    hermes debug home               Print a local HERMES_HOME report
     hermes debug share              Upload debug report and print URL
     hermes debug share --lines 500  Include more log lines
     hermes debug share --expire 30  Keep paste for 30 days
@@ -5419,6 +5421,10 @@ Examples:
 """,
     )
     debug_sub = debug_parser.add_subparsers(dest="debug_command")
+    debug_sub.add_parser(
+        "home",
+        help="Print a structured local report of the active HERMES_HOME",
+    )
     share_parser = debug_sub.add_parser(
         "share",
         help="Upload debug report to a paste service and print a shareable URL",

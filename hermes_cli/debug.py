@@ -1,6 +1,7 @@
 """``hermes debug`` — debug tools for Hermes Agent.
 
 Currently supports:
+    hermes debug home     Print a local summary of the active HERMES_HOME.
     hermes debug share    Upload debug report (system info + logs) to a
                           paste service and print a shareable URL.
 """
@@ -10,10 +11,171 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from hermes_constants import get_hermes_home
+from hermes_constants import display_hermes_home, get_hermes_home, get_subprocess_home
+
+
+# ---------------------------------------------------------------------------
+# Local HERMES_HOME report
+# ---------------------------------------------------------------------------
+
+_HOME_REPORT_FILES = (
+    "config.yaml",
+    ".env",
+    "auth.json",
+    "state.db",
+    "SOUL.md",
+    ".container-mode",
+)
+
+_HOME_REPORT_DIRS = (
+    "logs",
+    "sessions",
+    "memories",
+    "skills",
+    "cron",
+    "home",
+)
+
+
+def _format_size(num_bytes: int) -> str:
+    """Return a compact human-readable byte count."""
+    if num_bytes < 1024:
+        return f"{num_bytes} B"
+    if num_bytes < 1024 * 1024:
+        return f"{num_bytes / 1024:.1f} KB"
+    return f"{num_bytes / (1024 * 1024):.1f} MB"
+
+
+def _format_mtime(path: Path) -> str:
+    """Return a stable local timestamp for the file's mtime."""
+    try:
+        return datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+    except OSError:
+        return "unknown"
+
+
+def _safe_iterdir_count(path: Path) -> str:
+    """Return the number of direct children for a directory."""
+    try:
+        return str(sum(1 for _ in path.iterdir()))
+    except OSError:
+        return "?"
+
+
+def _describe_file(path: Path) -> str:
+    """Describe a file path without reading its contents."""
+    if not path.exists():
+        return "missing"
+    if not path.is_file():
+        return "not a file"
+    try:
+        size = _format_size(path.stat().st_size)
+    except OSError:
+        size = "size unavailable"
+    return f"present  {size:<8} modified {_format_mtime(path)}"
+
+
+def _describe_dir(path: Path) -> str:
+    """Describe a directory path without traversing recursively."""
+    if not path.exists():
+        return "missing"
+    if not path.is_dir():
+        return "not a directory"
+    return f"present  {_safe_iterdir_count(path):>3} entries  modified {_format_mtime(path)}"
+
+
+def _top_level_entry_lines(home: Path) -> list[str]:
+    """Return report lines for immediate children inside HERMES_HOME."""
+    if not home.exists() or not home.is_dir():
+        return ["  (directory not found)"]
+
+    try:
+        entries = sorted(
+            home.iterdir(),
+            key=lambda entry: (not entry.is_dir(), entry.name.lower()),
+        )
+    except OSError as exc:
+        return [f"  (unable to read directory: {exc})"]
+
+    if not entries:
+        return ["  (empty)"]
+
+    lines: list[str] = []
+    for entry in entries:
+        kind = "dir" if entry.is_dir() else "file" if entry.is_file() else "other"
+        if kind == "dir":
+            detail = f"{_safe_iterdir_count(entry)} entries"
+        elif kind == "file":
+            try:
+                detail = _format_size(entry.stat().st_size)
+            except OSError:
+                detail = "size unavailable"
+        else:
+            detail = "special"
+        lines.append(f"  {entry.name:<18} {kind:<5} {detail}")
+    return lines
+
+
+def _log_status_lines() -> list[str]:
+    """Return report lines for the key log files Hermes rotates."""
+    lines: list[str] = []
+    for log_name in ("agent", "errors", "gateway"):
+        log_path = _resolve_log_path(log_name)
+        if log_path is None:
+            lines.append(f"  {log_name}.log{'':<8} missing")
+            continue
+        try:
+            size = _format_size(log_path.stat().st_size)
+        except OSError:
+            size = "size unavailable"
+        lines.append(
+            f"  {log_name}.log{'':<8} {log_path.name:<14} {size:<8} modified {_format_mtime(log_path)}"
+        )
+    return lines
+
+
+def collect_home_report() -> str:
+    """Build a local summary of the active HERMES_HOME contents."""
+    home = get_hermes_home()
+    display_home = display_hermes_home()
+    subprocess_home = get_subprocess_home()
+
+    buf = io.StringIO()
+    buf.write("Hermes Home Report\n")
+    buf.write("==================\n")
+    buf.write(f"Display path:    {display_home}\n")
+    buf.write(f"Resolved path:   {home}\n")
+    buf.write(f"Exists:          {'yes' if home.exists() else 'no'}\n")
+    buf.write(f"Directory:       {'yes' if home.is_dir() else 'no'}\n")
+    if subprocess_home:
+        buf.write(f"Subprocess HOME: {display_home.rstrip('/')}/home\n")
+
+    buf.write("\nKey files:\n")
+    for name in _HOME_REPORT_FILES:
+        buf.write(f"  {name:<16} {_describe_file(home / name)}\n")
+
+    buf.write("\nKey directories:\n")
+    for name in _HOME_REPORT_DIRS:
+        buf.write(f"  {name + '/':<16} {_describe_dir(home / name)}\n")
+
+    buf.write("\nTop-level entries:\n")
+    buf.write("\n".join(_top_level_entry_lines(home)))
+    buf.write("\n")
+
+    buf.write("\nLogs:\n")
+    buf.write("\n".join(_log_status_lines()))
+    buf.write("\n")
+    return buf.getvalue()
+
+
+def run_debug_home(args):
+    """Print a local HERMES_HOME report."""
+    del args  # subcommand reserved for future flags
+    print(collect_home_report(), end="")
 
 
 # ---------------------------------------------------------------------------
@@ -456,7 +618,9 @@ def run_debug_delete(args):
 def run_debug(args):
     """Route debug subcommands."""
     subcmd = getattr(args, "debug_command", None)
-    if subcmd == "share":
+    if subcmd == "home":
+        run_debug_home(args)
+    elif subcmd == "share":
         run_debug_share(args)
     elif subcmd == "delete":
         run_debug_delete(args)
@@ -465,8 +629,12 @@ def run_debug(args):
         print("Usage: hermes debug <command>")
         print()
         print("Commands:")
+        print("  home     Print a local HERMES_HOME report")
         print("  share    Upload debug report to a paste service and print URL")
         print("  delete   Delete a previously uploaded paste")
+        print()
+        print("Options (home):")
+        print("  (none)")
         print()
         print("Options (share):")
         print("  --lines N    Number of log lines to include (default: 200)")

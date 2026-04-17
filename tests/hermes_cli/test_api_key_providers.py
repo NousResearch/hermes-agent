@@ -42,6 +42,7 @@ class TestProviderRegistry:
         ("minimax-cn", "MiniMax (China)", "api_key"),
         ("ai-gateway", "Vercel AI Gateway", "api_key"),
         ("kilocode", "Kilo Code", "api_key"),
+        ("gmi", "GMI Cloud", "api_key"),
     ])
     def test_provider_registered(self, provider_id, name, auth_type):
         assert provider_id in PROVIDER_REGISTRY
@@ -106,6 +107,11 @@ class TestProviderRegistry:
         assert pconfig.api_key_env_vars == ("KILOCODE_API_KEY",)
         assert pconfig.base_url_env_var == "KILOCODE_BASE_URL"
 
+    def test_gmi_env_vars(self):
+        pconfig = PROVIDER_REGISTRY["gmi"]
+        assert pconfig.api_key_env_vars == ("GMI_API_KEY",)
+        assert pconfig.base_url_env_var == "GMI_BASE_URL"
+
     def test_huggingface_env_vars(self):
         pconfig = PROVIDER_REGISTRY["huggingface"]
         assert pconfig.api_key_env_vars == ("HF_TOKEN",)
@@ -121,6 +127,7 @@ class TestProviderRegistry:
         assert PROVIDER_REGISTRY["minimax-cn"].inference_base_url == "https://api.minimaxi.com/anthropic"
         assert PROVIDER_REGISTRY["ai-gateway"].inference_base_url == "https://ai-gateway.vercel.sh/v1"
         assert PROVIDER_REGISTRY["kilocode"].inference_base_url == "https://api.kilo.ai/api/gateway"
+        assert PROVIDER_REGISTRY["gmi"].inference_base_url == "https://api.gmi-serving.com/v1"
         assert PROVIDER_REGISTRY["huggingface"].inference_base_url == "https://router.huggingface.co/v1"
 
     def test_oauth_providers_unchanged(self):
@@ -143,6 +150,7 @@ PROVIDER_ENV_VARS = (
     "MINIMAX_API_KEY", "MINIMAX_CN_API_KEY",
     "AI_GATEWAY_API_KEY", "AI_GATEWAY_BASE_URL",
     "KILOCODE_API_KEY", "KILOCODE_BASE_URL",
+    "GMI_API_KEY", "GMI_BASE_URL",
     "DASHSCOPE_API_KEY", "OPENCODE_ZEN_API_KEY", "OPENCODE_GO_API_KEY",
     "NOUS_API_KEY", "GITHUB_TOKEN", "GH_TOKEN",
     "OPENAI_BASE_URL", "HERMES_COPILOT_ACP_COMMAND", "COPILOT_CLI_PATH",
@@ -178,6 +186,9 @@ class TestResolveProvider:
     def test_explicit_ai_gateway(self):
         assert resolve_provider("ai-gateway") == "ai-gateway"
 
+    def test_explicit_gmi(self):
+        assert resolve_provider("gmi") == "gmi"
+
     def test_alias_glm(self):
         assert resolve_provider("glm") == "zai"
 
@@ -204,6 +215,9 @@ class TestResolveProvider:
 
     def test_alias_vercel(self):
         assert resolve_provider("vercel") == "ai-gateway"
+
+    def test_alias_gmi_cloud(self):
+        assert resolve_provider("gmi-cloud") == "gmi"
 
     def test_explicit_kilocode(self):
         assert resolve_provider("kilocode") == "kilocode"
@@ -279,6 +293,10 @@ class TestResolveProvider:
     def test_auto_detects_ai_gateway_key(self, monkeypatch):
         monkeypatch.setenv("AI_GATEWAY_API_KEY", "test-gw-key")
         assert resolve_provider("auto") == "ai-gateway"
+
+    def test_auto_detects_gmi_key(self, monkeypatch):
+        monkeypatch.setenv("GMI_API_KEY", "test-gmi-key")
+        assert resolve_provider("auto") == "gmi"
 
     def test_auto_detects_kilocode_key(self, monkeypatch):
         monkeypatch.setenv("KILOCODE_API_KEY", "test-kilo-key")
@@ -497,6 +515,19 @@ class TestResolveApiKeyProviderCredentials:
         assert creds["api_key"] == "kilo-secret-key"
         assert creds["base_url"] == "https://api.kilo.ai/api/gateway"
 
+    def test_resolve_gmi_with_key(self, monkeypatch):
+        monkeypatch.setenv("GMI_API_KEY", "gmi-secret-key")
+        creds = resolve_api_key_provider_credentials("gmi")
+        assert creds["provider"] == "gmi"
+        assert creds["api_key"] == "gmi-secret-key"
+        assert creds["base_url"] == "https://api.gmi-serving.com/v1"
+
+    def test_resolve_gmi_custom_base_url(self, monkeypatch):
+        monkeypatch.setenv("GMI_API_KEY", "gmi-key")
+        monkeypatch.setenv("GMI_BASE_URL", "https://custom.gmi.example/v1")
+        creds = resolve_api_key_provider_credentials("gmi")
+        assert creds["base_url"] == "https://custom.gmi.example/v1"
+
     def test_resolve_kilocode_custom_base_url(self, monkeypatch):
         monkeypatch.setenv("KILOCODE_API_KEY", "kilo-key")
         monkeypatch.setenv("KILOCODE_BASE_URL", "https://custom.kilo.example/v1")
@@ -593,6 +624,15 @@ class TestRuntimeProviderResolution:
         assert result["api_mode"] == "chat_completions"
         assert result["api_key"] == "kilo-key"
         assert "kilo.ai" in result["base_url"]
+
+    def test_runtime_gmi(self, monkeypatch):
+        monkeypatch.setenv("GMI_API_KEY", "gmi-key")
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        result = resolve_runtime_provider(requested="gmi")
+        assert result["provider"] == "gmi"
+        assert result["api_mode"] == "chat_completions"
+        assert result["api_key"] == "gmi-key"
+        assert result["base_url"] == "https://api.gmi-serving.com/v1"
 
     def test_runtime_auto_detects_api_key_provider(self, monkeypatch):
         monkeypatch.setenv("KIMI_API_KEY", "auto-kimi-key")

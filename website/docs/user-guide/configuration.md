@@ -801,6 +801,17 @@ These options apply to **auxiliary task configs** (`auxiliary:`, `compression:`,
 | `"codex"` | Force Codex OAuth (ChatGPT account). Supports vision (gpt-5.3-codex). | `hermes model` → Codex |
 | `"main"` | Use your active custom/main endpoint. This can come from `OPENAI_BASE_URL` + `OPENAI_API_KEY` or from a custom endpoint saved via `hermes model` / `config.yaml`. Works with OpenAI, local models, or any OpenAI-compatible API. **Auxiliary tasks only — not valid for `model.provider`.** | Custom endpoint credentials + base URL |
 
+Direct API-key providers from the main provider catalog also work here when you want side tasks to bypass your default router. `gmi` is valid once `GMI_API_KEY` is configured:
+
+```yaml
+auxiliary:
+  compression:
+    provider: "gmi"
+    model: "anthropic/claude-opus-4.6"
+```
+
+For GMI auxiliary routing, use the exact model ID returned by GMI's `/v1/models` endpoint.
+
 ### Common Setups
 
 **Using a direct custom endpoint** (clearer than `provider: "main"` for local/self-hosted APIs):

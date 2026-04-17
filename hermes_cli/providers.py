@@ -163,6 +163,12 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         base_url_override="https://api.arcee.ai/api/v1",
         base_url_env_var="ARCEE_BASE_URL",
     ),
+    "gmi": HermesOverlay(
+        transport="openai_chat",
+        extra_env_vars=("GMI_API_KEY",),
+        base_url_override="https://api.gmi-serving.com/v1",
+        base_url_env_var="GMI_BASE_URL",
+    ),
     "ollama-cloud": HermesOverlay(
         transport="openai_chat",
         base_url_env_var="OLLAMA_BASE_URL",
@@ -297,6 +303,10 @@ ALIASES: Dict[str, str] = {
     "arcee-ai": "arcee",
     "arceeai": "arcee",
 
+    # gmi
+    "gmi-cloud": "gmi",
+    "gmicloud": "gmi",
+
     # Local server aliases → virtual "local" concept (resolved via user config)
     "lmstudio": "lmstudio",
     "lm-studio": "lmstudio",
@@ -319,6 +329,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "copilot-acp": "GitHub Copilot ACP",
     "stepfun": "StepFun Step Plan",
     "xiaomi": "Xiaomi MiMo",
+    "gmi": "GMI Cloud",
     "local": "Local endpoint",
     "bedrock": "AWS Bedrock",
     "ollama-cloud": "Ollama Cloud",

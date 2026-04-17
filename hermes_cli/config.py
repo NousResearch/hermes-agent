@@ -1082,6 +1082,7 @@ ENV_VARS_BY_VERSION: Dict[int, List[str]] = {
         "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_ALLOWED_USERS"],
     10: ["TAVILY_API_KEY"],
     11: ["TERMINAL_MODAL_MODE"],
+    17: ["GMI_API_KEY", "GMI_BASE_URL"],
 }
 
 # Required environment variables with metadata for migration prompts.
@@ -1249,6 +1250,22 @@ OPTIONAL_ENV_VARS = {
     "ARCEE_BASE_URL": {
         "description": "Arcee AI base URL override",
         "prompt": "Arcee base URL (leave empty for default)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
+    "GMI_API_KEY": {
+        "description": "GMI Cloud API key",
+        "prompt": "GMI Cloud API key",
+        "url": "https://www.gmicloud.ai/",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "GMI_BASE_URL": {
+        "description": "GMI Cloud base URL override",
+        "prompt": "GMI Cloud base URL (leave empty for default)",
         "url": None,
         "password": False,
         "category": "provider",

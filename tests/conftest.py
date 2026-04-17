@@ -288,6 +288,10 @@ def _hermetic_environment(tmp_path, monkeypatch):
         monkeypatch.setattr(_plugins_mod, "_plugin_manager", None)
     except Exception:
         pass
+    # Explicitly clear provider-specific base URL overrides that don't match
+    # the generic credential-shaped env-var filter above.
+    monkeypatch.delenv("GMI_API_KEY", raising=False)
+    monkeypatch.delenv("GMI_BASE_URL", raising=False)
 
 
 # Backward-compat alias — old tests reference this fixture name. Keep it

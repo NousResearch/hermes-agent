@@ -1,8 +1,8 @@
 ---
-name: touchdesigner
+name: touchdesigner-mcp
 description: "Control a running TouchDesigner instance via twozero MCP — create operators, set parameters, wire connections, execute Python, build real-time visuals. 36 native tools."
 version: 1.0.0
-author: Hermes Agent
+author: kshitijk4poor
 license: MIT
 metadata:
   hermes:
@@ -36,7 +36,7 @@ Hub health check: `GET http://localhost:40404/mcp` returns JSON with instance PI
 Run the setup script to handle everything:
 
 ```bash
-bash ~/.hermes/skills/creative/touchdesigner/scripts/setup.sh
+bash ~/.hermes/optional-skills/creative/touchdesigner-mcp/scripts/setup.sh
 ```
 
 The script will:
@@ -78,7 +78,7 @@ No temp nodes, no cleanup. This replaces the old discovery dance entirely.
 
 ### Step 1: Clean + Build
 
-**IMPORTANT: Split cleanup and creation into SEPARATE MCP calls.** Destroying and recreating same-named nodes in one `td_execute_python` script causes "Invalid OP object" errors. See pitfalls #10b.
+**IMPORTANT: Split cleanup and creation into SEPARATE MCP calls.** Destroying and recreating same-named nodes in one `td_execute_python` script causes "Invalid OP object" errors. See pitfalls #11b.
 
 Use `td_create_operator` for each node (handles viewport positioning automatically):
 
@@ -255,9 +255,9 @@ Extract frames: `ffmpeg -i /tmp/output.mov -vframes 120 /tmp/frames/frame_%06d.p
 
 ### Before Recording: Checklist
 
-1. **Verify FPS > 0** via `td_get_perf`. If FPS=0 the recording will be empty. See pitfalls #37-38.
-2. **Verify shader output is not black** via `td_get_screenshot`. Black output = shader error or missing input. See pitfalls #7, #39.
-3. **If recording with audio:** cue audio to start first, then delay recording by 3 frames. See pitfalls #18.
+1. **Verify FPS > 0** via `td_get_perf`. If FPS=0 the recording will be empty. See pitfalls #38-39.
+2. **Verify shader output is not black** via `td_get_screenshot`. Black output = shader error or missing input. See pitfalls #8, #40.
+3. **If recording with audio:** cue audio to start first, then delay recording by 3 frames. See pitfalls #19.
 4. **Set output path before starting record** — setting both in the same script can race.
 
 ## Audio-Reactive GLSL (Proven Recipe)

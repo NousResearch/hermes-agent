@@ -1369,7 +1369,8 @@ class FeishuAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         formatted = self.format_message(content)
-        chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+        from gateway.platforms.base import utf16_len
+        chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH, len_fn=utf16_len)
         last_response = None
 
         try:

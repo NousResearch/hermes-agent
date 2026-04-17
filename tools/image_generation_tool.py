@@ -134,11 +134,11 @@ FAL_MODELS: Dict[str, Dict[str, Any]] = {
         },
         "upscale": False,
     },
-    "fal-ai/nano-banana": {
-        "display": "Nano Banana (Gemini 2.5 Flash Image)",
-        "speed": "~6s",
-        "strengths": "Gemini 2.5, consistency",
-        "price": "$0.08/image",
+    "fal-ai/nano-banana-pro": {
+        "display": "Nano Banana Pro (Gemini 3 Pro Image)",
+        "speed": "~8s",
+        "strengths": "Gemini 3 Pro, reasoning depth, text rendering",
+        "price": "$0.15/image (1K)",
         "size_style": "aspect_ratio",
         "sizes": {
             "landscape": "16:9",
@@ -149,10 +149,14 @@ FAL_MODELS: Dict[str, Dict[str, Any]] = {
             "num_images": 1,
             "output_format": "png",
             "safety_tolerance": "5",
+            # "1K" is the cheapest tier; 4K doubles the per-image cost.
+            # Users on Nous Subscription should stay at 1K for predictable billing.
+            "resolution": "1K",
         },
         "supports": {
             "prompt", "aspect_ratio", "num_images", "output_format",
-            "safety_tolerance", "seed", "sync_mode",
+            "safety_tolerance", "seed", "sync_mode", "resolution",
+            "enable_web_search", "limit_generations",
         },
         "upscale": False,
     },
@@ -202,11 +206,11 @@ FAL_MODELS: Dict[str, Dict[str, Any]] = {
         },
         "upscale": False,
     },
-    "fal-ai/recraft-v3": {
-        "display": "Recraft V3",
+    "fal-ai/recraft/v4/pro/text-to-image": {
+        "display": "Recraft V4 Pro",
         "speed": "~8s",
-        "strengths": "Vector, brand styles",
-        "price": "$0.04/image",
+        "strengths": "Design, brand systems, production-ready",
+        "price": "$0.25/image",
         "size_style": "image_size_preset",
         "sizes": {
             "landscape": "landscape_16_9",
@@ -214,10 +218,12 @@ FAL_MODELS: Dict[str, Dict[str, Any]] = {
             "portrait": "portrait_16_9",
         },
         "defaults": {
-            "style": "realistic_image",
+            # V4 Pro dropped V3's required `style` enum — defaults handle taste now.
+            "enable_safety_checker": False,
         },
         "supports": {
-            "prompt", "image_size", "style",
+            "prompt", "image_size", "enable_safety_checker",
+            "colors", "background_color",
         },
         "upscale": False,
     },

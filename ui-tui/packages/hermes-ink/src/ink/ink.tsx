@@ -241,6 +241,15 @@ export default class Ink {
     x: number
     y: number
   } | null = null
+  // Burst of SIGWINCH (vscode panel drag) → one React commit per
+  // microtask. Dims are captured sync in handleResize; only the
+  // expensive tree rebuild defers.
+  private pendingResizeRender = false
+
+  // Fold synchronous re-entry (selection fanout, onFrame callback)
+  // into one follow-up microtask instead of stacking renders.
+  private isRendering = false
+  private immediateRerenderRequested = false
   constructor(private readonly options: Options) {
     autoBind(this)
 
@@ -402,12 +411,10 @@ export default class Ink {
     this.displayCursor = null
   }
 
-  // NOT debounced. A debounce opens a window where stdout.columns is NEW
-  // but this.terminalColumns/Yoga are OLD — any scheduleRender during that
-  // window (spinner, clock) makes log-update detect a width change and
-  // clear the screen, then the debounce fires and clears again (double
-  // blank→paint flicker). useVirtualScroll's height scaling already bounds
-  // the per-resize cost; synchronous handling keeps dimensions consistent.
+  // Dims captured sync — closes the stale-dim window the original
+  // debounce rejection warned about. Expensive React commit defers to
+  // one microtask per burst: vscode fires many SIGWINCHes per panel
+  // drag, each ~80ms uncoalesced = event loop visibly locks up.
   private handleResize = () => {
     const cols = this.options.stdout.columns || 80
     const rows = this.options.stdout.rows || 24
@@ -422,6 +429,15 @@ export default class Ink {
     this.terminalColumns = cols
     this.terminalRows = rows
     this.altScreenParkPatch = makeAltScreenParkPatch(this.terminalRows)
+
+    // Pending throttled/drain work captured stale dims — cancel so
+    // the upcoming microtask owns the next frame.
+    this.scheduleRender.cancel?.()
+
+    if (this.drainTimer !== null) {
+      clearTimeout(this.drainTimer)
+      this.drainTimer = null
+    }
 
     // Alt screen: reset frame buffers so the next render repaints from
     // scratch (prevFrameContaminated → every cell written, wrapped in
@@ -442,14 +458,24 @@ export default class Ink {
       this.needsEraseBeforePaint = true
     }
 
-    // Re-render the React tree with updated props so the context value changes.
-    // React's commit phase will call onComputeLayout() to recalculate yoga layout
-    // with the new dimensions, then call onRender() to render the updated frame.
-    // We don't call scheduleRender() here because that would render before the
-    // layout is updated, causing a mismatch between viewport and content dimensions.
-    if (this.currentNode !== null) {
-      this.render(this.currentNode)
+    // Already queued: later events in this burst updated dims/alt-screen
+    // prep above; the queued render picks up the latest values when it
+    // fires (React commit → onComputeLayout → scheduleRender → onRender).
+    if (this.pendingResizeRender) {
+      return
     }
+
+    this.pendingResizeRender = true
+
+    queueMicrotask(() => {
+      this.pendingResizeRender = false
+
+      if (this.isUnmounted || this.currentNode === null) {
+        return
+      }
+
+      this.render(this.currentNode)
+    })
   }
   resolveExitPromise: () => void = () => {}
   rejectExitPromise: (reason?: Error) => void = () => {}
@@ -535,6 +561,17 @@ export default class Ink {
     if (this.isUnmounted || this.isPaused) {
       return
     }
+
+    // Fold synchronous re-entry (selection fanout, onFrame callback)
+    // into one follow-up microtask — back-to-back renders within one
+    // macrotask were the freeze multiplier.
+    if (this.isRendering) {
+      this.immediateRerenderRequested = true
+
+      return
+    }
+
+    this.isRendering = true
 
     // Entering a render cancels any pending drain tick — this render will
     // handle the drain (and re-schedule below if needed). Prevents a
@@ -906,10 +943,12 @@ export default class Ink {
     // are only ever true in alt-screen; in main-screen this is false→false.
     this.prevFrameContaminated = selActive || hlActive || !!frame.absoluteOverlayMoved
 
-    // Schedule corrective frame for scroll drain or absolute overlay resize.
-    // Plain timeout instead of scheduleRender to avoid double-render from
-    // lodash throttle's leadingEdge firing inside a trailing invocation.
-    if (frame.scrollDrainPending || frame.absoluteOverlayMoved) {
+    // Plain setTimeout (not scheduleRender) — lodash throttle's leading
+    // edge would fire inside this trailing invocation and double-render.
+    // Scroll drain only; absolute-overlay movement rides prevFrameContaminated
+    // into the next natural render. Routing it here made caret re-layout a
+    // 250fps self-oscillator that locked the event loop after resize.
+    if (frame.scrollDrainPending) {
       this.drainTimer = setTimeout(() => this.onRender(), FRAME_INTERVAL_MS >> 2)
     }
 
@@ -942,6 +981,13 @@ export default class Ink {
       },
       flickers
     })
+
+    this.isRendering = false
+
+    if (this.immediateRerenderRequested) {
+      this.immediateRerenderRequested = false
+      queueMicrotask(() => this.onRender())
+    }
   }
   pause(): void {
     // Flush pending React updates and render before pausing.

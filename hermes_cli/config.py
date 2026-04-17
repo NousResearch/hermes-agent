@@ -705,6 +705,20 @@ DEFAULT_CONFIG = {
         # Default (None) uses the built-in "⚕ *Hermes Agent*" header.
         # Set to "" (empty string) to disable the header entirely.
         # Supports \n for newlines, e.g. "🤖 *My Bot*\n──────\n"
+        "service_conversations": {
+            "enabled": False,
+            "default_mode": "draft_first",
+            "approved_chats": [],
+            "allow_agent_initiated_service_chats": False,
+            "auto_promote_replied_to_chats": False,
+            "max_new_service_chats_per_day": 3,
+            "require_explicit_approval_for_first_contact": True,
+            "allow_inbound_media": False,
+            "allow_outbound_media": False,
+            "pending_first_contact_ttl_minutes": 1440,
+            "max_auto_sends_per_chat_per_hour": 3,
+            "max_consecutive_agent_sends_without_reply": 2,
+        },
     },
 
     # Telegram platform settings (gateway mode)

@@ -112,6 +112,69 @@ def test_star_wildcard_in_allowlist_authorizes_any_user(monkeypatch):
     assert runner._is_user_authorized(source) is True
 
 
+def test_whatsapp_service_chat_is_authorized_via_phone_number(monkeypatch):
+    _clear_auth_env(monkeypatch)
+    config = GatewayConfig(
+        platforms={
+            Platform.WHATSAPP: PlatformConfig(
+                enabled=True,
+                extra={
+                    "service_conversations": {
+                        "enabled": True,
+                        "approved_chats": ["+34 600-111-222"],
+                    }
+                },
+            )
+        },
+    )
+    runner, _adapter = _make_runner(Platform.WHATSAPP, config)
+    runner._whatsapp_service_policy = gateway_run.WhatsAppServiceConversationPolicy.from_gateway_config(config)
+
+    source = SessionSource(
+        platform=Platform.WHATSAPP,
+        user_id="34600111222@s.whatsapp.net",
+        chat_id="34600111222@s.whatsapp.net",
+        user_name="Movistar",
+        chat_type="dm",
+    )
+
+    assert runner._is_user_authorized(source) is True
+    runner.pairing_store.is_approved.assert_not_called()
+
+
+def test_whatsapp_service_chat_helper_detects_service_chat(monkeypatch):
+    _clear_auth_env(monkeypatch)
+    config = GatewayConfig(
+        platforms={
+            Platform.WHATSAPP: PlatformConfig(
+                enabled=True,
+                extra={
+                    "service_conversations": {
+                        "enabled": True,
+                        "approved_chats": ["+34 600-111-222"],
+                    }
+                },
+            )
+        },
+    )
+    runner, _adapter = _make_runner(Platform.WHATSAPP, config)
+    runner._whatsapp_service_policy = gateway_run.WhatsAppServiceConversationPolicy.from_gateway_config(config)
+
+    event = MessageEvent(
+        text="/status",
+        message_id="m2",
+        source=SessionSource(
+            platform=Platform.WHATSAPP,
+            user_id="34600111222@s.whatsapp.net",
+            chat_id="34600111222@s.whatsapp.net",
+            user_name="Movistar",
+            chat_type="dm",
+        ),
+    )
+
+    assert runner._is_from_whatsapp_service_chat(event) is True
+
+
 def test_star_wildcard_works_for_any_platform(monkeypatch):
     """The * wildcard should work generically, not just for WhatsApp."""
     _clear_auth_env(monkeypatch)
@@ -170,6 +233,39 @@ def test_qq_group_allowlist_does_not_authorize_other_groups(monkeypatch):
     )
 
     assert runner._is_user_authorized(source) is False
+
+
+@pytest.mark.asyncio
+async def test_unauthorized_whatsapp_service_dm_gets_approval_message(monkeypatch):
+    _clear_auth_env(monkeypatch)
+    config = GatewayConfig(
+        platforms={
+            Platform.WHATSAPP: PlatformConfig(
+                enabled=True,
+                extra={
+                    "service_conversations": {
+                        "enabled": True,
+                        "approved_chats": [],
+                    }
+                },
+            )
+        },
+    )
+    runner, adapter = _make_runner(Platform.WHATSAPP, config)
+    runner._whatsapp_service_policy = gateway_run.WhatsAppServiceConversationPolicy.from_gateway_config(config)
+
+    result = await runner._handle_message(
+        _make_event(
+            Platform.WHATSAPP,
+            "34600111222@s.whatsapp.net",
+            "34600111222@s.whatsapp.net",
+        )
+    )
+
+    assert result is None
+    runner.pairing_store.generate_code.assert_not_called()
+    adapter.send.assert_awaited_once()
+    assert "not approved yet" in adapter.send.await_args.args[1]
 
 
 @pytest.mark.asyncio

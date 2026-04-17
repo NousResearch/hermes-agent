@@ -824,6 +824,34 @@ class WhatsAppAdapter(BasePlatformAdapter):
             logger.debug("Could not get WhatsApp chat info for %s: %s", chat_id, e)
         
         return {"name": chat_id, "type": "dm"}
+
+    async def list_recent_chats(self, limit: int = 50) -> list[dict[str, Any]]:
+        """Return recent WhatsApp chats discovered by the local bridge."""
+        if not self._running or not self._http_session:
+            return []
+        bridge_exit = await self._check_managed_bridge_exit()
+        if bridge_exit:
+            logger.debug("WhatsApp list_recent_chats aborted: %s", bridge_exit)
+            return []
+
+        try:
+            import aiohttp
+
+            async with self._http_session.get(
+                f"http://127.0.0.1:{self._bridge_port}/chats",
+                params={"limit": max(1, min(int(limit), 200))},
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as resp:
+                if resp.status != 200:
+                    logger.debug("WhatsApp /chats returned status %s", resp.status)
+                    return []
+                data = await resp.json()
+                if not isinstance(data, list):
+                    return []
+                return [entry for entry in data if isinstance(entry, dict) and entry.get("chatId")]
+        except Exception as e:
+            logger.debug("Could not list WhatsApp chats: %s", e)
+            return []
     
     async def _poll_messages(self) -> None:
         """Poll the bridge for incoming messages."""

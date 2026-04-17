@@ -120,6 +120,24 @@ const MAX_RECENT_IDS = 50;
 let sock = null;
 let connectionState = 'disconnected';
 
+// Track recently seen chats for discovery.  This is intentionally lightweight
+// and stores metadata only — no message bodies.
+const recentChats = new Map();
+
+function rememberRecentChat(chatId, metadata = {}) {
+  if (!chatId) return;
+  const existing = recentChats.get(chatId) || {};
+  const merged = {
+    chatId,
+    name: metadata.name ?? existing.name ?? chatId.replace(/@.*/, ''),
+    isGroup: metadata.isGroup ?? existing.isGroup ?? chatId.endsWith('@g.us'),
+    lastMessageTimestamp: metadata.lastMessageTimestamp ?? existing.lastMessageTimestamp ?? Math.floor(Date.now() / 1000),
+    unreadCount: metadata.unreadCount ?? existing.unreadCount ?? 0,
+    isBusiness: metadata.isBusiness ?? existing.isBusiness ?? false,
+  };
+  recentChats.set(chatId, merged);
+}
+
 async function startSocket() {
   const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR);
   const { version } = await fetchLatestBaileysVersion();
@@ -227,8 +245,11 @@ async function startSocket() {
         if (!isSelfChat) continue;
       }
 
-      // Check allowlist for messages from others (resolve LID ↔ phone aliases)
-      if (!msg.key.fromMe && !matchesAllowedUser(senderId, ALLOWED_USERS, SESSION_DIR)) {
+      // Check allowlist for messages from others (resolve LID ↔ phone aliases).
+      // DMs are intentionally forwarded even when the sender is unknown so the
+      // Python gateway can apply its own authorization policy (pairing, deny,
+      // or service-conversation approval). Group chats stay bridge-filtered.
+      if (!msg.key.fromMe && isGroup && !matchesAllowedUser(senderId, ALLOWED_USERS, SESSION_DIR)) {
         continue;
       }
 
@@ -352,6 +373,12 @@ async function startSocket() {
         timestamp: msg.messageTimestamp,
       };
 
+      rememberRecentChat(chatId, {
+        name: event.chatName,
+        isGroup,
+        lastMessageTimestamp: Number(msg.messageTimestamp || Math.floor(Date.now() / 1000)),
+      });
+
       messageQueue.push(event);
       if (messageQueue.length > MAX_QUEUE_SIZE) {
         messageQueue.shift();
@@ -383,6 +410,12 @@ app.post('/send', async (req, res) => {
 
   try {
     const sent = await sock.sendMessage(chatId, { text: formatOutgoingMessage(message) });
+
+    rememberRecentChat(chatId, {
+      name: chatId.replace(/@.*/, ''),
+      isGroup: chatId.endsWith('@g.us'),
+      lastMessageTimestamp: Math.floor(Date.now() / 1000),
+    });
 
     // Track sent message ID to prevent echo-back loops
     if (sent?.key?.id) {
@@ -517,11 +550,26 @@ app.post('/typing', async (req, res) => {
 // Chat info
 app.get('/chat/:id', async (req, res) => {
   const chatId = req.params.id;
+
+  const cached = recentChats.get(chatId);
+  if (cached) {
+    return res.json({
+      name: cached.name,
+      isGroup: cached.isGroup,
+      participants: [],
+    });
+  }
+
   const isGroup = chatId.endsWith('@g.us');
 
   if (isGroup && sock) {
     try {
       const metadata = await sock.groupMetadata(chatId);
+      rememberRecentChat(chatId, {
+        name: metadata.subject,
+        isGroup: true,
+        lastMessageTimestamp: Math.floor(Date.now() / 1000),
+      });
       return res.json({
         name: metadata.subject,
         isGroup: true,
@@ -532,11 +580,26 @@ app.get('/chat/:id', async (req, res) => {
     }
   }
 
+  rememberRecentChat(chatId, {
+    name: chatId.replace(/@.*/, ''),
+    isGroup,
+    lastMessageTimestamp: Math.floor(Date.now() / 1000),
+  });
   res.json({
     name: chatId.replace(/@.*/, ''),
     isGroup,
     participants: [],
   });
+});
+
+// Recent chat discovery
+app.get('/chats', (req, res) => {
+  const limitRaw = parseInt(String(req.query.limit || '50'), 10);
+  const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(limitRaw, 200)) : 50;
+  const chats = Array.from(recentChats.values())
+    .sort((a, b) => Number(b.lastMessageTimestamp || 0) - Number(a.lastMessageTimestamp || 0))
+    .slice(0, limit);
+  res.json(chats);
 });
 
 // Health check

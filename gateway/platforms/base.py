@@ -2132,10 +2132,15 @@ class BasePlatformAdapter(ABC):
                 discard_pending=False,
             )
             if response:
+                _reply_anchor = (
+                    event.reply_to_message_id
+                    if event.source.platform == Platform.FEISHU and event.source.thread_id and event.reply_to_message_id
+                    else event.message_id
+                )
                 await self._send_with_retry(
                     chat_id=event.source.chat_id,
                     content=response,
-                    reply_to=event.message_id,
+                    reply_to=_reply_anchor,
                     metadata=thread_meta,
                 )
         except Exception:
@@ -2216,10 +2221,15 @@ class BasePlatformAdapter(ABC):
                     _thread_meta = {"thread_id": event.source.thread_id} if event.source.thread_id else None
                     response = await self._message_handler(event)
                     if response:
+                        _reply_anchor = (
+                            event.reply_to_message_id
+                            if event.source.platform == Platform.FEISHU and event.source.thread_id and event.reply_to_message_id
+                            else event.message_id
+                        )
                         await self._send_with_retry(
                             chat_id=event.source.chat_id,
                             content=response,
-                            reply_to=event.message_id,
+                            reply_to=_reply_anchor,
                             metadata=_thread_meta,
                         )
                 except Exception as e:
@@ -2399,10 +2409,15 @@ class BasePlatformAdapter(ABC):
                 # Send the text portion
                 if text_content:
                     logger.info("[%s] Sending response (%d chars) to %s", self.name, len(text_content), event.source.chat_id)
+                    _reply_anchor = (
+                        event.reply_to_message_id
+                        if event.source.platform == Platform.FEISHU and event.source.thread_id and event.reply_to_message_id
+                        else event.message_id
+                    )
                     result = await self._send_with_retry(
                         chat_id=event.source.chat_id,
                         content=text_content,
-                        reply_to=event.message_id,
+                        reply_to=_reply_anchor,
                         metadata=_thread_metadata,
                     )
                     _record_delivery(result)

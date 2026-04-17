@@ -61,3 +61,48 @@ async def test_handle_model_command_lists_saved_custom_provider(tmp_path, monkey
     assert "Local (127.0.0.1:4141)" in result
     assert "custom:local-(127.0.0.1:4141)" in result
     assert "rotator-openrouter-coding" in result
+
+
+@pytest.mark.asyncio
+async def test_handle_model_command_lists_models_from_custom_provider_map(tmp_path, monkeypatch):
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "model": {
+                    "default": "gpt-5.4",
+                    "provider": "openai-codex",
+                    "base_url": "https://chatgpt.com/backend-api/codex",
+                },
+                "providers": {},
+                "custom_providers": [
+                    {
+                        "name": "Thor",
+                        "base_url": "http://thor.lab:8337/v1",
+                        "model": "gemma-4-26B-A4B-it-MXFP4_MOE",
+                        "models": {
+                            "Qwen3.6-35B-A3B-MXFP4_MOE": {"context_length": 262144},
+                            "Qwen3.5-35B-A3B-MXFP4_MOE": {"context_length": 262144},
+                            "gemma-4-26B-A4B-it-MXFP4_MOE": {"context_length": 262144},
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    import gateway.run as gateway_run
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+
+    result = await _make_runner()._handle_model_command(_make_event())
+
+    assert result is not None
+    assert "Thor" in result
+    assert "custom:thor" in result
+    assert "gemma-4-26B-A4B-it-MXFP4_MOE" in result
+    assert "Qwen3.6-35B-A3B-MXFP4_MOE" in result
+    assert "Qwen3.5-35B-A3B-MXFP4_MOE" in result

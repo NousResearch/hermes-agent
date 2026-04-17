@@ -156,3 +156,36 @@ def test_list_deduplicates_same_model_in_group(monkeypatch):
     assert len(my_rows) == 1
     assert my_rows[0]["models"] == ["llama3", "mistral"]
     assert my_rows[0]["total_models"] == 2
+
+
+def test_list_includes_models_map_from_single_custom_provider(monkeypatch):
+    """A single custom_providers entry should expose its full models map."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+
+    providers = list_authenticated_providers(
+        current_provider="custom:thor",
+        user_providers={},
+        custom_providers=[
+            {
+                "name": "Thor",
+                "base_url": "http://thor.lab:8337/v1",
+                "model": "gemma-4-26B-A4B-it-MXFP4_MOE",
+                "models": {
+                    "Qwen3.6-35B-A3B-MXFP4_MOE": {"context_length": 262144},
+                    "Qwen3.5-35B-A3B-MXFP4_MOE": {"context_length": 262144},
+                    "gemma-4-26B-A4B-it-MXFP4_MOE": {"context_length": 262144},
+                },
+            }
+        ],
+        max_models=50,
+    )
+
+    thor_rows = [p for p in providers if p["slug"] == "custom:thor"]
+    assert len(thor_rows) == 1
+    assert thor_rows[0]["models"] == [
+        "gemma-4-26B-A4B-it-MXFP4_MOE",
+        "Qwen3.6-35B-A3B-MXFP4_MOE",
+        "Qwen3.5-35B-A3B-MXFP4_MOE",
+    ]
+    assert thor_rows[0]["total_models"] == 3

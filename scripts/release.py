@@ -231,6 +231,7 @@ AUTHOR_MAP = {
     "zaynjarvis@gmail.com": "ZaynJarvis",
     "zhiheng.liu@bytedance.com": "ZaynJarvis",
     "mbelleau@Michels-MacBook-Pro.local": "malaiwah",
+    "michel.belleau@malaiwah.com": "malaiwah",
     "dhandhalyabhavik@gmail.com": "v1k22",
 }
 

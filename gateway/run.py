@@ -1111,7 +1111,12 @@ class GatewayRunner:
         return "restarting" if self._restart_requested else "shutting down"
 
     def _queue_during_drain_enabled(self) -> bool:
-        return self._restart_requested and self._busy_input_mode == "queue"
+        # Queue mode applies to both restarts and shutdowns — the user
+        # configured queue behavior and expects it to work regardless of
+        # why the gateway is draining.  The old AND logic (restart + queue)
+        # meant queue only worked during restarts, not during normal agent
+        # busy states or shutdowns.
+        return self._busy_input_mode == "queue"
 
     def _update_runtime_status(self, gateway_state: Optional[str] = None, exit_reason: Optional[str] = None) -> None:
         try:
@@ -1431,25 +1436,54 @@ class GatewayRunner:
             return True
 
         # --- Normal busy case (agent actively running a task) ---
-        # The user sent a message while the agent is working.  Interrupt the
-        # agent immediately so it stops the current tool-calling loop and
-        # processes the new message.  The pending message is stored in the
-        # adapter so the base adapter picks it up once the interrupted run
-        # returns.  A brief ack tells the user what's happening (debounced
-        # to avoid spam when they fire multiple messages quickly).
+        # The user sent a message while the agent is working.  Behavior depends
+        # on busy_input_mode config:
+        #   - "interrupt" (default): Interrupt the agent immediately so it stops
+        #     the current tool-calling loop and processes the new message.
+        #   - "queue": Queue the message for the next turn without interrupting.
+        # The pending message is stored in the adapter so the base adapter picks
+        # it up once the current run completes.  A brief ack tells the user what's
+        # happening (debounced to avoid spam when they fire multiple messages quickly).
 
         adapter = self.adapters.get(event.source.platform)
         if not adapter:
             return False  # let default path handle it
 
-        # Store the message so it's processed as the next turn after the
-        # interrupt causes the current run to exit.
+        # Store the message so it's processed as the next turn (works for both
+        # interrupt and queue modes — the difference is whether we interrupt now).
         from gateway.platforms.base import merge_pending_message_event
         merge_pending_message_event(adapter._pending_messages, session_key, event)
 
+        running_agent = self._running_agents.get(session_key)
+
+        # Queue mode: don't interrupt, just acknowledge queuing
+        if self._busy_input_mode == "queue":
+            # Debounce: only send an acknowledgment once every 30 seconds per session
+            # to avoid spamming the user when they send multiple messages quickly
+            _BUSY_ACK_COOLDOWN = 30
+            now = time.time()
+            last_ack = self._busy_ack_ts.get(session_key, 0)
+            if now - last_ack < _BUSY_ACK_COOLDOWN:
+                return True  # queued, ack already delivered recently
+
+            self._busy_ack_ts[session_key] = now
+
+            thread_meta = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+            try:
+                await adapter._send_with_retry(
+                    chat_id=event.source.chat_id,
+                    content="⏳ Agent is busy — queued for the next turn.",
+                    reply_to=event.message_id,
+                    metadata=thread_meta,
+                )
+            except Exception as e:
+                logger.debug("Failed to send busy-ack: %s", e)
+
+            return True
+
+        # Interrupt mode: interrupt the running agent immediately
         # Interrupt the running agent — this aborts in-flight tool calls and
         # causes the agent loop to exit at the next check point.
-        running_agent = self._running_agents.get(session_key)
         if running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
             try:
                 running_agent.interrupt(event.text)

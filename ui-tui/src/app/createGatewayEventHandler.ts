@@ -16,7 +16,16 @@ const ERRLIKE_RE = /\b(error|traceback|exception|failed|spawn)\b/i
 const statusFromBusy = () => (getUiState().busy ? 'running…' : 'ready')
 
 const applySkin = (s: GatewaySkin) =>
-  patchUiState({ theme: fromSkin(s.colors ?? {}, s.branding ?? {}, s.banner_logo ?? '', s.banner_hero ?? '') })
+  patchUiState({
+    theme: fromSkin(
+      s.colors ?? {},
+      s.branding ?? {},
+      s.banner_logo ?? '',
+      s.banner_hero ?? '',
+      s.tool_prefix ?? '',
+      s.help_header ?? ''
+    )
+  })
 
 const dropBgTask = (taskId: string) =>
   patchUiState(state => {

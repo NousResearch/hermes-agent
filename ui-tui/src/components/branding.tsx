@@ -106,7 +106,12 @@ export function SessionPanel({ info, sid, t }: { info: SessionInfo; sid?: string
           <Text color={t.color.dim} wrap="truncate-end">
             {cwd}
           </Text>
-          {sid && <Text color={t.color.dim}>Session: {sid}</Text>}
+          {sid && (
+            <Text>
+              <Text color={t.color.sessionLabel}>Session: </Text>
+              <Text color={t.color.sessionBorder}>{sid}</Text>
+            </Text>
+          )}
         </Box>
       )}
       <Box flexDirection="column" width={w}>

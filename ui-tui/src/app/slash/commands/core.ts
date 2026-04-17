@@ -55,7 +55,7 @@ export const coreCommands: SlashCommand[] = [
       })
       sections.push({ rows: HOTKEYS, title: 'Hotkeys' })
 
-      ctx.transcript.panel('Commands', sections)
+      ctx.transcript.panel(ctx.ui.theme.brand.helpHeader, sections)
     }
   },
 

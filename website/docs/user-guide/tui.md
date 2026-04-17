@@ -48,7 +48,7 @@ The classic CLI remains available as the default. Anything documented in [CLI In
 - **Alternate-screen rendering** — differential updates mean no flicker when streaming, no scrollback clutter after you quit.
 - **Composer affordances** — inline paste-collapse for long snippets, image paste from the clipboard (`Alt+V`), bracketed-paste safety.
 
-Same [skins](features/skins.md) and [personalities](features/personality.md) apply. Switch mid-session with `/skin ares`, `/personality pirate`, `/theme daylight`, and the UI repaints live.
+Same [skins](features/skins.md) and [personalities](features/personality.md) apply. Switch mid-session with `/skin ares`, `/personality pirate`, and the UI repaints live. Skin keys are marked `(both)`, `(classic)`, or `(tui)` in [`example-skin.yaml`](https://github.com/NousResearch/hermes-agent/blob/main/docs/skins/example-skin.yaml) so you can see at a glance what applies where — the TUI honors the banner palette, UI colors, prompt glyph/color, session display, completion menu, selection bg, `tool_prefix`, and `help_header`.
 
 ## Requirements
 

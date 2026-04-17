@@ -5,6 +5,8 @@ export interface GatewaySkin {
   banner_logo?: string
   branding?: Record<string, string>
   colors?: Record<string, string>
+  help_header?: string
+  tool_prefix?: string
 }
 
 export interface GatewayCompletionItem {

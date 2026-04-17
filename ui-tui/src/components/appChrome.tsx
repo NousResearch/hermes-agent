@@ -1,11 +1,31 @@
 import { Box, type ScrollBoxHandle, Text } from '@hermes/ink'
 import { type ReactNode, type RefObject, useCallback, useEffect, useState, useSyncExternalStore } from 'react'
 
+import { FACES } from '../content/faces.js'
+import { VERBS } from '../content/verbs.js'
 import { fmtDuration } from '../domain/messages.js'
 import { stickyPromptFromViewport } from '../domain/viewport.js'
 import { fmtK } from '../lib/text.js'
 import type { Theme } from '../theme.js'
 import type { Msg, Usage } from '../types.js'
+
+const FACE_TICK_MS = 2500
+
+function FaceTicker({ color }: { color: string }) {
+  const [tick, setTick] = useState(() => Math.floor(Math.random() * 1000))
+
+  useEffect(() => {
+    const id = setInterval(() => setTick(n => n + 1), FACE_TICK_MS)
+
+    return () => clearInterval(id)
+  }, [])
+
+  return (
+    <Text color={color}>
+      {FACES[tick % FACES.length]} {VERBS[tick % VERBS.length]}…
+    </Text>
+  )
+}
 
 function ctxBarColor(pct: number | undefined, t: Theme) {
   if (pct == null) {
@@ -73,6 +93,7 @@ export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
 export function StatusRule({
   cwdLabel,
   cols,
+  busy,
   status,
   statusColor,
   model,
@@ -84,6 +105,7 @@ export function StatusRule({
 }: {
   cwdLabel: string
   cols: number
+  busy: boolean
   status: string
   statusColor: string
   model: string
@@ -111,7 +133,7 @@ export function StatusRule({
       <Box flexShrink={1} width={leftWidth}>
         <Text color={t.color.bronze} wrap="truncate-end">
           {'─ '}
-          <Text color={statusColor}>{status}</Text>
+          {busy ? <FaceTicker color={statusColor} /> : <Text color={statusColor}>{status}</Text>}
           <Text color={t.color.dim}> │ {model}</Text>
           {ctxLabel ? <Text color={t.color.dim}> │ {ctxLabel}</Text> : null}
           {bar ? (

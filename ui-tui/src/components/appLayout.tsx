@@ -138,6 +138,7 @@ const ComposerPane = memo(function ComposerPane({
         {ui.statusBar && (
           <StatusRule
             bgCount={ui.bgTasks.size}
+            busy={ui.busy}
             cols={composer.cols}
             cwdLabel={status.cwdLabel}
             model={ui.info?.model?.split('/').pop() ?? ''}
@@ -181,7 +182,7 @@ const ComposerPane = memo(function ComposerPane({
               {sh ? (
                 <Text color={ui.theme.color.shellDollar}>$ </Text>
               ) : (
-                <Text bold color={ui.theme.color.gold}>
+                <Text bold color={ui.theme.color.prompt}>
                   {composer.inputBuf.length ? '  ' : `${ui.theme.brand.prompt} `}
                 </Text>
               )}

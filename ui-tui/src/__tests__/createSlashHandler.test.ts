@@ -102,7 +102,7 @@ describe('createSlashHandler', () => {
     const h = createSlashHandler(ctx)
     expect(h('/zzz')).toBe(true)
     await vi.waitFor(() => {
-      expect(ctx.transcript.panel).toHaveBeenCalledWith('Commands', expect.any(Array))
+      expect(ctx.transcript.panel).toHaveBeenCalledWith(expect.any(String), expect.any(Array))
     })
   })
 
@@ -119,7 +119,7 @@ describe('createSlashHandler', () => {
     })
 
     expect(createSlashHandler(ctx)('/h')).toBe(true)
-    expect(ctx.transcript.panel).toHaveBeenCalledWith('Commands', expect.any(Array))
+    expect(ctx.transcript.panel).toHaveBeenCalledWith(expect.any(String), expect.any(Array))
   })
 })
 

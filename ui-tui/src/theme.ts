@@ -12,6 +12,10 @@ export interface ThemeColors {
   error: string
   warn: string
 
+  prompt: string
+  sessionLabel: string
+  sessionBorder: string
+
   statusBg: string
   statusFg: string
   statusGood: string
@@ -35,6 +39,7 @@ export interface ThemeBrand {
   welcome: string
   goodbye: string
   tool: string
+  helpHeader: string
 }
 
 export interface Theme {
@@ -88,6 +93,10 @@ export const DEFAULT_THEME: Theme = {
     error: '#ef5350',
     warn: '#ffa726',
 
+    prompt: '#FFF8DC',
+    sessionLabel: '#B8860B',
+    sessionBorder: '#B8860B',
+
     statusBg: '#1a1a2e',
     statusFg: '#C0C0C0',
     statusGood: '#8FBC8F',
@@ -109,7 +118,8 @@ export const DEFAULT_THEME: Theme = {
     prompt: '❯',
     welcome: 'Type your message or /help for commands.',
     goodbye: 'Goodbye! ⚕',
-    tool: '┊'
+    tool: '┊',
+    helpHeader: '(^_^)? Commands'
   },
 
   bannerLogo: '',
@@ -122,20 +132,24 @@ export function fromSkin(
   colors: Record<string, string>,
   branding: Record<string, string>,
   bannerLogo = '',
-  bannerHero = ''
+  bannerHero = '',
+  toolPrefix = '',
+  helpHeader = ''
 ): Theme {
   const d = DEFAULT_THEME
   const c = (k: string) => colors[k]
 
+  const amber = c('ui_accent') ?? c('banner_accent') ?? d.color.amber
   const accent = c('banner_accent') ?? c('banner_title') ?? d.color.amber
+  const dim = c('banner_dim') ?? d.color.dim
 
   return {
     color: {
       gold: c('banner_title') ?? d.color.gold,
-      amber: c('banner_accent') ?? d.color.amber,
+      amber,
       bronze: c('banner_border') ?? d.color.bronze,
       cornsilk: c('banner_text') ?? d.color.cornsilk,
-      dim: c('banner_dim') ?? d.color.dim,
+      dim,
       completionBg: c('completion_menu_bg') ?? '#FFFFFF',
       completionCurrentBg: c('completion_menu_current_bg') ?? mix('#FFFFFF', accent, 0.25),
 
@@ -143,6 +157,10 @@ export function fromSkin(
       ok: c('ui_ok') ?? d.color.ok,
       error: c('ui_error') ?? d.color.error,
       warn: c('ui_warn') ?? d.color.warn,
+
+      prompt: c('prompt') ?? c('banner_text') ?? d.color.prompt,
+      sessionLabel: c('session_label') ?? dim,
+      sessionBorder: c('session_border') ?? dim,
 
       statusBg: d.color.statusBg,
       statusFg: d.color.statusFg,
@@ -165,7 +183,8 @@ export function fromSkin(
       prompt: branding.prompt_symbol ?? d.brand.prompt,
       welcome: branding.welcome ?? d.brand.welcome,
       goodbye: branding.goodbye ?? d.brand.goodbye,
-      tool: d.brand.tool
+      tool: toolPrefix || d.brand.tool,
+      helpHeader: branding.help_header ?? (helpHeader || d.brand.helpHeader)
     },
 
     bannerLogo,

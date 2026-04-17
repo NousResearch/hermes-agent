@@ -6,8 +6,11 @@ import types
 
 import pytest
 
-# Ensure dotenv doesn't interfere
-if "dotenv" not in sys.modules:
+# Import real dotenv when available. Only fall back to a stub in minimal
+# environments where python-dotenv is not installed.
+try:
+    import dotenv  # noqa: F401
+except ImportError:
     fake_dotenv = types.ModuleType("dotenv")
     fake_dotenv.load_dotenv = lambda *args, **kwargs: None
     sys.modules["dotenv"] = fake_dotenv
@@ -131,7 +134,7 @@ PROVIDER_ENV_VARS = (
     "AI_GATEWAY_API_KEY", "AI_GATEWAY_BASE_URL",
     "KILOCODE_API_KEY", "KILOCODE_BASE_URL",
     "DASHSCOPE_API_KEY", "OPENCODE_ZEN_API_KEY", "OPENCODE_GO_API_KEY",
-    "NOUS_API_KEY", "GITHUB_TOKEN", "GH_TOKEN",
+    "NOUS_API_KEY", "COPILOT_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN",
     "OPENAI_BASE_URL", "HERMES_COPILOT_ACP_COMMAND", "COPILOT_CLI_PATH",
     "HERMES_COPILOT_ACP_ARGS", "COPILOT_ACP_BASE_URL",
 )

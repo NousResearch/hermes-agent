@@ -144,6 +144,44 @@ class TestNonInteractiveSetup:
         out = capsys.readouterr().out
         assert "hermes config set model.provider custom" in out
 
+    def test_chat_with_provider_exits_cleanly_when_interactive_ui_cannot_attach(self, capsys):
+        """Configured chat should fail gracefully instead of surfacing prompt_toolkit tracebacks."""
+        from hermes_cli.main import cmd_chat
+
+        args = _make_chat_args()
+
+        with (
+            patch("hermes_cli.main._has_any_provider_configured", return_value=True),
+            patch(
+                "hermes_cli.main.can_launch_chat_interactively",
+                return_value=(False, "Your current terminal session cannot hand stdin to the interactive chat UI."),
+            ),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cmd_chat(args)
+
+        assert exc.value.code == 1
+        err = capsys.readouterr().err
+        assert "requires an interactive terminal" in err
+        assert "single-query mode" in err
+
+    def test_offer_launch_chat_skips_auto_launch_when_chat_ui_cannot_attach(self, capsys):
+        """Setup should not prompt to launch chat when the interactive UI cannot start safely."""
+        from hermes_cli import setup as setup_mod
+
+        with (
+            patch(
+                "hermes_cli.main.can_launch_chat_interactively",
+                return_value=(False, "Your current terminal session cannot hand stdin to the interactive chat UI."),
+            ),
+            patch.object(setup_mod, "prompt_yes_no", side_effect=AssertionError("launch prompt should be skipped")),
+        ):
+            setup_mod._offer_launch_chat()
+
+        out = capsys.readouterr().out
+        assert "Skipping automatic chat launch." in out
+        assert "Run 'hermes chat' directly in your terminal" in out
+
     def test_returning_user_terminal_menu_choice_dispatches_terminal_section(self, tmp_path):
         """Returning-user menu should map Terminal Backend to the terminal setup, not TTS."""
         from hermes_cli import setup as setup_mod

@@ -467,6 +467,7 @@ def test_offer_launch_chat_execs_fresh_process(monkeypatch):
 
     monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(setup_mod, "_resolve_hermes_chat_argv", lambda: ["/usr/local/bin/hermes", "chat"])
+    monkeypatch.setattr("hermes_cli.main.can_launch_chat_interactively", lambda: (True, None))
 
     exec_calls = []
 
@@ -487,6 +488,7 @@ def test_offer_launch_chat_manual_fallback_when_unresolvable(monkeypatch, capsys
 
     monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(setup_mod, "_resolve_hermes_chat_argv", lambda: None)
+    monkeypatch.setattr("hermes_cli.main.can_launch_chat_interactively", lambda: (True, None))
 
     setup_mod._offer_launch_chat()
 

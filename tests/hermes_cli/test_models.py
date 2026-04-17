@@ -2,6 +2,8 @@
 
 from unittest.mock import patch, MagicMock
 
+import pytest
+
 from hermes_cli.models import (
     OPENROUTER_MODELS, fetch_openrouter_models, model_ids, detect_provider_for_model,
     filter_nous_free_models, _NOUS_ALLOWED_FREE_MODELS,
@@ -16,6 +18,22 @@ LIVE_OPENROUTER_MODELS = [
     ("nvidia/nemotron-3-super-120b-a12b:free", "free"),
 ]
 
+
+@pytest.fixture(autouse=True)
+def _clear_provider_env(monkeypatch):
+    for env_var in (
+        "OPENROUTER_API_KEY",
+        "OPENAI_API_KEY",
+        "OPENAI_BASE_URL",
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_TOKEN",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "CLAUDE_CODE_TOKEN",
+        "GITHUB_TOKEN",
+        "GH_TOKEN",
+        "COPILOT_GITHUB_TOKEN",
+    ):
+        monkeypatch.delenv(env_var, raising=False)
 
 
 class TestModelIds:

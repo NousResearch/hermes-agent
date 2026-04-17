@@ -45,10 +45,56 @@ Usage:
 
 import argparse
 import os
+import selectors
 import subprocess
 import sys
 from pathlib import Path
 from typing import Optional
+
+def _has_interactive_stdio() -> bool:
+    """Return True when both stdin and stdout are usable terminals."""
+    for name in ("stdin", "stdout"):
+        stream = getattr(sys, name, None)
+        if stream is None:
+            return False
+        try:
+            if not stream.isatty():
+                return False
+        except Exception:
+            return False
+    return True
+
+
+def can_launch_chat_interactively() -> tuple[bool, Optional[str]]:
+    """Return whether prompt_toolkit can safely attach to the current terminal."""
+    if not _has_interactive_stdio():
+        return False, "Interactive chat needs a real stdin/stdout terminal."
+
+    stdin = getattr(sys, "stdin", None)
+    try:
+        fd = stdin.fileno()
+    except (AttributeError, OSError, ValueError):
+        return False, "stdin is not exposed as a usable terminal file descriptor."
+
+    try:
+        if not os.isatty(fd):
+            return False, "stdin is not attached to a usable terminal device."
+    except OSError:
+        return False, "stdin is not attached to a usable terminal device."
+
+    selector = None
+    try:
+        selector = selectors.DefaultSelector()
+        selector.register(fd, selectors.EVENT_READ)
+        selector.unregister(fd)
+    except OSError:
+        return False, "Your current terminal session cannot hand stdin to the interactive chat UI."
+    finally:
+        if selector is not None:
+            selector.close()
+
+    return True, None
+
 
 def _require_tty(command_name: str) -> None:
     """Exit with a clear error if stdin is not a terminal.
@@ -57,7 +103,7 @@ def _require_tty(command_name: str) -> None:
     curses or input() prompts that spin at 100% CPU when stdin is a pipe.
     This guard prevents accidental non-interactive invocation.
     """
-    if not sys.stdin.isatty():
+    if not _has_interactive_stdio():
         print(
             f"Error: 'hermes {command_name}' requires an interactive terminal.\n"
             f"It cannot be run through a pipe or non-interactive subprocess.\n"
@@ -738,6 +784,17 @@ def cmd_chat(args):
         prefetch_update_check()
     except Exception:
         pass
+
+    if not getattr(args, "query", None):
+        can_launch, reason = can_launch_chat_interactively()
+        if not can_launch:
+            print(
+                "Error: 'hermes chat' requires an interactive terminal.\n"
+                f"{reason}\n"
+                "Run it directly in your terminal, or pass -q/--query for single-query mode.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
 
     # Sync bundled skills on every CLI launch (fast -- skips unchanged skills)
     try:

@@ -2645,6 +2645,16 @@ class GatewayRunner:
         if platform_allow_all_var and os.getenv(platform_allow_all_var, "").lower() in ("true", "1", "yes"):
             return True
 
+        # Discord bot senders that passed the DISCORD_ALLOW_BOTS platform
+        # filter are already authorized at the platform level — skip the
+        # user allowlist. Without this, bot messages allowed by
+        # DISCORD_ALLOW_BOTS=mentions/all would be rejected here with
+        # "Unauthorized user" (fixes #4466).
+        if source.platform == Platform.DISCORD and getattr(source, "is_bot", False):
+            allow_bots = os.getenv("DISCORD_ALLOW_BOTS", "none").lower().strip()
+            if allow_bots in ("mentions", "all"):
+                return True
+
         # Check pairing store (always checked, regardless of allowlists)
         platform_name = source.platform.value if source.platform else ""
         if self.pairing_store.is_approved(platform_name, user_id):

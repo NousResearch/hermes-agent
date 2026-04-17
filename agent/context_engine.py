@@ -29,6 +29,7 @@ from abc import ABC, abstractmethod
 from typing import Any, Dict, List
 
 
+from typing import Optional  # noqa: F401 — used in compress signature
 class ContextEngine(ABC):
     """Base class all context engines must implement."""
 
@@ -73,11 +74,11 @@ class ContextEngine(ABC):
     def should_compress(self, prompt_tokens: int = None) -> bool:
         """Return True if compaction should fire this turn."""
 
-    @abstractmethod
     def compress(
         self,
         messages: List[Dict[str, Any]],
         current_tokens: int = None,
+        focus_topic: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Compact the message list and return the new message list.
 
@@ -86,6 +87,12 @@ class ContextEngine(ABC):
         context budget. The implementation is free to summarize, build a
         DAG, or do anything else — as long as the returned list is a valid
         OpenAI-format message sequence.
+
+        Args:
+            messages: The full conversation message list.
+            current_tokens: Current token usage estimate, if known.
+            focus_topic: Optional hint for the engine to bias retention
+                towards messages relevant to this topic or task.
         """
 
     # -- Optional: pre-flight check ----------------------------------------

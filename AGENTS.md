@@ -56,6 +56,19 @@ hermes-agent/
 │   ├── run.py            # Main loop, slash commands, message dispatch
 │   ├── session.py        # SessionStore — conversation persistence
 │   └── platforms/        # Adapters: telegram, discord, slack, whatsapp, homeassistant, signal, qqbot
+├── ui-tui/               # Ink (React) terminal UI — `hermes --tui`
+│   ├── src/entry.tsx        # TTY gate + render()
+│   ├── src/app.tsx          # Main state machine and UI
+│   ├── src/gatewayClient.ts # Child process + JSON-RPC bridge
+│   ├── src/app/             # Decomposed app logic (event handler, slash handler, stores, hooks)
+│   ├── src/components/      # Ink components (branding, markdown, prompts, pickers, etc.)
+│   ├── src/hooks/           # useCompletion, useInputHistory, useQueue, useVirtualHistory
+│   └── src/lib/             # Pure helpers (history, osc52, text, rpc, messages)
+├── tui_gateway/          # Python JSON-RPC backend for the TUI
+│   ├── entry.py             # stdio entrypoint
+│   ├── server.py            # RPC handlers and session logic
+│   ├── render.py            # Optional rich/ANSI bridge
+│   └── slash_worker.py      # Persistent HermesCLI subprocess for slash commands
 ├── acp_adapter/          # ACP server (VS Code / Zed / JetBrains integration)
 ├── cron/                 # Scheduler (jobs.py, scheduler.py)
 ├── environments/         # RL training environments (Atropos)
@@ -176,6 +189,59 @@ if canonical == "mycommand":
 - `gateway_config_gate` — config dotpath (e.g. `"display.tool_progress_command"`); when set on a `cli_only` command, the command becomes available in the gateway if the config value is truthy. `GATEWAY_KNOWN_COMMANDS` always includes config-gated commands so the gateway can dispatch them; help/menus only show them when the gate is open.
 
 **Adding an alias** requires only adding it to the `aliases` tuple on the existing `CommandDef`. No other file changes needed — dispatch, help text, Telegram menu, Slack mapping, and autocomplete all update automatically.
+
+---
+
+## TUI Architecture (ui-tui + tui_gateway)
+
+The TUI is a full replacement for the classic (prompt_toolkit) CLI, activated via `hermes --tui` or `HERMES_TUI=1`.
+
+### Process Model
+
+```
+hermes --tui
+  └─ Node (Ink)  ──stdio JSON-RPC──  Python (tui_gateway)
+       │                                  └─ AIAgent + tools + sessions
+       └─ renders transcript, composer, prompts, activity
+```
+
+TypeScript owns the screen. Python owns sessions, tools, model calls, and slash command logic.
+
+### Transport
+
+Newline-delimited JSON-RPC over stdio. Requests from Ink, events from Python. See `tui_gateway/server.py` for the full method/event catalog.
+
+### Key Surfaces
+
+| Surface | Ink component | Gateway method |
+|---------|---------------|----------------|
+| Chat streaming | `app.tsx` + `messageLine.tsx` | `prompt.submit` → `message.delta/complete` |
+| Tool activity | `thinking.tsx` | `tool.start/progress/complete` |
+| Approvals | `prompts.tsx` | `approval.respond` ← `approval.request` |
+| Clarify/sudo/secret | `prompts.tsx`, `maskedPrompt.tsx` | `clarify/sudo/secret.respond` |
+| Session picker | `sessionPicker.tsx` | `session.list/resume` |
+| Slash commands | Local handler + fallthrough | `slash.exec` → `_SlashWorker`, `command.dispatch` |
+| Completions | `useCompletion` hook | `complete.slash`, `complete.path` |
+| Theming | `theme.ts` + `branding.tsx` | `gateway.ready` with skin data |
+
+### Slash Command Flow
+
+1. Built-in client commands (`/help`, `/quit`, `/clear`, `/resume`, `/copy`, `/paste`, etc.) handled locally in `app.tsx`
+2. Everything else → `slash.exec` (runs in persistent `_SlashWorker` subprocess) → `command.dispatch` fallback
+
+### Dev Commands
+
+```bash
+cd ui-tui
+npm install       # first time
+npm run dev       # watch mode (rebuilds hermes-ink + tsx --watch)
+npm start         # production
+npm run build     # full build (hermes-ink + tsc)
+npm run type-check # typecheck only (tsc --noEmit)
+npm run lint      # eslint
+npm run fmt       # prettier
+npm test          # vitest
+```
 
 ---
 

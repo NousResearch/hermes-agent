@@ -103,6 +103,28 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           echo "ok" > $out/result
         '';
 
+        # Verify bundled TUI is present and compiled
+        bundled-tui = pkgs.runCommand "hermes-bundled-tui" { } ''
+          set -e
+          echo "=== Checking bundled TUI ==="
+          test -d ${hermes-agent}/ui-tui || (echo "FAIL: ui-tui directory missing"; exit 1)
+          echo "PASS: ui-tui directory exists"
+
+          test -f ${hermes-agent}/ui-tui/dist/entry.js || (echo "FAIL: compiled entry.js missing"; exit 1)
+          echo "PASS: compiled entry.js present"
+
+          test -d ${hermes-agent}/ui-tui/node_modules || (echo "FAIL: node_modules missing"; exit 1)
+          echo "PASS: node_modules present"
+
+          grep -q "HERMES_TUI_DIR" ${hermes-agent}/bin/hermes || \
+            (echo "FAIL: HERMES_TUI_DIR not in wrapper"; exit 1)
+          echo "PASS: HERMES_TUI_DIR set in wrapper"
+
+          echo "=== All bundled TUI checks passed ==="
+          mkdir -p $out
+          echo "ok" > $out/result
+        '';
+
         # Verify HERMES_MANAGED guard works on all mutation commands
         managed-guard = pkgs.runCommand "hermes-managed-guard" { } ''
           set -e

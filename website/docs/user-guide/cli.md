@@ -8,6 +8,10 @@ description: "Master the Hermes Agent terminal interface — commands, keybindin
 
 Hermes Agent's CLI is a full terminal user interface (TUI) — not a web UI. It features multiline editing, slash-command autocomplete, conversation history, interrupt-and-redirect, and streaming tool output. Built for people who live in the terminal.
 
+:::tip
+Hermes also ships a modern TUI with modal overlays, mouse selection, and non-blocking input. Launch it with `hermes --tui` — see the [TUI](tui.md) guide.
+:::
+
 ## Running the CLI
 
 ```bash

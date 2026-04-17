@@ -515,6 +515,90 @@ def do_inspect(identifier: str, console: Optional[Console] = None) -> None:
     c.print()
 
 
+def browse_skills(page: int = 1, page_size: int = 20, source: str = "all") -> dict:
+    """Paginated hub browse for programmatic callers (e.g. TUI gateway).
+
+    Returns ``{"items": [...], "page": int, "total_pages": int, "total": int}``.
+    """
+    from tools.skills_hub import GitHubAuth, create_source_router
+
+    page_size = max(1, min(page_size, 100))
+    _TRUST_RANK = {"builtin": 3, "trusted": 2, "community": 1}
+    _PER_SOURCE_LIMIT = {"official": 100, "skills-sh": 100, "well-known": 25, "github": 100, "clawhub": 50,
+                         "claude-marketplace": 50, "lobehub": 50}
+    auth = GitHubAuth()
+    sources = create_source_router(auth)
+    all_results: list = []
+    for src in sources:
+        sid = src.source_id()
+        if source != "all" and sid != source and sid != "official":
+            continue
+        try:
+            limit = _PER_SOURCE_LIMIT.get(sid, 50)
+            all_results.extend(src.search("", limit=limit))
+        except Exception:
+            continue
+    if not all_results:
+        return {"items": [], "page": 1, "total_pages": 1, "total": 0}
+    seen: dict = {}
+    for r in all_results:
+        rank = _TRUST_RANK.get(r.trust_level, 0)
+        if r.name not in seen or rank > _TRUST_RANK.get(seen[r.name].trust_level, 0):
+            seen[r.name] = r
+    deduped = list(seen.values())
+    deduped.sort(key=lambda r: (-_TRUST_RANK.get(r.trust_level, 0), r.source != "official", r.name.lower()))
+    total = len(deduped)
+    total_pages = max(1, (total + page_size - 1) // page_size)
+    page = max(1, min(page, total_pages))
+    start = (page - 1) * page_size
+    page_items = deduped[start : min(start + page_size, total)]
+    return {
+        "items": [{"name": r.name, "description": r.description, "source": r.source,
+                    "trust": r.trust_level} for r in page_items],
+        "page": page,
+        "total_pages": total_pages,
+        "total": total,
+    }
+
+
+def inspect_skill(identifier: str) -> Optional[dict]:
+    """Skill metadata (+ SKILL.md preview) for programmatic callers."""
+    from tools.skills_hub import GitHubAuth, create_source_router
+
+    class _Q:
+        def print(self, *a, **k):
+            pass
+
+    c = _Q()
+    auth = GitHubAuth()
+    sources = create_source_router(auth)
+    ident = identifier
+    if "/" not in ident:
+        ident = _resolve_short_name(ident, sources, c)
+        if not ident:
+            return None
+    meta, bundle, _ = _resolve_source_meta_and_bundle(ident, sources)
+    if not meta:
+        return None
+    out: dict = {
+        "name": meta.name,
+        "description": meta.description,
+        "source": meta.source,
+        "identifier": meta.identifier,
+        "tags": list(meta.tags) if meta.tags else [],
+    }
+    if bundle and "SKILL.md" in bundle.files:
+        content = bundle.files["SKILL.md"]
+        if isinstance(content, bytes):
+            content = content.decode("utf-8", errors="replace")
+        lines = content.split("\n")
+        preview = "\n".join(lines[:50])
+        if len(lines) > 50:
+            preview += f"\n\n... ({len(lines) - 50} more lines)"
+        out["skill_md_preview"] = preview
+    return out
+
+
 def do_list(source_filter: str = "all", console: Optional[Console] = None) -> None:
     """List installed skills, distinguishing hub, builtin, and local skills."""
     from tools.skills_hub import HubLockFile, ensure_hub_dirs

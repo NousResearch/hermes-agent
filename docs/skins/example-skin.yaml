@@ -6,6 +6,11 @@
 # All fields are optional — missing values inherit from the default skin.
 # Activate with: /skin <name>  or  display.skin: <name> in config.yaml
 #
+# Keys are marked:
+#   (both)    — applies to both the classic CLI and the TUI
+#   (classic) — classic CLI only (see hermes --tui in user-guide/tui.md)
+#   (tui)     — TUI only
+#
 # See hermes_cli/skin_engine.py for the full schema reference.
 # ============================================================================
 
@@ -14,43 +19,47 @@ name: example
 description: An example custom skin — copy and modify this template
 
 # ── Colors ──────────────────────────────────────────────────────────────────
-# Hex color values for Rich markup. These control the CLI's visual palette.
+# Hex color values. These control the visual palette.
 colors:
-  # Banner panel (the startup welcome box)
+  # Banner panel (the startup welcome box) — (both)
   banner_border: "#CD7F32"        # Panel border
   banner_title: "#FFD700"         # Panel title text
   banner_accent: "#FFBF00"        # Section headers (Available Tools, Skills, etc.)
   banner_dim: "#B8860B"           # Dim/muted text (separators, model info)
   banner_text: "#FFF8DC"          # Body text (tool names, skill names)
 
-  # UI elements
-  ui_accent: "#FFBF00"            # General accent color
+  # UI elements — (both)
+  ui_accent: "#FFBF00"            # General accent (falls back to banner_accent)
   ui_label: "#4dd0e1"             # Labels
   ui_ok: "#4caf50"                # Success indicators
   ui_error: "#ef5350"             # Error indicators
   ui_warn: "#ffa726"              # Warning indicators
 
   # Input area
-  prompt: "#FFF8DC"               # Prompt text color
-  input_rule: "#CD7F32"           # Horizontal rule around input
+  prompt: "#FFF8DC"               # Prompt text / `❯` glyph color (both)
+  input_rule: "#CD7F32"           # Horizontal rule above input (classic)
 
-  # Response box
-  response_border: "#FFD700"      # Response box border (ANSI color)
+  # Response box — (classic)
+  response_border: "#FFD700"      # Response box border
 
-  # Session display
-  session_label: "#DAA520"        # Session label
-  session_border: "#8B8682"       # Session ID dim color
+  # Session display — (both)
+  session_label: "#DAA520"        # "Session: " label
+  session_border: "#8B8682"       # Session ID text
 
-  # TUI surfaces
-  status_bar_bg: "#1a1a2e"              # Status / usage bar background
-  voice_status_bg: "#1a1a2e"            # Voice-mode badge background
-  completion_menu_bg: "#1a1a2e"         # Completion list background
-  completion_menu_current_bg: "#333355" # Active completion row background
-  completion_menu_meta_bg: "#1a1a2e"    # Completion meta column background
-  completion_menu_meta_current_bg: "#333355"  # Active completion meta background
+  # TUI / CLI surfaces — (classic: status bar, voice badge, completion meta)
+  status_bar_bg: "#1a1a2e"              # Status / usage bar background (classic)
+  voice_status_bg: "#1a1a2e"            # Voice-mode badge background (classic)
+  completion_menu_bg: "#1a1a2e"         # Completion list background (both)
+  completion_menu_current_bg: "#333355" # Active completion row background (both)
+  completion_menu_meta_bg: "#1a1a2e"    # Completion meta column bg (classic)
+  completion_menu_meta_current_bg: "#333355"  # Active meta bg (classic)
+
+  # Drag-to-select background — (tui)
+  selection_bg: "#3a3a55"               # Uniform selection highlight in the TUI
 
 # ── Spinner ─────────────────────────────────────────────────────────────────
-# Customize the animated spinner shown during API calls and tool execution.
+# (classic) — the TUI uses its own animated indicators; spinner config here
+# is only read by the classic prompt_toolkit CLI.
 spinner:
   # Faces shown while waiting for the API response
   waiting_faces:
@@ -78,17 +87,17 @@ spinner:
   #   - ["⟪▲", "▲⟫"]
 
 # ── Branding ────────────────────────────────────────────────────────────────
-# Text strings used throughout the CLI interface.
+# Text strings used throughout the interface.
 branding:
-  agent_name: "Hermes Agent"          # Banner title, about display
-  welcome: "Welcome! Type your message or /help for commands."
-  goodbye: "Goodbye! ⚕"              # Exit message
-  response_label: " ⚕ Hermes "       # Response box header label
-  prompt_symbol: "❯ "                 # Input prompt symbol
-  help_header: "(^_^)? Available Commands"  # /help header text
+  agent_name: "Hermes Agent"                  # (both) Banner title, about display
+  welcome: "Welcome! Type your message or /help for commands."  # (both)
+  goodbye: "Goodbye! ⚕"                       # (both) Exit message
+  response_label: " ⚕ Hermes "                # (classic) Response box header label
+  prompt_symbol: "❯ "                          # (both) Input prompt glyph
+  help_header: "(^_^)? Available Commands"     # (both) /help overlay title
 
 # ── Tool Output ─────────────────────────────────────────────────────────────
-# Character used as the prefix for tool output lines.
+# Character used as the prefix for tool output lines. (both)
 # Default is "┊" (thin dotted vertical line). Some alternatives:
 #   "╎" (light triple dash vertical)
 #   "▏" (left one-eighth block)

@@ -161,6 +161,30 @@ class TestCommandBypassActiveSession:
         assert any("handled:status" in r for r in adapter.sent_responses)
 
     @pytest.mark.asyncio
+    async def test_agents_bypasses_guard(self):
+        """/agents must bypass so active-task queries don't interrupt runs."""
+        adapter = _make_adapter()
+        sk = _session_key()
+        adapter._active_sessions[sk] = asyncio.Event()
+
+        await adapter.handle_message(_make_event("/agents"))
+
+        assert sk not in adapter._pending_messages
+        assert any("handled:agents" in r for r in adapter.sent_responses)
+
+    @pytest.mark.asyncio
+    async def test_tasks_alias_bypasses_guard(self):
+        """/tasks alias must bypass active-session guard too."""
+        adapter = _make_adapter()
+        sk = _session_key()
+        adapter._active_sessions[sk] = asyncio.Event()
+
+        await adapter.handle_message(_make_event("/tasks"))
+
+        assert sk not in adapter._pending_messages
+        assert any("handled:tasks" in r for r in adapter.sent_responses)
+
+    @pytest.mark.asyncio
     async def test_background_bypasses_guard(self):
         """/background must bypass so it spawns a parallel task, not an interrupt."""
         adapter = _make_adapter()

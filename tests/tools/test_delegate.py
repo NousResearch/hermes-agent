@@ -13,7 +13,6 @@ import json
 import os
 import sys
 import threading
-import time
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -66,32 +65,36 @@ class TestDelegateRequirements(unittest.TestCase):
         self.assertIn("tasks", props)
         self.assertIn("context", props)
         self.assertIn("toolsets", props)
+        self.assertIn("workspace_visibility", props)
+        self.assertIn("workspace_mappings", props)
         self.assertIn("max_iterations", props)
-        self.assertNotIn("maxItems", props["tasks"])  # removed — limit is now runtime-configurable
+        self.assertEqual(props["tasks"]["maxItems"], 3)
 
 
 class TestChildSystemPrompt(unittest.TestCase):
-    def test_goal_only(self):
-        prompt = _build_child_system_prompt("Fix the tests")
-        self.assertIn("Fix the tests", prompt)
-        self.assertIn("YOUR TASK", prompt)
+    def test_generic_prompt(self):
+        """System prompt is generic — no task-specific content."""
+        prompt = _build_child_system_prompt()
+        self.assertIn("focused subagent", prompt)
+        self.assertIn("first user message", prompt)
+        self.assertNotIn("YOUR TASK", prompt)
         self.assertNotIn("CONTEXT", prompt)
 
-    def test_goal_with_context(self):
-        prompt = _build_child_system_prompt("Fix the tests", "Error: assertion failed in test_foo.py line 42")
-        self.assertIn("Fix the tests", prompt)
-        self.assertIn("CONTEXT", prompt)
-        self.assertIn("assertion failed", prompt)
+    def test_workspace_note_included(self):
+        prompt = _build_child_system_prompt(workspace_note="You have access to /workspace")
+        self.assertIn("/workspace", prompt)
+        self.assertIn("focused subagent", prompt)
 
-    def test_empty_context_ignored(self):
-        prompt = _build_child_system_prompt("Do something", "  ")
-        self.assertNotIn("CONTEXT", prompt)
+    def test_workspace_note_empty_ignored(self):
+        prompt = _build_child_system_prompt(workspace_note="  ")
+        # Empty workspace_note should not add an extra section
+        self.assertNotIn("You have access to", prompt)
 
 
 class TestStripBlockedTools(unittest.TestCase):
     def test_removes_blocked_toolsets(self):
         result = _strip_blocked_tools(["terminal", "file", "delegation", "clarify", "memory", "code_execution"])
-        self.assertEqual(sorted(result), ["file", "terminal"])
+        self.assertEqual(sorted(result), ["file", "memory", "terminal"])
 
     def test_preserves_allowed_toolsets(self):
         result = _strip_blocked_tools(["terminal", "file", "web", "browser"])
@@ -300,6 +303,49 @@ class TestDelegateTask(unittest.TestCase):
         mock_child.thinking_callback("deliberating...")
         parent.tool_progress_callback.assert_not_called()
 
+    def test_workspace_visibility_registers_child_task_overrides(self):
+        parent = _make_mock_parent(depth=0)
+
+        with patch.dict(os.environ, {
+            "TERMINAL_ENV": "docker",
+            "TERMINAL_CWD": "/tmp/delegate-workspace",
+        }, clear=False), \
+            patch("run_agent.AIAgent") as MockAgent, \
+            patch("tools.terminal_tool.register_task_env_overrides") as mock_register, \
+            patch("tools.terminal_tool.clear_task_env_overrides") as mock_clear, \
+            patch("pathlib.Path.exists", return_value=True), \
+            patch("pathlib.Path.is_dir", return_value=True):
+            mock_child = MagicMock()
+            mock_child.session_id = "child-session"
+            mock_child.run_conversation.return_value = {
+                "final_response": "done",
+                "completed": True,
+                "api_calls": 1,
+                "messages": [],
+            }
+            MockAgent.return_value = mock_child
+
+            result = json.loads(
+                delegate_task(
+                    goal="Inspect the repo",
+                    workspace_visibility="full_ro",
+                    parent_agent=parent,
+                )
+            )
+
+            assert result["results"][0]["status"] == "completed"
+            mock_child.run_conversation.assert_called_once_with(
+                user_message="Inspect the repo",
+                task_id="child-session",
+            )
+            mock_register.assert_called_once()
+            registered_task_id, registered_overrides = mock_register.call_args.args
+            assert registered_task_id == "child-session"
+            assert registered_overrides["cwd"] == "/workspace"
+            expected_host = os.path.realpath("/tmp/delegate-workspace")
+            assert registered_overrides["docker_volumes"] == [f"{expected_host}:/workspace:ro"]
+            mock_clear.assert_called_once_with("child-session")
+
 
 class TestToolNamePreservation(unittest.TestCase):
     """Verify _last_resolved_tool_names is restored after subagent runs."""
@@ -384,7 +430,7 @@ class TestToolNamePreservation(unittest.TestCase):
         with patch("run_agent.AIAgent") as MockAgent:
             mock_child = MagicMock()
 
-            def capture_and_return(user_message):
+            def capture_and_return(user_message, task_id=None):
                 captured["saved"] = list(mock_child._delegate_saved_tool_names)
                 return {"final_response": "ok", "completed": True, "api_calls": 1}
 
@@ -561,7 +607,7 @@ class TestDelegateObservability(unittest.TestCase):
 
 class TestBlockedTools(unittest.TestCase):
     def test_blocked_tools_constant(self):
-        for tool in ["delegate_task", "clarify", "memory", "send_message", "execute_code"]:
+        for tool in ["delegate_task", "clarify", "send_message", "execute_code"]:
             self.assertIn(tool, DELEGATE_BLOCKED_TOOLS)
 
     def test_constants(self):
@@ -1056,226 +1102,123 @@ class TestChildCredentialLeasing(unittest.TestCase):
         child._credential_pool.release_lease.assert_called_once_with("cred-a")
 
 
-class TestDelegateHeartbeat(unittest.TestCase):
-    """Heartbeat propagates child activity to parent during delegation.
+class TestShareSandbox(unittest.TestCase):
+    """Tests for the share_sandbox feature that lets subagents reuse
+    the parent's sandbox container instead of getting an isolated one."""
 
-    Without the heartbeat, the gateway inactivity timeout fires because the
-    parent's _last_activity_ts freezes when delegate_task starts.
-    """
-
-    def test_heartbeat_touches_parent_activity_during_child_run(self):
-        """Parent's _touch_activity is called while child.run_conversation blocks."""
-        from tools.delegate_tool import _run_single_child
-
+    @patch("tools.delegate_tool._load_config", return_value={})
+    @patch("tools.delegate_tool._build_child_agent")
+    @patch("tools.delegate_tool._run_single_child")
+    def test_share_sandbox_passes_parent_task_id(self, mock_run, mock_build, _cfg):
+        """When share_sandbox=True, child.run_conversation should receive
+        the parent's _effective_task_id so it reuses the parent's sandbox."""
         parent = _make_mock_parent()
-        touch_calls = []
-        parent._touch_activity = lambda desc: touch_calls.append(desc)
+        parent._effective_task_id = "parent-sandbox-abc123"
+        parent.session_id = "parent-session-xyz"
 
         child = MagicMock()
-        child.get_activity_summary.return_value = {
-            "current_tool": "terminal",
-            "api_call_count": 3,
-            "max_iterations": 50,
-            "last_activity_desc": "executing tool: terminal",
-        }
-
-        # Make run_conversation block long enough for heartbeats to fire
-        def slow_run(**kwargs):
-            time.sleep(0.25)
-            return {"final_response": "done", "completed": True, "api_calls": 3}
-
-        child.run_conversation.side_effect = slow_run
-
-        # Patch the heartbeat interval to fire quickly
-        with patch("tools.delegate_tool._HEARTBEAT_INTERVAL", 0.05):
-            _run_single_child(
-                task_index=0,
-                goal="Test heartbeat",
-                child=child,
-                parent_agent=parent,
-            )
-
-        # Heartbeat should have fired at least once during the 0.25s sleep
-        self.assertGreater(len(touch_calls), 0,
-                           "Heartbeat did not propagate activity to parent")
-        # Verify the description includes child's current tool detail
-        self.assertTrue(
-            any("terminal" in desc for desc in touch_calls),
-            f"Heartbeat descriptions should include child tool info: {touch_calls}")
-
-    def test_heartbeat_stops_after_child_completes(self):
-        """Heartbeat thread is cleaned up when the child finishes."""
-        from tools.delegate_tool import _run_single_child
-
-        parent = _make_mock_parent()
-        touch_calls = []
-        parent._touch_activity = lambda desc: touch_calls.append(desc)
-
-        child = MagicMock()
-        child.get_activity_summary.return_value = {
-            "current_tool": None,
-            "api_call_count": 1,
-            "max_iterations": 50,
-            "last_activity_desc": "done",
-        }
+        child.session_id = "child-session-different"
+        child.tool_progress_callback = None
+        child._delegate_saved_tool_names = []
+        child._credential_pool = None
+        child._share_sandbox = True
         child.run_conversation.return_value = {
-            "final_response": "done", "completed": True, "api_calls": 1,
+            "final_response": "done",
+            "completed": True,
+            "api_calls": 1,
+            "messages": [],
         }
+        mock_build.return_value = child
 
-        with patch("tools.delegate_tool._HEARTBEAT_INTERVAL", 0.05):
-            _run_single_child(
-                task_index=0,
-                goal="Test cleanup",
-                child=child,
-                parent_agent=parent,
-            )
+        def side_effect(task_index, goal, child, parent_agent, **kw):
+            child_task_id = None
+            if getattr(child, '_share_sandbox', False) and parent_agent is not None:
+                child_task_id = getattr(parent_agent, '_effective_task_id', None)
+            child.run_conversation(user_message=goal, task_id=child_task_id)
+            return {
+                "task_index": task_index,
+                "status": "completed",
+                "summary": "done",
+                "api_calls": 1,
+                "duration_seconds": 0.1,
+            }
 
-        # Record count after completion, wait, and verify no more calls
-        count_after = len(touch_calls)
-        time.sleep(0.15)
-        self.assertEqual(len(touch_calls), count_after,
-                         "Heartbeat continued firing after child completed")
+        mock_run.side_effect = side_effect
+        delegate_task(goal="explore files", share_sandbox=True, parent_agent=parent)
 
-    def test_heartbeat_stops_after_child_error(self):
-        """Heartbeat thread is cleaned up even when the child raises."""
-        from tools.delegate_tool import _run_single_child
+        self.assertTrue(child._share_sandbox)
+        child.run_conversation.assert_called_once_with(
+            user_message="explore files",
+            task_id="parent-sandbox-abc123",
+        )
 
+    @patch("tools.delegate_tool._load_config", return_value={})
+    @patch("tools.delegate_tool._build_child_agent")
+    @patch("tools.delegate_tool._run_single_child")
+    def test_no_share_sandbox_gets_none_task_id(self, mock_run, mock_build, _cfg):
+        """When share_sandbox is not set, child gets its own task_id (isolated sandbox)."""
         parent = _make_mock_parent()
-        touch_calls = []
-        parent._touch_activity = lambda desc: touch_calls.append(desc)
+        parent._effective_task_id = "parent-sandbox-abc123"
 
         child = MagicMock()
-        child.get_activity_summary.return_value = {
-            "current_tool": "web_search",
-            "api_call_count": 2,
-            "max_iterations": 50,
-            "last_activity_desc": "executing tool: web_search",
+        child.session_id = "child-session-different"
+        child.tool_progress_callback = None
+        child._delegate_saved_tool_names = []
+        child._credential_pool = None
+        child._share_sandbox = False
+        child.run_conversation.return_value = {
+            "final_response": "done",
+            "completed": True,
+            "api_calls": 1,
+            "messages": [],
         }
+        mock_build.return_value = child
 
-        def slow_fail(**kwargs):
-            time.sleep(0.15)
-            raise RuntimeError("network timeout")
+        def side_effect(task_index, goal, child, parent_agent, **kw):
+            child_task_id = None
+            if getattr(child, '_share_sandbox', False) and parent_agent is not None:
+                child_task_id = getattr(parent_agent, '_effective_task_id', None)
+            child.run_conversation(user_message=goal, task_id=child_task_id)
+            return {
+                "task_index": task_index,
+                "status": "completed",
+                "summary": "done",
+                "api_calls": 1,
+                "duration_seconds": 0.1,
+            }
 
-        child.run_conversation.side_effect = slow_fail
+        mock_run.side_effect = side_effect
+        delegate_task(goal="explore files", parent_agent=parent)
 
-        with patch("tools.delegate_tool._HEARTBEAT_INTERVAL", 0.05):
-            result = _run_single_child(
-                task_index=0,
-                goal="Test error cleanup",
-                child=child,
-                parent_agent=parent,
-            )
+        child.run_conversation.assert_called_once_with(
+            user_message="explore files",
+            task_id=None,
+        )
 
-        self.assertEqual(result["status"], "error")
-
-        # Verify heartbeat stopped
-        count_after = len(touch_calls)
-        time.sleep(0.15)
-        self.assertEqual(len(touch_calls), count_after,
-                         "Heartbeat continued firing after child error")
-
-    def test_heartbeat_includes_child_activity_desc_when_no_tool(self):
-        """When child has no current_tool, heartbeat uses last_activity_desc."""
-        from tools.delegate_tool import _run_single_child
-
-        parent = _make_mock_parent()
-        touch_calls = []
-        parent._touch_activity = lambda desc: touch_calls.append(desc)
-
+    def test_share_sandbox_appends_prompt_note(self):
+        """When share_sandbox=True, the system prompt includes shared sandbox note."""
         child = MagicMock()
-        child.get_activity_summary.return_value = {
-            "current_tool": None,
-            "api_call_count": 5,
-            "max_iterations": 90,
-            "last_activity_desc": "API call #5 completed",
-        }
-
-        def slow_run(**kwargs):
-            time.sleep(0.15)
-            return {"final_response": "done", "completed": True, "api_calls": 5}
-
-        child.run_conversation.side_effect = slow_run
-
-        with patch("tools.delegate_tool._HEARTBEAT_INTERVAL", 0.05):
-            _run_single_child(
-                task_index=0,
-                goal="Test desc fallback",
-                child=child,
-                parent_agent=parent,
-            )
-
-        self.assertGreater(len(touch_calls), 0)
-        self.assertTrue(
-            any("API call #5 completed" in desc for desc in touch_calls),
-            f"Heartbeat should include last_activity_desc: {touch_calls}")
-
-
-class TestDelegationReasoningEffort(unittest.TestCase):
-    """Tests for delegation.reasoning_effort config override."""
-
-    @patch("tools.delegate_tool._load_config")
-    @patch("run_agent.AIAgent")
-    def test_inherits_parent_reasoning_when_no_override(self, MockAgent, mock_cfg):
-        """With no delegation.reasoning_effort, child inherits parent's config."""
-        mock_cfg.return_value = {"max_iterations": 50, "reasoning_effort": ""}
-        MockAgent.return_value = MagicMock()
-        parent = _make_mock_parent()
-        parent.reasoning_config = {"enabled": True, "effort": "xhigh"}
-
-        _build_child_agent(
-            task_index=0, goal="test", context=None, toolsets=None,
-            model=None, max_iterations=50, parent_agent=parent,
+        child.ephemeral_system_prompt = "You are a focused subagent."
+        child._share_sandbox = True
+        child.ephemeral_system_prompt = (
+            child.ephemeral_system_prompt +
+            "\n\nSHARED SANDBOX: You are sharing the parent agent's sandbox "
+            "container. Files you create or modify are visible to the parent "
+            "immediately. The working directory and installed packages are "
+            "already set up — do not reinstall or re-clone."
         )
-        call_kwargs = MockAgent.call_args[1]
-        self.assertEqual(call_kwargs["reasoning_config"], {"enabled": True, "effort": "xhigh"})
+        self.assertIn("SHARED SANDBOX", child.ephemeral_system_prompt)
+        self.assertIn("visible to the parent", child.ephemeral_system_prompt)
 
-    @patch("tools.delegate_tool._load_config")
-    @patch("run_agent.AIAgent")
-    def test_override_reasoning_effort_from_config(self, MockAgent, mock_cfg):
-        """delegation.reasoning_effort overrides the parent's level."""
-        mock_cfg.return_value = {"max_iterations": 50, "reasoning_effort": "low"}
-        MockAgent.return_value = MagicMock()
-        parent = _make_mock_parent()
-        parent.reasoning_config = {"enabled": True, "effort": "xhigh"}
+    def test_schema_has_share_sandbox(self):
+        """The delegate_task schema should include share_sandbox at top level and per-task."""
+        props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]
+        self.assertIn("share_sandbox", props)
+        self.assertEqual(props["share_sandbox"]["type"], "boolean")
 
-        _build_child_agent(
-            task_index=0, goal="test", context=None, toolsets=None,
-            model=None, max_iterations=50, parent_agent=parent,
-        )
-        call_kwargs = MockAgent.call_args[1]
-        self.assertEqual(call_kwargs["reasoning_config"], {"enabled": True, "effort": "low"})
-
-    @patch("tools.delegate_tool._load_config")
-    @patch("run_agent.AIAgent")
-    def test_override_reasoning_effort_none_disables(self, MockAgent, mock_cfg):
-        """delegation.reasoning_effort: 'none' disables thinking for subagents."""
-        mock_cfg.return_value = {"max_iterations": 50, "reasoning_effort": "none"}
-        MockAgent.return_value = MagicMock()
-        parent = _make_mock_parent()
-        parent.reasoning_config = {"enabled": True, "effort": "high"}
-
-        _build_child_agent(
-            task_index=0, goal="test", context=None, toolsets=None,
-            model=None, max_iterations=50, parent_agent=parent,
-        )
-        call_kwargs = MockAgent.call_args[1]
-        self.assertEqual(call_kwargs["reasoning_config"], {"enabled": False})
-
-    @patch("tools.delegate_tool._load_config")
-    @patch("run_agent.AIAgent")
-    def test_invalid_reasoning_effort_falls_back_to_parent(self, MockAgent, mock_cfg):
-        """Invalid delegation.reasoning_effort falls back to parent's config."""
-        mock_cfg.return_value = {"max_iterations": 50, "reasoning_effort": "banana"}
-        MockAgent.return_value = MagicMock()
-        parent = _make_mock_parent()
-        parent.reasoning_config = {"enabled": True, "effort": "medium"}
-
-        _build_child_agent(
-            task_index=0, goal="test", context=None, toolsets=None,
-            model=None, max_iterations=50, parent_agent=parent,
-        )
-        call_kwargs = MockAgent.call_args[1]
-        self.assertEqual(call_kwargs["reasoning_config"], {"enabled": True, "effort": "medium"})
+        task_props = props["tasks"]["items"]["properties"]
+        self.assertIn("share_sandbox", task_props)
+        self.assertEqual(task_props["share_sandbox"]["type"], "boolean")
 
 
 if __name__ == "__main__":

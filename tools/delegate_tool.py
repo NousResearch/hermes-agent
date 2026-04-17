@@ -10,7 +10,7 @@ Each child gets:
   - A fresh conversation (no parent history)
   - Its own task_id (own terminal session, file ops cache)
   - A restricted toolset (configurable, with blocked tools always stripped)
-  - A focused system prompt built from the delegated goal + context
+  - A stable system prompt (task goal + context flow via user message)
 
 The parent's context only sees the delegation call and the summary result,
 never the child's intermediate tool calls or reasoning.
@@ -18,68 +18,64 @@ never the child's intermediate tool calls or reasoning.
 
 import json
 import logging
-logger = logging.getLogger(__name__)
 import os
-import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional
 
-from toolsets import TOOLSETS
+logger = logging.getLogger(__name__)
 
 
 # Tools that children must never have access to
 DELEGATE_BLOCKED_TOOLS = frozenset([
     "delegate_task",   # no recursive delegation
     "clarify",         # no user interaction
-    "memory",          # no writes to shared MEMORY.md
     "send_message",    # no cross-platform side effects
     "execute_code",    # children should reason step-by-step, not write scripts
+    # Note: "memory" removed - subagents have read-only memory access
+    # Memory writes are blocked in memory.py based on subagent_memory_mode
 ])
 
-# Build a description fragment listing toolsets available for subagents.
-# Excludes toolsets where ALL tools are blocked, composite/platform toolsets
-# (hermes-* prefixed), and scenario toolsets.
-_EXCLUDED_TOOLSET_NAMES = frozenset({"debugging", "safe", "delegation", "moa", "rl"})
-_SUBAGENT_TOOLSETS = sorted(
-    name for name, defn in TOOLSETS.items()
-    if name not in _EXCLUDED_TOOLSET_NAMES
-    and not name.startswith("hermes-")
-    and not all(t in DELEGATE_BLOCKED_TOOLS for t in defn.get("tools", []))
-)
-_TOOLSET_LIST_STR = ", ".join(f"'{n}'" for n in _SUBAGENT_TOOLSETS)
+# Toolsets that are stripped from subagents by default
+# Can be overridden via config.yaml: delegation.allowed_toolsets
+BLOCKED_TOOLSET_NAMES = frozenset([
+    "delegation",  # delegate_task tool
+    "clarify",     # clarify tool
+    "code_execution",  # execute_code tool
+    # Note: "memory" removed - subagents now have read-only memory access
+])
 
+# Allowlist of toolsets that subagents CAN use
+# Set to None to inherit all parent toolsets (except blocked ones)
+# Configure via config.yaml: delegation.allowed_toolsets
+DEFAULT_ALLOWED_TOOLSETS = ["terminal", "file", "web", "mcp", "browser", "memory"]
+
+# Configuration constants
 _DEFAULT_MAX_CONCURRENT_CHILDREN = 3
-MAX_DEPTH = 2  # parent (0) -> child (1) -> grandchild rejected (2)
 
 
 def _get_max_concurrent_children() -> int:
-    """Read delegation.max_concurrent_children from config, falling back to
-    DELEGATION_MAX_CONCURRENT_CHILDREN env var, then the default (3).
-
-    Uses the same ``_load_config()`` path that the rest of ``delegate_task``
-    uses, keeping config priority consistent (config.yaml > env > default).
-    """
-    cfg = _load_config()
-    val = cfg.get("max_concurrent_children")
-    if val is not None:
-        try:
-            return max(1, int(val))
-        except (TypeError, ValueError):
-            logger.warning(
-                "delegation.max_concurrent_children=%r is not a valid integer; "
-                "using default %d", val, _DEFAULT_MAX_CONCURRENT_CHILDREN,
-            )
+    """Read delegation.max_concurrent_children from config.yaml, falling back
+    to DELEGATION_MAX_CONCURRENT_CHILDREN env var, then the default (3)."""
     env_val = os.getenv("DELEGATION_MAX_CONCURRENT_CHILDREN")
     if env_val:
         try:
             return max(1, int(env_val))
         except (TypeError, ValueError):
             pass
+    try:
+        from hermes_cli.config import read_raw_config
+        cfg = read_raw_config()
+        val = cfg.get("delegation", {}).get("max_concurrent_children")
+        if val is not None:
+            return max(1, int(val))
+    except Exception:
+        pass
     return _DEFAULT_MAX_CONCURRENT_CHILDREN
+MAX_DEPTH = 2  # parent (0) -> child (1) -> grandchild rejected (2)
 DEFAULT_MAX_ITERATIONS = 50
-_HEARTBEAT_INTERVAL = 30  # seconds between parent activity heartbeats during delegation
-DEFAULT_TOOLSETS = ["terminal", "file", "web"]
+DEFAULT_SUBAGENT_MEMORY_MODE = "read_only"  # "read_only" | "full" | "none"
+DEFAULT_WORKSPACE_VISIBILITY = "inherit"
 
 
 def check_delegate_requirements() -> bool:
@@ -88,25 +84,22 @@ def check_delegate_requirements() -> bool:
 
 
 def _build_child_system_prompt(
-    goal: str,
-    context: Optional[str] = None,
-    *,
-    workspace_path: Optional[str] = None,
+    workspace_note: Optional[str] = None,
+    **_kwargs,
 ) -> str:
-    """Build a focused system prompt for a child agent."""
+    """Build a focused system prompt for a child agent.
+
+    Task-specific content (goal, context) is NOT included here — it flows
+    via run_conversation(user_message=...) as the first user message.
+    This keeps the system prompt stable across subagents, improving
+    prefix cache reuse on local LLM backends.
+    """
     parts = [
-        "You are a focused subagent working on a specific delegated task.",
-        "",
-        f"YOUR TASK:\n{goal}",
+        "You are a focused subagent working on a specific delegated task. "
+        "Your task is provided in the first user message below.",
     ]
-    if context and context.strip():
-        parts.append(f"\nCONTEXT:\n{context}")
-    if workspace_path and str(workspace_path).strip():
-        parts.append(
-            "\nWORKSPACE PATH:\n"
-            f"{workspace_path}\n"
-            "Use this exact path for local repository/workdir operations unless the task explicitly says otherwise."
-        )
+    if workspace_note and workspace_note.strip():
+        parts.append(f"\n{workspace_note.strip()}")
     parts.append(
         "\nComplete this task using the tools available to you. "
         "When finished, provide a clear, concise summary of:\n"
@@ -147,12 +140,47 @@ def _resolve_workspace_hint(parent_agent) -> Optional[str]:
     return None
 
 
+def _configure_child_workspace(child, task_index: int, task_cfg: Dict[str, Any], delegation_cfg: Dict[str, Any]):
+    """Resolve workspace visibility for a delegated child and attach task overrides."""
+    from tools.subagent_workspace import (
+        build_workspace_overrides,
+        resolve_parent_workspace_root,
+        resolve_terminal_backend,
+    )
+
+    visibility = task_cfg.get("workspace_visibility")
+    mappings = task_cfg.get("workspace_mappings")
+    if mappings is None:
+        mappings = delegation_cfg.get("workspace_mappings")
+    if visibility is None:
+        visibility = delegation_cfg.get("workspace_visibility", DEFAULT_WORKSPACE_VISIBILITY)
+    if (visibility in (None, "", "inherit")) and mappings:
+        visibility = "mapped"
+
+    plan = build_workspace_overrides(
+        visibility=visibility,
+        mappings=mappings,
+        workspace_root=resolve_parent_workspace_root(),
+        child_token=f"subagent-{task_index}-{getattr(child, 'session_id', '') or task_index}",
+        backend=resolve_terminal_backend(),
+    )
+
+    child._delegate_task_id = getattr(child, "session_id", None)
+    child._delegate_task_env_overrides = plan.get("task_env_overrides")
+    prompt_note = plan.get("prompt_note", "").strip()
+    if prompt_note:
+        child.ephemeral_system_prompt = _build_child_system_prompt(
+            workspace_note=prompt_note,
+        )
+    # Only set context if not already set by _build_child_agent
+    if not getattr(child, "_delegate_context", None):
+        child._delegate_context = task_cfg.get("context")
+
+
 def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
     """Remove toolsets that contain only blocked tools."""
-    blocked_toolset_names = {
-        "delegation", "clarify", "memory", "code_execution",
-    }
-    return [t for t in toolsets if t not in blocked_toolset_names]
+    # Use configurable blocked toolset names
+    return [t for t in toolsets if t not in BLOCKED_TOOLSET_NAMES]
 
 
 def _build_child_progress_callback(task_index: int, parent_agent, task_count: int = 1) -> Optional[callable]:
@@ -265,33 +293,22 @@ def _build_child_agent(
 
     # When no explicit toolsets given, inherit from parent's enabled toolsets
     # so disabled tools (e.g. web) don't leak to subagents.
-    # Note: enabled_toolsets=None means "all tools enabled" (the default),
-    # so we must derive effective toolsets from the parent's loaded tools.
-    parent_enabled = getattr(parent_agent, "enabled_toolsets", None)
-    if parent_enabled is not None:
-        parent_toolsets = set(parent_enabled)
-    elif parent_agent and hasattr(parent_agent, "valid_tool_names"):
-        # enabled_toolsets is None (all tools) — derive from loaded tool names
-        import model_tools
-        parent_toolsets = {
-            ts for name in parent_agent.valid_tool_names
-            if (ts := model_tools.get_toolset_for_tool(name)) is not None
-        }
-    else:
-        parent_toolsets = set(DEFAULT_TOOLSETS)
-
+    parent_toolsets = set(getattr(parent_agent, "enabled_toolsets", None) or DEFAULT_ALLOWED_TOOLSETS)
     if toolsets:
         # Intersect with parent — subagent must not gain tools the parent lacks
+        # Then apply allowlist
         child_toolsets = _strip_blocked_tools([t for t in toolsets if t in parent_toolsets])
-    elif parent_agent and parent_enabled is not None:
-        child_toolsets = _strip_blocked_tools(parent_enabled)
-    elif parent_toolsets:
-        child_toolsets = _strip_blocked_tools(sorted(parent_toolsets))
+        # Filter to allowed toolsets
+        child_toolsets = [t for t in child_toolsets if t in DEFAULT_ALLOWED_TOOLSETS]
+    elif parent_agent and getattr(parent_agent, "enabled_toolsets", None):
+        child_toolsets = _strip_blocked_tools(parent_agent.enabled_toolsets)
+        # Filter to allowed toolsets
+        child_toolsets = [t for t in child_toolsets if t in DEFAULT_ALLOWED_TOOLSETS]
     else:
-        child_toolsets = _strip_blocked_tools(DEFAULT_TOOLSETS)
+        child_toolsets = _strip_blocked_tools(DEFAULT_ALLOWED_TOOLSETS)
 
     workspace_hint = _resolve_workspace_hint(parent_agent)
-    child_prompt = _build_child_system_prompt(goal, context, workspace_path=workspace_hint)
+    child_prompt = _build_child_system_prompt(workspace_note=workspace_hint)
     # Extract parent's API key so subagents inherit auth (e.g. Nous Portal).
     parent_api_key = getattr(parent_agent, "api_key", None)
     if (not parent_api_key) and hasattr(parent_agent, "_client_kwargs"):
@@ -326,25 +343,6 @@ def _build_child_agent(
     effective_acp_command = override_acp_command or getattr(parent_agent, "acp_command", None)
     effective_acp_args = list(override_acp_args if override_acp_args is not None else (getattr(parent_agent, "acp_args", []) or []))
 
-    # Resolve reasoning config: delegation override > parent inherit
-    parent_reasoning = getattr(parent_agent, "reasoning_config", None)
-    child_reasoning = parent_reasoning
-    try:
-        delegation_cfg = _load_config()
-        delegation_effort = str(delegation_cfg.get("reasoning_effort") or "").strip()
-        if delegation_effort:
-            from hermes_constants import parse_reasoning_effort
-            parsed = parse_reasoning_effort(delegation_effort)
-            if parsed is not None:
-                child_reasoning = parsed
-            else:
-                logger.warning(
-                    "Unknown delegation.reasoning_effort '%s', inheriting parent level",
-                    delegation_effort,
-                )
-    except Exception as exc:
-        logger.debug("Could not load delegation reasoning_effort: %s", exc)
-
     child = AIAgent(
         base_url=effective_base_url,
         api_key=effective_api_key,
@@ -355,7 +353,7 @@ def _build_child_agent(
         acp_args=effective_acp_args,
         max_iterations=max_iterations,
         max_tokens=getattr(parent_agent, "max_tokens", None),
-        reasoning_config=child_reasoning,
+        reasoning_config=getattr(parent_agent, "reasoning_config", None),
         prefill_messages=getattr(parent_agent, "prefill_messages", None),
         enabled_toolsets=child_toolsets,
         quiet_mode=True,
@@ -363,7 +361,8 @@ def _build_child_agent(
         log_prefix=f"[subagent-{task_index}]",
         platform=parent_agent.platform,
         skip_context_files=True,
-        skip_memory=True,
+        skip_memory=False,  # Enable memory for subagents (read-only mode enforced in memory_tool.py)
+        subagent_memory_mode=DEFAULT_SUBAGENT_MEMORY_MODE,  # Pass read_only/full/none config
         clarify_callback=None,
         thinking_callback=child_thinking_cb,
         session_db=getattr(parent_agent, '_session_db', None),
@@ -374,8 +373,13 @@ def _build_child_agent(
         provider_sort=parent_agent.provider_sort,
         tool_progress_callback=child_progress_cb,
         iteration_budget=None,  # fresh budget per subagent
+        _is_subagent=True,  # Mark this agent as a subagent for memory/tool access control
+        # Share parent's memory store (read-only access enforced in memory_tool.py)
+        _shared_memory_store=getattr(parent_agent, '_memory_store', None),
     )
     child._print_fn = getattr(parent_agent, '_print_fn', None)
+    # Store context for injection into user message (not system prompt)
+    child._delegate_context = context
     # Set delegation depth so children can't spawn grandchildren
     child._delegate_depth = getattr(parent_agent, '_delegate_depth', 0) + 1
 
@@ -430,46 +434,26 @@ def _run_single_child(
             except Exception as exc:
                 logger.debug("Failed to bind child to leased credential: %s", exc)
 
-    # Heartbeat: periodically propagate child activity to the parent so the
-    # gateway inactivity timeout doesn't fire while the subagent is working.
-    # Without this, the parent's _last_activity_ts freezes when delegate_task
-    # starts and the gateway eventually kills the agent for "no activity".
-    _heartbeat_stop = threading.Event()
-
-    def _heartbeat_loop():
-        while not _heartbeat_stop.wait(_HEARTBEAT_INTERVAL):
-            if parent_agent is None:
-                continue
-            touch = getattr(parent_agent, '_touch_activity', None)
-            if not touch:
-                continue
-            # Pull detail from the child's own activity tracker
-            desc = f"delegate_task: subagent {task_index} working"
-            try:
-                child_summary = child.get_activity_summary()
-                child_tool = child_summary.get("current_tool")
-                child_iter = child_summary.get("api_call_count", 0)
-                child_max = child_summary.get("max_iterations", 0)
-                if child_tool:
-                    desc = (f"delegate_task: subagent running {child_tool} "
-                            f"(iteration {child_iter}/{child_max})")
-                else:
-                    child_desc = child_summary.get("last_activity_desc", "")
-                    if child_desc:
-                        desc = (f"delegate_task: subagent {child_desc} "
-                                f"(iteration {child_iter}/{child_max})")
-            except Exception:
-                pass
-            try:
-                touch(desc)
-            except Exception:
-                pass
-
-    _heartbeat_thread = threading.Thread(target=_heartbeat_loop, daemon=True)
-    _heartbeat_thread.start()
-
     try:
-        result = child.run_conversation(user_message=goal)
+        # When share_sandbox is True, reuse the parent's sandbox container
+        # by passing the parent's task_id instead of generating a new one.
+        if getattr(child, '_share_sandbox', False) and parent_agent is not None:
+            child_task_id = getattr(parent_agent, '_effective_task_id', None)
+        else:
+            child_task_id = getattr(child, "_delegate_task_id", None) or getattr(child, "session_id", None)
+        child_env_overrides = getattr(child, "_delegate_task_env_overrides", None)
+        if child_task_id and child_env_overrides:
+            from tools.terminal_tool import register_task_env_overrides
+
+            register_task_env_overrides(child_task_id, child_env_overrides)
+
+        # Build user message: goal + context (context moved from system prompt
+        # to user message for prefix cache stability across subagents)
+        _user_msg = goal
+        _child_context = getattr(child, "_delegate_context", None)
+        if _child_context:
+            _user_msg = f"{goal}\n\nCONTEXT:\n{_child_context}"
+        result = child.run_conversation(user_message=_user_msg, task_id=child_task_id)
 
         # Flush any remaining batched progress to gateway
         if child_progress_cb and hasattr(child_progress_cb, '_flush'):
@@ -578,16 +562,26 @@ def _run_single_child(
         }
 
     finally:
-        # Stop the heartbeat thread so it doesn't keep touching parent activity
-        # after the child has finished (or failed).
-        _heartbeat_stop.set()
-        _heartbeat_thread.join(timeout=5)
-
+        # Release the credential pool lease acquired at the top of the try
+        # block. Without this, every delegated child leaks a lease, and the
+        # pool gradually marks all entries as exhausted. Upstream has this;
+        # the fork's rewrite for workspace env overrides accidentally dropped
+        # it. Restored here.
         if child_pool is not None and leased_cred_id is not None:
             try:
                 child_pool.release_lease(leased_cred_id)
-            except Exception as exc:
-                logger.debug("Failed to release credential lease: %s", exc)
+            except Exception:
+                logger.debug("Failed to release credential lease %s", leased_cred_id, exc_info=True)
+
+        child_task_id = getattr(child, "_delegate_task_id", None) or getattr(child, "session_id", None)
+        child_env_overrides = getattr(child, "_delegate_task_env_overrides", None)
+        if child_task_id and child_env_overrides:
+            try:
+                from tools.terminal_tool import clear_task_env_overrides
+
+                clear_task_env_overrides(child_task_id)
+            except Exception:
+                logger.debug("Failed to clear delegated task env overrides", exc_info=True)
 
         # Restore the parent's tool names so the process-global is correct
         # for any subsequent execute_code calls or other consumers.
@@ -611,23 +605,18 @@ def _run_single_child(
             except (ValueError, UnboundLocalError) as e:
                 logger.debug("Could not remove child from active_children: %s", e)
 
-        # Close tool resources (terminal sandboxes, browser daemons,
-        # background processes, httpx clients) so subagent subprocesses
-        # don't outlive the delegation.
-        try:
-            if hasattr(child, 'close'):
-                child.close()
-        except Exception:
-            logger.debug("Failed to close child agent after delegation")
-
 def delegate_task(
     goal: Optional[str] = None,
     context: Optional[str] = None,
     toolsets: Optional[List[str]] = None,
+    workspace_visibility: Optional[str] = None,
+    workspace_mappings: Optional[List[Dict[str, Any]]] = None,
     tasks: Optional[List[Dict[str, Any]]] = None,
     max_iterations: Optional[int] = None,
+    model: Optional[str] = None,
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
+    share_sandbox: Optional[bool] = None,
     parent_agent=None,
 ) -> str:
     """
@@ -667,6 +656,11 @@ def delegate_task(
     except ValueError as exc:
         return tool_error(str(exc))
 
+    # Per-call model override: the agent can request a specific model or tier
+    # (small/medium/large) for this delegation.
+    if model and isinstance(model, str) and model.strip():
+        creds["model"] = _resolve_model_or_tier(model.strip())
+
     # Normalize to task list
     max_children = _get_max_concurrent_children()
     if tasks and isinstance(tasks, list):
@@ -680,7 +674,14 @@ def delegate_task(
             )
         task_list = tasks
     elif goal and isinstance(goal, str) and goal.strip():
-        task_list = [{"goal": goal, "context": context, "toolsets": toolsets}]
+        task_list = [{
+            "goal": goal,
+            "context": context,
+            "toolsets": toolsets,
+            "workspace_visibility": workspace_visibility,
+            "workspace_mappings": workspace_mappings,
+            "share_sandbox": share_sandbox,
+        }]
     else:
         return tool_error("Provide either 'goal' (single task) or 'tasks' (batch).")
 
@@ -711,9 +712,12 @@ def delegate_task(
     children = []
     try:
         for i, t in enumerate(task_list):
+            # Per-task model override takes precedence over top-level model
+            raw_task_model = str(t.get("model") or "").strip()
+            task_model = _resolve_model_or_tier(raw_task_model) if raw_task_model else creds["model"]
             child = _build_child_agent(
                 task_index=i, goal=t["goal"], context=t.get("context"),
-                toolsets=t.get("toolsets") or toolsets, model=creds["model"],
+                toolsets=t.get("toolsets") or toolsets, model=task_model,
                 max_iterations=effective_max_iter, parent_agent=parent_agent,
                 override_provider=creds["provider"], override_base_url=creds["base_url"],
                 override_api_key=creds["api_key"],
@@ -721,9 +725,29 @@ def delegate_task(
                 override_acp_command=t.get("acp_command") or acp_command,
                 override_acp_args=t.get("acp_args") or acp_args,
             )
+            if "workspace_visibility" not in t and workspace_visibility is not None:
+                t["workspace_visibility"] = workspace_visibility
+            if "workspace_mappings" not in t and workspace_mappings is not None:
+                t["workspace_mappings"] = workspace_mappings
+            _configure_child_workspace(child, i, t, cfg)
             # Override with correct parent tool names (before child construction mutated global)
             child._delegate_saved_tool_names = _parent_tool_names
+            # Store share_sandbox flag for _run_single_child to use.
+            # When True, child reuses the parent's sandbox container.
+            task_share = bool(t.get("share_sandbox") or share_sandbox)
+            child._share_sandbox = task_share
+            if task_share:
+                # Inform the child it's sharing the parent's sandbox
+                child.ephemeral_system_prompt = (
+                    getattr(child, 'ephemeral_system_prompt', '') +
+                    "\n\nSHARED SANDBOX: You are sharing the parent agent's sandbox "
+                    "container. Files you create or modify are visible to the parent "
+                    "immediately. The working directory and installed packages are "
+                    "already set up — do not reinstall or re-clone."
+                )
             children.append((i, t, child))
+    except ValueError as exc:
+        return json.dumps({"error": str(exc)})
     finally:
         # Authoritative restore: reset global to parent's tool names after all children built
         _model_tools._last_resolved_tool_names = _parent_tool_names
@@ -998,6 +1022,135 @@ def _load_config() -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Model tier resolution
+# ---------------------------------------------------------------------------
+
+_DEFAULT_TIERS = {"small": None, "medium": None, "large": None}
+
+
+def _load_model_tiers() -> dict:
+    """Load model_tiers from delegation config.
+
+    Returns a dict mapping tier names (small/medium/large) to model names.
+    Falls back to empty tiers when unconfigured.
+    """
+    cfg = _load_config()
+    tiers = cfg.get("model_tiers", {})
+    if not isinstance(tiers, dict):
+        return dict(_DEFAULT_TIERS)
+    result = dict(_DEFAULT_TIERS)
+    for tier in result:
+        val = str(tiers.get(tier) or "").strip()
+        if val:
+            result[tier] = val
+    return result
+
+
+def _resolve_model_or_tier(model_spec: str) -> str:
+    """Resolve a model specification that may be a tier name or a model name.
+
+    If model_spec is 'small', 'medium', or 'large', resolves to the
+    configured model name for that tier.  Otherwise returns model_spec
+    as-is (assumed to be a direct model name).
+    """
+    if not model_spec:
+        return model_spec
+    lowered = model_spec.strip().lower()
+    if lowered in ("small", "medium", "large"):
+        tiers = _load_model_tiers()
+        resolved = tiers.get(lowered)
+        if resolved:
+            logger.info("model tier '%s' resolved to '%s'", lowered, resolved)
+            return resolved
+        logger.warning(
+            "model tier '%s' requested but not configured in "
+            "delegation.model_tiers; falling back to default model",
+            lowered,
+        )
+        return ""  # empty → inherit default
+    return model_spec
+
+
+def list_models(parent_agent=None) -> str:
+    """Return available models and their delegation tiers as JSON.
+
+    Reads custom_providers from config.yaml to enumerate models, and
+    delegation.model_tiers for tier assignments.
+    """
+    # Load custom providers to enumerate available models
+    models = []
+    try:
+        from cli import CLI_CONFIG
+        full_cfg = CLI_CONFIG
+    except Exception:
+        try:
+            from hermes_cli.config import load_config
+            full_cfg = load_config()
+        except Exception:
+            full_cfg = {}
+
+    # Get the current/default model
+    model_cfg = full_cfg.get("model", {})
+    if isinstance(model_cfg, dict):
+        default_model = model_cfg.get("default", "")
+    else:
+        default_model = str(model_cfg or "")
+
+    # Enumerate models from custom_providers
+    for cp in full_cfg.get("custom_providers", []):
+        provider_name = cp.get("name", "unknown")
+        for model_name, model_info in (cp.get("models") or {}).items():
+            ctx = None
+            if isinstance(model_info, dict):
+                ctx = model_info.get("context_length")
+            models.append({
+                "name": model_name,
+                "provider": provider_name,
+                "context_length": ctx,
+            })
+
+    # Load tiers
+    tiers = _load_model_tiers()
+
+    # Assign tier labels to models
+    tier_by_model = {}
+    for tier_name, tier_model in tiers.items():
+        if tier_model:
+            tier_by_model[tier_model] = tier_name
+
+    for m in models:
+        m["tier"] = tier_by_model.get(m["name"])
+        m["is_default"] = m["name"] == default_model
+
+    return json.dumps({
+        "models": models,
+        "tiers": {k: v for k, v in tiers.items() if v},
+        "default_model": default_model,
+        "usage_hint": (
+            "Use 'small' for simple tasks (summarization, formatting, file listing). "
+            "Use 'medium' (default) for standard work. "
+            "Use 'large' for complex reasoning, peer review, or when you're stuck. "
+            "You can pass tier names ('small', 'medium', 'large') or model names directly "
+            "as the 'model' parameter in delegate_task."
+        ),
+    }, indent=2)
+
+
+LIST_MODELS_SCHEMA = {
+    "name": "list_models",
+    "description": (
+        "List available models for delegation with their tiers (small/medium/large). "
+        "Use this to discover which models are available before delegating tasks. "
+        "Returns model names, providers, context lengths, and tier assignments."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {},
+    },
+}
+
+
+# ---------------------------------------------------------------------------
 # OpenAI Function-Calling Schema
 # ---------------------------------------------------------------------------
 
@@ -1025,8 +1178,20 @@ DELEGATE_TASK_SCHEMA = {
         "info (file paths, error messages, constraints) via the 'context' field.\n"
         "- Subagents CANNOT call: delegate_task, clarify, memory, send_message, "
         "execute_code.\n"
-        "- Each subagent gets its own terminal session (separate working directory and state).\n"
-        "- Results are always returned as an array, one entry per task."
+        "- Each subagent gets its own terminal session (separate working directory and state) "
+        "unless share_sandbox=true, which reuses the parent's sandbox.\n"
+        "- workspace_visibility defaults to 'inherit'. Use 'full_ro' or 'mapped' "
+        "when you need stricter filesystem isolation in Docker sandboxes.\n"
+        "- Results are always returned as an array, one entry per task.\n\n"
+        "MODEL SELECTION:\n"
+        "- You can set 'model' to a tier name ('small', 'medium', 'large') "
+        "or a specific model name. Use list_models to see available options.\n"
+        "- 'small': fast/cheap model for simple tasks (file exploration, "
+        "summarization, formatting, lookups)\n"
+        "- 'medium' or omit: default model for standard work\n"
+        "- 'large': most capable model for complex reasoning, peer review, "
+        "or when you're stuck and need to escalate\n"
+        "- Each task in a batch can use a different model."
     ),
     "parameters": {
         "type": "object",
@@ -1053,11 +1218,57 @@ DELEGATE_TASK_SCHEMA = {
                 "description": (
                     "Toolsets to enable for this subagent. "
                     "Default: inherits your enabled toolsets. "
-                    f"Available toolsets: {_TOOLSET_LIST_STR}. "
                     "Common patterns: ['terminal', 'file'] for code work, "
-                    "['web'] for research, ['browser'] for web interaction, "
-                    "['terminal', 'file', 'web'] for full-stack tasks."
+                    "['web'] for research, ['terminal', 'file', 'web'] for "
+                    "full-stack tasks."
                 ),
+            },
+            "model": {
+                "type": "string",
+                "description": (
+                    "Model to use for this subagent. Default: inherits from "
+                    "delegation config or parent model. Use a smaller/faster model "
+                    "(e.g. 'gemma4-nothink') for simple tasks like summarization, "
+                    "formatting, or lookups. Keep the default for complex reasoning, "
+                    "debugging, or multi-step implementation."
+                ),
+            },
+            "workspace_visibility": {
+                "type": "string",
+                "enum": ["inherit", "full_rw", "full_ro", "mapped"],
+                "description": (
+                    "Filesystem visibility for the child sandbox. "
+                    "'inherit' keeps the current backend behavior. "
+                    "'full_rw' mounts the full parent workspace at /workspace read-write. "
+                    "'full_ro' mounts it read-only. "
+                    "'mapped' exposes only the paths listed in workspace_mappings."
+                ),
+            },
+            "workspace_mappings": {
+                "type": "array",
+                "description": (
+                    "Used only with workspace_visibility='mapped'. "
+                    "Each mapping source must stay inside the parent workspace. "
+                    "target defaults under /workspace and read_only defaults to false."
+                ),
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "source": {
+                            "type": "string",
+                            "description": "Workspace-relative or absolute path inside the parent workspace.",
+                        },
+                        "target": {
+                            "type": "string",
+                            "description": "Path inside the child sandbox under /workspace.",
+                        },
+                        "read_only": {
+                            "type": "boolean",
+                            "description": "Mount this mapping read-only.",
+                        },
+                    },
+                    "required": ["source"],
+                },
             },
             "tasks": {
                 "type": "array",
@@ -1069,7 +1280,15 @@ DELEGATE_TASK_SCHEMA = {
                         "toolsets": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": f"Toolsets for this specific task. Available: {_TOOLSET_LIST_STR}. Use 'web' for network access, 'terminal' for shell, 'browser' for web interaction.",
+                            "description": "Toolsets for this specific task. Use 'web' for network access, 'terminal' for shell.",
+                        },
+                        "model": {
+                            "type": "string",
+                            "description": "Model override for this task (e.g. 'gemma4-nothink' for simple work).",
+                        },
+                        "share_sandbox": {
+                            "type": "boolean",
+                            "description": "Share the parent's sandbox instead of creating an isolated one for this task.",
                         },
                         "acp_command": {
                             "type": "string",
@@ -1080,16 +1299,33 @@ DELEGATE_TASK_SCHEMA = {
                             "items": {"type": "string"},
                             "description": "Per-task ACP args override.",
                         },
+                        "workspace_visibility": {
+                            "type": "string",
+                            "enum": ["inherit", "full_rw", "full_ro", "mapped"],
+                            "description": "Workspace visibility for this task's sandbox.",
+                        },
+                        "workspace_mappings": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "source": {"type": "string"},
+                                    "target": {"type": "string"},
+                                    "read_only": {"type": "boolean"},
+                                },
+                                "required": ["source"],
+                            },
+                            "description": "Workspace mappings for this task when workspace_visibility='mapped'.",
+                        },
                     },
                     "required": ["goal"],
                 },
-                # No maxItems — the runtime limit is configurable via
-                # delegation.max_concurrent_children (default 3) and
-                # enforced with a clear error in delegate_task().
+                "maxItems": 3,
                 "description": (
                     "Batch mode: tasks to run in parallel (limit configurable via delegation.max_concurrent_children, default 3). Each gets "
                     "its own subagent with isolated context and terminal session. "
-                    "When provided, top-level goal/context/toolsets are ignored."
+                    "When provided, top-level goal/context are ignored. "
+                    "Top-level toolsets and workspace visibility settings act as defaults."
                 ),
             },
             "max_iterations": {
@@ -1097,6 +1333,17 @@ DELEGATE_TASK_SCHEMA = {
                 "description": (
                     "Max tool-calling turns per subagent (default: 50). "
                     "Only set lower for simple tasks."
+                ),
+            },
+            "share_sandbox": {
+                "type": "boolean",
+                "description": (
+                    "When true, the subagent shares the parent's sandbox container "
+                    "instead of getting an isolated one. The subagent sees the same "
+                    "filesystem, installed packages, and working directory as the parent. "
+                    "Use this for explorer subagents that need access to the parent's "
+                    "prepared workspace (e.g. source code already cloned, dependencies "
+                    "installed). Default: false (isolated sandbox)."
                 ),
             },
             "acp_command": {
@@ -1123,7 +1370,7 @@ DELEGATE_TASK_SCHEMA = {
 
 
 # --- Registry ---
-from tools.registry import registry, tool_error
+from tools.registry import registry, tool_error  # noqa: E402
 
 registry.register(
     name="delegate_task",
@@ -1133,11 +1380,23 @@ registry.register(
         goal=args.get("goal"),
         context=args.get("context"),
         toolsets=args.get("toolsets"),
+        workspace_visibility=args.get("workspace_visibility"),
+        workspace_mappings=args.get("workspace_mappings"),
         tasks=args.get("tasks"),
         max_iterations=args.get("max_iterations"),
+        model=args.get("model"),
         acp_command=args.get("acp_command"),
         acp_args=args.get("acp_args"),
+        share_sandbox=args.get("share_sandbox"),
         parent_agent=kw.get("parent_agent")),
     check_fn=check_delegate_requirements,
     emoji="🔀",
+)
+
+registry.register(
+    name="list_models",
+    toolset="delegation",
+    schema=LIST_MODELS_SCHEMA,
+    handler=lambda args, **kw: list_models(parent_agent=kw.get("parent_agent")),
+    emoji="📋",
 )

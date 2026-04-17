@@ -388,16 +388,8 @@ def _load_enabled_toolsets() -> list[str] | None:
         return None
 
 
-def _session_show_reasoning(sid: str) -> bool:
-    return bool(_sessions.get(sid, {}).get("show_reasoning", False))
-
-
 def _session_tool_progress_mode(sid: str) -> str:
     return str(_sessions.get(sid, {}).get("tool_progress_mode", "all") or "all")
-
-
-def _reasoning_visible(sid: str) -> bool:
-    return _session_show_reasoning(sid) or _session_tool_progress_mode(sid) == "verbose"
 
 
 def _tool_progress_enabled(sid: str) -> bool:
@@ -705,7 +697,7 @@ def _on_tool_progress(
     if event_type == "tool.started" and name:
         _emit("tool.progress", sid, {"name": name, "preview": preview or ""})
         return
-    if event_type == "reasoning.available" and preview and _reasoning_visible(sid):
+    if event_type == "reasoning.available" and preview:
         _emit("reasoning.available", sid, {"text": str(preview)})
         return
     if event_type.startswith("subagent."):
@@ -739,7 +731,7 @@ def _agent_cbs(sid: str) -> dict:
         ),
         tool_gen_callback=lambda name: _tool_progress_enabled(sid) and _emit("tool.generating", sid, {"name": name}),
         thinking_callback=lambda text: _emit("thinking.delta", sid, {"text": text}),
-        reasoning_callback=lambda text: _reasoning_visible(sid) and _emit("reasoning.delta", sid, {"text": text}),
+        reasoning_callback=lambda text: _emit("reasoning.delta", sid, {"text": text}),
         status_callback=lambda kind, text=None: _status_update(sid, str(kind), None if text is None else str(text)),
         clarify_callback=lambda q, c: _block("clarify.request", sid, {"question": q, "choices": c}),
     )

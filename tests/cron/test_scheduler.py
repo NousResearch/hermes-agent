@@ -71,9 +71,12 @@ class TestResolveDeliveryTarget:
             ("signal", "SIGNAL_HOME_CHANNEL", "+15551234567"),
             ("mattermost", "MATTERMOST_HOME_CHANNEL", "team-town-square"),
             ("sms", "SMS_HOME_CHANNEL", "+15557654321"),
+            ("email", "EMAIL_HOME_ADDRESS", "home@example.com"),
+            ("dingtalk", "DINGTALK_HOME_CHANNEL", "cidNNN"),
             ("feishu", "FEISHU_HOME_CHANNEL", "oc_home"),
             ("wecom", "WECOM_HOME_CHANNEL", "wecom-home"),
             ("weixin", "WEIXIN_HOME_CHANNEL", "wxid_home"),
+            ("qqbot", "QQ_HOME_CHANNEL", "group-openid-home"),
         ],
     )
     def test_origin_delivery_without_origin_falls_back_to_supported_home_channels(
@@ -88,10 +91,13 @@ class TestResolveDeliveryTarget:
             "SIGNAL_HOME_CHANNEL",
             "MATTERMOST_HOME_CHANNEL",
             "SMS_HOME_CHANNEL",
+            "EMAIL_HOME_ADDRESS",
+            "DINGTALK_HOME_CHANNEL",
             "BLUEBUBBLES_HOME_CHANNEL",
             "FEISHU_HOME_CHANNEL",
             "WECOM_HOME_CHANNEL",
             "WEIXIN_HOME_CHANNEL",
+            "QQ_HOME_CHANNEL",
         ):
             monkeypatch.delenv(fallback_env, raising=False)
         monkeypatch.setenv(env_var, chat_id)

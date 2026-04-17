@@ -12,6 +12,10 @@ from gateway.group_control_intents import (
     resolve_oral_report_delivery_target,
 )
 from gateway.group_control_requests import match_group_control_request
+from gateway.group_control_runtime_service import (
+    match_admin_platform_group_control_request,
+    run_admin_group_control_shortcut,
+)
 from gateway.group_reply_formatters import (
     format_admin_group_control_reply,
     format_admin_send_reply,
@@ -554,20 +558,23 @@ class DirectControlRouter:
         unresolved_target_guard=None,
     ) -> tuple[dict[str, Any] | None, str | None]:
         source, body = self._extract_platform_text_event_body(event, platform=platform)
-        if source is None:
-            return None, None
-
-        target = target_extractor(source, body)
-        if unresolved_target_guard is not None and unresolved_target_guard(body) and not target:
-            return None, None
-        return self._match_admin_group_control_request_common(
+        return match_admin_platform_group_control_request(
             source=source,
             body=body,
-            target=target,
+            target_extractor=target_extractor,
+            admin_ids_configured=bool(self.owner._configured_admin_user_ids(getattr(source, "platform", None)))
+            if source is not None
+            else False,
+            is_admin_user=self.owner._is_admin_user(source) if source is not None else False,
             missing_target_message=missing_target_message,
-            admin_action_label=admin_action_label,
+            admin_only_message=(
+                self.owner._admin_only_message(source, admin_action_label)
+                if source is not None
+                else ""
+            ),
             collect_only_action=collect_only_action,
             report_target_resolver=self._resolve_oral_report_delivery_target,
+            unresolved_target_guard=unresolved_target_guard,
         )
 
     def _match_admin_qq_group_control_request(
@@ -643,20 +650,14 @@ class DirectControlRouter:
         reply_formatter,
     ) -> str | None:
         tool_args, shortcut_error = matcher(event)
-        if shortcut_error:
-            return shortcut_error
-        if not tool_args:
-            return None
-
-        try:
-            result = tool_runner(tool_args)
-        except Exception as exc:
-            logger.warning("%s: %s", error_prefix, exc)
-            return f"{error_prefix}：{exc}"
-
-        if result.get("error"):
-            return str(result["error"])
-        return reply_formatter(tool_args, result)
+        return run_admin_group_control_shortcut(
+            tool_args=tool_args,
+            shortcut_error=shortcut_error,
+            tool_runner=tool_runner,
+            error_prefix=error_prefix,
+            reply_formatter=reply_formatter,
+            logger=logger,
+        )
 
     def _try_handle_admin_qq_group_control(self, event: MessageEvent) -> str | None:
         return self._try_handle_admin_group_control_common(

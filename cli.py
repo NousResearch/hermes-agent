@@ -9481,6 +9481,9 @@ class HermesCLI:
             except Exception:
                 pass  # never break resize handling
             _original_on_resize()
+            # Force a redraw after resize so status bar recalculates
+            # with the new terminal width immediately, avoiding ghost rows
+            app.invalidate()
 
         app._on_resize = _resize_clear_ghosts
 

@@ -455,8 +455,10 @@ class ContextCompressor(ContextEngine):
             for tc in msg["tool_calls"]:
                 if isinstance(tc, dict):
                     args = tc.get("function", {}).get("arguments", "")
-                    if len(args) > 500:
-                        tc = {**tc, "function": {**tc["function"], "arguments": args[:200] + "...[truncated]"}}
+                    if isinstance(args, str) and len(args) > 500:
+                        # Don't truncate the JSON string mid-value — that breaks JSON parsing.
+                        # Instead, replace with a compact placeholder that stays valid JSON.
+                        tc = {**tc, "function": {**tc["function"], "arguments": '{"_truncated": true, "original_len": ' + str(len(args)) + '}'}}
                         modified = True
                 new_tcs.append(tc)
             if modified:

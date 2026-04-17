@@ -9,6 +9,7 @@ or a temp file (local).
 import json
 import logging
 import os
+import select
 import shlex
 import subprocess
 import threading
@@ -344,8 +345,20 @@ class BaseEnvironment(ABC):
         )
         parts.append(f"cd {quoted_cwd} || exit 126")
 
-        # Run the actual command
-        parts.append(f"eval '{escaped}'")
+        # Run the actual command.
+        # If the command contains "&" (user-requested background), disown any
+        # resulting background jobs before the exit below so bash does not wait
+        # for them.  Without this, a command like "npm run dev &" keeps the
+        # wrapper bash alive forever because bash waits for all background jobs
+        # before exiting.
+        # DISOWN_FIX
+        if "&" in escaped:
+            # disown all jobs currently known to this shell (they were started
+            # by the eval).  Using "|| true" keeps the script running even if
+            # there are no jobs (e.g. the & was quoted/escaped and not active).
+            parts.append(f"eval '{escaped}'; disown -a 2>/dev/null || true")
+        else:
+            parts.append(f"eval '{escaped}'")
         parts.append("__hermes_ec=$?")
 
         # Re-dump env vars to snapshot (last-writer-wins for concurrent calls)
@@ -390,17 +403,45 @@ class BaseEnvironment(ABC):
         """
         output_chunks: list[str] = []
 
+        # Non-blocking drain: read stdout in short chunks with periodic
+        # interrupt checks.  This replaces the old blocking
+        #   for line in proc.stdout:
+        # which could hang indefinitely if the pipe is left in an
+        # inconsistent state after SIGKILL.
         def _drain():
-            try:
-                for line in proc.stdout:
-                    output_chunks.append(line)
-            except UnicodeDecodeError:
-                output_chunks.clear()
-                output_chunks.append(
-                    "[binary output detected — raw bytes not displayable]"
-                )
-            except (ValueError, OSError):
-                pass
+            chunk_buf = ""
+            _drain_interval = 0.1  # seconds between read attempts
+            while not is_interrupted():
+                # Only poll if the process has not yet exited.
+                # Checking here rather than relying on proc.poll() below
+                # lets us wake up promptly when the process exits.
+                try:
+                    ready, _, _ = select.select([proc.stdout], [], [], _drain_interval)
+                except (ValueError, OSError):
+                    # stdout fd closed or invalid — pipe is done
+                    break
+                if not ready:
+                    # No data available within the interval; loop and
+                    # check is_interrupted() again before retrying.
+                    continue
+                try:
+                    # text=True Popen wraps stdout in a TextIOWrapper.
+                    # read() on a TextIOWrapper decodes incrementally,
+                    # so this is safe even with multibyte UTF-8.
+                    chunk = proc.stdout.read(4096)
+                    if chunk:
+                        output_chunks.append(chunk)
+                    else:
+                        # EOF — pipe closed by the child
+                        break
+                except UnicodeDecodeError:
+                    output_chunks.append(
+                        "[binary output detected — raw bytes not displayable]"
+                    )
+                    break
+                except (ValueError, OSError):
+                    # Raised when stdout is already closed
+                    break
 
         drain_thread = threading.Thread(target=_drain, daemon=True)
         drain_thread.start()
@@ -411,14 +452,14 @@ class BaseEnvironment(ABC):
         while proc.poll() is None:
             if is_interrupted():
                 self._kill_process(proc)
-                drain_thread.join(timeout=2)
+                drain_thread.join(timeout=1.0)
                 return {
                     "output": "".join(output_chunks) + "\n[Command interrupted]",
                     "returncode": 130,
                 }
             if time.monotonic() > deadline:
                 self._kill_process(proc)
-                drain_thread.join(timeout=2)
+                drain_thread.join(timeout=1.0)
                 partial = "".join(output_chunks)
                 timeout_msg = f"\n[Command timed out after {timeout}s]"
                 return {
@@ -440,7 +481,7 @@ class BaseEnvironment(ABC):
                         pass
             time.sleep(0.2)
 
-        drain_thread.join(timeout=5)
+        drain_thread.join(timeout=2.0)
 
         try:
             proc.stdout.close()

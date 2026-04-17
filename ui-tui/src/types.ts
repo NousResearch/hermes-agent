@@ -1,7 +1,7 @@
 export interface ActiveTool {
+  context?: string
   id: string
   name: string
-  context?: string
   startedAt?: number
 }
 
@@ -36,11 +36,11 @@ export interface ClarifyReq {
 }
 
 export interface Msg {
+  info?: SessionInfo
+  kind?: 'intro' | 'panel' | 'slash' | 'trail'
+  panelData?: PanelData
   role: Role
   text: string
-  kind?: 'intro' | 'panel' | 'slash' | 'trail'
-  info?: SessionInfo
-  panelData?: PanelData
   thinking?: string
   thinkingTokens?: number
   toolTokens?: number
@@ -76,6 +76,7 @@ export interface Usage {
 export interface SudoReq {
   requestId: string
 }
+
 export interface SecretReq {
   envVar: string
   prompt: string

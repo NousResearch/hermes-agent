@@ -29,19 +29,6 @@ const expandSnips = (snips: PasteSnippet[]) => {
 const spliceMatches = (text: string, matches: RegExpMatchArray[], results: string[]) =>
   matches.reduceRight((acc, m, i) => acc.slice(0, m.index!) + results[i] + acc.slice(m.index! + m[0].length), text)
 
-export interface UseSubmissionOptions {
-  appendMessage: (msg: Msg) => void
-  composerActions: ComposerActions
-  composerRefs: ComposerRefs
-  composerState: ComposerState
-  gw: GatewayClient
-  maybeGoodVibes: (text: string) => void
-  setLastUserMsg: (value: string) => void
-  slashRef: MutableRefObject<(cmd: string) => boolean>
-  submitRef: MutableRefObject<(value: string) => void>
-  sys: (text: string) => void
-}
-
 export function useSubmission(opts: UseSubmissionOptions) {
   const {
     appendMessage,
@@ -183,7 +170,6 @@ export function useSubmission(opts: UseSubmissionOptions) {
         return
       }
 
-      // Slash + shell run regardless of session state (each handles its own sid needs).
       if (looksLikeSlashCommand(full)) {
         appendMessage({ kind: 'slash', role: 'system', text: full })
         composerActions.pushHistory(full)
@@ -201,7 +187,6 @@ export function useSubmission(opts: UseSubmissionOptions) {
 
       const live = getUiState()
 
-      // No session yet — queue the text and let the ready-flush effect send it.
       if (!live.sid) {
         composerActions.pushHistory(full)
         composerActions.enqueue(full)
@@ -246,7 +231,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
 
       send(full)
     },
-    [appendMessage, composerActions, composerRefs, interpolate, send, sendQueued, shellExec, slashRef, sys]
+    [appendMessage, composerActions, composerRefs, interpolate, send, sendQueued, shellExec, slashRef]
   )
 
   const submit = useCallback(
@@ -256,7 +241,6 @@ export function useSubmission(opts: UseSubmissionOptions) {
 
         if (row?.text) {
           const text = row.text.startsWith('/') && composerState.compReplace > 0 ? row.text.slice(1) : row.text
-
           const next = value.slice(0, composerState.compReplace) + text
 
           if (next !== value) {
@@ -303,4 +287,17 @@ export function useSubmission(opts: UseSubmissionOptions) {
   submitRef.current = submit
 
   return { dispatchSubmission, send, sendQueued, shellExec, submit }
+}
+
+export interface UseSubmissionOptions {
+  appendMessage: (msg: Msg) => void
+  composerActions: ComposerActions
+  composerRefs: ComposerRefs
+  composerState: ComposerState
+  gw: GatewayClient
+  maybeGoodVibes: (text: string) => void
+  setLastUserMsg: (value: string) => void
+  slashRef: MutableRefObject<(cmd: string) => boolean>
+  submitRef: MutableRefObject<(value: string) => void>
+  sys: (text: string) => void
 }

@@ -33,9 +33,9 @@ export function useVirtualHistory(
   items: readonly { key: string }[],
   { estimate = ESTIMATE, overscan = OVERSCAN, maxMounted = MAX_MOUNTED, coldStartCount = COLD_START } = {}
 ) {
-  const nodes = useRef(new Map<string, any>())
+  const nodes = useRef(new Map<string, unknown>())
   const heights = useRef(new Map<string, number>())
-  const refs = useRef(new Map<string, (el: any) => void>())
+  const refs = useRef(new Map<string, (el: unknown) => void>())
   const [ver, setVer] = useState(0)
 
   useSyncExternalStore(
@@ -108,7 +108,7 @@ export function useVirtualHistory(
     let fn = refs.current.get(key)
 
     if (!fn) {
-      fn = (el: any) => (el ? nodes.current.set(key, el) : nodes.current.delete(key))
+      fn = (el: unknown) => (el ? nodes.current.set(key, el) : nodes.current.delete(key))
       refs.current.set(key, fn)
     }
 
@@ -125,7 +125,7 @@ export function useVirtualHistory(
         continue
       }
 
-      const h = Math.ceil(nodes.current.get(k)?.yogaNode?.getComputedHeight?.() ?? 0)
+      const h = Math.ceil((nodes.current.get(k) as MeasuredNode | undefined)?.yogaNode?.getComputedHeight?.() ?? 0)
 
       if (h > 0 && heights.current.get(k) !== h) {
         heights.current.set(k, h)
@@ -139,11 +139,15 @@ export function useVirtualHistory(
   }, [end, items, start])
 
   return {
-    start,
-    end,
-    offsets,
-    topSpacer: offsets[start] ?? 0,
     bottomSpacer: Math.max(0, total - (offsets[end] ?? total)),
-    measureRef
+    end,
+    measureRef,
+    offsets,
+    start,
+    topSpacer: offsets[start] ?? 0
   }
+}
+
+interface MeasuredNode {
+  yogaNode?: { getComputedHeight?: () => number } | null
 }

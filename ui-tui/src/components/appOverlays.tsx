@@ -28,18 +28,17 @@ export function AppOverlays({
   const overlay = useStore($overlayState)
   const ui = useStore($uiState)
 
-  if (
-    !(
-      overlay.approval ||
-      overlay.clarify ||
-      overlay.modelPicker ||
-      overlay.pager ||
-      overlay.picker ||
-      overlay.secret ||
-      overlay.sudo ||
-      completions.length
-    )
-  ) {
+  const hasAny =
+    overlay.approval ||
+    overlay.clarify ||
+    overlay.modelPicker ||
+    overlay.pager ||
+    overlay.picker ||
+    overlay.secret ||
+    overlay.sudo ||
+    completions.length
+
+  if (!hasAny) {
     return null
   }
 

@@ -1,12 +1,13 @@
 import { THINKING_COT_MAX } from '../config/limits.js'
 import type { ThinkingMode } from '../types.js'
 
-// eslint-disable-next-line no-control-regex
-const ANSI_RE = /\x1b\[[0-9;]*m/g
+const ESC = String.fromCharCode(27)
+const ANSI_RE = new RegExp(`${ESC}\\[[0-9;]*m`, 'g')
+const WS_RE = /\s+/g
 
 export const stripAnsi = (s: string) => s.replace(ANSI_RE, '')
 
-export const hasAnsi = (s: string) => s.includes('\x1b[') || s.includes('\x1b]')
+export const hasAnsi = (s: string) => s.includes(`${ESC}[`) || s.includes(`${ESC}]`)
 
 const renderEstimateLine = (line: string) => {
   const trimmed = line.trim()
@@ -38,7 +39,7 @@ const renderEstimateLine = (line: string) => {
 }
 
 export const compactPreview = (s: string, max: number) => {
-  const one = s.replace(/\s+/g, ' ').trim()
+  const one = s.replace(WS_RE, ' ').trim()
 
   return !one ? '' : one.length > max ? one.slice(0, max - 1) + '…' : one
 }
@@ -46,17 +47,13 @@ export const compactPreview = (s: string, max: number) => {
 export const estimateTokensRough = (text: string) => (!text ? 0 : (text.length + 3) >> 2)
 
 export const edgePreview = (s: string, head = 16, tail = 28) => {
-  const one = s.replace(/\s+/g, ' ').trim().replace(/\]\]/g, '] ]')
+  const one = s.replace(WS_RE, ' ').trim().replace(/\]\]/g, '] ]')
 
-  if (!one) {
-    return ''
-  }
-
-  if (one.length <= head + tail + 4) {
-    return one
-  }
-
-  return `${one.slice(0, head).trimEnd()}.. ${one.slice(-tail).trimStart()}`
+  return !one
+    ? ''
+    : one.length <= head + tail + 4
+      ? one
+      : `${one.slice(0, head).trimEnd()}.. ${one.slice(-tail).trimStart()}`
 }
 
 export const pasteTokenLabel = (text: string, lineCount: number) => {
@@ -76,15 +73,7 @@ export const pasteTokenLabel = (text: string, lineCount: number) => {
 export const thinkingPreview = (reasoning: string, mode: ThinkingMode, max: number = THINKING_COT_MAX) => {
   const raw = reasoning.trim()
 
-  if (!raw || mode === 'collapsed') {
-    return ''
-  }
-
-  if (mode === 'full') {
-    return raw
-  }
-
-  return compactPreview(raw.replace(/\s+/g, ' '), max)
+  return !raw || mode === 'collapsed' ? '' : mode === 'full' ? raw : compactPreview(raw.replace(WS_RE, ' '), max)
 }
 
 export const stripTrailingPasteNewlines = (text: string) => (/[^\n]/.test(text) ? text.replace(/\n+$/, '') : text)
@@ -97,18 +86,18 @@ export const toolTrailLabel = (name: string) =>
     .join(' ') || name
 
 export const formatToolCall = (name: string, context = '') => {
+  const label = toolTrailLabel(name)
   const preview = compactPreview(context, 64)
 
-  return preview ? `${toolTrailLabel(name)}("${preview}")` : toolTrailLabel(name)
+  return preview ? `${label}("${preview}")` : label
 }
 
-export const buildToolTrailLine = (name: string, context: string, error?: boolean, note?: string): string => {
+export const buildToolTrailLine = (name: string, context: string, error?: boolean, note?: string) => {
   const detail = compactPreview(note ?? '', 72)
 
   return `${formatToolCall(name, context)}${detail ? ` :: ${detail}` : ''} ${error ? ' ✗' : ' ✓'}`
 }
 
-/** Tool completed / failed row in the inline trail (not CoT prose). */
 export const isToolTrailResultLine = (line: string) => line.endsWith(' ✓') || line.endsWith(' ✗')
 
 export const parseToolTrailResultLine = (line: string) => {
@@ -133,10 +122,8 @@ export const parseToolTrailResultLine = (line: string) => {
   return { call: body, detail: '', mark }
 }
 
-/** Ephemeral status lines that should vanish once the next phase starts. */
 export const isTransientTrailLine = (line: string) => line.startsWith('drafting ') || line === 'analyzing tool output…'
 
-/** Whether a persisted/activity tool line belongs to the same tool label as a newer line. */
 export const sameToolTrailGroup = (label: string, entry: string) =>
   entry === `${label} ✓` ||
   entry === `${label} ✗` ||
@@ -144,7 +131,6 @@ export const sameToolTrailGroup = (label: string, entry: string) =>
   entry.startsWith(`${label} ::`) ||
   entry.startsWith(`${label}:`)
 
-/** Index of the last non-result trail line, or -1. */
 export const lastCotTrailIndex = (trail: readonly string[]) => {
   for (let i = trail.length - 1; i >= 0; i--) {
     if (!isToolTrailResultLine(trail[i]!)) {
@@ -168,10 +154,7 @@ export const estimateRows = (text: string, w: number, compact = false) => {
       const lang = maybeFence[2]!.trim()
 
       if (!fence) {
-        fence = {
-          char: marker[0] as '`' | '~',
-          len: marker.length
-        }
+        fence = { char: marker[0] as '`' | '~', len: marker.length }
 
         if (lang) {
           rows += Math.ceil((`─ ${lang}`.length || 1) / w)
@@ -204,14 +187,11 @@ export const estimateRows = (text: string, w: number, compact = false) => {
 
 export const flat = (r: Record<string, string[]>) => Object.values(r).flat()
 
-const COMPACT_NUMBER = new Intl.NumberFormat('en-US', {
-  maximumFractionDigits: 1,
-  notation: 'compact'
-})
+const COMPACT_NUMBER = new Intl.NumberFormat('en-US', { maximumFractionDigits: 1, notation: 'compact' })
 
 export const fmtK = (n: number) => COMPACT_NUMBER.format(n).replace(/[KMBT]$/, s => s.toLowerCase())
 
 export const pick = <T>(a: T[]) => a[Math.floor(Math.random() * a.length)]!
 
-export const isPasteBackedText = (text: string): boolean =>
+export const isPasteBackedText = (text: string) =>
   /\[\[paste:\d+(?:[^\n]*?)\]\]|\[paste #\d+ (?:attached|excerpt)(?:[^\n]*?)\]/.test(text)

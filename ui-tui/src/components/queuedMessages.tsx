@@ -14,17 +14,7 @@ export function getQueueWindow(queueLen: number, queueEditIdx: number | null) {
   return { end, showLead: start > 0, showTail: end < queueLen, start }
 }
 
-export function QueuedMessages({
-  cols,
-  queueEditIdx,
-  queued,
-  t
-}: {
-  cols: number
-  queueEditIdx: number | null
-  queued: string[]
-  t: Theme
-}) {
+export function QueuedMessages({ cols, queueEditIdx, queued, t }: QueuedMessagesProps) {
   if (!queued.length) {
     return null
   }
@@ -36,12 +26,14 @@ export function QueuedMessages({
       <Text color={t.color.dim} dimColor>
         queued ({queued.length}){queueEditIdx !== null ? ` · editing ${queueEditIdx + 1}` : ''}
       </Text>
+
       {q.showLead && (
         <Text color={t.color.dim} dimColor>
           {' '}
           …
         </Text>
       )}
+
       {queued.slice(q.start, q.end).map((item, i) => {
         const idx = q.start + i
         const active = queueEditIdx === idx
@@ -52,6 +44,7 @@ export function QueuedMessages({
           </Text>
         )
       })}
+
       {q.showTail && (
         <Text color={t.color.dim} dimColor>
           {'  '}…and {queued.length - q.end} more
@@ -59,4 +52,11 @@ export function QueuedMessages({
       )}
     </Box>
   )
+}
+
+interface QueuedMessagesProps {
+  cols: number
+  queueEditIdx: number | null
+  queued: string[]
+  t: Theme
 }

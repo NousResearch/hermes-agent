@@ -11,30 +11,20 @@ const FORTUNES = [
   'your instincts are correctly suspicious of that one branch'
 ]
 
-const LEGENDARY_FORTUNES = [
+const LEGENDARY = [
   'legendary drop: one-line fix, first try',
   'legendary drop: every flaky test passes cleanly',
   'legendary drop: your diff teaches by itself'
 ]
 
-const hash = (input: string) => {
-  let out = 2166136261
+const hash = (s: string) => [...s].reduce((h, c) => Math.imul(h ^ c.charCodeAt(0), 16777619), 2166136261) >>> 0
 
-  for (let i = 0; i < input.length; i++) {
-    out ^= input.charCodeAt(i)
-    out = Math.imul(out, 16777619)
-  }
+const fromScore = (n: number) => {
+  const rare = n % 20 === 0
+  const bag = rare ? LEGENDARY : FORTUNES
 
-  return out >>> 0
-}
-
-const fromScore = (score: number) => {
-  const rare = score % 20 === 0
-  const bag = rare ? LEGENDARY_FORTUNES : FORTUNES
-
-  return `${rare ? '🌟' : '🔮'} ${bag[score % bag.length]}`
+  return `${rare ? '🌟' : '🔮'} ${bag[n % bag.length]}`
 }
 
 export const randomFortune = () => fromScore(Math.floor(Math.random() * 0x7fffffff))
-
 export const dailyFortune = (seed: null | string) => fromScore(hash(`${seed || 'anon'}|${new Date().toDateString()}`))

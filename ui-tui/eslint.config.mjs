@@ -88,7 +88,8 @@ export default [
       '@typescript-eslint/consistent-type-imports': 'off',
       'no-constant-condition': 'off',
       'no-empty': 'off',
-      'no-redeclare': 'off'
+      'no-redeclare': 'off',
+      'react-hooks/exhaustive-deps': 'off'
     }
   },
   {

@@ -22,6 +22,7 @@ from hermes_cli.auth import (
     resolve_nous_runtime_credentials,
     resolve_codex_runtime_credentials,
     resolve_qwen_runtime_credentials,
+    resolve_gemini_oauth_runtime_credentials,
     resolve_api_key_provider_credentials,
     resolve_external_process_provider_credentials,
     has_usable_secret,
@@ -156,6 +157,9 @@ def _resolve_runtime_from_pool_entry(
     elif provider == "qwen-oauth":
         api_mode = "chat_completions"
         base_url = base_url or DEFAULT_QWEN_BASE_URL
+    elif provider == "google-gemini-cli":
+        api_mode = "chat_completions"
+        base_url = base_url or "cloudcode-pa://google"
     elif provider == "anthropic":
         api_mode = "anthropic_messages"
         cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
@@ -802,6 +806,26 @@ def resolve_runtime_provider(
             if requested_provider != "auto":
                 raise
             logger.info("Qwen OAuth credentials failed; "
+                        "falling through to next provider.")
+
+    if provider == "google-gemini-cli":
+        try:
+            creds = resolve_gemini_oauth_runtime_credentials()
+            return {
+                "provider": "google-gemini-cli",
+                "api_mode": "chat_completions",
+                "base_url": creds.get("base_url", ""),
+                "api_key": creds.get("api_key", ""),
+                "source": creds.get("source", "google-oauth"),
+                "expires_at_ms": creds.get("expires_at_ms"),
+                "email": creds.get("email", ""),
+                "project_id": creds.get("project_id", ""),
+                "requested_provider": requested_provider,
+            }
+        except AuthError:
+            if requested_provider != "auto":
+                raise
+            logger.info("Google Gemini OAuth credentials failed; "
                         "falling through to next provider.")
 
     if provider == "copilot-acp":

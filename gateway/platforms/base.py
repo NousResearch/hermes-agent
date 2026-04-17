@@ -1590,6 +1590,8 @@ class BasePlatformAdapter(ABC):
                 "reset",
                 "background",
                 "restart",
+                "queue",
+                "q",
             ):
                 logger.debug(
                     "[%s] Command '/%s' bypassing active-session guard for %s",

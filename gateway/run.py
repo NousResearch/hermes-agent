@@ -233,6 +233,12 @@ from gateway.runtime_status_service import (
     build_runtime_status_summary as shared_build_runtime_status_summary,
     render_status_command as shared_render_status_command,
 )
+from gateway.runtime_shortcuts_service import (
+    format_background_job_short_status as shared_format_background_job_short_status,
+    format_running_session_short_status as shared_format_running_session_short_status,
+    try_handle_background_job_status_shortcut as shared_try_handle_background_job_status_shortcut,
+    try_handle_runtime_status_shortcut as shared_try_handle_runtime_status_shortcut,
+)
 from gateway.group_control_intents import (
     looks_like_group_listen_disable_request,
     looks_like_group_listen_enable_request,
@@ -2942,46 +2948,14 @@ class GatewayRunner:
         }.get(str(status or "").strip().lower(), str(status or "").strip() or "unknown")
 
     def _format_background_job_short_status(self, job: dict[str, Any]) -> str:
-        status_labels = {
-            "queued": "排队中",
-            "running": "进行中",
-            "cancelling": "停止中",
-            "completed": "已完成",
-            "failed": "失败",
-            "cancelled": "已停止",
-        }
-        task_id = str(job.get("task_id") or "").strip()
-        status = status_labels.get(str(job.get("status") or "").strip().lower(), str(job.get("status") or "unknown"))
-        worker_name = str(job.get("worker_name") or "").strip()
-        preview = str(job.get("preview") or job.get("prompt") or "").strip()
-        age = self._format_background_job_age(job)
-        line = f"后台任务 `{task_id}` 当前{status}"
-        if worker_name:
-            line += f"，负责人：{worker_name}"
-        line += f"，已持续 {age}。"
-        if preview:
-            line += f"\n内容：{preview}"
-        error = str(job.get("error") or "").strip()
-        if error:
-            line += f"\n错误：{error}"
-        session_key = str(job.get("session_key") or "").strip()
-        pending_approval_count = 0
-        if session_key:
-            try:
-                pending_approval_count = self._get_background_job_store().count_pending_approval_requests(
-                    session_key
-                )
-            except Exception:
-                pending_approval_count = 0
-        if pending_approval_count:
-            line += f"\n当前卡在授权审批，待处理 {pending_approval_count} 条。"
-        return line
+        return shared_format_background_job_short_status(self, job)
 
     def _format_running_session_short_status(self, session_key: str, agent_ref: Any) -> str:
-        detail = _build_long_running_status_detail(agent_ref, session_key)
-        if detail:
-            return f"当前前台这轮还在跑：{detail}。"
-        return "当前前台这轮还在跑，我还没做完。"
+        return shared_format_running_session_short_status(
+            session_key,
+            agent_ref,
+            detail_builder=_build_long_running_status_detail,
+        )
 
     @staticmethod
     def _unique_report_targets(values: list[Any]) -> list[str]:
@@ -3277,54 +3251,14 @@ class GatewayRunner:
             self._write_runtime_status_snapshot()
 
     def _try_handle_background_job_status_shortcut(self, event: MessageEvent) -> str | None:
-        source = getattr(event, "source", None)
-        if not source:
-            return None
-        if event.get_command():
-            return None
-        if getattr(event, "message_type", None) != MessageType.TEXT:
-            return None
-        if not self._looks_like_background_status_query(getattr(event, "text", "")):
-            return None
-
-        jobs = self._background_jobs_for_source(source)
-        if not jobs:
-            return None
-
-        def _job_rank(job: dict[str, Any]) -> tuple[int, float]:
-            status = str(job.get("status") or "").strip().lower()
-            priority = 0 if status in {"running", "queued", "cancelling"} else 1
-            return priority, -_safe_float(job.get("updated_at"), 0.0)
-
-        latest = sorted(jobs, key=_job_rank)[0]
-        return self._format_background_job_short_status(latest)
+        return shared_try_handle_background_job_status_shortcut(self, event)
 
     def _try_handle_runtime_status_shortcut(self, event: MessageEvent) -> str | None:
-        source = getattr(event, "source", None)
-        if not source:
-            return None
-        if event.get_command():
-            return None
-        if getattr(event, "message_type", None) != MessageType.TEXT:
-            return None
-        if not self._looks_like_runtime_status_query(getattr(event, "text", "")):
-            return None
-
-        session_key = self._session_key_for_source(source)
-        running_agent = self._running_agents.get(session_key)
-        if running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
-            return self._format_running_session_short_status(session_key, running_agent)
-
-        jobs = self._background_jobs_for_source(source)
-        if jobs:
-            def _job_rank(job: dict[str, Any]) -> tuple[int, float]:
-                status = str(job.get("status") or "").strip().lower()
-                priority = 0 if status in {"running", "queued", "cancelling"} else 1
-                return priority, -_safe_float(job.get("updated_at"), 0.0)
-
-            latest = sorted(jobs, key=_job_rank)[0]
-            return self._format_background_job_short_status(latest)
-        return None
+        return shared_try_handle_runtime_status_shortcut(
+            self,
+            event,
+            pending_sentinel=_AGENT_PENDING_SENTINEL,
+        )
 
     def _prime_session_env_for_direct_shortcuts(self, source: SessionSource) -> None:
         """Populate session env so tool-backed direct shortcuts can run off the main path."""

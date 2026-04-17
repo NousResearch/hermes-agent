@@ -27,8 +27,8 @@ _DPASTE_COM_URL = "https://dpaste.com/api/"
 # paste.rs caps at ~1 MB; we stay under that with headroom.
 _MAX_LOG_BYTES = 512_000
 
-# Auto-delete pastes after this many seconds (1 hour).
-_AUTO_DELETE_SECONDS = 3600
+# Auto-delete pastes after this many seconds (6 hours).
+_AUTO_DELETE_SECONDS = 21600
 
 
 # ---------------------------------------------------------------------------
@@ -44,7 +44,7 @@ _PRIVACY_NOTICE = """\
   • Full agent.log and gateway.log (up to 512 KB each — likely contains
     conversation content, tool outputs, and file paths)
 
-Pastes auto-delete after 1 hour.
+Pastes auto-delete after 6 hours.
 """
 
 _GATEWAY_PRIVACY_NOTICE = (
@@ -52,7 +52,7 @@ _GATEWAY_PRIVACY_NOTICE = (
     "(may contain conversation fragments) to a public paste service. "
     "Full logs are NOT included from the gateway — use `hermes debug share` "
     "from the CLI for full log uploads.\n"
-    "Pastes auto-delete after 1 hour."
+    "Pastes auto-delete after 6 hours."
 )
 
 
@@ -422,9 +422,9 @@ def run_debug_share(args):
     if failures:
         print(f"\n  (failed to upload: {', '.join(failures)})")
 
-    # Schedule auto-deletion after 1 hour
+    # Schedule auto-deletion after 6 hours
     _schedule_auto_delete(list(urls.values()))
-    print(f"\n⏱  Pastes will auto-delete in 1 hour.")
+    print(f"\n⏱  Pastes will auto-delete in 6 hours.")
 
     # Manual delete fallback
     print(f"To delete now:  hermes debug delete <url>")

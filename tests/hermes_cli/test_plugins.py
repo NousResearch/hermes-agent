@@ -764,3 +764,135 @@ class TestPluginCommands:
         assert "cmd-b" in mgr._plugin_commands
         assert mgr._plugin_commands["cmd-a"]["plugin"] == "plugin-a"
         assert mgr._plugin_commands["cmd-b"]["plugin"] == "plugin-b"
+
+
+# ── TestPluginDispatchTool ────────────────────────────────────────────────
+
+
+class TestPluginDispatchTool:
+    """Tests for PluginContext.dispatch_tool() — tool dispatch with agent context."""
+
+    def test_dispatch_tool_calls_registry(self):
+        """dispatch_tool() delegates to registry.dispatch()."""
+        mgr = PluginManager()
+        manifest = PluginManifest(name="test-plugin", source="user")
+        ctx = PluginContext(manifest, mgr)
+
+        mock_registry = MagicMock()
+        mock_registry.dispatch.return_value = '{"result": "ok"}'
+
+        with patch("hermes_cli.plugins.PluginContext.dispatch_tool.__module__", "hermes_cli.plugins"):
+            with patch.dict("sys.modules", {}):
+                with patch("tools.registry.registry", mock_registry):
+                    result = ctx.dispatch_tool("web_search", {"query": "test"})
+
+        assert result == '{"result": "ok"}'
+
+    def test_dispatch_tool_injects_parent_agent_from_cli_ref(self):
+        """When _cli_ref has an agent, it's passed as parent_agent."""
+        mgr = PluginManager()
+        manifest = PluginManifest(name="test-plugin", source="user")
+        ctx = PluginContext(manifest, mgr)
+
+        mock_agent = MagicMock()
+        mock_cli = MagicMock()
+        mock_cli.agent = mock_agent
+        mgr._cli_ref = mock_cli
+
+        mock_registry = MagicMock()
+        mock_registry.dispatch.return_value = '{"ok": true}'
+
+        with patch("tools.registry.registry", mock_registry):
+            ctx.dispatch_tool("delegate_task", {"goal": "test"})
+
+        mock_registry.dispatch.assert_called_once()
+        call_kwargs = mock_registry.dispatch.call_args
+        assert call_kwargs[1].get("parent_agent") is mock_agent
+
+    def test_dispatch_tool_no_parent_agent_when_no_cli_ref(self):
+        """When _cli_ref is None (gateway mode), no parent_agent is injected."""
+        mgr = PluginManager()
+        manifest = PluginManifest(name="test-plugin", source="user")
+        ctx = PluginContext(manifest, mgr)
+        mgr._cli_ref = None
+
+        mock_registry = MagicMock()
+        mock_registry.dispatch.return_value = '{"ok": true}'
+
+        with patch("tools.registry.registry", mock_registry):
+            ctx.dispatch_tool("delegate_task", {"goal": "test"})
+
+        call_kwargs = mock_registry.dispatch.call_args
+        assert "parent_agent" not in call_kwargs[1]
+
+    def test_dispatch_tool_no_parent_agent_when_agent_is_none(self):
+        """When cli_ref exists but agent is None (not yet initialized), skip parent_agent."""
+        mgr = PluginManager()
+        manifest = PluginManifest(name="test-plugin", source="user")
+        ctx = PluginContext(manifest, mgr)
+
+        mock_cli = MagicMock()
+        mock_cli.agent = None
+        mgr._cli_ref = mock_cli
+
+        mock_registry = MagicMock()
+        mock_registry.dispatch.return_value = '{"ok": true}'
+
+        with patch("tools.registry.registry", mock_registry):
+            ctx.dispatch_tool("delegate_task", {"goal": "test"})
+
+        call_kwargs = mock_registry.dispatch.call_args
+        assert "parent_agent" not in call_kwargs[1]
+
+    def test_dispatch_tool_respects_explicit_parent_agent(self):
+        """Explicit parent_agent kwarg is not overwritten by _cli_ref.agent."""
+        mgr = PluginManager()
+        manifest = PluginManifest(name="test-plugin", source="user")
+        ctx = PluginContext(manifest, mgr)
+
+        cli_agent = MagicMock(name="cli_agent")
+        mock_cli = MagicMock()
+        mock_cli.agent = cli_agent
+        mgr._cli_ref = mock_cli
+
+        explicit_agent = MagicMock(name="explicit_agent")
+
+        mock_registry = MagicMock()
+        mock_registry.dispatch.return_value = '{"ok": true}'
+
+        with patch("tools.registry.registry", mock_registry):
+            ctx.dispatch_tool("delegate_task", {"goal": "test"}, parent_agent=explicit_agent)
+
+        call_kwargs = mock_registry.dispatch.call_args
+        assert call_kwargs[1]["parent_agent"] is explicit_agent
+
+    def test_dispatch_tool_forwards_extra_kwargs(self):
+        """Extra kwargs are forwarded to registry.dispatch()."""
+        mgr = PluginManager()
+        manifest = PluginManifest(name="test-plugin", source="user")
+        ctx = PluginContext(manifest, mgr)
+        mgr._cli_ref = None
+
+        mock_registry = MagicMock()
+        mock_registry.dispatch.return_value = '{"ok": true}'
+
+        with patch("tools.registry.registry", mock_registry):
+            ctx.dispatch_tool("some_tool", {"x": 1}, task_id="test-123")
+
+        call_kwargs = mock_registry.dispatch.call_args
+        assert call_kwargs[1]["task_id"] == "test-123"
+
+    def test_dispatch_tool_returns_json_string(self):
+        """dispatch_tool() returns the raw JSON string from the registry."""
+        mgr = PluginManager()
+        manifest = PluginManifest(name="test-plugin", source="user")
+        ctx = PluginContext(manifest, mgr)
+        mgr._cli_ref = None
+
+        mock_registry = MagicMock()
+        mock_registry.dispatch.return_value = '{"error": "Unknown tool: fake"}'
+
+        with patch("tools.registry.registry", mock_registry):
+            result = ctx.dispatch_tool("fake", {})
+
+        assert '"error"' in result

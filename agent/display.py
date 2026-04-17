@@ -600,6 +600,45 @@ class KawaiiSpinner:
         "analyzing", "computing", "synthesizing", "formulating", "brainstorming",
     ]
 
+    @classmethod
+    def get_waiting_faces(cls) -> list:
+        """Return waiting faces from the active skin, falling back to KAWAII_WAITING."""
+        try:
+            skin = _get_skin()
+            if skin:
+                faces = skin.spinner.get("waiting_faces", [])
+                if faces:
+                    return faces
+        except Exception:
+            pass
+        return cls.KAWAII_WAITING
+
+    @classmethod
+    def get_thinking_faces(cls) -> list:
+        """Return thinking faces from the active skin, falling back to KAWAII_THINKING."""
+        try:
+            skin = _get_skin()
+            if skin:
+                faces = skin.spinner.get("thinking_faces", [])
+                if faces:
+                    return faces
+        except Exception:
+            pass
+        return cls.KAWAII_THINKING
+
+    @classmethod
+    def get_thinking_verbs(cls) -> list:
+        """Return thinking verbs from the active skin, falling back to THINKING_VERBS."""
+        try:
+            skin = _get_skin()
+            if skin:
+                verbs = skin.spinner.get("thinking_verbs", [])
+                if verbs:
+                    return verbs
+        except Exception:
+            pass
+        return cls.THINKING_VERBS
+
     def __init__(self, message: str = "", spinner_type: str = 'dots', print_fn=None):
         self.message = message
         self.spinner_frames = self.SPINNERS.get(spinner_type, self.SPINNERS['dots'])
@@ -954,84 +993,4 @@ def get_cute_tool_message(
 # Honcho session line (one-liner with clickable OSC 8 hyperlink)
 # =========================================================================
 
-_DIM = "\033[2m"
-_SKY_BLUE = "\033[38;5;117m"
-_ANSI_RESET = "\033[0m"
 
-
-# =========================================================================
-# Context pressure display (CLI user-facing warnings)
-# =========================================================================
-
-# ANSI color codes for context pressure tiers
-_CYAN = "\033[36m"
-_YELLOW = "\033[33m"
-_BOLD = "\033[1m"
-_DIM_ANSI = "\033[2m"
-
-# Bar characters
-_BAR_FILLED = "▰"
-_BAR_EMPTY = "▱"
-_BAR_WIDTH = 20
-
-
-def format_context_pressure(
-    compaction_progress: float,
-    threshold_tokens: int,
-    threshold_percent: float,
-    compression_enabled: bool = True,
-) -> str:
-    """Build a formatted context pressure line for CLI display.
-
-    The bar and percentage show progress toward the compaction threshold,
-    NOT the raw context window.  100% = compaction fires.
-
-    Args:
-        compaction_progress: How close to compaction (0.0–1.0, 1.0 = fires).
-        threshold_tokens: Compaction threshold in tokens.
-        threshold_percent: Compaction threshold as a fraction of context window.
-        compression_enabled: Whether auto-compression is active.
-    """
-    pct_int = min(int(compaction_progress * 100), 100)
-    filled = min(int(compaction_progress * _BAR_WIDTH), _BAR_WIDTH)
-    bar = _BAR_FILLED * filled + _BAR_EMPTY * (_BAR_WIDTH - filled)
-
-    threshold_k = f"{threshold_tokens // 1000}k" if threshold_tokens >= 1000 else str(threshold_tokens)
-    threshold_pct_int = int(threshold_percent * 100)
-
-    color = f"{_BOLD}{_YELLOW}"
-    icon = "⚠"
-    if compression_enabled:
-        hint = "compaction approaching"
-    else:
-        hint = "no auto-compaction"
-
-    return (
-        f"  {color}{icon} context {bar} {pct_int}% to compaction{_ANSI_RESET}"
-        f"  {_DIM_ANSI}{threshold_k} threshold ({threshold_pct_int}%) · {hint}{_ANSI_RESET}"
-    )
-
-
-def format_context_pressure_gateway(
-    compaction_progress: float,
-    threshold_percent: float,
-    compression_enabled: bool = True,
-) -> str:
-    """Build a plain-text context pressure notification for messaging platforms.
-
-    No ANSI — just Unicode and plain text suitable for Telegram/Discord/etc.
-    The percentage shows progress toward the compaction threshold.
-    """
-    pct_int = min(int(compaction_progress * 100), 100)
-    filled = min(int(compaction_progress * _BAR_WIDTH), _BAR_WIDTH)
-    bar = _BAR_FILLED * filled + _BAR_EMPTY * (_BAR_WIDTH - filled)
-
-    threshold_pct_int = int(threshold_percent * 100)
-
-    icon = "⚠️"
-    if compression_enabled:
-        hint = f"Context compaction approaching (threshold: {threshold_pct_int}% of window)."
-    else:
-        hint = "Auto-compaction is disabled — context may be truncated."
-
-    return f"{icon} Context: {bar} {pct_int}% to compaction\n{hint}"

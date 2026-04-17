@@ -1073,6 +1073,13 @@ class FeishuAdapter(BasePlatformAdapter):
         self._webhook_rate_counts: Dict[str, tuple[int, float]] = {}  # rate_key → (count, window_start)
         self._webhook_anomaly_counts: Dict[str, tuple[int, str, float]] = {}  # ip → (count, last_status, first_seen)
         self._card_action_tokens: Dict[str, float] = {}  # token → first_seen_time
+        # Inbound events that arrived before the adapter loop was ready
+        # (e.g. during startup/restart or network-flap reconnect). A single
+        # drainer thread replays them as soon as the loop becomes available.
+        self._pending_inbound_events: List[Any] = []
+        self._pending_inbound_lock = threading.Lock()
+        self._pending_drain_scheduled = False
+        self._pending_inbound_max_depth = 1000  # cap queue; drop oldest beyond
         self._chat_locks: Dict[str, asyncio.Lock] = {}  # chat_id → lock (per-chat serial processing)
         self._sent_message_ids_to_chat: Dict[str, str] = {}  # message_id → chat_id (for reaction routing)
         self._sent_message_id_order: List[str] = []  # LRU order for _sent_message_ids_to_chat
@@ -1757,16 +1764,146 @@ class FeishuAdapter(BasePlatformAdapter):
     # =========================================================================
 
     def _on_message_event(self, data: Any) -> None:
-        """Normalize Feishu inbound events into MessageEvent."""
+        """Normalize Feishu inbound events into MessageEvent.
+
+        Called by the lark_oapi SDK's event dispatcher on a background thread.
+        If the adapter loop is not currently accepting callbacks (brief window
+        during startup/restart or network-flap reconnect), the event is queued
+        for replay instead of dropped.
+        """
         loop = self._loop
-        if loop is None or bool(getattr(loop, "is_closed", lambda: False)()):
-            logger.warning("[Feishu] Dropping inbound message before adapter loop is ready")
+        if not self._loop_accepts_callbacks(loop):
+            start_drainer = self._enqueue_pending_inbound_event(data)
+            if start_drainer:
+                threading.Thread(
+                    target=self._drain_pending_inbound_events,
+                    name="feishu-pending-inbound-drainer",
+                    daemon=True,
+                ).start()
             return
         future = asyncio.run_coroutine_threadsafe(
             self._handle_message_event_data(data),
             loop,
         )
         future.add_done_callback(self._log_background_failure)
+
+    def _enqueue_pending_inbound_event(self, data: Any) -> bool:
+        """Append an event to the pending-inbound queue.
+
+        Returns True if the caller should spawn a drainer thread (no drainer
+        currently scheduled), False if a drainer is already running and will
+        pick up the new event on its next pass.
+        """
+        with self._pending_inbound_lock:
+            if len(self._pending_inbound_events) >= self._pending_inbound_max_depth:
+                # Queue full — drop the oldest to make room. This happens only
+                # if the loop stays unavailable for an extended period AND the
+                # WS keeps firing callbacks. Still better than silent drops.
+                dropped = self._pending_inbound_events.pop(0)
+                try:
+                    event = getattr(dropped, "event", None)
+                    message = getattr(event, "message", None)
+                    message_id = str(getattr(message, "message_id", "") or "unknown")
+                except Exception:
+                    message_id = "unknown"
+                logger.error(
+                    "[Feishu] Pending-inbound queue full (%d); dropped oldest event %s",
+                    self._pending_inbound_max_depth,
+                    message_id,
+                )
+            self._pending_inbound_events.append(data)
+            depth = len(self._pending_inbound_events)
+            should_start = not self._pending_drain_scheduled
+            if should_start:
+                self._pending_drain_scheduled = True
+        logger.warning(
+            "[Feishu] Queued inbound event for replay (loop not ready, queue depth=%d)",
+            depth,
+        )
+        return should_start
+
+    def _drain_pending_inbound_events(self) -> None:
+        """Replay queued inbound events once the adapter loop is ready.
+
+        Runs in a dedicated daemon thread. Polls ``_running`` and
+        ``_loop_accepts_callbacks`` until events can be dispatched or the
+        adapter shuts down. A single drainer handles the entire queue;
+        concurrent ``_on_message_event`` calls just append.
+        """
+        poll_interval = 0.25
+        max_wait_seconds = 120.0  # safety cap: drop queue after 2 minutes
+        waited = 0.0
+        try:
+            while True:
+                if not getattr(self, "_running", True):
+                    # Adapter shutting down — drop queued events rather than
+                    # holding them against a closed loop.
+                    with self._pending_inbound_lock:
+                        dropped = len(self._pending_inbound_events)
+                        self._pending_inbound_events.clear()
+                    if dropped:
+                        logger.warning(
+                            "[Feishu] Dropped %d queued inbound event(s) during shutdown",
+                            dropped,
+                        )
+                    return
+                loop = self._loop
+                if self._loop_accepts_callbacks(loop):
+                    with self._pending_inbound_lock:
+                        batch = self._pending_inbound_events[:]
+                        self._pending_inbound_events.clear()
+                    if not batch:
+                        # Queue emptied between check and grab; done.
+                        with self._pending_inbound_lock:
+                            if not self._pending_inbound_events:
+                                return
+                        continue
+                    dispatched = 0
+                    requeue: List[Any] = []
+                    for event in batch:
+                        try:
+                            fut = asyncio.run_coroutine_threadsafe(
+                                self._handle_message_event_data(event),
+                                loop,
+                            )
+                            fut.add_done_callback(self._log_background_failure)
+                            dispatched += 1
+                        except RuntimeError:
+                            # Loop closed between check and submit — requeue
+                            # and poll again.
+                            requeue.append(event)
+                    if requeue:
+                        with self._pending_inbound_lock:
+                            self._pending_inbound_events[:0] = requeue
+                    if dispatched:
+                        logger.info(
+                            "[Feishu] Replayed %d queued inbound event(s)",
+                            dispatched,
+                        )
+                    if not requeue:
+                        # Successfully drained; check if more arrived while
+                        # we were dispatching and exit if not.
+                        with self._pending_inbound_lock:
+                            if not self._pending_inbound_events:
+                                return
+                    # More events queued or requeue pending — loop again.
+                    continue
+                if waited >= max_wait_seconds:
+                    with self._pending_inbound_lock:
+                        dropped = len(self._pending_inbound_events)
+                        self._pending_inbound_events.clear()
+                    logger.error(
+                        "[Feishu] Adapter loop unavailable for %.0fs; "
+                        "dropped %d queued inbound event(s)",
+                        max_wait_seconds,
+                        dropped,
+                    )
+                    return
+                time.sleep(poll_interval)
+                waited += poll_interval
+        finally:
+            with self._pending_inbound_lock:
+                self._pending_drain_scheduled = False
 
     async def _handle_message_event_data(self, data: Any) -> None:
         """Shared inbound message handling for websocket and webhook transports."""

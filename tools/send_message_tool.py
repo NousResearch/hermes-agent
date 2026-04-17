@@ -5,6 +5,7 @@ Sends a message to a user or channel on any connected messaging platform
 human-friendly channel names to IDs. Works in both CLI and gateway contexts.
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -46,6 +47,49 @@ def _sanitize_error_text(text) -> str:
 def _error(message: str) -> dict:
     """Build a standardized error payload with redacted content."""
     return {"error": _sanitize_error_text(message)}
+
+
+def _telegram_retry_delay(exc: Exception, attempt: int) -> float | None:
+    retry_after = getattr(exc, "retry_after", None)
+    if retry_after is not None:
+        try:
+            return max(float(retry_after), 0.0)
+        except (TypeError, ValueError):
+            return 1.0
+
+    text = str(exc).lower()
+    if "timed out" in text or "timeout" in text:
+        return None
+    if (
+        "bad gateway" in text
+        or "502" in text
+        or "too many requests" in text
+        or "429" in text
+        or "service unavailable" in text
+        or "503" in text
+        or "gateway timeout" in text
+        or "504" in text
+    ):
+        return float(2 ** attempt)
+    return None
+
+
+async def _send_telegram_message_with_retry(bot, *, attempts: int = 3, **kwargs):
+    for attempt in range(attempts):
+        try:
+            return await bot.send_message(**kwargs)
+        except Exception as exc:
+            delay = _telegram_retry_delay(exc, attempt)
+            if delay is None or attempt >= attempts - 1:
+                raise
+            logger.warning(
+                "Transient Telegram send failure (attempt %d/%d), retrying in %.1fs: %s",
+                attempt + 1,
+                attempts,
+                delay,
+                _sanitize_error_text(exc),
+            )
+            await asyncio.sleep(delay)
 
 
 SEND_MESSAGE_SCHEMA = {
@@ -530,7 +574,8 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
 
         if formatted.strip():
             try:
-                last_msg = await bot.send_message(
+                last_msg = await _send_telegram_message_with_retry(
+                    bot,
                     chat_id=int_chat_id, text=formatted,
                     parse_mode=send_parse_mode, **thread_kwargs
                 )
@@ -550,7 +595,8 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                             plain = message
                     else:
                         plain = message
-                    last_msg = await bot.send_message(
+                    last_msg = await _send_telegram_message_with_retry(
+                        bot,
                         chat_id=int_chat_id, text=plain,
                         parse_mode=None, **thread_kwargs
                     )

@@ -401,14 +401,27 @@ def load_cli_config() -> Dict[str, Any]:
     # filesystem is directly accessible.  For ALL remote/container backends
     # (ssh, docker, modal, singularity), the host path doesn't exist on the
     # target -- remove the key so terminal_tool.py uses its per-backend default.
-    if terminal_config.get("cwd") in (".", "auto", "cwd"):
-        effective_backend = terminal_config.get("env_type", "local")
-        if effective_backend == "local":
-            terminal_config["cwd"] = os.getcwd()
-            defaults["terminal"]["cwd"] = terminal_config["cwd"]
+    #
+    # GUARD: If TERMINAL_CWD is already set to a real absolute path (by the
+    # gateway's config bridge earlier in the process), don't clobber it.
+    # This prevents a lazy import of cli.py during gateway runtime from
+    # rewriting TERMINAL_CWD to the service's working directory.
+    # See issue #10817.
+    _CWD_PLACEHOLDERS = (".", "auto", "cwd")
+    if terminal_config.get("cwd") in _CWD_PLACEHOLDERS:
+        _existing_cwd = os.environ.get("TERMINAL_CWD", "")
+        if _existing_cwd and _existing_cwd not in _CWD_PLACEHOLDERS and os.path.isabs(_existing_cwd):
+            # Gateway (or earlier startup) already resolved a real path — keep it
+            terminal_config["cwd"] = _existing_cwd
+            defaults["terminal"]["cwd"] = _existing_cwd
         else:
-            # Remove so TERMINAL_CWD stays unset → tool picks backend default
-            terminal_config.pop("cwd", None)
+            effective_backend = terminal_config.get("env_type", "local")
+            if effective_backend == "local":
+                terminal_config["cwd"] = os.getcwd()
+                defaults["terminal"]["cwd"] = terminal_config["cwd"]
+            else:
+                # Remove so TERMINAL_CWD stays unset → tool picks backend default
+                terminal_config.pop("cwd", None)
     
     env_mappings = {
         "env_type": "TERMINAL_ENV",
@@ -2013,7 +2026,17 @@ class HermesCLI:
         """Return the visible height for the spinner/status text line above the status bar."""
         if not getattr(self, "_spinner_text", ""):
             return 0
-        return 0 if self._use_minimal_tui_chrome(width=width) else 1
+        if self._use_minimal_tui_chrome(width=width):
+            return 0
+        # Compute how many lines the spinner text needs when wrapped.
+        # The rendered text is "  {emoji} {label}  ({elapsed})" — about
+        # len(_spinner_text) + 16 chars for indent + timer suffix.
+        width = width or self._get_tui_terminal_width()
+        if width and width > 10:
+            import math
+            text_len = len(self._spinner_text) + 16  # indent + timer
+            return max(1, math.ceil(text_len / width))
+        return 1
 
     def _get_voice_status_fragments(self, width: Optional[int] = None):
         """Return the voice status bar fragments for the interactive TUI."""
@@ -4901,6 +4924,52 @@ class HermesCLI:
             return "\n".join(p for p in parts if p)
         return str(value)
 
+    def _handle_gquota_command(self, cmd_original: str) -> None:
+        """Show Google Gemini Code Assist quota usage for the current OAuth account."""
+        try:
+            from agent.google_oauth import get_valid_access_token, GoogleOAuthError, load_credentials
+            from agent.google_code_assist import retrieve_user_quota, CodeAssistError
+        except ImportError as exc:
+            self.console.print(f"  [red]Gemini modules unavailable: {exc}[/]")
+            return
+
+        try:
+            access_token = get_valid_access_token()
+        except GoogleOAuthError as exc:
+            self.console.print(f"  [yellow]{exc}[/]")
+            self.console.print("  Run [bold]/model[/] and pick 'Google Gemini (OAuth)' to sign in.")
+            return
+
+        creds = load_credentials()
+        project_id = (creds.project_id if creds else "") or ""
+
+        try:
+            buckets = retrieve_user_quota(access_token, project_id=project_id)
+        except CodeAssistError as exc:
+            self.console.print(f"  [red]Quota lookup failed:[/] {exc}")
+            return
+
+        if not buckets:
+            self.console.print("  [dim]No quota buckets reported (account may be on legacy/unmetered tier).[/]")
+            return
+
+        # Sort for stable display, group by model
+        buckets.sort(key=lambda b: (b.model_id, b.token_type))
+        self.console.print()
+        self.console.print(f"  [bold]Gemini Code Assist quota[/]  (project: {project_id or '(auto / free-tier)'})")
+        self.console.print()
+        for b in buckets:
+            pct = max(0.0, min(1.0, b.remaining_fraction))
+            width = 20
+            filled = int(round(pct * width))
+            bar = "▓" * filled + "░" * (width - filled)
+            pct_str = f"{int(pct * 100):3d}%"
+            header = b.model_id
+            if b.token_type:
+                header += f" [{b.token_type}]"
+            self.console.print(f"    {header:40s}  {bar}  {pct_str}")
+        self.console.print()
+
     def _handle_personality_command(self, cmd: str):
         """Handle the /personality command to set predefined personalities."""
         parts = cmd.split(maxsplit=1)
@@ -5410,6 +5479,8 @@ class HermesCLI:
             self._handle_model_switch(cmd_original)
         elif canonical == "provider":
             self._show_model_and_providers()
+        elif canonical == "gquota":
+            self._handle_gquota_command(cmd_original)
 
         elif canonical == "personality":
             # Use original case (handler lowercases the personality name itself)
@@ -6197,13 +6268,21 @@ class HermesCLI:
     def _toggle_yolo(self):
         """Toggle YOLO mode — skip all dangerous command approval prompts."""
         import os
+        from hermes_cli.colors import Colors as _Colors
+
         current = bool(os.environ.get("HERMES_YOLO_MODE"))
         if current:
             os.environ.pop("HERMES_YOLO_MODE", None)
-            self.console.print("  ⚠ YOLO mode [bold red]OFF[/] — dangerous commands will require approval.")
+            _cprint(
+                f"  ⚠ YOLO mode {_Colors.BOLD}{_Colors.RED}OFF{_Colors.RESET}"
+                " — dangerous commands will require approval."
+            )
         else:
             os.environ["HERMES_YOLO_MODE"] = "1"
-            self.console.print("  ⚡ YOLO mode [bold green]ON[/] — all commands auto-approved. Use with caution.")
+            _cprint(
+                f"  ⚡ YOLO mode {_Colors.BOLD}{_Colors.GREEN}ON{_Colors.RESET}"
+                " — all commands auto-approved. Use with caution."
+            )
 
     def _handle_reasoning_command(self, cmd: str):
         """Handle /reasoning — manage effort level and display toggle.
@@ -7380,7 +7459,15 @@ class HermesCLI:
         self._invalidate()
 
     def _get_approval_display_fragments(self):
-        """Render the dangerous-command approval panel for the prompt_toolkit UI."""
+        """Render the dangerous-command approval panel for the prompt_toolkit UI.
+
+        Layout priority: title + command + choices must always render, even if
+        the terminal is short or the description is long. Description is placed
+        at the bottom of the panel and gets truncated to fit the remaining row
+        budget. This prevents HSplit from clipping approve/deny off-screen when
+        tirith findings produce multi-paragraph descriptions or when the user
+        runs in a compact terminal pane.
+        """
         state = self._approval_state
         if not state:
             return []
@@ -7439,22 +7526,89 @@ class HermesCLI:
         box_width = _panel_box_width(title, preview_lines)
         inner_text_width = max(8, box_width - 2)
 
+        # Pre-wrap the mandatory content — command + choices must always render.
+        cmd_wrapped = _wrap_panel_text(cmd_display, inner_text_width)
+
+        # (choice_index, wrapped_line) so we can re-apply selected styling below
+        choice_wrapped: list[tuple[int, str]] = []
+        for i, choice in enumerate(choices):
+            label = choice_labels.get(choice, choice)
+            prefix = '❯ ' if i == selected else '  '
+            for wrapped in _wrap_panel_text(f"{prefix}{label}", inner_text_width, subsequent_indent="  "):
+                choice_wrapped.append((i, wrapped))
+
+        # Budget vertical space so HSplit never clips the command or choices.
+        # Panel chrome (full layout with separators):
+        #   top border + title + blank_after_title
+        #   + blank_between_cmd_choices + bottom border = 5 rows.
+        # In tight terminals we collapse to:
+        #   top border + title + bottom border = 3 rows (no blanks).
+        #
+        # reserved_below: rows consumed below the approval panel by the
+        # spinner/tool-progress line, status bar, input area, separators, and
+        # prompt symbol. Measured at ~6 rows during live PTY approval prompts;
+        # budget 6 so we don't overestimate the panel's room.
+        term_rows = shutil.get_terminal_size((100, 24)).lines
+        chrome_full = 5
+        chrome_tight = 3
+        reserved_below = 6
+
+        available = max(0, term_rows - reserved_below)
+        mandatory_full = chrome_full + len(cmd_wrapped) + len(choice_wrapped)
+
+        # If the full-chrome panel doesn't fit, drop the separator blanks.
+        # This keeps the command and every choice on-screen in compact terminals.
+        use_compact_chrome = mandatory_full > available
+        chrome_rows = chrome_tight if use_compact_chrome else chrome_full
+
+        # If the command itself is too long to leave room for choices (e.g. user
+        # hit "view" on a multi-hundred-character command), truncate it so the
+        # approve/deny buttons still render. Keep at least 1 row of command.
+        max_cmd_rows = max(1, available - chrome_rows - len(choice_wrapped))
+        if len(cmd_wrapped) > max_cmd_rows:
+            keep = max(1, max_cmd_rows - 1) if max_cmd_rows > 1 else 1
+            cmd_wrapped = cmd_wrapped[:keep] + ["… (command truncated — use /logs or /debug for full text)"]
+
+        # Allocate any remaining rows to description. The extra -1 in full mode
+        # accounts for the blank separator between choices and description.
+        mandatory_no_desc = chrome_rows + len(cmd_wrapped) + len(choice_wrapped)
+        desc_sep_cost = 0 if use_compact_chrome else 1
+        available_for_desc = available - mandatory_no_desc - desc_sep_cost
+        # Even on huge terminals, cap description height so the panel stays compact.
+        available_for_desc = max(0, min(available_for_desc, 10))
+
+        desc_wrapped = _wrap_panel_text(description, inner_text_width) if description else []
+        if available_for_desc < 1 or not desc_wrapped:
+            desc_wrapped = []
+        elif len(desc_wrapped) > available_for_desc:
+            keep = max(1, available_for_desc - 1)
+            desc_wrapped = desc_wrapped[:keep] + ["… (description truncated)"]
+
+        # Render: title → command → choices → description (description last so
+        # any remaining overflow clips from the bottom of the least-critical
+        # content, never from the command or choices). Use compact chrome (no
+        # blank separators) when the terminal is tight.
         lines = []
         lines.append(('class:approval-border', '╭' + ('─' * box_width) + '╮\n'))
         _append_panel_line(lines, 'class:approval-border', 'class:approval-title', title, box_width)
-        _append_blank_panel_line(lines, 'class:approval-border', box_width)
-        for wrapped in _wrap_panel_text(description, inner_text_width):
-            _append_panel_line(lines, 'class:approval-border', 'class:approval-desc', wrapped, box_width)
-        for wrapped in _wrap_panel_text(cmd_display, inner_text_width):
+        if not use_compact_chrome:
+            _append_blank_panel_line(lines, 'class:approval-border', box_width)
+
+        for wrapped in cmd_wrapped:
             _append_panel_line(lines, 'class:approval-border', 'class:approval-cmd', wrapped, box_width)
-        _append_blank_panel_line(lines, 'class:approval-border', box_width)
-        for i, choice in enumerate(choices):
-            label = choice_labels.get(choice, choice)
+        if not use_compact_chrome:
+            _append_blank_panel_line(lines, 'class:approval-border', box_width)
+
+        for i, wrapped in choice_wrapped:
             style = 'class:approval-selected' if i == selected else 'class:approval-choice'
-            prefix = '❯ ' if i == selected else '  '
-            for wrapped in _wrap_panel_text(f"{prefix}{label}", inner_text_width, subsequent_indent="  "):
-                _append_panel_line(lines, 'class:approval-border', style, wrapped, box_width)
-        _append_blank_panel_line(lines, 'class:approval-border', box_width)
+            _append_panel_line(lines, 'class:approval-border', style, wrapped, box_width)
+
+        if desc_wrapped:
+            if not use_compact_chrome:
+                _append_blank_panel_line(lines, 'class:approval-border', box_width)
+            for wrapped in desc_wrapped:
+                _append_panel_line(lines, 'class:approval-border', 'class:approval-desc', wrapped, box_width)
+
         lines.append(('class:approval-border', '╰' + ('─' * box_width) + '╯\n'))
         return lines
 
@@ -7750,7 +7904,33 @@ class HermesCLI:
                     # Fallback for non-interactive mode (e.g., single-query)
                     agent_thread.join(0.1)
 
-            agent_thread.join()  # Ensure agent thread completes
+            # Wait for the agent thread to finish.  After an interrupt the
+            # agent may take a few seconds to clean up (kill subprocess, persist
+            # session).  Poll instead of a blocking join so the process_loop
+            # stays responsive — if the user sent another interrupt or the
+            # agent gets stuck, we can break out instead of freezing forever.
+            if interrupt_msg is not None:
+                # Interrupt path: poll briefly, then move on.  The agent
+                # thread is daemon — it dies on process exit regardless.
+                for _wait_tick in range(50):  # 50 * 0.2s = 10s max
+                    agent_thread.join(timeout=0.2)
+                    if not agent_thread.is_alive():
+                        break
+                    # Check if user fired ANOTHER interrupt (Ctrl+C sets
+                    # _should_exit which process_loop checks on next pass).
+                    if getattr(self, '_should_exit', False):
+                        break
+                if agent_thread.is_alive():
+                    logger.warning(
+                        "Agent thread still alive after interrupt "
+                        "(thread %s). Daemon thread will be cleaned up "
+                        "on exit.",
+                        agent_thread.ident,
+                    )
+            else:
+                # Normal completion: agent thread should be done already,
+                # but guard against edge cases.
+                agent_thread.join(timeout=30)
 
             # Proactively clean up async clients whose event loop is dead.
             # The agent thread may have created AsyncOpenAI clients bound
@@ -9043,6 +9223,7 @@ class HermesCLI:
         spinner_widget = Window(
             content=FormattedTextControl(get_spinner_text),
             height=get_spinner_height,
+            wrap_lines=True,
         )
 
         spacer = Window(
@@ -9079,7 +9260,13 @@ class HermesCLI:
             lines.append((border_style, "│" + (" " * box_width) + "│\n"))
 
         def _get_clarify_display():
-            """Build styled text for the clarify question/choices panel."""
+            """Build styled text for the clarify question/choices panel.
+
+            Layout priority: choices + Other option must always render even if
+            the question is very long. The question is budgeted to leave enough
+            rows for the choices and trailing chrome; anything over the budget
+            is truncated with a marker.
+            """
             state = cli_ref._clarify_state
             if not state:
                 return []
@@ -9100,48 +9287,97 @@ class HermesCLI:
             box_width = _panel_box_width("Hermes needs your input", preview_lines)
             inner_text_width = max(8, box_width - 2)
 
+            # Pre-wrap choices + Other option — these are mandatory.
+            choice_wrapped: list[tuple[int, str]] = []
+            if choices:
+                for i, choice in enumerate(choices):
+                    prefix = '❯ ' if i == selected and not cli_ref._clarify_freetext else '  '
+                    for wrapped in _wrap_panel_text(f"{prefix}{choice}", inner_text_width, subsequent_indent="  "):
+                        choice_wrapped.append((i, wrapped))
+                # Trailing Other row(s)
+                other_idx = len(choices)
+                if selected == other_idx and not cli_ref._clarify_freetext:
+                    other_label_mand = '❯ Other (type your answer)'
+                elif cli_ref._clarify_freetext:
+                    other_label_mand = '❯ Other (type below)'
+                else:
+                    other_label_mand = '  Other (type your answer)'
+                other_wrapped = _wrap_panel_text(other_label_mand, inner_text_width, subsequent_indent="  ")
+            elif cli_ref._clarify_freetext:
+                # Freetext-only mode: the guidance line takes the place of choices.
+                other_wrapped = _wrap_panel_text(
+                    "Type your answer in the prompt below, then press Enter.",
+                    inner_text_width,
+                )
+            else:
+                other_wrapped = []
+
+            # Budget the question so mandatory rows always render.
+            # Chrome layouts:
+            #   full : top border + blank_after_title + blank_after_question
+            #          + blank_before_bottom + bottom border = 5 rows
+            #   tight: top border + bottom border = 2 rows (drop all blanks)
+            #
+            # reserved_below matches the approval-panel budget (~6 rows for
+            # spinner/tool-progress + status + input + separators + prompt).
+            term_rows = shutil.get_terminal_size((100, 24)).lines
+            chrome_full = 5
+            chrome_tight = 2
+            reserved_below = 6
+
+            available = max(0, term_rows - reserved_below)
+            mandatory_full = chrome_full + len(choice_wrapped) + len(other_wrapped)
+
+            use_compact_chrome = mandatory_full > available
+            chrome_rows = chrome_tight if use_compact_chrome else chrome_full
+
+            max_question_rows = max(1, available - chrome_rows - len(choice_wrapped) - len(other_wrapped))
+            max_question_rows = min(max_question_rows, 12)  # soft cap on huge terminals
+
+            question_wrapped = _wrap_panel_text(question, inner_text_width)
+            if len(question_wrapped) > max_question_rows:
+                keep = max(1, max_question_rows - 1)
+                question_wrapped = question_wrapped[:keep] + ["… (question truncated)"]
+
             lines = []
             # Box top border
             lines.append(('class:clarify-border', '╭─ '))
             lines.append(('class:clarify-title', 'Hermes needs your input'))
             lines.append(('class:clarify-border', ' ' + ('─' * max(0, box_width - len("Hermes needs your input") - 3)) + '╮\n'))
-            _append_blank_panel_line(lines, 'class:clarify-border', box_width)
+            if not use_compact_chrome:
+                _append_blank_panel_line(lines, 'class:clarify-border', box_width)
 
-            # Question text
-            for wrapped in _wrap_panel_text(question, inner_text_width):
+            # Question text (bounded)
+            for wrapped in question_wrapped:
                 _append_panel_line(lines, 'class:clarify-border', 'class:clarify-question', wrapped, box_width)
-            _append_blank_panel_line(lines, 'class:clarify-border', box_width)
+            if not use_compact_chrome:
+                _append_blank_panel_line(lines, 'class:clarify-border', box_width)
 
             if cli_ref._clarify_freetext and not choices:
-                guidance = "Type your answer in the prompt below, then press Enter."
-                for wrapped in _wrap_panel_text(guidance, inner_text_width):
+                for wrapped in other_wrapped:
                     _append_panel_line(lines, 'class:clarify-border', 'class:clarify-choice', wrapped, box_width)
-                _append_blank_panel_line(lines, 'class:clarify-border', box_width)
+                if not use_compact_chrome:
+                    _append_blank_panel_line(lines, 'class:clarify-border', box_width)
 
             if choices:
                 # Multiple-choice mode: show selectable options
-                for i, choice in enumerate(choices):
+                for i, wrapped in choice_wrapped:
                     style = 'class:clarify-selected' if i == selected and not cli_ref._clarify_freetext else 'class:clarify-choice'
-                    prefix = '❯ ' if i == selected and not cli_ref._clarify_freetext else '  '
-                    wrapped_lines = _wrap_panel_text(f"{prefix}{choice}", inner_text_width, subsequent_indent="  ")
-                    for wrapped in wrapped_lines:
-                        _append_panel_line(lines, 'class:clarify-border', style, wrapped, box_width)
+                    _append_panel_line(lines, 'class:clarify-border', style, wrapped, box_width)
 
-                # "Other" option (5th line, only shown when choices exist)
+                # "Other" option (trailing row(s), only shown when choices exist)
                 other_idx = len(choices)
                 if selected == other_idx and not cli_ref._clarify_freetext:
                     other_style = 'class:clarify-selected'
-                    other_label = '❯ Other (type your answer)'
                 elif cli_ref._clarify_freetext:
                     other_style = 'class:clarify-active-other'
-                    other_label = '❯ Other (type below)'
                 else:
                     other_style = 'class:clarify-choice'
-                    other_label = '  Other (type your answer)'
-                for wrapped in _wrap_panel_text(other_label, inner_text_width, subsequent_indent="  "):
+                for wrapped in other_wrapped:
                     _append_panel_line(lines, 'class:clarify-border', other_style, wrapped, box_width)
 
-            _append_blank_panel_line(lines, 'class:clarify-border', box_width)
+            if not use_compact_chrome:
+                _append_blank_panel_line(lines, 'class:clarify-border', box_width)
             lines.append(('class:clarify-border', '╰' + ('─' * box_width) + '╯\n'))
             return lines
 
@@ -10002,6 +10238,11 @@ def main(
                 ):
                     cli.agent.quiet_mode = True
                     cli.agent.suppress_status_output = True
+                    # Suppress streaming display callbacks so stdout stays
+                    # machine-readable (no styled "Hermes" box, no tool-gen
+                    # status lines).  The response is printed once below.
+                    cli.agent.stream_delta_callback = None
+                    cli.agent.tool_gen_callback = None
                     result = cli.agent.run_conversation(
                         user_message=effective_query,
                         conversation_history=cli.conversation_history,
@@ -10009,7 +10250,8 @@ def main(
                     response = result.get("final_response", "") if isinstance(result, dict) else str(result)
                     if response:
                         print(response)
-                    print(f"\nsession_id: {cli.session_id}")
+                    # Session ID goes to stderr so piped stdout is clean.
+                    print(f"\nsession_id: {cli.session_id}", file=sys.stderr)
                     
                     # Ensure proper exit code for automation wrappers
                     sys.exit(1 if isinstance(result, dict) and result.get("failed") else 0)

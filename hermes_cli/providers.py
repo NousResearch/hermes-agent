@@ -64,6 +64,11 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         base_url_override="https://portal.qwen.ai/v1",
         base_url_env_var="HERMES_QWEN_BASE_URL",
     ),
+    "google-gemini-cli": HermesOverlay(
+        transport="openai_chat",
+        auth_type="oauth_external",
+        base_url_override="cloudcode-pa://google",
+    ),
     "copilot-acp": HermesOverlay(
         transport="codex_responses",
         auth_type="external_process",
@@ -128,7 +133,7 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         base_url_env_var="HF_BASE_URL",
     ),
     "xai": HermesOverlay(
-        transport="openai_chat",
+        transport="codex_responses",
         base_url_override="https://api.x.ai/v1",
         base_url_env_var="XAI_BASE_URL",
     ),
@@ -140,6 +145,10 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         transport="openai_chat",
         base_url_override="https://api.arcee.ai/api/v1",
         base_url_env_var="ARCEE_BASE_URL",
+    ),
+    "ollama-cloud": HermesOverlay(
+        transport="openai_chat",
+        base_url_env_var="OLLAMA_BASE_URL",
     ),
 }
 
@@ -180,6 +189,7 @@ ALIASES: Dict[str, str] = {
     # xai
     "x-ai": "xai",
     "x.ai": "xai",
+    "grok": "xai",
 
     # kimi-for-coding (models.dev ID)
     "kimi": "kimi-for-coding",
@@ -227,6 +237,11 @@ ALIASES: Dict[str, str] = {
     "qwen": "alibaba",
     "alibaba-cloud": "alibaba",
 
+    # google-gemini-cli (OAuth + Code Assist)
+    "gemini-cli": "google-gemini-cli",
+    "gemini-oauth": "google-gemini-cli",
+
+
     # huggingface
     "hf": "huggingface",
     "hugging-face": "huggingface",
@@ -250,7 +265,7 @@ ALIASES: Dict[str, str] = {
     "lmstudio": "lmstudio",
     "lm-studio": "lmstudio",
     "lm_studio": "lmstudio",
-    "ollama": "ollama-cloud",
+    "ollama": "custom",  # bare "ollama" = local; use "ollama-cloud" for cloud
     "vllm": "local",
     "llamacpp": "local",
     "llama.cpp": "local",
@@ -269,6 +284,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "xiaomi": "Xiaomi MiMo",
     "local": "Local endpoint",
     "bedrock": "AWS Bedrock",
+    "ollama-cloud": "Ollama Cloud",
 }
 
 

@@ -457,6 +457,7 @@ def switch_model(
         ModelSwitchResult with all information the caller needs.
     """
     from hermes_cli.models import (
+        copilot_model_api_mode,
         detect_provider_for_model,
         validate_requested_model,
         opencode_model_api_mode,
@@ -714,13 +715,33 @@ def switch_model(
     if validation.get("corrected_model"):
         new_model = validation["corrected_model"]
 
+    # --- Copilot api_mode override ---
+    if target_provider in {"copilot", "github-copilot"}:
+        api_mode = copilot_model_api_mode(new_model, api_key=api_key)
+
     # --- OpenCode api_mode override ---
-    if target_provider in {"opencode-zen", "opencode-go", "opencode", "opencode-go"}:
+    if target_provider in {"opencode-zen", "opencode-go", "opencode"}:
         api_mode = opencode_model_api_mode(target_provider, new_model)
 
     # --- Determine api_mode if not already set ---
     if not api_mode:
         api_mode = determine_api_mode(target_provider, base_url)
+
+    # OpenCode base URLs end with /v1 for OpenAI-compatible models, but the
+    # Anthropic SDK prepends its own /v1/messages to the base_url.  Strip the
+    # trailing /v1 so the SDK constructs the correct path (e.g.
+    # https://opencode.ai/zen/go/v1/messages instead of .../v1/v1/messages).
+    # Mirrors the same logic in hermes_cli.runtime_provider.resolve_runtime_provider;
+    # without it, /model switches into an anthropic_messages-routed OpenCode
+    # model (e.g. `/model minimax-m2.7` on opencode-go, `/model claude-sonnet-4-6`
+    # on opencode-zen) hit a double /v1 and returned OpenCode's website 404 page.
+    if (
+        api_mode == "anthropic_messages"
+        and target_provider in {"opencode-zen", "opencode-go"}
+        and isinstance(base_url, str)
+        and base_url
+    ):
+        base_url = re.sub(r"/v1/?$", "", base_url)
 
     # --- Get capabilities (legacy) ---
     capabilities = get_model_capabilities(target_provider, new_model)
@@ -802,6 +823,10 @@ def list_authenticated_providers(
     # "nous" shares OpenRouter's curated list if not separately defined
     if "nous" not in curated:
         curated["nous"] = curated["openrouter"]
+    # Ollama Cloud uses dynamic discovery (no static curated list)
+    if "ollama-cloud" not in curated:
+        from hermes_cli.models import fetch_ollama_cloud_models
+        curated["ollama-cloud"] = fetch_ollama_cloud_models()
 
     # --- 1. Check Hermes-mapped providers ---
     for hermes_id, mdev_id in PROVIDER_TO_MODELS_DEV.items():
@@ -1098,5 +1123,3 @@ def list_authenticated_providers(
     results.sort(key=lambda r: (not r["is_current"], -r["total_models"]))
 
     return results
-
-

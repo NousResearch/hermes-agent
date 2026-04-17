@@ -1118,6 +1118,8 @@ def select_provider_and_model(args=None):
         _model_flow_openai_codex(config, current_model)
     elif selected_provider == "qwen-oauth":
         _model_flow_qwen_oauth(config, current_model)
+    elif selected_provider == "google-gemini-cli":
+        _model_flow_google_gemini_cli(config, current_model)
     elif selected_provider == "copilot-acp":
         _model_flow_copilot_acp(config, current_model)
     elif selected_provider == "copilot":
@@ -1141,7 +1143,7 @@ def select_provider_and_model(args=None):
         _model_flow_kimi(config, current_model)
     elif selected_provider == "bedrock":
         _model_flow_bedrock(config, current_model)
-    elif selected_provider in ("gemini", "deepseek", "xai", "zai", "kimi-coding-cn", "minimax", "minimax-cn", "kilocode", "opencode-zen", "opencode-go", "ai-gateway", "alibaba", "huggingface", "xiaomi", "arcee"):
+    elif selected_provider in ("gemini", "deepseek", "xai", "zai", "kimi-coding-cn", "minimax", "minimax-cn", "kilocode", "opencode-zen", "opencode-go", "ai-gateway", "alibaba", "huggingface", "xiaomi", "arcee", "ollama-cloud"):
         _model_flow_api_key_provider(config, selected_provider, current_model)
 
     # ── Post-switch cleanup: clear stale OPENAI_BASE_URL ──────────────
@@ -1277,11 +1279,8 @@ def _model_flow_nous(config, current_model="", args=None):
         AuthError, format_auth_error,
         _login_nous, PROVIDER_REGISTRY,
     )
-    from hermes_cli.config import get_env_value, save_config, save_env_value
-    from hermes_cli.nous_subscription import (
-        apply_nous_provider_defaults,
-        get_nous_subscription_explainer_lines,
-    )
+    from hermes_cli.config import get_env_value, load_config, save_config, save_env_value
+    from hermes_cli.nous_subscription import prompt_enable_tool_gateway
     import argparse
 
     state = get_provider_auth_state("nous")
@@ -1300,9 +1299,12 @@ def _model_flow_nous(config, current_model="", args=None):
                 insecure=bool(getattr(args, "insecure", False)),
             )
             _login_nous(mock_args, PROVIDER_REGISTRY["nous"])
-            print()
-            for line in get_nous_subscription_explainer_lines():
-                print(line)
+            # Offer Tool Gateway enablement for paid subscribers
+            try:
+                _refreshed = load_config() or {}
+                prompt_enable_tool_gateway(_refreshed)
+            except Exception:
+                pass
         except SystemExit:
             print("Login cancelled or failed.")
             return
@@ -1410,18 +1412,10 @@ def _model_flow_nous(config, current_model="", args=None):
         if get_env_value("OPENAI_BASE_URL"):
             save_env_value("OPENAI_BASE_URL", "")
             save_env_value("OPENAI_API_KEY", "")
-        changed_defaults = apply_nous_provider_defaults(config)
         save_config(config)
         print(f"Default model set to: {selected} (via Nous Portal)")
-        if "tts" in changed_defaults:
-            print("TTS provider set to: OpenAI TTS via your Nous subscription")
-        else:
-            current_tts = str(config.get("tts", {}).get("provider") or "edge")
-            if current_tts.lower() not in {"", "edge"}:
-                print(f"Keeping your existing TTS provider: {current_tts}")
-        print()
-        for line in get_nous_subscription_explainer_lines():
-            print(line)
+        # Offer Tool Gateway enablement for paid subscribers
+        prompt_enable_tool_gateway(config)
     else:
         print("No change.")
 
@@ -1528,6 +1522,76 @@ def _model_flow_qwen_oauth(_config, current_model=""):
         print("No change.")
 
 
+def _model_flow_google_gemini_cli(_config, current_model=""):
+    """Google Gemini OAuth (PKCE) via Cloud Code Assist — supports free AND paid tiers.
+
+    Flow:
+      1. Show upfront warning about Google's ToS stance (per opencode-gemini-auth).
+      2. If creds missing, run PKCE browser OAuth via agent.google_oauth.
+      3. Resolve project context (env -> config -> auto-discover -> free tier).
+      4. Prompt user to pick a model.
+      5. Save to ~/.hermes/config.yaml.
+    """
+    from hermes_cli.auth import (
+        DEFAULT_GEMINI_CLOUDCODE_BASE_URL,
+        get_gemini_oauth_auth_status,
+        resolve_gemini_oauth_runtime_credentials,
+        _prompt_model_selection,
+        _save_model_choice,
+        _update_config_for_provider,
+    )
+    from hermes_cli.models import _PROVIDER_MODELS
+
+    print()
+    print("⚠  Google considers using the Gemini CLI OAuth client with third-party")
+    print("   software a policy violation. Some users have reported account")
+    print("   restrictions. You can use your own API key via 'gemini' provider")
+    print("   for the lowest-risk experience.")
+    print()
+    try:
+        proceed = input("Continue with OAuth login? [y/N]: ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print("Cancelled.")
+        return
+    if proceed not in {"y", "yes"}:
+        print("Cancelled.")
+        return
+
+    status = get_gemini_oauth_auth_status()
+    if not status.get("logged_in"):
+        try:
+            from agent.google_oauth import resolve_project_id_from_env, start_oauth_flow
+
+            env_project = resolve_project_id_from_env()
+            start_oauth_flow(force_relogin=True, project_id=env_project)
+        except Exception as exc:
+            print(f"OAuth login failed: {exc}")
+            return
+
+    # Verify creds resolve + trigger project discovery
+    try:
+        creds = resolve_gemini_oauth_runtime_credentials(force_refresh=False)
+        project_id = creds.get("project_id", "")
+        if project_id:
+            print(f"  Using GCP project: {project_id}")
+        else:
+            print("  No GCP project configured — free tier will be auto-provisioned on first request.")
+    except Exception as exc:
+        print(f"Failed to resolve Gemini credentials: {exc}")
+        return
+
+    models = list(_PROVIDER_MODELS.get("google-gemini-cli") or [])
+    default = current_model or (models[0] if models else "gemini-2.5-flash")
+    selected = _prompt_model_selection(models, current_model=default)
+    if selected:
+        _save_model_choice(selected)
+        _update_config_for_provider("google-gemini-cli", DEFAULT_GEMINI_CLOUDCODE_BASE_URL)
+        print(f"Default model set to: {selected} (via Google Gemini OAuth / Code Assist)")
+    else:
+        print("No change.")
+
+
+
 
 def _model_flow_custom(config):
     """Custom endpoint: collect URL, API key, and model name.
@@ -1567,6 +1631,27 @@ def _model_flow_custom(config):
         return
 
     effective_key = api_key or current_key
+
+    # Hint: most local model servers (Ollama, vLLM, llama.cpp) require /v1
+    # in the base URL for OpenAI-compatible chat completions.  Prompt the
+    # user if the URL looks like a local server without /v1.
+    _url_lower = effective_url.rstrip("/").lower()
+    _looks_local = any(h in _url_lower for h in ("localhost", "127.0.0.1", "0.0.0.0", ":11434", ":8080", ":5000"))
+    if _looks_local and not _url_lower.endswith("/v1"):
+        print()
+        print(f"  Hint: Did you mean to add /v1 at the end?")
+        print(f"  Most local model servers (Ollama, vLLM, llama.cpp) require it.")
+        print(f"  e.g. {effective_url.rstrip('/')}/v1")
+        try:
+            _add_v1 = input("  Add /v1? [Y/n]: ").strip().lower()
+        except (KeyboardInterrupt, EOFError):
+            _add_v1 = "n"
+        if _add_v1 in ("", "y", "yes"):
+            effective_url = effective_url.rstrip("/") + "/v1"
+            if base_url:
+                base_url = effective_url
+            print(f"  Updated URL: {effective_url}")
+        print()
 
     from hermes_cli.models import probe_api_models
 
@@ -2734,34 +2819,43 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
     #   1. models.dev registry (cached, filtered for agentic/tool-capable models)
     #   2. Curated static fallback list (offline insurance)
     #   3. Live /models endpoint probe (small providers without models.dev data)
-    curated = _PROVIDER_MODELS.get(provider_id, [])
-
-    # Try models.dev first — returns tool-capable models, filtered for noise
-    mdev_models: list = []
-    try:
-        from agent.models_dev import list_agentic_models
-        mdev_models = list_agentic_models(provider_id)
-    except Exception:
-        pass
-
-    if mdev_models:
-        model_list = mdev_models
-        print(f"  Found {len(model_list)} model(s) from models.dev registry")
-    elif curated and len(curated) >= 8:
-        # Curated list is substantial — use it directly, skip live probe
-        model_list = curated
-        print(f"  Showing {len(model_list)} curated models — use \"Enter custom model name\" for others.")
-    else:
+    #
+    # Ollama Cloud: dedicated merged discovery (live API + models.dev + disk cache)
+    if provider_id == "ollama-cloud":
+        from hermes_cli.models import fetch_ollama_cloud_models
         api_key_for_probe = existing_key or (get_env_value(key_env) if key_env else "")
-        live_models = fetch_api_models(api_key_for_probe, effective_base)
-        if live_models and len(live_models) >= len(curated):
-            model_list = live_models
-            print(f"  Found {len(model_list)} model(s) from {pconfig.name} API")
-        else:
+        model_list = fetch_ollama_cloud_models(api_key=api_key_for_probe, base_url=effective_base)
+        if model_list:
+            print(f"  Found {len(model_list)} model(s) from Ollama Cloud")
+    else:
+        curated = _PROVIDER_MODELS.get(provider_id, [])
+
+        # Try models.dev first — returns tool-capable models, filtered for noise
+        mdev_models: list = []
+        try:
+            from agent.models_dev import list_agentic_models
+            mdev_models = list_agentic_models(provider_id)
+        except Exception:
+            pass
+
+        if mdev_models:
+            model_list = mdev_models
+            print(f"  Found {len(model_list)} model(s) from models.dev registry")
+        elif curated and len(curated) >= 8:
+            # Curated list is substantial — use it directly, skip live probe
             model_list = curated
-            if model_list:
-                print(f"  Showing {len(model_list)} curated models — use \"Enter custom model name\" for others.")
-        # else: no defaults either, will fall through to raw input
+            print(f"  Showing {len(model_list)} curated models — use \"Enter custom model name\" for others.")
+        else:
+            api_key_for_probe = existing_key or (get_env_value(key_env) if key_env else "")
+            live_models = fetch_api_models(api_key_for_probe, effective_base)
+            if live_models and len(live_models) >= len(curated):
+                model_list = live_models
+                print(f"  Found {len(model_list)} model(s) from {pconfig.name} API")
+            else:
+                model_list = curated
+                if model_list:
+                    print(f"  Showing {len(model_list)} curated models — use \"Enter custom model name\" for others.")
+            # else: no defaults either, will fall through to raw input
 
     if provider_id in {"opencode-zen", "opencode-go"}:
         model_list = [normalize_opencode_model_id(provider_id, mid) for mid in model_list]
@@ -4860,7 +4954,7 @@ For more help on a command:
     )
     chat_parser.add_argument(
         "--provider",
-        choices=["auto", "openrouter", "nous", "openai-codex", "copilot-acp", "copilot", "anthropic", "gemini", "huggingface", "zai", "kimi-coding", "kimi-coding-cn", "minimax", "minimax-cn", "kilocode", "xiaomi", "arcee"],
+        choices=["auto", "openrouter", "nous", "openai-codex", "copilot-acp", "copilot", "anthropic", "gemini", "xai", "ollama-cloud", "huggingface", "zai", "kimi-coding", "kimi-coding-cn", "minimax", "minimax-cn", "kilocode", "xiaomi", "arcee"],
         default=None,
         help="Inference provider (default: auto)"
     )
@@ -5629,6 +5723,18 @@ Examples:
     memory_sub.add_parser("setup", help="Interactive provider selection and configuration")
     memory_sub.add_parser("status", help="Show current memory provider config")
     memory_sub.add_parser("off", help="Disable external provider (built-in only)")
+    _reset_parser = memory_sub.add_parser(
+        "reset",
+        help="Erase all built-in memory (MEMORY.md and USER.md)",
+    )
+    _reset_parser.add_argument(
+        "--yes", "-y", action="store_true",
+        help="Skip confirmation prompt",
+    )
+    _reset_parser.add_argument(
+        "--target", choices=["all", "memory", "user"], default="all",
+        help="Which store to reset: 'all' (default), 'memory', or 'user'",
+    )
 
     def cmd_memory(args):
         sub = getattr(args, "memory_command", None)
@@ -5641,6 +5747,44 @@ Examples:
             save_config(config)
             print("\n  ✓ Memory provider: built-in only")
             print("  Saved to config.yaml\n")
+        elif sub == "reset":
+            from hermes_constants import get_hermes_home, display_hermes_home
+            mem_dir = get_hermes_home() / "memories"
+            target = getattr(args, "target", "all")
+            files_to_reset = []
+            if target in ("all", "memory"):
+                files_to_reset.append(("MEMORY.md", "agent notes"))
+            if target in ("all", "user"):
+                files_to_reset.append(("USER.md", "user profile"))
+
+            # Check what exists
+            existing = [(f, desc) for f, desc in files_to_reset if (mem_dir / f).exists()]
+            if not existing:
+                print(f"\n  Nothing to reset — no memory files found in {display_hermes_home()}/memories/\n")
+                return
+
+            print(f"\n  This will permanently erase the following memory files:")
+            for f, desc in existing:
+                path = mem_dir / f
+                size = path.stat().st_size
+                print(f"    ◆ {f} ({desc}) — {size:,} bytes")
+
+            if not getattr(args, "yes", False):
+                try:
+                    answer = input("\n  Type 'yes' to confirm: ").strip().lower()
+                except (EOFError, KeyboardInterrupt):
+                    print("\n  Cancelled.\n")
+                    return
+                if answer != "yes":
+                    print("  Cancelled.\n")
+                    return
+
+            for f, desc in existing:
+                (mem_dir / f).unlink()
+                print(f"  ✓ Deleted {f} ({desc})")
+
+            print(f"\n  Memory reset complete. New sessions will start with a blank slate.")
+            print(f"  Files were in: {display_hermes_home()}/memories/\n")
         else:
             from hermes_cli.memory_setup import memory_command
             memory_command(args)

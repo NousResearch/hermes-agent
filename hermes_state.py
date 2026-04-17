@@ -987,6 +987,21 @@ class SessionDB:
 
         return sanitized.strip()
 
+    @staticmethod
+    def _is_cjk_query(query: str) -> bool:
+        """Check if query contains CJK (Chinese/Japanese/Korean) characters.
+
+        FTS5 default tokenizer splits CJK character-by-character, requiring all
+        characters to match. For multi-character CJK phrases, this causes
+        false negatives. Returns True when LIKE fallback should be used.
+        """
+        # CJK Unicode ranges:
+        # Chinese: \u4e00-\u9fff (common 20k+)
+        # Japanese Hiragana: \u3040-\u309f
+        # Japanese Katakana: \u30a0-\u30ff
+        # Korean: \ac00-\ud7af (Hangul syllables)
+        return bool(re.search(r'[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\ud7a0-\ud7af]', query))
+
     def search_messages(
         self,
         query: str,
@@ -1064,6 +1079,52 @@ class SessionDB:
                 # FTS5 query syntax error despite sanitization — return empty
                 return []
             matches = [dict(row) for row in cursor.fetchall()]
+
+        # FALLBACK: When FTS5 returns 0 results for a CJK query, retry with LIKE.
+        # FTS5 default tokenizer splits CJK character-by-character, requiring all
+        # characters to be present in the same message. LIKE is more lenient.
+        if not matches and self._is_cjk_query(query):
+            like_sql = """
+                SELECT
+                    m.id,
+                    m.session_id,
+                    m.role,
+                    substr(m.content, 1, 200) AS snippet,
+                    m.content,
+                    m.timestamp,
+                    m.tool_name,
+                    s.source,
+                    s.model,
+                    s.started_at AS session_started
+                FROM messages m
+                JOIN sessions s ON s.id = m.session_id
+                WHERE m.content LIKE ?
+                ORDER BY m.timestamp DESC
+                LIMIT ? OFFSET ?
+            """
+            like_pattern = f"%{query}%"
+            like_params = [like_pattern, limit, offset]
+
+            # Apply same filters as FTS5 query
+            if source_filter is not None:
+                source_placeholders = ",".join("?" for _ in source_filter)
+                like_sql += f" AND s.source IN ({source_placeholders})"
+                like_params = [like_pattern] + source_filter + [limit, offset]
+            if exclude_sources is not None:
+                exclude_placeholders = ",".join("?" for _ in exclude_sources)
+                like_sql += f" AND s.source NOT IN ({exclude_placeholders})"
+                like_params = [like_pattern] + exclude_sources + [limit, offset]
+            if role_filter:
+                role_placeholders = ",".join("?" for _ in role_filter)
+                like_sql += f" AND m.role IN ({role_placeholders})"
+                like_params = [like_pattern] + role_filter + [limit, offset]
+
+            with self._lock:
+                try:
+                    cursor = self._conn.execute(like_sql, like_params)
+                    matches = [dict(row) for row in cursor.fetchall()]
+                except sqlite3.OperationalError:
+                    matches = []
 
         # Add surrounding context (1 message before + after each match).
         # Done outside the lock so we don't hold it across N sequential queries.

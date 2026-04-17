@@ -992,19 +992,21 @@ def _setup_worktree(repo_root: str = None) -> Optional[Dict[str, str]]:
 def _worktree_has_unpushed_commits(worktree_path: str, timeout: int = 10) -> bool:
     """Return whether a worktree has commits not reachable from any remote branch.
 
-    If the repo has no configured remotes, treat it as having no "unpushed"
-    commits because there is no remote baseline to compare against.
+    ``git log HEAD --not --remotes`` compares against remote-tracking refs under
+    ``refs/remotes/*``. If a repo has no remote-tracking refs yet, there is no
+    usable remote baseline to compare against, so treat it as having no
+    "unpushed" commits.
     """
     import subprocess
 
     try:
-        remotes = subprocess.run(
-            ["git", "remote"],
+        remote_refs = subprocess.run(
+            ["git", "for-each-ref", "--format=%(refname)", "refs/remotes"],
             capture_output=True, text=True, timeout=timeout, cwd=worktree_path,
         )
-        if remotes.returncode != 0:
+        if remote_refs.returncode != 0:
             return True
-        if not remotes.stdout.strip():
+        if not remote_refs.stdout.strip():
             return False
 
         result = subprocess.run(

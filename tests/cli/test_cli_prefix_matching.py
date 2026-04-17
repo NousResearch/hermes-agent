@@ -107,6 +107,23 @@ class TestSlashCommandPrefixMatching:
         unknown = any("Unknown command" in p for p in printed)
         assert not unknown, f"Expected skill prefix to match, got: {printed}"
 
+    def test_skill_load_failure_does_not_queue_placeholder_text(self):
+        cli_obj = _make_cli()
+        fake_skill = {"/broken-skill": {"name": "Broken Skill", "description": "test"}}
+
+        import cli as cli_mod
+
+        with patch.object(cli_mod, "_skill_commands", fake_skill), \
+             patch.object(cli_mod, "build_skill_invocation_message", return_value=None), \
+             patch.object(cli_mod, "ChatConsole") as mock_console:
+            cli_obj.process_command("/broken-skill")
+
+        cli_obj._pending_input.put.assert_not_called()
+        mock_console.return_value.print.assert_called_once()
+        printed = str(mock_console.return_value.print.call_args)
+        assert "Failed to load skill" in printed
+        assert "/broken-skill" in printed
+
     def test_ambiguous_between_builtin_and_skill(self):
         """Ambiguous prefix spanning builtin + skill commands shows suggestions."""
         cli_obj = _make_cli()

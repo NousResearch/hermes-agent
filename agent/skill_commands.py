@@ -310,7 +310,8 @@ def build_skill_invocation_message(
         user_instruction: Optional text the user typed after the command.
 
     Returns:
-        The formatted message string, or None if the skill wasn't found.
+        The formatted message string, or None if the skill wasn't found or
+        its payload could not be loaded.
     """
     commands = get_skill_commands()
     skill_info = commands.get(cmd_key)
@@ -319,7 +320,12 @@ def build_skill_invocation_message(
 
     loaded = _load_skill_payload(skill_info["skill_dir"], task_id=task_id)
     if not loaded:
-        return f"[Failed to load skill: {skill_info['name']}]"
+        logger.warning(
+            "Failed to load payload for skill command %s (%s)",
+            cmd_key,
+            skill_info["name"],
+        )
+        return None
 
     loaded_skill, skill_dir, skill_name = loaded
     activation_note = (

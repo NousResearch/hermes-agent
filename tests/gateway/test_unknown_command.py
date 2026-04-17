@@ -7,7 +7,7 @@ delegate_task call instead of telling the user the command doesn't exist).
 
 from datetime import datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -164,3 +164,31 @@ async def test_underscored_alias_for_hyphenated_builtin_not_flagged(monkeypatch)
     # Whatever /reload_mcp returns, it must not be the unknown-command guard.
     if result is not None:
         assert "Unknown command" not in result
+
+
+@pytest.mark.asyncio
+async def test_known_skill_load_failure_returns_guidance_and_skips_agent(monkeypatch):
+    import gateway.run as gateway_run
+
+    runner = _make_runner()
+    runner._run_agent = AsyncMock(
+        side_effect=AssertionError("broken skill should not be forwarded to the agent")
+    )
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    with patch(
+        "agent.skill_commands.get_skill_commands",
+        return_value={"/broken-skill": {"name": "broken-skill"}},
+    ), patch(
+        "agent.skill_commands.build_skill_invocation_message",
+        return_value=None,
+    ):
+        result = await runner._handle_message(_make_event("/broken-skill"))
+
+    assert result is not None
+    assert "Failed to load skill" in result
+    assert "/broken-skill" in result
+    runner._run_agent.assert_not_called()

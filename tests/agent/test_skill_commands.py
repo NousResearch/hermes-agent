@@ -259,6 +259,15 @@ Generate some audio.
             msg = build_skill_invocation_message("/nonexistent")
         assert msg is None
 
+    def test_returns_none_when_skill_payload_fails_to_load_after_scan(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            skill_dir = _make_skill(tmp_path, "test-skill")
+            scan_skill_commands()
+            (skill_dir / "SKILL.md").unlink()
+            msg = build_skill_invocation_message("/test-skill")
+
+        assert msg is None
+
     def test_uses_shared_skill_loader_for_secure_setup(self, tmp_path, monkeypatch):
         monkeypatch.delenv("TENOR_API_KEY", raising=False)
         calls = []

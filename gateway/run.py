@@ -3233,6 +3233,11 @@ class GatewayRunner:
                     if msg:
                         event.text = msg
                         # Fall through to normal message processing with skill content
+                    else:
+                        return (
+                            f"Failed to load skill `{cmd_key}`. "
+                            "Try reinstalling or re-scanning that skill from the local CLI."
+                        )
                 else:
                     # Not an active skill — check if it's a known-but-disabled or
                     # uninstalled skill and give actionable guidance.

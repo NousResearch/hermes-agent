@@ -258,6 +258,35 @@ GATEWAY_KNOWN_COMMANDS: frozenset[str] = frozenset(
 )
 
 
+# Commands that must never be queued behind an active gateway session.
+# These are explicit control/info commands handled by the gateway itself;
+# if they get queued as pending text, the safety net in gateway.run will
+# discard them before they ever reach the user.
+ACTIVE_SESSION_BYPASS_COMMANDS: frozenset[str] = frozenset(
+    {
+        "agents",
+        "approve",
+        "background",
+        "commands",
+        "deny",
+        "help",
+        "new",
+        "profile",
+        "queue",
+        "restart",
+        "status",
+        "stop",
+        "update",
+    }
+)
+
+
+def should_bypass_active_session(command_name: str | None) -> bool:
+    """Return True when a slash command must bypass active-session queuing."""
+    cmd = resolve_command(command_name) if command_name else None
+    return bool(cmd and cmd.name in ACTIVE_SESSION_BYPASS_COMMANDS)
+
+
 def _resolve_config_gates() -> set[str]:
     """Return canonical names of commands whose ``gateway_config_gate`` is truthy.
 

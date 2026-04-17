@@ -2952,7 +2952,10 @@ class GatewayRunner:
                 return await self._handle_status_command(event)
 
             # Resolve the command once for all early-intercept checks below.
-            from hermes_cli.commands import resolve_command as _resolve_cmd_inner
+            from hermes_cli.commands import (
+                resolve_command as _resolve_cmd_inner,
+                should_bypass_active_session as _should_bypass_active_inner,
+            )
             _evt_cmd = event.get_command()
             _cmd_def_inner = _resolve_cmd_inner(_evt_cmd) if _evt_cmd else None
 
@@ -3037,6 +3040,20 @@ class GatewayRunner:
             # parallel task and must never interrupt the active conversation.
             if _cmd_def_inner and _cmd_def_inner.name == "background":
                 return await self._handle_background_command(event)
+
+            # Gateway-handled info/control commands must never fall through to
+            # the interrupt path. If they are queued as pending text, the
+            # slash-command safety net discards them before the user sees any
+            # response.
+            if _cmd_def_inner and _should_bypass_active_inner(_cmd_def_inner.name):
+                if _cmd_def_inner.name == "help":
+                    return await self._handle_help_command(event)
+                if _cmd_def_inner.name == "commands":
+                    return await self._handle_commands_command(event)
+                if _cmd_def_inner.name == "profile":
+                    return await self._handle_profile_command(event)
+                if _cmd_def_inner.name == "update":
+                    return await self._handle_update_command(event)
 
             if event.message_type == MessageType.PHOTO:
                 logger.debug("PRIORITY photo follow-up for session %s — queueing without interrupt", _quick_key[:20])

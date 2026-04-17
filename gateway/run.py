@@ -1299,15 +1299,23 @@ class GatewayRunner:
         return None
 
     @staticmethod
-    def _load_show_reasoning() -> bool:
-        """Load show_reasoning toggle from config.yaml display section."""
+    def _load_show_reasoning(platform_key: str = "") -> bool:
+        """Load show_reasoning toggle — resolves per-platform then global.
+
+        Delegates to resolve_display_setting() so the resolution order
+        (platform override → global → default) stays in one place.
+        """
         try:
+            from gateway.display_config import resolve_display_setting
             import yaml as _y
             cfg_path = _hermes_home / "config.yaml"
+            user_cfg = {}
             if cfg_path.exists():
                 with open(cfg_path, encoding="utf-8") as _f:
-                    cfg = _y.safe_load(_f) or {}
-                return bool(cfg.get("display", {}).get("show_reasoning", False))
+                    user_cfg = _y.safe_load(_f) or {}
+            return bool(resolve_display_setting(
+                user_cfg, platform_key, "show_reasoning", False
+            ))
         except Exception:
             pass
         return False
@@ -6289,7 +6297,8 @@ class GatewayRunner:
         args = event.get_command_args().strip().lower()
         config_path = _hermes_home / "config.yaml"
         self._reasoning_config = self._load_reasoning_config()
-        self._show_reasoning = self._load_show_reasoning()
+        _pk = _platform_config_key(event.source.platform)
+        self._show_reasoning = self._load_show_reasoning(_pk)
 
         def _save_config_key(key_path: str, value):
             """Save a dot-separated key to config.yaml."""

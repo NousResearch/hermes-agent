@@ -330,6 +330,7 @@ logger = logging.getLogger(__name__)
 # session from bypassing the "already running" guard during the async gap
 # between the guard check and actual agent creation.
 _AGENT_PENDING_SENTINEL = object()
+_PENDING_RESTART_EVENTS_FILE = ".gateway_restart_pending.json"
 
 
 def _resolve_runtime_agent_kwargs() -> dict:
@@ -1078,6 +1079,129 @@ class GatewayRunner:
 
     def _queue_during_drain_enabled(self) -> bool:
         return self._restart_requested and self._busy_input_mode == "queue"
+
+    def _pending_restart_events_path(self) -> Path:
+        return _hermes_home / _PENDING_RESTART_EVENTS_FILE
+
+    @staticmethod
+    def _serialize_pending_event(event: MessageEvent) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {
+            "text": event.text,
+            "message_type": event.message_type.value,
+            "source": event.source.to_dict() if event.source else None,
+            "message_id": event.message_id,
+            "media_urls": list(event.media_urls or []),
+            "media_types": list(event.media_types or []),
+            "reply_to_message_id": event.reply_to_message_id,
+            "reply_to_text": event.reply_to_text,
+            "auto_skill": event.auto_skill,
+            "channel_prompt": event.channel_prompt,
+            "internal": bool(event.internal),
+        }
+        if getattr(event, "timestamp", None):
+            try:
+                payload["timestamp"] = event.timestamp.isoformat()
+            except Exception:
+                pass
+        return payload
+
+    @staticmethod
+    def _deserialize_pending_event(payload: Dict[str, Any]) -> MessageEvent:
+        source_payload = payload.get("source") or {}
+        source = SessionSource.from_dict(source_payload) if source_payload else None
+        timestamp = None
+        raw_ts = payload.get("timestamp")
+        if raw_ts:
+            try:
+                timestamp = datetime.fromisoformat(raw_ts)
+            except Exception:
+                timestamp = None
+        return MessageEvent(
+            text=payload.get("text") or "",
+            message_type=MessageType(payload.get("message_type") or MessageType.TEXT.value),
+            source=source,
+            message_id=payload.get("message_id"),
+            media_urls=list(payload.get("media_urls") or []),
+            media_types=list(payload.get("media_types") or []),
+            reply_to_message_id=payload.get("reply_to_message_id"),
+            reply_to_text=payload.get("reply_to_text"),
+            auto_skill=payload.get("auto_skill"),
+            channel_prompt=payload.get("channel_prompt"),
+            internal=bool(payload.get("internal", False)),
+            timestamp=timestamp or datetime.now(),
+        )
+
+    def _persist_pending_restart_events(self) -> int:
+        path = self._pending_restart_events_path()
+        events: List[Dict[str, Any]] = []
+        for _platform, adapter in list(getattr(self, "adapters", {}).items()):
+            pending_messages = getattr(adapter, "_pending_messages", {}) or {}
+            for pending_event in list(pending_messages.values()):
+                if not isinstance(pending_event, MessageEvent) or not pending_event.source:
+                    continue
+                events.append(self._serialize_pending_event(pending_event))
+
+        if not events:
+            try:
+                path.unlink(missing_ok=True)
+            except Exception:
+                pass
+            return 0
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = path.with_suffix(path.suffix + ".tmp")
+        tmp_path.write_text(json.dumps({"events": events}, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp_path.replace(path)
+        logger.info("Persisted %d queued gateway event(s) for restart replay", len(events))
+        return len(events)
+
+    async def _replay_persisted_pending_restart_events(self) -> int:
+        path = self._pending_restart_events_path()
+        if not path.exists():
+            return 0
+
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as e:
+            logger.warning("Could not read pending restart events checkpoint: %s", e)
+            return 0
+
+        raw_events = payload.get("events") or []
+        replayed = 0
+        remaining: List[Dict[str, Any]] = []
+
+        for item in raw_events:
+            try:
+                event = self._deserialize_pending_event(item)
+            except Exception as e:
+                logger.warning("Skipping invalid pending restart event: %s", e)
+                continue
+
+            adapter = self.adapters.get(event.source.platform) if event.source else None
+            if not adapter:
+                remaining.append(item)
+                continue
+
+            try:
+                await adapter.handle_message(event)
+                replayed += 1
+            except Exception as e:
+                logger.warning("Failed replaying queued gateway event: %s", e)
+                remaining.append(item)
+
+        if remaining:
+            tmp_path = path.with_suffix(path.suffix + ".tmp")
+            tmp_path.write_text(json.dumps({"events": remaining}, ensure_ascii=False, indent=2), encoding="utf-8")
+            tmp_path.replace(path)
+        else:
+            try:
+                path.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+        if replayed:
+            logger.info("Replayed %d queued gateway event(s) after restart", replayed)
+        return replayed
 
     def _update_runtime_status(self, gateway_state: Optional[str] = None, exit_reason: Optional[str] = None) -> None:
         try:
@@ -2017,6 +2141,10 @@ class GatewayRunner:
         # Notify the chat that initiated /restart that the gateway is back.
         await self._send_restart_notification()
 
+        # Replay any queued follow-up messages persisted by the previous
+        # gateway instance during a graceful restart.
+        await self._replay_persisted_pending_restart_events()
+
         # Drain any recovered process watchers (from crash recovery checkpoint)
         try:
             from tools.process_registry import process_registry
@@ -2329,6 +2457,12 @@ class GatewayRunner:
                     await self._launch_detached_restart_command()
                 except Exception as e:
                     logger.error("Failed to launch detached gateway restart: %s", e)
+
+            if self._restart_requested and self._queue_during_drain_enabled():
+                try:
+                    self._persist_pending_restart_events()
+                except Exception as e:
+                    logger.warning("Failed to persist queued gateway events for restart: %s", e)
 
             self._finalize_shutdown_agents(active_agents)
 

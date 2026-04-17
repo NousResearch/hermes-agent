@@ -28,6 +28,14 @@ All config via environment variables in `.env`:
 |---------|---------|-------------|
 | `OPENVIKING_ENDPOINT` | `http://127.0.0.1:1933` | Server URL |
 | `OPENVIKING_API_KEY` | (none) | API key (optional) |
+| `OPENVIKING_ACCOUNT` | `default` | Tenant account for API requests |
+| `OPENVIKING_USER` | `hermes` | Tenant user for API requests |
+| `OPENVIKING_AGENT` | `hermes` | Tenant agent for API requests |
+
+## Behavior notes
+
+- File reads via `viking_read` fall back to full-content reads for file URIs because OpenViking overview/abstract endpoints are directory-oriented and can return 500 on file paths.
+- Explicit Hermes memory writes also store a deterministic fallback resource under `viking://resources/hermes_explicit_memories/...` so important notes remain durable even if session extraction is degraded.
 
 ## Tools
 

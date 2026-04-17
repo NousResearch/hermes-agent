@@ -1,6 +1,8 @@
 import asyncio
+import json
 import shutil
 import subprocess
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -242,3 +244,68 @@ async def test_shutdown_notification_send_failure_does_not_block():
 
     # Should not raise
     await runner._notify_active_sessions_of_shutdown()
+
+
+def test_persist_pending_restart_events_writes_checkpoint(tmp_path, monkeypatch):
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    runner, adapter = make_restart_runner()
+    runner._persist_pending_restart_events = gateway_run.GatewayRunner._persist_pending_restart_events.__get__(runner, gateway_run.GatewayRunner)
+
+    event = MessageEvent(
+        text="continue openviking fix",
+        message_type=MessageType.TEXT,
+        source=make_restart_source(chat_id="555"),
+        message_id="msg-555",
+    )
+    session_key = build_session_key(event.source)
+    adapter._pending_messages[session_key] = event
+
+    saved = runner._persist_pending_restart_events()
+
+    assert saved == 1
+    checkpoint = tmp_path / ".gateway_restart_pending.json"
+    payload = json.loads(checkpoint.read_text())
+    assert len(payload["events"]) == 1
+    assert payload["events"][0]["text"] == "continue openviking fix"
+    assert payload["events"][0]["source"]["chat_id"] == "555"
+
+
+@pytest.mark.asyncio
+async def test_replay_pending_restart_events_requeues_messages_and_clears_checkpoint(tmp_path, monkeypatch):
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    runner, adapter = make_restart_runner()
+    runner._replay_persisted_pending_restart_events = gateway_run.GatewayRunner._replay_persisted_pending_restart_events.__get__(runner, gateway_run.GatewayRunner)
+
+    seen = []
+
+    async def fake_handle_message(event):
+        seen.append(event)
+
+    adapter.handle_message = fake_handle_message
+
+    checkpoint = tmp_path / ".gateway_restart_pending.json"
+    checkpoint.write_text(json.dumps({
+        "events": [
+            {
+                "text": "resume queued task",
+                "message_type": "text",
+                "source": make_restart_source(chat_id="777").to_dict(),
+                "message_id": "queued-777",
+                "media_urls": [],
+                "media_types": [],
+                "reply_to_message_id": None,
+                "reply_to_text": None,
+                "auto_skill": None,
+                "channel_prompt": None,
+                "internal": False,
+            }
+        ]
+    }))
+
+    replayed = await runner._replay_persisted_pending_restart_events()
+
+    assert replayed == 1
+    assert len(seen) == 1
+    assert seen[0].text == "resume queued task"
+    assert seen[0].source.chat_id == "777"
+    assert not checkpoint.exists()

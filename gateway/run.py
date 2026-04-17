@@ -226,6 +226,13 @@ from gateway.background_delivery_service import (
     recover_stale_background_jobs_once as shared_recover_stale_background_jobs_once,
     sanitize_background_visible_text as shared_sanitize_background_visible_text,
 )
+from gateway.auto_background_runtime_service import (
+    format_auto_background_ack as shared_format_auto_background_ack,
+    history_suggests_auto_background_work as shared_history_suggests_auto_background_work,
+    resolve_auto_background_dispatch as shared_resolve_auto_background_dispatch,
+    resolve_employee_background_dispatch as shared_resolve_employee_background_dispatch,
+    should_auto_background_message as shared_should_auto_background_message,
+)
 from gateway.direct_control_router import (
     DIRECT_CONTROL_ROUTER_METHODS as SHARED_DIRECT_CONTROL_ROUTER_METHODS,
     DirectControlRouter,
@@ -864,27 +871,6 @@ def _explicit_group_reply_context_note(event: MessageEvent) -> str:
     )
 
 
-_AUTO_BACKGROUND_SHORTCUTS = (
-    "继续",
-    "继续啊",
-    "继续!",
-    "继续！",
-    "接着做",
-    "继续处理",
-    "按你建议做",
-    "马上做",
-    "整套",
-)
-_AUTO_BACKGROUND_ACTION_TERMS = (
-    "修复", "排查", "审查", "部署", "实现", "开发", "收尾", "调查",
-    "分析", "制定", "设计", "重启", "同步", "处理", "看看日志",
-    "上服务器", "查原因", "完整实施", "全部修复", "计划清单",
-)
-_AUTO_BACKGROUND_DOMAIN_TERMS = (
-    "服务器", "日志", "配置", "代码", "接口", "模型", "端点", "并发",
-    "群聊", "私聊", "gateway", "cron", "qq", "napcat", "服务", "任务",
-    "问题", "故障",
-)
 _NON_INTERRUPTIBLE_RUNNING_TOOLS = frozenset({
     "qq_group_moderation",
 })
@@ -897,87 +883,6 @@ def _safe_float(value: Any, default: float) -> float:
         return float(value)
     except Exception:
         return default
-
-
-def _contains_any(text: str, terms: tuple[str, ...]) -> bool:
-    """Return True when any term is present in the normalized text."""
-    if not text:
-        return False
-    lowered = text.lower()
-    return any(term in lowered for term in terms)
-
-
-def _is_auto_background_shortcut(text: str) -> bool:
-    """Return True when the message is a bare follow-up shortcut like '继续'."""
-    compact = str(text or "").strip().lower()
-    return compact in _AUTO_BACKGROUND_SHORTCUTS
-
-
-def _looks_like_auto_background_work_request(text: str) -> bool:
-    """Return True when the message itself looks like a real work assignment."""
-    body = str(text or "").strip()
-    if not body:
-        return False
-
-    compact = body.lower()
-    action_hits = {term for term in _AUTO_BACKGROUND_ACTION_TERMS if term in body}
-    domain_hits = {term for term in _AUTO_BACKGROUND_DOMAIN_TERMS if term in compact}
-    overlapping_hits = {term for term in action_hits if term in domain_hits}
-    distinct_hits = (action_hits | domain_hits) - overlapping_hits
-    has_structure = (
-        len(body) >= 80
-        or body.count("\n") >= 2
-        or "```" in body
-        or body.count("http://") + body.count("https://") > 0
-    )
-    has_action = bool(action_hits)
-
-    if distinct_hits and has_action:
-        return True
-    if has_structure and has_action:
-        return True
-    if "全部修复" in body or "完整实施" in body or "上服务器" in body:
-        return True
-    return False
-
-
-def _looks_like_explicit_worker_assignment(text: str, worker_names: list[str]) -> bool:
-    """Return True when a named employee is being explicitly assigned work."""
-    body = str(text or "").strip()
-    if not body:
-        return False
-    if any(mark in body for mark in ("?", "？")):
-        return False
-    if _is_auto_background_shortcut(body) or _looks_like_auto_background_work_request(body):
-        return True
-
-    lead_markers = ("让", "叫", "安排", "交给", "给", "找", "请", "麻烦")
-    tail_markers = (
-        "继续",
-        "去",
-        "来",
-        "做",
-        "处理",
-        "跟进",
-        "修",
-        "查",
-        "看",
-        "优化",
-        "打磨",
-        "润色",
-        "改",
-        "整",
-    )
-    for name in worker_names:
-        candidate = str(name or "").strip()
-        if not candidate or candidate not in body:
-            continue
-        before, _, after = body.partition(candidate)
-        if any(marker in before[-4:] for marker in lead_markers):
-            return True
-        if any(after.startswith(marker) for marker in tail_markers):
-            return True
-    return False
 
 
 def _load_gateway_signal_force_exit_seconds() -> float:
@@ -2720,43 +2625,19 @@ class GatewayRunner:
         return f"{elapsed}s"
 
     def _should_auto_background_message(self, event: MessageEvent, message_text: str) -> bool:
-        """Heuristic: detach obvious work assignments to keep chat responsive."""
-        if not self._get_auto_background_work(getattr(event.source, "platform", None)):
-            return False
-        if event.get_command():
-            return False
-        if getattr(event, "message_type", None) != MessageType.TEXT:
-            return False
-        if getattr(event, "media_urls", None):
-            return False
-
-        body = str(message_text or "").strip()
-        if not body:
-            return False
-        return _looks_like_auto_background_work_request(body)
+        return shared_should_auto_background_message(
+            auto_background_work_enabled=self._get_auto_background_work(
+                getattr(event.source, "platform", None)
+            ),
+            event=event,
+            message_text=message_text,
+        )
 
     def _history_suggests_auto_background_work(
         self,
         conversation_history: Optional[List[Dict[str, Any]]] = None,
     ) -> bool:
-        """Return True when recent history clearly looks like an ongoing work task."""
-        recent_parts: List[str] = []
-        for item in list(conversation_history or [])[-4:]:
-            if not isinstance(item, dict):
-                continue
-            content = item.get("content")
-            if content:
-                recent_parts.append(str(content))
-        recent_text = "\n".join(recent_parts)
-        if not recent_text.strip():
-            return False
-
-        lowered = recent_text.lower()
-        action_hits = {term for term in _AUTO_BACKGROUND_ACTION_TERMS if term in recent_text}
-        domain_hits = {term for term in _AUTO_BACKGROUND_DOMAIN_TERMS if term in lowered}
-        overlapping_hits = {term for term in action_hits if term in domain_hits}
-        distinct_hits = (action_hits | domain_hits) - overlapping_hits
-        return bool(action_hits) and bool(distinct_hits)
+        return shared_history_suggests_auto_background_work(conversation_history)
 
     def _resolve_employee_background_dispatch(
         self,
@@ -2765,67 +2646,11 @@ class GatewayRunner:
         platform: Platform = Platform.QQ_NAPCAT,
         conversation_history: Optional[List[Dict[str, Any]]] = None,
     ) -> Optional[Dict[str, Any]]:
-        """Return worker-routing metadata for tasks that should run as employees."""
-        body = str(message_text or "").strip()
-        if not body:
-            return None
-
-        employee_routes = get_employee_routes(self.config, platform=platform)
-        if not employee_routes:
-            return None
-
-        current_text = body.lower()
-        recent_context_parts: List[str] = [body]
-        for item in list(conversation_history or [])[-4:]:
-            if not isinstance(item, dict):
-                continue
-            content = item.get("content")
-            if content:
-                recent_context_parts.append(str(content))
-        recent_context = "\n".join(recent_context_parts).lower()
-        shortcut_followup = _is_auto_background_shortcut(body)
-
-        for route in employee_routes:
-            route_names = [str(route.get("worker_name") or "").strip(), *list(route.get("aliases") or [])]
-            match_modes = {str(mode or "").strip().lower() for mode in (route.get("match_modes") or ())}
-            explicit_worker_mention = any(name and name in body for name in route_names)
-            current_has_action = _contains_any(current_text, tuple(route.get("action_terms") or ()))
-            current_has_subject = _contains_any(current_text, tuple(route.get("subject_terms") or ()))
-            current_has_pain = _contains_any(current_text, tuple(route.get("pain_terms") or ()))
-            combined_has_action = _contains_any(recent_context, tuple(route.get("action_terms") or ()))
-            combined_has_subject = _contains_any(recent_context, tuple(route.get("subject_terms") or ()))
-            combined_has_pain = _contains_any(recent_context, tuple(route.get("pain_terms") or ()))
-
-            if "explicit" in match_modes and explicit_worker_mention and (
-                shortcut_followup
-                or current_has_action
-                or current_has_subject
-                or current_has_pain
-                or _looks_like_auto_background_work_request(body)
-                or _looks_like_explicit_worker_assignment(body, route_names)
-            ):
-                return {
-                    "worker_name": str(route["worker_name"]),
-                    "preloaded_skills": list(route.get("preloaded_skills") or []),
-                }
-            if "heuristic" not in match_modes:
-                continue
-            if current_has_subject and (current_has_action or current_has_pain):
-                return {
-                    "worker_name": str(route["worker_name"]),
-                    "preloaded_skills": list(route.get("preloaded_skills") or []),
-                }
-            if (current_has_action or current_has_pain) and combined_has_subject:
-                return {
-                    "worker_name": str(route["worker_name"]),
-                    "preloaded_skills": list(route.get("preloaded_skills") or []),
-                }
-            if shortcut_followup and combined_has_subject and (combined_has_action or combined_has_pain):
-                return {
-                    "worker_name": str(route["worker_name"]),
-                    "preloaded_skills": list(route.get("preloaded_skills") or []),
-                }
-        return None
+        return shared_resolve_employee_background_dispatch(
+            message_text,
+            employee_routes=get_employee_routes(self.config, platform=platform),
+            conversation_history=conversation_history,
+        )
 
     def _resolve_auto_background_dispatch(
         self,
@@ -2834,57 +2659,21 @@ class GatewayRunner:
         *,
         conversation_history: Optional[List[Dict[str, Any]]] = None,
     ) -> Optional[Dict[str, Any]]:
-        """Return auto-background metadata when this turn should detach."""
-        if not self._get_auto_background_work(getattr(event.source, "platform", None)):
-            return None
-        if event.get_command():
-            return None
-        if getattr(event, "message_type", None) != MessageType.TEXT:
-            return None
-        if getattr(event, "media_urls", None):
-            return None
-
-        body = str(message_text or "").strip()
-        if not body:
-            return None
-        if getattr(event.source, "chat_type", "") == "group":
-            is_shortcut = _is_auto_background_shortcut(body)
-            if not _qq_group_has_visible_bot_address(body) and not (
-                is_shortcut and self._history_suggests_auto_background_work(conversation_history)
-            ):
-                return None
-
-        dispatch = self._resolve_employee_background_dispatch(
-            body,
-            platform=getattr(event.source, "platform", Platform.QQ_NAPCAT),
+        return shared_resolve_auto_background_dispatch(
+            event,
+            message_text,
+            auto_background_work_enabled=self._get_auto_background_work(
+                getattr(event.source, "platform", None)
+            ),
+            employee_routes=get_employee_routes(
+                self.config,
+                platform=getattr(event.source, "platform", Platform.QQ_NAPCAT),
+            ),
             conversation_history=conversation_history,
         )
-        if dispatch:
-            return dispatch
-        if _is_auto_background_shortcut(body):
-            if self._history_suggests_auto_background_work(conversation_history):
-                return {
-                    "worker_name": "",
-                    "preloaded_skills": [],
-                }
-            return None
-        if self._should_auto_background_message(event, body):
-            return {
-                "worker_name": "",
-                "preloaded_skills": [],
-            }
-        return None
 
     def _format_auto_background_ack(self, prompt: str, task_id: str, *, worker_name: str = "") -> str:
-        """Return the immediate acknowledgement for an auto-detached job."""
-        preview = prompt[:60] + ("..." if len(prompt) > 60 else "")
-        lead = f"🛠️ 这活我交给{worker_name}后台处理了。" if worker_name else "🛠️ 这事我转后台做了。"
-        return (
-            f"{lead}\n"
-            f"任务ID：`{task_id}`\n"
-            f"内容：{preview}\n"
-            "你继续发消息就行，我做完会回来汇报。"
-        )
+        return shared_format_auto_background_ack(prompt, task_id, worker_name=worker_name)
 
     @staticmethod
     def _looks_like_qq_group_listen_disable_request(message_text: str) -> bool:

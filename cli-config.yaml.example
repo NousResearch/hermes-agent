@@ -571,6 +571,16 @@ platform_toolsets:
 #     reply_to_mode: "first"  # off | first | all
 #     extra:
 #       disable_link_previews: false  # Set true to suppress Telegram URL previews in bot messages
+#
+#   email:
+#     extra:
+#       # Route each visible Gmail thread to its own session via Gmail's
+#       # X-GM-THRID IMAP extension. Requires a server that advertises
+#       # X-GM-EXT-1 — Gmail and Google Workspace. Falls back to "sender"
+#       # mode with a warning on other providers.
+#       # Default (omitted) is "sender": one session per sender address,
+#       # preserving the pre-existing behavior.
+#       session_keying: gmail_thread_id  # sender | gmail_thread_id
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Available toolsets (use these names in platform_toolsets or the toolsets list)

@@ -133,6 +133,44 @@ When enabled, attachment and inline parts are skipped before payload decoding. T
 
 ---
 
+## Session Keying
+
+By default, every inbound message from a given sender address collapses into a single Hermes session. That works for simple single-topic back-and-forth, but it creates problems in busier mailboxes:
+
+- The agent's memory of Thread A leaks into its reply for Thread B.
+- Every first turn of a new email replays the full sender history, growing token cost per message over time.
+- `/reset` in one thread wipes every other concurrent thread from the same sender.
+
+### `session_keying: gmail_thread_id` (Gmail only)
+
+To route each visible Gmail thread to its own isolated session, set `session_keying: gmail_thread_id` in `config.yaml`:
+
+```yaml
+platforms:
+  email:
+    extra:
+      session_keying: gmail_thread_id
+```
+
+The adapter then uses Gmail's [`X-GM-THRID`](https://developers.google.com/gmail/imap/imap-extensions) IMAP extension — the same thread identifier Gmail's own web and mobile clients use — to build the session key. Two concurrent email conversations from the same sender become two distinct sessions, matching the model used by Slack, Discord, Telegram, and Matrix.
+
+**Requirements:**
+
+- The IMAP server must advertise the `X-GM-EXT-1` capability. Gmail and Google Workspace mailboxes always do; most other IMAP providers do not.
+- On startup the adapter probes for the capability. If `gmail_thread_id` is requested but the server doesn't advertise `X-GM-EXT-1`, the adapter logs a warning and degrades to `sender` mode for the rest of the run.
+
+**Fallback:** if Gmail returns a message without a `X-GM-THRID` value (rare — can happen on delegated or migrated mailboxes), the adapter treats that message as its own thread root by hashing its `Message-ID`.
+
+### `session_keying: sender` (default)
+
+Preserves the pre-existing behavior: one session per sender address. Use this (or omit the setting) for non-Gmail mailboxes, or when you want all email from a given correspondent in one continuous session.
+
+### Migrating an existing deployment
+
+Opting into `gmail_thread_id` produces a one-time session-fragmentation event: the next message from a sender lands in a fresh thread session instead of the pre-existing flat one. Existing sessions remain accessible under their previous keys (via `hermes sessions list`) but stop accumulating new messages. Expect the agent to behave as if it has no memory of the current thread for the first message after the switch.
+
+---
+
 ## Access Control
 
 Email access follows the same pattern as all other Hermes platforms:

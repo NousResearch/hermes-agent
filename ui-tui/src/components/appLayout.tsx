@@ -58,7 +58,7 @@ const TranscriptPane = memo(function TranscriptPane({
           {progress.showProgressArea && (
             <ToolTrail
               activity={progress.activity}
-              busy={ui.busy && !progress.streaming}
+              busy={ui.busy}
               detailsMode={ui.detailsMode}
               reasoning={progress.reasoning}
               reasoningActive={progress.reasoningActive}

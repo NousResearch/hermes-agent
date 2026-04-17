@@ -303,6 +303,9 @@ from gateway.agent_prelude_runtime_service import (
     append_discord_voice_channel_context as shared_append_discord_voice_channel_context,
     build_agent_start_hook_context as shared_build_agent_start_hook_context,
 )
+from gateway.agent_response_runtime_service import (
+    normalize_gateway_agent_response as shared_normalize_gateway_agent_response,
+)
 from gateway.context_reference_runtime_service import (
     GatewayContextReferenceOutcome,
     expand_gateway_context_references as shared_expand_gateway_context_references,
@@ -4458,35 +4461,21 @@ class GatewayRunner:
             except Exception:
                 pass
 
-            response = agent_result.get("final_response") or ""
-            suppress_reply = bool(agent_result.get("suppress_reply"))
-            response_state = "sent"
-            if response.strip() in {"(empty)", "[[NO_REPLY]]"}:
-                empty_kind = "no_reply" if response.strip() == "[[NO_REPLY]]" else "empty"
-                fallback = _empty_response_fallback(
+            normalized_response = shared_normalize_gateway_agent_response(
+                agent_result=agent_result,
+                history_len=len(history),
+                empty_response_fallback=lambda empty_kind: _empty_response_fallback(
                     source,
                     message_text,
                     empty_kind=empty_kind,
                     is_admin_user=bool(context.is_admin_user),
                     raw_message=event.raw_message,
                     event=event,
-                )
-                if fallback:
-                    response = fallback
-                    suppress_reply = False
-                    response_state = "qq_explicit_fallback"
-                else:
-                    suppress_reply = True
-                    response = ""
-                    response_state = "suppressed_empty"
-            if response.strip() == "[[NO_REPLY]]":
-                suppress_reply = True
-                response = ""
-                response_state = "suppressed_no_reply"
-            elif not response and suppress_reply and response_state == "sent":
-                response_state = "suppressed"
-            elif not response and agent_result.get("failed"):
-                response_state = "failed_silent"
+                ),
+            )
+            response = normalized_response.response
+            suppress_reply = normalized_response.suppress_reply
+            response_state = normalized_response.response_state
             agent_messages = agent_result.get("messages", [])
             _response_time = time.time() - _msg_start_time
             _api_calls = agent_result.get("api_calls", 0)
@@ -4496,34 +4485,6 @@ class GatewayRunner:
                 _platform_name, source.chat_id or "unknown",
                 _response_time, _api_calls, _resp_len, response_state,
             )
-
-            # Surface error details when the agent failed silently (final_response=None)
-            if not response and agent_result.get("failed"):
-                error_detail = agent_result.get("error", "unknown error")
-                error_str = str(error_detail).lower()
-
-                # Detect context-overflow failures and give specific guidance.
-                # Generic 400 "Error" from Anthropic with large sessions is the
-                # most common cause of this (#1630).
-                _is_ctx_fail = any(p in error_str for p in (
-                    "context", "token", "too large", "too long",
-                    "exceed", "payload",
-                )) or (
-                    "400" in error_str
-                    and len(history) > 50
-                )
-
-                if _is_ctx_fail:
-                    response = (
-                        "⚠️ Session too large for the model's context window.\n"
-                        "Use /compact to compress the conversation, or "
-                        "/reset to start fresh."
-                    )
-                else:
-                    response = (
-                        f"The request failed: {str(error_detail)[:300]}\n"
-                        "Try again or use /reset to start a fresh session."
-                    )
 
             # If the agent's session_id changed during compression, update
             # session_entry so transcript writes below go to the right session.

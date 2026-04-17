@@ -77,7 +77,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 # Resolve Hermes home directory (respects HERMES_HOME override)
 from hermes_constants import get_hermes_home
 from utils import atomic_yaml_write
-from agent.skill_commands import build_preloaded_skills_prompt
 _hermes_home = get_hermes_home()
 
 # Load environment variables from ~/.hermes/.env first.
@@ -218,7 +217,6 @@ from gateway.agent_turn_runtime_service import (
 )
 from gateway.agent_runtime import (
     agent_config_signature as shared_agent_config_signature,
-    build_gateway_agent_runtime,
     load_ephemeral_system_prompt as shared_load_ephemeral_system_prompt,
     load_fallback_model as shared_load_fallback_model,
     load_gateway_user_config as shared_load_gateway_user_config,
@@ -6080,65 +6078,32 @@ class GatewayRunner:
         _thread_metadata = {"thread_id": source.thread_id} if source.thread_id else None
 
         try:
-            runtime_kwargs = _resolve_runtime_agent_kwargs()
-            if not runtime_kwargs.get("api_key"):
-                if job:
-                    job["status"] = "failed"
-                    job["error"] = "no provider credentials configured"
-                    job["finished_at"] = time.time()
-                    job["updated_at"] = time.time()
-                await adapter.send(
-                    source.chat_id,
-                    f"❌ Background task {task_id} failed: no provider credentials configured.",
-                    metadata=_thread_metadata,
-                )
-                return
-
             user_config = _load_gateway_config()
-            model = _resolve_gateway_model(user_config)
-            platform_key = _platform_config_key(source.platform)
-
-            from hermes_cli.tools_config import _get_platform_tools
-            enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
-
-            reasoning_config = self._load_reasoning_config()
-            self._reasoning_config = reasoning_config
             bg_history = list(conversation_history or [])
             event_loop = asyncio.get_event_loop()
-
-            combined_context_prompt = str(context_prompt or "").strip()
-            loaded_skill_names: List[str] = []
-            missing_skills: List[str] = []
-            if preloaded_skills:
-                skill_prompt, loaded_skill_names, missing_skills = build_preloaded_skills_prompt(
-                    list(preloaded_skills),
-                    task_id=task_id,
-                )
-                if skill_prompt:
-                    combined_context_prompt = (
-                        f"{skill_prompt}\n\n{combined_context_prompt}".strip()
-                        if combined_context_prompt
-                        else skill_prompt
-                    )
-            if job:
-                job["loaded_skills"] = loaded_skill_names
-                job["missing_skills"] = missing_skills
-                job["updated_at"] = time.time()
-
-            runtime_spec = build_gateway_agent_runtime(
+            prepared_runtime = shared_prepare_gateway_sync_turn_runtime(
+                env_path=_env_path,
+                load_dotenv_fn=load_dotenv,
+                resolve_runtime_agent_kwargs_fn=_resolve_runtime_agent_kwargs,
+                load_reasoning_config_fn=self._load_reasoning_config,
                 source=source,
                 user_message=prompt,
-                context_prompt=combined_context_prompt,
+                context_prompt=str(context_prompt or "").strip(),
                 gateway_ephemeral_system_prompt=getattr(self, "_ephemeral_system_prompt", ""),
                 provider_routing=getattr(self, "_provider_routing", {}),
                 fallback_model=getattr(self, "_fallback_model", None),
                 smart_model_routing=getattr(self, "_smart_model_routing", {}),
-                reasoning_config=reasoning_config,
                 user_config=user_config,
-                model=model,
-                runtime_kwargs=runtime_kwargs,
-                enabled_toolsets=enabled_toolsets,
+                model=_resolve_gateway_model(user_config),
+                preloaded_skills=list(preloaded_skills or []),
+                skill_task_id=task_id,
             )
+            runtime_spec = prepared_runtime.runtime_spec
+            self._reasoning_config = prepared_runtime.reasoning_config
+            if job:
+                job["loaded_skills"] = list(runtime_spec.loaded_skills)
+                job["missing_skills"] = list(runtime_spec.missing_skills)
+                job["updated_at"] = time.time()
 
             def run_sync():
                 agent = create_gateway_agent(
@@ -6381,18 +6346,7 @@ class GatewayRunner:
         _thread_meta = {"thread_id": source.thread_id} if source.thread_id else None
 
         try:
-            runtime_kwargs = _resolve_runtime_agent_kwargs()
-            if not runtime_kwargs.get("api_key"):
-                await adapter.send(
-                    source.chat_id,
-                    "❌ /btw failed: no provider credentials configured.",
-                    metadata=_thread_meta,
-                )
-                return
-
             user_config = _load_gateway_config()
-            model = _resolve_gateway_model(user_config)
-            reasoning_config = self._load_reasoning_config()
 
             # Snapshot history from running agent or stored transcript
             running_agent = self._running_agents.get(session_key)
@@ -6407,7 +6361,11 @@ class GatewayRunner:
                 "context. No tools available. Be direct and concise.]\n\n"
                 + question
             )
-            runtime_spec = build_gateway_agent_runtime(
+            prepared_runtime = shared_prepare_gateway_sync_turn_runtime(
+                env_path=_env_path,
+                load_dotenv_fn=load_dotenv,
+                resolve_runtime_agent_kwargs_fn=_resolve_runtime_agent_kwargs,
+                load_reasoning_config_fn=self._load_reasoning_config,
                 source=source,
                 user_message=question,
                 context_prompt="",
@@ -6415,12 +6373,11 @@ class GatewayRunner:
                 provider_routing=getattr(self, "_provider_routing", {}),
                 fallback_model=getattr(self, "_fallback_model", None),
                 smart_model_routing=getattr(self, "_smart_model_routing", {}),
-                reasoning_config=reasoning_config,
                 user_config=user_config,
-                model=model,
-                runtime_kwargs=runtime_kwargs,
+                model=_resolve_gateway_model(user_config),
                 enabled_toolsets=[],
             )
+            runtime_spec = prepared_runtime.runtime_spec
 
             def run_sync():
                 agent = create_gateway_agent(

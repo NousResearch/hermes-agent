@@ -76,6 +76,8 @@ def test_prepare_gateway_sync_turn_runtime_builds_runtime_from_injected_resolver
         assert kwargs["fallback_model"] == [{"model": "backup"}]
         assert kwargs["smart_model_routing"] == {"mode": "smart"}
         assert kwargs["reasoning_config"] == {"effort": "high"}
+        assert kwargs["preloaded_skills"] is None
+        assert kwargs["skill_task_id"] is None
         assert kwargs["user_config"] == {"model": {"default": "gpt-test"}}
         assert kwargs["model"] == "gpt-test"
         assert kwargs["runtime_kwargs"] == {
@@ -118,3 +120,45 @@ def test_prepare_gateway_sync_turn_runtime_builds_runtime_from_injected_resolver
         "load_reasoning",
         "build_runtime_spec",
     ]
+
+
+def test_prepare_gateway_sync_turn_runtime_passes_preloaded_skills(monkeypatch):
+    source = SimpleNamespace(platform=SimpleNamespace(value="qq"))
+    captured = {}
+
+    monkeypatch.setenv("HERMES_MAX_ITERATIONS", "90")
+    monkeypatch.setattr(
+        agent_runtime,
+        "build_gateway_agent_runtime",
+        lambda **kwargs: captured.update(kwargs) or GatewayAgentRuntimeSpec(
+            user_config={},
+            source=source,
+            platform_key="qq",
+            model="gpt-test",
+            runtime_kwargs={"api_key": "secret"},
+            turn_route={"model": "gpt-test", "runtime": {"api_key": "secret"}},
+            provider_routing={},
+            fallback_model=None,
+            reasoning_config={"effort": "medium"},
+            enabled_toolsets=["core"],
+            combined_ephemeral="ctx",
+            loaded_skills=["ops-skill"],
+            missing_skills=[],
+            max_iterations=90,
+        ),
+    )
+
+    prepared = prepare_gateway_sync_turn_runtime(
+        env_path=Path("/tmp/runtime.env"),
+        load_dotenv_fn=lambda *args, **kwargs: None,
+        resolve_runtime_agent_kwargs_fn=lambda: {"api_key": "secret"},
+        load_reasoning_config_fn=lambda: {"effort": "medium"},
+        source=source,
+        user_message="hello",
+        preloaded_skills=["ops-skill"],
+        skill_task_id="task-1",
+    )
+
+    assert captured["preloaded_skills"] == ["ops-skill"]
+    assert captured["skill_task_id"] == "task-1"
+    assert prepared.runtime_spec.loaded_skills == ["ops-skill"]

@@ -313,7 +313,7 @@ class TestRunBackgroundTask:
         with patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}), \
              patch("gateway.run._resolve_gateway_model", return_value="gpt-5.4"), \
              patch("gateway.run.asyncio.get_event_loop", return_value=_InlineExecutorLoop()), \
-             patch("gateway.run.build_preloaded_skills_prompt", return_value=("[SKILL PROMPT]", ["frontend-design-pro"], [])) as mock_build_skills, \
+             patch("agent.skill_commands.build_preloaded_skills_prompt", return_value=("[SKILL PROMPT]", ["frontend-design-pro"], [])) as mock_build_skills, \
              patch("gateway.run._platform_config_key", return_value="telegram"), \
              patch("hermes_cli.tools_config._get_platform_tools", return_value={"core"}), \
              patch("run_agent.AIAgent") as MockAgent:

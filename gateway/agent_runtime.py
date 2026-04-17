@@ -353,6 +353,8 @@ def prepare_gateway_sync_turn_runtime(
     user_config: dict[str, Any] | None = None,
     model: str | None = None,
     enabled_toolsets: list[str] | None = None,
+    preloaded_skills: list[str] | None = None,
+    skill_task_id: str | None = None,
 ) -> GatewayPreparedSyncTurnRuntime:
     """Reload env/config and build the shared sync-turn runtime payload."""
 
@@ -368,6 +370,8 @@ def prepare_gateway_sync_turn_runtime(
         fallback_model=fallback_model,
         smart_model_routing=smart_model_routing,
         reasoning_config=reasoning_config,
+        preloaded_skills=preloaded_skills,
+        skill_task_id=skill_task_id,
         user_config=user_config,
         model=model,
         runtime_kwargs=runtime_kwargs,

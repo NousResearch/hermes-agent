@@ -435,7 +435,7 @@ def iter_skill_index_files(skills_dir: Path, filename: str):
     Excludes ``.git``, ``.github``, ``.hub`` directories.
     """
     matches = []
-    for root, dirs, files in os.walk(skills_dir):
+    for root, dirs, files in os.walk(skills_dir, followlinks=True):
         dirs[:] = [d for d in dirs if d not in EXCLUDED_SKILL_DIRS]
         if filename in files:
             matches.append(Path(root) / filename)

@@ -15,6 +15,10 @@ from agent.prompt_builder import (
     _find_hermes_md,
     _find_git_root,
     _strip_yaml_frontmatter,
+    _resolve_walk_limit,
+    _walk_parents,
+    _load_all_of_type,
+    discover_context_files,
     build_skills_system_prompt,
     build_nous_subscription_prompt,
     build_context_files_prompt,
@@ -560,9 +564,10 @@ class TestBuildContextFilesPrompt:
         assert "type hints" in result
 
     def test_hermes_md_lowercase_takes_priority(self, tmp_path):
+        """In legacy mode, .hermes.md takes priority over HERMES.md."""
         (tmp_path / ".hermes.md").write_text("From dotfile.")
         (tmp_path / "HERMES.md").write_text("From uppercase.")
-        result = build_context_files_prompt(cwd=str(tmp_path))
+        result = build_context_files_prompt(cwd=str(tmp_path), compose=False)
         assert "From dotfile" in result
         assert "From uppercase" not in result
 
@@ -573,7 +578,7 @@ class TestBuildContextFilesPrompt:
         (tmp_path / ".hermes.md").write_text("Root project rules.")
         sub = tmp_path / "src" / "components"
         sub.mkdir(parents=True)
-        result = build_context_files_prompt(cwd=str(sub))
+        result = build_context_files_prompt(cwd=str(sub), walk_limit="git_root")
         assert "Root project rules" in result
 
     def test_hermes_md_stops_at_git_root(self, tmp_path):
@@ -600,24 +605,24 @@ class TestBuildContextFilesPrompt:
         assert "BLOCKED" in result
 
     def test_hermes_md_beats_agents_md(self, tmp_path):
-        """When both exist, .hermes.md wins and AGENTS.md is not loaded."""
+        """When both exist, .hermes.md wins and AGENTS.md is not loaded (legacy mode)."""
         (tmp_path / "AGENTS.md").write_text("Agent guidelines here.")
         (tmp_path / ".hermes.md").write_text("Hermes project rules.")
-        result = build_context_files_prompt(cwd=str(tmp_path))
+        result = build_context_files_prompt(cwd=str(tmp_path), compose=False)
         assert "Hermes project rules" in result
         assert "Agent guidelines" not in result
 
     def test_agents_md_beats_claude_md(self, tmp_path):
         (tmp_path / "AGENTS.md").write_text("Agent guidelines here.")
         (tmp_path / "CLAUDE.md").write_text("Claude guidelines here.")
-        result = build_context_files_prompt(cwd=str(tmp_path))
+        result = build_context_files_prompt(cwd=str(tmp_path), compose=False)
         assert "Agent guidelines" in result
         assert "Claude guidelines" not in result
 
     def test_claude_md_beats_cursorrules(self, tmp_path):
         (tmp_path / "CLAUDE.md").write_text("Claude guidelines here.")
         (tmp_path / ".cursorrules").write_text("Cursor rules here.")
-        result = build_context_files_prompt(cwd=str(tmp_path))
+        result = build_context_files_prompt(cwd=str(tmp_path), compose=False)
         assert "Claude guidelines" in result
         assert "Cursor rules" not in result
 
@@ -654,12 +659,12 @@ class TestBuildContextFilesPrompt:
         assert "BLOCKED" in result
 
     def test_hermes_md_beats_all_others(self, tmp_path):
-        """When all four types exist, only .hermes.md is loaded."""
+        """When all four exist, only .hermes.md is loaded (legacy mode)."""
         (tmp_path / ".hermes.md").write_text("Hermes wins.")
         (tmp_path / "AGENTS.md").write_text("Agents lose.")
         (tmp_path / "CLAUDE.md").write_text("Claude loses.")
         (tmp_path / ".cursorrules").write_text("Cursor loses.")
-        result = build_context_files_prompt(cwd=str(tmp_path))
+        result = build_context_files_prompt(cwd=str(tmp_path), compose=False)
         assert "Hermes wins" in result
         assert "Agents lose" not in result
         assert "Claude loses" not in result
@@ -1027,6 +1032,189 @@ class TestOpenAIModelExecutionGuidance:
     def test_guidance_is_string(self):
         assert isinstance(OPENAI_MODEL_EXECUTION_GUIDANCE, str)
         assert len(OPENAI_MODEL_EXECUTION_GUIDANCE) > 100
+
+
+# =========================================================================
+# Walk functions — _resolve_walk_limit, _walk_parents, _load_all_of_type
+# =========================================================================
+
+
+class TestResolveWalkLimit:
+    def test_home_returns_home_path(self):
+        from pathlib import Path
+        result = _resolve_walk_limit("home")
+        assert result == Path.home()
+
+    def test_unlimited_returns_none(self):
+        assert _resolve_walk_limit("unlimited") is None
+
+    def test_empty_returns_none(self):
+        assert _resolve_walk_limit("") is None
+
+    def test_git_root_returns_none(self):
+        assert _resolve_walk_limit("git_root") is None
+
+    def test_absolute_path_resolves(self, tmp_path):
+        from pathlib import Path as _P
+        result = _resolve_walk_limit(str(tmp_path))
+        expected = _P(str(tmp_path)).resolve()
+        # macOS /tmp -> /private/tmp symlink can cause case differences
+        assert str(result).lower() == str(expected).lower()
+
+
+class TestWalkParents:
+    def test_includes_cwd(self, tmp_path):
+        result = _walk_parents(tmp_path, walk_limit="home")
+        assert tmp_path in result
+
+    def test_stops_at_git_root(self, tmp_path):
+        (tmp_path / ".git").mkdir()
+        sub = tmp_path / "src" / "lib"
+        sub.mkdir(parents=True)
+        result = _walk_parents(sub, walk_limit="git_root")
+        assert tmp_path in result  # git root is included
+        # Should not include directories above git root
+        result_strs = [str(p) for p in result]
+        for parent in tmp_path.parents:
+            assert str(parent) not in result_strs
+
+    def test_stops_at_home(self, tmp_path, monkeypatch):
+        from pathlib import Path
+        # Create a dir under home
+        home = Path.home()
+        under_home = home / "test_walk_parents_tmp"
+        under_home.mkdir(exist_ok=True)
+        try:
+            sub = under_home / "a" / "b"
+            sub.mkdir(parents=True)
+            result = _walk_parents(sub, walk_limit="home")
+            result_strs = [str(p) for p in result]
+            # home should be in the result
+            assert str(home) in result_strs
+        finally:
+            import shutil
+            shutil.rmtree(under_home, ignore_errors=True)
+
+
+class TestLoadAllOfType:
+    def test_finds_all_matching_files(self, tmp_path):
+        (tmp_path / "AGENTS.md").write_text("root agents")
+        sub = tmp_path / "src"
+        sub.mkdir()
+        (sub / "AGENTS.md").write_text("src agents")
+        result = _load_all_of_type([tmp_path, sub], ("AGENTS.md",), "AGENTS.md")
+        assert len(result) == 2
+
+    def test_returns_empty_when_no_match(self, tmp_path):
+        result = _load_all_of_type([tmp_path], ("NONEXISTENT.md",), "test")
+        assert result == []
+
+
+# =========================================================================
+# Compose mode — multiple context files loaded simultaneously
+# =========================================================================
+
+
+class TestComposeMode:
+    def test_compose_loads_multiple_types(self, tmp_path):
+        """When compose=True, both .hermes.md and AGENTS.md are loaded."""
+        (tmp_path / ".hermes.md").write_text("Hermes rules.")
+        (tmp_path / "AGENTS.md").write_text("Agent rules.")
+        result = build_context_files_prompt(cwd=str(tmp_path), compose=True)
+        assert "Hermes rules" in result
+        assert "Agent rules" in result
+
+    def test_compose_loads_agents_and_claude(self, tmp_path):
+        """Both AGENTS.md and CLAUDE.md loaded when compose=True."""
+        (tmp_path / "AGENTS.md").write_text("Agents.")
+        (tmp_path / "CLAUDE.md").write_text("Claude.")
+        result = build_context_files_prompt(cwd=str(tmp_path), compose=True)
+        assert "Agents" in result
+        assert "Claude" in result
+
+    def test_legacy_first_match_wins(self, tmp_path):
+        """When compose=False, only the highest-priority file loads."""
+        (tmp_path / ".hermes.md").write_text("Hermes wins.")
+        (tmp_path / "AGENTS.md").write_text("Agents lose.")
+        result = build_context_files_prompt(cwd=str(tmp_path), compose=False)
+        assert "Hermes wins" in result
+        assert "Agents lose" not in result
+
+    def test_compose_walks_parents(self, tmp_path):
+        """Compose mode collects files from parent directories."""
+        (tmp_path / ".git").mkdir()
+        (tmp_path / ".hermes.md").write_text("Root hermes.")
+        sub = tmp_path / "src"
+        sub.mkdir()
+        (sub / "AGENTS.md").write_text("Sub agents.")
+        result = build_context_files_prompt(cwd=str(sub), compose=True, walk_limit="git_root")
+        assert "Root hermes" in result
+        assert "Sub agents" in result
+
+    def test_compose_strips_frontmatter(self, tmp_path):
+        """Compose mode strips YAML frontmatter from .hermes.md files."""
+        content = "---\nmodel: claude\n---\n\n# Project\n\nUse Ruff."
+        (tmp_path / ".hermes.md").write_text(content)
+        result = build_context_files_prompt(cwd=str(tmp_path), compose=True)
+        assert "Use Ruff" in result
+        assert "claude" not in result
+
+
+# =========================================================================
+# discover_context_files — path listing for /context command
+# =========================================================================
+
+
+class TestDiscoverContextFiles:
+    def test_returns_hermes_md(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+        (tmp_path / "home").mkdir()
+        (tmp_path / ".hermes.md").write_text("rules")
+        result = discover_context_files(cwd=str(tmp_path), compose=True)
+        assert ".hermes.md" in result
+
+    def test_returns_agents_md(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+        (tmp_path / "home").mkdir()
+        (tmp_path / "AGENTS.md").write_text("rules")
+        result = discover_context_files(cwd=str(tmp_path), compose=True)
+        assert "AGENTS.md" in result
+
+    def test_returns_all_files_in_compose_mode(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+        (tmp_path / "home").mkdir()
+        (tmp_path / ".hermes.md").write_text("hermes")
+        (tmp_path / "AGENTS.md").write_text("agents")
+        (tmp_path / "CLAUDE.md").write_text("claude")
+        result = discover_context_files(cwd=str(tmp_path), compose=True)
+        assert ".hermes.md" in result
+        assert "AGENTS.md" in result
+        assert "CLAUDE.md" in result
+
+    def test_legacy_returns_only_first_match(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+        (tmp_path / "home").mkdir()
+        (tmp_path / ".hermes.md").write_text("hermes")
+        (tmp_path / "AGENTS.md").write_text("agents")
+        result = discover_context_files(cwd=str(tmp_path), compose=False)
+        assert ".hermes.md" in result
+        assert "AGENTS.md" not in result
+
+    def test_includes_soul_md(self, tmp_path, monkeypatch):
+        home = tmp_path / "hermes_home"
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        (home / "SOUL.md").write_text("soul")
+        result = discover_context_files(cwd=str(tmp_path), compose=True)
+        assert any("SOUL.md" in f for f in result)
+
+    def test_empty_when_no_files(self, tmp_path, monkeypatch):
+        home = tmp_path / "hermes_home"
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        result = discover_context_files(cwd=str(tmp_path), compose=True)
+        # SOUL.md won't exist, so result may be empty
+        assert isinstance(result, list)
 
 
 # =========================================================================

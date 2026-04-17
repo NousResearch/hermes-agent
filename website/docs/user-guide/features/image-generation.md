@@ -1,6 +1,6 @@
 ---
 title: Image Generation
-description: Generate images via FAL.ai — 8 models including FLUX 2, GPT-Image, Nano Banana, Ideogram, and more, selectable via `hermes tools`.
+description: Generate images via FAL.ai — 8 models including FLUX 2, GPT-Image, Nano Banana Pro, Ideogram, Recraft V4 Pro, and more, selectable via `hermes tools`.
 sidebar_label: Image Generation
 sidebar_position: 6
 ---
@@ -13,13 +13,13 @@ Hermes Agent generates images from text prompts via FAL.ai. Eight models are sup
 
 | Model | Speed | Strengths | Price |
 |---|---|---|---|
-| `fal-ai/flux-2/klein/9b` *(default)* | <1s | Fast, crisp text | $0.006/MP |
+| `fal-ai/flux-2/klein/9b` *(default)* | `<1s` | Fast, crisp text | $0.006/MP |
 | `fal-ai/flux-2-pro` | ~6s | Studio photorealism | $0.03/MP |
 | `fal-ai/z-image/turbo` | ~2s | Bilingual EN/CN, 6B params | $0.005/MP |
-| `fal-ai/nano-banana` | ~6s | Gemini 2.5, character consistency | $0.08/image |
+| `fal-ai/nano-banana-pro` | ~8s | Gemini 3 Pro, reasoning depth, text rendering | $0.15/image (1K) |
 | `fal-ai/gpt-image-1.5` | ~15s | Prompt adherence | $0.034/image |
 | `fal-ai/ideogram/v3` | ~5s | Best typography | $0.03–0.09/image |
-| `fal-ai/recraft-v3` | ~8s | Vector art, brand styles | $0.04/image |
+| `fal-ai/recraft/v4/pro/text-to-image` | ~8s | Design, brand systems, production-ready | $0.25/image |
 | `fal-ai/qwen-image` | ~12s | LLM-based, complex text | $0.02/MP |
 
 Prices are FAL's pricing at time of writing; check [fal.ai](https://fal.ai/) for current numbers.
@@ -87,7 +87,7 @@ Make me a futuristic cityscape, landscape orientation
 
 Every model accepts the same three aspect ratios from the agent's perspective. Internally, each model's native size spec is filled in automatically:
 
-| Agent input | image_size (flux/z-image/qwen/recraft/ideogram) | aspect_ratio (nano-banana) | image_size (gpt-image) |
+| Agent input | image_size (flux/z-image/qwen/recraft/ideogram) | aspect_ratio (nano-banana-pro) | image_size (gpt-image) |
 |---|---|---|---|
 | `landscape` | `landscape_16_9` | `16:9` | `1536x1024` |
 | `square` | `square_hd` | `1:1` | `1024x1024` |

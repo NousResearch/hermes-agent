@@ -40,6 +40,19 @@ def test_get_platform_tools_preserves_explicit_empty_selection():
     assert enabled == set()
 
 
+def test_get_platform_tools_handles_null_platform_toolsets():
+    """YAML `platform_toolsets:` with no value parses as None — the old
+    ``config.get("platform_toolsets", {})`` pattern would then crash with
+    ``NoneType has no attribute 'get'`` on the next line. Guard against that.
+    """
+    config = {"platform_toolsets": None}
+
+    enabled = _get_platform_tools(config, "cli")
+
+    # Falls through to defaults instead of raising
+    assert enabled
+
+
 def test_platform_toolset_summary_uses_explicit_platform_list():
     config = {}
 

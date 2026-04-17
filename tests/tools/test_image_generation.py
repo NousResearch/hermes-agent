@@ -107,16 +107,16 @@ class TestAspectRatioFamily:
     """Nano-banana uses aspect_ratio enum, NOT image_size."""
 
     def test_nano_banana_landscape_uses_aspect_ratio(self, image_tool):
-        p = image_tool._build_fal_payload("fal-ai/nano-banana", "hello", "landscape")
+        p = image_tool._build_fal_payload("fal-ai/nano-banana-pro", "hello", "landscape")
         assert p["aspect_ratio"] == "16:9"
         assert "image_size" not in p
 
     def test_nano_banana_square_uses_aspect_ratio(self, image_tool):
-        p = image_tool._build_fal_payload("fal-ai/nano-banana", "hello", "square")
+        p = image_tool._build_fal_payload("fal-ai/nano-banana-pro", "hello", "square")
         assert p["aspect_ratio"] == "1:1"
 
     def test_nano_banana_portrait_uses_aspect_ratio(self, image_tool):
-        p = image_tool._build_fal_payload("fal-ai/nano-banana", "hello", "portrait")
+        p = image_tool._build_fal_payload("fal-ai/nano-banana-pro", "hello", "portrait")
         assert p["aspect_ratio"] == "9:16"
 
 
@@ -164,13 +164,17 @@ class TestSupportsFilter:
         assert "num_inference_steps" not in p
 
     def test_recraft_has_minimal_payload(self, image_tool):
-        # Recraft supports prompt, image_size, style only.
-        p = image_tool._build_fal_payload("fal-ai/recraft-v3", "hi", "landscape")
-        assert set(p.keys()) <= {"prompt", "image_size", "style"}
+        # Recraft V4 Pro supports prompt, image_size, enable_safety_checker,
+        # colors, background_color (no seed, no style — V4 dropped V3's style enum).
+        p = image_tool._build_fal_payload("fal-ai/recraft/v4/pro/text-to-image", "hi", "landscape")
+        assert set(p.keys()) <= {
+            "prompt", "image_size", "enable_safety_checker",
+            "colors", "background_color",
+        }
 
     def test_nano_banana_never_gets_image_size(self, image_tool):
         # Common bug: translator accidentally setting both image_size and aspect_ratio.
-        p = image_tool._build_fal_payload("fal-ai/nano-banana", "hi", "landscape", seed=1)
+        p = image_tool._build_fal_payload("fal-ai/nano-banana-pro", "hi", "landscape", seed=1)
         assert "image_size" not in p
         assert p["aspect_ratio"] == "16:9"
 
@@ -285,9 +289,9 @@ class TestModelResolution:
     def test_config_wins_over_env_var(self, image_tool, monkeypatch):
         monkeypatch.setenv("FAL_IMAGE_MODEL", "fal-ai/z-image/turbo")
         with patch("hermes_cli.config.load_config",
-                   return_value={"image_gen": {"model": "fal-ai/nano-banana"}}):
+                   return_value={"image_gen": {"model": "fal-ai/nano-banana-pro"}}):
             mid, _ = image_tool._resolve_fal_model()
-        assert mid == "fal-ai/nano-banana"
+        assert mid == "fal-ai/nano-banana-pro"
 
 
 # ---------------------------------------------------------------------------
@@ -387,10 +391,10 @@ class TestManagedGatewayErrorTranslation:
                             lambda gw: mock_managed_client)
 
         with pytest.raises(ValueError) as exc_info:
-            image_tool._submit_fal_request("fal-ai/nano-banana", {"prompt": "x"})
+            image_tool._submit_fal_request("fal-ai/nano-banana-pro", {"prompt": "x"})
 
         msg = str(exc_info.value)
-        assert "fal-ai/nano-banana" in msg
+        assert "fal-ai/nano-banana-pro" in msg
         assert "403" in msg
         assert "FAL_KEY" in msg
         assert "hermes tools" in msg

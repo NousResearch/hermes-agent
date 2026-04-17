@@ -76,6 +76,7 @@ def _codex_curated_models() -> list[str]:
 _PROVIDER_MODELS: dict[str, list[str]] = {
     "nous": [
         "xiaomi/mimo-v2-pro",
+        "anthropic/claude-opus-4.7",
         "anthropic/claude-opus-4.6",
         "anthropic/claude-sonnet-4.6",
         "anthropic/claude-sonnet-4.5",
@@ -1487,6 +1488,19 @@ _COPILOT_MODEL_ALIASES = {
     "anthropic/claude-sonnet-4.6": "claude-sonnet-4.6",
     "anthropic/claude-sonnet-4.5": "claude-sonnet-4.5",
     "anthropic/claude-haiku-4.5": "claude-haiku-4.5",
+    # Dash-notation fallbacks: Hermes' default Claude IDs elsewhere use
+    # hyphens (anthropic native format), but Copilot's API only accepts
+    # dot-notation.  Accept both so users who configure copilot + a
+    # default hyphenated Claude model don't hit HTTP 400
+    # "model_not_supported".  See issue #6879.
+    "claude-opus-4-6": "claude-opus-4.6",
+    "claude-sonnet-4-6": "claude-sonnet-4.6",
+    "claude-sonnet-4-5": "claude-sonnet-4.5",
+    "claude-haiku-4-5": "claude-haiku-4.5",
+    "anthropic/claude-opus-4-6": "claude-opus-4.6",
+    "anthropic/claude-sonnet-4-6": "claude-sonnet-4.6",
+    "anthropic/claude-sonnet-4-5": "claude-sonnet-4.5",
+    "anthropic/claude-haiku-4-5": "claude-haiku-4.5",
 }
 
 

@@ -104,6 +104,7 @@ from gateway.platforms.base import (
     cache_image_from_url,
     cache_audio_from_bytes,
     cache_image_from_bytes,
+    utf16_len,
 )
 from gateway.status import acquire_scoped_lock, release_scoped_lock
 from hermes_constants import get_hermes_home
@@ -1369,7 +1370,7 @@ class FeishuAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         formatted = self.format_message(content)
-        chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+        chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH, len_fn=utf16_len)
         last_response = None
 
         try:

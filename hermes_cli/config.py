@@ -1828,11 +1828,25 @@ def _normalize_custom_provider_entry(
         normalized["model"] = model_name.strip()
 
     models = entry.get("models")
-    if isinstance(models, dict) and models:
+    if isinstance(models, list):
+        # Convert list of model objects to a dict keyed by id for runtime compatibility
+        model_dict = {}
+        for m in models:
+            if isinstance(m, dict) and "id" in m:
+                model_dict[m["id"]] = m
+        normalized["models"] = model_dict
+    elif isinstance(models, dict) and models:
         normalized["models"] = models
 
-    context_length = entry.get("context_length")
-    if isinstance(context_length, int) and context_length > 0:
+    # Check for various context length keys (mirroring agent/model_metadata.py)
+    context_length = None
+    for k in ("context_length", "context_window", "max_context_length"):
+        val = entry.get(k)
+        if isinstance(val, int) and val > 0:
+            context_length = val
+            break
+    
+    if context_length:
         normalized["context_length"] = context_length
 
     rate_limit_delay = entry.get("rate_limit_delay")

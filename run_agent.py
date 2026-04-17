@@ -1395,11 +1395,22 @@ class AIAgent:
                     continue
                 _cp_url = (_cp_entry.get("base_url") or "").rstrip("/")
                 if _cp_url and _cp_url == self.base_url.rstrip("/"):
+                    # Check for provider-level context length override first
+                    for k in ("context_length", "context_window", "max_context_length"):
+                        _val = _cp_entry.get(k)
+                        if isinstance(_val, int) and _val > 0:
+                            _config_context_length = _val
+                            break
+
                     _cp_models = _cp_entry.get("models", {})
                     if isinstance(_cp_models, dict):
                         _cp_model_cfg = _cp_models.get(self.model, {})
                         if isinstance(_cp_model_cfg, dict):
-                            _cp_ctx = _cp_model_cfg.get("context_length")
+                            _cp_ctx = None
+                            for k in ("context_length", "context_window", "max_context_length"):
+                                _cp_ctx = _cp_model_cfg.get(k)
+                                if _cp_ctx is not None:
+                                    break
                             if _cp_ctx is not None:
                                 try:
                                     _config_context_length = int(_cp_ctx)
@@ -1418,6 +1429,39 @@ class AIAgent:
                                         f"  Falling back to auto-detected context window.\n",
                                         file=sys.stderr,
                                     )
+                                    _config_context_length = None
+                                break # Found the match, stop searching providers
+                    elif isinstance(_cp_models, list):
+                        # Handle OpenClaw-style list of model objects
+                        for _m in _cp_models:
+                            if isinstance(_m, dict) and _m.get("id") == self.model:
+                                _cp_ctx = None
+                                for k in ("context_length", "context_window", "max_context_length"):
+                                    _cp_ctx = _m.get(k)
+                                    if _cp_ctx is not None:
+                                        break
+                                if _cp_ctx is not None:
+                                    try:
+                                        _config_context_length = int(_cp_ctx)
+                                    except (TypeError, ValueError):
+                                        logger.warning(
+                                            "Invalid context_length for model %r in "
+                                            "custom_providers: %r — must be a plain "
+                                            "integer (e.g. 256000, not '256K'). "
+                                            "Falling back to auto-detection.",
+                                            self.model, _cp_ctx,
+                                        )
+                                        import sys
+                                        print(
+                                            f"\n⚠ Invalid context_length for model {self.model!r} in custom_providers: {_cp_ctx!r}\n"
+                                            f"  Must be a plain integer (e.g. 256000, not '256K').\n"
+                                            f"  Falling back to auto-detected context window.\n",
+                                            file=sys.stderr,
+                                        )
+                                        _config_context_length = None
+                                break
+                        if _config_context_length is not None:
+                            break # Found match in this provider's list
                     break
         
         # Select context engine: config-driven (like memory providers).

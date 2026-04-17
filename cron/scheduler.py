@@ -1053,7 +1053,18 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         #
         # Uses the agent's built-in activity tracker (updated by
         # _touch_activity() on every tool call, API call, and stream delta).
-        _cron_timeout = float(os.getenv("HERMES_CRON_TIMEOUT", 600))
+        _raw_cron_timeout = os.getenv("HERMES_CRON_TIMEOUT", "").strip()
+        if _raw_cron_timeout:
+            try:
+                _cron_timeout = float(_raw_cron_timeout)
+            except (ValueError, TypeError):
+                logger.warning(
+                    "Invalid HERMES_CRON_TIMEOUT=%r; using default 600s",
+                    _raw_cron_timeout,
+                )
+                _cron_timeout = 600.0
+        else:
+            _cron_timeout = 600.0
         _cron_inactivity_limit = _cron_timeout if _cron_timeout > 0 else None
         _POLL_INTERVAL = 5.0
         _cron_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)

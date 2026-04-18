@@ -1182,6 +1182,7 @@ def _format_process_notification(evt: dict) -> "str | None":
     evt_type = evt.get("type", "completion")
     _sid = evt.get("session_id", "unknown")
     _cmd = evt.get("command", "unknown")
+    _is_codex_turn = isinstance(_sid, str) and _sid.startswith("codex_turn_")
 
     if evt_type == "watch_disabled":
         return f"[SYSTEM: {evt.get('message', '')}]"
@@ -1204,6 +1205,16 @@ def _format_process_notification(evt: dict) -> "str | None":
     # Default: completion event
     _exit = evt.get("exit_code", "?")
     _out = evt.get("output", "")
+    if _is_codex_turn:
+        _state = "completed" if _exit == 0 else "failed"
+        return (
+            f"[SYSTEM: Codex app-server turn {_state} "
+            f"(exit code {_exit}).\n"
+            f"Session: {_sid}\n"
+            f"Command: {_cmd}\n"
+            f"Output:\n{_out}\n"
+            f"Verify git diff and run relevant tests before declaring success.]"
+        )
     return (
         f"[SYSTEM: Background process {_sid} completed "
         f"(exit code {_exit}).\n"

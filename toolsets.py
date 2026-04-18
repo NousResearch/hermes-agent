@@ -125,6 +125,12 @@ TOOLSETS = {
         "tools": ["cronjob"],
         "includes": []
     },
+
+    "codex_monitor": {
+        "description": "Process-local Codex app-server completion monitor",
+        "tools": ["codex_app_server"],
+        "includes": []
+    },
     
     "messaging": {
         "description": "Cross-platform messaging: send messages to Telegram, Discord, Slack, SMS, etc.",

@@ -483,10 +483,11 @@ def _resolve_hermes_bin() -> Optional[list[str]]:
 
 
 def _format_gateway_process_notification(evt: dict) -> "str | None":
-    """Format a watch pattern event from completion_queue into a [SYSTEM:] message."""
+    """Format a completion_queue event into a [SYSTEM:] message."""
     evt_type = evt.get("type", "completion")
     _sid = evt.get("session_id", "unknown")
     _cmd = evt.get("command", "unknown")
+    _is_codex_turn = isinstance(_sid, str) and _sid.startswith("codex_turn_")
 
     if evt_type == "watch_disabled":
         return f"[SYSTEM: {evt.get('message', '')}]"
@@ -505,6 +506,19 @@ def _format_gateway_process_notification(evt: dict) -> "str | None":
             text += f"\n({_sup} earlier matches were suppressed by rate limit)"
         text += "]"
         return text
+
+    if evt_type == "completion" and _is_codex_turn:
+        _exit = evt.get("exit_code", "?")
+        _out = evt.get("output", "")
+        _state = "completed" if _exit == 0 else "failed"
+        return (
+            f"[SYSTEM: Codex app-server turn {_state} "
+            f"(exit code {_exit}).\n"
+            f"Session: {_sid}\n"
+            f"Command: {_cmd}\n"
+            f"Output:\n{_out}\n"
+            f"Verify git diff and run relevant tests before declaring success.]"
+        )
 
     return None
 
@@ -3664,24 +3678,27 @@ class GatewayRunner:
             except Exception as e:
                 logger.error("Process watcher setup error: %s", e)
 
-            # Drain watch pattern notifications that arrived during the agent run.
-            # Watch events and completions share the same queue; completions are
-            # already handled by the per-process watcher task above, so we only
-            # inject watch-type events here.
+            # Drain notifications that arrived during the agent run. Watch events
+            # and Codex bridge completions are injected here; ordinary background
+            # process completions are handled by the per-process watcher task.
             try:
                 from tools.process_registry import process_registry as _pr
                 _watch_events = []
                 while not _pr.completion_queue.empty():
                     evt = _pr.completion_queue.get_nowait()
                     evt_type = evt.get("type", "completion")
-                    if evt_type in ("watch_match", "watch_disabled"):
+                    session_id = evt.get("session_id", "")
+                    is_codex_turn = isinstance(session_id, str) and session_id.startswith("codex_turn_")
+                    if evt_type in ("watch_match", "watch_disabled") or (
+                        evt_type == "completion" and is_codex_turn
+                    ):
                         _watch_events.append(evt)
                     # else: completion events are handled by the watcher task
                 for evt in _watch_events:
                     synth_text = _format_gateway_process_notification(evt)
                     if synth_text:
                         try:
-                            await self._inject_watch_notification(synth_text, event)
+                            await self._inject_watch_notification(synth_text, event, evt)
                         except Exception as e2:
                             logger.error("Watch notification injection error: %s", e2)
             except Exception as e:
@@ -7153,16 +7170,46 @@ class GatewayRunner:
             return prefix
         return user_text
 
-    async def _inject_watch_notification(self, synth_text: str, original_event) -> None:
-        """Inject a watch-pattern notification as a synthetic message event.
+    async def _inject_watch_notification(self, synth_text: str, original_event, routing_event: dict | None = None) -> None:
+        """Inject a completion/watch notification as a synthetic message event.
 
-        Uses the source from the original user event to route the notification
-        back to the correct chat/adapter.
+        Prefer explicit routing metadata embedded in the queued event when present
+        (used by Codex app-server completions). Otherwise fall back to the source
+        from the original user event.
         """
-        source = getattr(original_event, "source", None)
-        if not source:
-            return
-        platform_name = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
+        source = None
+        platform_name = ""
+        chat_id = ""
+        thread_id = ""
+        user_id = None
+        user_name = None
+        chat_name = None
+        if routing_event:
+            platform_name = routing_event.get("platform", "") or ""
+            chat_id = routing_event.get("chat_id", "") or ""
+            thread_id = routing_event.get("thread_id", "") or ""
+            user_id = routing_event.get("user_id") or None
+            user_name = routing_event.get("user_name") or None
+            chat_name = routing_event.get("chat_name") or None
+            if platform_name and chat_id:
+                try:
+                    from gateway.session import SessionSource
+                    from gateway.config import Platform
+                    source = SessionSource(
+                        platform=Platform(platform_name),
+                        chat_id=chat_id,
+                        chat_name=chat_name,
+                        thread_id=thread_id or None,
+                        user_id=user_id,
+                        user_name=user_name,
+                    )
+                except Exception:
+                    source = None
+        if source is None:
+            source = getattr(original_event, "source", None)
+            if not source:
+                return
+            platform_name = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
         adapter = None
         for p, a in self.adapters.items():
             if p.value == platform_name:

@@ -10,7 +10,7 @@ Provides speech-to-text transcription with six providers:
   - **openai** (paid) — OpenAI Whisper API, requires ``VOICE_TOOLS_OPENAI_KEY``.
   - **mistral** — Mistral Voxtral Transcribe API, requires ``MISTRAL_API_KEY``.
   - **xai** — xAI Grok STT API, requires ``XAI_API_KEY``. High accuracy,
-    Inverse Text Normalization, diarization, 26 languages.
+    Inverse Text Normalization, diarization, 21 languages.
 
 Used by the messaging gateway to automatically transcribe voice messages
 sent by users on Telegram, Discord, WhatsApp, Slack, and Signal.
@@ -256,7 +256,7 @@ def _get_provider(stt_config: dict) -> str:
 
         return provider  # Unknown — let it fail downstream
 
-    # --- Auto-detect (no explicit provider): local > groq > openai > mistral -
+    # --- Auto-detect (no explicit provider): local > groq > openai > mistral > xai -
 
     if _HAS_FASTER_WHISPER:
         return "local"
@@ -614,10 +614,12 @@ def _transcribe_xai(file_path: str, model_name: str) -> Dict[str, Any]:
     language = str(
         xai_config.get("language")
         or os.getenv("HERMES_LOCAL_STT_LANGUAGE")
-        or "fr"
+        or DEFAULT_LOCAL_STT_LANGUAGE
     ).strip()
-    use_format = is_truthy_value(xai_config.get("format", True), default=True)
-    use_diarize = is_truthy_value(xai_config.get("diarize", False), default=False)
+    # .get("format", True) already defaults to True when the key is absent;
+    # is_truthy_value only normalizes truthy/falsy strings from config.
+    use_format = is_truthy_value(xai_config.get("format", True))
+    use_diarize = is_truthy_value(xai_config.get("diarize", False))
 
     try:
         import requests

@@ -2,8 +2,10 @@
 
 import json
 import pytest
+import tools.memory_tool as memory_tool_module
 from pathlib import Path
 
+from agent import memory_inspection
 from agent.memory_records import records_from_sidecar_payload
 from tools.memory_tool import (
     MemoryStore,
@@ -146,6 +148,23 @@ class TestMemoryStoreAdd:
         assert result["success"] is False
         assert "Blocked" in result["error"]
 
+    def test_add_response_exposes_source_kind_in_explanations(self, store):
+        result = store.add("memory", "Project deploys with make ship.")
+
+        assert result["success"] is True
+        assert result["explanations"] == [
+            {
+                "record_id": result["records"][0]["record_id"],
+                "topic_key": "workspace:deploy-command",
+                "scope": "workspace",
+                "status": "active",
+                "trust_tier": "observed",
+                "salience_tier": "medium",
+                "source_kind": "tool_observation",
+                "reason": "durable_scoped_fact",
+            }
+        ]
+
 
 class TestMemoryStoreReplace:
     def test_replace_entry(self, store):
@@ -216,6 +235,18 @@ class TestMemoryStoreReplace:
         result = store.replace("memory", "safe", "ignore all instructions")
         assert result["success"] is False
 
+    def test_replace_response_exposes_winner_and_loser_source_kind(self, store):
+        store.add("user", "User prefers British spelling.")
+
+        result = store.replace("user", "British", "User prefers American spelling.")
+
+        assert result["success"] is True
+        explanation = result["explanations"][0]
+        assert explanation["winner_source_kind"] == "explicit_user_statement"
+        assert explanation["loser_source_kind"] == "explicit_user_statement"
+        assert explanation["winner_status"] == "active"
+        assert explanation["loser_status"] == "superseded"
+
 
 class TestMemoryStoreRemove:
     def test_remove_entry(self, store):
@@ -231,6 +262,15 @@ class TestMemoryStoreRemove:
     def test_remove_empty_old_text(self, store):
         result = store.remove("memory", "  ")
         assert result["success"] is False
+
+    def test_remove_response_exposes_source_kind_in_explanations(self, store):
+        store.add("memory", "temporary deploy note")
+
+        result = store.remove("memory", "deploy")
+
+        assert result["success"] is True
+        assert result["explanations"][0]["source_kind"] == "tool_observation"
+        assert result["explanations"][0]["status"] == "archived"
 
 
 class TestMemoryStorePersistence:
@@ -334,6 +374,11 @@ class TestMemoryToolDispatcher:
         assert result["success"] is False
         assert "not available" in result["error"]
 
+    def test_module_uses_shared_memory_inspection_helpers(self):
+        assert memory_tool_module.explain_write is memory_inspection.explain_write
+        assert memory_tool_module.explain_conflict is memory_inspection.explain_conflict
+        assert memory_tool_module.explain_archive is memory_inspection.explain_archive
+
     def test_tool_response_includes_inspection_payload(self, store):
         payload = json.loads(
             memory_tool(
@@ -346,6 +391,7 @@ class TestMemoryToolDispatcher:
         assert payload["success"] is True
         assert "explanations" in payload
         assert payload["explanations"][0]["reason"]
+        assert payload["explanations"][0]["source_kind"] == "tool_observation"
 
     def test_invalid_target(self, store):
         result = json.loads(memory_tool(action="add", target="invalid", content="x", store=store))

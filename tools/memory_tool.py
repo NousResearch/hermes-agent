@@ -35,6 +35,7 @@ from pathlib import Path
 from hermes_constants import get_hermes_home
 from typing import Dict, Any, List, Optional
 
+from agent.memory_inspection import explain_archive, explain_conflict, explain_write
 from agent.memory_policy import ConflictDecision, WriteClass, assign_topic_key, classify_write_candidate, resolve_conflict
 from agent.memory_records import (
     MemoryRecord,
@@ -117,38 +118,6 @@ def _scan_memory_content(content: str) -> Optional[str]:
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-
-
-def _explain_write(record: MemoryRecord, reason: str) -> Dict[str, Any]:
-    return {
-        "record_id": record.record_id,
-        "topic_key": record.topic_key,
-        "scope": record.scope.value,
-        "status": record.status.value,
-        "trust_tier": record.trust_tier.value,
-        "salience_tier": record.salience_tier.value,
-        "reason": reason,
-    }
-
-
-def _explain_conflict(conflict) -> Dict[str, Any]:
-    return {
-        "winner_record_id": conflict.winner.record_id,
-        "loser_record_id": conflict.loser.record_id,
-        "loser_status": conflict.loser_status.value,
-        "reason": conflict.reason,
-        "topic_key": conflict.winner.topic_key,
-    }
-
-
-def _explain_archive(record: MemoryRecord, reason: str) -> Dict[str, Any]:
-    return {
-        "record_id": record.record_id,
-        "topic_key": record.topic_key,
-        "scope": record.scope.value,
-        "status": record.status.value,
-        "reason": reason,
-    }
 
 
 class MemoryStore:
@@ -485,7 +454,7 @@ class MemoryStore:
             self.records = self._deduplicate_records(self.records)
             self._persist_state()
 
-        return self._success_response(target, "Entry added.", explanations=[_explain_write(record, decision.reason)])
+        return self._success_response(target, "Entry added.", explanations=[explain_write(record, decision.reason)])
 
     def replace(self, target: str, old_text: str, new_content: str) -> Dict[str, Any]:
         """Supersede the record containing old_text with a new record-backed replacement."""
@@ -562,7 +531,7 @@ class MemoryStore:
             self.records = self._deduplicate_records(projected_records)
             self._persist_state()
 
-        return self._success_response(target, "Entry replaced.", explanations=[_explain_conflict(conflict)])
+        return self._success_response(target, "Entry replaced.", explanations=[explain_conflict(conflict)])
 
     def remove(self, target: str, old_text: str) -> Dict[str, Any]:
         """Archive the record containing old_text."""
@@ -595,7 +564,7 @@ class MemoryStore:
         return self._success_response(
             target,
             "Entry removed.",
-            explanations=[_explain_archive(archived_record or record, "operator_requested_archive")],
+            explanations=[explain_archive(archived_record or record, "operator_requested_archive")],
         )
 
     def format_for_system_prompt(self, target: str) -> Optional[str]:

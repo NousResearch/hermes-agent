@@ -148,6 +148,58 @@ _file_ops_cache: dict = {}
 _read_tracker_lock = threading.Lock()
 _read_tracker: dict = {}
 
+# Per-task bounds for the containers inside each _read_tracker[task_id].
+# A CLI session uses one stable task_id for its lifetime; without these
+# caps, a 10k-read session would accumulate ~1.5MB of dict/set state that
+# is never referenced again (only the most recent reads matter for dedup,
+# loop detection, and external-edit warnings).  Hard caps bound the
+# accretion to a few hundred KB regardless of session length.
+_READ_HISTORY_CAP = 500       # set; used only by get_read_files_summary
+_DEDUP_CAP = 1000             # dict; skip-identical-reread guard
+_READ_TIMESTAMPS_CAP = 1000   # dict; external-edit detection for write/patch
+
+
+def _cap_read_tracker_data(task_data: dict) -> None:
+    """Enforce size caps on the per-task read-tracker sub-containers.
+
+    Must be called with ``_read_tracker_lock`` held.  Eviction policy:
+
+      * ``read_history`` (set): pop arbitrary entries on overflow.  This
+        is fine because the set only feeds diagnostic summaries; losing
+        old entries just trims the summary's tail.
+      * ``dedup`` / ``read_timestamps`` (dict): pop oldest by insertion
+        order (Python 3.7+ dicts).  Evicted entries lose their dedup
+        skip on a future re-read (the file gets re-sent once) and
+        external-edit mtime comparison (the write/patch falls back to
+        a non-mtime check).  Both are graceful degradations, not bugs.
+    """
+    rh = task_data.get("read_history")
+    if rh is not None and len(rh) > _READ_HISTORY_CAP:
+        excess = len(rh) - _READ_HISTORY_CAP
+        for _ in range(excess):
+            try:
+                rh.pop()
+            except KeyError:
+                break
+
+    dedup = task_data.get("dedup")
+    if dedup is not None and len(dedup) > _DEDUP_CAP:
+        excess = len(dedup) - _DEDUP_CAP
+        for _ in range(excess):
+            try:
+                dedup.pop(next(iter(dedup)))
+            except (StopIteration, KeyError):
+                break
+
+    ts = task_data.get("read_timestamps")
+    if ts is not None and len(ts) > _READ_TIMESTAMPS_CAP:
+        excess = len(ts) - _READ_TIMESTAMPS_CAP
+        for _ in range(excess):
+            try:
+                ts.pop(next(iter(ts)))
+            except (StopIteration, KeyError):
+                break
+
 
 def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
     """Get or create ShellFileOperations for a terminal environment.
@@ -426,6 +478,10 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
             except OSError:
                 pass  # Can't stat — skip tracking for this entry
 
+            # Bound the per-task containers so a long CLI session doesn't
+            # accumulate megabytes of dict/set state.  See _cap_read_tracker_data.
+            _cap_read_tracker_data(task_data)
+
         if count >= 4:
             # Hard block: stop returning content to break the loop
             return json.dumps({
@@ -449,38 +505,6 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
         return tool_error(str(e))
 
 
-def get_read_files_summary(task_id: str = "default") -> list:
-    """Return a list of files read in this session for the given task.
-
-    Used by context compression to preserve file-read history across
-    compression boundaries.
-    """
-    with _read_tracker_lock:
-        task_data = _read_tracker.get(task_id, {})
-        read_history = task_data.get("read_history", set())
-        seen_paths: dict = {}
-        for (path, offset, limit) in read_history:
-            if path not in seen_paths:
-                seen_paths[path] = []
-            seen_paths[path].append(f"lines {offset}-{offset + limit - 1}")
-        return [
-            {"path": p, "regions": regions}
-            for p, regions in sorted(seen_paths.items())
-        ]
-
-
-def clear_read_tracker(task_id: str = None):
-    """Clear the read tracker.
-
-    Call with a task_id to clear just that task, or without to clear all.
-    Should be called when a session is destroyed to prevent memory leaks
-    in long-running gateway processes.
-    """
-    with _read_tracker_lock:
-        if task_id:
-            _read_tracker.pop(task_id, None)
-        else:
-            _read_tracker.clear()
 
 
 def reset_file_dedup(task_id: str = None):
@@ -537,6 +561,7 @@ def _update_read_timestamp(filepath: str, task_id: str) -> None:
         task_data = _read_tracker.get(task_id)
         if task_data is not None:
             task_data.setdefault("read_timestamps", {})[resolved] = current_mtime
+            _cap_read_tracker_data(task_data)
 
 
 def _check_file_staleness(filepath: str, task_id: str) -> str | None:
@@ -719,12 +744,6 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
         return tool_error(str(e))
 
 
-FILE_TOOLS = [
-    {"name": "read_file", "function": read_file_tool},
-    {"name": "write_file", "function": write_file_tool},
-    {"name": "patch", "function": patch_tool},
-    {"name": "search_files", "function": search_tool}
-]
 
 
 # ---------------------------------------------------------------------------

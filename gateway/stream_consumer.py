@@ -43,6 +43,7 @@ class StreamConsumerConfig:
     edit_interval: float = 1.0
     buffer_threshold: int = 40
     cursor: str = " ▉"
+    buffer_only: bool = False
 
 
 class GatewayStreamConsumer:
@@ -63,6 +64,18 @@ class GatewayStreamConsumer:
     # After this many consecutive flood-control failures, permanently disable
     # progressive edits for the remainder of the stream.
     _MAX_FLOOD_STRIKES = 3
+
+    # Reasoning/thinking tags that models emit inline in content.
+    # Must stay in sync with cli.py _OPEN_TAGS/_CLOSE_TAGS and
+    # run_agent.py _strip_think_blocks() tag variants.
+    _OPEN_THINK_TAGS = (
+        "<REASONING_SCRATCHPAD>", "<think>", "<reasoning>",
+        "<THINKING>", "<thinking>", "<thought>",
+    )
+    _CLOSE_THINK_TAGS = (
+        "</REASONING_SCRATCHPAD>", "</think>", "</reasoning>",
+        "</THINKING>", "</thinking>", "</thought>",
+    )
 
     def __init__(
         self,
@@ -87,6 +100,18 @@ class GatewayStreamConsumer:
         self._flood_strikes = 0         # Consecutive flood-control edit failures
         self._current_edit_interval = self.cfg.edit_interval  # Adaptive backoff
         self._final_response_sent = False
+        # Cache adapter lifecycle capability: only platforms that need an
+        # explicit finalize call (e.g. DingTalk AI Cards) force us to make
+        # a redundant final edit.  Everyone else keeps the fast path.
+        # Use ``is True`` (not ``bool(...)``) so MagicMock attribute access
+        # in tests doesn't incorrectly enable this path.
+        self._adapter_requires_finalize: bool = (
+            getattr(adapter, "REQUIRES_EDIT_FINALIZE", False) is True
+        )
+
+        # Think-block filter state (mirrors CLI's _stream_delta tag suppression)
+        self._in_think_block = False
+        self._think_buffer = ""
 
     @property
     def already_sent(self) -> bool:
@@ -132,6 +157,112 @@ class GatewayStreamConsumer:
         """Signal that the stream is complete."""
         self._queue.put(_DONE)
 
+    # ── Think-block filtering ────────────────────────────────────────
+    # Models like MiniMax emit inline <think>...</think> blocks in their
+    # content.  The CLI's _stream_delta suppresses these via a state
+    # machine; we do the same here so gateway users never see raw
+    # reasoning tags.  The agent also strips them from the final
+    # response (run_agent.py _strip_think_blocks), but the stream
+    # consumer sends intermediate edits before that stripping happens.
+
+    def _filter_and_accumulate(self, text: str) -> None:
+        """Add a text delta to the accumulated buffer, suppressing think blocks.
+
+        Uses a state machine that tracks whether we are inside a
+        reasoning/thinking block.  Text inside such blocks is silently
+        discarded.  Partial tags at buffer boundaries are held back in
+        ``_think_buffer`` until enough characters arrive to decide.
+        """
+        buf = self._think_buffer + text
+        self._think_buffer = ""
+
+        while buf:
+            if self._in_think_block:
+                # Look for the earliest closing tag
+                best_idx = -1
+                best_len = 0
+                for tag in self._CLOSE_THINK_TAGS:
+                    idx = buf.find(tag)
+                    if idx != -1 and (best_idx == -1 or idx < best_idx):
+                        best_idx = idx
+                        best_len = len(tag)
+
+                if best_len:
+                    # Found closing tag — discard block, process remainder
+                    self._in_think_block = False
+                    buf = buf[best_idx + best_len:]
+                else:
+                    # No closing tag yet — hold tail that could be a
+                    # partial closing tag prefix, discard the rest.
+                    max_tag = max(len(t) for t in self._CLOSE_THINK_TAGS)
+                    self._think_buffer = buf[-max_tag:] if len(buf) > max_tag else buf
+                    return
+            else:
+                # Look for earliest opening tag at a block boundary
+                # (start of text / preceded by newline + optional whitespace).
+                # This prevents false positives when models *mention* tags
+                # in prose (e.g. "the <think> tag is used for…").
+                best_idx = -1
+                best_len = 0
+                for tag in self._OPEN_THINK_TAGS:
+                    search_start = 0
+                    while True:
+                        idx = buf.find(tag, search_start)
+                        if idx == -1:
+                            break
+                        # Block-boundary check (mirrors cli.py logic)
+                        if idx == 0:
+                            is_boundary = (
+                                not self._accumulated
+                                or self._accumulated.endswith("\n")
+                            )
+                        else:
+                            preceding = buf[:idx]
+                            last_nl = preceding.rfind("\n")
+                            if last_nl == -1:
+                                is_boundary = (
+                                    (not self._accumulated
+                                     or self._accumulated.endswith("\n"))
+                                    and preceding.strip() == ""
+                                )
+                            else:
+                                is_boundary = preceding[last_nl + 1:].strip() == ""
+
+                        if is_boundary and (best_idx == -1 or idx < best_idx):
+                            best_idx = idx
+                            best_len = len(tag)
+                            break  # first boundary hit for this tag is enough
+                        search_start = idx + 1
+
+                if best_len:
+                    # Emit text before the tag, enter think block
+                    self._accumulated += buf[:best_idx]
+                    self._in_think_block = True
+                    buf = buf[best_idx + best_len:]
+                else:
+                    # No opening tag — check for a partial tag at the tail
+                    held_back = 0
+                    for tag in self._OPEN_THINK_TAGS:
+                        for i in range(1, len(tag)):
+                            if buf.endswith(tag[:i]) and i > held_back:
+                                held_back = i
+                    if held_back:
+                        self._accumulated += buf[:-held_back]
+                        self._think_buffer = buf[-held_back:]
+                    else:
+                        self._accumulated += buf
+                    return
+
+    def _flush_think_buffer(self) -> None:
+        """Flush any held-back partial-tag buffer into accumulated text.
+
+        Called when the stream ends (got_done) so that partial text that
+        was held back waiting for a possible opening tag is not lost.
+        """
+        if self._think_buffer and not self._in_think_block:
+            self._accumulated += self._think_buffer
+            self._think_buffer = ""
+
     async def run(self) -> None:
         """Async task that drains the queue and edits the platform message."""
         # Platform message length limit — leave room for cursor + formatting
@@ -156,9 +287,15 @@ class GatewayStreamConsumer:
                         if isinstance(item, tuple) and len(item) == 2 and item[0] is _COMMENTARY:
                             commentary_text = item[1]
                             break
-                        self._accumulated += item
+                        self._filter_and_accumulate(item)
                     except queue.Empty:
                         break
+
+                # Flush any held-back partial-tag buffer on stream end
+                # so trailing text that was waiting for a potential open
+                # tag is not lost.
+                if got_done:
+                    self._flush_think_buffer()
 
                 # Decide whether to flush an edit
                 now = time.monotonic()
@@ -167,10 +304,13 @@ class GatewayStreamConsumer:
                     got_done
                     or got_segment_break
                     or commentary_text is not None
-                    or (elapsed >= self._current_edit_interval
-                        and self._accumulated)
-                    or len(self._accumulated) >= self.cfg.buffer_threshold
                 )
+                if not self.cfg.buffer_only:
+                    should_edit = should_edit or (
+                        (elapsed >= self._current_edit_interval
+                            and self._accumulated)
+                        or len(self._accumulated) >= self.cfg.buffer_threshold
+                    )
 
                 current_update_visible = False
                 if should_edit and self._accumulated:
@@ -229,7 +369,16 @@ class GatewayStreamConsumer:
                     if not got_done and not got_segment_break and commentary_text is None:
                         display_text += self.cfg.cursor
 
-                    current_update_visible = await self._send_or_edit(display_text)
+                    # Segment break: finalize the current message so platforms
+                    # that need explicit closure (e.g. DingTalk AI Cards) don't
+                    # leave the previous segment stuck in a loading state when
+                    # the next segment (tool progress, next chunk) creates a
+                    # new message below it.  got_done has its own finalize
+                    # path below so we don't finalize here for it.
+                    current_update_visible = await self._send_or_edit(
+                        display_text,
+                        finalize=got_segment_break,
+                    )
                     self._last_edit_time = time.monotonic()
 
                 if got_done:
@@ -240,10 +389,22 @@ class GatewayStreamConsumer:
                     if self._accumulated:
                         if self._fallback_final_send:
                             await self._send_fallback_final(self._accumulated)
-                        elif current_update_visible:
+                        elif (
+                            current_update_visible
+                            and not self._adapter_requires_finalize
+                        ):
+                            # Mid-stream edit above already delivered the
+                            # final accumulated content.  Skip the redundant
+                            # final edit — but only for adapters that don't
+                            # need an explicit finalize signal.
                             self._final_response_sent = True
                         elif self._message_id:
-                            self._final_response_sent = await self._send_or_edit(self._accumulated)
+                            # Either the mid-stream edit didn't run (no
+                            # visible update this tick) OR the adapter needs
+                            # explicit finalize=True to close the stream.
+                            self._final_response_sent = await self._send_or_edit(
+                                self._accumulated, finalize=True,
+                            )
                         elif not self._already_sent:
                             self._final_response_sent = await self._send_or_edit(self._accumulated)
                     return
@@ -275,11 +436,21 @@ class GatewayStreamConsumer:
 
         except asyncio.CancelledError:
             # Best-effort final edit on cancellation
+            _best_effort_ok = False
             if self._accumulated and self._message_id:
                 try:
-                    await self._send_or_edit(self._accumulated)
+                    _best_effort_ok = bool(await self._send_or_edit(self._accumulated))
                 except Exception:
                     pass
+            # Only confirm final delivery if the best-effort send above
+            # actually succeeded OR if the final response was already
+            # confirmed before we were cancelled.  Previously this
+            # promoted any partial send (already_sent=True) to
+            # final_response_sent — which suppressed the gateway's
+            # fallback send even when only intermediate text (e.g.
+            # "Let me search…") had been delivered, not the real answer.
+            if _best_effort_ok and not self._final_response_sent:
+                self._final_response_sent = True
         except Exception as e:
             logger.error("Stream consumer error: %s", e)
 
@@ -377,9 +548,17 @@ class GatewayStreamConsumer:
         self._fallback_final_send = False
         if not continuation.strip():
             # Nothing new to send — the visible partial already matches final text.
-            self._already_sent = True
-            self._final_response_sent = True
-            return
+            # BUT: if final_text itself has meaningful content (e.g. a timeout
+            # message after a long tool call), the prefix-based continuation
+            # calculation may wrongly conclude "already shown" because the
+            # streamed prefix was from a *previous* segment (before the tool
+            # boundary).  In that case, send the full final_text as-is (#10807).
+            if final_text.strip() and final_text != self._visible_prefix():
+                continuation = final_text
+            else:
+                self._already_sent = True
+                self._final_response_sent = True
+                return
 
         raw_limit = getattr(self.adapter, "MAX_MESSAGE_LENGTH", 4096)
         safe_limit = max(500, raw_limit - 100)
@@ -473,37 +652,74 @@ class GatewayStreamConsumer:
                 content=text,
                 metadata=self.metadata,
             )
-            if result.success:
-                self._already_sent = True
-                return True
+            # Note: do NOT set _already_sent = True here.
+            # Commentary messages are interim status updates (e.g. "Using browser
+            # tool..."), not the final response. Setting already_sent would cause
+            # the final response to be incorrectly suppressed when there are
+            # multiple tool calls. See: https://github.com/NousResearch/hermes-agent/issues/10454
+            return result.success
         except Exception as e:
             logger.error("Commentary send error: %s", e)
-        return False
+            return False
 
-    async def _send_or_edit(self, text: str) -> bool:
+    async def _send_or_edit(self, text: str, *, finalize: bool = False) -> bool:
         """Send or edit the streaming message.
 
         Returns True if the text was successfully delivered (sent or edited),
         False otherwise.  Callers like the overflow split loop use this to
         decide whether to advance past the delivered chunk.
+
+        ``finalize`` is True when this is the last edit in a streaming
+        sequence.
         """
         # Strip MEDIA: directives so they don't appear as visible text.
         # Media files are delivered as native attachments after the stream
         # finishes (via _deliver_media_from_response in gateway/run.py).
         text = self._clean_for_display(text)
+        # A bare streaming cursor is not meaningful user-visible content and
+        # can render as a stray tofu/white-box message on some clients.
+        visible_without_cursor = text
+        if self.cfg.cursor:
+            visible_without_cursor = visible_without_cursor.replace(self.cfg.cursor, "")
+        _visible_stripped = visible_without_cursor.strip()
+        if not _visible_stripped:
+            return True  # cursor-only / whitespace-only update
         if not text.strip():
             return True  # nothing to send is "success"
+        # Guard: do not create a brand-new standalone message when the only
+        # visible content is a handful of characters alongside the streaming
+        # cursor.  During rapid tool-calling the model often emits 1-2 tokens
+        # before switching to tool calls; the resulting "X ▉" message risks
+        # leaving the cursor permanently visible if the follow-up edit (to
+        # strip the cursor on segment break) is rate-limited by the platform.
+        # This was reported on Telegram, Matrix, and other clients where the
+        # ▉ block character renders as a visible white box ("tofu").
+        # Existing messages (edits) are unaffected — only first sends gated.
+        _MIN_NEW_MSG_CHARS = 4
+        if (self._message_id is None
+                and self.cfg.cursor
+                and self.cfg.cursor in text
+                and len(_visible_stripped) < _MIN_NEW_MSG_CHARS):
+            return True  # too short for a standalone message — accumulate more
         try:
             if self._message_id is not None:
                 if self._edit_supported:
-                    # Skip if text is identical to what we last sent
-                    if text == self._last_sent_text:
+                    # Skip if text is identical to what we last sent.
+                    # Exception: adapters that require an explicit finalize
+                    # call (REQUIRES_EDIT_FINALIZE) must still receive the
+                    # finalize=True edit even when content is unchanged, so
+                    # their streaming UI can transition out of the in-
+                    # progress state.  Everyone else short-circuits.
+                    if text == self._last_sent_text and not (
+                        finalize and self._adapter_requires_finalize
+                    ):
                         return True
                     # Edit existing message
                     result = await self.adapter.edit_message(
                         chat_id=self.chat_id,
                         message_id=self._message_id,
                         content=text,
+                        finalize=finalize,
                     )
                     if result.success:
                         self._already_sent = True

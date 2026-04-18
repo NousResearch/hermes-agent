@@ -37,6 +37,18 @@ class TestCamofoxMode:
         monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
         assert is_camofox_mode() is True
 
+    def test_cdp_override_takes_priority(self, monkeypatch):
+        """When BROWSER_CDP_URL is set (via /browser connect), CDP takes priority over Camofox."""
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        monkeypatch.setenv("BROWSER_CDP_URL", "http://127.0.0.1:9222")
+        assert is_camofox_mode() is False
+
+    def test_cdp_override_blank_does_not_disable_camofox(self, monkeypatch):
+        """Empty/whitespace BROWSER_CDP_URL should not suppress Camofox."""
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        monkeypatch.setenv("BROWSER_CDP_URL", "  ")
+        assert is_camofox_mode() is True
+
     def test_health_check_unreachable(self, monkeypatch):
         monkeypatch.setenv("CAMOFOX_URL", "http://localhost:19999")
         assert check_camofox_available() is False

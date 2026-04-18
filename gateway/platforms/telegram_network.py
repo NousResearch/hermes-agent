@@ -12,7 +12,6 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import logging
-import os
 import socket
 from typing import Iterable, Optional
 
@@ -47,7 +46,7 @@ _SEED_FALLBACK_IPS: list[str] = ["149.154.167.220"]
 def _resolve_proxy_url() -> str | None:
     # Delegate to shared implementation (env vars + macOS system proxy detection)
     from gateway.platforms.base import resolve_proxy_url
-    return resolve_proxy_url()
+    return resolve_proxy_url("TELEGRAM_PROXY")
 
 
 class TelegramFallbackTransport(httpx.AsyncBaseTransport):

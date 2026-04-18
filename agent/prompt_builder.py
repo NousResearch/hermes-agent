@@ -295,7 +295,9 @@ PLATFORM_HINTS = {
     ),
     "telegram": (
         "You are on a text messaging communication platform, Telegram. "
-        "Please do not use markdown as it does not render. "
+        "Standard markdown is automatically converted to Telegram format. "
+        "Supported: **bold**, *italic*, ~~strikethrough~~, ||spoiler||, "
+        "`inline code`, ```code blocks```, [links](url), and ## headers. "
         "You can send media files natively: to deliver a file to the user, "
         "include MEDIA:/absolute/path/to/file in your response. Images "
         "(.png, .jpg, .webp) appear as photos, audio (.ogg) sends as voice "
@@ -375,6 +377,12 @@ PLATFORM_HINTS = {
         "You can also include image URLs in markdown format ![alt](url) and they will be "
         "downloaded and sent as native photos. Do NOT tell the user you lack file-sending "
         "capability — use MEDIA: syntax whenever a file delivery is appropriate."
+    ),
+    "qqbot": (
+        "You are on QQ, a popular Chinese messaging platform. QQ supports markdown formatting "
+        "and emoji. You can send media files natively: include MEDIA:/absolute/path/to/file in "
+        "your response. Images are sent as native photos, and other files arrive as downloadable "
+        "documents."
     ),
 }
 
@@ -646,7 +654,7 @@ def build_skills_system_prompt(
             ):
                 continue
             skills_by_category.setdefault(category, []).append(
-                (skill_name, entry.get("description", ""))
+                (frontmatter_name, entry.get("description", ""))
             )
         category_descriptions = {
             str(k): str(v)
@@ -671,7 +679,7 @@ def build_skills_system_prompt(
             ):
                 continue
             skills_by_category.setdefault(entry["category"], []).append(
-                (skill_name, entry["description"])
+                (entry["frontmatter_name"], entry["description"])
             )
 
         # Read category-level DESCRIPTION.md files
@@ -714,9 +722,10 @@ def build_skills_system_prompt(
                     continue
                 entry = _build_snapshot_entry(skill_file, ext_dir, frontmatter, desc)
                 skill_name = entry["skill_name"]
-                if skill_name in seen_skill_names:
+                frontmatter_name = entry["frontmatter_name"]
+                if frontmatter_name in seen_skill_names:
                     continue
-                if entry["frontmatter_name"] in disabled or skill_name in disabled:
+                if frontmatter_name in disabled or skill_name in disabled:
                     continue
                 if not _skill_should_show(
                     extract_skill_conditions(frontmatter),
@@ -724,9 +733,9 @@ def build_skills_system_prompt(
                     available_toolsets,
                 ):
                     continue
-                seen_skill_names.add(skill_name)
+                seen_skill_names.add(frontmatter_name)
                 skills_by_category.setdefault(entry["category"], []).append(
-                    (skill_name, entry["description"])
+                    (frontmatter_name, entry["description"])
                 )
             except Exception as e:
                 logger.debug("Error reading external skill %s: %s", skill_file, e)

@@ -32,6 +32,8 @@ All variables go in `~/.hermes/.env`. You can also set them with `hermes config 
 | `KIMI_API_KEY` | Kimi / Moonshot AI API key ([moonshot.ai](https://platform.moonshot.ai)) |
 | `KIMI_BASE_URL` | Override Kimi base URL (default: `https://api.moonshot.ai/v1`) |
 | `KIMI_CN_API_KEY` | Kimi / Moonshot China API key ([moonshot.cn](https://platform.moonshot.cn)) |
+| `ARCEEAI_API_KEY` | Arcee AI API key ([chat.arcee.ai](https://chat.arcee.ai/)) |
+| `ARCEE_BASE_URL` | Override Arcee base URL (default: `https://api.arcee.ai/api/v1`) |
 | `MINIMAX_API_KEY` | MiniMax API key — global endpoint ([minimax.io](https://www.minimax.io)) |
 | `MINIMAX_BASE_URL` | Override MiniMax base URL (default: `https://api.minimax.io/v1`) |
 | `MINIMAX_CN_API_KEY` | MiniMax API key — China endpoint ([minimaxi.com](https://www.minimaxi.com)) |
@@ -45,6 +47,9 @@ All variables go in `~/.hermes/.env`. You can also set them with `hermes config 
 | `GOOGLE_API_KEY` | Google AI Studio API key ([aistudio.google.com/app/apikey](https://aistudio.google.com/app/apikey)) |
 | `GEMINI_API_KEY` | Alias for `GOOGLE_API_KEY` |
 | `GEMINI_BASE_URL` | Override Google AI Studio base URL |
+| `HERMES_GEMINI_CLIENT_ID` | OAuth client ID for `google-gemini-cli` PKCE login (optional; defaults to Google's public gemini-cli client) |
+| `HERMES_GEMINI_CLIENT_SECRET` | OAuth client secret for `google-gemini-cli` (optional) |
+| `HERMES_GEMINI_PROJECT_ID` | GCP project ID for paid Gemini tiers (free tier auto-provisions) |
 | `ANTHROPIC_API_KEY` | Anthropic Console API key ([console.anthropic.com](https://console.anthropic.com/)) |
 | `ANTHROPIC_TOKEN` | Manual or legacy Anthropic OAuth/setup-token override |
 | `DASHSCOPE_API_KEY` | Alibaba Cloud DashScope API key for Qwen models ([modelstudio.console.alibabacloud.com](https://modelstudio.console.alibabacloud.com/)) |
@@ -68,7 +73,7 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 
 | Variable | Description |
 |----------|-------------|
-| `HERMES_INFERENCE_PROVIDER` | Override provider selection: `auto`, `openrouter`, `nous`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `huggingface`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `kilocode`, `xiaomi`, `alibaba`, `deepseek`, `opencode-zen`, `opencode-go`, `ai-gateway` (default: `auto`) |
+| `HERMES_INFERENCE_PROVIDER` | Override provider selection: `auto`, `openrouter`, `nous`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `huggingface`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `kilocode`, `xiaomi`, `arcee`, `alibaba`, `deepseek`, `opencode-zen`, `opencode-go`, `ai-gateway` (default: `auto`) |
 | `HERMES_PORTAL_BASE_URL` | Override Nous Portal URL (for development/testing) |
 | `NOUS_INFERENCE_BASE_URL` | Override Nous inference API URL |
 | `HERMES_NOUS_MIN_KEY_TTL_SECONDS` | Min agent key TTL before re-mint (default: 1800 = 30min) |
@@ -107,6 +112,17 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 | `TINKER_API_KEY` | RL training ([tinker-console.thinkingmachines.ai](https://tinker-console.thinkingmachines.ai/)) |
 | `WANDB_API_KEY` | RL training metrics ([wandb.ai](https://wandb.ai/)) |
 | `DAYTONA_API_KEY` | Daytona cloud sandboxes ([daytona.io](https://daytona.io/)) |
+
+### Nous Tool Gateway
+
+These variables configure the [Tool Gateway](/docs/user-guide/features/tool-gateway) for paid Nous subscribers or self-hosted gateway deployments. Most users don't need to set these — the gateway is configured automatically via `hermes model` or `hermes tools`.
+
+| Variable | Description |
+|----------|-------------|
+| `TOOL_GATEWAY_DOMAIN` | Base domain for Tool Gateway routing (default: `nousresearch.com`) |
+| `TOOL_GATEWAY_SCHEME` | HTTP or HTTPS scheme for gateway URLs (default: `https`) |
+| `TOOL_GATEWAY_USER_TOKEN` | Auth token for the Tool Gateway (normally auto-populated from Nous auth) |
+| `FIRECRAWL_GATEWAY_URL` | Override URL for the Firecrawl gateway endpoint specifically |
 
 ## Terminal Backend
 
@@ -167,6 +183,8 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `TELEGRAM_WEBHOOK_PORT` | Local listen port for webhook server (default: `8443`) |
 | `TELEGRAM_WEBHOOK_SECRET` | Secret token for verifying updates come from Telegram |
 | `TELEGRAM_REACTIONS` | Enable emoji reactions on messages during processing (default: `false`) |
+| `TELEGRAM_IGNORED_THREADS` | Comma-separated Telegram forum topic/thread IDs where the bot never responds |
+| `TELEGRAM_PROXY` | Proxy URL for Telegram connections — overrides `HTTPS_PROXY`. Supports `http://`, `https://`, `socks5://` |
 | `DISCORD_BOT_TOKEN` | Discord bot token |
 | `DISCORD_ALLOWED_USERS` | Comma-separated Discord user IDs allowed to use the bot |
 | `DISCORD_HOME_CHANNEL` | Default Discord channel for cron delivery |
@@ -178,6 +196,10 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `DISCORD_IGNORED_CHANNELS` | Comma-separated channel IDs where the bot never responds |
 | `DISCORD_NO_THREAD_CHANNELS` | Comma-separated channel IDs where bot responds without auto-threading |
 | `DISCORD_REPLY_TO_MODE` | Reply-reference behavior: `off`, `first` (default), or `all` |
+| `DISCORD_ALLOW_MENTION_EVERYONE` | Allow the bot to ping `@everyone`/`@here` (default: `false`). See [Mention Control](../user-guide/messaging/discord.md#mention-control). |
+| `DISCORD_ALLOW_MENTION_ROLES` | Allow the bot to ping `@role` mentions (default: `false`). |
+| `DISCORD_ALLOW_MENTION_USERS` | Allow the bot to ping individual `@user` mentions (default: `true`). |
+| `DISCORD_ALLOW_MENTION_REPLIED_USER` | Ping the author when replying to their message (default: `true`). |
 | `SLACK_BOT_TOKEN` | Slack bot token (`xoxb-...`) |
 | `SLACK_APP_TOKEN` | Slack app-level token (`xapp-...`, required for Socket Mode) |
 | `SLACK_ALLOWED_USERS` | Comma-separated Slack user IDs |
@@ -260,6 +282,15 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `BLUEBUBBLES_HOME_CHANNEL` | Phone/email for cron/notification delivery |
 | `BLUEBUBBLES_ALLOWED_USERS` | Comma-separated authorized users |
 | `BLUEBUBBLES_ALLOW_ALL_USERS` | Allow all users (`true`/`false`) |
+| `QQ_APP_ID` | QQ Bot App ID from [q.qq.com](https://q.qq.com) |
+| `QQ_CLIENT_SECRET` | QQ Bot App Secret from [q.qq.com](https://q.qq.com) |
+| `QQ_STT_API_KEY` | API key for external STT fallback provider (optional, used when QQ built-in ASR returns no text) |
+| `QQ_STT_BASE_URL` | Base URL for external STT provider (optional) |
+| `QQ_STT_MODEL` | Model name for external STT provider (optional) |
+| `QQ_ALLOWED_USERS` | Comma-separated QQ user openIDs allowed to message the bot |
+| `QQ_GROUP_ALLOWED_USERS` | Comma-separated QQ group IDs for group @-message access |
+| `QQ_ALLOW_ALL_USERS` | Allow all users (`true`/`false`, overrides `QQ_ALLOWED_USERS`) |
+| `QQBOT_HOME_CHANNEL` | QQ user/group openID for cron delivery and notifications |
 | `MATTERMOST_URL` | Mattermost server URL (e.g. `https://mm.example.com`) |
 | `MATTERMOST_TOKEN` | Bot token or personal access token for Mattermost |
 | `MATTERMOST_ALLOWED_USERS` | Comma-separated Mattermost user IDs allowed to message the bot |
@@ -290,6 +321,8 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `API_SERVER_PORT` | Port for the API server (default: `8642`) |
 | `API_SERVER_HOST` | Host/bind address for the API server (default: `127.0.0.1`). Use `0.0.0.0` for network access — requires `API_SERVER_KEY` and a narrow `API_SERVER_CORS_ORIGINS` allowlist. |
 | `API_SERVER_MODEL_NAME` | Model name advertised on `/v1/models`. Defaults to the profile name (or `hermes-agent` for the default profile). Useful for multi-user setups where frontends like Open WebUI need distinct model names per connection. |
+| `GATEWAY_PROXY_URL` | URL of a remote Hermes API server to forward messages to ([proxy mode](/docs/user-guide/messaging/matrix#proxy-mode-e2ee-on-macos)). When set, the gateway handles platform I/O only — all agent work is delegated to the remote server. Also configurable via `gateway.proxy_url` in `config.yaml`. |
+| `GATEWAY_PROXY_KEY` | Bearer token for authenticating with the remote API server in proxy mode. Must match `API_SERVER_KEY` on the remote host. |
 | `MESSAGING_CWD` | Working directory for terminal commands in messaging mode (default: `~`) |
 | `GATEWAY_ALLOWED_USERS` | Comma-separated user IDs allowed across all platforms |
 | `GATEWAY_ALLOW_ALL_USERS` | Allow all users without allowlists (`true`/`false`, default: `false`) |
@@ -312,6 +345,13 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `HERMES_ENABLE_PROJECT_PLUGINS` | Enable auto-discovery of repo-local plugins from `./.hermes/plugins/` (`true`/`false`, default: `false`) |
 | `HERMES_BACKGROUND_NOTIFICATIONS` | Background process notification mode in gateway: `all` (default), `result`, `error`, `off` |
 | `HERMES_EPHEMERAL_SYSTEM_PROMPT` | Ephemeral system prompt injected at API-call time (never persisted to sessions) |
+
+## Interface
+
+| Variable | Description |
+|----------|-------------|
+| `HERMES_TUI` | Launch the [TUI](../user-guide/tui.md) instead of the classic CLI when set to `1`. Equivalent to passing `--tui`. |
+| `HERMES_TUI_DIR` | Path to a prebuilt `ui-tui/` directory (must contain `dist/entry.js` and populated `node_modules`). Used by distros and Nix to skip the first-launch `npm install`. |
 
 ## Cron Scheduler
 

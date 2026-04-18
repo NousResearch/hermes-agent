@@ -284,6 +284,80 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         source_url="https://ai.google.dev/pricing",
         pricing_version="google-pricing-2026-03-16",
     ),
+    # AWS Bedrock — pricing per the Bedrock pricing page.
+    # Bedrock charges the same per-token rates as the model provider but
+    # through AWS billing.  These are the on-demand prices (no commitment).
+    # Source: https://aws.amazon.com/bedrock/pricing/
+    (
+        "bedrock",
+        "anthropic.claude-opus-4-6",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("15.00"),
+        output_cost_per_million=Decimal("75.00"),
+        source="official_docs_snapshot",
+        source_url="https://aws.amazon.com/bedrock/pricing/",
+        pricing_version="bedrock-pricing-2026-04",
+    ),
+    (
+        "bedrock",
+        "anthropic.claude-sonnet-4-6",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("3.00"),
+        output_cost_per_million=Decimal("15.00"),
+        source="official_docs_snapshot",
+        source_url="https://aws.amazon.com/bedrock/pricing/",
+        pricing_version="bedrock-pricing-2026-04",
+    ),
+    (
+        "bedrock",
+        "anthropic.claude-sonnet-4-5",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("3.00"),
+        output_cost_per_million=Decimal("15.00"),
+        source="official_docs_snapshot",
+        source_url="https://aws.amazon.com/bedrock/pricing/",
+        pricing_version="bedrock-pricing-2026-04",
+    ),
+    (
+        "bedrock",
+        "anthropic.claude-haiku-4-5",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.80"),
+        output_cost_per_million=Decimal("4.00"),
+        source="official_docs_snapshot",
+        source_url="https://aws.amazon.com/bedrock/pricing/",
+        pricing_version="bedrock-pricing-2026-04",
+    ),
+    (
+        "bedrock",
+        "amazon.nova-pro",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.80"),
+        output_cost_per_million=Decimal("3.20"),
+        source="official_docs_snapshot",
+        source_url="https://aws.amazon.com/bedrock/pricing/",
+        pricing_version="bedrock-pricing-2026-04",
+    ),
+    (
+        "bedrock",
+        "amazon.nova-lite",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.06"),
+        output_cost_per_million=Decimal("0.24"),
+        source="official_docs_snapshot",
+        source_url="https://aws.amazon.com/bedrock/pricing/",
+        pricing_version="bedrock-pricing-2026-04",
+    ),
+    (
+        "bedrock",
+        "amazon.nova-micro",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.035"),
+        output_cost_per_million=Decimal("0.14"),
+        source="official_docs_snapshot",
+        source_url="https://aws.amazon.com/bedrock/pricing/",
+        pricing_version="bedrock-pricing-2026-04",
+    ),
 }
 
 
@@ -574,25 +648,6 @@ def has_known_pricing(
     entry = get_pricing_entry(model_name, provider=provider, base_url=base_url, api_key=api_key)
     return entry is not None
 
-
-def get_pricing(
-    model_name: str,
-    provider: Optional[str] = None,
-    base_url: Optional[str] = None,
-    api_key: Optional[str] = None,
-) -> Dict[str, float]:
-    """Backward-compatible thin wrapper for legacy callers.
-
-    Returns only non-cache input/output fields when a pricing entry exists.
-    Unknown routes return zeroes.
-    """
-    entry = get_pricing_entry(model_name, provider=provider, base_url=base_url, api_key=api_key)
-    if not entry:
-        return {"input": 0.0, "output": 0.0}
-    return {
-        "input": float(entry.input_cost_per_million or _ZERO),
-        "output": float(entry.output_cost_per_million or _ZERO),
-    }
 
 
 def format_duration_compact(seconds: float) -> str:

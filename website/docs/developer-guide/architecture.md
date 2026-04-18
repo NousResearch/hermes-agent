@@ -20,21 +20,21 @@ This page is the top-level map of Hermes Agent internals. Use it to orient yours
            │              │                       │
            ▼              ▼                       ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│                     AIAgent (run_agent.py)                           │
-│                                                                      │
-│  ┌──────────────┐ ┌──────────────┐ ┌──────────────┐                │
-│  │ Prompt        │ │ Provider     │ │ Tool         │                │
-│  │ Builder       │ │ Resolution   │ │ Dispatch     │                │
-│  │ (prompt_      │ │ (runtime_    │ │ (model_      │                │
-│  │  builder.py)  │ │  provider.py)│ │  tools.py)   │                │
-│  └──────┬───────┘ └──────┬───────┘ └──────┬───────┘                │
-│         │                │                │                          │
-│  ┌──────┴───────┐ ┌──────┴───────┐ ┌──────┴───────┐                │
-│  │ Compression  │ │ 3 API Modes  │ │ Tool Registry│                │
-│  │ & Caching    │ │ chat_compl.  │ │ (registry.py)│                │
-│  │              │ │ codex_resp.  │ │ 47 tools     │                │
-│  │              │ │ anthropic    │ │ 19 toolsets  │                │
-│  └──────────────┘ └──────────────┘ └──────────────┘                │
+│                     AIAgent (run_agent.py)                          │
+│                                                                     │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐               │
+│  │ Prompt       │  │ Provider     │  │ Tool         │               │
+│  │ Builder      │  │ Resolution   │  │ Dispatch     │               │
+│  │ (prompt_     │  │ (runtime_    │  │ (model_      │               │
+│  │  builder.py) │  │  provider.py)│  │  tools.py)   │               │
+│  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘               │
+│         │                 │                 │                       │
+│  ┌──────┴───────┐  ┌──────┴───────┐  ┌──────┴───────┐               │
+│  │ Compression  │  │ 3 API Modes  │  │ Tool Registry│               │
+│  │ & Caching    │  │ chat_compl.  │  │ (registry.py)│               │
+│  │              │  │ codex_resp.  │  │ 47 tools     │               │
+│  │              │  │ anthropic    │  │ 19 toolsets  │               │
+│  └──────────────┘  └──────────────┘  └──────────────┘               │
 └─────────────────────────────────────────────────────────────────────┘
            │                                    │
            ▼                                    ▼
@@ -120,7 +120,7 @@ hermes-agent/
 │   └── platforms/            # 18 adapters: telegram, discord, slack, whatsapp,
 │                             #   signal, matrix, mattermost, email, sms,
 │                             #   dingtalk, feishu, wecom, wecom_callback, weixin,
-│                             #   bluebubbles, homeassistant, webhook, api_server
+│                             #   bluebubbles, qqbot, homeassistant, webhook, api_server
 │
 ├── acp_adapter/              # ACP server (VS Code / Zed / JetBrains)
 ├── cron/                     # Scheduler (jobs.py, scheduler.py)
@@ -275,4 +275,4 @@ model_tools.py  (imports tools/registry + triggers tool discovery)
 run_agent.py, cli.py, batch_runner.py, environments/
 ```
 
-This chain means tool registration happens at import time, before any agent instance is created. Adding a new tool requires an import in `model_tools.py`'s `_discover_tools()` list.
+This chain means tool registration happens at import time, before any agent instance is created. Any `tools/*.py` file with a top-level `registry.register()` call is auto-discovered — no manual import list needed.

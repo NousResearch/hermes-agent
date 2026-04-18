@@ -152,6 +152,34 @@ class TestIsSafeUrl:
             # 100.0.0.1 is a global IP, not in CGNAT range
             assert is_safe_url("http://legit-host.example/") is True
 
+    def test_benchmark_ip_blocked_for_non_allowlisted_host(self):
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("198.18.0.23", 0)),
+        ]):
+            assert is_safe_url("https://example.com/file.jpg") is False
+
+    def test_qq_multimedia_hostname_allowed_with_benchmark_ip(self):
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("198.18.0.23", 0)),
+        ]):
+            assert is_safe_url("https://multimedia.nt.qq.com.cn/download?id=123") is True
+
+    def test_qq_multimedia_hostname_exception_is_exact_match(self):
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("198.18.0.23", 0)),
+        ]):
+            assert is_safe_url("https://sub.multimedia.nt.qq.com.cn/download?id=123") is False
+
+    def test_qq_multimedia_hostname_exception_requires_https(self):
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("198.18.0.23", 0)),
+        ]):
+            assert is_safe_url("http://multimedia.nt.qq.com.cn/download?id=123") is False
+
+    def test_qq_multimedia_hostname_dns_failure_still_blocked(self):
+        with patch("socket.getaddrinfo", side_effect=socket.gaierror("Name resolution failed")):
+            assert is_safe_url("https://multimedia.nt.qq.com.cn/download?id=123") is False
+
 
 class TestIsBlockedIp:
     """Direct tests for the _is_blocked_ip helper."""
@@ -159,7 +187,7 @@ class TestIsBlockedIp:
     @pytest.mark.parametrize("ip_str", [
         "127.0.0.1", "10.0.0.1", "172.16.0.1", "192.168.1.1",
         "169.254.169.254", "0.0.0.0", "224.0.0.1", "255.255.255.255",
-        "100.64.0.1", "100.100.100.100", "100.127.255.254",
+        "100.64.0.1", "100.100.100.100", "100.127.255.254", "198.18.0.23",
         "::1", "fe80::1", "fc00::1", "fd12::1", "ff02::1",
         "::ffff:127.0.0.1", "::ffff:169.254.169.254",
     ])

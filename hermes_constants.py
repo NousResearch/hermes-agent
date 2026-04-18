@@ -14,7 +14,8 @@ def get_hermes_home() -> Path:
     Reads HERMES_HOME env var, falls back to ~/.hermes.
     This is the single source of truth — all other copies should import this.
     """
-    return Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+    val = os.environ.get("HERMES_HOME", "").strip()
+    return Path(val) if val else Path.home() / ".hermes"
 
 
 def get_default_hermes_root() -> Path:
@@ -237,10 +238,6 @@ def get_skills_dir() -> Path:
     return get_hermes_home() / "skills"
 
 
-def get_logs_dir() -> Path:
-    """Return the path to the logs directory under HERMES_HOME."""
-    return get_hermes_home() / "logs"
-
 
 def get_env_path() -> Path:
     """Return the path to the ``.env`` file under HERMES_HOME."""
@@ -296,5 +293,3 @@ OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 OPENROUTER_MODELS_URL = f"{OPENROUTER_BASE_URL}/models"
 
 AI_GATEWAY_BASE_URL = "https://ai-gateway.vercel.sh/v1"
-
-NOUS_API_BASE_URL = "https://inference-api.nousresearch.com/v1"

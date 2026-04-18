@@ -29,8 +29,11 @@ class TestInterruptModule:
 
     def test_thread_safety(self):
         """Set from one thread targeting another thread's ident."""
-        from tools.interrupt import set_interrupt, is_interrupted
+        from tools.interrupt import set_interrupt, is_interrupted, _interrupted_threads, _lock
         set_interrupt(False)
+        # Clear any stale thread idents left by prior tests in this worker.
+        with _lock:
+            _interrupted_threads.clear()
 
         seen = {"value": False}
 

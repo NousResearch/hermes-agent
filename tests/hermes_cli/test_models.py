@@ -3,7 +3,7 @@
 from unittest.mock import patch, MagicMock
 
 from hermes_cli.models import (
-    OPENROUTER_MODELS, fetch_openrouter_models, menu_labels, model_ids, detect_provider_for_model,
+    OPENROUTER_MODELS, fetch_openrouter_models, model_ids, detect_provider_for_model,
     filter_nous_free_models, _NOUS_ALLOWED_FREE_MODELS,
     is_nous_free_tier, partition_nous_models_by_tier,
     check_nous_free_tier, _FREE_TIER_CACHE_TTL,
@@ -43,27 +43,6 @@ class TestModelIds:
         assert len(ids) == len(set(ids)), "Duplicate model IDs found"
 
 
-class TestMenuLabels:
-    def test_same_length_as_model_ids(self):
-        with patch("hermes_cli.models.fetch_openrouter_models", return_value=LIVE_OPENROUTER_MODELS):
-            assert len(menu_labels()) == len(model_ids())
-
-    def test_first_label_marked_recommended(self):
-        with patch("hermes_cli.models.fetch_openrouter_models", return_value=LIVE_OPENROUTER_MODELS):
-            labels = menu_labels()
-        assert "recommended" in labels[0].lower()
-
-    def test_each_label_contains_its_model_id(self):
-        with patch("hermes_cli.models.fetch_openrouter_models", return_value=LIVE_OPENROUTER_MODELS):
-            for label, mid in zip(menu_labels(), model_ids()):
-                assert mid in label, f"Label '{label}' doesn't contain model ID '{mid}'"
-
-    def test_non_recommended_labels_have_no_tag(self):
-        """Only the first model should have (recommended)."""
-        with patch("hermes_cli.models.fetch_openrouter_models", return_value=LIVE_OPENROUTER_MODELS):
-            labels = menu_labels()
-        for label in labels[1:]:
-            assert "recommended" not in label.lower(), f"Unexpected 'recommended' in '{label}'"
 
 
 

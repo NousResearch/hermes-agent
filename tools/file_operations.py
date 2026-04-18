@@ -330,11 +330,26 @@ class ShellFileOperations(FileOperations):
     def __init__(self, terminal_env, cwd: str = None):
         """
         Initialize file operations with a terminal environment.
-        
+
         Args:
             terminal_env: Any object with execute(command, cwd) method.
                          Returns {"output": str, "returncode": int}
-            cwd: Working directory (defaults to env's cwd or current directory)
+            cwd: Optional explicit fallback cwd when the terminal env has
+                 no cwd attribute (rare — most backends track cwd live).
+
+        Note:
+            Every _exec() call prefers the LIVE ``terminal_env.cwd`` over
+            ``self.cwd`` so ``cd`` commands run via the terminal tool are
+            picked up immediately.  ``self.cwd`` is only used as a fallback
+            when the env has no cwd at all — it is NOT the authoritative
+            cwd, despite being settable at init time.
+
+            Historical bug (fixed): prior versions of this class used the
+            init-time cwd for every _exec() call, which caused relative
+            paths passed to patch/read/write to target the wrong directory
+            after the user ran ``cd`` in the terminal.  Patches would
+            claim success and return a plausible diff but land in the
+            original directory, producing apparent silent failures.
         """
         self.env = terminal_env
         # Determine cwd from various possible sources.
@@ -343,25 +358,37 @@ class ShellFileOperations(FileOperations):
         # If nothing provides a cwd, use "/" as a safe universal default.
         self.cwd = cwd or getattr(terminal_env, 'cwd', None) or \
                    getattr(getattr(terminal_env, 'config', None), 'cwd', None) or "/"
-        
+
         # Cache for command availability checks
         self._command_cache: Dict[str, bool] = {}
     
     def _exec(self, command: str, cwd: str = None, timeout: int = None,
               stdin_data: str = None) -> ExecuteResult:
         """Execute command via terminal backend.
-        
+
         Args:
             stdin_data: If provided, piped to the process's stdin instead of
                         embedding in the command string. Bypasses ARG_MAX.
+
+        Cwd resolution order (critical — see class docstring):
+          1. Explicit ``cwd`` arg (if provided)
+          2. Live ``self.env.cwd`` (tracks ``cd`` commands run via terminal)
+          3. Init-time ``self.cwd`` (fallback when env has no cwd attribute)
+
+        This ordering ensures relative paths in file operations follow the
+        terminal's current directory — not the directory this file_ops was
+        originally created in.  See test_file_ops_cwd_tracking.py.
         """
         kwargs = {}
         if timeout:
             kwargs['timeout'] = timeout
         if stdin_data is not None:
             kwargs['stdin_data'] = stdin_data
-        
-        result = self.env.execute(command, cwd=cwd or self.cwd, **kwargs)
+
+        # Resolve cwd from the live env so `cd` commands are picked up.
+        # Fall through to init-time self.cwd only if the env doesn't track cwd.
+        effective_cwd = cwd or getattr(self.env, 'cwd', None) or self.cwd
+        result = self.env.execute(command, cwd=effective_cwd, **kwargs)
         return ExecuteResult(
             stdout=result.get("output", ""),
             exit_code=result.get("returncode", 0)
@@ -556,27 +583,54 @@ class ShellFileOperations(FileOperations):
     
     def _suggest_similar_files(self, path: str) -> ReadResult:
         """Suggest similar files when the requested file is not found."""
-        # Get directory and filename
         dir_path = os.path.dirname(path) or "."
         filename = os.path.basename(path)
-        
-        # List files in directory
-        ls_cmd = f"ls -1 {self._escape_shell_arg(dir_path)} 2>/dev/null | head -20"
+        basename_no_ext = os.path.splitext(filename)[0]
+        ext = os.path.splitext(filename)[1].lower()
+        lower_name = filename.lower()
+
+        # List files in the target directory
+        ls_cmd = f"ls -1 {self._escape_shell_arg(dir_path)} 2>/dev/null | head -50"
         ls_result = self._exec(ls_cmd)
-        
-        similar = []
+
+        scored: list = []  # (score, filepath) — higher is better
         if ls_result.exit_code == 0 and ls_result.stdout.strip():
-            files = ls_result.stdout.strip().split('\n')
-            # Simple similarity: files that share some characters with the target
-            for f in files:
-                # Check if filenames share significant overlap
-                common = set(filename.lower()) & set(f.lower())
-                if len(common) >= len(filename) * 0.5:  # 50% character overlap
-                    similar.append(os.path.join(dir_path, f))
-        
+            for f in ls_result.stdout.strip().split('\n'):
+                if not f:
+                    continue
+                lf = f.lower()
+                score = 0
+
+                # Exact match (shouldn't happen, but guard)
+                if lf == lower_name:
+                    score = 100
+                # Same base name, different extension (e.g. config.yml vs config.yaml)
+                elif os.path.splitext(f)[0].lower() == basename_no_ext.lower():
+                    score = 90
+                # Target is prefix of candidate or vice-versa
+                elif lf.startswith(lower_name) or lower_name.startswith(lf):
+                    score = 70
+                # Substring match (candidate contains query)
+                elif lower_name in lf:
+                    score = 60
+                # Reverse substring (query contains candidate name)
+                elif lf in lower_name and len(lf) > 2:
+                    score = 40
+                # Same extension with some overlap
+                elif ext and os.path.splitext(f)[1].lower() == ext:
+                    common = set(lower_name) & set(lf)
+                    if len(common) >= max(len(lower_name), len(lf)) * 0.4:
+                        score = 30
+
+                if score > 0:
+                    scored.append((score, os.path.join(dir_path, f)))
+
+        scored.sort(key=lambda x: -x[0])
+        similar = [fp for _, fp in scored[:5]]
+
         return ReadResult(
             error=f"File not found: {path}",
-            similar_files=similar[:5]  # Limit to 5 suggestions
+            similar_files=similar
         )
     
     def read_file_raw(self, path: str) -> ReadResult:
@@ -845,8 +899,33 @@ class ShellFileOperations(FileOperations):
         # Validate that the path exists before searching
         check = self._exec(f"test -e {self._escape_shell_arg(path)} && echo exists || echo not_found")
         if "not_found" in check.stdout:
+            # Try to suggest nearby paths
+            parent = os.path.dirname(path) or "."
+            basename_query = os.path.basename(path)
+            hint_parts = [f"Path not found: {path}"]
+            # Check if parent directory exists and list similar entries
+            parent_check = self._exec(
+                f"test -d {self._escape_shell_arg(parent)} && echo yes || echo no"
+            )
+            if "yes" in parent_check.stdout and basename_query:
+                ls_result = self._exec(
+                    f"ls -1 {self._escape_shell_arg(parent)} 2>/dev/null | head -20"
+                )
+                if ls_result.exit_code == 0 and ls_result.stdout.strip():
+                    lower_q = basename_query.lower()
+                    candidates = []
+                    for entry in ls_result.stdout.strip().split('\n'):
+                        if not entry:
+                            continue
+                        le = entry.lower()
+                        if lower_q in le or le in lower_q or le.startswith(lower_q[:3]):
+                            candidates.append(os.path.join(parent, entry))
+                    if candidates:
+                        hint_parts.append(
+                            "Similar paths: " + ", ".join(candidates[:5])
+                        )
             return SearchResult(
-                error=f"Path not found: {path}. Verify the path exists (use 'terminal' to check).",
+                error=". ".join(hint_parts),
                 total_count=0
             )
         
@@ -912,7 +991,8 @@ class ShellFileOperations(FileOperations):
 
         rg --files respects .gitignore and excludes hidden directories by
         default, and uses parallel directory traversal for ~200x speedup
-        over find on wide trees.
+        over find on wide trees.  Results are sorted by modification time
+        (most recently edited first) when rg >= 13.0 supports --sortr.
         """
         # rg --files -g uses glob patterns; wrap bare names so they match
         # at any depth (equivalent to find -name).
@@ -922,14 +1002,25 @@ class ShellFileOperations(FileOperations):
             glob_pattern = pattern
 
         fetch_limit = limit + offset
-        cmd = (
-            f"rg --files -g {self._escape_shell_arg(glob_pattern)} "
+        # Try mtime-sorted first (rg 13+); fall back to unsorted if not supported.
+        cmd_sorted = (
+            f"rg --files --sortr=modified -g {self._escape_shell_arg(glob_pattern)} "
             f"{self._escape_shell_arg(path)} 2>/dev/null "
             f"| head -n {fetch_limit}"
         )
-        result = self._exec(cmd, timeout=60)
-
+        result = self._exec(cmd_sorted, timeout=60)
         all_files = [f for f in result.stdout.strip().split('\n') if f]
+
+        if not all_files:
+            # --sortr may have failed on older rg; retry without it.
+            cmd_plain = (
+                f"rg --files -g {self._escape_shell_arg(glob_pattern)} "
+                f"{self._escape_shell_arg(path)} 2>/dev/null "
+                f"| head -n {fetch_limit}"
+            )
+            result = self._exec(cmd_plain, timeout=60)
+            all_files = [f for f in result.stdout.strip().split('\n') if f]
+
         page = all_files[offset:offset + limit]
 
         return SearchResult(

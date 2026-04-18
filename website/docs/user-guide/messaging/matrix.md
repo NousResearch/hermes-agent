@@ -284,8 +284,40 @@ MATRIX_RECOVERY_KEY=EsT... your recovery key here
 
 On each startup, if `MATRIX_RECOVERY_KEY` is set, Hermes imports cross-signing keys from the homeserver's secure secret storage and signs the current device. This is idempotent and safe to leave enabled permanently.
 
-:::warning
-If you delete the `~/.hermes/platforms/matrix/store/` directory, the bot loses its encryption keys. You'll need to verify the device again in your Matrix client. Back up this directory if you want to preserve encrypted sessions.
+:::warning[Deleting the crypto store]
+If you delete `~/.hermes/platforms/matrix/store/crypto.db`, the bot loses its encryption identity. Simply restarting with the same device ID will **not** fully recover — the homeserver still holds one-time keys signed with the old identity key, and peers cannot establish new Olm sessions.
+
+Hermes detects this condition on startup and refuses to enable E2EE, logging: `device XXXX has stale one-time keys on the server signed with a previous identity key`.
+
+**Easiest recovery: generate a new access token** (which gets a fresh device ID with no stale key history). See the "Upgrading from a previous version with E2EE" section below. This is the most reliable path and avoids touching the homeserver database.
+
+**Manual recovery** (advanced — keeps the same device ID):
+
+1. Stop Synapse and delete the old device from its database:
+   ```bash
+   sudo systemctl stop matrix-synapse
+   sudo sqlite3 /var/lib/matrix-synapse/homeserver.db "
+     DELETE FROM e2e_device_keys_json WHERE device_id = 'DEVICE_ID' AND user_id = '@hermes:your-server';
+     DELETE FROM e2e_one_time_keys_json WHERE device_id = 'DEVICE_ID' AND user_id = '@hermes:your-server';
+     DELETE FROM e2e_fallback_keys_json WHERE device_id = 'DEVICE_ID' AND user_id = '@hermes:your-server';
+     DELETE FROM devices WHERE device_id = 'DEVICE_ID' AND user_id = '@hermes:your-server';
+   "
+   sudo systemctl start matrix-synapse
+   ```
+   Or via the Synapse admin API (note the URL-encoded user ID):
+   ```bash
+   curl -X DELETE -H "Authorization: Bearer ADMIN_TOKEN" \
+     'https://your-server/_synapse/admin/v2/users/%40hermes%3Ayour-server/devices/DEVICE_ID'
+   ```
+   Note: deleting a device via the admin API may also invalidate the associated access token. You may need to generate a new token afterward.
+
+2. Delete the local crypto store and restart Hermes:
+   ```bash
+   rm -f ~/.hermes/platforms/matrix/store/crypto.db*
+   # restart hermes
+   ```
+
+Other Matrix clients (Element, matrix-commander) may cache the old device keys. After recovery, type `/discardsession` in Element to force a new encryption session with the bot.
 :::
 
 :::info
@@ -360,6 +392,10 @@ pip install 'hermes-agent[matrix]'
 4. If the bot just joined an encrypted room, it can only decrypt messages sent *after* it joined. Older messages are inaccessible.
 
 ### Upgrading from a previous version with E2EE
+
+:::tip
+If you also manually deleted `crypto.db`, see the "Deleting the crypto store" warning in the E2EE section above — there are additional steps to clear stale one-time keys from the homeserver.
+:::
 
 If you previously used Hermes with `MATRIX_ENCRYPTION=true` and are upgrading to
 a version that uses the new SQLite-based crypto store, the bot's encryption
@@ -437,6 +473,141 @@ ID. Reusing the same device ID with new encryption keys causes other Matrix
 clients to distrust the device (they see changed identity keys as a potential
 security breach). A new access token gets a new device ID with no stale key
 history, so other clients trust it immediately.
+:::
+
+## Proxy Mode (E2EE on macOS)
+
+Matrix E2EE requires `libolm`, which doesn't compile on macOS ARM64 (Apple Silicon). The `hermes-agent[matrix]` extra is gated to Linux only. If you're on macOS, proxy mode lets you run E2EE in a Docker container on a Linux VM while the actual agent runs natively on macOS with full access to your local files, memory, and skills.
+
+### How It Works
+
+```
+macOS (Host):
+  └─ hermes gateway
+       ├─ api_server adapter ← listens on 0.0.0.0:8642
+       ├─ AIAgent ← single source of truth
+       ├─ Sessions, memory, skills
+       └─ Local file access (Obsidian, projects, etc.)
+
+Linux VM (Docker):
+  └─ hermes gateway (proxy mode)
+       ├─ Matrix adapter ← E2EE decryption/encryption
+       └─ HTTP forward → macOS:8642/v1/chat/completions
+           (no LLM API keys, no agent, no inference)
+```
+
+The Docker container only handles Matrix protocol + E2EE. When a message arrives, it decrypts it and forwards the text to the host via a standard HTTP request. The host runs the agent, calls tools, generates a response, and streams it back. The container encrypts and sends the response to Matrix. All sessions are unified — CLI, Matrix, Telegram, and any other platform share the same memory and conversation history.
+
+### Step 1: Configure the Host (macOS)
+
+Enable the API server so the host accepts incoming requests from the Docker container.
+
+Add to `~/.hermes/.env`:
+
+```bash
+API_SERVER_ENABLED=true
+API_SERVER_KEY=your-secret-key-here
+API_SERVER_HOST=0.0.0.0
+```
+
+- `API_SERVER_HOST=0.0.0.0` binds to all interfaces so the Docker container can reach it.
+- `API_SERVER_KEY` is required for non-loopback binding. Pick a strong random string.
+- The API server runs on port 8642 by default (change with `API_SERVER_PORT` if needed).
+
+Start the gateway:
+
+```bash
+hermes gateway
+```
+
+You should see the API server start alongside any other platforms you have configured. Verify it's reachable from the VM:
+
+```bash
+# From the Linux VM
+curl http://<mac-ip>:8642/health
+```
+
+### Step 2: Configure the Docker Container (Linux VM)
+
+The container needs Matrix credentials and the proxy URL. It does NOT need LLM API keys.
+
+**`docker-compose.yml`:**
+
+```yaml
+services:
+  hermes-matrix:
+    build: .
+    environment:
+      # Matrix credentials
+      MATRIX_HOMESERVER: "https://matrix.example.org"
+      MATRIX_ACCESS_TOKEN: "syt_..."
+      MATRIX_ALLOWED_USERS: "@you:matrix.example.org"
+      MATRIX_ENCRYPTION: "true"
+      MATRIX_DEVICE_ID: "HERMES_BOT"
+
+      # Proxy mode — forward to host agent
+      GATEWAY_PROXY_URL: "http://192.168.1.100:8642"
+      GATEWAY_PROXY_KEY: "your-secret-key-here"
+    volumes:
+      - ./matrix-store:/root/.hermes/platforms/matrix/store
+```
+
+**`Dockerfile`:**
+
+```dockerfile
+FROM python:3.11-slim
+
+RUN apt-get update && apt-get install -y libolm-dev && rm -rf /var/lib/apt/lists/*
+RUN pip install 'hermes-agent[matrix]'
+
+CMD ["hermes", "gateway"]
+```
+
+That's the entire container. No API keys for OpenRouter, Anthropic, or any inference provider.
+
+### Step 3: Start Both
+
+1. Start the host gateway first:
+   ```bash
+   hermes gateway
+   ```
+
+2. Start the Docker container:
+   ```bash
+   docker compose up -d
+   ```
+
+3. Send a message in an encrypted Matrix room. The container decrypts it, forwards it to the host, and streams the response back.
+
+### Configuration Reference
+
+Proxy mode is configured on the **container side** (the thin gateway):
+
+| Setting | Description |
+|---------|-------------|
+| `GATEWAY_PROXY_URL` | URL of the remote Hermes API server (e.g., `http://192.168.1.100:8642`) |
+| `GATEWAY_PROXY_KEY` | Bearer token for authentication (must match `API_SERVER_KEY` on the host) |
+| `gateway.proxy_url` | Same as `GATEWAY_PROXY_URL` but in `config.yaml` |
+
+The host side needs:
+
+| Setting | Description |
+|---------|-------------|
+| `API_SERVER_ENABLED` | Set to `true` |
+| `API_SERVER_KEY` | Bearer token (shared with the container) |
+| `API_SERVER_HOST` | Set to `0.0.0.0` for network access |
+| `API_SERVER_PORT` | Port number (default: `8642`) |
+
+### Works for Any Platform
+
+Proxy mode is not limited to Matrix. Any platform adapter can use it — set `GATEWAY_PROXY_URL` on any gateway instance and it will forward to the remote agent instead of running one locally. This is useful for any deployment where the platform adapter needs to run in a different environment from the agent (network isolation, E2EE requirements, resource constraints).
+
+:::tip
+Session continuity is maintained via the `X-Hermes-Session-Id` header. The host's API server tracks sessions by this ID, so conversations persist across messages just like they would with a local agent.
+:::
+
+:::note
+**Limitations (v1):** Tool progress messages from the remote agent are not relayed back — the user sees the streamed final response only, not individual tool calls. Dangerous command approval prompts are handled on the host side, not relayed to the Matrix user. These can be addressed in future updates.
 :::
 
 ### Sync issues / bot falls behind

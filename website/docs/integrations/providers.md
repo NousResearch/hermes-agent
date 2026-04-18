@@ -24,6 +24,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **z.ai / GLM** | `GLM_API_KEY` in `~/.hermes/.env` (provider: `zai`) |
 | **Kimi / Moonshot** | `KIMI_API_KEY` in `~/.hermes/.env` (provider: `kimi-coding`) |
 | **Kimi / Moonshot (China)** | `KIMI_CN_API_KEY` in `~/.hermes/.env` (provider: `kimi-coding-cn`; aliases: `kimi-cn`, `moonshot-cn`) |
+| **Arcee AI** | `ARCEEAI_API_KEY` in `~/.hermes/.env` (provider: `arcee`; aliases: `arcee-ai`, `arceeai`) |
 | **MiniMax** | `MINIMAX_API_KEY` in `~/.hermes/.env` (provider: `minimax`) |
 | **MiniMax China** | `MINIMAX_CN_API_KEY` in `~/.hermes/.env` (provider: `minimax-cn`) |
 | **Alibaba Cloud** | `DASHSCOPE_API_KEY` in `~/.hermes/.env` (provider: `alibaba`, aliases: `dashscope`, `qwen`) |
@@ -34,11 +35,98 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **DeepSeek** | `DEEPSEEK_API_KEY` in `~/.hermes/.env` (provider: `deepseek`) |
 | **Hugging Face** | `HF_TOKEN` in `~/.hermes/.env` (provider: `huggingface`, aliases: `hf`) |
 | **Google / Gemini** | `GOOGLE_API_KEY` (or `GEMINI_API_KEY`) in `~/.hermes/.env` (provider: `gemini`) |
+| **Google Gemini (OAuth)** | `hermes model` → "Google Gemini (OAuth)" (provider: `google-gemini-cli`, free tier supported, browser PKCE login) |
 | **Custom Endpoint** | `hermes model` → choose "Custom endpoint" (saved in `config.yaml`) |
 
 :::tip Model key alias
 In the `model:` config section, you can use either `default:` or `model:` as the key name for your model ID. Both `model: { default: my-model }` and `model: { model: my-model }` work identically.
 :::
+
+
+### Google Gemini via OAuth (`google-gemini-cli`)
+
+The `google-gemini-cli` provider uses Google's Cloud Code Assist backend — the
+same API that Google's own `gemini-cli` tool uses. This supports both the
+**free tier** (generous daily quota for personal accounts) and **paid tiers**
+(Standard/Enterprise via a GCP project).
+
+**Quick start:**
+
+```bash
+hermes model
+# → pick "Google Gemini (OAuth)"
+# → see policy warning, confirm
+# → browser opens to accounts.google.com, sign in
+# → done — Hermes auto-provisions your free tier on first request
+```
+
+Hermes ships Google's **public** `gemini-cli` desktop OAuth client by default —
+the same credentials Google includes in their open-source `gemini-cli`. Desktop
+OAuth clients are not confidential (PKCE provides the security). You do not
+need to install `gemini-cli` or register your own GCP OAuth client.
+
+**How auth works:**
+- PKCE Authorization Code flow against `accounts.google.com`
+- Browser callback at `http://127.0.0.1:8085/oauth2callback` (with ephemeral-port fallback if busy)
+- Tokens stored at `~/.hermes/auth/google_oauth.json` (chmod 0600, atomic write, cross-process `fcntl` lock)
+- Automatic refresh 60 s before expiry
+- Headless environments (SSH, `HERMES_HEADLESS=1`) → paste-mode fallback
+- Inflight refresh deduplication — two concurrent requests won't double-refresh
+- `invalid_grant` (revoked refresh) → credential file wiped, user prompted to re-login
+
+**How inference works:**
+- Traffic goes to `https://cloudcode-pa.googleapis.com/v1internal:generateContent`
+  (or `:streamGenerateContent?alt=sse` for streaming), NOT the paid `v1beta/openai` endpoint
+- Request body wrapped `{project, model, user_prompt_id, request}`
+- OpenAI-shaped `messages[]`, `tools[]`, `tool_choice` are translated to Gemini's native
+  `contents[]`, `tools[].functionDeclarations`, `toolConfig` shape
+- Responses translated back to OpenAI shape so the rest of Hermes works unchanged
+
+**Tiers & project IDs:**
+
+| Your situation | What to do |
+|---|---|
+| Personal Google account, want free tier | Nothing — sign in, start chatting |
+| Workspace / Standard / Enterprise account | Set `HERMES_GEMINI_PROJECT_ID` or `GOOGLE_CLOUD_PROJECT` to your GCP project ID |
+| VPC-SC-protected org | Hermes detects `SECURITY_POLICY_VIOLATED` and forces `standard-tier` automatically |
+
+Free tier auto-provisions a Google-managed project on first use. No GCP setup required.
+
+**Quota monitoring:**
+
+```
+/gquota
+```
+
+Shows remaining Code Assist quota per model with progress bars:
+
+```
+Gemini Code Assist quota  (project: 123-abc)
+
+  gemini-2.5-pro                      ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░   85%
+  gemini-2.5-flash [input]            ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░   92%
+```
+
+:::warning Policy risk
+Google considers using the Gemini CLI OAuth client with third-party software a
+policy violation. Some users have reported account restrictions. For the lowest-risk
+experience, use your own API key via the `gemini` provider instead. Hermes shows
+an upfront warning and requires explicit confirmation before OAuth begins.
+:::
+
+**Custom OAuth client (optional):**
+
+If you'd rather register your own Google OAuth client — e.g., to keep quota
+and consent scoped to your own GCP project — set:
+
+```bash
+HERMES_GEMINI_CLIENT_ID=your-client.apps.googleusercontent.com
+HERMES_GEMINI_CLIENT_SECRET=...   # optional for Desktop clients
+```
+
+Register a **Desktop app** OAuth client at
+[console.cloud.google.com/apis/credentials](https://console.cloud.google.com/apis/credentials)
+with the Generative Language API enabled.
 
 :::info Codex Note
 The OpenAI Codex provider authenticates via device code (open a URL, enter a code). Hermes stores the resulting credentials in its own auth store under `~/.hermes/auth.json` and can import existing Codex CLI credentials from `~/.codex/auth.json` when present. No Codex CLI installation is required.
@@ -47,6 +135,21 @@ The OpenAI Codex provider authenticates via device code (open a URL, enter a cod
 :::warning
 Even when using Nous Portal, Codex, or a custom endpoint, some tools (vision, web summarization, MoA) use a separate "auxiliary" model — by default Gemini Flash via OpenRouter. An `OPENROUTER_API_KEY` enables these tools automatically. You can also configure which model and provider these tools use — see [Auxiliary Models](/docs/user-guide/configuration#auxiliary-models).
 :::
+
+:::tip Nous Tool Gateway
+Paid Nous Portal subscribers also get access to the **[Tool Gateway](/docs/user-guide/features/tool-gateway)** — web search, image generation, TTS, and browser automation routed through your subscription. No extra API keys needed. It's offered automatically during `hermes model` setup, or enable it later with `hermes tools`.
+:::
+
+### Two Commands for Model Management
+
+Hermes has **two** model commands that serve different purposes:
+
+| Command | Where to run | What it does |
+|---------|-------------|--------------|
+| **`hermes model`** | Your terminal (outside any session) | Full setup wizard — add providers, run OAuth, enter API keys, configure endpoints |
+| **`/model`** | Inside a Hermes chat session | Quick switch between **already-configured** providers and models |
+
+If you're trying to switch to a provider you haven't set up yet (e.g. you only have OpenRouter configured and want to use Anthropic), you need `hermes model`, not `/model`. Exit your session first (`Ctrl+C` or `/quit`), run `hermes model`, complete the provider setup, then start a new session.
 
 ### Anthropic (Native)
 
@@ -167,12 +270,16 @@ hermes chat --provider alibaba --model qwen3.5-plus
 # Xiaomi MiMo
 hermes chat --provider xiaomi --model mimo-v2-pro
 # Requires: XIAOMI_API_KEY in ~/.hermes/.env
+
+# Arcee AI (Trinity models)
+hermes chat --provider arcee --model trinity-large-thinking
+# Requires: ARCEEAI_API_KEY in ~/.hermes/.env
 ```
 
 Or set the provider permanently in `config.yaml`:
 ```yaml
 model:
-  provider: "zai"       # or: kimi-coding, kimi-coding-cn, minimax, minimax-cn, alibaba, xiaomi
+  provider: "zai"       # or: kimi-coding, kimi-coding-cn, minimax, minimax-cn, alibaba, xiaomi, arcee
   default: "glm-5"
 ```
 
@@ -187,6 +294,30 @@ When using the Z.AI / GLM provider, Hermes automatically probes multiple endpoin
 When using xAI as a provider (any base URL containing `x.ai`), Hermes automatically enables prompt caching by sending the `x-grok-conv-id` header with every API request. This routes requests to the same server within a conversation session, allowing xAI's infrastructure to reuse cached system prompts and conversation history.
 
 No configuration is needed — caching activates automatically when an xAI endpoint is detected and a session ID is available. This reduces latency and cost for multi-turn conversations.
+
+### NVIDIA NIM
+
+Nemotron and other open source models via [build.nvidia.com](https://build.nvidia.com) (free API key) or a local NIM endpoint.
+
+```bash
+# Cloud (build.nvidia.com)
+hermes chat --provider nvidia --model nvidia/nemotron-3-super-120b-a12b
+# Requires: NVIDIA_API_KEY in ~/.hermes/.env
+
+# Local NIM endpoint — override base URL
+NVIDIA_BASE_URL=http://localhost:8000/v1 hermes chat --provider nvidia --model nvidia/nemotron-3-super-120b-a12b
+```
+
+Or set it permanently in `config.yaml`:
+```yaml
+model:
+  provider: "nvidia"
+  default: "nvidia/nemotron-3-super-120b-a12b"
+```
+
+:::tip Local NIM
+For on-prem deployments (DGX Spark, local GPU), set `NVIDIA_BASE_URL=http://localhost:8000/v1`. NIM exposes the same OpenAI-compatible chat completions API as build.nvidia.com, so switching between cloud and local is a one-line env-var change.
+:::
 
 ### Hugging Face Inference Providers
 
@@ -247,7 +378,15 @@ Both approaches persist to `config.yaml`, which is the source of truth for model
 
 ### Switching Models with `/model`
 
-Once a custom endpoint is configured, you can switch models mid-session:
+:::warning hermes model vs /model
+**`hermes model`** (run from your terminal, outside any chat session) is the **full provider setup wizard**. Use it to add new providers, run OAuth flows, enter API keys, and configure custom endpoints.
+
+**`/model`** (typed inside an active Hermes chat session) can only **switch between providers and models you've already set up**. It cannot add new providers, run OAuth, or prompt for API keys. If you've only configured one provider (e.g. OpenRouter), `/model` will only show models for that provider.
+
+**To add a new provider:** Exit your session (`Ctrl+C` or `/quit`), run `hermes model`, set up the new provider, then start a new session.
+:::
+
+Once you have at least one custom endpoint configured, you can switch models mid-session:
 
 ```
 /model custom:qwen-2.5          # Switch to a model on your custom endpoint
@@ -934,7 +1073,7 @@ fallback_model:
 
 When activated, the fallback swaps the model and provider mid-session without losing your conversation. It fires **at most once** per session.
 
-Supported providers: `openrouter`, `nous`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `huggingface`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `deepseek`, `ai-gateway`, `opencode-zen`, `opencode-go`, `kilocode`, `xiaomi`, `alibaba`, `custom`.
+Supported providers: `openrouter`, `nous`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `huggingface`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `deepseek`, `ai-gateway`, `opencode-zen`, `opencode-go`, `kilocode`, `xiaomi`, `arcee`, `alibaba`, `custom`.
 
 :::tip
 Fallback is configured exclusively through `config.yaml` — there are no environment variables for it. For full details on when it triggers, supported providers, and how it interacts with auxiliary tasks and delegation, see [Fallback Providers](/docs/user-guide/features/fallback-providers).

@@ -47,10 +47,12 @@ Both `provider` and `model` are **required**. If either is missing, the fallback
 | MiniMax | `minimax` | `MINIMAX_API_KEY` |
 | MiniMax (China) | `minimax-cn` | `MINIMAX_CN_API_KEY` |
 | DeepSeek | `deepseek` | `DEEPSEEK_API_KEY` |
+| NVIDIA NIM | `nvidia` | `NVIDIA_API_KEY` (optional: `NVIDIA_BASE_URL`) |
 | OpenCode Zen | `opencode-zen` | `OPENCODE_ZEN_API_KEY` |
 | OpenCode Go | `opencode-go` | `OPENCODE_GO_API_KEY` |
 | Kilo Code | `kilocode` | `KILOCODE_API_KEY` |
 | Xiaomi MiMo | `xiaomi` | `XIAOMI_API_KEY` |
+| Arcee AI | `arcee` | `ARCEEAI_API_KEY` |
 | Alibaba / DashScope | `alibaba` | `DASHSCOPE_API_KEY` |
 | Hugging Face | `huggingface` | `HF_TOKEN` |
 | Custom endpoint | `custom` | `base_url` + `api_key_env` (see below) |

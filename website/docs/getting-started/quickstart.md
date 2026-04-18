@@ -52,6 +52,7 @@ hermes setup       # Or configure everything at once
 | **Z.AI** | GLM / Zhipu-hosted models | Set `GLM_API_KEY` / `ZAI_API_KEY` |
 | **Kimi / Moonshot** | Moonshot-hosted coding and chat models | Set `KIMI_API_KEY` |
 | **Kimi / Moonshot China** | China-region Moonshot endpoint | Set `KIMI_CN_API_KEY` |
+| **Arcee AI** | Trinity models | Set `ARCEEAI_API_KEY` |
 | **MiniMax** | International MiniMax endpoint | Set `MINIMAX_API_KEY` |
 | **MiniMax China** | China-region MiniMax endpoint | Set `MINIMAX_CN_API_KEY` |
 | **Alibaba Cloud** | Qwen models via DashScope | Set `DASHSCOPE_API_KEY` |
@@ -60,6 +61,7 @@ hermes setup       # Or configure everything at once
 | **OpenCode Zen** | Pay-as-you-go access to curated models | Set `OPENCODE_ZEN_API_KEY` |
 | **OpenCode Go** | $10/month subscription for open models | Set `OPENCODE_GO_API_KEY` |
 | **DeepSeek** | Direct DeepSeek API access | Set `DEEPSEEK_API_KEY` |
+| **NVIDIA NIM** | Nemotron models via build.nvidia.com or local NIM | Set `NVIDIA_API_KEY` (optional: `NVIDIA_BASE_URL`) |
 | **GitHub Copilot** | GitHub Copilot subscription (GPT-5.x, Claude, Gemini, etc.) | OAuth via `hermes model`, or `COPILOT_GITHUB_TOKEN` / `GH_TOKEN` |
 | **GitHub Copilot ACP** | Copilot ACP agent backend (spawns local `copilot` CLI) | `hermes model` (requires `copilot` CLI + `copilot login`) |
 | **Vercel AI Gateway** | Vercel AI Gateway routing | Set `AI_GATEWAY_API_KEY` |
@@ -76,10 +78,15 @@ You can switch providers at any time with `hermes model` — no code changes, no
 ## 3. Start Chatting
 
 ```bash
-hermes
+hermes            # classic CLI
+hermes --tui      # modern TUI (recommended)
 ```
 
 That's it! You'll see a welcome banner with your model, available tools, and skills. Type a message and press Enter.
+
+:::tip Pick your interface
+Hermes ships with two terminal interfaces: the classic `prompt_toolkit` CLI and a newer [TUI](../user-guide/tui.md) with modal overlays, mouse selection, and non-blocking input. Both share the same sessions, slash commands, and config — try each with `hermes` vs `hermes --tui`.
+:::
 
 ```
 ❯ What can you help me with?

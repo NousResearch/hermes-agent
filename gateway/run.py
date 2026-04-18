@@ -5118,6 +5118,7 @@ class GatewayRunner:
                         if _cache_lock and _cache is not None:
                             with _cache_lock:
                                 cached_entry = _cache.get(_session_key)
+                        agent_swap_ok = True
                         if cached_entry and cached_entry[0] is not None:
                             try:
                                 cached_entry[0].switch_model(
@@ -5128,7 +5129,13 @@ class GatewayRunner:
                                     api_mode=result.api_mode,
                                 )
                             except Exception as exc:
-                                logger.warning("Picker model switch failed for cached agent: %s", exc)
+                                agent_swap_ok = False
+                                logger.warning(
+                                    "Picker model switch failed for cached agent: %s", exc
+                                )
+
+                        if not agent_swap_ok:
+                            return f"\u26a0 Switch failed. Still using `{_cur_model}`."
 
                         # Store model note + session override
                         if not hasattr(_self, "_pending_model_notes"):
@@ -5233,6 +5240,7 @@ class GatewayRunner:
             with _cache_lock:
                 cached_entry = _cache.get(session_key)
 
+        agent_swap_ok = True
         if cached_entry and cached_entry[0] is not None:
             try:
                 cached_entry[0].switch_model(
@@ -5243,7 +5251,11 @@ class GatewayRunner:
                     api_mode=result.api_mode,
                 )
             except Exception as exc:
+                agent_swap_ok = False
                 logger.warning("In-place model switch failed for cached agent: %s", exc)
+
+        if not agent_swap_ok:
+            return f"\u26a0 Switch failed. Still using `{current_model}`."
 
         # Store a note to prepend to the next user message so the model
         # knows about the switch (avoids system messages mid-history).

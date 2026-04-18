@@ -4652,6 +4652,14 @@ class HermesCLI:
             return
 
         old_model = self.model
+        old_provider = self.provider
+        old_requested_provider = self.requested_provider
+        old_api_key = self.api_key
+        old_explicit_api_key = getattr(self, "_explicit_api_key", "")
+        old_base_url = self.base_url
+        old_explicit_base_url = getattr(self, "_explicit_base_url", "")
+        old_api_mode = self.api_mode
+
         self.model = result.new_model
         self.provider = result.target_provider
         self.requested_provider = result.target_provider
@@ -4674,7 +4682,18 @@ class HermesCLI:
                     api_mode=result.api_mode,
                 )
             except Exception as exc:
-                _cprint(f"  ⚠ Agent swap failed ({exc}); change applied to next session.")
+                # Roll back CLI state so we don't claim success while the
+                # agent is still on the old model.
+                self.model = old_model
+                self.provider = old_provider
+                self.requested_provider = old_requested_provider
+                self.api_key = old_api_key
+                self._explicit_api_key = old_explicit_api_key
+                self.base_url = old_base_url
+                self._explicit_base_url = old_explicit_base_url
+                self.api_mode = old_api_mode
+                _cprint(f"  ⚠ Switch failed: {exc}. Using {old_model}.")
+                return
 
         self._pending_model_switch_note = (
             f"[Note: model was just switched from {old_model} to {result.new_model} "
@@ -4872,6 +4891,14 @@ class HermesCLI:
         # Update requested_provider so _ensure_runtime_credentials() doesn't
         # overwrite the switch on the next turn (it re-resolves from this).
         old_model = self.model
+        old_provider = self.provider
+        old_requested_provider = self.requested_provider
+        old_api_key = self.api_key
+        old_explicit_api_key = getattr(self, "_explicit_api_key", "")
+        old_base_url = self.base_url
+        old_explicit_base_url = getattr(self, "_explicit_base_url", "")
+        old_api_mode = self.api_mode
+
         self.model = result.new_model
         self.provider = result.target_provider
         self.requested_provider = result.target_provider
@@ -4895,7 +4922,18 @@ class HermesCLI:
                     api_mode=result.api_mode,
                 )
             except Exception as exc:
-                _cprint(f"  ⚠ Agent swap failed ({exc}); change applied to next session.")
+                # Roll back CLI state so we don't claim success while the
+                # agent is still on the old model.
+                self.model = old_model
+                self.provider = old_provider
+                self.requested_provider = old_requested_provider
+                self.api_key = old_api_key
+                self._explicit_api_key = old_explicit_api_key
+                self.base_url = old_base_url
+                self._explicit_base_url = old_explicit_base_url
+                self.api_mode = old_api_mode
+                _cprint(f"  ⚠ Switch failed: {exc}. Using {old_model}.")
+                return
 
         # Store a note to prepend to the next user message so the model
         # knows a switch occurred (avoids injecting system messages mid-history

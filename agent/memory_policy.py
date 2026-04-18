@@ -68,6 +68,7 @@ _UNSAFE_PHRASES = (
 
 _RESPONSE_DETAIL_TERMS = ("concise", "brief", "detailed", "verbose", "fuller")
 _RESPONSE_OBJECT_TERMS = ("response", "responses", "reply", "replies", "writeup", "writeups")
+_SCOPE_REFINEMENT_PATTERN = re.compile(r"\b(?:for|when|during|while|if|unless|except|under)\b\s+[^.]+")
 
 
 def classify_write_candidate(
@@ -93,7 +94,7 @@ def classify_write_candidate(
         return WriteDecision(
             write_class=WriteClass.DO_NOT_WRITE,
             reason="ephemeral_or_unsafe",
-            trust_tier=TrustTier.UNVERIFIED if source_kind == "model_inference" else inferred_trust,
+            trust_tier=inferred_trust,
             salience_tier=SalienceTier.LOW,
         )
 
@@ -208,7 +209,7 @@ def resolve_conflict(old: MemoryRecord, new: MemoryRecord, *, explicit_correctio
     incoming_rank = _trust_rank(incoming.trust_tier)
 
     if incoming_rank < existing_rank and _is_at_least_as_recent(incoming, existing):
-        incoming.supersedes = existing.record_id
+        incoming.supersedes = _bounded_supersedes_target(predecessor=existing, successor=incoming)
         existing.status = RecordStatus.SUPERSEDED
         _append_unique(existing.conflicts_with, incoming.record_id)
         return ConflictDecision(
@@ -230,7 +231,7 @@ def resolve_conflict(old: MemoryRecord, new: MemoryRecord, *, explicit_correctio
         )
 
     if explicit_correction and _is_at_least_as_recent(incoming, existing):
-        incoming.supersedes = existing.record_id
+        incoming.supersedes = _bounded_supersedes_target(predecessor=existing, successor=incoming)
         existing.status = RecordStatus.SUPERSEDED
         _append_unique(existing.conflicts_with, incoming.record_id)
         return ConflictDecision(
@@ -240,8 +241,23 @@ def resolve_conflict(old: MemoryRecord, new: MemoryRecord, *, explicit_correctio
             reason="newer_explicit_correction",
         )
 
+    if incoming_rank == existing_rank and _is_at_least_as_recent(incoming, existing) and _is_scoped_refinement(
+        existing.content, incoming.content
+    ):
+        incoming.metadata["scope_narrowed"] = True
+        incoming.metadata["scope_refinement_of"] = existing.record_id
+        scope_qualifier = _extract_scope_qualifier(incoming.content)
+        if scope_qualifier:
+            incoming.metadata["scope_qualifier"] = scope_qualifier
+        return ConflictDecision(
+            winner=incoming,
+            loser=existing,
+            loser_status=existing.status,
+            reason="scoped_refinement_keep_both",
+        )
+
     if _is_more_specific(incoming.content, existing.content) and _is_at_least_as_recent(incoming, existing):
-        incoming.supersedes = existing.record_id
+        incoming.supersedes = _bounded_supersedes_target(predecessor=existing, successor=incoming)
         existing.status = RecordStatus.SUPERSEDED
         _append_unique(existing.conflicts_with, incoming.record_id)
         return ConflictDecision(
@@ -267,8 +283,6 @@ def resolve_conflict(old: MemoryRecord, new: MemoryRecord, *, explicit_correctio
 
 
 def _looks_do_not_write(*, normalized: str, source_kind: str) -> bool:
-    if source_kind == "model_inference":
-        return True
     if any(phrase in normalized for phrase in _TRANSIENT_PHRASES):
         return True
     if any(phrase in normalized for phrase in _UNSAFE_PHRASES):
@@ -333,6 +347,29 @@ def _is_more_specific(new_content: str, old_content: str) -> bool:
     if not old_tokens:
         return bool(new_tokens)
     return old_tokens < new_tokens
+
+
+def _is_scoped_refinement(old_content: str, new_content: str) -> bool:
+    old_qualifier = _extract_scope_qualifier(old_content)
+    new_qualifier = _extract_scope_qualifier(new_content)
+    if not new_qualifier:
+        return False
+    return old_qualifier != new_qualifier
+
+
+def _extract_scope_qualifier(content: str) -> Optional[str]:
+    match = _SCOPE_REFINEMENT_PATTERN.search(_normalize_text(content))
+    if match is None:
+        return None
+    return match.group(0)
+
+
+def _bounded_supersedes_target(*, predecessor: MemoryRecord, successor: MemoryRecord) -> Optional[str]:
+    if predecessor.supersedes == successor.record_id:
+        return None
+    if predecessor.supersedes and predecessor.supersedes != predecessor.record_id:
+        return predecessor.supersedes
+    return predecessor.record_id
 
 
 def _is_at_least_as_recent(new_record: MemoryRecord, old_record: MemoryRecord) -> bool:

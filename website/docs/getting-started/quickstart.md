@@ -53,6 +53,9 @@ hermes setup       # Or configure everything at once
 | **Kimi / Moonshot** | Moonshot-hosted coding and chat models | Set `KIMI_API_KEY` |
 | **Kimi / Moonshot China** | China-region Moonshot endpoint | Set `KIMI_CN_API_KEY` |
 | **Arcee AI** | Trinity models | Set `ARCEEAI_API_KEY` |
+| **Xiaomi MiMo** | Xiaomi MiMo models via [platform.xiaomimimo.com](https://platform.xiaomimimo.com) | Set `XIAOMI_API_KEY` |
+| **AWS Bedrock** | Anthropic Claude, Amazon Nova, DeepSeek v3.2, and Meta Llama via AWS | Standard boto3 auth (`AWS_PROFILE` or `AWS_ACCESS_KEY_ID` + `AWS_REGION`) |
+| **Qwen Portal (OAuth)** | Qwen 3.5 / Qwen-Coder models via Alibaba's consumer Qwen Portal | OAuth via `hermes model` (optional: `HERMES_QWEN_BASE_URL`) |
 | **MiniMax** | International MiniMax endpoint | Set `MINIMAX_API_KEY` |
 | **MiniMax China** | China-region MiniMax endpoint | Set `MINIMAX_CN_API_KEY` |
 | **Alibaba Cloud** | Qwen models via DashScope | Set `DASHSCOPE_API_KEY` |

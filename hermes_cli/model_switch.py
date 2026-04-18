@@ -1039,6 +1039,9 @@ def list_authenticated_providers(
         for ep_name, ep_cfg in user_providers.items():
             if not isinstance(ep_cfg, dict):
                 continue
+            # Skip if a built-in / canonical / hermes overlay already claimed this slug (#12293).
+            if ep_name.lower() in seen_slugs:
+                continue
             display_name = ep_cfg.get("name", "") or ep_name
             api_url = ep_cfg.get("api", "") or ep_cfg.get("url", "") or ""
             default_model = ep_cfg.get("default_model", "")
@@ -1066,6 +1069,9 @@ def list_authenticated_providers(
                 "source": "user-config",
                 "api_url": api_url,
             })
+            # Register this user-defined slug so Section 4 (custom_providers)
+            # will not emit a second row for the same provider (#12293).
+            seen_slugs.add(ep_name.lower())
 
     # --- 4. Saved custom providers from config ---
     # Each ``custom_providers`` entry represents one model under a named
@@ -1105,7 +1111,16 @@ def list_authenticated_providers(
                 groups[slug]["models"].append(default_model)
 
         for slug, grp in groups.items():
-            if slug.lower() in seen_slugs:
+            # Match against the prefixed slug, the bare display name, and
+            # the hyphenated display name — any of the three forms may have
+            # been registered by an earlier section (#12293).
+            display_lower = grp["name"].strip().lower()
+            display_hyphen = display_lower.replace(" ", "-")
+            if (
+                slug.lower() in seen_slugs
+                or display_lower in seen_slugs
+                or display_hyphen in seen_slugs
+            ):
                 continue
             results.append({
                 "slug": slug,
@@ -1118,6 +1133,8 @@ def list_authenticated_providers(
                 "api_url": grp["api_url"],
             })
             seen_slugs.add(slug.lower())
+            seen_slugs.add(display_lower)
+            seen_slugs.add(display_hyphen)
 
     # Sort: current provider first, then by model count descending
     results.sort(key=lambda r: (not r["is_current"], -r["total_models"]))

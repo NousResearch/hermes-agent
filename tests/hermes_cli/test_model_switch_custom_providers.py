@@ -156,3 +156,64 @@ def test_list_deduplicates_same_model_in_group(monkeypatch):
     assert len(my_rows) == 1
     assert my_rows[0]["models"] == ["llama3", "mistral"]
     assert my_rows[0]["total_models"] == 2
+
+
+def test_user_provider_and_custom_provider_same_name_emit_once(monkeypatch):
+    """#12293: defining the same provider under BOTH `providers:` (user-defined)
+    and `custom_providers:` in config.yaml should emit one row, not two."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+
+    providers = list_authenticated_providers(
+        current_provider="openrouter",
+        user_providers={
+            "api.us-west-2.modal.direct": {
+                "name": "api.us-west-2.modal.direct",
+                "api": "https://api.us-west-2.modal.direct/v1",
+                "default_model": "claude-sonnet-4-5",
+            }
+        },
+        custom_providers=[
+            {
+                "name": "api.us-west-2.modal.direct",
+                "base_url": "https://api.us-west-2.modal.direct/v1",
+                "model": "claude-sonnet-4-5",
+            }
+        ],
+        max_models=50,
+    )
+
+    matching = [
+        p for p in providers
+        if p["name"] == "api.us-west-2.modal.direct"
+        or p["slug"] == "api.us-west-2.modal.direct"
+        or p["slug"] == "custom:api.us-west-2.modal.direct"
+    ]
+    assert len(matching) == 1, f"expected 1 row, got {len(matching)}: {matching}"
+
+
+def test_user_provider_registered_before_custom_wins_and_dedups(monkeypatch):
+    """When a user_provider runs first, the later custom_providers entry
+    must see the name in seen_slugs and be skipped (#12293)."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+
+    providers = list_authenticated_providers(
+        current_provider="openrouter",
+        user_providers={
+            "my-local": {
+                "name": "My Local",
+                "api": "http://localhost:4141/v1",
+                "default_model": "local-default",
+            }
+        },
+        custom_providers=[
+            # Different display name but same resolved target — should still dedupe
+            # when the prefixed custom:my-local slug matches a bare my-local already seen.
+            {"name": "my-local", "base_url": "http://localhost:4141/v1", "model": "local-default"},
+        ],
+        max_models=50,
+    )
+
+    my_local_rows = [p for p in providers if "my-local" in p["slug"].lower()]
+    assert len(my_local_rows) == 1

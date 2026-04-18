@@ -460,17 +460,17 @@ def cmd_setup(args) -> None:
             pass  # keep current
 
     # --- 7b. Dialectic cadence ---
-    current_dialectic = str(hermes_host.get("dialecticCadence") or cfg.get("dialecticCadence") or "1")
+    current_dialectic = str(hermes_host.get("dialecticCadence") or cfg.get("dialecticCadence") or "2")
     print("\n  Dialectic cadence:")
     print("    How often Honcho rebuilds its user model (LLM call on Honcho backend).")
-    print("    1 = every turn (default), 3+ = sparse.")
+    print("    1 = every turn, 2 = every other turn (wizard default), 3+ = sparse.")
     new_dialectic = _prompt("Dialectic cadence", default=current_dialectic)
     try:
         val = int(new_dialectic)
         if val >= 1:
             hermes_host["dialecticCadence"] = val
     except (ValueError, TypeError):
-        hermes_host["dialecticCadence"] = 1
+        hermes_host["dialecticCadence"] = 2
 
     # --- 8. Session strategy ---
     current_strat = hermes_host.get("sessionStrategy") or cfg.get("sessionStrategy", "per-session")

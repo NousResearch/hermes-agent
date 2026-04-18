@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { DEFAULT_THEME, fromSkin } from '../theme.js'
+import { DARK_THEME, DEFAULT_THEME, fromSkin, LIGHT_THEME } from '../theme.js'
 
 describe('DEFAULT_THEME', () => {
   it('has brand defaults', () => {
@@ -12,6 +12,26 @@ describe('DEFAULT_THEME', () => {
   it('has color palette', () => {
     expect(DEFAULT_THEME.color.gold).toBe('#FFD700')
     expect(DEFAULT_THEME.color.error).toBe('#ef5350')
+  })
+})
+
+describe('LIGHT_THEME', () => {
+  it('avoids bright-yellow accents unreadable on white backgrounds (#11300)', () => {
+    expect(LIGHT_THEME.color.gold).not.toBe('#FFD700')
+    expect(LIGHT_THEME.color.amber).not.toBe('#FFBF00')
+    expect(LIGHT_THEME.color.dim).not.toBe('#B8860B')
+    expect(LIGHT_THEME.color.statusWarn).not.toBe('#FFD700')
+  })
+
+  it('keeps the same shape as DARK_THEME', () => {
+    expect(Object.keys(LIGHT_THEME.color).sort()).toEqual(Object.keys(DARK_THEME.color).sort())
+    expect(LIGHT_THEME.brand).toEqual(DARK_THEME.brand)
+  })
+})
+
+describe('DEFAULT_THEME aliasing', () => {
+  it('defaults to DARK_THEME when HERMES_TUI_LIGHT is unset', () => {
+    expect(DEFAULT_THEME).toBe(DARK_THEME)
   })
 })
 

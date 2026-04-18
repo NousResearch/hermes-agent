@@ -3,9 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import importlib
 from typing import Any, Iterable
 
-from gateway.direct_control_router import DIRECT_CONTROL_ROUTER_METHODS
+from gateway.direct_control_router import DIRECT_CONTROL_ROUTER_METHODS, DirectControlRouter
+from gateway.runtime_shortcuts_service import (
+    try_handle_background_job_status_shortcut,
+    try_handle_runtime_status_shortcut,
+)
 
 
 @dataclass(frozen=True)
@@ -31,18 +36,42 @@ DIRECT_SHORTCUT_HANDLER_SPECS: tuple[DirectShortcutHandlerSpec, ...] = (
 )
 
 
+def _resolve_pending_agent_sentinel(runner: Any) -> Any:
+    sentinel = getattr(runner, "_pending_agent_sentinel", None)
+    if sentinel is not None:
+        return sentinel
+    module_name = getattr(type(runner), "__module__", "")
+    if not module_name:
+        return None
+    try:
+        module = importlib.import_module(module_name)
+    except Exception:
+        return None
+    return getattr(module, "_AGENT_PENDING_SENTINEL", None)
+
+
 def _resolve_direct_shortcut_handler(runner: Any, method_name: str):
     handler = getattr(runner, method_name, None)
     if handler is not None:
         return handler
+    if method_name == "_try_handle_background_job_status_shortcut":
+        return lambda event: try_handle_background_job_status_shortcut(runner, event)
+    if method_name == "_try_handle_runtime_status_shortcut":
+        return lambda event: try_handle_runtime_status_shortcut(
+            runner,
+            event,
+            pending_sentinel=_resolve_pending_agent_sentinel(runner),
+        )
     if method_name not in DIRECT_CONTROL_ROUTER_METHODS:
         return None
     get_router = getattr(runner, "_get_direct_control_router", None)
-    if get_router is None:
-        return None
-    router = get_router()
+    if callable(get_router):
+        router = get_router()
+    else:
+        router = getattr(runner, "_direct_control_router", None)
     if router is None:
-        return None
+        router = DirectControlRouter(runner)
+        runner._direct_control_router = router
     return getattr(router, method_name, None)
 
 

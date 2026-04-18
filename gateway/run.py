@@ -267,7 +267,6 @@ from gateway.direct_control_router import (
 )
 from gateway.direct_shortcuts import run_direct_shortcut_handlers
 from gateway.direct_shortcut_runtime_service import (
-    get_direct_control_router as shared_get_direct_control_router,
     try_handle_direct_gateway_shortcuts as shared_try_handle_direct_gateway_shortcuts,
 )
 from gateway.employee_routes import get_employee_routes
@@ -278,8 +277,6 @@ from gateway.runtime_status_service import (
 from gateway.runtime_shortcuts_service import (
     format_background_job_short_status as shared_format_background_job_short_status,
     format_running_session_short_status as shared_format_running_session_short_status,
-    try_handle_background_job_status_shortcut as shared_try_handle_background_job_status_shortcut,
-    try_handle_runtime_status_shortcut as shared_try_handle_runtime_status_shortcut,
 )
 from gateway.group_control_intents import (
     looks_like_group_listen_disable_request,
@@ -1225,6 +1222,7 @@ class GatewayRunner:
         self._running_agents: Dict[str, Any] = {}
         self._running_agents_ts: Dict[str, float] = {}  # start timestamp per session
         self._pending_messages: Dict[str, str] = {}  # Queued messages during interrupt
+        self._pending_agent_sentinel = _AGENT_PENDING_SENTINEL
 
         # Cache AIAgent instances per session to preserve prompt caching.
         # Without this, a new AIAgent is created per message, rebuilding the
@@ -3045,34 +3043,6 @@ class GatewayRunner:
                 await asyncio.sleep(1)
             self._write_runtime_status_snapshot()
 
-    def _try_handle_background_job_status_shortcut(self, event: MessageEvent) -> str | None:
-        return shared_try_handle_background_job_status_shortcut(self, event)
-
-    def _try_handle_runtime_status_shortcut(self, event: MessageEvent) -> str | None:
-        return shared_try_handle_runtime_status_shortcut(
-            self,
-            event,
-            pending_sentinel=_AGENT_PENDING_SENTINEL,
-        )
-
-    def _get_direct_control_router(self) -> DirectControlRouter:
-        return shared_get_direct_control_router(self, router_cls=DirectControlRouter)
-
-    def _try_handle_direct_gateway_shortcuts(
-        self,
-        event: MessageEvent,
-        *,
-        prepare_session_env: bool = False,
-        conversation_history: Optional[List[Dict[str, Any]]] = None,
-    ) -> str | None:
-        return shared_try_handle_direct_gateway_shortcuts(
-            self,
-            event,
-            prepare_session_env=prepare_session_env,
-            conversation_history=conversation_history,
-            logger=logger,
-        )
-
     def _resolve_background_job_for_stop(
         self,
         source: SessionSource,
@@ -3248,10 +3218,12 @@ class GatewayRunner:
                 shortcut_history = self.session_store.load_transcript(shortcut_session.session_id)
             except Exception:
                 shortcut_history = None
-            direct_shortcut_response = self._try_handle_direct_gateway_shortcuts(
+            direct_shortcut_response = shared_try_handle_direct_gateway_shortcuts(
+                self,
                 event,
                 prepare_session_env=True,
                 conversation_history=list(shortcut_history or []),
+                logger=logger,
             )
             if direct_shortcut_response is not None:
                 return direct_shortcut_response
@@ -3869,9 +3841,11 @@ class GatewayRunner:
 
         history = self.session_store.load_transcript(session_entry.session_id)
 
-        direct_shortcut_response = self._try_handle_direct_gateway_shortcuts(
+        direct_shortcut_response = shared_try_handle_direct_gateway_shortcuts(
+            self,
             event,
             conversation_history=list(history or []),
+            logger=logger,
         )
         if direct_shortcut_response is not None:
             return direct_shortcut_response

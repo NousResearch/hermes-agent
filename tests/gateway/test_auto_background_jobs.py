@@ -12,8 +12,13 @@ import pytest
 from gateway.background_delivery_service import recover_stale_background_jobs_once
 from gateway.config import GatewayConfig, Platform, PlatformConfig, load_gateway_config
 from gateway.background_jobs import BackgroundJobStore
+from gateway.direct_shortcut_runtime_service import (
+    get_direct_control_router,
+    try_handle_direct_gateway_shortcuts,
+)
 from gateway.platforms.base import MessageEvent, MessageType
 from gateway.runtime_status_service import build_runtime_status_summary
+from gateway.runtime_shortcuts_service import try_handle_background_job_status_shortcut
 from gateway.session import SessionEntry, SessionSource, build_session_key
 
 
@@ -310,7 +315,7 @@ def test_direct_gateway_shortcuts_prioritize_group_control_over_intel_control():
     runner._try_handle_admin_qq_group_runtime_status = MagicMock(return_value=None)
     runner._try_handle_admin_qq_group_moderation = MagicMock(return_value=None)
 
-    result = runner._try_handle_direct_gateway_shortcuts(event)
+    result = try_handle_direct_gateway_shortcuts(runner, event)
 
     assert result == "group-control"
     runner._try_handle_admin_qq_group_control.assert_called_once_with(event)
@@ -322,7 +327,9 @@ def test_admin_qq_intel_shortcut_requires_explicit_worker_context():
     runner.config.platforms[Platform.QQ_NAPCAT].extra["admin_users"] = ["179033731"]
     event = _make_event("让铁柱继续优化公司主页")
 
-    tool_args, shortcut_error = runner._get_direct_control_router()._match_admin_qq_intel_control_request(event)
+    tool_args, shortcut_error = get_direct_control_router(
+        runner
+    )._match_admin_qq_intel_control_request(event)
 
     assert tool_args is None
     assert shortcut_error is None
@@ -1917,7 +1924,7 @@ async def test_oral_background_status_query_mentions_pending_approval(tmp_path):
         },
     )
 
-    result = runner._try_handle_background_job_status_shortcut(_make_event("前面那个任务还在做吗"))
+    result = try_handle_background_job_status_shortcut(runner, _make_event("前面那个任务还在做吗"))
 
     assert result is not None
     assert "授权" in result or "审批" in result

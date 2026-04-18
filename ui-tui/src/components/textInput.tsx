@@ -2,6 +2,8 @@ import type { InputEvent, Key } from '@hermes/ink'
 import * as Ink from '@hermes/ink'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
+import { writeOsc52Clipboard } from '../lib/osc52.js'
+
 type InkExt = typeof Ink & {
   stringWidth: (s: string) => number
   useDeclaredCursor: (a: { line: number; column: number; active: boolean }) => (el: any) => void
@@ -468,10 +470,22 @@ export function TextInput({
         return void emitPaste({ cursor: curRef.current, hotkey: true, text: '', value: vRef.current })
       }
 
+      if (k.ctrl && inp === 'c') {
+        const range = selRange()
+
+        if (range) {
+          writeOsc52Clipboard(vRef.current.slice(range.start, range.end))
+          clearSel()
+
+          return
+        }
+
+        return
+      }
+
       if (
         k.upArrow ||
         k.downArrow ||
-        (k.ctrl && inp === 'c') ||
         k.tab ||
         (k.shift && k.tab) ||
         k.pageUp ||

@@ -4,7 +4,6 @@ Provides ``feishu_doc_read`` for reading document content as plain text.
 Uses the same lazy-import + BaseRequest pattern as feishu_comment.py.
 """
 
-import asyncio
 import json
 import logging
 import threading
@@ -85,13 +84,9 @@ def _handle_feishu_doc_read(args: dict, **kwargs) -> str:
         .build()
     )
 
-    try:
-        response = asyncio.get_event_loop().run_until_complete(
-            asyncio.to_thread(client.request, request)
-        )
-    except RuntimeError:
-        # No running event loop -- call synchronously
-        response = client.request(request)
+    # Tool handlers run synchronously in a worker thread (no running event
+    # loop), so call the blocking lark client directly.
+    response = client.request(request)
 
     code = getattr(response, "code", None)
     if code != 0:

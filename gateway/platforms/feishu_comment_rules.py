@@ -11,21 +11,26 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Optional
+
+from hermes_constants import get_hermes_home
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
+#
+# Uses the canonical ``get_hermes_home()`` helper (HERMES_HOME-aware and
+# profile-safe). Resolved at import time; this module is lazy-imported by
+# the Feishu comment event handler, which runs long after profile overrides
+# have been applied, so freezing paths here is safe.
 
-_HERMES_HOME = Path(os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes")))
-RULES_FILE = _HERMES_HOME / "feishu_comment_rules.json"
-PAIRING_FILE = _HERMES_HOME / "feishu_comment_pairing.json"
+RULES_FILE = get_hermes_home() / "feishu_comment_rules.json"
+PAIRING_FILE = get_hermes_home() / "feishu_comment_pairing.json"
 
 # ---------------------------------------------------------------------------
 # Data models

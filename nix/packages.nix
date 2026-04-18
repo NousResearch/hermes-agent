@@ -87,7 +87,7 @@
             STAMP_VALUE="${pyprojectHash}:${uvLockHash}"
             if [ ! -f "$STAMP" ] || [ "$(cat "$STAMP")" != "$STAMP_VALUE" ]; then
               echo "hermes-agent: installing Python dependencies..."
-              uv venv .venv --python ${pkgs.python311}/bin/python3 2>/dev/null || true
+              uv venv .venv --python ${pkgs.python312}/bin/python3 2>/dev/null || true
               source .venv/bin/activate
               uv pip install -e ".[all]"
               [ -d mini-swe-agent ] && uv pip install -e ./mini-swe-agent 2>/dev/null || true

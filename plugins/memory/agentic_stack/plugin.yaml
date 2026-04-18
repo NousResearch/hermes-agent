@@ -1,0 +1,9 @@
+name: agentic_stack
+version: 0.1.0
+description: "Agentic-stack portable brain provider - auto-logs episodic memory, injects review queue into system prompt, exposes brain_search/brain_review_queue/brain_graduate/brain_reject/brain_log tools. Profile-tagged via HERMES_HOME."
+pip_dependencies: []
+hooks:
+  - sync_turn
+  - on_delegation
+  - on_session_end
+  - on_pre_compress

@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import httpx
 
 sys.modules.setdefault("fire", types.SimpleNamespace(Fire=lambda *a, **k: None))
 sys.modules.setdefault("firecrawl", types.SimpleNamespace(Firecrawl=object))
@@ -873,6 +874,44 @@ def test_interruptible_streaming_api_call_chatgpt_web_fires_first_delta_without_
     assert first_delta_calls == ["fired"]
     assert deltas == ["Hel", "lo"]
     assert response.choices[0].message.content == "Hello"
+
+
+def test_run_chatgpt_web_completion_retries_once_after_stale_thread_404(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    agent._chatgpt_web_conversation_id = "conv_existing"
+    agent._chatgpt_web_parent_message_id = "msg_existing"
+
+    calls = []
+
+    def _fake_stream(**kwargs):
+        calls.append((kwargs.get("conversation_id"), kwargs.get("parent_message_id")))
+        if len(calls) == 1:
+            request = httpx.Request("POST", "https://chatgpt.com/backend-api/f/conversation")
+            response = httpx.Response(404, request=request)
+            raise httpx.HTTPStatusError("not found", request=request, response=response)
+        return {
+            "content": "Recovered",
+            "conversation_id": "conv_reset",
+            "parent_message_id": "msg_reset",
+            "message_id": "msg_reset",
+            "model": "gpt-5-thinking",
+            "finish_reason": "stop",
+        }
+
+    monkeypatch.setattr("hermes_cli.chatgpt_web.stream_chatgpt_web_completion", _fake_stream)
+
+    response = agent._run_chatgpt_web_completion({
+        "model": "gpt-5-thinking",
+        "messages": [{"role": "user", "content": "hi"}],
+        "conversation_id": "conv_existing",
+        "parent_message_id": "msg_existing",
+        "instructions": "Be concise.",
+    })
+
+    assert calls == [("conv_existing", "msg_existing"), (None, None)]
+    assert response.choices[0].message.content == "Recovered"
+    assert agent._chatgpt_web_conversation_id == "conv_reset"
+    assert agent._chatgpt_web_parent_message_id == "msg_reset"
 
 
 def test_interruptible_api_call_chatgpt_web_closes_request_client_on_interrupt(monkeypatch):

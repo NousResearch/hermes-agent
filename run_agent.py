@@ -8605,6 +8605,18 @@ class AIAgent:
                 return []
             vision_tool = tools_by_name.get("vision_analyze")
             return [vision_tool] if vision_tool is not None else []
+        if (
+            used_tool_count > 0
+            and last_tool_name == "search_files"
+            and isinstance(last_tool_payload, dict)
+            and path_match
+            and any(keyword in lowered for keyword in ("read", "open", "show", "inspect", "exact line", "exact def line", "first line"))
+        ):
+            matches = last_tool_payload.get("matches")
+            if isinstance(matches, list) and matches:
+                read_tool = tools_by_name.get("read_file")
+                if read_tool is not None:
+                    return [read_tool]
         if used_tool_count > 0 and self._chatgpt_web_answer_only_mode(user_text) == "line":
             last_tool_content = ""
             for item in reversed(payload_messages):
@@ -8913,7 +8925,7 @@ class AIAgent:
                 keyword in lowered for keyword in ("find", "search", "grep", "symbol", "definition", "define", "defines", "defined")
             ):
                 return {
-                    "pattern": explicit_symbol_target,
+                    "pattern": rf"\b{re.escape(explicit_symbol_target)}\b",
                     "target": "content",
                     "path": path_match,
                 }
@@ -9212,6 +9224,17 @@ class AIAgent:
             return ""
         return "Use these exact arguments for this turn: " + json.dumps(args, ensure_ascii=False)
 
+    @staticmethod
+    def _chatgpt_web_prompt_argument_mirror(args: Optional[dict[str, Any]]) -> str:
+        if not isinstance(args, dict):
+            return ""
+        lines: list[str] = []
+        for key in ("path", "image_url"):
+            value = args.get(key)
+            if isinstance(value, str) and "\\" in value:
+                lines.append(f'Windows path argument mirror: "{key}": "{value}"')
+        return "\n".join(lines)
+
     def _chatgpt_web_tool_call_example(self, tool_name: str, payload_messages: list[dict[str, Any]]) -> str:
         if not isinstance(tool_name, str) or not tool_name.strip():
             return ""
@@ -9437,10 +9460,7 @@ class AIAgent:
         if not isinstance(tool_payload, dict):
             return False
         matches = tool_payload.get("matches")
-        original_request = self._chatgpt_web_original_user_request(payload_messages)
         if isinstance(matches, list) and bool(matches):
-            if self._chatgpt_web_answer_only_mode(original_request) == "line":
-                return False
             return True
         if tool_payload.get("truncated"):
             try:
@@ -12180,6 +12200,7 @@ class AIAgent:
                 if selected_tool_args is not None
                 else (self._chatgpt_web_missing_args_hint(selected_tool_names[0]) if selected_tool_names else "")
             )
+            selected_tool_argument_mirror = self._chatgpt_web_prompt_argument_mirror(selected_tool_args)
             selected_tool_example = (
                 "<tool_call>\n"
                 + json.dumps({"name": selected_tool_names[0], "arguments": selected_tool_args}, ensure_ascii=False)
@@ -12228,6 +12249,8 @@ class AIAgent:
                             ])
                             if selected_tool_hint:
                                 reminder_lines.append(selected_tool_hint)
+                            if selected_tool_argument_mirror:
+                                reminder_lines.append(selected_tool_argument_mirror)
                             if selected_tool_example:
                                 reminder_lines.append("Reply now with this exact structure:")
                                 reminder_lines.append(selected_tool_example)
@@ -12244,6 +12267,8 @@ class AIAgent:
                                 ])
                                 if selected_tool_hint:
                                     reminder_lines.append(selected_tool_hint)
+                                if selected_tool_argument_mirror:
+                                    reminder_lines.append(selected_tool_argument_mirror)
                                 if selected_tool_example:
                                     reminder_lines.append("Reply now with this exact structure:")
                                     reminder_lines.append(selected_tool_example)
@@ -12274,6 +12299,8 @@ class AIAgent:
                                     reminder_lines.append(final_answer_example)
                                 if selected_tool_hint:
                                     reminder_lines.append(selected_tool_hint)
+                                if selected_tool_argument_mirror:
+                                    reminder_lines.append(selected_tool_argument_mirror)
                         item["content"] = (
                             f"Original user request:\n{original}\n\nRuntime reminder:\n"
                             + "\n".join(reminder_lines)

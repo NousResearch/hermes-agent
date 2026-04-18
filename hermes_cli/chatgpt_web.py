@@ -10,6 +10,7 @@ import os
 import random
 import time
 import uuid
+from collections import OrderedDict
 from contextlib import nullcontext
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -45,13 +46,75 @@ def _chatgpt_web_debug_base() -> str:
     return os.getenv("CHATGPT_WEB_DEBUG_BASE", "").strip()
 
 
-def _build_cookie_header(*, session_token: str = "", device_id: str = "") -> str:
-    parts: list[str] = []
+def _parse_cookie_header(raw_cookie_header: str) -> "OrderedDict[str, str]":
+    cookies: "OrderedDict[str, str]" = OrderedDict()
+    for part in str(raw_cookie_header or "").split(";"):
+        chunk = part.strip()
+        if not chunk or "=" not in chunk:
+            continue
+        name, value = chunk.split("=", 1)
+        name = name.strip()
+        if name:
+            cookies[name] = value.strip()
+    return cookies
+
+
+def _normalize_browser_cookies(browser_cookies: Any) -> list[dict[str, Any]]:
+    parsed = browser_cookies
+    if isinstance(parsed, str):
+        try:
+            parsed = json.loads(parsed)
+        except Exception:
+            parsed = None
+    if isinstance(parsed, dict):
+        parsed = [{"name": str(name), "value": value} for name, value in parsed.items()]
+    if not isinstance(parsed, list):
+        return []
+
+    normalized: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for item in parsed:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        value = str(item.get("value") or "").strip()
+        if not name or not value:
+            continue
+        domain = str(item.get("domain") or "").strip()
+        path = str(item.get("path") or "").strip()
+        key = (name, domain, path)
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized_item = dict(item)
+        normalized_item["name"] = name
+        normalized_item["value"] = value
+        normalized.append(normalized_item)
+    return normalized
+
+
+def _extract_cookie_value(raw_cookie_header: str, cookie_name: str) -> str:
+    return _parse_cookie_header(raw_cookie_header).get(str(cookie_name or "").strip(), "")
+
+
+def _build_cookie_header(
+    *,
+    session_token: str = "",
+    device_id: str = "",
+    cookie_header: str = "",
+    browser_cookies: Any = None,
+) -> str:
+    cookies = _parse_cookie_header(cookie_header)
+    for item in _normalize_browser_cookies(browser_cookies):
+        name = str(item.get("name") or "").strip()
+        value = str(item.get("value") or "").strip()
+        if name and value:
+            cookies[name] = value
     if session_token:
-        parts.append(f"__Secure-next-auth.session-token={session_token}")
+        cookies["__Secure-next-auth.session-token"] = session_token
     if device_id:
-        parts.append(f"oai-did={device_id}")
-    return "; ".join(parts)
+        cookies["oai-did"] = device_id
+    return "; ".join(f"{name}={value}" for name, value in cookies.items())
 
 
 def _build_chatgpt_web_headers(
@@ -59,33 +122,36 @@ def _build_chatgpt_web_headers(
     access_token: str,
     session_token: str = "",
     cookie_header: str = "",
+    browser_cookies: Any = None,
     user_agent: str = "",
     device_id: str = "",
     accept: str = "application/json",
 ) -> dict[str, str]:
+    resolved_device_id = (
+        device_id
+        or _extract_cookie_value(cookie_header, "oai-did")
+        or _default_device_id()
+    )
     headers = {
         "Authorization": f"Bearer {access_token}",
         "Accept": accept,
         "User-Agent": user_agent or _default_user_agent(),
         "Content-Type": "application/json",
-        "Oai-Device-Id": device_id or _default_device_id(),
+        "Oai-Device-Id": resolved_device_id,
         "Referer": "https://chatgpt.com/",
         "Origin": "https://chatgpt.com",
         "Sec-Fetch-Site": "same-origin",
         "Sec-Fetch-Mode": "cors",
         "Sec-Fetch-Dest": "empty",
     }
-    generated_cookie_header = _build_cookie_header(
+    resolved_cookie_header = _build_cookie_header(
         session_token=session_token,
         device_id=headers["Oai-Device-Id"],
+        cookie_header=cookie_header,
+        browser_cookies=browser_cookies,
     )
-    cookie_parts = [
-        part.strip()
-        for part in (cookie_header, generated_cookie_header)
-        if isinstance(part, str) and part.strip()
-    ]
-    if cookie_parts:
-        headers["Cookie"] = "; ".join(cookie_parts)
+    if resolved_cookie_header:
+        headers["Cookie"] = resolved_cookie_header
     return headers
 
 
@@ -795,6 +861,7 @@ def stream_chatgpt_web_completion(
         access_token=token,
         session_token=session_token,
         cookie_header=cookie_header,
+        browser_cookies=browser_cookies,
         user_agent=ua,
         device_id=did,
     )

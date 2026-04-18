@@ -277,7 +277,16 @@ async def test_handle_message_uses_recent_context_for_short_design_follow_up_whe
 
 @pytest.mark.asyncio
 async def test_handle_message_employee_followup_does_not_route_to_intel_worker_control():
-    runner = _make_runner(auto_background_work=True)
+    runner = _make_runner(
+        auto_background_work=True,
+        employee_routes=[
+            {
+                "worker_name": "铁柱",
+                "preloaded_skills": ["frontend-design-pro"],
+                "match_modes": ["explicit"],
+            }
+        ],
+    )
     runner.config.platforms[Platform.QQ_NAPCAT].extra["admin_users"] = ["179033731"]
     runner.session_store.load_transcript.return_value = [
         {"role": "assistant", "content": "公司主页还比较粗糙，交给铁柱继续打磨会更合适。"},
@@ -300,6 +309,31 @@ async def test_handle_message_employee_followup_does_not_route_to_intel_worker_c
     job = _latest_durable_job(runner)
     assert job["worker_name"] == "铁柱"
     assert job["preloaded_skills"] == ["frontend-design-pro"]
+
+
+@pytest.mark.asyncio
+async def test_handle_message_without_configured_employee_route_keeps_worker_followup_in_foreground():
+    runner = _make_runner(auto_background_work=True, employee_routes=[])
+    runner.config.platforms[Platform.QQ_NAPCAT].extra["admin_users"] = ["179033731"]
+    runner.session_store.load_transcript.return_value = [
+        {"role": "assistant", "content": "公司主页还比较粗糙，交给铁柱继续打磨会更合适。"},
+        {"role": "user", "content": "知道了。"},
+    ]
+    event = _make_event("让铁柱继续优化公司主页")
+
+    with (
+        patch(
+            "gateway.run.asyncio.create_task",
+            side_effect=lambda coro, *args, **kwargs: (coro.close(), MagicMock())[1],
+        ),
+        patch("tools.qq_control_tool.qq_control_tool") as control_mock,
+    ):
+        result = await runner._handle_message(event)
+
+    control_mock.assert_not_called()
+    runner._run_agent.assert_awaited_once()
+    assert result == "前台回复"
+    assert _list_durable_jobs(runner) == []
 
 
 def test_direct_gateway_shortcuts_prioritize_group_control_over_intel_control():

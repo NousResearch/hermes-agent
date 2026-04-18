@@ -2,17 +2,12 @@
 
 from __future__ import annotations
 
-import json
 import logging
-from functools import lru_cache
-from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 from gateway.config import GatewayConfig, Platform
 
 logger = logging.getLogger(__name__)
-
-_DEFAULT_ROUTES_PATH = Path(__file__).resolve().parent / "data" / "employee_routes.json"
 
 
 def _coerce_str_list(value: Any) -> List[str]:
@@ -42,22 +37,6 @@ def _normalize_match_modes(value: Any) -> Tuple[str, ...]:
     return tuple(normalized) or ("explicit",)
 
 
-@lru_cache(maxsize=1)
-def _load_default_routes() -> List[Dict[str, Any]]:
-    try:
-        raw = json.loads(_DEFAULT_ROUTES_PATH.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        logger.warning("Employee routes data file missing: %s", _DEFAULT_ROUTES_PATH)
-        return []
-    except Exception as exc:
-        logger.warning("Failed to load employee routes from %s: %s", _DEFAULT_ROUTES_PATH, exc)
-        return []
-    if not isinstance(raw, list):
-        logger.warning("Employee routes file must contain a list: %s", _DEFAULT_ROUTES_PATH)
-        return []
-    return [item for item in raw if isinstance(item, dict)]
-
-
 def _normalize_route(route: Dict[str, Any]) -> Dict[str, Any] | None:
     worker_name = str(route.get("worker_name") or route.get("name") or "").strip()
     if not worker_name:
@@ -84,7 +63,11 @@ def _normalize_route(route: Dict[str, Any]) -> Dict[str, Any] | None:
 
 
 def get_employee_routes(config: GatewayConfig | None, *, platform: Platform) -> List[Dict[str, Any]]:
-    """Return normalized employee-route definitions for a platform."""
+    """Return normalized employee-route definitions for a platform.
+
+    Employee routes are intentionally config-only. The framework does not ship
+    built-in worker personas so deployments stay policy-driven and upstream-safe.
+    """
     source_routes: Any = None
     try:
         pconfig = (config.platforms or {}).get(platform) if config else None
@@ -95,7 +78,7 @@ def get_employee_routes(config: GatewayConfig | None, *, platform: Platform) -> 
         source_routes = None
 
     if source_routes is None:
-        source_routes = _load_default_routes()
+        return []
     if not isinstance(source_routes, list):
         return []
 

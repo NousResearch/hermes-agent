@@ -2,6 +2,21 @@ from gateway.config import GatewayConfig, Platform, load_gateway_config
 from gateway.employee_routes import get_employee_routes
 
 
+def test_get_employee_routes_returns_empty_without_platform_override():
+    config = GatewayConfig.from_dict(
+        {
+            "platforms": {
+                "qq_napcat": {
+                    "enabled": True,
+                    "extra": {},
+                }
+            }
+        }
+    )
+
+    assert get_employee_routes(config, platform=Platform.QQ_NAPCAT) == []
+
+
 def test_get_employee_routes_prefers_platform_override():
     config = GatewayConfig.from_dict(
         {

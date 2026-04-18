@@ -5579,7 +5579,7 @@ class AIAgent:
                 raise result["error"]
             return result["response"]
 
-        result = {"response": None, "error": None}
+        result = {"response": None, "error": None, "partial_tool_names": []}
         request_client_holder = {"client": None}
         first_delta_fired = {"done": False}
         deltas_were_sent = {"yes": False}  # Track if any deltas were fired (for fallback)
@@ -5751,6 +5751,14 @@ class AIAgent:
                             tool_gen_notified.add(idx)
                             _fire_first_delta()
                             self._fire_tool_gen_started(name)
+                            # Record the partial tool-call name so the outer
+                            # stub-builder can surface a user-visible warning
+                            # if streaming dies before this tool's arguments
+                            # are fully delivered.  Without this, a stall
+                            # during tool-call JSON generation lets the stub
+                            # at line ~6107 return `tool_calls=None`, silently
+                            # discarding the attempted action.
+                            result["partial_tool_names"].append(name)
 
                 if chunk.choices[0].finish_reason:
                     finish_reason = chunk.choices[0].finish_reason
@@ -6117,13 +6125,44 @@ class AIAgent:
                 _partial_text = (
                     getattr(self, "_current_streamed_assistant_text", "") or ""
                 ).strip() or None
-                logger.warning(
-                    "Partial stream delivered before error; returning stub "
-                    "response with %s chars of recovered content to prevent "
-                    "duplicate messages: %s",
-                    len(_partial_text or ""),
-                    result["error"],
-                )
+
+                # If the stream died while the model was emitting a tool call,
+                # the stub below will silently set `tool_calls=None` and the
+                # agent loop will treat the turn as complete — the attempted
+                # action is lost with no user-facing signal.  Append a
+                # human-visible warning to the stub content so (a) the user
+                # knows something failed, and (b) the next turn's model sees
+                # in conversation history what was attempted and can retry.
+                _partial_names = list(result.get("partial_tool_names") or [])
+                if _partial_names:
+                    _name_str = ", ".join(_partial_names[:3])
+                    if len(_partial_names) > 3:
+                        _name_str += f", +{len(_partial_names) - 3} more"
+                    _warn = (
+                        f"\n\n⚠ Stream stalled mid tool-call "
+                        f"({_name_str}); the action was not executed. "
+                        f"Ask me to retry if you want to continue."
+                    )
+                    _partial_text = (_partial_text or "") + _warn
+                    # Also fire as a streaming delta so the user sees it now
+                    # instead of only in the persisted transcript.
+                    try:
+                        self._fire_stream_delta(_warn)
+                    except Exception:
+                        pass
+                    logger.warning(
+                        "Partial stream dropped tool call(s) %s after %s chars "
+                        "of text; surfaced warning to user: %s",
+                        _partial_names, len(_partial_text or ""), result["error"],
+                    )
+                else:
+                    logger.warning(
+                        "Partial stream delivered before error; returning stub "
+                        "response with %s chars of recovered content to prevent "
+                        "duplicate messages: %s",
+                        len(_partial_text or ""),
+                        result["error"],
+                    )
                 _stub_msg = SimpleNamespace(
                     role="assistant", content=_partial_text, tool_calls=None,
                     reasoning_content=None,

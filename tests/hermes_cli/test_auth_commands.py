@@ -168,6 +168,67 @@ def test_auth_add_nous_oauth_persists_pool_entry(tmp_path, monkeypatch):
     assert singleton["inference_base_url"] == "https://inference.example.com/v1"
 
 
+def test_auth_add_nous_oauth_honors_custom_label(tmp_path, monkeypatch):
+    """`hermes auth add nous --type oauth --label <name>` must preserve the
+    custom label end-to-end — it was silently dropped in the first cut of the
+    persist_nous_credentials helper because `--label` wasn't threaded through.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+    token = _jwt_with_email("nous@example.com")
+    monkeypatch.setattr(
+        "hermes_cli.auth._nous_device_code_login",
+        lambda **kwargs: {
+            "portal_base_url": "https://portal.example.com",
+            "inference_base_url": "https://inference.example.com/v1",
+            "client_id": "hermes-cli",
+            "scope": "inference:mint_agent_key",
+            "token_type": "Bearer",
+            "access_token": token,
+            "refresh_token": "refresh-token",
+            "obtained_at": "2026-03-23T10:00:00+00:00",
+            "expires_at": "2026-03-23T11:00:00+00:00",
+            "expires_in": 3600,
+            "agent_key": "ak-test",
+            "agent_key_id": "ak-id",
+            "agent_key_expires_at": "2026-03-23T10:30:00+00:00",
+            "agent_key_expires_in": 1800,
+            "agent_key_reused": False,
+            "agent_key_obtained_at": "2026-03-23T10:00:10+00:00",
+            "tls": {"insecure": False, "ca_bundle": None},
+        },
+    )
+
+    from hermes_cli.auth_commands import auth_add_command
+
+    class _Args:
+        provider = "nous"
+        auth_type = "oauth"
+        api_key = None
+        label = "my-nous"
+        portal_url = None
+        inference_url = None
+        client_id = None
+        scope = None
+        no_browser = False
+        timeout = None
+        insecure = False
+        ca_bundle = None
+
+    auth_add_command(_Args())
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+
+    # Custom label reaches the pool entry …
+    pool_entry = payload["credential_pool"]["nous"][0]
+    assert pool_entry["source"] == "device_code"
+    assert pool_entry["label"] == "my-nous"
+
+    # … and survives in providers.nous so a subsequent load_pool() re-seeds
+    # it without reverting to the auto-derived fingerprint.
+    assert payload["providers"]["nous"]["label"] == "my-nous"
+
+
 def test_auth_add_codex_oauth_persists_pool_entry(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _write_auth_store(tmp_path, {"version": 1, "providers": {}})

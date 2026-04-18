@@ -633,3 +633,81 @@ def test_persist_nous_credentials_reloads_pool_after_singleton_write(tmp_path, m
     # assert its exact value, just that the helper returned a real entry.
     assert entry.access_token == "access-tok"
     assert entry.agent_key == "agent-key-value"
+
+
+def test_persist_nous_credentials_embeds_custom_label(tmp_path, monkeypatch):
+    """User-supplied ``--label`` round-trips through providers.nous and the pool.
+
+    Previously `hermes auth add nous --type oauth --label <name>` silently
+    dropped the label because persist_nous_credentials() ignored it and
+    _seed_from_singletons always auto-derived via label_from_token().  The
+    fix stashes the label inside providers.nous so seeding prefers it.
+    """
+    from hermes_cli.auth import persist_nous_credentials, NOUS_DEVICE_CODE_SOURCE
+
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    (hermes_home / "auth.json").write_text(json.dumps({
+        "version": 1, "providers": {},
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    entry = persist_nous_credentials(_full_state_fixture(), label="my-personal")
+    assert entry is not None
+    assert entry.source == NOUS_DEVICE_CODE_SOURCE
+    assert entry.label == "my-personal"
+
+    # providers.nous carries the label so re-seeding on the next load_pool
+    # doesn't overwrite it with the auto-derived fingerprint.
+    payload = json.loads((hermes_home / "auth.json").read_text())
+    assert payload["providers"]["nous"]["label"] == "my-personal"
+
+
+def test_persist_nous_credentials_custom_label_survives_reseed(tmp_path, monkeypatch):
+    """Reopening the pool (which re-runs _seed_from_singletons) must keep the
+    user-chosen label instead of clobbering it with label_from_token output.
+    """
+    from hermes_cli.auth import persist_nous_credentials
+    from agent.credential_pool import load_pool
+
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    (hermes_home / "auth.json").write_text(json.dumps({
+        "version": 1, "providers": {},
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    persist_nous_credentials(_full_state_fixture(), label="work-acct")
+
+    # Second load_pool triggers _seed_from_singletons again.  Without the
+    # fix, this call overwrote the label with label_from_token(access_token).
+    pool = load_pool("nous")
+    entries = pool.entries()
+    assert len(entries) == 1
+    assert entries[0].label == "work-acct"
+
+
+def test_persist_nous_credentials_no_label_uses_auto_derived(tmp_path, monkeypatch):
+    """When the caller doesn't pass ``label``, the auto-derived fingerprint
+    is used (unchanged default behaviour — regression guard).
+    """
+    from hermes_cli.auth import persist_nous_credentials
+
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    (hermes_home / "auth.json").write_text(json.dumps({
+        "version": 1, "providers": {},
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    entry = persist_nous_credentials(_full_state_fixture())
+    assert entry is not None
+    # label_from_token derives from the access_token; exact value depends on
+    # the fingerprinter but it must not be empty and must not equal an
+    # arbitrary user string we never passed.
+    assert entry.label
+    assert entry.label != "my-personal"
+
+    # No "label" key embedded in providers.nous when the caller didn't supply one.
+    payload = json.loads((hermes_home / "auth.json").read_text())
+    assert "label" not in payload["providers"]["nous"]

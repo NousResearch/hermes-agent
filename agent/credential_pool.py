@@ -1130,6 +1130,14 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
         state = _load_provider_state(auth_store, "nous")
         if state:
             active_sources.add("device_code")
+            # Prefer a user-supplied label embedded in the singleton state
+            # (set by persist_nous_credentials(label=...) when the user ran
+            # `hermes auth add nous --label <name>`).  Fall back to the
+            # auto-derived token fingerprint for logins that didn't supply one.
+            custom_label = str(state.get("label") or "").strip()
+            seeded_label = custom_label or label_from_token(
+                state.get("access_token", ""), "device_code"
+            )
             changed |= _upsert_entry(
                 entries,
                 provider,
@@ -1148,7 +1156,7 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
                     "agent_key": state.get("agent_key"),
                     "agent_key_expires_at": state.get("agent_key_expires_at"),
                     "tls": state.get("tls") if isinstance(state.get("tls"), dict) else None,
-                    "label": label_from_token(state.get("access_token", ""), "device_code"),
+                    "label": seeded_label,
                 },
             )
 

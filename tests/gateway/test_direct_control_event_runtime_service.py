@@ -65,6 +65,19 @@ def test_normalize_direct_control_body_strips_leading_wrapper_phrases():
     )
 
 
+def test_normalize_direct_control_body_strips_stacked_wrapper_phrases():
+    from gateway.direct_control_event_runtime_service import normalize_direct_control_body
+
+    assert normalize_direct_control_body("我是说 帮我把这个群切成只监听") == "这个群切成只监听"
+
+
+def test_shared_oral_intents_exports_direct_control_wrapper_patterns():
+    from gateway.shared_oral_intents import DIRECT_CONTROL_WRAPPER_PATTERNS
+
+    assert DIRECT_CONTROL_WRAPPER_PATTERNS
+    assert all(hasattr(pattern, "sub") for pattern in DIRECT_CONTROL_WRAPPER_PATTERNS)
+
+
 def test_extract_platform_text_event_context_rejects_command_media_and_other_platforms():
     from gateway.direct_control_event_runtime_service import extract_platform_text_event_context
 

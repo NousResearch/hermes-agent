@@ -106,3 +106,12 @@ SEND_CONFIRM_TERMS = _load_term_sequence("term_sequences", "SEND_CONFIRM_TERMS")
 
 GROUP_LISTEN_DISABLE_PATTERNS = _load_pattern_sequence("pattern_sequences", "GROUP_LISTEN_DISABLE_PATTERNS")
 GROUP_LISTEN_ENABLE_PATTERNS = _load_pattern_sequence("pattern_sequences", "GROUP_LISTEN_ENABLE_PATTERNS")
+_DEFAULT_DIRECT_CONTROL_WRAPPER_PATTERNS = (
+    re.compile(r"^(?:我让你|我叫你|我说了|我说的是|我是说)\s*"),
+    re.compile(r"^(?:帮我把|请你把|麻烦你把)\s*"),
+    re.compile(r"^(?:帮我|请你|麻烦你)\s*"),
+)
+DIRECT_CONTROL_WRAPPER_PATTERNS = (
+    _load_pattern_sequence("pattern_sequences", "DIRECT_CONTROL_WRAPPER_PATTERNS")
+    or _DEFAULT_DIRECT_CONTROL_WRAPPER_PATTERNS
+)

@@ -2,15 +2,9 @@
 
 from __future__ import annotations
 
-import re
 from typing import Any
 
-
-_DIRECT_CONTROL_WRAPPER_PATTERNS = (
-    re.compile(r"^(?:我让你|我叫你|我说了|我说的是|我是说)\s*"),
-    re.compile(r"^(?:帮我把|请你把|麻烦你把)\s*"),
-    re.compile(r"^(?:帮我|请你|麻烦你)\s*"),
-)
+from gateway.shared_oral_intents import DIRECT_CONTROL_WRAPPER_PATTERNS
 
 
 def normalize_direct_control_body(body: str) -> str:
@@ -27,7 +21,7 @@ def normalize_direct_control_body(body: str) -> str:
     previous = None
     while normalized and normalized != previous:
         previous = normalized
-        for pattern in _DIRECT_CONTROL_WRAPPER_PATTERNS:
+        for pattern in DIRECT_CONTROL_WRAPPER_PATTERNS:
             normalized = pattern.sub("", normalized, count=1).strip()
     return normalized
 

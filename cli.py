@@ -2886,6 +2886,39 @@ class HermesCLI:
             self._command_status = ""
             self._invalidate(min_interval=0.0)
 
+    def _open_external_editor(self, buffer=None) -> bool:
+        """Open the active input buffer in an external editor."""
+        app = getattr(self, "_app", None)
+        if not app:
+            _cprint(f"{_DIM}External editor is only available inside the interactive CLI.{_RST}")
+            return False
+        if self._command_running:
+            _cprint(f"{_DIM}Wait for the current command to finish before opening the editor.{_RST}")
+            return False
+        if self._sudo_state or self._secret_state or self._approval_state or self._clarify_state:
+            _cprint(f"{_DIM}Finish the active prompt before opening the editor.{_RST}")
+            return False
+        target_buffer = buffer or getattr(app, "current_buffer", None)
+        if target_buffer is None:
+            _cprint(f"{_DIM}No active input buffer is available for the external editor.{_RST}")
+            return False
+        try:
+            existing_text = getattr(target_buffer, "text", "")
+            expanded_text = self._expand_paste_references(existing_text)
+            if expanded_text != existing_text and hasattr(target_buffer, "text"):
+                self._skip_paste_collapse = True
+                target_buffer.text = expanded_text
+                if hasattr(target_buffer, "cursor_position"):
+                    target_buffer.cursor_position = len(expanded_text)
+            # Set skip flag (again) so the text-change event fired when the
+            # editor closes does not re-collapse the returned content.
+            self._skip_paste_collapse = True
+            target_buffer.open_in_editor(validate_and_handle=False)
+            return True
+        except Exception as exc:
+            _cprint(f"{_DIM}Failed to open external editor: {exc}{_RST}")
+            return False
+
     def _ensure_runtime_credentials(self) -> bool:
         """
         Ensure runtime credentials are resolved before agent use.
@@ -4063,6 +4096,7 @@ class HermesCLI:
 
         _cprint(f"\n  {_DIM}Tip: Just type your message to chat with Hermes!{_RST}")
         _cprint(f"  {_DIM}Multi-line: Alt+Enter for a new line{_RST}")
+        _cprint(f"  {_DIM}Draft editor: Ctrl+G{_RST}")
         if _is_termux_environment():
             _cprint(f"  {_DIM}Attach image: /image {_termux_example_image_path()} or start your prompt with a local image path{_RST}\n")
         else:
@@ -8978,6 +9012,16 @@ class HermesCLI:
             """Ctrl+Enter (c-j) inserts a newline. Most terminals send c-j for Ctrl+Enter."""
             event.current_buffer.insert_text('\n')
 
+        @kb.add(
+            'c-g',
+            filter=Condition(
+                lambda: not self._clarify_state and not self._approval_state and not self._sudo_state and not self._secret_state
+            ),
+        )
+        def handle_open_in_editor(event):
+            """Ctrl+G opens the current draft in an external editor."""
+            cli_ref._open_external_editor(event.current_buffer)
+
         @kb.add('tab', eager=True)
         def handle_tab(event):
             """Tab: accept completion, auto-suggestion, or start completions.
@@ -9429,6 +9473,7 @@ class HermesCLI:
         _prev_text_len = [0]
         _prev_newline_count = [0]
         _paste_just_collapsed = [False]
+        self._skip_paste_collapse = False
 
         def _on_text_changed(buf):
             """Detect large pastes and collapse them to a file reference.
@@ -9448,8 +9493,9 @@ class HermesCLI:
             text = buf.text
             chars_added = len(text) - _prev_text_len[0]
             _prev_text_len[0] = len(text)
-            if _paste_just_collapsed[0]:
+            if _paste_just_collapsed[0] or self._skip_paste_collapse:
                 _paste_just_collapsed[0] = False
+                self._skip_paste_collapse = False
                 _prev_newline_count[0] = text.count('\n')
                 return
             line_count = text.count('\n')
@@ -9458,12 +9504,10 @@ class HermesCLI:
             is_paste = chars_added > 1 or newlines_added >= 4
             if line_count >= 5 and is_paste and not text.startswith('/'):
                 _paste_counter[0] += 1
-                # Save to temp file
                 paste_dir = _hermes_home / "pastes"
                 paste_dir.mkdir(parents=True, exist_ok=True)
                 paste_file = paste_dir / f"paste_{_paste_counter[0]}_{datetime.now().strftime('%H%M%S')}.txt"
                 paste_file.write_text(text, encoding="utf-8")
-                # Replace buffer with compact reference
                 _paste_just_collapsed[0] = True
                 buf.text = f"[Pasted text #{_paste_counter[0]}: {line_count + 1} lines \u2192 {paste_file}]"
                 buf.cursor_position = len(buf.text)

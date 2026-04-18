@@ -1,0 +1,12 @@
+name: claude-mem
+version: 1.0.0
+description: "Claude-Mem — automatic hook-driven observation capture with SQLite FTS5 + Chroma semantic search, via a local worker on localhost:37777."
+pip_dependencies:
+  - requests
+external_dependencies:
+  - name: claude-mem-worker
+    install: "npm install -g @thedotmack/claude-mem && claude-mem worker start"
+    check: "curl -sf http://127.0.0.1:37777/health >/dev/null"
+hooks:
+  - on_session_end
+  - on_pre_compress

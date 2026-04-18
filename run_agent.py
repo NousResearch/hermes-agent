@@ -96,6 +96,7 @@ from agent.subdirectory_hints import SubdirectoryHintTracker
 from agent.prompt_caching import apply_anthropic_cache_control
 from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt, build_environment_hints, load_soul_md, TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, DEVELOPER_ROLE_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE, OPENAI_MODEL_EXECUTION_GUIDANCE
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
+from agent.provider_tweaks import get_provider_tweaks, merge_provider_tweaks
 from agent.display import (
     KawaiiSpinner, build_tool_preview as _build_tool_preview,
     get_cute_tool_message as _get_cute_tool_message_impl,
@@ -7100,6 +7101,16 @@ class AIAgent:
         # specific.  Only send to OpenRouter-compatible endpoints.
         # TODO: Nous Portal will add transparent proxy support — re-enable
         # for _is_nous when their backend is updated.
+        if _is_openrouter:
+            # Apply known-broken-endpoint tweaks (e.g. skip Minimax direct
+            # endpoint on minimax/* models where tool-call streams stall —
+            # MiniMax-M2#109, Hermes-PR#12072).  User-supplied preferences
+            # always win; these only supply defaults where absent.
+            _tweaks = get_provider_tweaks(self.model, self._base_url)
+            if _tweaks:
+                provider_preferences = merge_provider_tweaks(
+                    provider_preferences, _tweaks,
+                )
         if provider_preferences and _is_openrouter:
             extra_body["provider"] = provider_preferences
         _is_nous = "nousresearch" in self._base_url_lower
@@ -8583,6 +8594,14 @@ class AIAgent:
                     provider_preferences["order"] = self.providers_order
                 if self.provider_sort:
                     provider_preferences["sort"] = self.provider_sort
+                # Apply known-broken-endpoint tweaks (OpenRouter only).
+                if "openrouter.ai" in self._base_url_lower:
+                    _tweaks = get_provider_tweaks(self.model, self._base_url)
+                    if _tweaks:
+                        provider_preferences = merge_provider_tweaks(
+                            provider_preferences, _tweaks,
+                            log_label="iteration_summary",
+                        )
                 if provider_preferences:
                     summary_extra_body["provider"] = provider_preferences
 

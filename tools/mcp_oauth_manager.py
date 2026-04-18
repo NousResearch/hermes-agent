@@ -125,9 +125,28 @@ def _make_hermes_provider_class() -> Optional[type]:
                     self._hermes_server_name, exc,
                 )
 
-            # Delegate to the SDK's auth flow
-            async for item in super().async_auth_flow(request):
-                yield item
+            # Manually bridge the bidirectional generator protocol. httpx's
+            # auth_flow driver (httpx._client._send_handling_auth) calls
+            # ``auth_flow.asend(response)`` to feed HTTP responses back into
+            # the generator. A naive wrapper using ``async for item in inner:
+            # yield item`` DISCARDS those .asend(response) values and resumes
+            # the inner generator with None, so the SDK's
+            # ``response = yield request`` branch in
+            # mcp/client/auth/oauth2.py sees response=None and crashes at
+            # ``if response.status_code == 401`` with AttributeError.
+            #
+            # The bridge below forwards each .asend() value into the inner
+            # generator via inner.asend(incoming), preserving the bidirectional
+            # contract. Regression from PR #11383 caught by
+            # tests/tools/test_mcp_oauth_bidirectional.py.
+            inner = super().async_auth_flow(request)
+            try:
+                outgoing = await inner.__anext__()
+                while True:
+                    incoming = yield outgoing
+                    outgoing = await inner.asend(incoming)
+            except StopAsyncIteration:
+                return
 
     return HermesMCPOAuthProvider
 

@@ -260,6 +260,42 @@ class SessionTree:
                         stack.append(child.id)
         return chain_ids
 
+    def get_same_conversation_ids(self, session_id: str) -> Set[str]:
+        """Get all session IDs in the same conversation (compression chain only).
+
+        Only traverses compression edges (up and down), not session_reset/
+        session_switch/branched boundaries. Returns all members of the same
+        conversation's compression chain both above and below session_id.
+
+        - Going up: traverse parent, but only continue when parent.end_reason
+          == "compression"
+        - Going down: use get_compression_chain_ids() which follows compression/
+          active children
+        - Always includes session_id itself
+
+        Used for /resume to exclude only the current conversation, not the
+        entire tree which may include independent conversations (e.g., after
+        auto-reset creates a new session in the same tree).
+        """
+        # Start with all descendants in the compression chain (going down)
+        chain_ids = self.get_compression_chain_ids(session_id)
+
+        # Add ancestors that are part of the compression chain (going up)
+        current = self._nodes.get(session_id)
+        while current and current.parent_id:
+            parent = self._nodes.get(current.parent_id)
+            if not parent:
+                break
+            # Only continue up if parent is a compression node
+            # Stop at session_reset/session_switch/branched boundaries
+            if parent.end_reason == "compression":
+                chain_ids.add(parent.id)
+                current = parent
+            else:
+                break
+
+        return chain_ids
+
     def get_resume_candidates(
         self,
         current_sid: str,
@@ -276,8 +312,8 @@ class SessionTree:
         The preview and last_active fields are set to empty/None and should be enriched
         by the caller using _enrich_candidates_with_display_info or similar.
         """
-        # Get all tree node IDs to exclude (entire current session tree)
-        tree_ids = self.get_tree_node_ids(current_sid)
+        # Get all IDs in the same conversation to exclude (compression chain only)
+        exclude_ids = self.get_same_conversation_ids(current_sid)
 
         # Sort all nodes by last_active descending (most recently active first)
         all_nodes = sorted(self._nodes.values(), key=lambda n: n.last_active, reverse=True)
@@ -292,15 +328,11 @@ class SessionTree:
             sid = node.id
             if sid == current_sid:
                 continue
-            if sid in tree_ids:
+            if sid in exclude_ids:
                 continue
             if sid in seen_ids:
                 continue
             if source and node.source != source:
-                continue
-            # Only filter by message_count for sessions without titles
-            # Titled sessions should always be visible regardless of message count
-            if not node.title and node.message_count < min_messages:
                 continue
 
             display_node = node
@@ -325,6 +357,12 @@ class SessionTree:
                 else:
                     # No distinct leaf — mark entire chain as seen
                     seen_ids.update(chain_ids)
+
+            # Only filter by message_count for sessions without titles
+            # Titled sessions should always be visible regardless of message count
+            # Apply this filter to the display_node (which may be the leaf of a compression chain)
+            if not display_node.title and display_node.message_count < min_messages:
+                continue
 
             seen_ids.add(sid)
 

@@ -299,7 +299,7 @@ async def test_handle_message_employee_followup_does_not_route_to_intel_worker_c
             "gateway.run.asyncio.create_task",
             side_effect=lambda coro, *args, **kwargs: (coro.close(), MagicMock())[1],
         ),
-        patch("tools.qq_control_tool.qq_control_tool") as control_mock,
+        patch("tools.messaging_control_tool.messaging_control_tool") as control_mock,
     ):
         result = await runner._handle_message(event)
 
@@ -326,7 +326,7 @@ async def test_handle_message_without_configured_employee_route_keeps_worker_fol
             "gateway.run.asyncio.create_task",
             side_effect=lambda coro, *args, **kwargs: (coro.close(), MagicMock())[1],
         ),
-        patch("tools.qq_control_tool.qq_control_tool") as control_mock,
+        patch("tools.messaging_control_tool.messaging_control_tool") as control_mock,
     ):
         result = await runner._handle_message(event)
 
@@ -378,7 +378,7 @@ async def test_admin_dm_bare_intel_status_phrase_falls_back_to_agent():
     runner.config.platforms[Platform.QQ_NAPCAT].extra["admin_users"] = ["179033731"]
     event = _make_event("那个情报员还在吗")
 
-    with patch("tools.qq_control_tool.qq_control_tool") as control_mock:
+    with patch("tools.messaging_control_tool.messaging_control_tool") as control_mock:
         result = await runner._handle_message(event)
 
     control_mock.assert_not_called()
@@ -397,7 +397,7 @@ async def test_admin_dm_bot_alias_intel_phrase_falls_back_to_agent():
             "gateway.direct_control_router.list_intel_workers",
             return_value=[{"worker_name": "马哥"}],
         ),
-        patch("tools.qq_control_tool.qq_control_tool") as control_mock,
+        patch("tools.messaging_control_tool.messaging_control_tool") as control_mock,
     ):
         result = await runner._handle_message(event)
 
@@ -417,7 +417,7 @@ async def test_admin_dm_verbose_known_worker_report_request_falls_back_to_agent(
             "gateway.direct_control_router.list_intel_workers",
             return_value=[{"worker_name": "钢镚"}],
         ),
-        patch("tools.qq_control_tool.qq_control_tool") as control_mock,
+        patch("tools.messaging_control_tool.messaging_control_tool") as control_mock,
     ):
         result = await runner._handle_message(event)
 
@@ -454,7 +454,7 @@ async def test_known_worker_name_does_not_steal_explicit_employee_route_when_mes
             "gateway.run.asyncio.create_task",
             side_effect=lambda coro, *args, **kwargs: (coro.close(), MagicMock())[1],
         ),
-        patch("tools.qq_control_tool.qq_control_tool") as control_mock,
+        patch("tools.messaging_control_tool.messaging_control_tool") as control_mock,
     ):
         result = await runner._handle_message(event)
 
@@ -488,7 +488,7 @@ async def test_background_status_shortcut_does_not_steal_explicit_intel_status_q
             return_value=[{"worker_name": "钢镚"}],
         ),
         patch(
-            "tools.qq_control_tool.qq_control_tool",
+            "tools.messaging_control_tool.messaging_control_tool",
             return_value=json.dumps(
                 {
                     "success": True,
@@ -509,6 +509,7 @@ async def test_background_status_shortcut_does_not_steal_explicit_intel_status_q
     assert "726109087" in result
     assert "bg_intel_conflict" not in result
     assert control_mock.call_args.args[0] == {
+        "platform": "qq_napcat",
         "action": "get_worker",
         "worker_name": "钢镚",
     }
@@ -609,7 +610,7 @@ async def test_admin_dm_can_orally_switch_explicit_group_to_collect_only_monitor
     event = _make_event("把 726109087 这个群切成只监听采集，不要走大模型，每天给我日报。")
 
     with patch(
-        "tools.qq_control_tool.qq_control_tool",
+        "tools.messaging_control_tool.messaging_control_tool",
         return_value=json.dumps(
             {
                 "success": True,
@@ -631,6 +632,7 @@ async def test_admin_dm_can_orally_switch_explicit_group_to_collect_only_monitor
     assert "监听" in result
     assert "日报" in result
     args = control_mock.call_args.args[0]
+    assert args["platform"] == "qq_napcat"
     assert args["action"] == "enable_collect_only"
     assert args["target"] == "group:726109087"
     assert args["daily_report_enabled"] is True
@@ -649,7 +651,7 @@ async def test_admin_group_can_orally_switch_current_group_to_collect_only_monit
     )
 
     with patch(
-        "tools.qq_control_tool.qq_control_tool",
+        "tools.messaging_control_tool.messaging_control_tool",
         return_value=json.dumps(
             {
                 "success": True,
@@ -669,6 +671,7 @@ async def test_admin_group_can_orally_switch_current_group_to_collect_only_monit
     assert "726109087" in result
     assert "监听" in result
     args = control_mock.call_args.args[0]
+    assert args["platform"] == "qq_napcat"
     assert args["action"] == "enable_collect_only"
     assert args["target"] == "group:726109087"
     assert "daily_report_enabled" not in args
@@ -681,7 +684,7 @@ async def test_admin_dm_can_orally_stop_explicit_group_monitoring_and_allow_chat
     event = _make_event("停止QQ 群 192903718 的监听采集,允许开始聊天")
 
     with patch(
-        "tools.qq_control_tool.qq_control_tool",
+        "tools.messaging_control_tool.messaging_control_tool",
         return_value=json.dumps(
             {
                 "success": True,
@@ -701,6 +704,7 @@ async def test_admin_dm_can_orally_stop_explicit_group_monitoring_and_allow_chat
     assert "已停止 QQ 群 192903718 的监听采集" in result
     assert "监听采集模式" not in result
     args = control_mock.call_args.args[0]
+    assert args["platform"] == "qq_napcat"
     assert args["action"] == "resume_chat"
     assert args["target"] == "group:192903718"
 
@@ -716,7 +720,7 @@ async def test_admin_group_can_orally_resume_current_group_chat_without_stop_lis
     )
 
     with patch(
-        "tools.qq_control_tool.qq_control_tool",
+        "tools.messaging_control_tool.messaging_control_tool",
         return_value=json.dumps(
             {
                 "success": True,
@@ -736,6 +740,7 @@ async def test_admin_group_can_orally_resume_current_group_chat_without_stop_lis
     assert "已停止 QQ 群 192903718 的监听采集" in result
     args = control_mock.call_args.args[0]
     assert args == {
+        "platform": "qq_napcat",
         "action": "resume_chat",
         "target": "group:192903718",
     }
@@ -748,7 +753,7 @@ async def test_admin_dm_stop_monitoring_request_does_not_misparse_bot_pronoun_as
     event = _make_event("我让你停止QQ 群 192903718 的监听采集,允许开始聊天")
 
     with patch(
-        "tools.qq_control_tool.qq_control_tool",
+        "tools.messaging_control_tool.messaging_control_tool",
         return_value=json.dumps(
             {
                 "success": True,
@@ -767,6 +772,7 @@ async def test_admin_dm_stop_monitoring_request_does_not_misparse_bot_pronoun_as
     runner._run_agent.assert_not_awaited()
     assert "已停止 QQ 群 192903718 的监听采集" in result
     args = control_mock.call_args.args[0]
+    assert args["platform"] == "qq_napcat"
     assert args["action"] == "resume_chat"
     assert args["target"] == "group:192903718"
     assert "worker_name" not in args
@@ -779,7 +785,7 @@ async def test_admin_dm_can_remove_group_from_monitoring_after_bot_was_kicked():
     event = _make_event("726109087群你已经被踢出了 去掉")
 
     with patch(
-        "tools.qq_control_tool.qq_control_tool",
+        "tools.messaging_control_tool.messaging_control_tool",
         return_value=json.dumps(
             {
                 "success": True,
@@ -799,6 +805,7 @@ async def test_admin_dm_can_remove_group_from_monitoring_after_bot_was_kicked():
     assert "726109087" in result
     assert "已停止" in result
     args = control_mock.call_args.args[0]
+    assert args["platform"] == "qq_napcat"
     assert args["action"] == "disable_group"
     assert args["target"] == "group:726109087"
 
@@ -962,7 +969,7 @@ async def test_admin_dm_can_orally_hire_intel_worker():
     event = _make_event("招一个情报员钢镚，去 726109087 这个群刺探情报，每天私聊向我汇报。")
 
     with patch(
-        "tools.qq_control_tool.qq_control_tool",
+        "tools.messaging_control_tool.messaging_control_tool",
         return_value=json.dumps(
             {
                 "success": True,
@@ -983,6 +990,7 @@ async def test_admin_dm_can_orally_hire_intel_worker():
     assert "钢镚" in result
     assert "726109087" in result
     args = control_mock.call_args.args[0]
+    assert args["platform"] == "qq_napcat"
     assert args["action"] == "hire_worker"
     assert args["worker_name"] == "钢镚"
     assert args["target_group"] == "group:726109087"
@@ -998,7 +1006,7 @@ async def test_admin_dm_can_orally_pause_intel_worker():
     event = _make_event("让情报员钢镚暂停任务，先别监听了。")
 
     with patch(
-        "tools.qq_control_tool.qq_control_tool",
+        "tools.messaging_control_tool.messaging_control_tool",
         return_value=json.dumps(
             {
                 "success": True,
@@ -1017,6 +1025,7 @@ async def test_admin_dm_can_orally_pause_intel_worker():
     assert "暂停" in result
     args = control_mock.call_args.args[0]
     assert args == {
+        "platform": "qq_napcat",
         "action": "pause_worker",
         "worker_name": "钢镚",
     }
@@ -1029,7 +1038,7 @@ async def test_admin_dm_can_orally_resume_intel_worker():
     event = _make_event("让情报员钢镚恢复任务，继续监听。")
 
     with patch(
-        "tools.qq_control_tool.qq_control_tool",
+        "tools.messaging_control_tool.messaging_control_tool",
         return_value=json.dumps(
             {
                 "success": True,
@@ -1048,6 +1057,7 @@ async def test_admin_dm_can_orally_resume_intel_worker():
     assert "恢复" in result or "继续" in result
     args = control_mock.call_args.args[0]
     assert args == {
+        "platform": "qq_napcat",
         "action": "resume_worker",
         "worker_name": "钢镚",
     }
@@ -1060,7 +1070,7 @@ async def test_admin_dm_can_orally_request_intel_report_now():
     event = _make_event("让情报员钢镚现在汇报，私聊发我。")
 
     with patch(
-        "tools.qq_control_tool.qq_control_tool",
+        "tools.messaging_control_tool.messaging_control_tool",
         return_value=json.dumps(
             {
                 "success": True,
@@ -1079,6 +1089,7 @@ async def test_admin_dm_can_orally_request_intel_report_now():
     assert "钢镚" in result
     assert "汇报" in result
     args = control_mock.call_args.args[0]
+    assert args["platform"] == "qq_napcat"
     assert args["action"] == "run_report_now"
     assert args["worker_name"] == "钢镚"
     assert args["manual_report_target"] == "current_user_dm"
@@ -1091,7 +1102,7 @@ async def test_admin_dm_can_orally_query_intel_worker_status():
     event = _make_event("看看情报员钢镚现在什么状态。")
 
     with patch(
-        "tools.qq_control_tool.qq_control_tool",
+        "tools.messaging_control_tool.messaging_control_tool",
         return_value=json.dumps(
             {
                 "success": True,
@@ -1115,6 +1126,7 @@ async def test_admin_dm_can_orally_query_intel_worker_status():
     assert "726109087" in result
     args = control_mock.call_args.args[0]
     assert args == {
+        "platform": "qq_napcat",
         "action": "get_worker",
         "worker_name": "钢镚",
     }
@@ -1127,7 +1139,7 @@ async def test_admin_dm_worker_status_mentions_report_targets():
     event = _make_event("看看情报员钢镚现在什么状态。")
 
     with patch(
-        "tools.qq_control_tool.qq_control_tool",
+        "tools.messaging_control_tool.messaging_control_tool",
         return_value=json.dumps(
             {
                 "success": True,
@@ -1157,7 +1169,7 @@ async def test_admin_dm_can_orally_list_joined_groups():
     event = _make_event("把你现在加的群列一下。")
 
     with patch(
-        "tools.qq_control_tool.qq_control_tool",
+        "tools.messaging_control_tool.messaging_control_tool",
         return_value=json.dumps(
             {
                 "success": True,
@@ -1176,7 +1188,7 @@ async def test_admin_dm_can_orally_list_joined_groups():
     assert "项目群" in result
     assert "888888" in result
     args = control_mock.call_args.args[0]
-    assert args == {"action": "list_joined_groups"}
+    assert args == {"platform": "qq_napcat", "action": "list_joined_groups"}
 
 
 @pytest.mark.asyncio
@@ -1338,7 +1350,7 @@ async def test_admin_dm_group_runtime_status_query_can_infer_recent_group_target
             "daily_report_enabled": False,
             "workers": [],
         },
-    ), patch("tools.qq_control_tool.qq_control_tool") as control_mock:
+    ), patch("tools.messaging_control_tool.messaging_control_tool") as control_mock:
         result = await runner._handle_message(event)
 
     runner._run_agent.assert_not_awaited()
@@ -1427,7 +1439,7 @@ async def test_admin_weixin_group_can_orally_enable_collect_only():
     )
 
     with patch(
-        "tools.weixin_control_tool.weixin_control_tool",
+        "tools.messaging_control_tool.messaging_control_tool",
         return_value=json.dumps(
             {
                 "success": True,
@@ -1449,6 +1461,7 @@ async def test_admin_weixin_group_can_orally_enable_collect_only():
     assert "监听采集模式" in result
     assert "日报已开启" in result
     args = control_mock.call_args.args[0]
+    assert args["platform"] == "weixin"
     assert args["action"] == "collect_only"
     assert args["target"] == "project@chatroom"
     assert args["daily_report_target"] == "current_user_dm"
@@ -1465,7 +1478,7 @@ async def test_admin_group_policy_reply_mentions_manual_report_target():
     )
 
     with patch(
-        "tools.qq_control_tool.qq_control_tool",
+        "tools.messaging_control_tool.messaging_control_tool",
         return_value=json.dumps(
             {
                 "success": True,
@@ -1621,7 +1634,7 @@ async def test_busy_session_still_executes_oral_intel_control():
     event = _make_event("让情报员钢镚暂停任务，先别监听了。")
 
     with patch(
-        "tools.qq_control_tool.qq_control_tool",
+        "tools.messaging_control_tool.messaging_control_tool",
         return_value=json.dumps(
             {
                 "success": True,
@@ -1636,6 +1649,7 @@ async def test_busy_session_still_executes_oral_intel_control():
     assert "钢镚" in result
     assert "暂停" in result
     assert control_mock.call_args.args[0] == {
+        "platform": "qq_napcat",
         "action": "pause_worker",
         "worker_name": "钢镚",
     }
@@ -1656,7 +1670,7 @@ async def test_busy_session_still_executes_oral_group_policy_control():
     )
 
     with patch(
-        "tools.qq_control_tool.qq_control_tool",
+        "tools.messaging_control_tool.messaging_control_tool",
         return_value=json.dumps(
             {
                 "success": True,
@@ -1674,6 +1688,7 @@ async def test_busy_session_still_executes_oral_group_policy_control():
     runner._run_agent.assert_not_awaited()
     assert "726109087" in result
     assert "监听" in result
+    assert control_mock.call_args.args[0]["platform"] == "qq_napcat"
     assert control_mock.call_args.args[0]["action"] == "enable_collect_only"
 
 
@@ -1687,7 +1702,7 @@ async def test_busy_session_still_lists_pending_friend_requests_orally():
     event = _make_event("看看待处理的好友申请")
 
     with patch(
-        "tools.qq_social_tool.qq_social_tool",
+        "tools.messaging_control_tool.messaging_control_tool",
         return_value=json.dumps(
             {
                 "success": True,
@@ -1710,6 +1725,7 @@ async def test_busy_session_still_lists_pending_friend_requests_orally():
     assert "friend:friend-flag-1" in result
     assert "456789" in result
     assert social_mock.call_args.args[0] == {
+        "platform": "qq_napcat",
         "action": "list_requests",
         "status": "pending",
         "request_type": "friend",
@@ -1727,7 +1743,7 @@ async def test_busy_session_still_updates_social_policy_orally():
     event = _make_event("把自动通过好友申请打开，通知发我私聊。")
 
     with patch(
-        "tools.qq_social_tool.qq_social_tool",
+        "tools.messaging_control_tool.messaging_control_tool",
         return_value=json.dumps(
             {
                 "success": True,
@@ -1747,6 +1763,7 @@ async def test_busy_session_still_updates_social_policy_orally():
     assert "好友申请" in result
     assert "开启" in result
     assert social_mock.call_args.args[0] == {
+        "platform": "qq_napcat",
         "action": "set_social_policy",
         "auto_approve_friend_requests": True,
         "notify_target": "current_user_dm",
@@ -1764,7 +1781,7 @@ async def test_admin_group_can_orally_mute_member_via_control_plane():
     )
 
     with patch(
-        "tools.qq_control_tool.qq_control_tool",
+        "tools.messaging_control_tool.messaging_control_tool",
         return_value=json.dumps(
             {"success": True, "action": "mute_user", "target_user_id": "123456"},
             ensure_ascii=False,
@@ -1775,6 +1792,7 @@ async def test_admin_group_can_orally_mute_member_via_control_plane():
     runner._run_agent.assert_not_awaited()
     assert "禁言" in result
     args = control_mock.call_args.args[0]
+    assert args["platform"] == "qq_napcat"
     assert args["action"] == "mute_user"
     assert args["target"] == "group:726109087"
     assert args["user_query"] == "广告哥"
@@ -1793,7 +1811,7 @@ async def test_admin_group_can_orally_kick_member_via_control_plane():
     )
 
     with patch(
-        "tools.qq_control_tool.qq_control_tool",
+        "tools.messaging_control_tool.messaging_control_tool",
         return_value=json.dumps(
             {"success": True, "action": "kick_user", "target_user_id": "123456"},
             ensure_ascii=False,
@@ -1804,6 +1822,7 @@ async def test_admin_group_can_orally_kick_member_via_control_plane():
     runner._run_agent.assert_not_awaited()
     assert "踢" in result
     args = control_mock.call_args.args[0]
+    assert args["platform"] == "qq_napcat"
     assert args["action"] == "kick_user"
     assert args["target"] == "group:726109087"
     assert args["user_query"] == "广告哥"
@@ -1833,7 +1852,7 @@ async def test_admin_weixin_group_moderation_returns_explicit_not_capable_reply(
     )
 
     with patch(
-        "tools.weixin_control_tool.weixin_control_tool",
+        "tools.messaging_control_tool.messaging_control_tool",
         return_value=json.dumps(
             {
                 "success": False,
@@ -1850,6 +1869,7 @@ async def test_admin_weixin_group_moderation_returns_explicit_not_capable_reply(
     runner._run_agent.assert_not_awaited()
     assert result == "微信群暂不支持禁言/踢人。"
     assert control_mock.call_args.args[0] == {
+        "platform": "weixin",
         "action": "kick_user",
         "target": "project@chatroom",
         "user_query": "广告哥",

@@ -290,15 +290,12 @@ class DirectControlRouter:
         tool_args, shortcut_error = self._match_admin_qq_intel_control_request(event)
 
         try:
-            from tools.qq_control_tool import qq_control_tool
-
             return run_admin_qq_intel_control_shortcut(
                 tool_args=tool_args,
                 shortcut_error=shortcut_error,
-                tool_runner=lambda current_tool_args: (
-                    (lambda raw: json.loads(raw) if isinstance(raw, str) else (raw or {}))(
-                        qq_control_tool(current_tool_args)
-                    )
+                tool_runner=lambda current_tool_args: self._run_messaging_control_tool(
+                    current_tool_args,
+                    platform=Platform.QQ_NAPCAT,
                 ),
                 reply_formatter=self._format_admin_qq_intel_control_reply,
                 logger=logger,
@@ -447,18 +444,22 @@ class DirectControlRouter:
         )
 
     @staticmethod
-    def _run_qq_group_control_tool(tool_args: dict[str, Any]) -> dict[str, Any]:
-        from tools.qq_control_tool import qq_control_tool
-
-        raw = qq_control_tool(tool_args)
+    def _parse_tool_json_result(raw: Any) -> dict[str, Any]:
         return json.loads(raw) if isinstance(raw, str) else (raw or {})
 
-    @staticmethod
-    def _run_weixin_group_control_tool(tool_args: dict[str, Any]) -> dict[str, Any]:
-        from tools.weixin_control_tool import weixin_control_tool
+    @classmethod
+    def _run_messaging_control_tool(
+        cls,
+        tool_args: dict[str, Any],
+        *,
+        platform: Platform,
+    ) -> dict[str, Any]:
+        from tools.messaging_control_tool import messaging_control_tool
 
-        raw = weixin_control_tool(tool_args)
-        return json.loads(raw) if isinstance(raw, str) else (raw or {})
+        payload = dict(tool_args)
+        payload.setdefault("platform", platform.value)
+        raw = messaging_control_tool(payload)
+        return cls._parse_tool_json_result(raw)
 
     def _try_handle_admin_group_control_common(
         self,
@@ -483,7 +484,10 @@ class DirectControlRouter:
         return self._try_handle_admin_group_control_common(
             event,
             matcher=self._match_admin_qq_group_control_request,
-            tool_runner=self._run_qq_group_control_tool,
+            tool_runner=lambda current_tool_args: self._run_messaging_control_tool(
+                current_tool_args,
+                platform=QQ_ADMIN_GROUP_CONTROL_SPEC.platform,
+            ),
             error_prefix=QQ_ADMIN_GROUP_CONTROL_SPEC.error_prefix,
             reply_formatter=self._format_admin_qq_group_control_reply,
         )
@@ -492,7 +496,10 @@ class DirectControlRouter:
         return self._try_handle_admin_group_control_common(
             event,
             matcher=self._match_admin_weixin_group_control_request,
-            tool_runner=self._run_weixin_group_control_tool,
+            tool_runner=lambda current_tool_args: self._run_messaging_control_tool(
+                current_tool_args,
+                platform=WEIXIN_ADMIN_GROUP_CONTROL_SPEC.platform,
+            ),
             error_prefix=WEIXIN_ADMIN_GROUP_CONTROL_SPEC.error_prefix,
             reply_formatter=self._format_admin_weixin_group_control_reply,
         )
@@ -555,13 +562,12 @@ class DirectControlRouter:
 
     def _try_handle_admin_qq_group_moderation(self, event: MessageEvent) -> str | None:
         try:
-            from tools.qq_control_tool import qq_control_tool
-
             return self._try_handle_admin_platform_group_moderation(
                 event,
                 matcher=self._match_admin_qq_group_moderation_request,
-                tool_runner=lambda current_tool_args: (
-                    (lambda raw: json.loads(raw) if isinstance(raw, str) else (raw or {}))(qq_control_tool(current_tool_args))
+                tool_runner=lambda current_tool_args: self._run_messaging_control_tool(
+                    current_tool_args,
+                    platform=QQ_ADMIN_GROUP_MODERATION_SPEC.platform,
                 ),
                 spec=QQ_ADMIN_GROUP_MODERATION_SPEC,
             )
@@ -571,15 +577,12 @@ class DirectControlRouter:
 
     def _try_handle_admin_weixin_group_moderation(self, event: MessageEvent) -> str | None:
         try:
-            from tools.weixin_control_tool import weixin_control_tool
-
             return self._try_handle_admin_platform_group_moderation(
                 event,
                 matcher=self._match_admin_weixin_group_moderation_request,
-                tool_runner=lambda current_tool_args: (
-                    (lambda raw: json.loads(raw) if isinstance(raw, str) else (raw or {}))(
-                        weixin_control_tool(current_tool_args)
-                    )
+                tool_runner=lambda current_tool_args: self._run_messaging_control_tool(
+                    current_tool_args,
+                    platform=WEIXIN_ADMIN_GROUP_MODERATION_SPEC.platform,
                 ),
                 spec=WEIXIN_ADMIN_GROUP_MODERATION_SPEC,
             )
@@ -613,15 +616,12 @@ class DirectControlRouter:
         tool_args, shortcut_error = self._match_admin_qq_social_control_request(event)
 
         try:
-            from tools.qq_social_tool import qq_social_tool
-
             return run_admin_qq_social_control_shortcut(
                 tool_args=tool_args,
                 shortcut_error=shortcut_error,
-                tool_runner=lambda current_tool_args: (
-                    (lambda raw: json.loads(raw) if isinstance(raw, str) else (raw or {}))(
-                        qq_social_tool(current_tool_args)
-                    )
+                tool_runner=lambda current_tool_args: self._run_messaging_control_tool(
+                    current_tool_args,
+                    platform=Platform.QQ_NAPCAT,
                 ),
                 reply_formatter=self._format_admin_qq_social_control_reply,
                 logger=logger,

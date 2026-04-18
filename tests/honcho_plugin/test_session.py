@@ -815,6 +815,24 @@ class TestDialecticInputGuard:
 # ---------------------------------------------------------------------------
 
 
+def _settle_prewarm(provider):
+    """Wait for the session-start prewarm dialectic thread, then return the
+    provider to a clean 'nothing fired yet' state so cadence/first-turn/
+    trivial-prompt tests can assert from a known baseline."""
+    if provider._prefetch_thread:
+        provider._prefetch_thread.join(timeout=3.0)
+    with provider._prefetch_lock:
+        provider._prefetch_result = ""
+    provider._prefetch_thread = None
+    provider._last_dialectic_turn = -999
+    if getattr(provider, "_manager", None) is not None:
+        try:
+            provider._manager.dialectic_query.reset_mock()
+            provider._manager.prefetch_context.reset_mock()
+        except AttributeError:
+            pass
+
+
 class TestDialecticCadenceDefaults:
     """Regression tests for dialectic_cadence default value."""
 
@@ -840,12 +858,15 @@ class TestDialecticCadenceDefaults:
              patch("hermes_constants.get_hermes_home", return_value=MagicMock()):
             provider.initialize(session_id="test-session-001")
 
+        _settle_prewarm(provider)
         return provider
 
-    def test_default_is_3(self):
-        """Default dialectic_cadence should be 3 to avoid per-turn LLM calls."""
+    def test_default_is_1(self):
+        """Default dialectic_cadence should be 1 (every turn) — restored from
+        pre-#10619 behavior to avoid a silent regression on upgrade for users
+        who never set dialecticCadence explicitly."""
         provider = self._make_provider()
-        assert provider._dialectic_cadence == 3
+        assert provider._dialectic_cadence == 1
 
     def test_config_override(self):
         """dialecticCadence from config overrides the default."""
@@ -908,6 +929,7 @@ class TestDialecticDepth:
              patch("hermes_constants.get_hermes_home", return_value=MagicMock()):
             provider.initialize(session_id="test-session-001")
 
+        _settle_prewarm(provider)
         return provider
 
     def test_default_depth_is_1(self):
@@ -1062,7 +1084,8 @@ class TestDialecticDepth:
         provider.prefetch("hello")
         assert provider._manager.dialectic_query.call_count == 1
 
-        # Now queue_prefetch on same turn should skip (cadence: 0 - 0 < 3)
+        # Now queue_prefetch on same turn should skip — _last_dialectic_turn
+        # was just set to _turn_count by the sync path, so (0 - 0 = 0) < cadence.
         provider._manager.dialectic_query.reset_mock()
         provider.queue_prefetch("hello")
         assert provider._manager.dialectic_query.call_count == 0
@@ -1081,6 +1104,453 @@ class TestDialecticDepth:
         result = provider._run_dialectic_depth("test query")
         # Only 1 call because pass 0 had sufficient signal
         assert provider._manager.dialectic_query.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Trivial-prompt heuristic + dialectic cadence silent-failure guards
+# ---------------------------------------------------------------------------
+
+
+class TestTrivialPromptHeuristic:
+    """Trivial prompts ('ok', 'y', slash commands) must short-circuit injection.
+
+    Restored after accidental removal during the two-layer prefetch refactor.
+    """
+
+    @staticmethod
+    def _make_provider():
+        from unittest.mock import patch, MagicMock
+        from plugins.memory.honcho.client import HonchoClientConfig
+
+        cfg = HonchoClientConfig(api_key="test-key", enabled=True, recall_mode="hybrid")
+        provider = HonchoMemoryProvider()
+        mock_manager = MagicMock()
+        mock_session = MagicMock()
+        mock_session.messages = []
+        mock_manager.get_or_create.return_value = mock_session
+
+        with patch("plugins.memory.honcho.client.HonchoClientConfig.from_global_config", return_value=cfg), \
+             patch("plugins.memory.honcho.client.get_honcho_client", return_value=MagicMock()), \
+             patch("plugins.memory.honcho.session.HonchoSessionManager", return_value=mock_manager), \
+             patch("hermes_constants.get_hermes_home", return_value=MagicMock()):
+            provider.initialize(session_id="test-session-trivial")
+        _settle_prewarm(provider)
+        return provider
+
+    def test_classifier_catches_common_trivial_forms(self):
+        for t in ("ok", "OK", " ok ", "y", "yes", "sure", "thanks", "lgtm", "/help", "", "   "):
+            assert HonchoMemoryProvider._is_trivial_prompt(t), f"expected trivial: {t!r}"
+
+    def test_classifier_lets_substantive_prompts_through(self):
+        for t in ("hello world", "what's my name", "explain this", "ok so what's next"):
+            assert not HonchoMemoryProvider._is_trivial_prompt(t), f"expected non-trivial: {t!r}"
+
+    def test_prefetch_skips_on_trivial_prompt(self):
+        provider = self._make_provider()
+        provider._session_key = "test"
+        provider._base_context_cache = "cached base"
+        provider._last_dialectic_turn = 0
+        provider._turn_count = 5
+
+        assert provider.prefetch("ok") == ""
+        assert provider.prefetch("/help") == ""
+        # Dialectic should not have fired
+        assert provider._manager.dialectic_query.call_count == 0
+
+    def test_queue_prefetch_skips_on_trivial_prompt(self):
+        provider = self._make_provider()
+        provider._session_key = "test"
+        provider._turn_count = 10
+        provider._last_dialectic_turn = -999  # would otherwise fire
+        # initialize() pre-warms; clear call counts before the assertion.
+        provider._manager.prefetch_context.reset_mock()
+        provider._manager.dialectic_query.reset_mock()
+
+        provider.queue_prefetch("y")
+        # Trivial prompts short-circuit both context refresh and dialectic fire.
+        assert provider._manager.prefetch_context.call_count == 0
+        assert provider._manager.dialectic_query.call_count == 0
+
+
+class TestDialecticCadenceAdvancesOnSuccess:
+    """Cadence tracker must only advance when the dialectic call actually returned.
+
+    A silent failure (empty result, API blip) used to burn the full cadence window
+    before retrying — making it look like dialectic 'never fires again'.
+    """
+
+    @staticmethod
+    def _make_provider():
+        from unittest.mock import patch, MagicMock
+        from plugins.memory.honcho.client import HonchoClientConfig
+
+        cfg = HonchoClientConfig(
+            api_key="test-key", enabled=True, recall_mode="hybrid", dialectic_depth=1,
+        )
+        provider = HonchoMemoryProvider()
+        mock_manager = MagicMock()
+        mock_session = MagicMock()
+        mock_session.messages = []
+        mock_manager.get_or_create.return_value = mock_session
+
+        with patch("plugins.memory.honcho.client.HonchoClientConfig.from_global_config", return_value=cfg), \
+             patch("plugins.memory.honcho.client.get_honcho_client", return_value=MagicMock()), \
+             patch("plugins.memory.honcho.session.HonchoSessionManager", return_value=mock_manager), \
+             patch("hermes_constants.get_hermes_home", return_value=MagicMock()):
+            provider.initialize(session_id="test-session-retry")
+        _settle_prewarm(provider)
+        return provider
+
+    def test_empty_dialectic_result_does_not_advance_cadence(self):
+        import time as _time
+        provider = self._make_provider()
+        provider._session_key = "test"
+        provider._manager.dialectic_query.return_value = ""  # silent failure
+        provider._turn_count = 5
+        provider._last_dialectic_turn = 0  # would fire (5 - 0 = 5 ≥ 3)
+
+        provider.queue_prefetch("hello")
+        # wait for the background thread to settle
+        if provider._prefetch_thread:
+            provider._prefetch_thread.join(timeout=2.0)
+
+        # Dialectic call was attempted
+        assert provider._manager.dialectic_query.call_count == 1
+        # But cadence tracker did NOT advance — next turn should retry
+        assert provider._last_dialectic_turn == 0
+
+    def test_non_empty_dialectic_result_advances_cadence(self):
+        provider = self._make_provider()
+        provider._session_key = "test"
+        provider._manager.dialectic_query.return_value = "real synthesis output"
+        provider._turn_count = 5
+        provider._last_dialectic_turn = 0
+
+        provider.queue_prefetch("hello")
+        if provider._prefetch_thread:
+            provider._prefetch_thread.join(timeout=2.0)
+
+        assert provider._last_dialectic_turn == 5
+
+    def test_in_flight_thread_is_not_stacked(self):
+        import threading as _threading
+        provider = self._make_provider()
+        provider._session_key = "test"
+        provider._turn_count = 10
+        provider._last_dialectic_turn = 0
+
+        # Simulate a prior thread still running
+        hold = _threading.Event()
+
+        def _block():
+            hold.wait(timeout=5.0)
+
+        stale = _threading.Thread(target=_block, daemon=True)
+        stale.start()
+        provider._prefetch_thread = stale
+
+        provider.queue_prefetch("hello")
+        # Should have short-circuited — no new dialectic call
+        assert provider._manager.dialectic_query.call_count == 0
+        hold.set()
+        stale.join(timeout=2.0)
+
+
+class TestSessionStartDialecticPrewarm:
+    """Session-start prewarm fires a depth-aware dialectic whose result is
+    consumed by turn 1 — no duplicate .chat() and no dead-cache orphaning."""
+
+    @staticmethod
+    def _make_provider(cfg_extra=None, dialectic_result="prewarm synthesis"):
+        from unittest.mock import patch, MagicMock
+        from plugins.memory.honcho.client import HonchoClientConfig
+
+        defaults = dict(api_key="test-key", enabled=True, recall_mode="hybrid")
+        if cfg_extra:
+            defaults.update(cfg_extra)
+        cfg = HonchoClientConfig(**defaults)
+        provider = HonchoMemoryProvider()
+        mock_manager = MagicMock()
+        mock_manager.get_or_create.return_value = MagicMock(messages=[])
+        mock_manager.get_prefetch_context.return_value = None
+        mock_manager.pop_context_result.return_value = None
+        mock_manager.dialectic_query.return_value = dialectic_result
+
+        with patch("plugins.memory.honcho.client.HonchoClientConfig.from_global_config", return_value=cfg), \
+             patch("plugins.memory.honcho.client.get_honcho_client", return_value=MagicMock()), \
+             patch("plugins.memory.honcho.session.HonchoSessionManager", return_value=mock_manager), \
+             patch("hermes_constants.get_hermes_home", return_value=MagicMock()):
+            provider.initialize(session_id="test-prewarm")
+        return provider
+
+    def test_prewarm_populates_prefetch_result(self):
+        p = self._make_provider()
+        # Wait for prewarm thread to land
+        if p._prefetch_thread:
+            p._prefetch_thread.join(timeout=3.0)
+        with p._prefetch_lock:
+            assert p._prefetch_result == "prewarm synthesis"
+        assert p._last_dialectic_turn == 0
+
+    def test_turn1_consumes_prewarm_without_duplicate_dialectic(self):
+        """With prewarm result already in _prefetch_result, turn 1 prefetch
+        should NOT fire another dialectic."""
+        p = self._make_provider()
+        if p._prefetch_thread:
+            p._prefetch_thread.join(timeout=3.0)
+        p._manager.dialectic_query.reset_mock()
+        p._session_key = "test-prewarm"
+        p._base_context_cache = ""
+        p._turn_count = 1
+
+        result = p.prefetch("hello world")
+        assert "prewarm synthesis" in result
+        # The sync first-turn path must NOT have fired another .chat()
+        assert p._manager.dialectic_query.call_count == 0
+
+    def test_turn1_falls_back_to_sync_when_prewarm_missing(self):
+        """If the prewarm produced nothing (empty graph, API blip), turn 1
+        still fires its own sync dialectic."""
+        p = self._make_provider(dialectic_result="")  # prewarm returns empty
+        if p._prefetch_thread:
+            p._prefetch_thread.join(timeout=3.0)
+        with p._prefetch_lock:
+            assert p._prefetch_result == ""  # prewarm landed nothing
+        # Switch dialectic_query to return something on the sync first-turn call
+        p._manager.dialectic_query.return_value = "sync recovery"
+        p._manager.dialectic_query.reset_mock()
+        p._session_key = "test-prewarm"
+        p._base_context_cache = ""
+        p._turn_count = 1
+
+        result = p.prefetch("hello world")
+        assert "sync recovery" in result
+        assert p._manager.dialectic_query.call_count == 1
+
+
+class TestDialecticLifecycleSmoke:
+    """End-to-end smoke: walks a realistic multi-turn session through every
+    behavior we care about — prewarm → turn 1 consume → trivial skip → cadence
+    fire → silent-failure retry → heuristic bump → session-end flush.
+
+    This is the 'velvet circuit' test: one provider, one flow, one set of
+    assertions. If the suite above lies about intent, this one catches it.
+    """
+
+    @staticmethod
+    def _make_provider(cfg_extra=None):
+        from unittest.mock import patch, MagicMock
+        from plugins.memory.honcho.client import HonchoClientConfig
+
+        defaults = dict(
+            api_key="test-key", enabled=True, recall_mode="hybrid",
+            dialectic_reasoning_level="low", reasoning_heuristic=True,
+            reasoning_level_cap="high", dialectic_depth=1,
+        )
+        if cfg_extra:
+            defaults.update(cfg_extra)
+        cfg = HonchoClientConfig(**defaults)
+        provider = HonchoMemoryProvider()
+        mock_manager = MagicMock()
+        mock_session = MagicMock()
+        mock_session.messages = []
+        mock_manager.get_or_create.return_value = mock_session
+        mock_manager.get_prefetch_context.return_value = None
+        mock_manager.pop_context_result.return_value = None
+
+        with patch("plugins.memory.honcho.client.HonchoClientConfig.from_global_config", return_value=cfg), \
+             patch("plugins.memory.honcho.client.get_honcho_client", return_value=MagicMock()), \
+             patch("plugins.memory.honcho.session.HonchoSessionManager", return_value=mock_manager), \
+             patch("hermes_constants.get_hermes_home", return_value=MagicMock()):
+            return provider, mock_manager, cfg
+
+    def _await_thread(self, provider):
+        if provider._prefetch_thread:
+            provider._prefetch_thread.join(timeout=3.0)
+
+    def test_full_multi_turn_session(self):
+        """Walks init → turns 1..8 → session end. Asserts at every step that
+        the plugin did exactly what it should and nothing more.
+
+        Uses dialecticCadence=3 so we can exercise skip-turns between fires
+        and the silent-failure retry path without their gates tripping each
+        other. Trivial + slash skips apply independent of cadence.
+        """
+        from unittest.mock import patch, MagicMock
+        provider, mgr, cfg = self._make_provider(
+            cfg_extra={"raw": {"dialecticCadence": 3}}
+        )
+
+        # Program the dialectic responses in the exact order they'll be requested.
+        # An extra or missing call fails the test — strong smoke signal.
+        responses = iter([
+            "prewarm: user is eri, works on hermes",      # session-start prewarm
+            "cadence fire: long query synthesis",         # turn 4 queue_prefetch
+            "",                                           # turn 7 fire: silent failure
+            "retry success: fresh synthesis",             # turn 8 queue_prefetch retry
+        ])
+        mgr.dialectic_query.side_effect = lambda *a, **kw: next(responses)
+
+        # ---- init: prewarm fires ----
+        with patch("plugins.memory.honcho.client.HonchoClientConfig.from_global_config", return_value=cfg), \
+             patch("plugins.memory.honcho.client.get_honcho_client", return_value=MagicMock()), \
+             patch("plugins.memory.honcho.session.HonchoSessionManager", return_value=mgr), \
+             patch("hermes_constants.get_hermes_home", return_value=MagicMock()):
+            provider.initialize(session_id="smoke-test")
+
+        self._await_thread(provider)
+        with provider._prefetch_lock:
+            assert provider._prefetch_result.startswith("prewarm"), \
+                "session-start prewarm must land in _prefetch_result"
+        assert provider._last_dialectic_turn == 0, "prewarm marks turn 0"
+        assert mgr.dialectic_query.call_count == 1
+
+        # ---- turn 1: consume prewarm, no duplicate dialectic ----
+        provider.on_turn_start(1, "hey")
+        inject1 = provider.prefetch("hey")
+        assert "prewarm" in inject1, "turn 1 must surface prewarm"
+        provider.sync_turn("hey", "hi there")
+        provider.queue_prefetch("hey")  # cadence gate: (1-0)<3 → skip
+        self._await_thread(provider)
+        assert mgr.dialectic_query.call_count == 1, \
+            "turn 1 must not fire — prewarm covered it and cadence skips"
+
+        # ---- turn 2: trivial 'ok' → skip everything ----
+        mgr.prefetch_context.reset_mock()
+        provider.on_turn_start(2, "ok")
+        assert provider.prefetch("ok") == "", "trivial prompt must short-circuit injection"
+        provider.sync_turn("ok", "cool")
+        provider.queue_prefetch("ok")
+        self._await_thread(provider)
+        assert mgr.dialectic_query.call_count == 1, "trivial must not fire dialectic"
+        assert mgr.prefetch_context.call_count == 0, "trivial must not fire context refresh"
+
+        # ---- turn 3: slash '/help' → also skip ----
+        provider.on_turn_start(3, "/help")
+        assert provider.prefetch("/help") == ""
+        provider.queue_prefetch("/help")
+        assert mgr.dialectic_query.call_count == 1
+
+        # ---- turn 4: long query → cadence fires + heuristic bumps ----
+        long_q = "walk me through " + ("x " * 100)  # ~200 chars → heuristic +1
+        provider.on_turn_start(4, long_q)
+        provider.prefetch(long_q)
+        provider.sync_turn(long_q, "sure")
+        provider.queue_prefetch(long_q)  # (4-0)≥3 → fires
+        self._await_thread(provider)
+        assert mgr.dialectic_query.call_count == 2, "turn 4 cadence fire"
+        _, kwargs = mgr.dialectic_query.call_args
+        assert kwargs.get("reasoning_level") in ("medium", "high"), \
+            f"long query must bump reasoning level above 'low'; got {kwargs.get('reasoning_level')}"
+        assert provider._last_dialectic_turn == 4, "cadence tracker advances on success"
+
+        # ---- turns 5–6: cadence cooldown, no fires ----
+        for t in (5, 6):
+            provider.on_turn_start(t, "tell me more")
+            provider.queue_prefetch("tell me more")
+            self._await_thread(provider)
+        assert mgr.dialectic_query.call_count == 2, "turns 5–6 blocked by cadence window"
+
+        # ---- turn 7: fires but silent failure (empty dialectic) ----
+        provider.on_turn_start(7, "and then what")
+        provider.queue_prefetch("and then what")  # (7-4)≥3 → fires
+        self._await_thread(provider)
+        assert mgr.dialectic_query.call_count == 3, "turn 7 fires"
+        assert provider._last_dialectic_turn == 4, \
+            "silent failure must NOT burn the cadence window"
+
+        # ---- turn 8: retries because cadence didn't advance ----
+        provider.on_turn_start(8, "try again")
+        provider.queue_prefetch("try again")  # (8-4)≥3 → fires again
+        self._await_thread(provider)
+        assert mgr.dialectic_query.call_count == 4, \
+            "turn 8 retries because turn 7's empty result didn't advance cadence"
+        assert provider._last_dialectic_turn == 8, "retry success advances"
+
+        # ---- session end: flush messages ----
+        provider.on_session_end([])
+        mgr.flush_all.assert_called()
+
+
+class TestReasoningHeuristic:
+    """Restored char-count heuristic for auto-injected dialectic reasoning level.
+
+    Pre-9a0ab34c behavior: scale base up by query length, capped at
+    reasoning_level_cap. 'max' is reserved for explicit tool-path selection.
+    """
+
+    @staticmethod
+    def _make_provider(cfg_extra=None):
+        from unittest.mock import patch, MagicMock
+        from plugins.memory.honcho.client import HonchoClientConfig
+
+        defaults = dict(
+            api_key="test-key", enabled=True, recall_mode="hybrid",
+            dialectic_reasoning_level="low", reasoning_heuristic=True,
+            reasoning_level_cap="high",
+        )
+        if cfg_extra:
+            defaults.update(cfg_extra)
+        cfg = HonchoClientConfig(**defaults)
+        provider = HonchoMemoryProvider()
+        mock_manager = MagicMock()
+        mock_manager.get_or_create.return_value = MagicMock(messages=[])
+        with patch("plugins.memory.honcho.client.HonchoClientConfig.from_global_config", return_value=cfg), \
+             patch("plugins.memory.honcho.client.get_honcho_client", return_value=MagicMock()), \
+             patch("plugins.memory.honcho.session.HonchoSessionManager", return_value=mock_manager), \
+             patch("hermes_constants.get_hermes_home", return_value=MagicMock()):
+            provider.initialize(session_id="test-heuristic")
+        _settle_prewarm(provider)
+        return provider
+
+    def test_short_query_stays_at_base(self):
+        p = self._make_provider()
+        assert p._apply_reasoning_heuristic("low", "hey") == "low"
+
+    def test_medium_query_bumps_one_level(self):
+        p = self._make_provider()
+        q = "x" * 150
+        assert p._apply_reasoning_heuristic("low", q) == "medium"
+
+    def test_long_query_bumps_two_levels(self):
+        p = self._make_provider()
+        q = "x" * 500
+        assert p._apply_reasoning_heuristic("low", q) == "high"
+
+    def test_bump_respects_cap(self):
+        p = self._make_provider(cfg_extra={"reasoning_level_cap": "medium"})
+        q = "x" * 500  # would hit 'high' without the cap
+        assert p._apply_reasoning_heuristic("low", q) == "medium"
+
+    def test_max_never_auto_selected_with_default_cap(self):
+        p = self._make_provider(cfg_extra={"dialectic_reasoning_level": "high"})
+        q = "x" * 500  # base=high, bump would push to 'max'
+        assert p._apply_reasoning_heuristic("high", q) == "high"
+
+    def test_heuristic_disabled_returns_base(self):
+        p = self._make_provider(cfg_extra={"reasoning_heuristic": False})
+        q = "x" * 500
+        assert p._apply_reasoning_heuristic("low", q) == "low"
+
+    def test_resolve_pass_level_applies_heuristic_at_base_mapping(self):
+        """Depth=1, pass 0 maps to 'base' → heuristic applies."""
+        p = self._make_provider()
+        q = "x" * 150
+        assert p._resolve_pass_level(0, query=q) == "medium"
+
+    def test_resolve_pass_level_does_not_touch_explicit_per_pass(self):
+        """dialecticDepthLevels wins absolutely — no heuristic scaling."""
+        p = self._make_provider(cfg_extra={"dialectic_depth_levels": ["minimal"]})
+        q = "x" * 500  # heuristic would otherwise bump to 'high'
+        assert p._resolve_pass_level(0, query=q) == "minimal"
+
+    def test_resolve_pass_level_does_not_touch_lighter_passes(self):
+        """Depth 3 pass 0 is hardcoded 'minimal' — heuristic must not bump it."""
+        p = self._make_provider(cfg_extra={"dialectic_depth": 3})
+        q = "x" * 500
+        assert p._resolve_pass_level(0, query=q) == "minimal"
+        # But the 'base' pass (idx 1 for depth 3) does get heuristic
+        assert p._resolve_pass_level(1, query=q) == "high"
 
 
 # ---------------------------------------------------------------------------

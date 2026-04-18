@@ -505,6 +505,17 @@ For the full setup and operational guide, see:
 - [Voice Mode](/docs/user-guide/features/voice-mode)
 - [Use Voice Mode with Hermes](/docs/guides/use-voice-mode-with-hermes)
 
+## Forum Channels
+
+Discord forum channels (type 15) don't accept direct messages — every post in a forum must be a thread. Hermes auto-detects forum channels and creates a new thread post whenever it needs to send there, so `send_message`, TTS, images, voice messages, and file attachments all work without special handling from the agent.
+
+- **Thread name** is derived from the first line of the message (markdown heading prefix stripped, capped at 100 chars). When the message is attachment-only, the filename is used as the fallback thread name.
+- **Attachments** ride along on the starter message of the new thread — no separate upload step, no partial sends.
+- **One call, one thread**: each forum send creates a new thread. Successive sends to the same forum will therefore produce separate threads.
+- **Detection is three-layered**: the channel directory cache first, a process-local probe cache second, and a live `GET /channels/{id}` probe as a last resort (whose result is then memoized for the life of the process).
+
+Refreshing the directory (`/channels refresh` on platforms that expose it, or a gateway restart) populates the cache with any forum channels created after the bot started.
+
 ## Troubleshooting
 
 ### Bot is online but not responding to messages

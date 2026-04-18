@@ -85,7 +85,6 @@ except ImportError:
     lark = None  # type: ignore[assignment]
     CallBackCard = None  # type: ignore[assignment]
     P2CardActionTriggerResponse = None  # type: ignore[assignment]
-    CallBackCard = None  # type: ignore[assignment]
     EventDispatcherHandler = None  # type: ignore[assignment]
     FeishuWSClient = None  # type: ignore[assignment]
     FEISHU_DOMAIN = None  # type: ignore[assignment]

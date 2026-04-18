@@ -155,7 +155,7 @@ services:
     image: nousresearch/hermes-agent:latest
     container_name: hermes-dashboard
     restart: unless-stopped
-    command: dashboard --host 0.0.0.0
+    command: dashboard --host 0.0.0.0 --insecure
     ports:
       - "9119:9119"
     volumes:

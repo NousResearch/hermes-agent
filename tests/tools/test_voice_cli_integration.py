@@ -5,6 +5,7 @@ import ast
 import os
 import queue
 import threading
+from contextlib import nullcontext
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -36,6 +37,113 @@ def _make_voice_cli(**overrides):
     for k, v in overrides.items():
         setattr(cli, k, v)
     return cli
+
+
+def _make_full_cli():
+    import cli as cli_module
+    from cli import HermesCLI
+
+    clean_config = {
+        "model": {
+            "default": "anthropic/claude-opus-4.6",
+            "base_url": "https://openrouter.ai/api/v1",
+            "provider": "auto",
+        },
+        "display": {"compact": False, "tool_progress": "all"},
+        "agent": {},
+        "terminal": {"env_type": "local"},
+    }
+
+    with patch("cli.get_tool_definitions", return_value=[]), patch.dict(
+        "os.environ", {"LLM_MODEL": "", "HERMES_MAX_ITERATIONS": ""}, clear=False
+    ), patch.dict(cli_module.__dict__, {"CLI_CONFIG": clean_config}):
+        return HermesCLI()
+
+
+def _build_run_keybindings():
+    import cli as cli_module
+
+    captured = {}
+    thread_calls = []
+
+    class FakeApplication:
+        def __init__(self, *args, **kwargs):
+            self.key_bindings = kwargs["key_bindings"]
+            self.layout = kwargs.get("layout")
+            self.style = kwargs.get("style")
+            self.full_screen = kwargs.get("full_screen", False)
+            self.mouse_support = kwargs.get("mouse_support", False)
+            self.is_running = False
+            self.renderer = SimpleNamespace(
+                _last_size=None,
+                _last_screen=None,
+                _cursor_pos=SimpleNamespace(x=0, y=0),
+                output=SimpleNamespace(get_size=lambda: SimpleNamespace(columns=80)),
+            )
+            self.current_buffer = SimpleNamespace(text="", reset=lambda: None)
+            self.invalidated = 0
+            self.exited = False
+            self._on_resize = lambda: None
+            captured["app"] = self
+
+        def run(self):
+            return None
+
+        def invalidate(self):
+            self.invalidated += 1
+
+        def exit(self):
+            self.exited = True
+            self.is_running = False
+
+    class FakeThread:
+        def __init__(self, target, args=(), kwargs=None, daemon=False):
+            self.target = target
+            self.args = args
+            self.kwargs = kwargs or {}
+            self.daemon = daemon
+            self.join_calls = []
+            self._alive = False
+            self.target_name = getattr(target, "__name__", target.__class__.__name__)
+            thread_calls.append(self)
+
+        def start(self):
+            if self.target_name in {"spinner_loop", "process_loop"}:
+                self._alive = False
+                return
+            self._alive = True
+            try:
+                self.target(*self.args, **self.kwargs)
+            finally:
+                self._alive = False
+
+        def join(self, timeout=None):
+            self.join_calls.append(timeout)
+            self._alive = False
+
+        def is_alive(self):
+            return self._alive
+
+    cli_obj = _make_full_cli()
+    cli_obj._print_exit_summary = lambda: None
+
+    with (
+        patch("cli.Application", FakeApplication),
+        patch("cli.patch_stdout", return_value=nullcontext()),
+        patch("cli.threading.Thread", FakeThread),
+        patch("cli.atexit.register", lambda *_args, **_kwargs: None),
+        patch("cli._run_cleanup", lambda: None),
+    ):
+        cli_obj.run()
+
+    return cli_obj, captured["app"], thread_calls
+
+
+def _find_handler(app, handler_name: str):
+    for binding in app.key_bindings.bindings:
+        if getattr(binding.handler, "__name__", "") == handler_name:
+            return binding.handler
+    raise AssertionError(f"Could not find keybinding handler {handler_name!r}")
 
 
 # ============================================================================
@@ -560,29 +668,33 @@ class TestCtrlCResetsContinuousMode:
     """Bug #4: Ctrl+C cancel must reset _voice_continuous."""
 
     def test_ctrl_c_handler_resets_voice_continuous(self):
-        """Source check: Ctrl+C voice cancel block must set
-        _voice_continuous = False."""
-        with open("cli.py") as f:
-            source = f.read()
+        """Ctrl+C while recording should stop continuous mode before dispatching stop."""
+        cli_obj, app, _thread_calls = _build_run_keybindings()
+        handler = _find_handler(app, "handle_ctrl_c")
 
-        # Find the Ctrl+C handler's voice cancel block
-        lines = source.split("\n")
-        in_cancel_block = False
-        found_continuous_reset = False
-        for i, line in enumerate(lines):
-            if "Cancel active voice recording" in line:
-                in_cancel_block = True
-            if in_cancel_block:
-                if "_voice_continuous = False" in line:
-                    found_continuous_reset = True
-                    break
-                # Block ends at next comment section or return
-                if "return" in line and in_cancel_block:
-                    break
+        cli_obj._voice_mode = True
+        cli_obj._voice_recording = True
+        cli_obj._voice_continuous = True
+        cli_obj._voice_recorder = MagicMock()
+        thread_targets = []
 
-        assert found_continuous_reset, (
-            "Ctrl+C voice cancel block must set _voice_continuous = False"
-        )
+        class FakeThread:
+            def __init__(self, target, args=(), kwargs=None, daemon=False):
+                self.target = target
+                self.args = args
+                self.kwargs = kwargs or {}
+                self.daemon = daemon
+                thread_targets.append(target)
+
+            def start(self):
+                self.target(*self.args, **self.kwargs)
+
+        with patch("cli.threading.Thread", FakeThread):
+            handler(SimpleNamespace(app=app))
+
+        assert cli_obj._voice_continuous is False
+        cli_obj._voice_recorder.cancel.assert_called_once()
+        assert thread_targets == [cli_obj._voice_recorder.cancel]
 
 
 class TestVoiceStatusUsesConfigKey:
@@ -605,34 +717,85 @@ class TestVoiceStatusUsesConfigKey:
 class TestChatTTSCleanupOnException:
     """Bug #2: chat() must clean up streaming TTS resources on exception."""
 
-    def test_chat_has_finally_for_tts_cleanup(self):
-        """AST check: chat() method must have a finally block that cleans up
-        text_queue, stop_event, and tts_thread."""
-        import ast as _ast
+    def test_chat_exception_path_cleans_streaming_tts_resources(self):
+        """If chat errors after streaming TTS starts, the cleanup path should stop the worker."""
+        import cli as cli_module
 
-        with open("cli.py") as f:
-            tree = _ast.parse(f.read())
+        cli_obj = _make_full_cli()
+        cli_obj._voice_tts = True
+        cli_obj._interrupt_queue = queue.Queue()
+        cli_obj._ensure_runtime_credentials = MagicMock(return_value=True)
+        cli_obj._resolve_turn_agent_config = MagicMock(
+            return_value={"signature": "sig", "model": None, "runtime": None, "label": None}
+        )
+        cli_obj._active_agent_route_signature = "sig"
+        cli_obj.agent = SimpleNamespace(
+            run_conversation=lambda **_kwargs: {"final_response": "hello", "messages": []},
+            flush_memories=lambda *_args, **_kwargs: None,
+            session_id="sid",
+        )
+        cli_obj._flush_stream = MagicMock(side_effect=RuntimeError("flush failed"))
 
-        for node in _ast.walk(tree):
-            if isinstance(node, _ast.FunctionDef) and node.name == "chat":
-                # Find Try nodes with finally blocks
-                for child in _ast.walk(node):
-                    if isinstance(child, _ast.Try) and child.finalbody:
-                        finally_text = "\n".join(
-                            _ast.dump(n) for n in child.finalbody
-                        )
-                        if "text_queue" in finally_text:
-                            assert "stop_event" in finally_text, (
-                                "finally must also handle stop_event"
-                            )
-                            assert "tts_thread" in finally_text, (
-                                "finally must also handle tts_thread"
-                            )
-                            return
-                pytest.fail(
-                    "chat() must have a finally block cleaning up "
-                    "text_queue/stop_event/tts_thread"
-                )
+        queue_holder = {}
+        thread_calls = []
+
+        class FakeQueue:
+            def __init__(self):
+                self.items = []
+                queue_holder["queue"] = self
+
+            def put(self, item):
+                self.items.append(item)
+
+            def put_nowait(self, item):
+                self.items.append(item)
+
+        class FakeThread:
+            def __init__(self, target, args=(), kwargs=None, daemon=False):
+                self.target = target
+                self.args = args
+                self.kwargs = kwargs or {}
+                self.daemon = daemon
+                self.target_name = getattr(target, "__name__", target.__class__.__name__)
+                self.join_calls = []
+                self._alive = False
+                thread_calls.append(self)
+
+            def start(self):
+                if self.target_name == "run_agent":
+                    self._alive = True
+                    try:
+                        self.target(*self.args, **self.kwargs)
+                    finally:
+                        self._alive = False
+                else:
+                    self._alive = True
+
+            def join(self, timeout=None):
+                self.join_calls.append(timeout)
+                self._alive = False
+
+            def is_alive(self):
+                return self._alive
+
+        with (
+            patch("tools.tts_tool._load_tts_config", return_value={}),
+            patch("tools.tts_tool._get_provider", return_value="elevenlabs"),
+            patch("tools.tts_tool._import_elevenlabs"),
+            patch("tools.tts_tool._import_sounddevice"),
+            patch("tools.tts_tool.stream_tts_to_speaker", lambda *_args, **_kwargs: None),
+            patch.object(cli_module, "queue", SimpleNamespace(Queue=FakeQueue, Empty=queue.Empty)),
+            patch.object(cli_module.threading, "Thread", FakeThread),
+            patch("cli._cprint"),
+            patch.object(cli_module.ChatConsole, "print"),
+        ):
+            response = cli_obj.chat("hello")
+
+        assert response is None
+        assert queue_holder["queue"].items[-1] is None
+        tts_threads = [thread for thread in thread_calls if thread.target_name == "<lambda>"]
+        assert tts_threads
+        assert tts_threads[0].join_calls == [5]
 
 
 class TestBrowserToolSignalHandlerRemoved:
@@ -670,86 +833,86 @@ class TestKeyHandlerNeverBlocks:
     3. _voice_processing is set atomically with _voice_recording in stop_and_transcribe
     """
 
-    def test_start_recording_not_called_directly_in_handler(self):
-        """AST check: handle_voice_record must NOT call _voice_start_recording()
-        directly — it must wrap it in a Thread to avoid blocking the UI."""
-        import ast as _ast
+    def test_start_recording_dispatches_via_thread(self):
+        """Voice record start should schedule work onto a background thread."""
+        cli_obj, app, _thread_calls = _build_run_keybindings()
+        handler = _find_handler(app, "handle_voice_record")
 
-        with open("cli.py") as f:
-            tree = _ast.parse(f.read())
+        cli_obj._voice_mode = True
+        cli_obj._voice_recording = False
+        cli_obj._voice_processing = False
+        cli_obj._agent_running = False
+        cli_obj._clarify_state = None
+        cli_obj._sudo_state = None
+        cli_obj._approval_state = None
+        cli_obj._voice_tts_done.set()
+        cli_obj._voice_start_recording = MagicMock()
+        thread_targets = []
 
-        for node in _ast.walk(tree):
-            if isinstance(node, _ast.FunctionDef) and node.name == "handle_voice_record":
-                # Collect all direct calls to _voice_start_recording in this function.
-                # They should ONLY appear inside a nested def (the _start_recording wrapper).
-                for child in _ast.iter_child_nodes(node):
-                    # Direct statements in the handler body (not nested defs)
-                    if isinstance(child, _ast.Expr) and isinstance(child.value, _ast.Call):
-                        call_src = _ast.dump(child.value)
-                        assert "_voice_start_recording" not in call_src, (
-                            "handle_voice_record calls _voice_start_recording directly "
-                            "— must dispatch to a daemon thread"
-                        )
-                break
+        class FakeThread:
+            def __init__(self, target, args=(), kwargs=None, daemon=False):
+                self.target = target
+                self.args = args
+                self.kwargs = kwargs or {}
+                self.daemon = daemon
+                thread_targets.append(target)
 
-    def test_processing_guard_in_start_path(self):
-        """Source check: key handler must check _voice_processing before
-        starting a new recording."""
-        with open("cli.py") as f:
-            source = f.read()
+            def start(self):
+                self.target(*self.args, **self.kwargs)
 
-        lines = source.split("\n")
-        in_handler = False
-        in_else = False
-        found_guard = False
-        for line in lines:
-            if "def handle_voice_record" in line:
-                in_handler = True
-            elif in_handler and line.strip().startswith("def ") and "_start_recording" not in line:
-                break
-            elif in_handler and "else:" in line:
-                in_else = True
-            elif in_else and "_voice_processing" in line:
-                found_guard = True
-                break
+        with patch("cli.threading.Thread", FakeThread):
+            handler(SimpleNamespace(app=app))
 
-        assert found_guard, (
-            "Key handler START path must guard against _voice_processing "
-            "to prevent blocking on AudioRecorder._lock"
-        )
+        cli_obj._voice_start_recording.assert_called_once()
+        assert len(thread_targets) == 1
+
+    def test_processing_guard_blocks_new_recording_start(self):
+        """Voice record start should no-op while stop/transcribe is still running."""
+        cli_obj, app, thread_calls = _build_run_keybindings()
+        handler = _find_handler(app, "handle_voice_record")
+
+        cli_obj._voice_mode = True
+        cli_obj._voice_recording = False
+        cli_obj._voice_processing = True
+        cli_obj._agent_running = False
+        cli_obj._clarify_state = None
+        cli_obj._sudo_state = None
+        cli_obj._approval_state = None
+        cli_obj._voice_tts_done.set()
+        cli_obj._voice_start_recording = MagicMock()
+
+        baseline_threads = len(thread_calls)
+        handler(SimpleNamespace(app=app))
+
+        cli_obj._voice_start_recording.assert_not_called()
+        assert len(thread_calls) == baseline_threads
 
     def test_processing_set_atomically_with_recording_false(self):
-        """Source check: _voice_stop_and_transcribe must set _voice_processing = True
-        in the same lock block where it sets _voice_recording = False."""
-        with open("cli.py") as f:
-            source = f.read()
+        """_voice_stop_and_transcribe should expose processing=True before stop() returns."""
+        cli_obj = _make_voice_cli(_voice_recording=True)
+        stop_entered = threading.Event()
+        release_stop = threading.Event()
 
-        lines = source.split("\n")
-        in_method = False
-        in_first_lock = False
-        found_recording_false = False
-        found_processing_true = False
-        for line in lines:
-            if "def _voice_stop_and_transcribe" in line:
-                in_method = True
-            elif in_method and "with self._voice_lock:" in line and not in_first_lock:
-                in_first_lock = True
-            elif in_first_lock:
-                stripped = line.strip()
-                if not stripped or stripped.startswith("#"):
-                    continue
-                if "_voice_recording = False" in stripped:
-                    found_recording_false = True
-                if "_voice_processing = True" in stripped:
-                    found_processing_true = True
-                # End of with block (dedent)
-                if stripped and not line.startswith("            ") and not line.startswith("\t\t\t"):
-                    break
+        recorder = MagicMock()
 
-        assert found_recording_false and found_processing_true, (
-            "_voice_stop_and_transcribe must set _voice_processing = True "
-            "atomically (same lock block) with _voice_recording = False"
-        )
+        def _stop():
+            stop_entered.set()
+            release_stop.wait(timeout=5)
+            return None
+
+        recorder.stop.side_effect = _stop
+        cli_obj._voice_recorder = recorder
+
+        worker = threading.Thread(target=cli_obj._voice_stop_and_transcribe, daemon=True)
+        worker.start()
+
+        assert stop_entered.wait(timeout=2)
+        assert cli_obj._voice_recording is False
+        assert cli_obj._voice_processing is True
+
+        release_stop.set()
+        worker.join(timeout=2)
+        assert cli_obj._voice_processing is False
 
 
 # ============================================================================

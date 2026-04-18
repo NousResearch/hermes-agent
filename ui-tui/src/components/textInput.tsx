@@ -464,7 +464,7 @@ export function TextInput({
     (inp: string, k: Key, event: InputEvent) => {
       const eventRaw = event.keypress.raw
 
-      if (eventRaw === '\x1bv' || eventRaw === '\x1bV') {
+      if (eventRaw === '\x1bv' || eventRaw === '\x1bV' || eventRaw === '\x16') {
         return void emitPaste({ cursor: curRef.current, hotkey: true, text: '', value: vRef.current })
       }
 

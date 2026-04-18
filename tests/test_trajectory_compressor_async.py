@@ -19,18 +19,27 @@ import pytest
 class TestAsyncClientLazyCreation:
     """trajectory_compressor.py — _get_async_client()"""
 
-    def test_async_client_none_after_init(self):
-        """async_client should be None after __init__ (not eagerly created)."""
-        from trajectory_compressor import TrajectoryCompressor
+    def test_init_leaves_async_client_uninitialized(self, monkeypatch):
+        """__init__ should not create AsyncOpenAI eagerly for custom endpoints."""
+        from trajectory_compressor import CompressionConfig, TrajectoryCompressor
 
-        comp = TrajectoryCompressor.__new__(TrajectoryCompressor)
-        comp.config = MagicMock()
-        comp.config.base_url = "https://api.example.com/v1"
-        comp.config.api_key_env = "TEST_API_KEY"
-        comp._use_call_llm = False
-        comp.async_client = None
-        comp._async_client_api_key = "test-key"
+        config = CompressionConfig()
+        config.base_url = "https://api.example.com/v1"
+        config.api_key_env = "TEST_API_KEY"
+        monkeypatch.setenv("TEST_API_KEY", "test-key")
 
+        with (
+            patch.object(TrajectoryCompressor, "_init_tokenizer", return_value=None),
+            patch("openai.OpenAI") as mock_openai,
+            patch("openai.AsyncOpenAI") as mock_async_openai,
+        ):
+            comp = TrajectoryCompressor(config)
+
+        mock_openai.assert_called_once_with(
+            api_key="test-key",
+            base_url="https://api.example.com/v1",
+        )
+        mock_async_openai.assert_not_called()
         assert comp.async_client is None
 
     def test_get_async_client_creates_new_client(self):
@@ -81,35 +90,3 @@ class TestAsyncClientLazyCreation:
         # Should have created two separate instances
         assert call_count == 2
         assert instances[0] is not instances[1]
-
-
-class TestSourceLineVerification:
-    """Verify the actual source has the lazy pattern applied."""
-
-    @staticmethod
-    def _read_file() -> str:
-        import os
-        base = os.path.dirname(os.path.dirname(__file__))
-        with open(os.path.join(base, "trajectory_compressor.py")) as f:
-            return f.read()
-
-    def test_no_eager_async_openai_in_init(self):
-        """__init__ should NOT create AsyncOpenAI eagerly."""
-        src = self._read_file()
-        # The old pattern: self.async_client = AsyncOpenAI(...) in _init_summarizer
-        # should not exist — only self.async_client = None
-        lines = src.split("\n")
-        for i, line in enumerate(lines, 1):
-            if "self.async_client = AsyncOpenAI(" in line and "_get_async_client" not in lines[max(0,i-3):i+1]:
-                # Allow it inside _get_async_client method
-                # Check if we're inside _get_async_client by looking at context
-                context = "\n".join(lines[max(0,i-10):i+1])
-                if "_get_async_client" not in context:
-                    pytest.fail(
-                        f"Line {i}: AsyncOpenAI created eagerly outside _get_async_client()"
-                    )
-
-    def test_get_async_client_method_exists(self):
-        """_get_async_client method should exist."""
-        src = self._read_file()
-        assert "def _get_async_client(self)" in src

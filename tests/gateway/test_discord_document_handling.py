@@ -210,6 +210,26 @@ class TestIncomingDocumentHandling:
         assert "# Title" in event.text
 
     @pytest.mark.asyncio
+    async def test_html_document_cached_and_injected(self, adapter):
+        """HTML files should be passed through as readable documents."""
+        file_content = b"<html><body><h1>Status</h1><p>All good</p></body></html>"
+
+        with _mock_aiohttp_download(file_content):
+            msg = make_message(
+                attachments=[make_attachment(filename="report.html", content_type="text/html")],
+                content="inspect this page",
+            )
+            await adapter._handle_message(msg)
+
+        event = adapter.handle_message.call_args[0][0]
+        assert event.message_type == MessageType.DOCUMENT
+        assert len(event.media_urls) == 1
+        assert event.media_types == ["text/html"]
+        assert "[Content of report.html]:" in event.text
+        assert "<h1>Status</h1>" in event.text
+        assert "inspect this page" in event.text
+
+    @pytest.mark.asyncio
     async def test_log_content_injected(self, adapter):
         """.log file under 100KB should be treated as text/plain and injected."""
         file_content = b"BLE trace line 1\nBLE trace line 2"

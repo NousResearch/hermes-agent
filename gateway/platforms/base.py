@@ -562,6 +562,7 @@ DOCUMENT_CACHE_DIR = get_hermes_dir("cache/documents", "document_cache")
 
 SUPPORTED_DOCUMENT_TYPES = {
     ".pdf": "application/pdf",
+    ".html": "text/html",
     ".md": "text/markdown",
     ".txt": "text/plain",
     ".log": "text/plain",

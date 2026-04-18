@@ -121,6 +121,37 @@ describe('createSlashHandler', () => {
     expect(createSlashHandler(ctx)('/h')).toBe(true)
     expect(ctx.transcript.panel).toHaveBeenCalledWith(expect.any(String), expect.any(Array))
   })
+
+  it('falls through to command.dispatch for skill commands and sends the message', async () => {
+    const skillMessage = 'Use this skill to do X.\n\n## Steps\n1. First step'
+
+    const ctx = buildCtx({
+      gateway: {
+        gw: {
+          getLogTail: vi.fn(() => ''),
+          request: vi.fn((method: string) => {
+            if (method === 'slash.exec') {
+              return Promise.reject(new Error('skill command: use command.dispatch'))
+            }
+
+            if (method === 'command.dispatch') {
+              return Promise.resolve({ type: 'skill', message: skillMessage, name: 'hermes-agent-dev' })
+            }
+
+            return Promise.resolve({})
+          })
+        },
+        rpc: vi.fn(() => Promise.resolve({}))
+      }
+    })
+
+    const h = createSlashHandler(ctx)
+    expect(h('/hermes-agent-dev')).toBe(true)
+    await vi.waitFor(() => {
+      expect(ctx.transcript.sys).toHaveBeenCalledWith('⚡ loading skill: hermes-agent-dev')
+    })
+    expect(ctx.transcript.send).toHaveBeenCalledWith(skillMessage)
+  })
 })
 
 const buildCtx = (overrides: Partial<Ctx> = {}): Ctx => ({

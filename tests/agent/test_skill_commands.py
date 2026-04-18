@@ -368,6 +368,7 @@ Generate some audio.
             fake_secret_callback,
             raising=False,
         )
+        monkeypatch.setattr(skills_tool_module, "_is_gateway_surface", lambda: False)
 
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
             _make_skill(
@@ -448,7 +449,8 @@ Generate some audio.
             msg = build_skill_invocation_message("/test-skill", "do stuff")
 
         assert msg is not None
-        assert "remote environment" in msg.lower()
+        assert "skill setup note" in msg.lower()
+        assert (".env manually" in msg.lower()) or ("remote environment" in msg.lower())
 
     def test_supporting_file_hint_uses_file_path_argument(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):

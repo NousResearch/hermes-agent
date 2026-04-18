@@ -2031,7 +2031,8 @@ async def test_status_command_includes_runtime_model_and_collect_only_monitoring
     assert "openrouter" in result
     assert "fallback" in result.lower()
     assert "Pending Approvals" in result
-    assert "QQ Monitoring" in result
+    assert "Group Monitoring" in result
+    assert "QQ 群 · 项目群 (726109087)" in result
     assert "collect_only" in result
     assert "钢镚" in result
 

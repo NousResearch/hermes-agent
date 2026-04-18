@@ -11,7 +11,9 @@ Covers the bugs discovered while setting up TBLite evaluation:
 
 import os
 import sys
+import asyncio
 from pathlib import Path
+from types import ModuleType, SimpleNamespace
 import pytest
 
 # Ensure repo root is importable
@@ -230,43 +232,97 @@ class TestModalEnvironmentDefaults:
 class TestEnsurepipFix:
     """Verify the pip fix is applied in the ModalEnvironment init."""
 
-    def test_modal_environment_creates_image_with_setup_commands(self):
-        """ModalEnvironment.__init__ should create a modal.Image with pip fix."""
+    def test_resolve_modal_image_adds_ensurepip_setup_commands(self):
+        """Registry-backed Modal images should include the ensurepip bootstrap fix."""
         try:
-            from tools.environments.modal import ModalEnvironment
+            from tools.environments.modal import _resolve_modal_image
         except ImportError:
             pytest.skip("tools.environments.modal not importable")
 
-        import inspect
-        source = inspect.getsource(ModalEnvironment.__init__)
-        assert "ensurepip" in source, (
-            "ModalEnvironment should include ensurepip fix "
-            "for Modal's legacy image builder"
-        )
-        assert "setup_dockerfile_commands" in source, (
-            "ModalEnvironment should use setup_dockerfile_commands "
-            "to fix pip before Modal's bootstrap"
-        )
+        observed = {}
+
+        class FakeImage:
+            @staticmethod
+            def from_registry(image, setup_dockerfile_commands=None):
+                observed["image"] = image
+                observed["setup"] = setup_dockerfile_commands
+                return "resolved-image"
+
+            @staticmethod
+            def from_id(image_id):
+                observed["snapshot"] = image_id
+                return "snapshot-image"
+
+        fake_modal = ModuleType("modal")
+        fake_modal.Image = FakeImage
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setitem(sys.modules, "modal", fake_modal)
+            result = _resolve_modal_image("python:3.11")
+
+        assert result == "resolved-image"
+        assert observed["image"] == "python:3.11"
+        assert any("ensurepip" in cmd for cmd in observed["setup"])
 
     def test_modal_environment_uses_native_sdk(self):
-        """ModalEnvironment should use Modal SDK directly, not swe-rex."""
+        """ModalEnvironment should create sandboxes via native Modal SDK calls."""
         try:
             from tools.environments.modal import ModalEnvironment
         except ImportError:
             pytest.skip("tools.environments.modal not importable")
 
-        import inspect
-        source = inspect.getsource(ModalEnvironment)
-        assert "swerex" not in source.lower(), (
-            "ModalEnvironment should not depend on swe-rex; "
-            "use Modal SDK directly via Sandbox.create() + exec()"
-        )
-        assert "Sandbox.create.aio" in source, (
-            "ModalEnvironment should use async Modal Sandbox.create.aio()"
-        )
-        assert "exec.aio" in source, (
-            "ModalEnvironment should use Sandbox.exec.aio() for command execution"
-        )
+        lookup_calls = []
+        create_calls = []
+
+        async def lookup_aio(name, create_if_missing=False):
+            lookup_calls.append((name, create_if_missing))
+            return "fake-app"
+
+        async def create_aio(*args, **kwargs):
+            create_calls.append((args, kwargs))
+            return "fake-sandbox"
+
+        class FakeWorker:
+            def __init__(self):
+                self.started = False
+                self.stopped = False
+
+            def start(self):
+                self.started = True
+
+            def run_coroutine(self, coro, timeout=600):
+                return asyncio.run(coro)
+
+            def stop(self):
+                self.stopped = True
+
+        fake_modal = ModuleType("modal")
+        fake_modal.App = SimpleNamespace(lookup=SimpleNamespace(aio=lookup_aio))
+        fake_modal.Sandbox = SimpleNamespace(create=SimpleNamespace(aio=create_aio))
+        fake_modal.Mount = SimpleNamespace(from_local_file=lambda *args, **kwargs: None)
+        fake_modal.Image = SimpleNamespace(from_id=lambda image_id: image_id)
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setitem(sys.modules, "modal", fake_modal)
+            mp.setattr("tools.environments.modal._AsyncWorker", FakeWorker)
+            mp.setattr("tools.environments.modal._resolve_modal_image", lambda image: f"resolved:{image}")
+            mp.setattr("tools.credential_files.get_credential_file_mounts", lambda: [])
+            mp.setattr("tools.credential_files.iter_skills_files", lambda: [])
+            mp.setattr("tools.credential_files.iter_cache_files", lambda: [])
+            env = ModalEnvironment(
+                image="python:3.11",
+                persistent_filesystem=False,
+                task_id="native-sdk-test",
+            )
+
+        assert lookup_calls == [("hermes-agent", True)]
+        assert create_calls
+        args, kwargs = create_calls[0]
+        assert args == ("sleep", "infinity")
+        assert kwargs["image"] == "resolved:python:3.11"
+        assert kwargs["app"] == "fake-app"
+        assert kwargs["timeout"] == 3600
+        assert env._sandbox == "fake-sandbox"
 
 
 # =========================================================================
@@ -276,15 +332,21 @@ class TestEnsurepipFix:
 class TestHostPrefixList:
     """Verify the host prefix list catches common host-only paths."""
 
-    def test_all_common_host_prefixes_caught(self):
-        """The host prefix check should catch /Users/, /home/, C:\\, C:/."""
-        # Read the actual source to verify the prefixes
-        import inspect
-        source = inspect.getsource(_tt_mod._get_env_config)
-        for prefix in ["/Users/", "/home/", 'C:\\\\"', "C:/"]:
-            # Normalize for source comparison
-            check = prefix.rstrip('"')
-            assert check in source or prefix in source, (
-                f"Host prefix {prefix!r} not found in _get_env_config. "
-                "Container backends need this to avoid using host paths."
-            )
+    @pytest.mark.parametrize(
+        ("backend", "cwd"),
+        [
+            ("modal", "/Users/someone/projects"),
+            ("modal", "/home/someone/projects"),
+            ("modal", "C:\\Users\\someone\\projects"),
+            ("modal", "C:/Users/someone/projects"),
+        ],
+    )
+    def test_common_host_prefixes_are_sanitized(self, backend, cwd, monkeypatch):
+        """Container backends should discard host-only paths regardless of prefix style."""
+        monkeypatch.setenv("TERMINAL_ENV", backend)
+        monkeypatch.setenv("TERMINAL_CWD", cwd)
+        monkeypatch.delenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", raising=False)
+
+        config = _tt_mod._get_env_config()
+
+        assert config["cwd"] == "/root"

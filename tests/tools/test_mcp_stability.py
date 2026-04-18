@@ -114,9 +114,6 @@ class TestMCPReloadTimeout:
 
     def test_reload_timeout_does_not_block_forever(self, tmp_path, monkeypatch):
         """If _reload_mcp hangs, the config watcher times out and returns."""
-        import time
-
-        # Create a mock HermesCLI-like object with the needed attributes
         class FakeCLI:
             _config_mtime = 0.0
             _config_mcp_servers = {}
@@ -125,19 +122,54 @@ class TestMCPReloadTimeout:
             config = {}
             agent = None
 
+            def __init__(self):
+                self.reload_called = False
+
             def _reload_mcp(self):
-                # Simulate a hang — sleep longer than the timeout
-                time.sleep(60)
+                self.reload_called = True
 
             def _slow_command_status(self, cmd):
                 return cmd
 
-        # This test verifies the timeout mechanism exists in the code
-        # by checking that _check_config_mcp_changes doesn't call
-        # _reload_mcp directly (it uses a thread now)
-        import inspect
         from cli import HermesCLI
-        source = inspect.getsource(HermesCLI._check_config_mcp_changes)
-        # The fix adds threading.Thread for _reload_mcp
-        assert "Thread" in source or "thread" in source.lower(), \
-            "_check_config_mcp_changes should use a thread for _reload_mcp"
+
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            "mcp_servers:\n  test:\n    command: ['echo', 'ok']\n",
+            encoding="utf-8",
+        )
+
+        thread_events = []
+
+        class FakeThread:
+            def __init__(self, target, daemon):
+                self._target = target
+                self.daemon = daemon
+                thread_events.append(("init", daemon))
+
+            def start(self):
+                thread_events.append(("start",))
+
+            def join(self, timeout=None):
+                thread_events.append(("join", timeout))
+
+            def is_alive(self):
+                return True
+
+        fake_cli = FakeCLI()
+
+        monkeypatch.setattr("time.monotonic", lambda: 10.0)
+        monkeypatch.setattr("hermes_cli.config.get_config_path", lambda: config_path)
+        monkeypatch.setattr("cli.threading.Thread", FakeThread)
+
+        printed = []
+        monkeypatch.setattr("builtins.print", lambda *args, **kwargs: printed.append(" ".join(str(arg) for arg in args)))
+
+        HermesCLI._check_config_mcp_changes(fake_cli)
+
+        assert fake_cli._config_mcp_servers == {"test": {"command": ["echo", "ok"]}}
+        assert fake_cli.reload_called is False
+        assert ("init", True) in thread_events
+        assert ("start",) in thread_events
+        assert ("join", 30) in thread_events
+        assert any("timed out" in line for line in printed)

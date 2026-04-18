@@ -243,10 +243,8 @@ from gateway.background_job_start_service import (
 )
 from gateway.auto_background_runtime_service import (
     format_auto_background_ack as shared_format_auto_background_ack,
-    history_suggests_auto_background_work as shared_history_suggests_auto_background_work,
     resolve_auto_background_dispatch as shared_resolve_auto_background_dispatch,
     resolve_employee_background_dispatch as shared_resolve_employee_background_dispatch,
-    should_auto_background_message as shared_should_auto_background_message,
 )
 from gateway.attachment_message_runtime_service import (
     collect_audio_paths as shared_collect_audio_paths,
@@ -2722,57 +2720,6 @@ class GatewayRunner:
             return f"{elapsed // 60}m{elapsed % 60:02d}s"
         return f"{elapsed}s"
 
-    def _should_auto_background_message(self, event: MessageEvent, message_text: str) -> bool:
-        return shared_should_auto_background_message(
-            auto_background_work_enabled=self._get_auto_background_work(
-                getattr(event.source, "platform", None)
-            ),
-            event=event,
-            message_text=message_text,
-        )
-
-    def _history_suggests_auto_background_work(
-        self,
-        conversation_history: Optional[List[Dict[str, Any]]] = None,
-    ) -> bool:
-        return shared_history_suggests_auto_background_work(conversation_history)
-
-    def _resolve_employee_background_dispatch(
-        self,
-        message_text: str,
-        *,
-        platform: Platform = Platform.QQ_NAPCAT,
-        conversation_history: Optional[List[Dict[str, Any]]] = None,
-    ) -> Optional[Dict[str, Any]]:
-        return shared_resolve_employee_background_dispatch(
-            message_text,
-            employee_routes=get_employee_routes(self.config, platform=platform),
-            conversation_history=conversation_history,
-        )
-
-    def _resolve_auto_background_dispatch(
-        self,
-        event: MessageEvent,
-        message_text: str,
-        *,
-        conversation_history: Optional[List[Dict[str, Any]]] = None,
-    ) -> Optional[Dict[str, Any]]:
-        return shared_resolve_auto_background_dispatch(
-            event,
-            message_text,
-            auto_background_work_enabled=self._get_auto_background_work(
-                getattr(event.source, "platform", None)
-            ),
-            employee_routes=get_employee_routes(
-                self.config,
-                platform=getattr(event.source, "platform", Platform.QQ_NAPCAT),
-            ),
-            conversation_history=conversation_history,
-        )
-
-    def _format_auto_background_ack(self, prompt: str, task_id: str, *, worker_name: str = "") -> str:
-        return shared_format_auto_background_ack(prompt, task_id, worker_name=worker_name)
-
     @staticmethod
     def _looks_like_qq_group_listen_disable_request(message_text: str) -> bool:
         return looks_like_group_listen_disable_request(message_text)
@@ -4146,9 +4093,16 @@ class GatewayRunner:
             event=event,
             history=history,
         )
-        background_dispatch = self._resolve_auto_background_dispatch(
+        background_dispatch = shared_resolve_auto_background_dispatch(
             event,
             background_message_text,
+            auto_background_work_enabled=self._get_auto_background_work(
+                getattr(event.source, "platform", None)
+            ),
+            employee_routes=get_employee_routes(
+                self.config,
+                platform=getattr(event.source, "platform", Platform.QQ_NAPCAT),
+            ),
             conversation_history=list(history_for_agent or []),
         )
         if background_dispatch:
@@ -4164,7 +4118,7 @@ class GatewayRunner:
                 admin_user_ids=context.admin_user_ids,
                 is_admin_user=context.is_admin_user,
             )
-            return self._format_auto_background_ack(
+            return shared_format_auto_background_ack(
                 background_message_text,
                 task_id,
                 worker_name=str(background_dispatch.get("worker_name") or ""),
@@ -5883,9 +5837,12 @@ class GatewayRunner:
         source = event.source
         admin_user_ids = self._configured_admin_user_ids(source.platform)
         is_admin_user = self._is_admin_user(source) if admin_user_ids else None
-        dispatch = self._resolve_employee_background_dispatch(
+        dispatch = shared_resolve_employee_background_dispatch(
             prompt,
-            platform=getattr(source, "platform", Platform.QQ_NAPCAT),
+            employee_routes=get_employee_routes(
+                self.config,
+                platform=getattr(source, "platform", Platform.QQ_NAPCAT),
+            ),
         )
         task_id = self._start_background_job(
             prompt,

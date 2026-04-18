@@ -114,25 +114,33 @@ def test_prefetch_non_blocking():
 
 
 def test_get_update_result_timeout():
-    """get_update_result() returns None when check hasn't completed within timeout."""
+    """get_update_result() returns promptly when the event is never set."""
     import hermes_cli.banner as banner
 
-    # Patch check_for_updates so any stray background prefetch thread writes a
-    # deterministic None rather than a real git-based commit count. Without
-    # this, a prefetch from an earlier test or fixture could race and set
-    # _update_result to a real commit count between our reset and the call.
-    with patch.object(banner, "check_for_updates", return_value=None):
-        # Reset module state — don't set the event
-        banner._update_result = None
-        banner._update_check_done = threading.Event()
+    # Swap out the module-level state with fresh objects BEFORE any stray
+    # prefetch thread (started by a prior test or background fixture) can
+    # race with our reset. Save the originals and restore them at the end
+    # so we don't leak state to other tests in the same worker.
+    original_event = banner._update_check_done
+    original_result = banner._update_result
+    fresh_event = threading.Event()  # not .set(); no background thread holds a reference
+    banner._update_check_done = fresh_event
+    banner._update_result = None
 
+    try:
         start = time.monotonic()
         result = banner.get_update_result(timeout=0.1)
         elapsed = time.monotonic() - start
+    finally:
+        banner._update_check_done = original_event
+        banner._update_result = original_result
 
-    # Should have waited ~0.1s and returned None
-    assert result is None
+    # Core invariant: the call returns quickly, bounded by the timeout.
     assert elapsed < 0.5
+    # Since no background thread holds fresh_event, result must be the
+    # value we set (None). This also guards against regressions where
+    # get_update_result reaches past the event for a cached value.
+    assert result is None
 
 
 def test_invalidate_update_cache_clears_all_profiles(tmp_path):

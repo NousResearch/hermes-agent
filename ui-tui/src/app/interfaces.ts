@@ -335,5 +335,6 @@ export interface AppOverlaysProps {
 
 export interface PasteSnippet {
   label: string
+  path?: string
   text: string
 }

@@ -8681,9 +8681,39 @@ class GatewayRunner:
         last_tool = [None]  # Mutable container for tracking in closure
         last_progress_msg = [None]  # Track last message for dedup
         repeat_count = [0]  # How many times the same message repeated
-        
+
+        # Subagent progress → TTL 24h forum topic router.
+        # Only active on Telegram; silently no-op elsewhere.  Router failures
+        # never propagate to the parent agent.
+        from gateway.subagent_topic_router import get_subagent_topic_router
+        _subagent_router = get_subagent_topic_router()
+        _subagent_router_loop = asyncio.get_running_loop()
+        _subagent_adapter = self.adapters.get(source.platform)
+
         def progress_callback(event_type: str, tool_name: str = None, preview: str = None, args: dict = None, **kwargs):
             """Callback invoked by agent on tool lifecycle events."""
+
+            # Subagent progress → forum topic router (Telegram only).
+            # This branch is independent of tool_progress settings because it
+            # delivers to a separate destination (the per-session topic).
+            if event_type.startswith("subagent.") and _subagent_adapter is not None:
+                try:
+                    _subagent_router.route(
+                        session_id=session_id,
+                        source=source,
+                        event_type=event_type,
+                        tool_name=tool_name,
+                        preview=preview,
+                        goal=kwargs.get("goal"),
+                        adapter=_subagent_adapter,
+                        loop=_subagent_router_loop,
+                    )
+                except Exception as e:
+                    logger.debug("Subagent router dispatch failed: %s", e)
+                # Do NOT fall through — subagent events should not also appear
+                # in the parent conversation's progress message.
+                return
+
             if not progress_queue:
                 return
 

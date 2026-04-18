@@ -15,7 +15,11 @@ import { patchOverlayState } from '../../overlayStore.js'
 import { patchUiState } from '../../uiStore.js'
 import type { SlashCommand } from '../types.js'
 
-const destructiveGate = createDestructiveGate()
+export const destructiveGate = createDestructiveGate()
+
+const DESTRUCTIVE_COMMANDS = new Set(['clear', 'new'])
+
+export const isDestructiveCommand = (name: string) => DESTRUCTIVE_COMMANDS.has(name)
 
 const flagFromArg = (arg: string, current: boolean): boolean | null => {
   if (!arg) {
@@ -89,7 +93,7 @@ export const coreCommands: SlashCommand[] = [
       const label = cmd.startsWith('/new') ? '/new' : '/clear'
 
       if (!NO_CONFIRM_DESTRUCTIVE && !destructiveGate.request('clear')) {
-        return ctx.transcript.sys(`press ${label} again within 3s to confirm (starts a new session)`)
+        return ctx.transcript.sys(`press ${label} again to confirm — starts a new session`)
       }
 
       patchUiState({ status: 'forging session…' })

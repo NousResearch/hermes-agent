@@ -1773,7 +1773,11 @@ def probe_api_models(
         candidates.append((alternate_base, True))
 
     tried: list[str] = []
-    headers: dict[str, str] = {}
+    headers: dict[str, str] = {
+        # Some providers (e.g. OpenCode) block the default Python-urllib
+        # User-Agent with a 403.  Send a generic HTTP client UA instead.
+        "User-Agent": "hermes/1.0",
+    }
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
     if normalized.startswith(COPILOT_BASE_URL):
@@ -2107,6 +2111,37 @@ def validate_requested_model(
                     f"{suggestion_text}"
                 ),
             }
+
+    # OpenCode Go does not expose a /models endpoint — its /zen/go/v1/models
+    # returns the OpenCode website 404 page.  Validate against the curated
+    # _PROVIDER_MODELS list plus the live Zen catalog (Go is a subset of Zen).
+    if normalized == "opencode-go":
+        go_models = set(_PROVIDER_MODELS.get("opencode-go", []))
+        try:
+            for m in provider_model_ids("opencode-zen") or []:
+                go_models.add(m)
+        except Exception:
+            pass
+        if requested_for_lookup in go_models:
+            return {"accepted": True, "persist": True, "recognized": True, "message": None}
+        auto = get_close_matches(requested_for_lookup, list(go_models), n=1, cutoff=0.9)
+        if auto:
+            return {
+                "accepted": True,
+                "persist": True,
+                "recognized": True,
+                "corrected_model": auto[0],
+                "message": f"Auto-corrected `{requested}` → `{auto[0]}`",
+            }
+        return {
+            "accepted": False,
+            "persist": False,
+            "recognized": False,
+            "message": (
+                f"Model `{requested}` is not available on OpenCode Go. "
+                f"Available: {', '.join(sorted(_PROVIDER_MODELS.get('opencode-go', [])))}"
+            ),
+        }
 
     # Probe the live API to check if the model actually exists
     api_models = fetch_api_models(api_key, base_url)

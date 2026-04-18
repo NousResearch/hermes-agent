@@ -14,6 +14,7 @@ Covers:
 
 import os
 import unittest
+import asyncio
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
@@ -258,54 +259,169 @@ class TestExtractAttachments(unittest.TestCase):
 
 
 class TestAuthorizationMaps(unittest.TestCase):
-    """Verify email is in authorization maps in gateway/run.py."""
+    """Verify email platform branches are actually wired and working."""
 
-    def test_email_in_adapter_factory(self):
-        """Email adapter creation branch should exist."""
-        import gateway.run
-        import inspect
-        source = inspect.getsource(gateway.run.GatewayRunner._create_adapter)
-        self.assertIn("Platform.EMAIL", source)
+    def _make_runner(self):
+        from gateway.run import GatewayRunner
 
-    def test_email_in_allowed_users_map(self):
-        """EMAIL_ALLOWED_USERS should be in platform_env_map."""
-        import gateway.run
-        import inspect
-        source = inspect.getsource(gateway.run.GatewayRunner._is_user_authorized)
-        self.assertIn("EMAIL_ALLOWED_USERS", source)
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner._is_admin_user = lambda _source: False
+        runner.pairing_store = SimpleNamespace(
+            is_approved=lambda _platform, _user_id: False
+        )
+        runner.config = SimpleNamespace(platforms={})
+        return runner
 
-    def test_email_in_allow_all_map(self):
-        """EMAIL_ALLOW_ALL_USERS should be in platform_allow_all_map."""
-        import gateway.run
-        import inspect
-        source = inspect.getsource(gateway.run.GatewayRunner._is_user_authorized)
-        self.assertIn("EMAIL_ALLOW_ALL_USERS", source)
+    def test_email_adapter_factory_returns_email_adapter(self):
+        from gateway.run import GatewayRunner
+        from gateway.config import Platform, PlatformConfig
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = SimpleNamespace(
+            group_sessions_per_user=False,
+            thread_sessions_per_user=False,
+        )
+        fake_adapter = object()
+        with (
+            patch("gateway.platforms.email.check_email_requirements", return_value=True),
+            patch("gateway.platforms.email.EmailAdapter", return_value=fake_adapter),
+        ):
+            result = runner._create_adapter(Platform.EMAIL, PlatformConfig(enabled=True))
+
+        self.assertIs(result, fake_adapter)
+
+    @patch.dict(os.environ, {"EMAIL_ALLOWED_USERS": "alice@example.com"}, clear=True)
+    def test_email_allowed_users_env_allows_matching_sender(self):
+        from gateway.config import Platform
+        from gateway.session import SessionSource
+
+        runner = self._make_runner()
+        source = SessionSource(
+            platform=Platform.EMAIL,
+            user_id="alice@example.com",
+            chat_id="alice@example.com",
+            user_name="Alice",
+            chat_type="dm",
+        )
+
+        self.assertTrue(runner._is_user_authorized(source))
+
+    @patch.dict(os.environ, {"EMAIL_ALLOW_ALL_USERS": "true"}, clear=True)
+    def test_email_allow_all_env_allows_any_sender(self):
+        from gateway.config import Platform
+        from gateway.session import SessionSource
+
+        runner = self._make_runner()
+        source = SessionSource(
+            platform=Platform.EMAIL,
+            user_id="bob@example.com",
+            chat_id="bob@example.com",
+            user_name="Bob",
+            chat_type="dm",
+        )
+
+        self.assertTrue(runner._is_user_authorized(source))
 
 
 class TestSendMessageToolRouting(unittest.TestCase):
     """Verify email routing in send_message_tool."""
 
-    def test_email_in_platform_map(self):
+    def test_handle_send_routes_email_home_channel_to_email_platform(self):
         import tools.send_message_tool as smt
-        import inspect
-        source = inspect.getsource(smt._handle_send)
-        self.assertIn('"email"', source)
+        from gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
+
+        config = GatewayConfig(
+            platforms={
+                Platform.EMAIL: PlatformConfig(
+                    enabled=True,
+                    extra={},
+                    home_channel=HomeChannel(
+                        platform=Platform.EMAIL,
+                        chat_id="person@example.com",
+                        name="Inbox",
+                    ),
+                )
+            }
+        )
+        observed = {}
+
+        async def _fake_send(platform, pconfig, chat_id, message, thread_id=None, media_files=None):
+            observed["platform"] = platform
+            observed["chat_id"] = chat_id
+            observed["message"] = message
+            return {"success": True}
+
+        with (
+            patch("gateway.config.load_gateway_config", return_value=config),
+            patch("tools.send_message_tool._send_to_platform", side_effect=_fake_send),
+            patch("model_tools._run_async", side_effect=lambda coro: asyncio.run(coro)),
+            patch("gateway.mirror.mirror_to_session", return_value=None),
+        ):
+            payload = smt._handle_send(
+                {
+                    "target": "email",
+                    "message": "hello from test",
+                }
+            )
+
+        self.assertIn('"success": true', payload.lower())
+        self.assertEqual(observed["platform"], Platform.EMAIL)
+        self.assertEqual(observed["chat_id"], "person@example.com")
+        self.assertEqual(observed["message"], "hello from test")
+        self.assertIn("home channel", payload.lower())
 
     def test_send_to_platform_has_email_branch(self):
         import tools.send_message_tool as smt
-        import inspect
-        source = inspect.getsource(smt._send_to_platform)
-        self.assertIn("Platform.EMAIL", source)
+
+        async def _run():
+            from gateway.config import Platform, PlatformConfig
+
+            with patch("tools.send_message_tool._send_email", new=AsyncMock(return_value={"success": True})) as mock_send:
+                result = await smt._send_to_platform(
+                    Platform.EMAIL,
+                    PlatformConfig(enabled=True, extra={}),
+                    "person@example.com",
+                    "hello",
+                )
+            mock_send.assert_awaited_once()
+            return result
+
+        result = asyncio.run(_run())
+        self.assertEqual(result, {"success": True})
 
 
 class TestCronDelivery(unittest.TestCase):
     """Verify email in cron scheduler platform_map."""
 
-    def test_email_in_cron_platform_map(self):
+    def test_email_delivery_routes_through_email_platform(self):
         import cron.scheduler
-        import inspect
-        source = inspect.getsource(cron.scheduler)
-        self.assertIn('"email"', source)
+        from gateway.config import GatewayConfig, Platform, PlatformConfig
+
+        config = GatewayConfig(
+            platforms={Platform.EMAIL: PlatformConfig(enabled=True, extra={})}
+        )
+        observed = {}
+
+        async def _fake_send(platform, pconfig, chat_id, message, thread_id=None, media_files=None):
+            observed["platform"] = platform
+            observed["chat_id"] = chat_id
+            observed["message"] = message
+            return {"success": True}
+
+        with (
+            patch("gateway.config.load_gateway_config", return_value=config),
+            patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}),
+            patch("tools.send_message_tool._send_to_platform", side_effect=_fake_send),
+        ):
+            result = cron.scheduler._deliver_result(
+                {"id": "job-1", "name": "Email Job", "deliver": "email:person@example.com"},
+                "report body",
+            )
+
+        self.assertIsNone(result)
+        self.assertEqual(observed["platform"], Platform.EMAIL)
+        self.assertEqual(observed["chat_id"], "person@example.com")
+        self.assertEqual(observed["message"], "report body")
 
 
 class TestToolset(unittest.TestCase):
@@ -335,9 +451,41 @@ class TestChannelDirectory(unittest.TestCase):
 
     def test_email_in_session_discovery(self):
         import gateway.channel_directory
-        import inspect
-        source = inspect.getsource(gateway.channel_directory.build_channel_directory)
-        self.assertIn('"email"', source)
+
+        tmp_root = Path(self.id().replace(".", "_"))
+        # Use a deterministic disposable temp dir under pytest's cwd-independent tmp root.
+        # unittest.TestCase doesn't inject tmp_path, so create/remove manually.
+        from tempfile import TemporaryDirectory
+
+        with TemporaryDirectory() as tmp_dir:
+            tmp_root = Path(tmp_dir)
+            sessions_dir = tmp_root / "sessions"
+            sessions_dir.mkdir(parents=True, exist_ok=True)
+            (sessions_dir / "sessions.json").write_text(
+                """
+                {
+                  "email:alice@example.com": {
+                    "chat_type": "dm",
+                    "origin": {
+                      "platform": "email",
+                      "chat_id": "alice@example.com",
+                      "user_name": "Alice",
+                      "chat_type": "dm"
+                    }
+                  }
+                }
+                """.strip(),
+                encoding="utf-8",
+            )
+
+            with (
+                patch("gateway.channel_directory.get_hermes_home", return_value=tmp_root),
+                patch("gateway.channel_directory.DIRECTORY_PATH", tmp_root / "channel_directory.json"),
+            ):
+                directory = gateway.channel_directory.build_channel_directory({})
+
+        self.assertIn("email", directory["platforms"])
+        self.assertEqual(directory["platforms"]["email"][0]["id"], "alice@example.com")
 
 
 class TestGatewaySetup(unittest.TestCase):

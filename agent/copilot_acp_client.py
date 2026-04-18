@@ -326,7 +326,15 @@ class CopilotACPClient:
                 getattr(timeout, attr, None)
                 for attr in ("read", "write", "connect", "pool", "timeout")
             ]
-            _numeric = [float(v) for v in _candidates if isinstance(v, (int, float))]
+            _numeric = []
+            for v in _candidates:
+                if isinstance(v, (int, float)):
+                    _numeric.append(float(v))
+                elif isinstance(v, str):
+                    try:
+                        _numeric.append(float(v))
+                    except ValueError:
+                        pass
             _effective_timeout = max(_numeric) if _numeric else _DEFAULT_TIMEOUT_SECONDS
 
         response_text, reasoning_text = self._run_prompt(

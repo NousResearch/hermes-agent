@@ -125,3 +125,16 @@
 - 已验证：
   - `tests/gateway/test_group_control_intents.py tests/gateway/test_qq_intents.py tests/gateway/test_auto_background_jobs.py -q -k '这个群现在什么状态 or explicit_group_runtime_query_as_session_status or background_status_shortcut_does_not_steal_explicit_group_runtime_status_query or shared_status_asks'`：`3 passed`
   - `tests/gateway/test_group_control_intents.py tests/gateway/test_group_runtime_status_requests.py tests/gateway/test_group_runtime_status_runtime_service.py tests/gateway/test_qq_intents.py tests/gateway/test_runtime_shortcuts_service.py tests/gateway/test_qq_intel_control_requests.py tests/gateway/test_qq_intel_runtime_service.py tests/gateway/test_auto_background_jobs.py -q -k 'not weixin and (group_runtime or runtime_status or background_status or explicit_group_runtime_query or explicit_intel_status_query or intel or joined_group_list or verbose or bot_alias)'`：`55 passed`
+
+## 2026-04-19 Weixin oral collect-only 日报目标收口
+
+- 已修复：
+  - `这个群切到监听采集，日报发我私聊` 现在会同时设置 `daily_report_enabled` / `daily_report_target` / `manual_report_target`
+  - 修复点放在共享 `group_control_requests`，不做 Weixin 特判
+  - 现有“查询尾巴不要误开日报”的防误判逻辑保留
+- 已新增测试：
+  - [tests/gateway/test_group_control_requests.py](/home/dtamade/projects/hermes-agent/tests/gateway/test_group_control_requests.py)
+- 已验证：
+  - `tests/gateway/test_group_control_requests.py -q -k 'enables_report_when_collect_only_specifies_delivery_target or does_not_enable_daily_report_from_query_tail or returns_collect_only_and_report_targets_for_admin'`：`3 passed`
+  - `tests/gateway/test_auto_background_jobs.py -q -k 'test_admin_weixin_group_can_orally_enable_collect_only'`：`1 passed`
+  - `tests/gateway/test_group_control_requests.py tests/gateway/test_group_control_intents.py tests/gateway/test_auto_background_jobs.py tests/tools/test_weixin_control_tool.py -q -k 'weixin or group_control or report_target or does_not_enable_daily_report_from_query_tail or orally_enable_collect_only'`：`28 passed`

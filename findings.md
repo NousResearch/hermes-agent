@@ -69,6 +69,9 @@
 - 2026-04-19 第四轮 group runtime shortcut 顺序审查：
   - `这个群现在什么状态` 在群会话有后台任务时，会先被 runtime status shortcut 抢走，返回后台任务状态而不是当前群运行态
   - 根因有两层：共享 `looks_like_group_runtime_status_query()` 对“有群指代 + 泛化状态问句”识别不足，而 QQ 的 runtime/background shortcut 也没有先排除这类显式群运行态查询
+- 2026-04-19 Weixin 既有失败排查：
+  - `这个群切到监听采集，日报发我私聊` 能识别 `collect_only` 和投递目标，但不会把“明确日报投递目标”视为“开启日报”
+  - 根因在共享 `group_control_requests`：此前只有命中 `GROUP_REPORT_ENABLE_TERMS` 才会附带 `daily_report_*`，没有覆盖“enable_listen + 明确日报投递目标”这个自然口头表达
 - 相关回归：
   - QQ 相关/新增链路：`170 passed`
   - 全量仓库：`37 failed, 9361 passed, 87 skipped, 6 errors`

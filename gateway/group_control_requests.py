@@ -10,6 +10,8 @@ from gateway.group_control_intents import (
     looks_like_group_report_disable_request,
     looks_like_group_report_enable_request,
     looks_like_group_report_now_request,
+    wants_report_delivery_to_current_chat,
+    wants_report_delivery_to_dm,
 )
 
 
@@ -34,7 +36,12 @@ def match_group_control_request(
     enable_listen = not disable_listen and looks_like_group_listen_enable_request(normalized_body)
     disable_report = looks_like_group_report_disable_request(normalized_body)
     report_now = looks_like_group_report_now_request(normalized_body)
-    enable_report = looks_like_group_report_enable_request(normalized_body)
+    explicit_report_delivery = wants_report_delivery_to_dm(normalized_body) or wants_report_delivery_to_current_chat(
+        normalized_body
+    )
+    enable_report = looks_like_group_report_enable_request(normalized_body) or (
+        enable_listen and "日报" in normalized_body and explicit_report_delivery
+    )
 
     if not any((allow_chat, enable_listen, disable_listen, enable_report, disable_report, report_now)):
         return None, None

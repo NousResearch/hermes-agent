@@ -45,6 +45,31 @@ def test_match_group_control_request_returns_collect_only_and_report_targets_for
     }
 
 
+def test_match_group_control_request_enables_report_when_collect_only_specifies_delivery_target():
+    source = _make_source(chat_type="group", chat_id="726109087")
+
+    tool_args, error = match_group_control_request(
+        source=source,
+        body="这个群切到监听采集，日报发我私聊。",
+        target="group:726109087",
+        admin_ids_configured=True,
+        is_admin_user=True,
+        missing_target_message="missing target",
+        admin_only_message="admin only",
+        collect_only_action="enable_collect_only",
+        report_target_resolver=lambda current_source, message, prefer_dm: "current_user_dm",
+    )
+
+    assert error is None
+    assert tool_args == {
+        "target": "group:726109087",
+        "action": "enable_collect_only",
+        "daily_report_enabled": True,
+        "daily_report_target": "current_user_dm",
+        "manual_report_target": "current_user_dm",
+    }
+
+
 def test_match_group_control_request_returns_deliver_report_for_report_now():
     source = _make_source(platform=Platform.WEIXIN, chat_id="project@chatroom")
 

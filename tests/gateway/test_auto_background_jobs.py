@@ -9,9 +9,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from gateway.background_delivery_service import recover_stale_background_jobs_once
 from gateway.config import GatewayConfig, Platform, PlatformConfig, load_gateway_config
 from gateway.background_jobs import BackgroundJobStore
 from gateway.platforms.base import MessageEvent, MessageType
+from gateway.runtime_status_service import build_runtime_status_summary
 from gateway.session import SessionEntry, SessionSource, build_session_key
 
 
@@ -1804,7 +1806,7 @@ def test_runtime_status_summary_includes_foreground_background_vision_and_archiv
             {"worker_name": "铁柱", "status": "paused"},
         ],
     ):
-        summary = runner._build_runtime_status_summary()
+        summary = build_runtime_status_summary(runner)
 
     assert summary["active_sessions_count"] == 1
     assert summary["active_sessions"][0]["current_tool"] == "delegate_task"
@@ -1876,7 +1878,7 @@ def test_runtime_status_summary_includes_model_fallback_approvals_and_collect_on
         "gateway.run._resolve_runtime_agent_kwargs",
         return_value={"provider": "custom"},
     ):
-        summary = runner._build_runtime_status_summary()
+        summary = build_runtime_status_summary(runner)
 
     assert summary["model"]["configured_model"] == "gpt-5.4"
     assert summary["model"]["active_model"] == "gpt-5.4-mini"
@@ -1940,7 +1942,8 @@ async def test_watchdog_recovers_stale_subprocess_job(tmp_path, monkeypatch):
     )
     monkeypatch.setattr("gateway.background_jobs.os.kill", lambda pid, sig: (_ for _ in ()).throw(ProcessLookupError()))
 
-    recovered = await runner._recover_stale_background_jobs_once(
+    recovered = await recover_stale_background_jobs_once(
+        runner,
         queued_grace_seconds=30,
         heartbeat_stale_seconds=30,
         now_ts=time.time() + 600,

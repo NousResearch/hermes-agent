@@ -232,8 +232,6 @@ from gateway.agent_runtime import (
 )
 from gateway.background_delivery_service import (
     background_job_delivery_poller as shared_background_job_delivery_poller,
-    deliver_background_job_updates_once as shared_deliver_background_job_updates_once,
-    recover_stale_background_jobs_once as shared_recover_stale_background_jobs_once,
 )
 from gateway.background_job_start_service import (
     start_background_job as shared_start_background_job,
@@ -1918,7 +1916,10 @@ class GatewayRunner:
             write_runtime_status(
                 gateway_state="running",
                 exit_reason=None,
-                runtime_summary=self._build_runtime_status_summary(),
+                runtime_summary=shared_build_runtime_status_summary(
+                    self,
+                    pending_sentinel=_AGENT_PENDING_SENTINEL,
+                ),
             )
         except Exception:
             pass
@@ -1979,7 +1980,7 @@ class GatewayRunner:
                 ", ".join(p.value for p in self._failed_platforms),
             )
         asyncio.create_task(self._platform_reconnect_watcher())
-        _bg_delivery_task = asyncio.create_task(self._background_job_delivery_poller())
+        _bg_delivery_task = asyncio.create_task(shared_background_job_delivery_poller(self))
         self._background_tasks.add(_bg_delivery_task)
         _bg_delivery_task.add_done_callback(self._background_tasks.discard)
         _runtime_status_task = asyncio.create_task(self._runtime_status_heartbeat())
@@ -3010,19 +3011,16 @@ class GatewayRunner:
     def _load_runtime_qq_archive_stats() -> dict[str, Any]:
         return QqGroupArchiveStore().get_runtime_stats()
 
-    def _build_runtime_status_summary(self) -> dict[str, Any]:
-        return shared_build_runtime_status_summary(
-            self,
-            pending_sentinel=_AGENT_PENDING_SENTINEL,
-        )
-
     def _write_runtime_status_snapshot(self) -> None:
         try:
             from gateway.status import write_runtime_status
 
             write_runtime_status(
                 gateway_state="running" if self._running else None,
-                runtime_summary=self._build_runtime_status_summary(),
+                runtime_summary=shared_build_runtime_status_summary(
+                    self,
+                    pending_sentinel=_AGENT_PENDING_SENTINEL,
+                ),
             )
             for platform in getattr(self, "adapters", {}) or {}:
                 try:
@@ -5787,28 +5785,6 @@ class GatewayRunner:
                 "你可以继续聊天，结果回来我会发到这里。"
             )
         return f'🔄 Background task started: "{preview}"\nTask ID: {task_id}\nYou can keep chatting — results will appear when done.'
-
-    async def _deliver_background_job_updates_once(self) -> None:
-        """Deliver one polling pass of durable background job completions and approvals."""
-        await shared_deliver_background_job_updates_once(self)
-
-    async def _background_job_delivery_poller(self, interval: float = 2.0) -> None:
-        """Background poller for durable job completions and approval prompts."""
-        await shared_background_job_delivery_poller(self, interval=interval)
-
-    async def _recover_stale_background_jobs_once(
-        self,
-        *,
-        queued_grace_seconds: float = 120.0,
-        heartbeat_stale_seconds: float = 120.0,
-        now_ts: float | None = None,
-    ) -> list[dict[str, Any]]:
-        return await shared_recover_stale_background_jobs_once(
-            self,
-            now_ts=now_ts,
-            queued_grace_seconds=queued_grace_seconds,
-            heartbeat_stale_seconds=heartbeat_stale_seconds,
-        )
 
     async def _handle_btw_command(self, event: MessageEvent) -> str:
         """Handle /btw <question> — ephemeral side question in the same chat."""

@@ -220,8 +220,8 @@ async def background_job_delivery_poller(runner: Any, interval: float = 2.0) -> 
     """Background poller for durable job completions and approval prompts."""
     while runner._running:
         try:
-            await runner._recover_stale_background_jobs_once()
-            await runner._deliver_background_job_updates_once()
+            await recover_stale_background_jobs_once(runner)
+            await deliver_background_job_updates_once(runner)
         except asyncio.CancelledError:
             raise
         except Exception:

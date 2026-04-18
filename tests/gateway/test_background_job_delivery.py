@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from gateway.background_delivery_service import deliver_background_job_updates_once
 from gateway.background_worker import run_background_job
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.session import SessionEntry, SessionSource, build_session_key
@@ -101,8 +102,8 @@ async def test_delivery_tick_sends_completed_job_once(tmp_path):
     )
     store.mark_job_completed("bg_200001_abcd12", raw_response="结果已经出来了")
 
-    await runner._deliver_background_job_updates_once()
-    await runner._deliver_background_job_updates_once()
+    await deliver_background_job_updates_once(runner)
+    await deliver_background_job_updates_once(runner)
 
     assert runner.adapters[Platform.QQ_NAPCAT].send.await_count == 1
     content = runner.adapters[Platform.QQ_NAPCAT].send.await_args.kwargs["content"]
@@ -127,7 +128,7 @@ async def test_delivery_tick_sends_manual_completion_with_concise_template(tmp_p
     )
     store.mark_job_completed("bg_200010_abcd12", raw_response="说明已经整理好了")
 
-    await runner._deliver_background_job_updates_once()
+    await deliver_background_job_updates_once(runner)
 
     content = runner.adapters[Platform.QQ_NAPCAT].send.await_args.kwargs["content"]
     assert "后台任务完成" in content
@@ -193,7 +194,7 @@ async def test_btw_job_runs_through_worker_and_delivery(tmp_path, monkeypatch):
     assert job["status"] == "completed"
     assert job["raw_response"] == "side answer"
 
-    await runner._deliver_background_job_updates_once()
+    await deliver_background_job_updates_once(runner)
 
     content = runner.adapters[Platform.QQ_NAPCAT].send.await_args.kwargs["content"]
     assert '💬 /btw: "what changed in this chat?"' in content
@@ -217,7 +218,7 @@ async def test_delivery_tick_sends_failed_job_with_concise_template(tmp_path):
     )
     store.mark_job_failed("bg_200011_abcd12", error="ssh timeout")
 
-    await runner._deliver_background_job_updates_once()
+    await deliver_background_job_updates_once(runner)
 
     content = runner.adapters[Platform.QQ_NAPCAT].send.await_args.kwargs["content"]
     assert "后台任务失败" in content
@@ -254,7 +255,7 @@ async def test_delivery_tick_sends_external_approval_prompt(tmp_path):
         },
     )
 
-    await runner._deliver_background_job_updates_once()
+    await deliver_background_job_updates_once(runner)
 
     assert runner.adapters[Platform.QQ_NAPCAT].send.await_count == 1
     content = runner.adapters[Platform.QQ_NAPCAT].send.await_args.kwargs["content"]

@@ -483,15 +483,7 @@ export function TextInput({
         return
       }
 
-      if (
-        k.upArrow ||
-        k.downArrow ||
-        k.tab ||
-        (k.shift && k.tab) ||
-        k.pageUp ||
-        k.pageDown ||
-        k.escape
-      ) {
+      if (k.upArrow || k.downArrow || k.tab || (k.shift && k.tab) || k.pageUp || k.pageDown || k.escape) {
         return
       }
 

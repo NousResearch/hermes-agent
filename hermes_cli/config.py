@@ -771,6 +771,20 @@ DEFAULT_CONFIG = {
         "wrap_response": True,
     },
 
+    # execute_code settings — controls the tool used for programmatic tool calls.
+    "code_execution": {
+        # Execution mode:
+        #   project (default) — scripts run in the session's working directory
+        #     with the active virtualenv/conda env's python, so project deps
+        #     (pandas, torch, project packages) and relative paths resolve.
+        #   strict            — scripts run in an isolated temp directory with
+        #     hermes-agent's own python (sys.executable). Maximum isolation
+        #     and reproducibility; project deps and relative paths won't work.
+        # Env scrubbing (strips *_API_KEY, *_TOKEN, *_SECRET, ...) and the
+        # tool whitelist apply identically in both modes.
+        "mode": "project",
+    },
+
     # Logging — controls file logging to ~/.hermes/logs/.
     # agent.log captures INFO+ (all agent activity); errors.log captures WARNING+.
     "logging": {
@@ -788,7 +802,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 18,
+    "_config_version": 19,
 }
 
 # =============================================================================

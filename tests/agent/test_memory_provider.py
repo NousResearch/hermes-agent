@@ -8,7 +8,6 @@ from agent.memory_provider import MemoryProvider
 from agent.memory_manager import MemoryManager
 from agent.builtin_memory_provider import BuiltinMemoryProvider
 
-
 # ---------------------------------------------------------------------------
 # Concrete test provider
 # ---------------------------------------------------------------------------
@@ -463,13 +462,11 @@ class TestSingleProviderGating:
         builtin = BuiltinMemoryProvider()
         mgr.add_provider(builtin)
 
-        # Simulate what run_agent.py does when provider="" 
         configured = ""
         available_plugins = [
             FakeMemoryProvider("holographic"),
             FakeMemoryProvider("mem0"),
         ]
-        # With empty config, no plugins should be added
         if configured:
             for p in available_plugins:
                 if p.name == configured and p.is_available():
@@ -493,7 +490,7 @@ class TestSingleProviderGating:
                 mgr.add_provider(p)
 
         assert mgr.provider_names == ["builtin", "holographic"]
-        assert p1.initialized is False  # not initialized by the gating logic itself
+        assert p1.initialized is False
 
     def test_unavailable_provider_skipped(self):
         """If the configured provider is unavailable, it should be skipped."""

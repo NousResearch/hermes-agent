@@ -4714,8 +4714,11 @@ class AIAgent:
                 elif hasattr(_socket, "TCP_KEEPALIVE"):
                     # macOS (uses TCP_KEEPALIVE instead of TCP_KEEPIDLE)
                     _sock_opts.append((_socket.IPPROTO_TCP, _socket.TCP_KEEPALIVE, 30))
+                import os as _os
+                _proxy = (_os.getenv("HTTPS_PROXY") or _os.getenv("https_proxy")
+                          or _os.getenv("HTTP_PROXY") or _os.getenv("http_proxy"))
                 client_kwargs["http_client"] = _httpx.Client(
-                    transport=_httpx.HTTPTransport(socket_options=_sock_opts),
+                    transport=_httpx.HTTPTransport(socket_options=_sock_opts, proxy=_proxy),
                 )
             except Exception:
                 pass  # Fall through to default transport if socket opts fail

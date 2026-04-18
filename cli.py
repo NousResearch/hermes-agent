@@ -10280,6 +10280,7 @@ def main(
     w: bool = False,
     checkpoints: bool = False,
     pass_session_id: bool = False,
+    output_format: str = "text",
 ):
     """
     Hermes Agent CLI - Interactive AI Assistant
@@ -10475,6 +10476,8 @@ def main(
         if quiet:
             # Quiet mode: suppress banner, spinner, tool previews.
             # Only print the final response and parseable session info.
+            # When output_format is "stream-json", emit JSONL events instead.
+            use_stream_json = output_format == "stream-json"
             cli.tool_progress_mode = "off"
             if cli._ensure_runtime_credentials():
                 effective_query = query
@@ -10495,23 +10498,43 @@ def main(
                 ):
                     cli.agent.quiet_mode = True
                     cli.agent.suppress_status_output = True
-                    # Suppress streaming display callbacks so stdout stays
-                    # machine-readable (no styled "Hermes" box, no tool-gen
-                    # status lines).  The response is printed once below.
-                    cli.agent.stream_delta_callback = None
-                    cli.agent.tool_gen_callback = None
+
+                    if use_stream_json:
+                        # stream-json: wire callbacks to JSONL emitter
+                        from stream_json import StreamJsonEmitter
+
+                        emitter = StreamJsonEmitter(
+                            model=cli.agent.model or "",
+                            session_id=cli.session_id or "",
+                        )
+                        cli.agent.stream_delta_callback = emitter.on_text_delta
+                        cli.agent.tool_gen_callback = emitter.on_tool_gen_start
+                        cli.agent.tool_progress_callback = emitter.on_tool_progress
+                    else:
+                        # Plain text quiet mode (original behavior)
+                        cli.agent.stream_delta_callback = None
+                        cli.agent.tool_gen_callback = None
+
                     result = cli.agent.run_conversation(
                         user_message=effective_query,
                         conversation_history=cli.conversation_history,
                     )
-                    response = result.get("final_response", "") if isinstance(result, dict) else str(result)
-                    if response:
-                        print(response)
-                    # Session ID goes to stderr so piped stdout is clean.
-                    print(f"\nsession_id: {cli.session_id}", file=sys.stderr)
-                    
-                    # Ensure proper exit code for automation wrappers
-                    sys.exit(1 if isinstance(result, dict) and result.get("failed") else 0)
+
+                    if use_stream_json:
+                        exit_code = emitter.emit_result(
+                            result,
+                            session_id=cli.session_id or "",
+                        )
+                        sys.exit(exit_code)
+                    else:
+                        response = result.get("final_response", "") if isinstance(result, dict) else str(result)
+                        if response:
+                            print(response)
+                        # Session ID goes to stderr so piped stdout is clean.
+                        print(f"\nsession_id: {cli.session_id}", file=sys.stderr)
+                        
+                        # Ensure proper exit code for automation wrappers
+                        sys.exit(1 if isinstance(result, dict) and result.get("failed") else 0)
             
             # Exit with error code if credentials or agent init fails
             sys.exit(1)

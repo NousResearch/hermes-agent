@@ -1123,6 +1123,7 @@ def cmd_chat(args):
         "checkpoints": getattr(args, "checkpoints", False),
         "pass_session_id": getattr(args, "pass_session_id", False),
         "max_turns": getattr(args, "max_turns", None),
+        "output_format": getattr(args, "output_format", "text"),
     }
     # Filter out None values
     kwargs = {k: v for k, v in kwargs.items() if v is not None}
@@ -6443,6 +6444,13 @@ For more help on a command:
         "--quiet",
         action="store_true",
         help="Quiet mode for programmatic use: suppress banner, spinner, and tool previews. Only output the final response and session info.",
+    )
+    chat_parser.add_argument(
+        "--format",
+        choices=["text", "stream-json"],
+        default="text",
+        dest="output_format",
+        help="Output format for single-query mode (-q). 'text' prints the final response as plain text (default). 'stream-json' emits newline-delimited JSON events (JSONL) with tool calls, token usage, and a final result envelope — suitable for CI pipelines and agent orchestrators.",
     )
     chat_parser.add_argument(
         "--resume",

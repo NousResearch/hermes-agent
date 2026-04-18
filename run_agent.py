@@ -5735,9 +5735,26 @@ class AIAgent:
                             entry["id"] = tc_delta.id
                         if tc_delta.function:
                             if tc_delta.function.name:
-                                entry["function"]["name"] += tc_delta.function.name
+                                entry["function"]["name"] = tc_delta.function.name
                             if tc_delta.function.arguments:
-                                entry["function"]["arguments"] += tc_delta.function.arguments
+                                # Smart accumulation: non-incremental backends (e.g.
+                                # codex-lb) send the complete JSON in every chunk.
+                                # Naively appending produces invalid JSON like
+                                # '{"task":"x"}{"task":"x"}'. If the new candidate
+                                # parses cleanly, use it. If it fails with "Extra
+                                # data", the previous accumulated value was already
+                                # complete and the new chunk is a duplicate — replace
+                                # it. Otherwise it's a normal partial fragment and we
+                                # keep accumulating.
+                                _new_args = entry["function"]["arguments"] + tc_delta.function.arguments
+                                try:
+                                    json.loads(_new_args)
+                                    entry["function"]["arguments"] = _new_args
+                                except json.JSONDecodeError as _e:
+                                    if "Extra data" in str(_e):
+                                        entry["function"]["arguments"] = tc_delta.function.arguments
+                                    else:
+                                        entry["function"]["arguments"] = _new_args
                         extra = getattr(tc_delta, "extra_content", None)
                         if extra is None and hasattr(tc_delta, "model_extra"):
                             extra = (tc_delta.model_extra or {}).get("extra_content")

@@ -1344,6 +1344,79 @@ class BasePlatformAdapter(ABC):
             return True
         return self._active_session_age_seconds(session_key) >= self._smart_busy_interrupt_grace_seconds(event)
 
+    @staticmethod
+    def _merge_text_event_metadata(
+        existing_metadata: Optional[Dict[str, Any]],
+        incoming_metadata: Optional[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        """Merge queued text-event metadata without downgrading explicit reply state."""
+
+        existing = dict(existing_metadata or {})
+        incoming = dict(incoming_metadata or {})
+        if not existing and not incoming:
+            return None
+
+        merged = dict(existing)
+        merged.update(incoming)
+
+        from gateway.group_runtime import build_group_message_metadata
+
+        group_policy_mode = (
+            incoming.get("group_policy_mode")
+            if "group_policy_mode" in incoming
+            else existing.get("group_policy_mode")
+        )
+        allow_model_dispatch = (
+            incoming.get("allow_model_dispatch")
+            if "allow_model_dispatch" in incoming
+            else existing.get("allow_model_dispatch")
+        )
+        trigger_reason = str(
+            incoming.get("group_trigger_reason")
+            or existing.get("group_trigger_reason")
+            or ""
+        ).strip()
+        explicit_reason = str(
+            incoming.get("address_reason")
+            or incoming.get("explicit_group_trigger_reason")
+            or existing.get("address_reason")
+            or existing.get("explicit_group_trigger_reason")
+            or ""
+        ).strip()
+
+        group_metadata = build_group_message_metadata(
+            trigger_reason=trigger_reason or None,
+            explicit_reason=explicit_reason or None,
+            group_policy_mode=group_policy_mode,
+            allow_model_dispatch=allow_model_dispatch
+            if isinstance(allow_model_dispatch, bool)
+            else None,
+        )
+        if group_metadata:
+            merged.update(group_metadata)
+        return merged or None
+
+    @staticmethod
+    def _merge_text_pending_event(existing: MessageEvent, incoming: MessageEvent) -> None:
+        """Merge queued text events while preserving the strongest reply context."""
+
+        existing.metadata = BasePlatformAdapter._merge_text_event_metadata(
+            existing.metadata,
+            incoming.metadata,
+        )
+        if incoming.raw_message is not None:
+            existing.raw_message = incoming.raw_message
+        if incoming.message_id:
+            existing.message_id = incoming.message_id
+        if incoming.reply_to_message_id:
+            existing.reply_to_message_id = incoming.reply_to_message_id
+        if incoming.reply_to_text:
+            existing.reply_to_text = incoming.reply_to_text
+        if incoming.auto_skill:
+            existing.auto_skill = incoming.auto_skill
+        if getattr(incoming, "timestamp", None) is not None:
+            existing.timestamp = incoming.timestamp
+
     def queue_message(self, session_key: str, event: MessageEvent) -> None:
         """Queue or merge a follow-up message for processing after the current run."""
         existing = self._pending_messages.get(session_key)
@@ -1367,6 +1440,7 @@ class BasePlatformAdapter(ABC):
                 return
             existing_text = (existing.text or "").strip()
             existing.text = f"{existing_text}\n{new_text}".strip() if existing_text else new_text
+            self._merge_text_pending_event(existing, event)
             return
 
         self._pending_messages[session_key] = event

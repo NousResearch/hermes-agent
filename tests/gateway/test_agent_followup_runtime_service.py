@@ -74,7 +74,16 @@ def test_queue_gateway_pending_followup_for_later_builds_text_event():
         chat_id="12345",
         chat_type="dm",
     )
-    pending_event = SimpleNamespace(message_id="pending-1")
+    pending_event = SimpleNamespace(
+        message_id="pending-1",
+        raw_message={"source": "pending"},
+        metadata={"explicit_addressed": True, "address_reason": "bot_mention"},
+        reply_to_message_id="bot-msg-1",
+        reply_to_text="上一条",
+        media_urls=["/tmp/test.png"],
+        media_sources=["/tmp/test.png"],
+        media_types=["image/png"],
+    )
     fallback_event = SimpleNamespace(message_id="fallback-1")
 
     queue_gateway_pending_followup_for_later(
@@ -89,6 +98,11 @@ def test_queue_gateway_pending_followup_for_later_builds_text_event():
     assert queued["session_key"] == "session-1"
     assert queued["event"].text == "后面继续"
     assert queued["event"].message_id == "pending-1"
+    assert queued["event"].raw_message == {"source": "pending"}
+    assert queued["event"].metadata["explicit_addressed"] is True
+    assert queued["event"].reply_to_message_id == "bot-msg-1"
+    assert queued["event"].reply_to_text == "上一条"
+    assert queued["event"].media_urls == ["/tmp/test.png"]
 
 
 @pytest.mark.asyncio
@@ -102,6 +116,8 @@ async def test_deliver_gateway_first_response_before_followup_skips_streamed_or_
         pending_event=None,
         fallback_event=None,
         stream_consumer=SimpleNamespace(already_sent=False),
+        history_len=0,
+        empty_response_fallback=lambda _kind: None,
         logger=MagicMock(),
     )
     await deliver_gateway_first_response_before_followup(
@@ -111,6 +127,8 @@ async def test_deliver_gateway_first_response_before_followup_skips_streamed_or_
         pending_event=None,
         fallback_event=None,
         stream_consumer=SimpleNamespace(already_sent=True),
+        history_len=0,
+        empty_response_fallback=lambda _kind: None,
         logger=MagicMock(),
     )
 
@@ -119,7 +137,10 @@ async def test_deliver_gateway_first_response_before_followup_skips_streamed_or_
 
 @pytest.mark.asyncio
 async def test_deliver_gateway_first_response_before_followup_sends_visible_text():
-    adapter = SimpleNamespace(send=AsyncMock())
+    adapter = SimpleNamespace(
+        send=AsyncMock(return_value=SimpleNamespace(success=True, message_id="sent-1")),
+        _record_successful_response_context=MagicMock(),
+    )
     pending_event = SimpleNamespace(metadata={"thread_id": "7"})
 
     await deliver_gateway_first_response_before_followup(
@@ -129,6 +150,8 @@ async def test_deliver_gateway_first_response_before_followup_sends_visible_text
         pending_event=pending_event,
         fallback_event=None,
         stream_consumer=SimpleNamespace(already_sent=False),
+        history_len=0,
+        empty_response_fallback=lambda _kind: None,
         logger=MagicMock(),
     )
 
@@ -137,6 +160,39 @@ async def test_deliver_gateway_first_response_before_followup_sends_visible_text
         "先回这条",
         metadata={"thread_id": "7"},
     )
+    adapter._record_successful_response_context.assert_called_once_with(
+        pending_event,
+        ["sent-1"],
+    )
+
+
+@pytest.mark.asyncio
+async def test_deliver_gateway_first_response_before_followup_uses_empty_fallback_without_reopening_context():
+    fallback_event = SimpleNamespace(metadata={"explicit_addressed": True})
+    adapter = SimpleNamespace(
+        send=AsyncMock(return_value=SimpleNamespace(success=True, message_id="sent-1")),
+        _record_successful_response_context=MagicMock(),
+    )
+
+    await deliver_gateway_first_response_before_followup(
+        result={"interrupted": False, "final_response": "(empty)", "suppress_reply": False},
+        adapter=adapter,
+        chat_id="12345",
+        pending_event=None,
+        fallback_event=fallback_event,
+        stream_consumer=SimpleNamespace(already_sent=False),
+        history_len=0,
+        empty_response_fallback=lambda kind: "我在，你继续说。" if kind == "empty" else None,
+        logger=MagicMock(),
+    )
+
+    adapter.send.assert_awaited_once_with(
+        "12345",
+        "我在，你继续说。",
+        metadata={"explicit_addressed": True, "skip_successful_response_context": True},
+    )
+    adapter._record_successful_response_context.assert_not_called()
+    assert fallback_event.metadata["skip_successful_response_context"] is True
 
 
 @pytest.mark.asyncio
@@ -155,6 +211,7 @@ async def test_process_gateway_pending_followup_returns_none_when_nothing_pendin
         stream_consumer=None,
         history=[],
         current_response_fallback={"final_response": "fallback", "messages": []},
+        empty_response_fallback=lambda _kind: None,
         recurse_followup=AsyncMock(),
     )
 
@@ -195,6 +252,7 @@ async def test_process_gateway_pending_followup_queues_when_depth_cap_reached(mo
         stream_consumer=None,
         history=[{"role": "user", "content": "hi"}],
         current_response_fallback={"final_response": "fallback", "messages": []},
+        empty_response_fallback=lambda _kind: None,
         recurse_followup=recurse_mock,
     )
 
@@ -239,6 +297,7 @@ async def test_process_gateway_pending_followup_delivers_and_recurses(monkeypatc
         stream_consumer=SimpleNamespace(already_sent=False),
         history=[{"role": "user", "content": "hi"}],
         current_response_fallback={"final_response": "fallback", "messages": []},
+        empty_response_fallback=lambda _kind: None,
         recurse_followup=recurse_mock,
     )
 

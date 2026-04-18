@@ -1080,6 +1080,73 @@ async def test_project_group_batch_is_dropped_if_group_switches_to_collect_only_
 
 
 @pytest.mark.asyncio
+async def test_project_group_batch_preserves_explicit_trigger_metadata_from_omitted_message():
+    from gateway.platforms.qq_napcat import QqNapCatAdapter, _BufferedGroupMessage
+
+    adapter = QqNapCatAdapter(
+        PlatformConfig(
+            enabled=True,
+            extra={
+                "ws_url": "ws://127.0.0.1:3001",
+                "allow_all_groups": True,
+                "require_mention": False,
+                "project_group_mode": True,
+                "group_batch_max_messages": 2,
+            },
+        )
+    )
+
+    payloads = [
+        _group_payload(
+            message_id=30201,
+            user_id=179033731,
+            text="@马嘎 看下这个",
+            nickname="發發發",
+            card="發發發",
+            segments=[
+                {"type": "at", "data": {"qq": "999001", "name": "马嘎"}},
+                {"type": "text", "data": {"text": " 看下这个"}},
+            ],
+        ),
+        _group_payload(
+            message_id=30202,
+            user_id=30002,
+            text="我补一句上下文",
+            nickname="同事A",
+            card="同事A",
+        ),
+        _group_payload(
+            message_id=30203,
+            user_id=30003,
+            text="再补一句结果",
+            nickname="同事B",
+            card="同事B",
+        ),
+    ]
+    batch = []
+    for index, payload in enumerate(payloads, start=1):
+        event = adapter._build_message_event(payload)
+        event.text = adapter._clean_bot_mention_text(event.text, payload)
+        batch.append(
+            _BufferedGroupMessage(
+                event=event,
+                payload=payload,
+                observed_at=float(index),
+            )
+        )
+
+    merged = await adapter._build_group_batch_event("987654321", batch)
+
+    assert "@马嘎" not in merged.text
+    assert "省略 1 条更早消息" in merged.text
+    assert merged.metadata["group_trigger_reason"] == "require_mention_disabled"
+    assert merged.metadata["explicit_group_trigger"] is True
+    assert merged.metadata["explicit_group_trigger_reason"] == "bot_mention"
+    assert merged.metadata["explicit_addressed"] is True
+    assert merged.metadata["requires_reply"] is True
+
+
+@pytest.mark.asyncio
 async def test_active_intel_overlay_effective_policy_exposes_report_targets():
     from gateway.platforms.qq_napcat import QqNapCatAdapter
     from gateway.qq_intel_assignments import hire_intel_worker

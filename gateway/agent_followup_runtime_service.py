@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
+from gateway.agent_response_runtime_service import normalize_gateway_agent_response
+
 
 @dataclass(slots=True)
 class GatewayPendingFollowup:
@@ -30,6 +32,7 @@ async def process_gateway_pending_followup(
     stream_consumer: Any,
     history: list[dict[str, Any]] | None,
     current_response_fallback: dict[str, Any],
+    empty_response_fallback: Callable[[str], str | None],
     recurse_followup: Callable[[GatewayPendingFollowup, list[dict[str, Any]] | None], Awaitable[dict[str, Any]]],
 ) -> dict[str, Any] | None:
     """Process any queued follow-up after a foreground turn completes."""
@@ -73,6 +76,8 @@ async def process_gateway_pending_followup(
         pending_event=pending_followup.event,
         fallback_event=fallback_event,
         stream_consumer=stream_consumer,
+        history_len=len(history or []),
+        empty_response_fallback=empty_response_fallback,
         logger=logger,
     )
     updated_history = result.get("messages", history) if result else history
@@ -166,15 +171,42 @@ def queue_gateway_pending_followup_for_later(
 
     from gateway.platforms.base import MessageEvent, MessageType
 
+    seed_event = pending_event or fallback_event
+    event_kwargs: dict[str, Any] = {
+        "text": pending_text,
+        "message_type": MessageType.TEXT,
+        "source": source,
+        "raw_message": getattr(seed_event, "raw_message", None),
+        "message_id": getattr(pending_event, "message_id", None)
+        or getattr(fallback_event, "message_id", None),
+        "metadata": dict(getattr(seed_event, "metadata", None) or {}) or None,
+        "reply_to_message_id": getattr(seed_event, "reply_to_message_id", None),
+        "reply_to_text": getattr(seed_event, "reply_to_text", None),
+        "auto_skill": getattr(seed_event, "auto_skill", None),
+    }
+
+    attachments = []
+    if seed_event is not None:
+        if hasattr(seed_event, "ensure_attachments"):
+            try:
+                attachments = list(seed_event.ensure_attachments() or [])
+            except Exception:
+                attachments = list(getattr(seed_event, "attachments", None) or [])
+        else:
+            attachments = list(getattr(seed_event, "attachments", None) or [])
+    if attachments:
+        event_kwargs["attachments"] = attachments
+    else:
+        event_kwargs["media_urls"] = list(getattr(seed_event, "media_urls", None) or [])
+        event_kwargs["media_sources"] = list(getattr(seed_event, "media_sources", None) or [])
+        event_kwargs["media_types"] = list(getattr(seed_event, "media_types", None) or [])
+    timestamp = getattr(seed_event, "timestamp", None)
+    if timestamp is not None:
+        event_kwargs["timestamp"] = timestamp
+
     adapter.queue_message(
         session_key,
-        MessageEvent(
-            text=pending_text,
-            message_type=MessageType.TEXT,
-            source=source,
-            message_id=getattr(pending_event, "message_id", None)
-            or getattr(fallback_event, "message_id", None),
-        ),
+        MessageEvent(**event_kwargs),
     )
 
 
@@ -186,6 +218,8 @@ async def deliver_gateway_first_response_before_followup(
     pending_event: Any | None,
     fallback_event: Any | None,
     stream_consumer: Any,
+    history_len: int,
+    empty_response_fallback: Callable[[str], str | None],
     logger: Any,
 ) -> None:
     """Send the first response before a queued non-interrupt follow-up is processed."""
@@ -193,20 +227,44 @@ async def deliver_gateway_first_response_before_followup(
     if not result or result.get("interrupted") or not adapter:
         return
 
+    normalized_response = normalize_gateway_agent_response(
+        agent_result=result,
+        history_len=history_len,
+        empty_response_fallback=empty_response_fallback,
+    )
     already_streamed = bool(stream_consumer and getattr(stream_consumer, "already_sent", False))
-    first_response = str(result.get("final_response", "") or "")
-    suppress_first_response = bool(result.get("suppress_reply"))
-    if first_response and first_response.strip() == "[[NO_REPLY]]":
-        suppress_first_response = True
-        first_response = ""
+    first_response = str(normalized_response.response or "")
+    suppress_first_response = bool(normalized_response.suppress_reply)
+    response_event = fallback_event or pending_event
+    if normalized_response.synthetic_fallback and response_event is not None:
+        metadata = dict(getattr(response_event, "metadata", None) or {})
+        metadata["skip_successful_response_context"] = True
+        response_event.metadata = metadata
     if first_response and not already_streamed and not suppress_first_response:
         try:
-            await adapter.send(
+            send_result = await adapter.send(
                 chat_id,
                 first_response,
-                metadata=getattr(pending_event, "metadata", None)
-                or getattr(fallback_event, "metadata", None),
+                metadata=getattr(fallback_event, "metadata", None)
+                or getattr(pending_event, "metadata", None),
             )
+            sent_message_id = str(getattr(send_result, "message_id", "") or "").strip()
+            if (
+                sent_message_id
+                and response_event is not None
+                and not normalized_response.synthetic_fallback
+                and hasattr(adapter, "_record_successful_response_context")
+            ):
+                try:
+                    adapter._record_successful_response_context(
+                        response_event,
+                        [sent_message_id],
+                    )
+                except Exception:
+                    logger.debug(
+                        "Failed to record successful-response context for pre-followup send",
+                        exc_info=True,
+                    )
         except Exception as exc:
             logger.warning(
                 "Failed to send first response before queued message: %s",

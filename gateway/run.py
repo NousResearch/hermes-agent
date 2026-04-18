@@ -6615,6 +6615,14 @@ class GatewayRunner:
                     "final_response": response,
                     "messages": history,
                 },
+                empty_response_fallback=lambda empty_kind: _empty_response_fallback(
+                    source,
+                    message,
+                    empty_kind=empty_kind,
+                    is_admin_user=bool(is_admin_user),
+                    raw_message=raw_message,
+                    event=event,
+                ),
                 recurse_followup=_continue_pending_followup,
             )
             if followup_result is not None:

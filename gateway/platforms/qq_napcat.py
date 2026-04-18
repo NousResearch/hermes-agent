@@ -1203,6 +1203,23 @@ class QqNapCatAdapter(BasePlatformAdapter):
         latest = selected[-1]
         latest_user_id = str(latest.event.source.user_id or "").strip()
         latest_is_admin = bool(latest_user_id and latest_user_id in self._admin_users)
+        batch_trigger_reason = ""
+        batch_explicit_reason = ""
+        for item in batch:
+            item_metadata = getattr(item.event, "metadata", None) or {}
+            item_trigger_reason = str(item_metadata.get("group_trigger_reason") or "").strip()
+            item_explicit_reason = str(
+                item_metadata.get("address_reason")
+                or item_metadata.get("explicit_group_trigger_reason")
+                or ""
+            ).strip()
+            if item_explicit_reason:
+                batch_trigger_reason = item_trigger_reason or item_explicit_reason
+                batch_explicit_reason = item_explicit_reason
+                break
+            if item_trigger_reason and not batch_trigger_reason:
+                batch_trigger_reason = item_trigger_reason
+
         merged_lines = [f"[QQ项目群合并消息，共 {len(batch)} 条]"]
         if omitted_count > 0:
             merged_lines.append(f"[已截取最近 {len(selected)} 条，省略 {omitted_count} 条更早消息]")
@@ -1221,6 +1238,14 @@ class QqNapCatAdapter(BasePlatformAdapter):
             speaker = str(item.event.source.user_name or item.event.source.user_id or "unknown").strip()
             merged_lines.append(f"{speaker}: {self._describe_group_message(item)}")
 
+        merged_metadata = dict(getattr(latest.event, "metadata", None) or {})
+        trigger_metadata = build_group_message_metadata(
+            trigger_reason=batch_trigger_reason or None,
+            explicit_reason=batch_explicit_reason or None,
+        )
+        if trigger_metadata:
+            merged_metadata.update(trigger_metadata)
+
         return MessageEvent(
             text="\n".join(line for line in merged_lines if line),
             message_type=MessageType.TEXT,
@@ -1233,6 +1258,7 @@ class QqNapCatAdapter(BasePlatformAdapter):
                 "latest_is_admin": latest_is_admin,
             },
             message_id=latest.event.message_id,
+            metadata=merged_metadata or None,
             attachments=merged_attachments,
             reply_to_message_id=latest.event.reply_to_message_id,
             timestamp=latest.event.timestamp,

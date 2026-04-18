@@ -127,6 +127,80 @@ class TestBaseAdapterBusyInputMode:
         assert interrupt_event.is_set() is False
 
     @pytest.mark.asyncio
+    async def test_queue_mode_merges_text_messages_upgrading_to_explicit_reply_metadata(self):
+        adapter = _StubQqAdapter(busy_input_mode="queue")
+        adapter.set_message_handler(lambda event: asyncio.sleep(0, result=None))
+
+        first = _make_qq_event("先记一条", chat_type="group", chat_id="685403987")
+        first.metadata = {
+            "group_trigger_reason": "require_mention_disabled",
+            "explicit_group_trigger": False,
+            "explicit_addressed": False,
+            "requires_reply": False,
+        }
+        second = _make_qq_event("@马嘎 接着处理", chat_type="group", chat_id="685403987")
+        second.message_id = "qq-m2"
+        second.raw_message = {"id": "latest"}
+        second.reply_to_message_id = "bot-msg-7"
+        second.metadata = {
+            "group_trigger_reason": "require_mention_disabled",
+            "explicit_group_trigger": True,
+            "explicit_group_trigger_reason": "bot_mention",
+            "explicit_addressed": True,
+            "address_reason": "bot_mention",
+            "requires_reply": True,
+        }
+
+        session_key = build_session_key(first.source)
+        adapter._active_sessions[session_key] = asyncio.Event()
+
+        await adapter.handle_message(first)
+        await adapter.handle_message(second)
+
+        queued = adapter._pending_messages[session_key]
+        assert queued.text == "先记一条\n@马嘎 接着处理"
+        assert queued.message_id == "qq-m2"
+        assert queued.raw_message == {"id": "latest"}
+        assert queued.reply_to_message_id == "bot-msg-7"
+        assert queued.metadata["explicit_addressed"] is True
+        assert queued.metadata["requires_reply"] is True
+        assert queued.metadata["explicit_group_trigger_reason"] == "bot_mention"
+
+    @pytest.mark.asyncio
+    async def test_queue_mode_merges_text_messages_without_downgrading_explicit_reply_metadata(self):
+        adapter = _StubQqAdapter(busy_input_mode="queue")
+        adapter.set_message_handler(lambda event: asyncio.sleep(0, result=None))
+
+        first = _make_qq_event("@马嘎 先看这个", chat_type="group", chat_id="685403987")
+        first.metadata = {
+            "group_trigger_reason": "require_mention_disabled",
+            "explicit_group_trigger": True,
+            "explicit_group_trigger_reason": "bot_mention",
+            "explicit_addressed": True,
+            "address_reason": "bot_mention",
+            "requires_reply": True,
+        }
+        second = _make_qq_event("补充一句背景", chat_type="group", chat_id="685403987")
+        second.metadata = {
+            "group_trigger_reason": "require_mention_disabled",
+            "explicit_group_trigger": False,
+            "explicit_addressed": False,
+            "requires_reply": False,
+        }
+
+        session_key = build_session_key(first.source)
+        adapter._active_sessions[session_key] = asyncio.Event()
+
+        await adapter.handle_message(first)
+        await adapter.handle_message(second)
+
+        queued = adapter._pending_messages[session_key]
+        assert queued.text == "@马嘎 先看这个\n补充一句背景"
+        assert queued.metadata["explicit_addressed"] is True
+        assert queued.metadata["requires_reply"] is True
+        assert queued.metadata["address_reason"] == "bot_mention"
+
+    @pytest.mark.asyncio
     async def test_smart_mode_queues_recent_dm_followup_without_interrupt(self):
         adapter = _StubAdapter(busy_input_mode="smart")
         adapter.set_message_handler(lambda event: asyncio.sleep(0, result=None))

@@ -16,6 +16,10 @@ from gateway.direct_shortcut_runtime_service import (
     get_direct_control_router,
     try_handle_direct_gateway_shortcuts,
 )
+from gateway.group_runtime_platform_specs import (
+    GroupArchiveRuntimePlatformSpec,
+    GroupMonitoringRuntimePlatformSpec,
+)
 from gateway.platforms.base import MessageEvent, MessageType
 from gateway.runtime_status_service import build_runtime_status_summary
 from gateway.runtime_shortcuts_service import try_handle_background_job_status_shortcut
@@ -2005,15 +2009,25 @@ async def test_status_command_includes_runtime_model_and_collect_only_monitoring
     )
 
     with patch(
-        "gateway.run.list_intel_workers",
+        "gateway.run.build_group_monitoring_runtime_platform_specs",
         return_value=[
-            {
-                "worker_name": "钢镚",
-                "status": "active_collecting",
-                "target_group_id": "726109087",
-                "target_group_name": "项目群",
-                "daily_report_enabled": True,
-            }
+            GroupMonitoringRuntimePlatformSpec(
+                platform="qq_napcat",
+                load_summary=lambda: {
+                    "active_worker_count": 1,
+                    "groups": [
+                        {
+                            "platform": "qq_napcat",
+                            "platform_label": "QQ 群",
+                            "group_id": "726109087",
+                            "chat_id": "726109087",
+                            "group_name": "项目群",
+                            "effective_mode": "collect_only",
+                            "worker_names": ["钢镚"],
+                        }
+                    ],
+                },
+            )
         ],
     ), patch(
         "gateway.run._resolve_gateway_model",
@@ -2110,17 +2124,18 @@ def test_runtime_status_summary_includes_foreground_background_vision_and_archiv
     runner._auto_vision_unhealthy_reason = "timeout"
 
     with patch(
-        "gateway.run.QqGroupArchiveStore",
-        return_value=MagicMock(
-            get_runtime_stats=MagicMock(
-                return_value={
+        "gateway.run.build_group_archive_runtime_platform_specs",
+        return_value=[
+            GroupArchiveRuntimePlatformSpec(
+                platform="qq_napcat",
+                load_runtime_stats=lambda: {
                     "raw_message_count": 42,
                     "raw_group_count": 2,
                     "due_rollup_count": 1,
                     "report_count": 5,
-                }
+                },
             )
-        ),
+        ],
     ), patch(
         "gateway.run._resolve_gateway_model",
         return_value="gpt-5.4",
@@ -2128,16 +2143,24 @@ def test_runtime_status_summary_includes_foreground_background_vision_and_archiv
         "gateway.run._resolve_runtime_agent_kwargs",
         return_value={"provider": "custom"},
     ), patch(
-        "gateway.run.list_group_policies",
+        "gateway.run.build_group_monitoring_runtime_platform_specs",
         return_value=[
-            {"group_id": "726109087", "mode": "collect_only"},
-            {"group_id": "999999999", "mode": "default"},
-        ],
-    ), patch(
-        "gateway.run.list_intel_workers",
-        return_value=[
-            {"worker_name": "钢镚", "status": "active_collecting"},
-            {"worker_name": "铁柱", "status": "paused"},
+            GroupMonitoringRuntimePlatformSpec(
+                platform="qq_napcat",
+                load_summary=lambda: {
+                    "active_worker_count": 1,
+                    "groups": [
+                        {
+                            "platform": "qq_napcat",
+                            "platform_label": "QQ 群",
+                            "group_id": "726109087",
+                            "chat_id": "726109087",
+                            "group_name": "726109087",
+                            "worker_names": ["钢镚"],
+                        }
+                    ],
+                },
+            )
         ],
     ):
         summary = build_runtime_status_summary(runner)
@@ -2195,15 +2218,24 @@ def test_runtime_status_summary_includes_model_fallback_approvals_and_collect_on
     )
 
     with patch(
-        "gateway.run.list_intel_workers",
+        "gateway.run.build_group_monitoring_runtime_platform_specs",
         return_value=[
-            {
-                "worker_name": "钢镚",
-                "status": "active_collecting",
-                "target_group_id": "726109087",
-                "target_group_name": "项目群",
-                "daily_report_enabled": True,
-            }
+            GroupMonitoringRuntimePlatformSpec(
+                platform="qq_napcat",
+                load_summary=lambda: {
+                    "active_worker_count": 1,
+                    "groups": [
+                        {
+                            "platform": "qq_napcat",
+                            "platform_label": "QQ 群",
+                            "group_id": "726109087",
+                            "chat_id": "726109087",
+                            "group_name": "项目群",
+                            "worker_names": ["钢镚"],
+                        }
+                    ],
+                },
+            )
         ],
     ), patch(
         "gateway.run._resolve_gateway_model",

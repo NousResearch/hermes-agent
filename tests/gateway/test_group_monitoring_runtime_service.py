@@ -1,4 +1,5 @@
 from gateway.group_monitoring_runtime_service import build_group_monitoring_summary
+from gateway.group_runtime_platform_specs import GroupMonitoringRuntimePlatformSpec
 
 
 def test_build_group_monitoring_summary_merges_qq_and_weixin_collect_only_groups():
@@ -52,3 +53,45 @@ def test_build_group_monitoring_summary_merges_qq_and_weixin_collect_only_groups
     assert summary["groups"][1]["chat_id"] == "wx-group-1"
     assert summary["groups"][1]["platform_label"] == "微信群"
     assert summary["groups"][1]["can_reply_in_group"] is False
+
+
+def test_build_group_monitoring_summary_accepts_platform_specs():
+    summary = build_group_monitoring_summary(
+        platform_specs=[
+            GroupMonitoringRuntimePlatformSpec(
+                platform="qq_napcat",
+                load_summary=lambda: {
+                    "active_worker_count": 2,
+                    "groups": [
+                        {
+                            "platform": "qq_napcat",
+                            "platform_label": "QQ 群",
+                            "group_id": "726109087",
+                            "group_name": "项目群",
+                            "worker_names": ["钢镚"],
+                        }
+                    ],
+                },
+            ),
+            GroupMonitoringRuntimePlatformSpec(
+                platform="weixin",
+                load_summary=lambda: {
+                    "active_worker_count": 0,
+                    "groups": [
+                        {
+                            "platform_label": "微信群",
+                            "chat_id": "wx-group-1",
+                            "group_name": "微信群项目组",
+                            "worker_names": [],
+                        }
+                    ],
+                },
+            ),
+        ]
+    )
+
+    assert summary["active_collect_only_groups"] == 2
+    assert summary["active_worker_count"] == 2
+    assert summary["platform_counts"] == {"qq_napcat": 1, "weixin": 1}
+    assert summary["platform_active_worker_counts"] == {"qq_napcat": 2, "weixin": 0}
+    assert summary["groups"][1]["platform"] == "weixin"

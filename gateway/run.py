@@ -281,6 +281,10 @@ from gateway.runtime_shortcuts_service import (
 from gateway.group_archive_runtime_service import (
     build_group_archive_runtime_summary as shared_build_group_archive_runtime_summary,
 )
+from gateway.group_runtime_platform_specs import (
+    build_group_archive_runtime_platform_specs,
+    build_group_monitoring_runtime_platform_specs,
+)
 from gateway.direct_shortcut_trace_runtime_service import (
     build_direct_shortcut_runtime_summary as shared_build_direct_shortcut_runtime_summary,
 )
@@ -317,11 +321,6 @@ from gateway.group_target_intents import (
     extract_qq_group_target,
     extract_weixin_group_target,
 )
-from gateway.qq_group_archive import QqGroupArchiveStore
-from gateway.qq_group_policies import list_group_policies
-from gateway.qq_intel_assignments import list_intel_workers
-from gateway.weixin_group_archive import WeixinGroupArchiveStore
-from gateway.weixin_group_policies import list_group_policies as list_weixin_group_policies
 from gateway.qq_intents import (
     _QQ_BACKGROUND_STATUS_QUERY_TERMS,
     _QQ_GROUP_REQUEST_HINT_TERMS,
@@ -2699,16 +2698,12 @@ class GatewayRunner:
 
     def _build_runtime_group_monitoring_summary(self) -> dict[str, Any]:
         return shared_build_group_monitoring_summary(
-            list_qq_group_policies_fn=list_group_policies,
-            list_qq_intel_workers_fn=list_intel_workers,
-            list_weixin_group_policies_fn=list_weixin_group_policies,
-            describe_weixin_group_reporting_fn=WeixinGroupArchiveStore().describe_group_reporting,
+            platform_specs=build_group_monitoring_runtime_platform_specs(),
         )
 
     def _build_runtime_group_archive_summary(self) -> dict[str, Any]:
         return shared_build_group_archive_runtime_summary(
-            load_qq_archive_stats_fn=QqGroupArchiveStore().get_runtime_stats,
-            load_weixin_archive_stats_fn=WeixinGroupArchiveStore().get_runtime_stats,
+            platform_specs=build_group_archive_runtime_platform_specs(),
         )
 
     def _build_runtime_direct_shortcut_summary(self) -> dict[str, Any]:

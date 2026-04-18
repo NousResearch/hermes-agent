@@ -5,14 +5,13 @@ from __future__ import annotations
 import logging
 from typing import Any, Callable
 
-from gateway.qq_group_archive import QqGroupArchiveStore
-from gateway.weixin_group_archive import WeixinGroupArchiveStore
+from gateway.group_runtime_platform_specs import (
+    GroupArchiveRuntimePlatformSpec,
+    build_group_archive_runtime_platform_specs,
+)
 
 
 logger = logging.getLogger(__name__)
-
-QQ_PLATFORM = "qq_napcat"
-WEIXIN_PLATFORM = "weixin"
 
 
 def _normalize_platform_archive_stats(stats: dict[str, Any] | None, *, platform: str) -> dict[str, Any]:
@@ -47,34 +46,33 @@ def _choose_newest(*values: Any) -> str | None:
 
 def build_group_archive_runtime_summary(
     *,
+    platform_specs: list[GroupArchiveRuntimePlatformSpec] | None = None,
     load_qq_archive_stats_fn: Callable[[], dict[str, Any]] | None = None,
     load_weixin_archive_stats_fn: Callable[[], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    load_qq_archive_stats_fn = load_qq_archive_stats_fn or QqGroupArchiveStore().get_runtime_stats
-    load_weixin_archive_stats_fn = load_weixin_archive_stats_fn or WeixinGroupArchiveStore().get_runtime_stats
+    if platform_specs is None:
+        platform_specs = build_group_archive_runtime_platform_specs(
+            load_qq_archive_stats_fn=load_qq_archive_stats_fn,
+            load_weixin_archive_stats_fn=load_weixin_archive_stats_fn,
+        )
 
-    try:
-        qq_stats = _normalize_platform_archive_stats(load_qq_archive_stats_fn(), platform=QQ_PLATFORM)
-    except Exception as exc:
-        logger.debug("Failed to load QQ archive runtime stats: %s", exc)
-        qq_stats = _normalize_platform_archive_stats({}, platform=QQ_PLATFORM)
+    platform_stats: dict[str, dict[str, Any]] = {}
+    for spec in platform_specs or []:
+        try:
+            stats = _normalize_platform_archive_stats(spec.load_runtime_stats(), platform=spec.platform)
+        except Exception as exc:
+            logger.debug("Failed to load %s archive runtime stats: %s", spec.platform, exc)
+            stats = _normalize_platform_archive_stats({}, platform=spec.platform)
+        platform_stats[spec.platform] = stats
 
-    try:
-        weixin_stats = _normalize_platform_archive_stats(load_weixin_archive_stats_fn(), platform=WEIXIN_PLATFORM)
-    except Exception as exc:
-        logger.debug("Failed to load Weixin archive runtime stats: %s", exc)
-        weixin_stats = _normalize_platform_archive_stats({}, platform=WEIXIN_PLATFORM)
-
+    all_stats = list(platform_stats.values())
     return {
-        "raw_message_count": qq_stats["raw_message_count"] + weixin_stats["raw_message_count"],
-        "raw_scope_count": qq_stats["raw_scope_count"] + weixin_stats["raw_scope_count"],
-        "due_rollup_count": qq_stats["due_rollup_count"] + weixin_stats["due_rollup_count"],
-        "due_scope_count": qq_stats["due_scope_count"] + weixin_stats["due_scope_count"],
-        "report_count": qq_stats["report_count"] + weixin_stats["report_count"],
-        "oldest_raw_date": _choose_oldest(qq_stats["oldest_raw_date"], weixin_stats["oldest_raw_date"]),
-        "newest_raw_date": _choose_newest(qq_stats["newest_raw_date"], weixin_stats["newest_raw_date"]),
-        "platforms": {
-            QQ_PLATFORM: qq_stats,
-            WEIXIN_PLATFORM: weixin_stats,
-        },
+        "raw_message_count": sum(item["raw_message_count"] for item in all_stats),
+        "raw_scope_count": sum(item["raw_scope_count"] for item in all_stats),
+        "due_rollup_count": sum(item["due_rollup_count"] for item in all_stats),
+        "due_scope_count": sum(item["due_scope_count"] for item in all_stats),
+        "report_count": sum(item["report_count"] for item in all_stats),
+        "oldest_raw_date": _choose_oldest(*(item["oldest_raw_date"] for item in all_stats)),
+        "newest_raw_date": _choose_newest(*(item["newest_raw_date"] for item in all_stats)),
+        "platforms": platform_stats,
     }

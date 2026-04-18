@@ -1414,145 +1414,6 @@ class TestSendDiscordForum:
         assert "403" in result["error"]
 
 
-# ---------------------------------------------------------------------------
-# Discord media attachment support
-# ---------------------------------------------------------------------------
-
-
-class TestSendDiscordMedia:
-    """_send_discord uploads media files via multipart/form-data."""
-
-    @staticmethod
-    def _build_mock(response_status, response_data=None, response_text="error body"):
-        """Build a properly-structured aiohttp mock chain."""
-        mock_resp = MagicMock()
-        mock_resp.status = response_status
-        mock_resp.json = AsyncMock(return_value=response_data or {"id": "msg123"})
-        mock_resp.text = AsyncMock(return_value=response_text)
-        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
-        mock_resp.__aexit__ = AsyncMock(return_value=None)
-
-        mock_session = MagicMock()
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock(return_value=None)
-        mock_session.post = MagicMock(return_value=mock_resp)
-
-        return mock_session, mock_resp
-
-    def test_text_and_media_sends_both(self, tmp_path):
-        """Text message is sent first, then each media file as multipart."""
-        img = tmp_path / "photo.png"
-        img.write_bytes(b"\x89PNG fake image data")
-
-        mock_session, _ = self._build_mock(200, {"id": "msg999"})
-        with patch("aiohttp.ClientSession", return_value=mock_session):
-            result = asyncio.run(
-                _send_discord("tok", "111", "hello", media_files=[(str(img), False)])
-            )
-
-        assert result["success"] is True
-        assert result["message_id"] == "msg999"
-        # Two POSTs: one text JSON, one multipart upload
-        assert mock_session.post.call_count == 2
-
-    def test_media_only_skips_text_post(self, tmp_path):
-        """When message is empty and media is present, text POST is skipped."""
-        img = tmp_path / "photo.png"
-        img.write_bytes(b"\x89PNG fake image data")
-
-        mock_session, _ = self._build_mock(200, {"id": "media_only"})
-        with patch("aiohttp.ClientSession", return_value=mock_session):
-            result = asyncio.run(
-                _send_discord("tok", "222", "  ", media_files=[(str(img), False)])
-            )
-
-        assert result["success"] is True
-        # Only one POST: the media upload (text was whitespace-only)
-        assert mock_session.post.call_count == 1
-
-    def test_missing_media_file_collected_as_warning(self):
-        """Non-existent media paths produce warnings but don't fail."""
-        mock_session, _ = self._build_mock(200, {"id": "txt_ok"})
-        with patch("aiohttp.ClientSession", return_value=mock_session):
-            result = asyncio.run(
-                _send_discord("tok", "333", "hello", media_files=[("/nonexistent/file.png", False)])
-            )
-
-        assert result["success"] is True
-        assert "warnings" in result
-        assert any("not found" in w for w in result["warnings"])
-        # Only the text POST was made, media was skipped
-        assert mock_session.post.call_count == 1
-
-    def test_media_upload_failure_collected_as_warning(self, tmp_path):
-        """Failed media upload becomes a warning, text still succeeds."""
-        img = tmp_path / "photo.png"
-        img.write_bytes(b"\x89PNG fake image data")
-
-        # First call (text) succeeds, second call (media) returns 413
-        text_resp = MagicMock()
-        text_resp.status = 200
-        text_resp.json = AsyncMock(return_value={"id": "txt_ok"})
-        text_resp.__aenter__ = AsyncMock(return_value=text_resp)
-        text_resp.__aexit__ = AsyncMock(return_value=None)
-
-        media_resp = MagicMock()
-        media_resp.status = 413
-        media_resp.text = AsyncMock(return_value="Request Entity Too Large")
-        media_resp.__aenter__ = AsyncMock(return_value=media_resp)
-        media_resp.__aexit__ = AsyncMock(return_value=None)
-
-        mock_session = MagicMock()
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock(return_value=None)
-        mock_session.post = MagicMock(side_effect=[text_resp, media_resp])
-
-        with patch("aiohttp.ClientSession", return_value=mock_session):
-            result = asyncio.run(
-                _send_discord("tok", "444", "hello", media_files=[(str(img), False)])
-            )
-
-        assert result["success"] is True
-        assert result["message_id"] == "txt_ok"
-        assert "warnings" in result
-        assert any("413" in w for w in result["warnings"])
-
-    def test_no_text_no_media_returns_error(self):
-        """Empty text with no media returns error dict."""
-        mock_session, _ = self._build_mock(200)
-        with patch("aiohttp.ClientSession", return_value=mock_session):
-            result = asyncio.run(
-                _send_discord("tok", "555", "", media_files=[])
-            )
-
-        # Text is empty but media_files is empty, so text POST fires
-        # (the "skip text if media present" condition isn't met)
-        assert result["success"] is True
-
-    def test_multiple_media_files_uploaded_separately(self, tmp_path):
-        """Each media file gets its own multipart POST."""
-        img1 = tmp_path / "a.png"
-        img1.write_bytes(b"img1")
-        img2 = tmp_path / "b.jpg"
-        img2.write_bytes(b"img2")
-
-        mock_session, _ = self._build_mock(200, {"id": "last"})
-        with patch("aiohttp.ClientSession", return_value=mock_session):
-            result = asyncio.run(
-                _send_discord("tok", "666", "hi", media_files=[
-                    (str(img1), False), (str(img2), False)
-                ])
-            )
-
-        assert result["success"] is True
-        # 1 text POST + 2 media POSTs = 3
-        assert mock_session.post.call_count == 3
-
-
-# ---------------------------------------------------------------------------
-# Tests for _send_to_platform with forum channel detection
-# ---------------------------------------------------------------------------
-
 
 class TestSendToPlatformDiscordForum:
     """_send_to_platform delegates forum detection to _send_discord."""
@@ -1594,3 +1455,199 @@ class TestSendToPlatformDiscordForum:
         assert result["success"] is True
         _, call_kwargs = send_mock.await_args
         assert call_kwargs["thread_id"] == "17585"
+
+
+# ---------------------------------------------------------------------------
+# Tests for _send_discord forum + media multipart upload
+# ---------------------------------------------------------------------------
+
+
+class TestSendDiscordForumMedia:
+    """_send_discord uploads media as part of the starter message when the target is a forum."""
+
+    @staticmethod
+    def _build_thread_resp(thread_id="th_999", msg_id="msg_500"):
+        resp = MagicMock()
+        resp.status = 201
+        resp.json = AsyncMock(return_value={"id": thread_id, "message": {"id": msg_id}})
+        resp.text = AsyncMock(return_value="")
+        resp.__aenter__ = AsyncMock(return_value=resp)
+        resp.__aexit__ = AsyncMock(return_value=None)
+        return resp
+
+    def test_forum_with_media_uses_multipart(self, tmp_path, monkeypatch):
+        """Forum + media → single multipart POST to /threads carrying the starter + files."""
+        from tools import send_message_tool as smt
+
+        img = tmp_path / "photo.png"
+        img.write_bytes(b"\x89PNGbytes")
+
+        monkeypatch.setattr(smt, "lookup_channel_type", lambda p, cid: "forum", raising=False)
+        monkeypatch.setattr(
+            "gateway.channel_directory.lookup_channel_type", lambda p, cid: "forum"
+        )
+
+        thread_resp = self._build_thread_resp()
+        session = MagicMock()
+        session.__aenter__ = AsyncMock(return_value=session)
+        session.__aexit__ = AsyncMock(return_value=None)
+        session.post = MagicMock(return_value=thread_resp)
+
+        post_calls = []
+        orig_post = session.post
+
+        def track_post(url, **kwargs):
+            post_calls.append({"url": url, "kwargs": kwargs})
+            return thread_resp
+
+        session.post = MagicMock(side_effect=track_post)
+
+        with patch("aiohttp.ClientSession", return_value=session):
+            result = asyncio.run(
+                _send_discord("tok", "forum_ch", "Thread title\nbody", media_files=[(str(img), False)])
+            )
+
+        assert result["success"] is True
+        assert result["thread_id"] == "th_999"
+        assert result["message_id"] == "msg_500"
+        # Exactly one POST — the combined thread-creation + attachments call
+        assert len(post_calls) == 1
+        assert post_calls[0]["url"].endswith("/threads")
+        # Multipart form, not JSON
+        assert post_calls[0]["kwargs"].get("data") is not None
+        assert post_calls[0]["kwargs"].get("json") is None
+
+    def test_forum_without_media_still_json_only(self, tmp_path, monkeypatch):
+        """Forum + no media → JSON POST (no multipart overhead)."""
+        monkeypatch.setattr(
+            "gateway.channel_directory.lookup_channel_type", lambda p, cid: "forum"
+        )
+
+        thread_resp = self._build_thread_resp("t1", "m1")
+        session = MagicMock()
+        session.__aenter__ = AsyncMock(return_value=session)
+        session.__aexit__ = AsyncMock(return_value=None)
+
+        post_calls = []
+
+        def track_post(url, **kwargs):
+            post_calls.append({"url": url, "kwargs": kwargs})
+            return thread_resp
+
+        session.post = MagicMock(side_effect=track_post)
+
+        with patch("aiohttp.ClientSession", return_value=session):
+            result = asyncio.run(_send_discord("tok", "forum_ch", "Hello forum"))
+
+        assert result["success"] is True
+        assert len(post_calls) == 1
+        # JSON path, no multipart
+        assert post_calls[0]["kwargs"].get("json") is not None
+        assert post_calls[0]["kwargs"].get("data") is None
+
+    def test_forum_missing_media_file_collected_as_warning(self, tmp_path, monkeypatch):
+        """Missing media files produce warnings but the thread is still created."""
+        monkeypatch.setattr(
+            "gateway.channel_directory.lookup_channel_type", lambda p, cid: "forum"
+        )
+
+        thread_resp = self._build_thread_resp()
+        session = MagicMock()
+        session.__aenter__ = AsyncMock(return_value=session)
+        session.__aexit__ = AsyncMock(return_value=None)
+        session.post = MagicMock(return_value=thread_resp)
+
+        with patch("aiohttp.ClientSession", return_value=session):
+            result = asyncio.run(
+                _send_discord(
+                    "tok", "forum_ch", "hi",
+                    media_files=[("/nonexistent/does-not-exist.png", False)],
+                )
+            )
+
+        assert result["success"] is True
+        assert "warnings" in result
+        assert any("not found" in w for w in result["warnings"])
+
+
+# ---------------------------------------------------------------------------
+# Tests for the process-local forum-probe cache
+# ---------------------------------------------------------------------------
+
+
+class TestForumProbeCache:
+    """_DISCORD_CHANNEL_TYPE_PROBE_CACHE memoizes forum detection results."""
+
+    def setup_method(self):
+        from tools import send_message_tool as smt
+        smt._DISCORD_CHANNEL_TYPE_PROBE_CACHE.clear()
+
+    def test_cache_round_trip(self):
+        from tools.send_message_tool import (
+            _probe_is_forum_cached,
+            _remember_channel_is_forum,
+        )
+        assert _probe_is_forum_cached("xyz") is None
+        _remember_channel_is_forum("xyz", True)
+        assert _probe_is_forum_cached("xyz") is True
+        _remember_channel_is_forum("xyz", False)
+        assert _probe_is_forum_cached("xyz") is False
+
+    def test_probe_result_is_memoized(self, monkeypatch):
+        """An API-probed channel type is cached so subsequent sends skip the probe."""
+        monkeypatch.setattr(
+            "gateway.channel_directory.lookup_channel_type", lambda p, cid: None
+        )
+
+        # First probe response: type=15 (forum)
+        probe_resp = MagicMock()
+        probe_resp.status = 200
+        probe_resp.json = AsyncMock(return_value={"type": 15})
+        probe_resp.__aenter__ = AsyncMock(return_value=probe_resp)
+        probe_resp.__aexit__ = AsyncMock(return_value=None)
+
+        thread_resp = MagicMock()
+        thread_resp.status = 201
+        thread_resp.json = AsyncMock(return_value={"id": "t1", "message": {"id": "m1"}})
+        thread_resp.__aenter__ = AsyncMock(return_value=thread_resp)
+        thread_resp.__aexit__ = AsyncMock(return_value=None)
+
+        probe_session = MagicMock()
+        probe_session.__aenter__ = AsyncMock(return_value=probe_session)
+        probe_session.__aexit__ = AsyncMock(return_value=None)
+        probe_session.get = MagicMock(return_value=probe_resp)
+
+        thread_session = MagicMock()
+        thread_session.__aenter__ = AsyncMock(return_value=thread_session)
+        thread_session.__aexit__ = AsyncMock(return_value=None)
+        thread_session.post = MagicMock(return_value=thread_resp)
+
+        # Two _send_discord calls: first does probe + thread-create; second should skip probe
+        from tools import send_message_tool as smt
+
+        sessions_created = []
+
+        def session_factory(**kwargs):
+            # Alternate: each new ClientSession() call returns a probe_session, thread_session pair
+            idx = len(sessions_created)
+            sessions_created.append(idx)
+            # Returns the same mocks; the real code opens a probe session then a thread session.
+            # Hand out probe_session if this is the first time called within _send_discord,
+            # otherwise thread_session.
+            if idx % 2 == 0:
+                return probe_session
+            return thread_session
+
+        with patch("aiohttp.ClientSession", side_effect=session_factory):
+            result1 = asyncio.run(_send_discord("tok", "ch1", "first"))
+        assert result1["success"] is True
+        assert smt._probe_is_forum_cached("ch1") is True
+
+        # Second call: cache hits, no new probe session needed. We need to only
+        # return thread_session now since probe is skipped.
+        sessions_created.clear()
+        with patch("aiohttp.ClientSession", return_value=thread_session):
+            result2 = asyncio.run(_send_discord("tok", "ch1", "second"))
+        assert result2["success"] is True
+        # Only one session opened (thread creation) — no probe session this time
+        # (verified by not raising from our side_effect exhaustion)

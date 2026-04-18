@@ -1367,6 +1367,8 @@ def build_execute_code_schema(enabled_sandbox_tools: set = None) -> dict:
         f"{tool_lines}\n\n"
         "Limits: 5-minute timeout, 50KB stdout cap, max 50 tool calls per script. "
         "terminal() is foreground-only (no background or pty).\n\n"
+        "Scripts run in their own temp dir, not the session's CWD — use absolute paths "
+        "(os.path.expanduser('~/.hermes/.env')) or terminal()/read_file() for user files.\n\n"
         "Print your final result to stdout. Use Python stdlib (json, re, math, csv, "
         "datetime, collections, etc.) for processing between tool calls.\n\n"
         "Also available (no import needed — built into hermes_tools):\n"

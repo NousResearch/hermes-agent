@@ -130,7 +130,7 @@ class TestGeminiModelCatalog:
         models = _PROVIDER_MODELS["gemini"]
         assert "gemini-2.5-pro" in models
         assert "gemini-2.5-flash" in models
-        assert "gemma-4-31b-it" in models
+        assert "gemma-4-31b-it" not in models
 
     def test_provider_models_has_3x(self):
         models = _PROVIDER_MODELS["gemini"]
@@ -313,9 +313,28 @@ class TestGeminiModelsDev:
             result = list_agentic_models("gemini")
         assert "gemini-3-flash-preview" in result
         assert "gemini-2.5-pro" in result
-        assert "gemma-4-31b-it" in result
+        assert "gemma-4-31b-it" not in result
         # Filtered out:
         assert "gemini-embedding-001" not in result      # no tool_call
         assert "gemini-2.5-flash-preview-tts" not in result  # no tool_call
         assert "gemini-live-2.5-flash" not in result     # noise: live-
         assert "gemini-2.5-flash-preview-04-17" not in result  # noise: dated preview
+
+    def test_list_provider_models_hides_low_tpm_google_gemmas(self):
+        mock_data = {
+            "google": {
+                "models": {
+                    "gemini-2.5-pro": {},
+                    "gemma-4-31b-it": {},
+                    "gemma-3-1b": {},
+                }
+            }
+        }
+        with patch("agent.models_dev.fetch_models_dev", return_value=mock_data):
+            from agent.models_dev import list_provider_models
+
+            result = list_provider_models("gemini")
+
+        assert "gemini-2.5-pro" in result
+        assert "gemma-4-31b-it" not in result
+        assert "gemma-3-1b" not in result

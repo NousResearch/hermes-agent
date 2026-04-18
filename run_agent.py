@@ -49,6 +49,12 @@ from hermes_constants import get_hermes_home
 # User-managed env files should override stale shell exports on restart.
 from hermes_cli.env_loader import load_hermes_dotenv
 
+from rate_limit_cooldown import (
+    record_rate_limit as _record_rate_limit,
+    is_in_cooldown as _is_in_cooldown,
+    get_cooldown_remaining as _get_cooldown_remaining,
+)
+
 _hermes_home = get_hermes_home()
 _project_env = Path(__file__).parent / '.env'
 _loaded_env_paths = load_hermes_dotenv(hermes_home=_hermes_home, project_env=_project_env)
@@ -6073,6 +6079,24 @@ class AIAgent:
         if not self._fallback_activated:
             return False
 
+        # ── Rate limit cooldown check ──
+        # If the primary provider is in cooldown from a recent rate limit,
+        # skip restoration and continue using fallback.
+        rt = self._primary_runtime
+        primary_provider = rt.get("provider", "")
+        primary_model = rt.get("model", "")
+        if _is_in_cooldown(primary_provider, primary_model):
+            remaining = _get_cooldown_remaining(primary_provider, primary_model)
+            self._emit_status(
+                f"⏳ Primary ({primary_model}) in rate limit cooldown "
+                f"({remaining}s remaining) — continuing with fallback"
+            )
+            logging.info(
+                "Skipping primary restoration: %s/%s in cooldown (%ds)",
+                primary_provider, primary_model, remaining
+            )
+            return False
+
         rt = self._primary_runtime
         try:
             # ── Core runtime state ──
@@ -9826,6 +9850,31 @@ class AIAgent:
                         if not pool_may_recover:
                             self._emit_status("⚠️ Rate limited — switching to fallback provider...")
                             if self._try_activate_fallback():
+                                # ── Record rate limit cooldown ──
+                                # Only record for rate_limit errors (not billing/quota)
+                                if classified.reason == FailoverReason.rate_limit:
+                                    try:
+                                        primary_model = getattr(self, "_primary_runtime", {}).get("model", self.model)
+                                        primary_provider = getattr(self, "_primary_runtime", {}).get("provider", self.provider)
+                                        # Parse reset_after from error if available
+                                        reset_after = None
+                                        _err_resp = getattr(api_error, "response", None)
+                                        if _err_resp:
+                                            _retry_after = getattr(_err_resp.headers, "get", lambda k: None)("retry-after")
+                                            if _retry_after:
+                                                try:
+                                                    reset_after = int(_retry_after)
+                                                except ValueError:
+                                                    pass
+                                        _record_rate_limit(
+                                            provider=primary_provider,
+                                            model=primary_model,
+                                            error_type="rate_limit",
+                                            reset_after=reset_after,
+                                            http_status=429,
+                                        )
+                                    except Exception as e:
+                                        logging.warning("Failed to record rate limit cooldown: %s", e)
                                 retry_count = 0
                                 compression_attempts = 0
                                 primary_recovery_attempted = False

@@ -170,6 +170,26 @@ class TestMemoryStoreReplace:
         assert replacement.supersedes == prior.record_id
         assert (tmp_path / "USER.md").read_text(encoding="utf-8").strip() == "User wants fuller replies for design work."
 
+    def test_replace_topicless_record_still_supersedes_and_exports_only_new_active_value(self, store, tmp_path):
+        initial = store.add("user", "Name: Alice")
+        assert initial["records"][0]["topic_key"] is None
+
+        result = store.replace("user", "Alice", "Name: Alicia")
+
+        assert result["success"] is True
+        assert result["entries"] == ["Name: Alicia"]
+        statuses = {record["content"]: record["status"] for record in result["records"]}
+        assert statuses["Name: Alice"] == "superseded"
+        assert statuses["Name: Alicia"] == "active"
+
+        sidecar_records = records_from_sidecar_payload(json.loads((tmp_path / "records.json").read_text(encoding="utf-8")))
+        replacement = next(record for record in sidecar_records if record.content == "Name: Alicia")
+        prior = next(record for record in sidecar_records if record.content == "Name: Alice")
+        assert prior.topic_key is None
+        assert replacement.topic_key is None
+        assert replacement.supersedes == prior.record_id
+        assert (tmp_path / "USER.md").read_text(encoding="utf-8").strip() == "Name: Alicia"
+
     def test_replace_no_match(self, store):
         store.add("memory", "fact A")
         result = store.replace("memory", "nonexistent", "new")

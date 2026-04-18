@@ -35,7 +35,7 @@ from pathlib import Path
 from hermes_constants import get_hermes_home
 from typing import Dict, Any, List, Optional
 
-from agent.memory_policy import WriteClass, assign_topic_key, classify_write_candidate, resolve_conflict
+from agent.memory_policy import ConflictDecision, WriteClass, assign_topic_key, classify_write_candidate, resolve_conflict
 from agent.memory_records import (
     MemoryRecord,
     MemoryScope,
@@ -484,7 +484,17 @@ class MemoryStore:
                 metadata=dict(old_record.metadata),
             )
 
-            conflict = resolve_conflict(old_record, new_record, explicit_correction=True)
+            if old_record.topic_key is None:
+                superseded_record = MemoryRecord.from_dict(old_record.to_dict())
+                superseded_record.status = RecordStatus.SUPERSEDED
+                conflict = ConflictDecision(
+                    winner=new_record,
+                    loser=superseded_record,
+                    loser_status=superseded_record.status,
+                    reason="explicit_replace_supersedes_topicless_match",
+                )
+            else:
+                conflict = resolve_conflict(old_record, new_record, explicit_correction=True)
             projected_records: List[MemoryRecord] = []
             for record in self.records:
                 if record.record_id == old_record.record_id:

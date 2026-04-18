@@ -4,7 +4,7 @@ import { createGatewayEventHandler } from '../app/createGatewayEventHandler.js'
 import { resetOverlayState } from '../app/overlayStore.js'
 import { turnController } from '../app/turnController.js'
 import { resetTurnState } from '../app/turnStore.js'
-import { resetUiState } from '../app/uiStore.js'
+import { patchUiState, resetUiState } from '../app/uiStore.js'
 import { estimateTokensRough } from '../lib/text.js'
 import type { Msg } from '../types.js'
 
@@ -47,6 +47,7 @@ describe('createGatewayEventHandler', () => {
     resetUiState()
     resetTurnState()
     turnController.fullReset()
+    patchUiState({ showReasoning: true })
   })
 
   it('persists completed tool rows when message.complete lands immediately after tool.complete', () => {

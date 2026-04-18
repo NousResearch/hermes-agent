@@ -70,12 +70,25 @@ export function useComposerState({ gw, onClipboardPaste, submitRef }: UseCompose
 
       setPasteSnips(prev => [...prev, { label, text: cleanedText }].slice(-32))
 
+      void gw
+        .request<{ path?: string }>('paste.collapse', { text: cleanedText })
+        .then(r => {
+          const path = r?.path
+
+          if (!path) {
+            return
+          }
+
+          setPasteSnips(prev => prev.map(s => (s.label === label ? { ...s, path } : s)))
+        })
+        .catch(() => {})
+
       return {
         cursor: cursor + insert.length,
         value: value.slice(0, cursor) + insert + value.slice(cursor)
       }
     },
-    [onClipboardPaste]
+    [gw, onClipboardPaste]
   )
 
   const openEditor = useCallback(() => {

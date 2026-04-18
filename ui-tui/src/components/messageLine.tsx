@@ -35,7 +35,9 @@ export const MessageLine = memo(function MessageLine({
     return (
       <Box alignSelf="flex-start" borderColor={t.color.dim} borderStyle="round" marginLeft={3} paddingX={1}>
         {hasAnsi(msg.text) ? (
-          <Text wrap="truncate-end"><Ansi>{msg.text}</Ansi></Text>
+          <Text wrap="truncate-end">
+            <Ansi>{msg.text}</Ansi>
+          </Text>
         ) : (
           <Text color={t.color.dim} wrap="truncate-end">
             {preview}

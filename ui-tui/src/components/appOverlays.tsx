@@ -11,6 +11,7 @@ import { MaskedPrompt } from './maskedPrompt.js'
 import { ModelPicker } from './modelPicker.js'
 import { ApprovalPrompt, ClarifyPrompt } from './prompts.js'
 import { SessionPicker } from './sessionPicker.js'
+import { SkillsHub } from './skillsHub.js'
 
 export function PromptZone({
   cols,
@@ -82,7 +83,7 @@ export function FloatingOverlays({
   const overlay = useStore($overlayState)
   const ui = useStore($uiState)
 
-  const hasAny = overlay.modelPicker || overlay.pager || overlay.picker || completions.length
+  const hasAny = overlay.modelPicker || overlay.pager || overlay.picker || overlay.skillsHub || completions.length
 
   if (!hasAny) {
     return null
@@ -112,6 +113,12 @@ export function FloatingOverlays({
             sessionId={ui.sid}
             t={ui.theme}
           />
+        </FloatBox>
+      )}
+
+      {overlay.skillsHub && (
+        <FloatBox color={ui.theme.color.bronze}>
+          <SkillsHub gw={gw} onClose={() => patchOverlayState({ skillsHub: false })} t={ui.theme} />
         </FloatBox>
       )}
 

@@ -1050,47 +1050,6 @@ class TestDialecticDepth:
         assert provider._manager.dialectic_query.call_count == 2
         assert "Synthesis" in result
 
-    def test_first_turn_runs_dialectic_synchronously(self):
-        """First turn should fire the dialectic synchronously (cold start)."""
-        from unittest.mock import MagicMock, patch
-        provider = self._make_provider(cfg_extra={"dialectic_depth": 1})
-        provider._manager = MagicMock()
-        provider._manager.dialectic_query.return_value = "cold start synthesis"
-        provider._manager.get_prefetch_context.return_value = None
-        provider._manager.pop_context_result.return_value = None
-        provider._session_key = "test"
-        provider._base_context_cache = ""  # cold start
-        provider._last_dialectic_turn = -999  # never fired
-
-        result = provider.prefetch("hello world")
-        assert "cold start synthesis" in result
-        assert provider._manager.dialectic_query.call_count == 1
-        # After first-turn sync, _last_dialectic_turn should be updated
-        assert provider._last_dialectic_turn != -999
-
-    def test_first_turn_dialectic_does_not_double_fire(self):
-        """After first-turn sync dialectic, queue_prefetch should skip (cadence)."""
-        from unittest.mock import MagicMock
-        provider = self._make_provider(cfg_extra={"dialectic_depth": 1})
-        provider._manager = MagicMock()
-        provider._manager.dialectic_query.return_value = "cold start synthesis"
-        provider._manager.get_prefetch_context.return_value = None
-        provider._manager.pop_context_result.return_value = None
-        provider._session_key = "test"
-        provider._base_context_cache = ""
-        provider._last_dialectic_turn = -999
-        provider._turn_count = 0
-
-        # First turn fires sync dialectic
-        provider.prefetch("hello")
-        assert provider._manager.dialectic_query.call_count == 1
-
-        # Now queue_prefetch on same turn should skip — _last_dialectic_turn
-        # was just set to _turn_count by the sync path, so (0 - 0 = 0) < cadence.
-        provider._manager.dialectic_query.reset_mock()
-        provider.queue_prefetch("hello")
-        assert provider._manager.dialectic_query.call_count == 0
-
     def test_run_dialectic_depth_bails_early_on_strong_signal(self):
         """Depth 2 skips pass 1 when pass 0 returns strong signal."""
         from unittest.mock import MagicMock

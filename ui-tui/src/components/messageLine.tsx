@@ -28,13 +28,14 @@ export const MessageLine = memo(function MessageLine({
   }
 
   if (msg.role === 'tool') {
-    const preview = compactPreview(hasAnsi(msg.text) ? stripAnsi(msg.text) : msg.text, Math.max(24, cols - 14)) ||
-      '(empty tool result)'
+    const maxChars = Math.max(24, cols - 14)
+    const stripped = hasAnsi(msg.text) ? stripAnsi(msg.text) : msg.text
+    const preview = compactPreview(stripped, maxChars) || '(empty tool result)'
 
     return (
       <Box alignSelf="flex-start" borderColor={t.color.dim} borderStyle="round" marginLeft={3} paddingX={1}>
         {hasAnsi(msg.text) ? (
-          <Ansi>{compactPreview(msg.text, Math.max(24, cols - 14)) || '(empty tool result)'}</Ansi>
+          <Text wrap="truncate-end"><Ansi>{msg.text}</Ansi></Text>
         ) : (
           <Text color={t.color.dim} wrap="truncate-end">
             {preview}

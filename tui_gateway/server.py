@@ -1949,6 +1949,13 @@ _TUI_EXTRA: list[tuple[str, str, str]] = [
     ("/logs", "Show recent gateway log lines", "TUI"),
 ]
 
+# Commands that queue messages onto _pending_input in the CLI.
+# In the TUI the slash worker subprocess has no reader for that queue,
+# so slash.exec rejects them → TUI falls through to command.dispatch.
+_PENDING_INPUT_COMMANDS: frozenset[str] = frozenset({
+    "retry", "queue", "q", "steer", "plan",
+})
+
 
 @method("commands.catalog")
 def _(rid, params: dict) -> dict:
@@ -2127,20 +2134,32 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"type": "send", "message": arg})
 
     if name == "retry":
-        agent = session.get("agent") if session else None
-        if agent and hasattr(agent, "conversation_history"):
-            hist = agent.conversation_history or []
-            for m in reversed(hist):
-                if m.get("role") == "user":
-                    content = m.get("content", "")
-                    if isinstance(content, list):
-                        content = " ".join(
-                            p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text"
-                        )
-                    if content:
-                        return _ok(rid, {"type": "send", "message": content})
+        if not session:
+            return _err(rid, 4001, "no active session to retry")
+        history = session.get("history", [])
+        if not history:
             return _err(rid, 4018, "no previous user message to retry")
-        return _err(rid, 4018, "no active session to retry")
+        # Walk backwards to find the last user message
+        last_user_idx = None
+        for i in range(len(history) - 1, -1, -1):
+            if history[i].get("role") == "user":
+                last_user_idx = i
+                break
+        if last_user_idx is None:
+            return _err(rid, 4018, "no previous user message to retry")
+        content = history[last_user_idx].get("content", "")
+        if isinstance(content, list):
+            content = " ".join(
+                p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text"
+            )
+        if not content:
+            return _err(rid, 4018, "last user message is empty")
+        # Truncate history: remove everything from the last user message onward
+        # (mirrors CLI retry_last() which strips the failed exchange)
+        with session["history_lock"]:
+            session["history"] = history[:last_user_idx]
+            session["history_version"] = int(session.get("history_version", 0)) + 1
+        return _ok(rid, {"type": "send", "message": content})
 
     if name == "steer":
         if not arg:
@@ -2159,9 +2178,16 @@ def _(rid, params: dict) -> dict:
     if name == "plan":
         try:
             from agent.skill_commands import build_skill_invocation_message as _bsim, build_plan_path
-            plan_path = build_plan_path(session.get("session_key", "") if session else "")
-            msg = _bsim("/plan", f"{arg} {plan_path}".strip() if arg else plan_path,
-                        task_id=session.get("session_key", "") if session else "")
+            user_instruction = arg or ""
+            plan_path = build_plan_path(user_instruction)
+            msg = _bsim(
+                "/plan", user_instruction,
+                task_id=session.get("session_key", "") if session else "",
+                runtime_note=(
+                    "Save the markdown plan with write_file to this exact relative path "
+                    f"inside the active workspace/backend cwd: {plan_path}"
+                ),
+            )
             if msg:
                 return _ok(rid, {"type": "send", "message": msg})
         except Exception as e:
@@ -2383,19 +2409,12 @@ def _(rid, params: dict) -> dict:
     if not cmd:
         return _err(rid, 4004, "empty command")
 
-    # Skill slash commands (e.g. /hermes-agent-dev) must NOT go through the
-    # slash worker — process_command() queues the skill payload onto
-    # _pending_input which nobody reads in the worker subprocess.  Reject
-    # here so the TUI falls through to command.dispatch which handles skills
-    # correctly (builds the invocation message and returns it to the client).
-    #
-    # The same applies to /retry, /queue, /steer, and /plan — they all
-    # put messages on _pending_input that the slash worker never reads.
+    # Skill slash commands and _pending_input commands must NOT go through the
+    # slash worker — see _PENDING_INPUT_COMMANDS definition above.
     # (/browser connect/disconnect also uses _pending_input for context
     # notes, but the actual browser operations need the slash worker's
     # env-var side effects, so they stay in slash.exec — only the context
     # note to the model is lost, which is low-severity.)
-    _PENDING_INPUT_COMMANDS = frozenset({"retry", "queue", "q", "steer", "plan"})
     _cmd_parts = cmd.split() if not cmd.startswith("/") else cmd.lstrip("/").split()
     _cmd_base = _cmd_parts[0] if _cmd_parts else ""
 
@@ -2403,9 +2422,9 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 4018, f"pending-input command: use command.dispatch for /{_cmd_base}")
 
     try:
-        from agent.skill_commands import scan_skill_commands
+        from agent.skill_commands import get_skill_commands
         _cmd_key = f"/{_cmd_base}"
-        if _cmd_key in scan_skill_commands():
+        if _cmd_key in get_skill_commands():
             return _err(rid, 4018, f"skill command: use command.dispatch for {_cmd_key}")
     except Exception:
         pass

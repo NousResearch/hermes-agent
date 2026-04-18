@@ -45,12 +45,13 @@ def try_handle_direct_gateway_shortcuts(
     prepare_session_env: bool = False,
     conversation_history: Iterable[dict[str, Any]] | None = None,
     logger=None,
+    session_env_primer=prime_session_env_for_direct_shortcuts,
     handler_runner=run_direct_shortcut_handlers,
 ) -> str | None:
     source = getattr(event, "source", None)
     if prepare_session_env and source is not None:
         try:
-            runner._prime_session_env_for_direct_shortcuts(source)
+            session_env_primer(runner, source)
         except Exception as exc:
             if logger is not None:
                 logger.debug("Failed to prime direct-shortcut session env: %s", exc)

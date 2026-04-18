@@ -77,7 +77,7 @@ def test_try_handle_direct_gateway_shortcuts_primes_env_then_runs_handlers():
     source = _make_source()
     event = SimpleNamespace(source=source)
     prime = MagicMock()
-    runner = SimpleNamespace(_prime_session_env_for_direct_shortcuts=prime)
+    runner = SimpleNamespace()
     logger = MagicMock()
 
     result = try_handle_direct_gateway_shortcuts(
@@ -86,11 +86,12 @@ def test_try_handle_direct_gateway_shortcuts_primes_env_then_runs_handlers():
         prepare_session_env=True,
         conversation_history=[{"role": "user", "content": "在吗"}],
         logger=logger,
+        session_env_primer=prime,
         handler_runner=lambda current_runner, current_event, **kwargs: "handled",
     )
 
     assert result == "handled"
-    prime.assert_called_once_with(source)
+    prime.assert_called_once_with(runner, source)
 
 
 def test_try_handle_direct_gateway_shortcuts_ignores_prime_error_and_continues():
@@ -98,9 +99,8 @@ def test_try_handle_direct_gateway_shortcuts_ignores_prime_error_and_continues()
 
     source = _make_source()
     event = SimpleNamespace(source=source)
-    runner = SimpleNamespace(
-        _prime_session_env_for_direct_shortcuts=MagicMock(side_effect=RuntimeError("boom"))
-    )
+    runner = SimpleNamespace()
+    prime = MagicMock(side_effect=RuntimeError("boom"))
     logger = MagicMock()
 
     result = try_handle_direct_gateway_shortcuts(
@@ -109,6 +109,7 @@ def test_try_handle_direct_gateway_shortcuts_ignores_prime_error_and_continues()
         prepare_session_env=True,
         conversation_history=None,
         logger=logger,
+        session_env_primer=prime,
         handler_runner=lambda current_runner, current_event, **kwargs: "handled-anyway",
     )
 

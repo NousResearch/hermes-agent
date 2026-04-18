@@ -320,7 +320,7 @@ def test_admin_qq_intel_shortcut_requires_explicit_worker_context():
     runner.config.platforms[Platform.QQ_NAPCAT].extra["admin_users"] = ["179033731"]
     event = _make_event("让铁柱继续优化公司主页")
 
-    tool_args, shortcut_error = runner._match_admin_qq_intel_control_request(event)
+    tool_args, shortcut_error = runner._get_direct_control_router()._match_admin_qq_intel_control_request(event)
 
     assert tool_args is None
     assert shortcut_error is None
@@ -966,7 +966,7 @@ async def test_admin_group_can_orally_query_current_group_runtime_status():
     )
 
     with patch(
-        "gateway.run.get_group_policy",
+        "gateway.direct_control_platform_specs.get_group_policy",
         return_value={
             "group_id": "726109087",
             "mode": "collect_only",
@@ -975,7 +975,7 @@ async def test_admin_group_can_orally_query_current_group_runtime_status():
             "daily_report_target": "qq_napcat:dm:179033731",
         },
     ), patch(
-        "gateway.run.get_group_monitoring_overlay",
+        "gateway.direct_control_platform_specs.get_group_monitoring_overlay",
         return_value={
             "active": True,
             "mode": "collect_only",
@@ -1004,7 +1004,7 @@ async def test_admin_group_runtime_status_uses_effective_collect_only_overlay_an
     event = _make_event("726109087 这个群现在谁在监听，日报发哪，立即汇报发哪？")
 
     with patch(
-        "gateway.run.get_group_policy",
+        "gateway.direct_control_platform_specs.get_group_policy",
         return_value={
             "group_id": "726109087",
             "mode": "default",
@@ -1014,7 +1014,7 @@ async def test_admin_group_runtime_status_uses_effective_collect_only_overlay_an
             "manual_report_target": None,
         },
     ), patch(
-        "gateway.run.get_group_monitoring_overlay",
+        "gateway.direct_control_platform_specs.get_group_monitoring_overlay",
         return_value={
             "active": True,
             "mode": "collect_only",
@@ -1052,7 +1052,7 @@ async def test_admin_dm_group_runtime_status_query_can_infer_recent_group_target
     event = _make_event("你现在在群里能说话吗 不是监听模式了吗")
 
     with patch(
-        "gateway.run.get_group_policy",
+        "gateway.direct_control_platform_specs.get_group_policy",
         return_value={
             "group_id": "192903718",
             "mode": "collect_only",
@@ -1062,7 +1062,7 @@ async def test_admin_dm_group_runtime_status_query_can_infer_recent_group_target
             "manual_report_target": None,
         },
     ), patch(
-        "gateway.run.get_group_monitoring_overlay",
+        "gateway.direct_control_platform_specs.get_group_monitoring_overlay",
         return_value={
             "active": False,
             "mode": "",
@@ -1104,7 +1104,7 @@ async def test_admin_weixin_group_can_orally_query_current_group_runtime_status(
     )
 
     with patch(
-        "gateway.run.get_weixin_group_policy",
+        "gateway.direct_control_platform_specs.get_weixin_group_policy",
         return_value={
             "chat_id": "project@chatroom",
             "mode": "collect_only",
@@ -1114,7 +1114,7 @@ async def test_admin_weixin_group_can_orally_query_current_group_runtime_status(
             "manual_report_target": "weixin:project@chatroom",
         },
     ), patch(
-        "gateway.run.WeixinGroupArchiveStore.describe_group_reporting",
+        "gateway.direct_control_platform_specs.WeixinGroupArchiveStore.describe_group_reporting",
         return_value={
             "effective_targets": {
                 "daily_report_targets": ["weixin:wxid_admin"],

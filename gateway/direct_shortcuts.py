@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Iterable
 
+from gateway.direct_control_router import DIRECT_CONTROL_ROUTER_METHODS
+
 
 @dataclass(frozen=True)
 class DirectShortcutHandlerSpec:
@@ -29,6 +31,21 @@ DIRECT_SHORTCUT_HANDLER_SPECS: tuple[DirectShortcutHandlerSpec, ...] = (
 )
 
 
+def _resolve_direct_shortcut_handler(runner: Any, method_name: str):
+    handler = getattr(runner, method_name, None)
+    if handler is not None:
+        return handler
+    if method_name not in DIRECT_CONTROL_ROUTER_METHODS:
+        return None
+    get_router = getattr(runner, "_get_direct_control_router", None)
+    if get_router is None:
+        return None
+    router = get_router()
+    if router is None:
+        return None
+    return getattr(router, method_name, None)
+
+
 def run_direct_shortcut_handlers(
     runner: Any,
     event: Any,
@@ -38,10 +55,10 @@ def run_direct_shortcut_handlers(
 ) -> str | None:
     """Try direct shortcut handlers in the canonical gateway order."""
     for spec in DIRECT_SHORTCUT_HANDLER_SPECS:
-        handler = getattr(runner, spec.method_name, None)
-        if handler is None:
-            continue
         try:
+            handler = _resolve_direct_shortcut_handler(runner, spec.method_name)
+            if handler is None:
+                continue
             if spec.passes_history:
                 response = handler(event, conversation_history=conversation_history)
             else:

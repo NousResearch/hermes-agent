@@ -57,3 +57,28 @@ def test_run_direct_shortcut_handlers_passes_history_only_to_history_aware_handl
         event,
         conversation_history=history,
     )
+
+
+def test_run_direct_shortcut_handlers_falls_back_to_direct_control_router():
+    event = object()
+    router = SimpleNamespace(
+        _try_handle_admin_qq_send_shortcut=MagicMock(return_value="router-sent"),
+    )
+    runner = SimpleNamespace(
+        _try_handle_background_job_status_shortcut=MagicMock(return_value=None),
+        _try_handle_runtime_status_shortcut=MagicMock(return_value=None),
+        _get_direct_control_router=MagicMock(return_value=router),
+    )
+
+    result = run_direct_shortcut_handlers(
+        runner,
+        event,
+        conversation_history=[{"role": "user", "content": "发消息"}],
+    )
+
+    assert result == "router-sent"
+    runner._get_direct_control_router.assert_called_once_with()
+    router._try_handle_admin_qq_send_shortcut.assert_called_once_with(
+        event,
+        conversation_history=[{"role": "user", "content": "发消息"}],
+    )

@@ -272,14 +272,9 @@ from gateway.direct_control_router import (
     DIRECT_CONTROL_ROUTER_METHODS as SHARED_DIRECT_CONTROL_ROUTER_METHODS,
     DirectControlRouter,
 )
-from gateway.direct_control_platform_specs import (
-    QQ_ADMIN_GROUP_RUNTIME_STATUS_SPEC,
-    WEIXIN_ADMIN_GROUP_RUNTIME_STATUS_SPEC,
-)
 from gateway.direct_shortcuts import run_direct_shortcut_handlers
 from gateway.direct_shortcut_runtime_service import (
     get_direct_control_router as shared_get_direct_control_router,
-    prime_session_env_for_direct_shortcuts as shared_prime_session_env_for_direct_shortcuts,
     try_handle_direct_gateway_shortcuts as shared_try_handle_direct_gateway_shortcuts,
 )
 from gateway.employee_routes import get_employee_routes
@@ -299,8 +294,6 @@ from gateway.group_control_intents import (
     looks_like_group_runtime_status_query as looks_like_shared_group_runtime_status_query,
 )
 from gateway.group_runtime_status_service import (
-    build_qq_group_runtime_status_details as shared_build_qq_group_runtime_status_details,
-    build_weixin_group_runtime_status_details as shared_build_weixin_group_runtime_status_details,
     unique_report_targets as shared_unique_report_targets,
     worker_report_targets as shared_worker_report_targets,
 )
@@ -352,12 +345,8 @@ from gateway.group_target_intents import (
     extract_weixin_group_target,
 )
 from gateway.qq_group_archive import QqGroupArchiveStore
-from gateway.qq_group_policies import get_group_policy, list_group_policies
-from gateway.qq_intel_assignments import get_group_monitoring_overlay, list_intel_workers
-from gateway.weixin_group_archive import WeixinGroupArchiveStore
-from gateway.weixin_group_policies import (
-    get_group_policy as get_weixin_group_policy,
-)
+from gateway.qq_group_policies import list_group_policies
+from gateway.qq_intel_assignments import list_intel_workers
 from gateway.qq_intents import (
     _QQ_BACKGROUND_STATUS_QUERY_TERMS,
     _QQ_GROUP_REQUEST_HINT_TERMS,
@@ -3124,9 +3113,6 @@ class GatewayRunner:
             pending_sentinel=_AGENT_PENDING_SENTINEL,
         )
 
-    def _prime_session_env_for_direct_shortcuts(self, source: SessionSource) -> None:
-        shared_prime_session_env_for_direct_shortcuts(self, source)
-
     def _get_direct_control_router(self) -> DirectControlRouter:
         return shared_get_direct_control_router(self, router_cls=DirectControlRouter)
 
@@ -3144,66 +3130,6 @@ class GatewayRunner:
             conversation_history=conversation_history,
             logger=logger,
         )
-
-    def _try_handle_admin_qq_group_runtime_status(
-        self,
-        event: MessageEvent,
-        *,
-        conversation_history: Optional[List[Dict[str, Any]]] = None,
-    ) -> str | None:
-        return self._try_handle_admin_platform_group_runtime_status(
-            event,
-            conversation_history=conversation_history,
-            spec=QQ_ADMIN_GROUP_RUNTIME_STATUS_SPEC,
-            status_loader=self._load_qq_group_runtime_status_details,
-        )
-
-    def _load_qq_group_runtime_status_details(self, target: str) -> dict[str, Any]:
-        return shared_build_qq_group_runtime_status_details(
-            target,
-            get_group_policy_fn=get_group_policy,
-            get_group_monitoring_overlay_fn=get_group_monitoring_overlay,
-        )
-
-    def _try_handle_admin_weixin_group_runtime_status(
-        self,
-        event: MessageEvent,
-        *,
-        conversation_history: Optional[List[Dict[str, Any]]] = None,
-    ) -> str | None:
-        return self._try_handle_admin_platform_group_runtime_status(
-            event,
-            conversation_history=conversation_history,
-            spec=WEIXIN_ADMIN_GROUP_RUNTIME_STATUS_SPEC,
-            status_loader=self._load_weixin_group_runtime_status_details,
-        )
-
-    def _load_weixin_group_runtime_status_details(self, target: str) -> dict[str, Any]:
-        return shared_build_weixin_group_runtime_status_details(
-            target,
-            get_group_policy_fn=get_weixin_group_policy,
-            describe_group_reporting_fn=WeixinGroupArchiveStore().describe_group_reporting,
-        )
-
-    def _try_handle_admin_platform_group_runtime_status(
-        self,
-        event: MessageEvent,
-        *,
-        conversation_history: Optional[List[Dict[str, Any]]] = None,
-        spec,
-        status_loader,
-    ) -> str | None:
-        return self._get_direct_control_router()._try_handle_admin_platform_group_runtime_status(
-            event,
-            conversation_history=conversation_history,
-            spec=spec,
-            status_loader=status_loader,
-        )
-
-    def __getattr__(self, name: str):
-        if name in _DIRECT_CONTROL_ROUTER_METHODS:
-            return getattr(self._get_direct_control_router(), name)
-        raise AttributeError(f"{type(self).__name__!s} object has no attribute {name!r}")
 
     @staticmethod
     def _sanitize_background_visible_text(text: str) -> str:

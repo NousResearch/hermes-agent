@@ -11,6 +11,7 @@ reasoning fields when content is empty.
 """
 
 import asyncio
+import json
 import types
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -64,6 +65,26 @@ class TestMoAReferenceModelContentNone:
         content = (response.choices[0].message.content or "").strip()
         assert content == "Hello world"
 
+    def test_reference_model_handles_none_content_without_attribute_error(self):
+        from tools.mixture_of_agents_tool import _run_reference_model_safe
+
+        client = types.SimpleNamespace(
+            chat=types.SimpleNamespace(
+                completions=types.SimpleNamespace(
+                    create=AsyncMock(return_value=_make_response(None))
+                )
+            )
+        )
+
+        with patch("tools.mixture_of_agents_tool._get_openrouter_client", return_value=client):
+            model, content, ok = _run(
+                _run_reference_model_safe("test-model", "hello", max_retries=1)
+            )
+
+        assert model == "test-model"
+        assert content == ""
+        assert ok is True
+
 
 # ── mixture_of_agents_tool — aggregator (line 214) ────────────────────────
 
@@ -81,6 +102,22 @@ class TestMoAAggregatorContentNone:
 
         content = (response.choices[0].message.content or "").strip()
         assert content == ""
+
+    def test_aggregator_retries_and_returns_empty_string(self):
+        from tools.mixture_of_agents_tool import _run_aggregator_model
+
+        client = types.SimpleNamespace(
+            chat=types.SimpleNamespace(
+                completions=types.SimpleNamespace(
+                    create=AsyncMock(side_effect=[_make_response(None), _make_response(None)])
+                )
+            )
+        )
+
+        with patch("tools.mixture_of_agents_tool._get_openrouter_client", return_value=client):
+            result = _run(_run_aggregator_model("system", "hello"))
+
+        assert result == ""
 
 
 # ── web_tools — LLM content processor (line 419) ─────────────────────────
@@ -100,6 +137,25 @@ class TestWebToolsProcessorContentNone:
         content = (response.choices[0].message.content or "").strip()
         assert content == ""
 
+    def test_call_summarizer_llm_returns_empty_string_after_none_content_retry(self):
+        from tools.web_tools import _call_summarizer_llm
+
+        with (
+            patch("tools.web_tools._resolve_web_extract_auxiliary", return_value=(object(), "test-model", None)),
+            patch("tools.web_tools.async_call_llm", new=AsyncMock(side_effect=[_make_response(None), _make_response(None)])),
+            patch("tools.web_tools.asyncio.sleep", new=AsyncMock()),
+        ):
+            result = _run(
+                _call_summarizer_llm(
+                    "x" * 100,
+                    "Context: example\n\n",
+                    model="test-model",
+                    max_tokens=100,
+                )
+            )
+
+        assert result == ""
+
 
 # ── web_tools — synthesis/summarization (line 538) ────────────────────────
 
@@ -117,6 +173,29 @@ class TestWebToolsSynthesisContentNone:
 
         content = (response.choices[0].message.content or "").strip()
         assert content == ""
+
+    def test_large_content_synthesis_falls_back_when_final_summary_is_empty(self):
+        from tools.web_tools import _process_large_content_chunked
+
+        with (
+            patch(
+                "tools.web_tools._call_summarizer_llm",
+                new=AsyncMock(side_effect=["sum-1", "sum-2", "sum-3"]),
+            ),
+            patch("tools.web_tools._resolve_web_extract_auxiliary", return_value=(object(), "test-model", None)),
+            patch("tools.web_tools.async_call_llm", new=AsyncMock(side_effect=[_make_response(None), _make_response(None)])),
+        ):
+            result = _run(
+                _process_large_content_chunked(
+                    "A" * 12,
+                    "",
+                    model="test-model",
+                    chunk_size=5,
+                    max_output_size=1000,
+                )
+            )
+
+        assert result == "## Section 1\nsum-1\n\n## Section 2\nsum-2\n\n## Section 3\nsum-3"
 
 
 # ── vision_tools (line 350) ───────────────────────────────────────────────
@@ -136,6 +215,37 @@ class TestVisionToolsContentNone:
         content = (response.choices[0].message.content or "").strip()
         assert content == ""
 
+    def test_legacy_vision_tool_returns_fallback_error_after_empty_retry(self, tmp_path):
+        from tools.vision_tools import _legacy_vision_analyze_tool_impl
+
+        image_path = tmp_path / "image.png"
+        image_path.write_bytes(b"not-a-real-png")
+
+        with (
+            patch("tools.vision_tools.resolve_vision_request_target", return_value=("openrouter", "https://openrouter.ai/api/v1")),
+            patch("tools.vision_tools._get_recent_vision_failure", return_value=None),
+            patch("tools.vision_tools._get_provider_unhealthy_reason", return_value=(0.0, "")),
+            patch("tools.vision_tools._detect_image_mime_type", return_value="image/png"),
+            patch("tools.vision_tools._image_to_base64_data_url", return_value="data:image/png;base64,AAAA"),
+            patch("tools.vision_tools.async_call_llm", new=AsyncMock(side_effect=[_make_response(None), _make_response(None)])),
+            patch("tools.vision_tools._store_recent_vision_failure"),
+            patch("tools.vision_tools._debug.log_call"),
+            patch("tools.vision_tools._debug.save"),
+            patch("hermes_cli.config.load_config", return_value={}),
+        ):
+            result = json.loads(
+                _run(
+                    _legacy_vision_analyze_tool_impl(
+                        str(image_path),
+                        "What is in the image?",
+                        model="test-vision-model",
+                    )
+                )
+            )
+
+        assert result["success"] is False
+        assert "empty response twice" in result["analysis"]
+
 
 # ── skills_guard (line 963) ───────────────────────────────────────────────
 
@@ -153,6 +263,25 @@ class TestSkillsGuardContentNone:
 
         content = (response.choices[0].message.content or "").strip()
         assert content == ""
+
+    def test_llm_audit_skill_returns_static_result_when_llm_content_is_empty(self, tmp_path):
+        from tools.skills_guard import ScanResult, llm_audit_skill
+
+        skill_file = tmp_path / "SKILL.md"
+        skill_file.write_text("# Demo skill\n", encoding="utf-8")
+        static_result = ScanResult(
+            skill_name="demo-skill",
+            source="community",
+            trust_level="community",
+            verdict="safe",
+            findings=[],
+            summary="safe",
+        )
+
+        with patch("agent.auxiliary_client.call_llm", return_value=_make_response(None)):
+            result = llm_audit_skill(skill_file, static_result, model="gpt-5.4")
+
+        assert result is static_result
 
 
 # ── session_search_tool (line 164) ────────────────────────────────────────
@@ -172,58 +301,22 @@ class TestSessionSearchContentNone:
         content = (response.choices[0].message.content or "").strip()
         assert content == ""
 
+    def test_summarize_session_returns_empty_string_after_empty_retries(self):
+        from tools.session_search_tool import _summarize_session
 
-# ── integration: verify the actual source lines are guarded ───────────────
+        with (
+            patch("tools.session_search_tool.async_call_llm", new=AsyncMock(side_effect=[_make_response(None), _make_response(None), _make_response(None)])),
+            patch("tools.session_search_tool.asyncio.sleep", new=AsyncMock()),
+        ):
+            result = _run(
+                _summarize_session(
+                    "user: hi\nassistant: hello",
+                    "find greeting",
+                    {"source": "cli", "started_at": "2025-01-01T00:00:00Z"},
+                )
+            )
 
-class TestSourceLinesAreGuarded:
-    """Read the actual source files and verify the fix is applied.
-
-    These tests will FAIL before the fix (bare .content.strip()) and
-    PASS after ((.content or "").strip()).
-    """
-
-    @staticmethod
-    def _read_file(rel_path: str) -> str:
-        import os
-        base = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-        with open(os.path.join(base, rel_path)) as f:
-            return f.read()
-
-    def test_mixture_of_agents_reference_model_guarded(self):
-        src = self._read_file("tools/mixture_of_agents_tool.py")
-        # The unguarded pattern should NOT exist
-        assert ".message.content.strip()" not in src, (
-            "tools/mixture_of_agents_tool.py still has unguarded "
-            ".content.strip() — apply `(... or \"\").strip()` guard"
-        )
-
-    def test_web_tools_guarded(self):
-        src = self._read_file("tools/web_tools.py")
-        assert ".message.content.strip()" not in src, (
-            "tools/web_tools.py still has unguarded "
-            ".content.strip() — apply `(... or \"\").strip()` guard"
-        )
-
-    def test_vision_tools_guarded(self):
-        src = self._read_file("tools/vision_tools.py")
-        assert ".message.content.strip()" not in src, (
-            "tools/vision_tools.py still has unguarded "
-            ".content.strip() — apply `(... or \"\").strip()` guard"
-        )
-
-    def test_skills_guard_guarded(self):
-        src = self._read_file("tools/skills_guard.py")
-        assert ".message.content.strip()" not in src, (
-            "tools/skills_guard.py still has unguarded "
-            ".content.strip() — apply `(... or \"\").strip()` guard"
-        )
-
-    def test_session_search_tool_guarded(self):
-        src = self._read_file("tools/session_search_tool.py")
-        assert ".message.content.strip()" not in src, (
-            "tools/session_search_tool.py still has unguarded "
-            ".content.strip() — apply `(... or \"\").strip()` guard"
-        )
+        assert result == ""
 
 
 # ── extract_content_or_reasoning() ────────────────────────────────────────

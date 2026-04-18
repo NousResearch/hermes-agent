@@ -32,3 +32,21 @@ def test_reasoning_menu_orders_minimal_before_low(monkeypatch):
         "  medium  ← currently in use",
         "  high",
     ]
+
+
+def test_reasoning_menu_places_max_after_xhigh(monkeypatch):
+    fake_module = types.SimpleNamespace(TerminalMenu=_FakeTerminalMenu)
+    monkeypatch.setitem(sys.modules, "simple_term_menu", fake_module)
+
+    selected = _prompt_reasoning_effort_selection(
+        ["max", "medium", "xhigh", "high"],
+        current_effort="max",
+    )
+
+    assert selected == "max"
+    assert _FakeTerminalMenu.last_choices[:4] == [
+        "  medium",
+        "  high",
+        "  xhigh",
+        "  max  ← currently in use",
+    ]

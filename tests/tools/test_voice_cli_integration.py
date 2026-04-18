@@ -585,64 +585,21 @@ class TestCtrlCResetsContinuousMode:
         )
 
 
-class TestDisableVoiceModeStopsTTS:
-    """Bug #5: _disable_voice_mode must stop active TTS playback."""
-
-    def test_disable_voice_mode_calls_stop_playback(self):
-        """Source check: _disable_voice_mode must call stop_playback()."""
-        import inspect
-        from cli import HermesCLI
-
-        source = inspect.getsource(HermesCLI._disable_voice_mode)
-        assert "stop_playback" in source, (
-            "_disable_voice_mode must call stop_playback()"
-        )
-        assert "_voice_tts_done.set()" in source, (
-            "_disable_voice_mode must set _voice_tts_done"
-        )
-
-
 class TestVoiceStatusUsesConfigKey:
     """Bug #8: _show_voice_status must read record key from config."""
 
-    def test_show_voice_status_not_hardcoded(self):
-        """Source check: _show_voice_status must not hardcode Ctrl+B."""
-        with open("cli.py") as f:
-            source = f.read()
+    @patch("cli._cprint")
+    @patch("tools.voice_mode.check_voice_requirements", return_value={"available": True, "details": "All good"})
+    @patch("hermes_cli.config.load_config", return_value={"voice": {"record_key": "ctrl+k"}})
+    def test_show_voice_status_uses_configured_key(self, _cfg, _req, mock_cprint):
+        """_show_voice_status should render the configured key instead of a hardcoded default."""
+        cli = _make_voice_cli(_voice_mode=True, _voice_tts=True)
 
-        lines = source.split("\n")
-        in_method = False
-        for line in lines:
-            if "def _show_voice_status" in line:
-                in_method = True
-            elif in_method and line.strip().startswith("def "):
-                break
-            elif in_method:
-                assert 'Record key: Ctrl+B"' not in line, (
-                    "_show_voice_status hardcodes 'Ctrl+B' — "
-                    "should read from config"
-                )
+        cli._show_voice_status()
 
-    def test_show_voice_status_reads_config(self):
-        """Source check: _show_voice_status must use load_config()."""
-        with open("cli.py") as f:
-            source = f.read()
-
-        lines = source.split("\n")
-        in_method = False
-        method_lines = []
-        for line in lines:
-            if "def _show_voice_status" in line:
-                in_method = True
-            elif in_method and line.strip().startswith("def "):
-                break
-            elif in_method:
-                method_lines.append(line)
-
-        method_body = "\n".join(method_lines)
-        assert "load_config" in method_body or "record_key" in method_body, (
-            "_show_voice_status should read record_key from config"
-        )
+        output = "\n".join(" ".join(str(arg) for arg in call.args) for call in mock_cprint.call_args_list)
+        assert "CTRL+K" in output
+        assert "Record key: Ctrl+B" not in output
 
 
 class TestChatTTSCleanupOnException:

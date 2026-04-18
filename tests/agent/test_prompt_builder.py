@@ -16,6 +16,7 @@ from agent.prompt_builder import (
     _find_git_root,
     _strip_yaml_frontmatter,
     build_skills_system_prompt,
+    build_minimal_skills_system_prompt,
     build_nous_subscription_prompt,
     build_context_files_prompt,
     build_environment_hints,
@@ -238,6 +239,13 @@ class TestPromptBuilderImports:
 # =========================================================================
 # Skills system prompt builder
 # =========================================================================
+
+
+def test_build_minimal_skills_system_prompt_is_compact():
+    result = build_minimal_skills_system_prompt()
+    assert "skills_list" in result
+    assert "skill_view" in result
+    assert "available_skills" not in result
 
 
 class TestBuildSkillsSystemPrompt:

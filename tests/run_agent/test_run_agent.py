@@ -713,6 +713,56 @@ class TestBuildSystemPrompt:
         assert mock_skills.call_args.kwargs["available_tools"] == set(toolset_map)
         assert mock_skills.call_args.kwargs["available_toolsets"] == {"web", "skills"}
 
+    def test_skills_prompt_auto_uses_minimal_on_gateway_platforms(self):
+        tools = _make_tool_defs("skills_list", "skill_view", "skill_manage")
+
+        with (
+            patch("run_agent.get_tool_definitions", return_value=tools),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.build_skills_system_prompt", return_value="FULL_SKILLS") as mock_full,
+            patch("run_agent.build_minimal_skills_system_prompt", return_value="MIN_SKILLS") as mock_min,
+            patch("run_agent.OpenAI"),
+            patch("hermes_cli.config.load_config", return_value={"skills": {"system_prompt_mode": "auto"}}),
+        ):
+            agent = AIAgent(
+                api_key="test-k...7890",
+                quiet_mode=True,
+                platform="slack",
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            prompt = agent._build_system_prompt()
+
+        assert "MIN_SKILLS" in prompt
+        assert "FULL_SKILLS" not in prompt
+        mock_min.assert_called_once()
+        mock_full.assert_not_called()
+
+    def test_skills_prompt_full_mode_forces_full_catalog_on_gateway(self):
+        tools = _make_tool_defs("skills_list", "skill_view", "skill_manage")
+
+        with (
+            patch("run_agent.get_tool_definitions", return_value=tools),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.build_skills_system_prompt", return_value="FULL_SKILLS") as mock_full,
+            patch("run_agent.build_minimal_skills_system_prompt", return_value="MIN_SKILLS") as mock_min,
+            patch("run_agent.OpenAI"),
+            patch("hermes_cli.config.load_config", return_value={"skills": {"system_prompt_mode": "full"}}),
+        ):
+            agent = AIAgent(
+                api_key="test-k...7890",
+                quiet_mode=True,
+                platform="slack",
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            prompt = agent._build_system_prompt()
+
+        assert "FULL_SKILLS" in prompt
+        assert "MIN_SKILLS" not in prompt
+        mock_full.assert_called_once()
+        mock_min.assert_not_called()
+
 
 class TestToolUseEnforcementConfig:
     """Tests for the agent.tool_use_enforcement config option."""

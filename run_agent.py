@@ -94,7 +94,7 @@ from agent.model_metadata import (
 from agent.context_compressor import ContextCompressor
 from agent.subdirectory_hints import SubdirectoryHintTracker
 from agent.prompt_caching import apply_anthropic_cache_control
-from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt, build_environment_hints, load_soul_md, TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, DEVELOPER_ROLE_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE, OPENAI_MODEL_EXECUTION_GUIDANCE
+from agent.prompt_builder import build_skills_system_prompt, build_minimal_skills_system_prompt, build_context_files_prompt, build_environment_hints, load_soul_md, TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, DEVELOPER_ROLE_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE, OPENAI_MODEL_EXECUTION_GUIDANCE
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
 from agent.display import (
     KawaiiSpinner, build_tool_preview as _build_tool_preview,
@@ -1400,11 +1400,17 @@ class AIAgent:
                     self.valid_tool_names.add(_tname)
                     _existing_tool_names.add(_tname)
 
-        # Skills config: nudge interval for skill creation reminders
+        # Skills config: nudge interval + system-prompt index mode
         self._skill_nudge_interval = 10
+        # Modes: full|minimal|off|auto
+        # auto => full on CLI/unknown, minimal on messaging gateways.
+        self._skills_system_prompt_mode = "auto"
         try:
             skills_config = _agent_cfg.get("skills", {})
             self._skill_nudge_interval = int(skills_config.get("creation_nudge_interval", 10))
+            _mode = str(skills_config.get("system_prompt_mode", "auto") or "auto").strip().lower()
+            if _mode in {"full", "minimal", "off", "auto"}:
+                self._skills_system_prompt_mode = _mode
         except Exception:
             pass
 
@@ -3605,21 +3611,34 @@ class AIAgent:
             except Exception:
                 pass
 
+        platform_key = (self.platform or "").lower().strip()
+
         has_skills_tools = any(name in self.valid_tool_names for name in ['skills_list', 'skill_view', 'skill_manage'])
         if has_skills_tools:
-            avail_toolsets = {
-                toolset
-                for toolset in (
-                    get_toolset_for_tool(tool_name) for tool_name in self.valid_tool_names
+            skills_mode = self._skills_system_prompt_mode
+            if skills_mode == "auto":
+                # Lean default on gateways; full catalog on CLI/unspecified platform.
+                skills_mode = "full" if platform_key in {"", "cli"} else "minimal"
+
+            if skills_mode == "full":
+                avail_toolsets = {
+                    toolset
+                    for toolset in (
+                        get_toolset_for_tool(tool_name) for tool_name in self.valid_tool_names
+                    )
+                    if toolset
+                }
+                skills_prompt = build_skills_system_prompt(
+                    available_tools=self.valid_tool_names,
+                    available_toolsets=avail_toolsets,
                 )
-                if toolset
-            }
-            skills_prompt = build_skills_system_prompt(
-                available_tools=self.valid_tool_names,
-                available_toolsets=avail_toolsets,
-            )
+            elif skills_mode == "minimal":
+                skills_prompt = build_minimal_skills_system_prompt()
+            else:  # off
+                skills_prompt = ""
         else:
             skills_prompt = ""
+
         if skills_prompt:
             prompt_parts.append(skills_prompt)
 
@@ -3663,7 +3682,6 @@ class AIAgent:
         if _env_hints:
             prompt_parts.append(_env_hints)
 
-        platform_key = (self.platform or "").lower().strip()
         if platform_key in PLATFORM_HINTS:
             prompt_parts.append(PLATFORM_HINTS[platform_key])
 

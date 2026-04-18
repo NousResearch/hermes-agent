@@ -809,6 +809,20 @@ def build_skills_system_prompt(
     return result
 
 
+def build_minimal_skills_system_prompt() -> str:
+    """Build a tiny skills guidance block without enumerating the full catalog.
+
+    Used for token-sensitive environments (e.g. messaging gateways) where
+    shipping the full <available_skills> index every turn is expensive.
+    """
+    return (
+        "## Skills\n"
+        "Use skills when relevant, but do NOT assume the catalog from memory. "
+        "If a task might match a reusable workflow, call skills_list first, then "
+        "load the best match with skill_view(name) before executing."
+    )
+
+
 def build_nous_subscription_prompt(valid_tool_names: "set[str] | None" = None) -> str:
     """Build a compact Nous subscription capability block for the system prompt."""
     try:

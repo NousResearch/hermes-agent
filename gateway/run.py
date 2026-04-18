@@ -778,7 +778,7 @@ def _explicit_group_reply_context_note(event: MessageEvent) -> str:
     return (
         "[Current group turn note: This message explicitly addressed you "
         f"(trigger reason: {label}). You must reply briefly to this turn. "
-        "Do not return [[NO_REPLY]] for this turn.]"
+        "Do not return [[NO_REPLY]] or an empty response for this turn.]"
     )
 
 

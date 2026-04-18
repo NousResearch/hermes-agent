@@ -124,6 +124,7 @@ async def test_explicit_qq_group_trigger_injects_reply_required_note_into_contex
     context_prompt = runner._run_agent.await_args.kwargs["context_prompt"]
     assert "explicitly addressed you" in context_prompt
     assert "Do not return [[NO_REPLY]]" in context_prompt
+    assert "empty response" in context_prompt
     assert "bot_mention" in context_prompt
 
 

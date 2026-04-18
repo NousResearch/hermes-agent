@@ -2,35 +2,124 @@
 
 from __future__ import annotations
 
+import json
+import logging
+from functools import lru_cache
+from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from gateway.platforms.base import MessageType
 from gateway.qq_intents import _qq_group_has_visible_bot_address
 
+logger = logging.getLogger(__name__)
 
-AUTO_BACKGROUND_SHORTCUTS = (
-    "继续",
-    "继续啊",
-    "继续!",
-    "继续！",
-    "接着做",
-    "继续处理",
-    "按你建议做",
-    "马上做",
-    "整套",
-)
+_DATA_PATH = Path(__file__).resolve().parent / "data" / "auto_background_intents.json"
+_DEFAULT_INTENTS_DATA = {
+    "shortcuts": [
+        "继续",
+        "继续啊",
+        "继续!",
+        "继续！",
+        "接着做",
+        "继续处理",
+        "按你建议做",
+        "马上做",
+        "整套",
+    ],
+    "action_terms": [
+        "修复", "排查", "审查", "部署", "实现", "开发", "收尾", "调查",
+        "分析", "制定", "设计", "重启", "同步", "处理", "看看日志",
+        "上服务器", "查原因", "完整实施", "全部修复", "计划清单",
+    ],
+    "domain_terms": [
+        "服务器", "日志", "配置", "代码", "接口", "模型", "端点", "并发",
+        "群聊", "私聊", "gateway", "cron", "qq", "napcat", "服务", "任务",
+        "问题", "故障",
+    ],
+    "worker_assignment": {
+        "lead_markers": ["让", "叫", "安排", "交给", "给", "找", "请", "麻烦"],
+        "tail_markers": [
+            "继续",
+            "去",
+            "来",
+            "做",
+            "处理",
+            "跟进",
+            "修",
+            "查",
+            "看",
+            "优化",
+            "打磨",
+            "润色",
+            "改",
+            "整",
+        ],
+    },
+}
 
-AUTO_BACKGROUND_ACTION_TERMS = (
-    "修复", "排查", "审查", "部署", "实现", "开发", "收尾", "调查",
-    "分析", "制定", "设计", "重启", "同步", "处理", "看看日志",
-    "上服务器", "查原因", "完整实施", "全部修复", "计划清单",
-)
 
-AUTO_BACKGROUND_DOMAIN_TERMS = (
-    "服务器", "日志", "配置", "代码", "接口", "模型", "端点", "并发",
-    "群聊", "私聊", "gateway", "cron", "qq", "napcat", "服务", "任务",
-    "问题", "故障",
-)
+@lru_cache(maxsize=1)
+def _load_auto_background_intents_data() -> dict[str, Any]:
+    try:
+        raw = json.loads(_DATA_PATH.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        logger.warning("Auto-background intents data file missing: %s", _DATA_PATH)
+        return dict(_DEFAULT_INTENTS_DATA)
+    except Exception as exc:
+        logger.warning(
+            "Failed to load auto-background intents from %s: %s",
+            _DATA_PATH,
+            exc,
+        )
+        return dict(_DEFAULT_INTENTS_DATA)
+    if not isinstance(raw, dict):
+        logger.warning("Auto-background intents data must be a dict: %s", _DATA_PATH)
+        return dict(_DEFAULT_INTENTS_DATA)
+    return raw
+
+
+def _load_term_sequence(key: str) -> tuple[str, ...]:
+    payload = _load_auto_background_intents_data().get(key)
+    if not isinstance(payload, list):
+        payload = _DEFAULT_INTENTS_DATA.get(key) or []
+    normalized: list[str] = []
+    for item in payload:
+        text = str(item or "").strip()
+        if text:
+            normalized.append(text)
+    return tuple(normalized)
+
+
+def _load_nested_term_sequence(section: str, key: str) -> tuple[str, ...]:
+    payload = (_load_auto_background_intents_data().get(section) or {}).get(key)
+    if not isinstance(payload, list):
+        payload = ((_DEFAULT_INTENTS_DATA.get(section) or {}).get(key) or [])
+    normalized: list[str] = []
+    for item in payload:
+        text = str(item or "").strip()
+        if text:
+            normalized.append(text)
+    return tuple(normalized)
+
+
+def _auto_background_shortcuts() -> tuple[str, ...]:
+    return _load_term_sequence("shortcuts")
+
+
+def _auto_background_action_terms() -> tuple[str, ...]:
+    return _load_term_sequence("action_terms")
+
+
+def _auto_background_domain_terms() -> tuple[str, ...]:
+    return _load_term_sequence("domain_terms")
+
+
+def _worker_assignment_lead_markers() -> tuple[str, ...]:
+    return _load_nested_term_sequence("worker_assignment", "lead_markers")
+
+
+def _worker_assignment_tail_markers() -> tuple[str, ...]:
+    return _load_nested_term_sequence("worker_assignment", "tail_markers")
 
 
 def contains_any(text: str, terms: tuple[str, ...]) -> bool:
@@ -44,7 +133,7 @@ def contains_any(text: str, terms: tuple[str, ...]) -> bool:
 def is_auto_background_shortcut(text: str) -> bool:
     """Return True when the message is a bare follow-up shortcut like '继续'."""
     compact = str(text or "").strip().lower()
-    return compact in AUTO_BACKGROUND_SHORTCUTS
+    return compact in _auto_background_shortcuts()
 
 
 def looks_like_auto_background_work_request(text: str) -> bool:
@@ -54,8 +143,8 @@ def looks_like_auto_background_work_request(text: str) -> bool:
         return False
 
     compact = body.lower()
-    action_hits = {term for term in AUTO_BACKGROUND_ACTION_TERMS if term in body}
-    domain_hits = {term for term in AUTO_BACKGROUND_DOMAIN_TERMS if term in compact}
+    action_hits = {term for term in _auto_background_action_terms() if term in body}
+    domain_hits = {term for term in _auto_background_domain_terms() if term in compact}
     overlapping_hits = {term for term in action_hits if term in domain_hits}
     distinct_hits = (action_hits | domain_hits) - overlapping_hits
     has_structure = (
@@ -85,23 +174,8 @@ def looks_like_explicit_worker_assignment(text: str, worker_names: list[str]) ->
     if is_auto_background_shortcut(body) or looks_like_auto_background_work_request(body):
         return True
 
-    lead_markers = ("让", "叫", "安排", "交给", "给", "找", "请", "麻烦")
-    tail_markers = (
-        "继续",
-        "去",
-        "来",
-        "做",
-        "处理",
-        "跟进",
-        "修",
-        "查",
-        "看",
-        "优化",
-        "打磨",
-        "润色",
-        "改",
-        "整",
-    )
+    lead_markers = _worker_assignment_lead_markers()
+    tail_markers = _worker_assignment_tail_markers()
     for name in worker_names:
         candidate = str(name or "").strip()
         if not candidate or candidate not in body:
@@ -152,8 +226,8 @@ def history_suggests_auto_background_work(
         return False
 
     lowered = recent_text.lower()
-    action_hits = {term for term in AUTO_BACKGROUND_ACTION_TERMS if term in recent_text}
-    domain_hits = {term for term in AUTO_BACKGROUND_DOMAIN_TERMS if term in lowered}
+    action_hits = {term for term in _auto_background_action_terms() if term in recent_text}
+    domain_hits = {term for term in _auto_background_domain_terms() if term in lowered}
     overlapping_hits = {term for term in action_hits if term in domain_hits}
     distinct_hits = (action_hits | domain_hits) - overlapping_hits
     return bool(action_hits) and bool(distinct_hits)

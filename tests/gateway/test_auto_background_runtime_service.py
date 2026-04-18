@@ -1,8 +1,12 @@
 from types import SimpleNamespace
 
+import json
+
 from gateway.auto_background_runtime_service import (
     format_auto_background_ack,
     history_suggests_auto_background_work,
+    is_auto_background_shortcut,
+    looks_like_auto_background_work_request,
     resolve_auto_background_dispatch,
     resolve_employee_background_dispatch,
 )
@@ -34,6 +38,48 @@ def test_history_suggests_auto_background_work_from_recent_task_context():
     ]
 
     assert history_suggests_auto_background_work(history) is True
+
+
+def test_auto_background_intents_load_from_json_data(monkeypatch, tmp_path):
+    import gateway.auto_background_runtime_service as service
+
+    data_path = tmp_path / "auto_background_intents.json"
+    data_path.write_text(
+        json.dumps(
+            {
+                "shortcuts": ["开干"],
+                "action_terms": ["攻坚"],
+                "domain_terms": ["线路"],
+                "worker_assignment": {
+                    "lead_markers": ["安排"],
+                    "tail_markers": ["攻坚"],
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(service, "_DATA_PATH", data_path)
+    service._load_auto_background_intents_data.cache_clear()
+
+    assert is_auto_background_shortcut("开干") is True
+    assert looks_like_auto_background_work_request("马上攻坚这条线路") is True
+
+    service._load_auto_background_intents_data.cache_clear()
+
+
+def test_auto_background_intents_fall_back_to_defaults_when_file_is_invalid(monkeypatch, tmp_path):
+    import gateway.auto_background_runtime_service as service
+
+    data_path = tmp_path / "auto_background_intents.json"
+    data_path.write_text("{bad json", encoding="utf-8")
+    monkeypatch.setattr(service, "_DATA_PATH", data_path)
+    service._load_auto_background_intents_data.cache_clear()
+
+    assert is_auto_background_shortcut("继续") is True
+    assert looks_like_auto_background_work_request("继续排查服务器日志里的 gateway 故障") is True
+
+    service._load_auto_background_intents_data.cache_clear()
 
 
 def test_resolve_employee_background_dispatch_prefers_explicit_worker_assignment():

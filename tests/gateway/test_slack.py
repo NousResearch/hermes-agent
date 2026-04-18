@@ -11,7 +11,7 @@ We mock the slack modules at import time to avoid collection errors.
 import asyncio
 import os
 import sys
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch, call
 
 import pytest
 
@@ -21,6 +21,7 @@ from gateway.platforms.base import (
     MessageType,
     SendResult,
     SUPPORTED_DOCUMENT_TYPES,
+    is_host_excluded_by_no_proxy,
 )
 
 
@@ -186,6 +187,198 @@ class TestSlackConnectCleanup:
         assert result is False
         mock_release.assert_called_once_with("slack-app-token", "xapp-fake")
         assert adapter._platform_lock_identity is None
+
+
+# ---------------------------------------------------------------------------
+# TestSlackProxyBehavior
+# ---------------------------------------------------------------------------
+
+class TestSlackProxyBehavior:
+    def test_no_proxy_helper_matches_slack_hosts(self):
+        assert is_host_excluded_by_no_proxy("slack.com", "localhost,.slack.com")
+        assert is_host_excluded_by_no_proxy("files.slack.com", "localhost slack.com")
+        assert is_host_excluded_by_no_proxy("wss-primary.slack.com", "*")
+        assert not is_host_excluded_by_no_proxy("slack.com", "localhost,.internal.corp")
+
+    def test_resolve_slack_proxy_url_ignores_unsupported_proxy_schemes(self):
+        with patch.object(_slack_mod, "resolve_proxy_url", return_value="socks5://proxy.example.com:1080"):
+            assert _slack_mod._resolve_slack_proxy_url() is None
+
+    def test_resolve_slack_proxy_url_checks_all_slack_hosts(self):
+        with patch.object(_slack_mod, "resolve_proxy_url", return_value="http://proxy.example.com:3128"), \
+             patch.object(_slack_mod, "is_host_excluded_by_no_proxy", side_effect=lambda host: host == "wss-primary.slack.com") as excluded:
+            assert _slack_mod._resolve_slack_proxy_url() is None
+            excluded.assert_has_calls([
+                call("slack.com"),
+                call("files.slack.com"),
+                call("wss-primary.slack.com"),
+            ])
+
+    @pytest.mark.asyncio
+    async def test_connect_uses_proxy_when_not_bypassed(self):
+        created_apps = []
+        created_clients = []
+
+        class FakeWebClient:
+            def __init__(self, token):
+                self.token = token
+                self.proxy = "constructor-default"
+                suffix = token.split("-")[-1]
+                self.auth_test = AsyncMock(return_value={
+                    "team_id": f"T_{suffix}",
+                    "user_id": f"U_{suffix}",
+                    "user": f"bot-{suffix}",
+                    "team": f"Team {suffix}",
+                })
+                created_clients.append(self)
+
+        class FakeApp:
+            def __init__(self, token):
+                self.token = token
+                self.client = FakeWebClient(token)
+                self.registered_events = []
+                self.registered_commands = []
+                self.registered_actions = []
+                created_apps.append(self)
+
+            def event(self, event_type):
+                self.registered_events.append(event_type)
+
+                def decorator(fn):
+                    return fn
+
+                return decorator
+
+            def command(self, command_name):
+                self.registered_commands.append(command_name)
+
+                def decorator(fn):
+                    return fn
+
+                return decorator
+
+            def action(self, action_id):
+                self.registered_actions.append(action_id)
+
+                def decorator(fn):
+                    return fn
+
+                return decorator
+
+        class FakeSocketModeHandler:
+            def __init__(self, app, app_token, proxy=None):
+                self.app = app
+                self.app_token = app_token
+                self.proxy = proxy
+                self.client = MagicMock(proxy="constructor-default")
+
+            def start_async(self):
+                return None
+
+            async def close_async(self):
+                return None
+
+        config = PlatformConfig(enabled=True, token="xoxb-primary,xoxb-secondary")
+        adapter = SlackAdapter(config)
+
+        with patch.object(_slack_mod, "AsyncApp", side_effect=FakeApp), \
+             patch.object(_slack_mod, "AsyncWebClient", side_effect=FakeWebClient), \
+             patch.object(_slack_mod, "AsyncSocketModeHandler", FakeSocketModeHandler), \
+             patch.object(_slack_mod, "_resolve_slack_proxy_url", return_value="http://proxy.example.com:3128"), \
+             patch.dict(os.environ, {"SLACK_APP_TOKEN": "xapp-fake"}, clear=False), \
+             patch("gateway.status.acquire_scoped_lock", return_value=(True, None)), \
+             patch("asyncio.create_task", return_value=MagicMock(name="socket-mode-task")):
+            result = await adapter.connect()
+
+        assert result is True
+        assert created_apps[0].client.proxy == "http://proxy.example.com:3128"
+        assert all(client.proxy == "http://proxy.example.com:3128" for client in created_clients)
+        assert adapter._handler is not None
+        assert adapter._handler.proxy == "http://proxy.example.com:3128"
+        assert adapter._handler.client.proxy == "http://proxy.example.com:3128"
+
+    @pytest.mark.asyncio
+    async def test_connect_clears_proxy_when_no_proxy_matches_slack(self):
+        created_apps = []
+        created_clients = []
+
+        class FakeWebClient:
+            def __init__(self, token):
+                self.token = token
+                self.proxy = "constructor-default"
+                suffix = token.split("-")[-1]
+                self.auth_test = AsyncMock(return_value={
+                    "team_id": f"T_{suffix}",
+                    "user_id": f"U_{suffix}",
+                    "user": f"bot-{suffix}",
+                    "team": f"Team {suffix}",
+                })
+                created_clients.append(self)
+
+        class FakeApp:
+            def __init__(self, token):
+                self.token = token
+                self.client = FakeWebClient(token)
+                self.registered_events = []
+                self.registered_commands = []
+                self.registered_actions = []
+                created_apps.append(self)
+
+            def event(self, event_type):
+                self.registered_events.append(event_type)
+
+                def decorator(fn):
+                    return fn
+
+                return decorator
+
+            def command(self, command_name):
+                self.registered_commands.append(command_name)
+
+                def decorator(fn):
+                    return fn
+
+                return decorator
+
+            def action(self, action_id):
+                self.registered_actions.append(action_id)
+
+                def decorator(fn):
+                    return fn
+
+                return decorator
+
+        class FakeSocketModeHandler:
+            def __init__(self, app, app_token, proxy=None):
+                self.app = app
+                self.app_token = app_token
+                self.proxy = proxy
+                self.client = MagicMock(proxy="constructor-default")
+
+            def start_async(self):
+                return None
+
+            async def close_async(self):
+                return None
+
+        config = PlatformConfig(enabled=True, token="xoxb-primary")
+        adapter = SlackAdapter(config)
+
+        with patch.object(_slack_mod, "AsyncApp", side_effect=FakeApp), \
+             patch.object(_slack_mod, "AsyncWebClient", side_effect=FakeWebClient), \
+             patch.object(_slack_mod, "AsyncSocketModeHandler", FakeSocketModeHandler), \
+             patch.object(_slack_mod, "_resolve_slack_proxy_url", return_value=None), \
+             patch.dict(os.environ, {"SLACK_APP_TOKEN": "xapp-fake"}, clear=False), \
+             patch("gateway.status.acquire_scoped_lock", return_value=(True, None)), \
+             patch("asyncio.create_task", return_value=MagicMock(name="socket-mode-task")):
+            result = await adapter.connect()
+
+        assert result is True
+        assert created_apps[0].client.proxy is None
+        assert all(client.proxy is None for client in created_clients)
+        assert adapter._handler is not None
+        assert adapter._handler.proxy is None
+        assert adapter._handler.client.proxy is None
 
 
 # ---------------------------------------------------------------------------

@@ -41,6 +41,8 @@ from gateway.platforms.base import (
     ProcessingOutcome,
     SendResult,
     SUPPORTED_DOCUMENT_TYPES,
+    is_host_excluded_by_no_proxy,
+    resolve_proxy_url,
     safe_url_for_log,
     cache_document_from_bytes,
 )
@@ -217,6 +219,40 @@ def _serialize_slack_blocks_for_agent(blocks: list, max_chars: int = 6000) -> st
     return f"[Slack Block Kit payload for this message]\n```json\n{payload}\n```"
 
 
+def _apply_slack_proxy(client: Any, proxy_url: Optional[str]) -> None:
+    """Apply a resolved proxy to a Slack SDK client or clear it explicitly."""
+    if hasattr(client, "proxy"):
+        client.proxy = proxy_url
+
+
+_SLACK_PROXY_HOSTS = (
+    "slack.com",
+    "files.slack.com",
+    "wss-primary.slack.com",
+)
+
+
+def _resolve_slack_proxy_url() -> Optional[str]:
+    """Resolve a proxy URL that Slack SDK clients can safely use."""
+    proxy_url = resolve_proxy_url()
+    if not proxy_url:
+        return None
+
+    normalized = proxy_url.lower()
+    if not normalized.startswith(("http://", "https://")):
+        logger.info(
+            "[Slack] Ignoring unsupported proxy scheme for Slack transport: %s",
+            safe_url_for_log(proxy_url),
+        )
+        return None
+
+    if any(is_host_excluded_by_no_proxy(host) for host in _SLACK_PROXY_HOSTS):
+        logger.info("[Slack] NO_PROXY bypasses Slack proxy configuration")
+        return None
+
+    return proxy_url
+
+
 class SlackAdapter(BasePlatformAdapter):
     """
     Slack bot adapter using Socket Mode.
@@ -237,13 +273,13 @@ class SlackAdapter(BasePlatformAdapter):
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.SLACK)
-        self._app: Optional[AsyncApp] = None
-        self._handler: Optional[AsyncSocketModeHandler] = None
+        self._app: Optional[Any] = None
+        self._handler: Optional[Any] = None
         self._bot_user_id: Optional[str] = None
         self._user_name_cache: Dict[str, str] = {}  # user_id → display name
         self._socket_mode_task: Optional[asyncio.Task] = None
         # Multi-workspace support
-        self._team_clients: Dict[str, AsyncWebClient] = {}   # team_id → WebClient
+        self._team_clients: Dict[str, Any] = {}   # team_id → WebClient
         self._team_bot_user_ids: Dict[str, str] = {}          # team_id → bot_user_id
         self._channel_team: Dict[str, str] = {}                # channel_id → team_id
         # Dedup cache: prevents duplicate bot responses when Socket Mode
@@ -350,6 +386,10 @@ class SlackAdapter(BasePlatformAdapter):
             logger.error("[Slack] SLACK_APP_TOKEN not set")
             return False
 
+        proxy_url = _resolve_slack_proxy_url()
+        if proxy_url:
+            logger.info("[Slack] Using proxy for Slack transport: %s", safe_url_for_log(proxy_url))
+
         # Support comma-separated bot tokens for multi-workspace
         bot_tokens = [t.strip() for t in raw_token.split(",") if t.strip()]
 
@@ -377,10 +417,12 @@ class SlackAdapter(BasePlatformAdapter):
             # First token is the primary — used for AsyncApp / Socket Mode
             primary_token = bot_tokens[0]
             self._app = AsyncApp(token=primary_token)
+            _apply_slack_proxy(self._app.client, proxy_url)
 
             # Register each bot token and map team_id → client
             for token in bot_tokens:
                 client = AsyncWebClient(token=token)
+                _apply_slack_proxy(client, proxy_url)
                 auth_response = await client.auth_test()
                 team_id = auth_response.get("team_id", "")
                 bot_user_id = auth_response.get("user_id", "")
@@ -473,7 +515,8 @@ class SlackAdapter(BasePlatformAdapter):
                 self._app.action(_action_id)(self._handle_approval_action)
 
             # Start Socket Mode handler in background
-            self._handler = AsyncSocketModeHandler(self._app, app_token)
+            self._handler = AsyncSocketModeHandler(self._app, app_token, proxy=proxy_url)
+            _apply_slack_proxy(self._handler.client, proxy_url)
             self._socket_mode_task = asyncio.create_task(self._handler.start_async())
 
             self._running = True
@@ -503,7 +546,7 @@ class SlackAdapter(BasePlatformAdapter):
 
         logger.info("[Slack] Disconnected")
 
-    def _get_client(self, chat_id: str) -> AsyncWebClient:
+    def _get_client(self, chat_id: str) -> Any:
         """Return the workspace-specific WebClient for a channel."""
         team_id = self._channel_team.get(chat_id)
         if team_id and team_id in self._team_clients:

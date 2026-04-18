@@ -6798,6 +6798,14 @@ class AIAgent:
             "messages": sanitized_messages,
             "timeout": float(os.getenv("HERMES_API_TIMEOUT", 1800.0)),
         }
+        try:
+            from agent.auxiliary_client import _fixed_temperature_for_model
+        except Exception:
+            _fixed_temperature_for_model = None
+        if _fixed_temperature_for_model is not None:
+            fixed_temperature = _fixed_temperature_for_model(self.model)
+            if fixed_temperature is not None:
+                api_kwargs["temperature"] = fixed_temperature
         if self._is_qwen_portal():
             api_kwargs["metadata"] = {
                 "sessionId": self.session_id or "hermes",
@@ -8227,6 +8235,15 @@ class AIAgent:
                     api_messages.insert(sys_offset + idx, pfm.copy())
 
             summary_extra_body = {}
+            try:
+                from agent.auxiliary_client import _fixed_temperature_for_model
+            except Exception:
+                _fixed_temperature_for_model = None
+            _summary_temperature = (
+                _fixed_temperature_for_model(self.model)
+                if _fixed_temperature_for_model is not None
+                else None
+            )
             _is_nous = "nousresearch" in self._base_url_lower
             if self._supports_reasoning_extra_body():
                 if self.reasoning_config is not None:
@@ -8250,6 +8267,8 @@ class AIAgent:
                     "model": self.model,
                     "messages": api_messages,
                 }
+                if _summary_temperature is not None:
+                    summary_kwargs["temperature"] = _summary_temperature
                 if self.max_tokens is not None:
                     summary_kwargs.update(self._max_tokens_param(self.max_tokens))
 
@@ -8315,6 +8334,8 @@ class AIAgent:
                         "model": self.model,
                         "messages": api_messages,
                     }
+                    if _summary_temperature is not None:
+                        summary_kwargs["temperature"] = _summary_temperature
                     if self.max_tokens is not None:
                         summary_kwargs.update(self._max_tokens_param(self.max_tokens))
                     if summary_extra_body:

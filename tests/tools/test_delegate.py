@@ -15,6 +15,8 @@ import sys
 import threading
 import time
 import unittest
+from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor as RealThreadPoolExecutor
 from unittest.mock import MagicMock, patch
 
 from tools.delegate_tool import (
@@ -569,6 +571,39 @@ class TestBlockedTools(unittest.TestCase):
         self.assertEqual(MAX_DEPTH, 2)
 
 
+class TestDelegationConfigIsolation(unittest.TestCase):
+    def test_stale_cli_config_from_other_hermes_home_is_ignored(self):
+        import cli
+
+        parent = _make_mock_parent()
+        stale_cfg = {
+            "delegation": {
+                "provider": "openai-codex",
+                "model": "gpt-5.4",
+                "max_concurrent_children": 12,
+            }
+        }
+
+        with (
+            patch.object(cli, "CLI_CONFIG", stale_cfg),
+            patch.object(cli, "_hermes_home", Path("/tmp/stale-hermes-home")),
+            patch("hermes_cli.config.load_config", return_value={}),
+            patch("tools.delegate_tool._run_single_child") as mock_run,
+        ):
+            mock_run.return_value = {
+                "task_index": 0,
+                "status": "completed",
+                "summary": "Done!",
+                "api_calls": 1,
+                "duration_seconds": 1.0,
+            }
+            self.assertEqual(_get_max_concurrent_children(), 3)
+            result = json.loads(delegate_task(goal="Ignore stale CLI config", parent_agent=parent))
+
+        self.assertIn("results", result)
+        mock_run.assert_called_once()
+
+
 class TestDelegationCredentialResolution(unittest.TestCase):
     """Tests for provider:model credential resolution in delegation config."""
 
@@ -592,6 +627,27 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         self.assertIsNone(creds["provider"])
         self.assertIsNone(creds["base_url"])
         self.assertIsNone(creds["api_key"])
+
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_matching_provider_reuses_parent_runtime_credentials(self, mock_resolve):
+        parent = _make_mock_parent(depth=0)
+        parent.model = "gpt-5.4"
+        parent.provider = "openai-codex"
+        parent.base_url = "https://chatgpt.com/backend-api/codex"
+        parent.api_key = "runtime-codex-key"
+        parent.api_mode = "codex_responses"
+
+        creds = _resolve_delegation_credentials(
+            {"model": "gpt-5.4", "provider": "openai-codex"},
+            parent,
+        )
+
+        self.assertEqual(creds["model"], "gpt-5.4")
+        self.assertEqual(creds["provider"], "openai-codex")
+        self.assertEqual(creds["base_url"], parent.base_url)
+        self.assertEqual(creds["api_key"], parent.api_key)
+        self.assertEqual(creds["api_mode"], parent.api_mode)
+        mock_resolve.assert_not_called()
 
     @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
     def test_provider_resolves_full_credentials(self, mock_resolve):
@@ -1276,6 +1332,103 @@ class TestDelegationReasoningEffort(unittest.TestCase):
         )
         call_kwargs = MockAgent.call_args[1]
         self.assertEqual(call_kwargs["reasoning_config"], {"enabled": True, "effort": "medium"})
+
+
+class TestDelegationCategoryPolicy(unittest.TestCase):
+    @patch("tools.delegate_tool._run_single_child")
+    @patch("tools.delegate_tool._build_child_agent")
+    @patch("tools.delegate_tool._load_config")
+    def test_category_profile_applies_tool_policy(self, mock_load_config, mock_build_child, mock_run_child):
+        mock_load_config.return_value = {
+            "max_concurrent_children": 5,
+            "categories": {
+                "research": {
+                    "enabled_tools": ["read_file", "search_files"],
+                    "toolsets": ["file"],
+                    "max_iterations": 7,
+                }
+            },
+        }
+        mock_build_child.return_value = MagicMock()
+        mock_run_child.return_value = {
+            "task_index": 0,
+            "status": "completed",
+            "summary": "Done!",
+            "api_calls": 1,
+            "duration_seconds": 0.1,
+        }
+        parent = _make_mock_parent()
+
+        result = json.loads(delegate_task(goal="Audit the repo", category="research", parent_agent=parent))
+
+        self.assertIn("results", result)
+        kwargs = mock_build_child.call_args.kwargs
+        self.assertEqual(kwargs["toolsets"], ["file"])
+        self.assertEqual(kwargs["enabled_tools"], ["read_file", "search_files"])
+        self.assertEqual(kwargs["max_iterations"], 7)
+
+    @patch("tools.delegate_tool._load_config")
+    def test_category_concurrency_cap_rejected(self, mock_load_config):
+        mock_load_config.return_value = {
+            "max_concurrent_children": 5,
+            "categories": {
+                "implementation": {"max_concurrent_children": 1},
+            },
+        }
+        parent = _make_mock_parent()
+
+        result = json.loads(delegate_task(
+            tasks=[
+                {"goal": "Patch module A", "category": "implementation"},
+                {"goal": "Patch module B", "category": "implementation"},
+            ],
+            parent_agent=parent,
+        ))
+
+        self.assertIn("error", result)
+        self.assertIn("category at 1", result["error"])
+
+    @patch("tools.delegate_tool._run_single_child")
+    @patch("tools.delegate_tool._build_child_agent")
+    @patch("tools.delegate_tool._load_config")
+    def test_category_only_batch_can_exceed_root_default(self, mock_load_config, mock_build_child, mock_run_child):
+        mock_load_config.return_value = {
+            "max_concurrent_children": 3,
+            "categories": {
+                "research": {"max_concurrent_children": 5},
+            },
+        }
+        mock_build_child.side_effect = [MagicMock() for _ in range(4)]
+        mock_run_child.side_effect = lambda *, task_index, goal, child, parent_agent: {
+            "task_index": task_index,
+            "status": "completed",
+            "summary": f"Done {goal}",
+            "api_calls": 1,
+            "duration_seconds": 0.1,
+        }
+        parent = _make_mock_parent()
+        captured = {}
+
+        def _recording_executor(*args, **kwargs):
+            captured["max_workers"] = kwargs.get("max_workers")
+            return RealThreadPoolExecutor(*args, **kwargs)
+
+        with patch("tools.delegate_tool.ThreadPoolExecutor", side_effect=_recording_executor):
+            result = json.loads(delegate_task(
+                tasks=[
+                    {"goal": "Research A"},
+                    {"goal": "Research B"},
+                    {"goal": "Research C"},
+                    {"goal": "Research D"},
+                ],
+                category="research",
+                parent_agent=parent,
+            ))
+
+        self.assertIn("results", result)
+        self.assertEqual(len(result["results"]), 4)
+        self.assertEqual(mock_build_child.call_count, 4)
+        self.assertEqual(captured["max_workers"], 4)
 
 
 if __name__ == "__main__":

@@ -616,6 +616,7 @@ class AIAgent:
         max_iterations: int = 90,  # Default tool-calling iterations (shared with subagents)
         tool_delay: float = 1.0,
         enabled_toolsets: List[str] = None,
+        enabled_tools: List[str] = None,
         disabled_toolsets: List[str] = None,
         save_trajectories: bool = False,
         verbose_logging: bool = False,
@@ -847,6 +848,7 @@ class AIAgent:
 
         # Store toolset filtering options
         self.enabled_toolsets = enabled_toolsets
+        self.enabled_tools = list(enabled_tools) if enabled_tools is not None else None
         self.disabled_toolsets = disabled_toolsets
         
         # Model response configuration
@@ -3292,6 +3294,42 @@ class AIAgent:
             "budget_max": self.iteration_budget.max_total,
         }
 
+    def get_orchestration_continuation_snapshot(self, result: Optional[dict]) -> dict:
+        """Summarize resumable work for gateway continuation handling."""
+        payload = result if isinstance(result, dict) else {}
+        todo_items = []
+        try:
+            if getattr(self, "_todo_store", None) is not None:
+                raw_items = self._todo_store.read() or []
+                if isinstance(raw_items, list):
+                    todo_items = [dict(item) for item in raw_items if isinstance(item, dict)]
+        except Exception:
+            todo_items = []
+
+        active_todos = [
+            dict(item)
+            for item in todo_items
+            if str(item.get("status") or "").strip().lower() in {"pending", "in_progress"}
+        ]
+
+        if payload.get("interrupted"):
+            outcome_status = "interrupted"
+        elif payload.get("failed"):
+            outcome_status = "failed"
+        elif payload.get("completed") or not active_todos:
+            outcome_status = "completed"
+        else:
+            outcome_status = "incomplete"
+
+        response_preview = str(payload.get("final_response") or payload.get("error") or "").strip()
+        return {
+            "sessionId": str(getattr(self, "session_id", "") or ""),
+            "outcomeStatus": outcome_status,
+            "todoItems": todo_items,
+            "activeTodos": active_todos,
+            "responsePreview": response_preview,
+        }
+
     def shutdown_memory_provider(self, messages: list = None) -> None:
         """Shut down the memory provider and context engine — call at actual session boundaries.
 
@@ -3732,6 +3770,73 @@ class AIAgent:
             )
         return messages
 
+    def _todo_has_active_items(self) -> bool:
+        try:
+            items = self._todo_store.read()
+        except Exception:
+            return False
+        return any(item.get("status") in ("pending", "in_progress") for item in items)
+
+    def _should_inject_orchestration_note(self, user_message: str, api_call_count: int) -> bool:
+        cfg = self._delegation_cfg if isinstance(self._delegation_cfg, dict) else {}
+        if getattr(self, "_delegate_depth", 0) != 0:
+            return False
+        if api_call_count != 1:
+            return False
+        if not cfg.get("auto_decompose_large_tasks", True):
+            return False
+        if not isinstance(user_message, str) or not user_message.strip():
+            return False
+        if "todo" not in self.valid_tool_names:
+            return False
+        if self._todo_has_active_items():
+            return False
+        text = user_message.lower()
+        score = 0
+        if len(user_message) >= 220:
+            score += 2
+        if len(re.findall(r"\b(and|also|then|after|before|while)\b", text)) >= 2:
+            score += 2
+        if any(token in text for token in ("across the board", "all profiles", "across all profiles", "end-to-end", "hardening pass", "make sure", "implement", "verify", "fix regressions", "audit")):
+            score += 2
+        if len(re.findall(r"\b(test|verify|implement|update|check|ensure|review|compare|patch|refactor)\b", text)) >= 3:
+            score += 2
+        if text.count("\n-") >= 2 or text.count("\n1.") >= 1 or text.count("; ") >= 2:
+            score += 2
+        return score >= 4
+
+    def _build_orchestration_user_note(self) -> str:
+        cfg = self._delegation_cfg if isinstance(self._delegation_cfg, dict) else {}
+        max_children = cfg.get("max_concurrent_children", 3)
+        try:
+            max_children = max(1, int(max_children))
+        except (TypeError, ValueError):
+            max_children = 3
+        auto_fanout_max = self._resolve_auto_fanout_max_tasks(cfg, max_children)
+        lines = [
+            "<runtime-orchestration-policy>",
+            "This request appears large or multi-step.",
+            "Before substantive execution, create a concise todo list with 2-7 items and mark exactly one item in_progress.",
+            "After planning, continue execution immediately instead of stopping after the plan.",
+        ]
+        if cfg.get("auto_fanout_batch_mode", True) and "delegate_task" in self.valid_tool_names:
+            lines.append(
+                f"When independent subtasks exist, prefer ONE delegate_task batch call with tasks=[...] (up to {auto_fanout_max} tasks) instead of many separate delegate_task calls."
+            )
+            lines.append(
+                "Use delegation categories when they fit: research for audits/comparison, implementation for code changes, verification for tests/review."
+            )
+        lines.append("</runtime-orchestration-policy>")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _resolve_auto_fanout_max_tasks(cfg: dict, max_children: int) -> int:
+        auto_fanout_max = cfg.get("auto_fanout_max_tasks", max_children)
+        try:
+            return max(1, min(max_children, int(auto_fanout_max)))
+        except (TypeError, ValueError):
+            return min(max_children, 3)
+
     @staticmethod
     def _cap_delegate_task_calls(tool_calls: list) -> list:
         """Truncate excess delegate_task calls to max_concurrent_children.
@@ -3762,6 +3867,106 @@ class AIAgent:
             delegate_count - max_children, max_children,
         )
         return truncated
+
+    @staticmethod
+    def _coalesce_delegate_task_calls(tool_calls: list) -> list:
+        if not tool_calls:
+            return tool_calls
+        try:
+            from tools.delegate_tool import _load_config, _resolve_batch_concurrency_limit
+            cfg = _load_config()
+        except Exception:
+            cfg = {}
+            from tools.delegate_tool import _resolve_batch_concurrency_limit
+        if not cfg.get("auto_fanout_batch_mode", True):
+            return tool_calls
+
+        merged_tasks = []
+        first_delegate = None
+        max_iterations = None
+        delegate_count = 0
+
+        for tc in tool_calls:
+            if tc.function.name != "delegate_task":
+                continue
+            delegate_count += 1
+            first_delegate = first_delegate or tc
+            try:
+                args = json.loads(tc.function.arguments or "{}")
+            except Exception:
+                return tool_calls
+            if not isinstance(args, dict):
+                return tool_calls
+            current_max_iterations = args.get("max_iterations")
+            if current_max_iterations is not None:
+                try:
+                    max_iterations = max(int(current_max_iterations), max_iterations or 0)
+                except (TypeError, ValueError):
+                    return tool_calls
+            top_level_defaults = {
+                key: args.get(key)
+                for key in ("category", "acp_command", "acp_args")
+                if args.get(key) is not None
+            }
+            if isinstance(args.get("tasks"), list):
+                for task in args["tasks"]:
+                    if not isinstance(task, dict) or not str(task.get("goal", "")).strip():
+                        return tool_calls
+                    normalized = dict(task)
+                    for key, value in top_level_defaults.items():
+                        normalized.setdefault(key, value)
+                    merged_tasks.append(normalized)
+            else:
+                goal = str(args.get("goal") or "").strip()
+                if not goal:
+                    return tool_calls
+                task = {"goal": goal}
+                for key in ("context", "toolsets", "category", "acp_command", "acp_args"):
+                    if args.get(key) is not None:
+                        task[key] = args.get(key)
+                merged_tasks.append(task)
+
+        if delegate_count == 0:
+            return tool_calls
+
+        batch_limit, _limit_category = _resolve_batch_concurrency_limit(merged_tasks, None, cfg)
+        auto_fanout_max = AIAgent._resolve_auto_fanout_max_tasks(cfg, batch_limit)
+        needs_rewrite = delegate_count > 1
+
+        if len(merged_tasks) > auto_fanout_max:
+            merged_tasks = merged_tasks[:auto_fanout_max]
+            needs_rewrite = True
+            logger.warning(
+                "Coalesced delegate_task fanout exceeded auto_fanout_max_tasks=%d; truncating merged batch",
+                auto_fanout_max,
+            )
+
+        if not needs_rewrite:
+            return tool_calls
+
+        merged_args = {"tasks": merged_tasks}
+        if max_iterations is not None:
+            merged_args["max_iterations"] = max_iterations
+        merged_call = SimpleNamespace(
+            id=getattr(first_delegate, "id", None),
+            type=getattr(first_delegate, "type", "function"),
+            function=SimpleNamespace(
+                name="delegate_task",
+                arguments=json.dumps(merged_args, ensure_ascii=False, separators=(",", ":"), sort_keys=True),
+            ),
+        )
+
+        output = []
+        inserted = False
+        for tc in tool_calls:
+            if tc.function.name == "delegate_task":
+                if not inserted:
+                    output.append(merged_call)
+                    inserted = True
+                continue
+            output.append(tc)
+        logger.info("Coalesced %d delegate_task calls into one batch with %d task(s)", delegate_count, len(merged_tasks))
+        return output
 
     @staticmethod
     def _deduplicate_tool_calls(tool_calls: list) -> list:
@@ -7551,7 +7756,10 @@ class AIAgent:
                 context=function_args.get("context"),
                 toolsets=function_args.get("toolsets"),
                 tasks=function_args.get("tasks"),
+                category=function_args.get("category"),
                 max_iterations=function_args.get("max_iterations"),
+                acp_command=function_args.get("acp_command"),
+                acp_args=function_args.get("acp_args"),
                 parent_agent=self,
             )
         else:
@@ -8839,6 +9047,8 @@ class AIAgent:
                 # never mutated, so nothing leaks into session persistence.
                 if idx == current_turn_user_idx and msg.get("role") == "user":
                     _injections = []
+                    if self._should_inject_orchestration_note(original_user_message, api_call_count):
+                        _injections.append(self._build_orchestration_user_note())
                     if _ext_prefetch_cache:
                         _fenced = build_memory_context_block(_ext_prefetch_cache)
                         if _fenced:
@@ -10885,6 +11095,9 @@ class AIAgent:
                     self._invalid_json_retries = 0
 
                     # ── Post-call guardrails ──────────────────────────
+                    assistant_message.tool_calls = self._coalesce_delegate_task_calls(
+                        assistant_message.tool_calls
+                    )
                     assistant_message.tool_calls = self._cap_delegate_task_calls(
                         assistant_message.tool_calls
                     )

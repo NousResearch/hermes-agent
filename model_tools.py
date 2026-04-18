@@ -209,6 +209,7 @@ def _append_description_suffix(description: str, suffix: str) -> str:
 
 def get_tool_definitions(
     enabled_toolsets: List[str] = None,
+    enabled_tools: List[str] = None,
     disabled_toolsets: List[str] = None,
     quiet_mode: bool = False,
 ) -> List[Dict[str, Any]]:
@@ -219,6 +220,7 @@ def get_tool_definitions(
 
     Args:
         enabled_toolsets: Only include tools from these toolsets.
+        enabled_tools: Only include these exact tool names (intersected after toolset filtering).
         disabled_toolsets: Exclude tools from these toolsets (if enabled_toolsets is None).
         quiet_mode: Suppress status prints.
 
@@ -267,6 +269,19 @@ def get_tool_definitions(
         from toolsets import get_all_toolsets
         for ts_name in get_all_toolsets():
             tools_to_include.update(resolve_toolset(ts_name))
+
+    if enabled_tools is not None:
+        explicit_tools = {
+            str(name).strip()
+            for name in enabled_tools
+            if isinstance(name, str) and str(name).strip()
+        }
+        tools_to_include &= explicit_tools
+        if not quiet_mode:
+            if explicit_tools:
+                print(f"🎯 Explicit tool filter: {', '.join(sorted(explicit_tools))}")
+            else:
+                print("🎯 Explicit tool filter provided, but it resolved to no valid tool names")
 
     # Plugin-registered tools are now resolved through the normal toolset
     # path — validate_toolset() / resolve_toolset() / get_all_toolsets()

@@ -22,7 +22,9 @@ logger = logging.getLogger(__name__)
 import os
 import threading
 import time
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from toolsets import TOOLSETS
@@ -80,6 +82,30 @@ def _get_max_concurrent_children() -> int:
 DEFAULT_MAX_ITERATIONS = 50
 _HEARTBEAT_INTERVAL = 30  # seconds between parent activity heartbeats during delegation
 DEFAULT_TOOLSETS = ["terminal", "file", "web"]
+DEFAULT_DELEGATION_CATEGORY = "general"
+DEFAULT_CATEGORY_PROFILES = {
+    "general": {"max_concurrent_children": _DEFAULT_MAX_CONCURRENT_CHILDREN},
+    "research": {
+        "max_concurrent_children": 3,
+        "max_iterations": 25,
+        "enabled_tools": [
+            "read_file", "search_files", "session_search", "skills_list", "skill_view",
+            "web_search", "web_extract", "browser_navigate", "browser_snapshot",
+            "browser_console", "browser_scroll", "browser_get_images", "vision_analyze",
+            "browser_vision",
+        ],
+    },
+    "implementation": {
+        "max_concurrent_children": 2,
+        "max_iterations": 35,
+        "toolsets": ["terminal", "file"],
+    },
+    "verification": {
+        "max_concurrent_children": 3,
+        "max_iterations": 20,
+        "toolsets": ["terminal", "file", "web"],
+    },
+}
 
 
 def check_delegate_requirements() -> bool:
@@ -153,6 +179,143 @@ def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
         "delegation", "clarify", "memory", "code_execution",
     }
     return [t for t in toolsets if t not in blocked_toolset_names]
+
+
+def _normalize_category_name(value: Optional[str]) -> str:
+    if not value or not isinstance(value, str):
+        return ""
+    return value.strip().lower().replace(" ", "_").replace("-", "_")
+
+
+def _normalize_category_profile(raw: Any) -> Dict[str, Any]:
+    if not isinstance(raw, dict):
+        return {}
+    profile: Dict[str, Any] = {}
+    if isinstance(raw.get("toolsets"), list):
+        profile["toolsets"] = [str(t).strip() for t in raw["toolsets"] if str(t).strip()]
+    if isinstance(raw.get("enabled_tools"), list):
+        profile["enabled_tools"] = [str(t).strip() for t in raw["enabled_tools"] if str(t).strip()]
+    for key in ("model", "provider", "base_url", "api_key", "reasoning_effort", "acp_command"):
+        if isinstance(raw.get(key), str) and raw.get(key).strip():
+            profile[key] = raw.get(key).strip()
+    if isinstance(raw.get("acp_args"), list):
+        profile["acp_args"] = [str(v) for v in raw["acp_args"]]
+    for key in ("max_iterations", "max_concurrent_children"):
+        if raw.get(key) is not None:
+            try:
+                profile[key] = max(1, int(raw.get(key)))
+            except (TypeError, ValueError):
+                logger.warning("Ignoring invalid delegation category %s=%r", key, raw.get(key))
+    return profile
+
+
+def _merge_category_profile(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
+    merged = dict(base or {})
+    for key, value in (override or {}).items():
+        if value in (None, "", [], {}):
+            continue
+        merged[key] = list(value) if isinstance(value, list) else value
+    return merged
+
+
+def _normalize_delegation_config(cfg: Any) -> Dict[str, Any]:
+    if not isinstance(cfg, dict):
+        cfg = {}
+    normalized = dict(cfg)
+    categories = {name: dict(profile) for name, profile in DEFAULT_CATEGORY_PROFILES.items()}
+    raw_categories = cfg.get("categories") if isinstance(cfg, dict) else None
+    if isinstance(raw_categories, dict):
+        for name, raw_profile in raw_categories.items():
+            normalized_name = _normalize_category_name(name)
+            if not normalized_name:
+                continue
+            categories[normalized_name] = _merge_category_profile(
+                categories.get(normalized_name, {}),
+                _normalize_category_profile(raw_profile),
+            )
+    normalized["categories"] = categories
+    default_category = _normalize_category_name(cfg.get("default_category")) if isinstance(cfg, dict) else ""
+    normalized["default_category"] = default_category or DEFAULT_DELEGATION_CATEGORY
+    return normalized
+
+
+def _resolve_task_category(task: Dict[str, Any], top_level_category: Optional[str], cfg: Dict[str, Any]) -> str:
+    explicit = _normalize_category_name(task.get("category"))
+    if explicit:
+        return explicit
+    inherited = _normalize_category_name(top_level_category)
+    if inherited:
+        return inherited
+    return _normalize_category_name(cfg.get("default_category")) or DEFAULT_DELEGATION_CATEGORY
+
+
+def _resolve_category_profile(cfg: Dict[str, Any], category: str) -> Dict[str, Any]:
+    categories = cfg.get("categories") if isinstance(cfg, dict) else {}
+    profile = categories.get(category) if isinstance(categories, dict) else None
+    if profile:
+        return _merge_category_profile({}, profile)
+    return _merge_category_profile({}, categories.get(DEFAULT_DELEGATION_CATEGORY, {})) if isinstance(categories, dict) else {}
+
+
+def _enforce_category_concurrency(
+    task_list: List[Dict[str, Any]],
+    cfg: Dict[str, Any],
+    top_level_category: Optional[str] = None,
+) -> Optional[str]:
+    categories = [_resolve_task_category(task, top_level_category, cfg) for task in task_list]
+    counts = Counter(categories)
+    for category, count in counts.items():
+        profile = _resolve_category_profile(cfg, category)
+        cap = profile.get("max_concurrent_children")
+        if cap is None:
+            continue
+        try:
+            cap_int = max(1, int(cap))
+        except (TypeError, ValueError):
+            continue
+        if count > cap_int:
+            return (
+                f"Too many '{category}' delegation tasks: {count} provided, but "
+                f"category policy caps this category at {cap_int}."
+            )
+    return None
+
+
+def _resolve_batch_concurrency_limit(
+    task_list: List[Dict[str, Any]],
+    top_level_category: Optional[str],
+    cfg: Dict[str, Any],
+) -> tuple[int, Optional[str]]:
+    """Return the effective concurrency limit for one delegation batch.
+
+    The root ``max_concurrent_children`` remains the default/global guardrail.
+    When every task is explicitly assigned to the same category, that category's
+    higher concurrency cap may override the root default for that batch.
+    """
+    base_limit = _get_max_concurrent_children()
+    if not task_list:
+        return base_limit, None
+
+    resolved_categories = [_resolve_task_category(task, top_level_category, cfg) for task in task_list]
+    if len(set(resolved_categories)) != 1:
+        return base_limit, None
+
+    category_name = resolved_categories[0]
+    explicit_top_level = _normalize_category_name(top_level_category)
+    explicit_per_task = all(_normalize_category_name(task.get("category")) == category_name for task in task_list)
+    if explicit_top_level != category_name and not explicit_per_task:
+        return base_limit, None
+
+    profile = _resolve_category_profile(cfg, category_name)
+    category_limit = profile.get("max_concurrent_children")
+    try:
+        category_limit = max(1, int(category_limit))
+    except (TypeError, ValueError):
+        return base_limit, None
+
+    if category_limit > base_limit:
+        return category_limit, category_name
+    return base_limit, None
 
 
 def _build_child_progress_callback(task_index: int, goal: str, parent_agent, task_count: int = 1) -> Optional[callable]:
@@ -267,10 +430,11 @@ def _build_child_agent(
     goal: str,
     context: Optional[str],
     toolsets: Optional[List[str]],
-    model: Optional[str],
-    max_iterations: int,
-    task_count: int,
-    parent_agent,
+    enabled_tools: Optional[List[str]] = None,
+    model: Optional[str] = None,
+    max_iterations: int = DEFAULT_MAX_ITERATIONS,
+    task_count: int = 1,
+    parent_agent=None,
     # Credential overrides from delegation config (provider:model resolution)
     override_provider: Optional[str] = None,
     override_base_url: Optional[str] = None,
@@ -317,6 +481,18 @@ def _build_child_agent(
         child_toolsets = _strip_blocked_tools(sorted(parent_toolsets))
     else:
         child_toolsets = _strip_blocked_tools(DEFAULT_TOOLSETS)
+
+    child_enabled_tools = None
+    if enabled_tools is not None:
+        parent_tool_names = set(getattr(parent_agent, "valid_tool_names", set()) or [])
+        child_enabled_tools = sorted({
+            str(name).strip()
+            for name in enabled_tools
+            if isinstance(name, str)
+            and str(name).strip()
+            and str(name).strip() in parent_tool_names
+            and str(name).strip() not in DELEGATE_BLOCKED_TOOLS
+        })
 
     workspace_hint = _resolve_workspace_hint(parent_agent)
     child_prompt = _build_child_system_prompt(goal, context, workspace_path=workspace_hint)
@@ -386,6 +562,7 @@ def _build_child_agent(
         reasoning_config=child_reasoning,
         prefill_messages=getattr(parent_agent, "prefill_messages", None),
         enabled_toolsets=child_toolsets,
+        enabled_tools=child_enabled_tools,
         quiet_mode=True,
         ephemeral_system_prompt=child_prompt,
         log_prefix=f"[subagent-{task_index}]",
@@ -682,6 +859,7 @@ def delegate_task(
     context: Optional[str] = None,
     toolsets: Optional[List[str]] = None,
     tasks: Optional[List[Dict[str, Any]]] = None,
+    category: Optional[str] = None,
     max_iterations: Optional[int] = None,
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
@@ -710,7 +888,7 @@ def delegate_task(
         })
 
     # Load config
-    cfg = _load_config()
+    cfg = _normalize_delegation_config(_load_config())
     default_max_iter = cfg.get("max_iterations", DEFAULT_MAX_ITERATIONS)
     effective_max_iter = max_iterations or default_max_iter
 
@@ -725,9 +903,19 @@ def delegate_task(
         return tool_error(str(exc))
 
     # Normalize to task list
-    max_children = _get_max_concurrent_children()
+    max_children, limit_category = _resolve_batch_concurrency_limit(
+        task_list=tasks or [],
+        top_level_category=category,
+        cfg=cfg,
+    )
     if tasks and isinstance(tasks, list):
         if len(tasks) > max_children:
+            if limit_category:
+                return tool_error(
+                    f"Too many tasks: {len(tasks)} provided, but category '{limit_category}' allows at most "
+                    f"{max_children} concurrent tasks in a single batch. Either reduce the task count or increase "
+                    f"delegation.categories.{limit_category}.max_concurrent_children in config.yaml."
+                )
             return tool_error(
                 f"Too many tasks: {len(tasks)} provided, but "
                 f"max_concurrent_children is {max_children}. "
@@ -737,7 +925,7 @@ def delegate_task(
             )
         task_list = tasks
     elif goal and isinstance(goal, str) and goal.strip():
-        task_list = [{"goal": goal, "context": context, "toolsets": toolsets}]
+        task_list = [{"goal": goal, "context": context, "toolsets": toolsets, "category": category}]
     else:
         return tool_error("Provide either 'goal' (single task) or 'tasks' (batch).")
 
@@ -748,6 +936,10 @@ def delegate_task(
     for i, task in enumerate(task_list):
         if not task.get("goal", "").strip():
             return tool_error(f"Task {i} is missing a 'goal'.")
+
+    category_error = _enforce_category_concurrency(task_list, cfg, top_level_category=category)
+    if category_error:
+        return tool_error(category_error)
 
     overall_start = time.monotonic()
     results = []
@@ -768,15 +960,22 @@ def delegate_task(
     children = []
     try:
         for i, t in enumerate(task_list):
+            task_category = _resolve_task_category(t, category, cfg)
+            category_profile = _resolve_category_profile(cfg, task_category)
+            merged_cfg = _merge_category_profile(cfg, category_profile)
+            category_creds = _resolve_delegation_credentials(merged_cfg, parent_agent)
+            task_toolsets = t.get("toolsets") or category_profile.get("toolsets") or toolsets
+            task_enabled_tools = category_profile.get("enabled_tools")
+            task_max_iter = int(category_profile.get("max_iterations") or effective_max_iter)
             child = _build_child_agent(
                 task_index=i, goal=t["goal"], context=t.get("context"),
-                toolsets=t.get("toolsets") or toolsets, model=creds["model"],
-                max_iterations=effective_max_iter, task_count=n_tasks, parent_agent=parent_agent,
-                override_provider=creds["provider"], override_base_url=creds["base_url"],
-                override_api_key=creds["api_key"],
-                override_api_mode=creds["api_mode"],
-                override_acp_command=t.get("acp_command") or acp_command,
-                override_acp_args=t.get("acp_args") or acp_args,
+                toolsets=task_toolsets, enabled_tools=task_enabled_tools, model=category_creds["model"] or creds["model"],
+                max_iterations=task_max_iter, task_count=n_tasks, parent_agent=parent_agent,
+                override_provider=category_creds["provider"] or creds["provider"], override_base_url=category_creds["base_url"] or creds["base_url"],
+                override_api_key=category_creds["api_key"] or creds["api_key"],
+                override_api_mode=category_creds["api_mode"] or creds["api_mode"],
+                override_acp_command=t.get("acp_command") or category_profile.get("acp_command") or acp_command,
+                override_acp_args=t.get("acp_args") or category_profile.get("acp_args") or acp_args,
             )
             # Override with correct parent tool names (before child construction mutated global)
             child._delegate_saved_tool_names = _parent_tool_names
@@ -795,7 +994,7 @@ def delegate_task(
         completed_count = 0
         spinner_ref = getattr(parent_agent, '_delegate_spinner', None)
 
-        with ThreadPoolExecutor(max_workers=max_children) as executor:
+        with ThreadPoolExecutor(max_workers=min(max_children, n_tasks)) as executor:
             futures = {}
             for i, t, child in children:
                 future = executor.submit(
@@ -1001,6 +1200,33 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
             "api_mode": None,
         }
 
+    parent_provider = str(getattr(parent_agent, "provider", "") or "").strip()
+    parent_base_url = str(getattr(parent_agent, "base_url", "") or "").strip()
+    parent_api_key = str(getattr(parent_agent, "api_key", "") or "").strip()
+    parent_api_mode = str(getattr(parent_agent, "api_mode", "") or "").strip()
+    runtime_parent_providers = {
+        "openai-codex",
+        "nous",
+        "qwen-oauth",
+        "google-gemini-cli",
+        "copilot-acp",
+    }
+    if (
+        configured_provider == parent_provider
+        and configured_provider in runtime_parent_providers
+        and parent_base_url
+        and parent_api_key
+    ):
+        return {
+            "model": configured_model,
+            "provider": parent_provider,
+            "base_url": parent_base_url,
+            "api_key": parent_api_key,
+            "api_mode": parent_api_mode or None,
+            "command": getattr(parent_agent, "acp_command", None),
+            "args": list(getattr(parent_agent, "acp_args", []) or []),
+        }
+
     # Provider is configured — resolve full credentials
     try:
         from hermes_cli.runtime_provider import resolve_runtime_provider
@@ -1034,24 +1260,30 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
 def _load_config() -> dict:
     """Load delegation config from CLI_CONFIG or persistent config.
 
-    Checks the runtime config (cli.py CLI_CONFIG) first, then falls back
-    to the persistent config (hermes_cli/config.py load_config()) so that
-    ``delegation.model`` / ``delegation.provider`` are picked up regardless
-    of the entry point (CLI, gateway, cron).
+    Prefer the live CLI runtime config when it was loaded for the current
+    HERMES_HOME. If ``cli`` was imported earlier under a different home/profile
+    (common in tests that isolate HERMES_HOME after collection), its module-level
+    ``CLI_CONFIG`` is stale and must not leak into delegation.
     """
     try:
-        from cli import CLI_CONFIG
-        cfg = CLI_CONFIG.get("delegation", {})
-        if cfg:
-            return cfg
+        import cli as cli_mod
+        from hermes_constants import get_hermes_home
+
+        current_home = Path(get_hermes_home()).resolve()
+        cli_home = getattr(cli_mod, "_hermes_home", None)
+        cli_home_resolved = Path(cli_home).resolve() if cli_home is not None else None
+        if cli_home_resolved == current_home:
+            cfg = getattr(cli_mod, "CLI_CONFIG", {}).get("delegation", {})
+            if cfg:
+                return _normalize_delegation_config(cfg)
     except Exception:
         pass
     try:
         from hermes_cli.config import load_config
         full = load_config()
-        return full.get("delegation", {})
+        return _normalize_delegation_config(full.get("delegation", {}))
     except Exception:
-        return {}
+        return _normalize_delegation_config({})
 
 
 # ---------------------------------------------------------------------------
@@ -1128,6 +1360,10 @@ DELEGATE_TASK_SCHEMA = {
                             "items": {"type": "string"},
                             "description": f"Toolsets for this specific task. Available: {_TOOLSET_LIST_STR}. Use 'web' for network access, 'terminal' for shell, 'browser' for web interaction.",
                         },
+                        "category": {
+                            "type": "string",
+                            "description": "Optional delegation policy category (e.g. research, implementation, verification). Category profiles can constrain concurrency, tool access, and model/runtime defaults.",
+                        },
                         "acp_command": {
                             "type": "string",
                             "description": "Per-task ACP command override (e.g. 'claude'). Overrides the top-level acp_command for this task only.",
@@ -1148,6 +1384,10 @@ DELEGATE_TASK_SCHEMA = {
                     "its own subagent with isolated context and terminal session. "
                     "When provided, top-level goal/context/toolsets are ignored."
                 ),
+            },
+            "category": {
+                "type": "string",
+                "description": "Optional delegation policy category (e.g. research, implementation, verification). Applies to all tasks unless a task overrides it.",
             },
             "max_iterations": {
                 "type": "integer",
@@ -1191,6 +1431,7 @@ registry.register(
         context=args.get("context"),
         toolsets=args.get("toolsets"),
         tasks=args.get("tasks"),
+        category=args.get("category"),
         max_iterations=args.get("max_iterations"),
         acp_command=args.get("acp_command"),
         acp_args=args.get("acp_args"),

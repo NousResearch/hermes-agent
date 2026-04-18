@@ -4220,3 +4220,143 @@ class TestMemoryProviderTurnStart:
         import inspect
         src = inspect.getsource(AIAgent.run_conversation)
         assert "on_turn_start(self._user_turn_count" in src
+
+
+class TestNativeOrchestrationHardening:
+    def test_enabled_tools_forwarded_to_tool_loader(self):
+        with (
+            patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("read_file")) as mock_get_tools,
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            AIAgent(
+                api_key="test-key-1234567890",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+                enabled_tools=["read_file", "search_files"],
+            )
+
+        assert mock_get_tools.call_args.kwargs["enabled_tools"] == ["read_file", "search_files"]
+
+    def test_coalesce_delegate_task_calls_merges_into_batch(self):
+        call_a = _mock_tool_call(
+            name="delegate_task",
+            arguments=json.dumps({"goal": "Research profile configs", "category": "research"}),
+            call_id="call_a",
+        )
+        call_b = _mock_tool_call(
+            name="delegate_task",
+            arguments=json.dumps({"goal": "Verify runtime hooks", "category": "verification"}),
+            call_id="call_b",
+        )
+
+        with (
+            patch("tools.delegate_tool._load_config", return_value={"auto_fanout_batch_mode": True}),
+            patch("tools.delegate_tool._get_max_concurrent_children", return_value=5),
+        ):
+            merged = AIAgent._coalesce_delegate_task_calls([call_a, call_b])
+
+        assert len(merged) == 1
+        assert merged[0].function.name == "delegate_task"
+        args = json.loads(merged[0].function.arguments)
+        assert [task["goal"] for task in args["tasks"]] == [
+            "Research profile configs",
+            "Verify runtime hooks",
+        ]
+        assert [task["category"] for task in args["tasks"]] == ["research", "verification"]
+
+    def test_coalesce_delegate_task_calls_respects_auto_fanout_max_tasks(self):
+        call_a = _mock_tool_call(
+            name="delegate_task",
+            arguments=json.dumps(
+                {
+                    "tasks": [
+                        {"goal": "Task A"},
+                        {"goal": "Task B"},
+                        {"goal": "Task C"},
+                    ]
+                }
+            ),
+            call_id="call_a",
+        )
+
+        with (
+            patch(
+                "tools.delegate_tool._load_config",
+                return_value={
+                    "auto_fanout_batch_mode": True,
+                    "auto_fanout_max_tasks": 2,
+                    "max_concurrent_children": 5,
+                },
+            ),
+            patch("tools.delegate_tool._get_max_concurrent_children", return_value=5),
+        ):
+            merged = AIAgent._coalesce_delegate_task_calls([call_a])
+
+        assert len(merged) == 1
+        args = json.loads(merged[0].function.arguments)
+        assert [task["goal"] for task in args["tasks"]] == ["Task A", "Task B"]
+
+    def test_coalesce_delegate_task_calls_allows_explicit_category_batch_above_root_default(self):
+        calls = [
+            _mock_tool_call(
+                name="delegate_task",
+                arguments=json.dumps({"goal": f"Research {idx}", "category": "research"}),
+                call_id=f"call_{idx}",
+            )
+            for idx in range(4)
+        ]
+
+        with (
+            patch(
+                "tools.delegate_tool._load_config",
+                return_value={
+                    "auto_fanout_batch_mode": True,
+                    "auto_fanout_max_tasks": 5,
+                    "max_concurrent_children": 3,
+                    "categories": {"research": {"max_concurrent_children": 5}},
+                },
+            ),
+            patch("tools.delegate_tool._get_max_concurrent_children", return_value=3),
+        ):
+            merged = AIAgent._coalesce_delegate_task_calls(calls)
+
+        assert len(merged) == 1
+        args = json.loads(merged[0].function.arguments)
+        assert [task["goal"] for task in args["tasks"]] == [
+            "Research 0",
+            "Research 1",
+            "Research 2",
+            "Research 3",
+        ]
+
+    def test_large_task_note_detection_prefers_todo_and_batch_delegation(self):
+        with (
+            patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("todo", "delegate_task")),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            agent = AIAgent(
+                api_key="test-key-1234567890",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+        agent._delegation_cfg = {
+            "auto_decompose_large_tasks": True,
+            "auto_fanout_batch_mode": True,
+            "auto_fanout_max_tasks": 4,
+            "max_concurrent_children": 5,
+        }
+        message = (
+            "Please audit all profiles, compare the runtime behavior across the board, "
+            "implement any missing orchestration hooks, run tests, verify the CLI behavior, "
+            "and fix regressions before you finish."
+        )
+
+        assert agent._should_inject_orchestration_note(message, api_call_count=1) is True
+        note = agent._build_orchestration_user_note()
+        assert "create a concise todo list" in note
+        assert "delegate_task batch call" in note

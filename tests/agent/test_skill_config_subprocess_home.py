@@ -21,7 +21,6 @@ from unittest.mock import patch
 import pytest
 
 from agent.skill_utils import (
-    SKILL_CONFIG_PREFIX,
     _expanduser_for_subprocess,
     resolve_skill_config_values,
 )
@@ -87,6 +86,49 @@ class TestExpanduserForSubprocess:
             assert _expanduser_for_subprocess("~/wiki") == "/home/alice/wiki"
             assert _expanduser_for_subprocess("~") == "/home/alice"
             assert _expanduser_for_subprocess("/abs/path") == "/abs/path"
+
+    # -- Edge cases flagged by Copilot on PR #12284 ---------------------
+
+    def test_double_slash_after_tilde_stays_under_subprocess_home(self):
+        """``~//foo`` must NOT bypass the subprocess HOME via ``os.path.join``
+        treating the ``/foo`` remainder as absolute.  Mirrors the behaviour
+        of ``os.path.expanduser`` which strips repeated separators."""
+        result = _expanduser_for_subprocess(
+            "~//foo/bar", subprocess_home="/opt/data/home"
+        )
+        assert result == "/opt/data/home/foo/bar"
+
+    def test_tilde_backslash_on_windows_style_paths(self):
+        """``~\\wiki`` (Windows-style) must also expand under the subprocess
+        HOME, not fall through to the Python process HOME."""
+        result = _expanduser_for_subprocess(
+            "~\\wiki", subprocess_home="/opt/data/home"
+        )
+        # os.path.join normalises on the running platform; we just check
+        # the result lives under the subprocess HOME.
+        assert result.startswith("/opt/data/home")
+        assert "wiki" in result
+
+    def test_mixed_separators_after_tilde(self):
+        """``~\\\\foo`` (escaped backslash + repeat) must still join under
+        the subprocess HOME, not return an absolute ``/foo``."""
+        result = _expanduser_for_subprocess(
+            "~\\\\foo", subprocess_home="/opt/data/home"
+        )
+        assert result.startswith("/opt/data/home")
+
+    def test_subprocess_home_argument_short_circuits_lookup(self):
+        """Passing ``subprocess_home=`` bypasses
+        :func:`get_subprocess_home` — callers in loops can resolve once
+        and reuse (avoids repeated ``os.path.isdir`` stat calls)."""
+        with patch(
+            "agent.skill_utils.get_subprocess_home",
+            side_effect=AssertionError("should not be called"),
+        ):
+            result = _expanduser_for_subprocess(
+                "~/x", subprocess_home="/opt/data/home"
+            )
+        assert result == "/opt/data/home/x"
 
 
 # ---------------------------------------------------------------------------

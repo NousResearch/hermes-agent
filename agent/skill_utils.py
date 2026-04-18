@@ -382,7 +382,13 @@ def _resolve_dotpath(config: Dict[str, Any], dotted_key: str):
     return current
 
 
-def _expanduser_for_subprocess(path: str) -> str:
+_TILDE_PREFIXES: Tuple[str, ...] = ("~/", "~\\")
+
+
+def _expanduser_for_subprocess(
+    path: str,
+    subprocess_home: Optional[str] = None,
+) -> str:
     """Expand ``~`` in a path using the Hermes subprocess HOME when active.
 
     Skill config values are surfaced in the agent's prompt and then acted on
@@ -394,21 +400,34 @@ def _expanduser_for_subprocess(path: str) -> str:
 
     Behaviour:
       * If :func:`hermes_constants.get_subprocess_home` is active
-        (``{HERMES_HOME}/home`` exists on disk), expand ``~`` and ``~/…``
-        against that directory.
+        (``{HERMES_HOME}/home`` exists on disk), expand ``~``, ``~/…`` and
+        ``~\\…`` (Windows) against that directory.  Leading path separators
+        on the remainder (``~//foo``, ``~\\\\foo``) are stripped so the
+        result always lives under the subprocess HOME — mirroring what
+        :func:`os.path.expanduser` does for the same inputs.
       * ``~user`` forms are still resolved via :func:`os.path.expanduser`
         (they name a specific OS user and are independent of Hermes).
-      * When no subprocess HOME is active, behaviour is identical to the
-        original :func:`os.path.expanduser` call.
+      * When no subprocess HOME is active (or the caller already resolved
+        ``None``), behaviour is identical to the original
+        :func:`os.path.expanduser` call.
+
+    ``subprocess_home`` may be passed in to avoid repeated
+    :func:`get_subprocess_home` lookups when this helper is called in a
+    loop (see :func:`resolve_skill_config_values`).
     """
-    subprocess_home = get_subprocess_home()
+    if subprocess_home is None:
+        subprocess_home = get_subprocess_home()
     if subprocess_home is None:
         return os.path.expanduser(path)
     if path == "~":
         return subprocess_home
-    if path.startswith("~/"):
-        # Explicit posix join — path[2:] has no leading slash.
-        return os.path.join(subprocess_home, path[2:])
+    for prefix in _TILDE_PREFIXES:
+        if path.startswith(prefix):
+            # Strip the leading ``~`` and *all* leading separators so
+            # ``~//foo`` or ``~\\foo`` join under the subprocess HOME
+            # instead of returning an accidentally-absolute path.
+            remainder = path[len(prefix) - 1:].lstrip("/\\")
+            return os.path.join(subprocess_home, remainder)
     # ``~user`` or embedded ``~`` — defer to the OS user database.
     return os.path.expanduser(path)
 
@@ -437,6 +456,12 @@ def resolve_skill_config_values(
         except Exception:
             pass
 
+    # Resolve the subprocess HOME once up-front so we don't re-``stat``
+    # ``{HERMES_HOME}/home`` for every config var.  ``None`` means no
+    # subprocess HOME is active and the helper will fall through to
+    # ``os.path.expanduser``.
+    subprocess_home = get_subprocess_home()
+
     resolved: Dict[str, Any] = {}
     for var in config_vars:
         logical_key = var["key"]
@@ -448,7 +473,10 @@ def resolve_skill_config_values(
 
         # Expand ~ in path-like values — subprocess HOME wins when active.
         if isinstance(value, str) and ("~" in value or "${" in value):
-            value = _expanduser_for_subprocess(os.path.expandvars(value))
+            value = _expanduser_for_subprocess(
+                os.path.expandvars(value),
+                subprocess_home=subprocess_home,
+            )
 
         resolved[logical_key] = value
 

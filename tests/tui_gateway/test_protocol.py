@@ -258,6 +258,72 @@ def test_slash_exec_rejects_skill_commands(server):
     assert "skill command" in resp["error"]["message"]
 
 
+@pytest.mark.parametrize("cmd", ["retry", "queue hello", "q hello", "steer fix the test", "plan"])
+def test_slash_exec_rejects_pending_input_commands(server, cmd):
+    """slash.exec must reject commands that use _pending_input in the CLI."""
+    sid = "test-session"
+    server._sessions[sid] = {"session_key": sid, "agent": None}
+
+    resp = server.handle_request({
+        "id": "r1",
+        "method": "slash.exec",
+        "params": {"command": cmd, "session_id": sid},
+    })
+
+    assert "error" in resp
+    assert resp["error"]["code"] == 4018
+    assert "pending-input command" in resp["error"]["message"]
+
+
+def test_command_dispatch_queue_sends_message(server):
+    """command.dispatch /queue returns {type: 'send', message: ...} for the TUI."""
+    sid = "test-session"
+    server._sessions[sid] = {"session_key": sid}
+
+    resp = server.handle_request({
+        "id": "r1",
+        "method": "command.dispatch",
+        "params": {"name": "queue", "arg": "tell me about quantum computing", "session_id": sid},
+    })
+
+    assert "error" not in resp
+    result = resp["result"]
+    assert result["type"] == "send"
+    assert result["message"] == "tell me about quantum computing"
+
+
+def test_command_dispatch_queue_requires_arg(server):
+    """command.dispatch /queue without an argument returns an error."""
+    sid = "test-session"
+    server._sessions[sid] = {"session_key": sid}
+
+    resp = server.handle_request({
+        "id": "r2",
+        "method": "command.dispatch",
+        "params": {"name": "queue", "arg": "", "session_id": sid},
+    })
+
+    assert "error" in resp
+    assert resp["error"]["code"] == 4004
+
+
+def test_command_dispatch_steer_fallback_sends_message(server):
+    """command.dispatch /steer with no active agent falls back to send."""
+    sid = "test-session"
+    server._sessions[sid] = {"session_key": sid, "agent": None}
+
+    resp = server.handle_request({
+        "id": "r3",
+        "method": "command.dispatch",
+        "params": {"name": "steer", "arg": "focus on testing", "session_id": sid},
+    })
+
+    assert "error" not in resp
+    result = resp["result"]
+    assert result["type"] == "send"
+    assert result["message"] == "focus on testing"
+
+
 def test_command_dispatch_returns_skill_payload(server):
     """command.dispatch returns structured skill payload for the TUI to send()."""
     sid = "test-session"

@@ -93,6 +93,7 @@ declare module '@hermes/ink' {
   export function useHasSelection(): boolean
   export function useStdout(): { readonly stdout?: NodeJS.WriteStream }
   export function useTerminalFocus(): boolean
+  export function useTerminalTitle(title: string | null): void
   export function useDeclaredCursor(args: {
     readonly line: number
     readonly column: number

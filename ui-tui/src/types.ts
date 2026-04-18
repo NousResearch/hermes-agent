@@ -29,6 +29,15 @@ export interface ApprovalReq {
   description: string
 }
 
+export interface ConfirmReq {
+  cancelLabel?: string
+  confirmLabel?: string
+  danger?: boolean
+  detail?: string
+  onConfirm: () => void
+  title: string
+}
+
 export interface ClarifyReq {
   choices: string[] | null
   question: string

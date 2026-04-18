@@ -1,3 +1,4 @@
+import { NO_CONFIRM_DESTRUCTIVE } from '../../../config/env.js'
 import { dailyFortune, randomFortune } from '../../../content/fortunes.js'
 import { HOTKEYS } from '../../../content/hotkeys.js'
 import { nextDetailsMode, parseDetailsMode } from '../../../domain/details.js'
@@ -82,8 +83,27 @@ export const coreCommands: SlashCommand[] = [
         return
       }
 
-      patchUiState({ status: 'forging session…' })
-      ctx.session.newSession(cmd.startsWith('/new') ? 'new session started' : undefined)
+      const isNew = cmd.startsWith('/new')
+
+      const commit = () => {
+        patchUiState({ status: 'forging session…' })
+        ctx.session.newSession(isNew ? 'new session started' : undefined)
+      }
+
+      if (NO_CONFIRM_DESTRUCTIVE) {
+        return commit()
+      }
+
+      patchOverlayState({
+        confirm: {
+          cancelLabel: 'No, keep going',
+          confirmLabel: isNew ? 'Yes, start a new session' : 'Yes, clear the session',
+          danger: true,
+          detail: 'This ends the current conversation and clears the transcript.',
+          onConfirm: commit,
+          title: isNew ? 'Start a new session?' : 'Clear the current session?'
+        }
+      })
     }
   },
 

@@ -10,6 +10,7 @@ import type {
   ActivityItem,
   ApprovalReq,
   ClarifyReq,
+  ConfirmReq,
   DetailsMode,
   Msg,
   PanelSection,
@@ -53,6 +54,7 @@ export interface GatewayProviderProps {
 export interface OverlayState {
   approval: ApprovalReq | null
   clarify: ClarifyReq | null
+  confirm: ConfirmReq | null
   modelPicker: boolean
   pager: null | PagerState
   picker: boolean

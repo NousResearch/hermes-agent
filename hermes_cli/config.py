@@ -740,6 +740,10 @@ DEFAULT_CONFIG = {
     "approvals": {
         "mode": "manual",
         "timeout": 60,
+        # Path prefixes where rm is auto-approved (no prompt needed).
+        # Only applies when ALL rm targets are under one of these paths.
+        # Set to [] to disable (always prompt for rm).
+        "safe_rm_paths": ["/tmp/", "/var/folders/", "/private/tmp/", "/private/var/folders/"],
     },
 
     # Permanently allowed dangerous command patterns (added via "always" approval)

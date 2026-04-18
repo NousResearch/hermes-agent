@@ -184,6 +184,43 @@ def _normalize_command_for_detection(command: str) -> str:
     return command
 
 
+# Cached safe-rm paths loaded from config.  Invalidated on first load and
+# then reused for the rest of the process lifetime.  Users editing
+# config.yaml should restart the gateway for changes to take effect.
+_safe_rm_prefixes: list[str] | None = None
+
+
+def _get_safe_rm_prefixes() -> list[str]:
+    """Return the cached list of safe rm path prefixes from config."""
+    global _safe_rm_prefixes
+    if _safe_rm_prefixes is None:
+        try:
+            from hermes_cli.config import load_config
+            _safe_rm_prefixes = load_config().get("approvals", {}).get("safe_rm_paths", [])
+        except Exception:
+            _safe_rm_prefixes = []
+    return _safe_rm_prefixes
+
+
+def _is_rm_in_safe_paths(command_lower: str) -> bool:
+    """Check whether an rm command only targets paths under safe_rm_paths.
+
+    Returns True when ALL path arguments start with one of the configured
+    safe prefixes, meaning the command can skip approval.  Returns False
+    if the command has no detectable absolute-path targets (conservative:
+    require approval when unsure) or if any target falls outside the
+    safe list.
+    """
+    prefixes = _get_safe_rm_prefixes()
+    if not prefixes:
+        return False
+    # Extract absolute path arguments (skip flags like -rf, --recursive)
+    targets = re.findall(r'(?:^|\s)(?:-\S*\s+)*(/[^\s;|&]+)', command_lower)
+    if not targets:
+        return False
+    return all(any(t.startswith(p) for p in prefixes) for t in targets)
+
+
 def detect_dangerous_command(command: str) -> tuple:
     """Check if a command matches any dangerous patterns.
 
@@ -191,6 +228,12 @@ def detect_dangerous_command(command: str) -> tuple:
         (is_dangerous, pattern_key, description) or (False, None, None)
     """
     command_lower = _normalize_command_for_detection(command).lower()
+
+    # Allow rm in configured safe directories without approval.
+    # Reads from config approvals.safe_rm_paths (data-driven, user can customize).
+    if re.search(r'\brm\b', command_lower) and _is_rm_in_safe_paths(command_lower):
+        return (False, None, None)
+
     for pattern, description in DANGEROUS_PATTERNS:
         if re.search(pattern, command_lower, re.IGNORECASE | re.DOTALL):
             pattern_key = description

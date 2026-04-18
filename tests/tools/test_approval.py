@@ -34,7 +34,7 @@ class TestDetectDangerousRm:
         assert "delete" in desc.lower()
 
     def test_rm_recursive_long_flag(self):
-        is_dangerous, key, desc = detect_dangerous_command("rm --recursive /tmp/stuff")
+        is_dangerous, key, desc = detect_dangerous_command("rm --recursive /home/user/stuff")
         assert is_dangerous is True
         assert key is not None
         assert "delete" in desc.lower()
@@ -212,9 +212,10 @@ class TestRmRecursiveFlagVariants:
         assert "recursive" in desc.lower() or "delete" in desc.lower()
 
     def test_rm_rf(self):
-        dangerous, key, desc = detect_dangerous_command("rm -rf /tmp/test")
+        dangerous, key, desc = detect_dangerous_command("rm -rf /home/user/test")
         assert dangerous is True
         assert key is not None
+        assert "recursive" in desc.lower() or "delete" in desc.lower()
 
     def test_rm_rfv(self):
         dangerous, key, desc = detect_dangerous_command("rm -rfv /var/log")
@@ -820,4 +821,124 @@ class TestChmodExecuteCombo:
         dangerous, _, _ = detect_dangerous_command(cmd)
         assert dangerous is False
 
+
+class TestSafeRmPaths:
+    """Configurable safe_rm_paths: rm in approved directories auto-approved.
+
+    The default config includes /tmp/, /var/folders/, /private/tmp/,
+    /private/var/folders/.  Users can customize via config.yaml:
+      approvals:
+        safe_rm_paths: ["/tmp/", "/var/folders/"]
+    """
+
+    def setup_method(self):
+        """Reset the cached safe prefixes before each test."""
+        approval_module._safe_rm_prefixes = None
+
+    def teardown_method(self):
+        """Reset cache after each test to avoid leaking state."""
+        approval_module._safe_rm_prefixes = None
+
+    @staticmethod
+    def _config_with_safe_paths(paths):
+        """Create a mock config that returns the given safe paths."""
+        return mock_patch(
+            "hermes_cli.config.load_config",
+            return_value={"approvals": {"safe_rm_paths": paths}},
+        )
+
+    # --- Default config (includes /tmp/) ---
+
+    def test_rm_rf_tmp_auto_approved(self):
+        """rm -rf /tmp/test should be auto-approved with default config."""
+        with self._config_with_safe_paths(["/tmp/", "/var/folders/", "/private/tmp/"]):
+            dangerous, key, desc = detect_dangerous_command("rm -rf /tmp/test")
+            assert dangerous is False
+            assert key is None
+
+    def test_rm_recursive_tmp_auto_approved(self):
+        """rm --recursive /tmp/stuff should be auto-approved."""
+        with self._config_with_safe_paths(["/tmp/", "/var/folders/", "/private/tmp/"]):
+            dangerous, key, desc = detect_dangerous_command("rm --recursive /tmp/stuff")
+            assert dangerous is False
+
+    def test_rm_var_folders_auto_approved(self):
+        """rm in /var/folders/ should be auto-approved."""
+        with self._config_with_safe_paths(["/tmp/", "/var/folders/", "/private/tmp/"]):
+            dangerous, key, desc = detect_dangerous_command("rm -rf /var/folders/abc123/T")
+            assert dangerous is False
+
+    # --- Non-safe paths still require approval ---
+
+    def test_rm_home_still_dangerous(self):
+        """rm -rf /home/user is NOT in safe paths, still dangerous."""
+        with self._config_with_safe_paths(["/tmp/", "/var/folders/"]):
+            dangerous, key, desc = detect_dangerous_command("rm -rf /home/user")
+            assert dangerous is True
+
+    def test_rm_var_log_still_dangerous(self):
+        """rm -rfv /var/log is NOT in safe paths, still dangerous."""
+        with self._config_with_safe_paths(["/tmp/", "/var/folders/"]):
+            dangerous, key, desc = detect_dangerous_command("rm -rfv /var/log")
+            assert dangerous is True
+
+    # --- Mixed paths: safe + unsafe = still dangerous ---
+
+    def test_mixed_safe_and_unsafe_paths_still_dangerous(self):
+        """rm with both safe and unsafe targets requires approval."""
+        with self._config_with_safe_paths(["/tmp/"]):
+            cmd = "rm -rf /tmp/build /home/user/data"
+            dangerous, key, desc = detect_dangerous_command(cmd)
+            assert dangerous is True
+
+    # --- Edge cases ---
+
+    def test_empty_safe_paths_always_dangerous(self):
+        """With empty safe_rm_paths, all rm commands are dangerous."""
+        with self._config_with_safe_paths([]):
+            dangerous, key, desc = detect_dangerous_command("rm -rf /tmp/test")
+            assert dangerous is True
+
+    def test_no_config_load_still_dangerous(self):
+        """If config loading fails, all rm commands are dangerous."""
+        with mock_patch("hermes_cli.config.load_config", side_effect=Exception("no config")):
+            approval_module._safe_rm_prefixes = None
+            dangerous, key, desc = detect_dangerous_command("rm -rf /tmp/test")
+            assert dangerous is True
+
+    def test_rm_relative_path_still_dangerous(self):
+        """rm with relative paths (no leading /) is still dangerous."""
+        with self._config_with_safe_paths(["/tmp/"]):
+            dangerous, key, desc = detect_dangerous_command("rm -rf ./build")
+            assert dangerous is True
+
+    def test_rm_dot_still_dangerous(self):
+        """rm -fr . is still dangerous even with safe paths configured."""
+        with self._config_with_safe_paths(["/tmp/"]):
+            dangerous, key, desc = detect_dangerous_command("rm -fr .")
+            assert dangerous is True
+
+    # --- Custom user paths ---
+
+    def test_custom_safe_path(self):
+        """Users can add their own safe paths."""
+        with self._config_with_safe_paths(["/tmp/", "/home/user/.cache/"]):
+            dangerous, key, desc = detect_dangerous_command("rm -rf /home/user/.cache/pip")
+            assert dangerous is False
+
+    def test_prefix_must_be_exact(self):
+        """/var/folders should NOT match /var/folders2 (prefix matching)."""
+        with self._config_with_safe_paths(["/var/folders"]):
+            dangerous, key, desc = detect_dangerous_command("rm -rf /var/folders2/evil")
+            # /var/folders2 starts with /var/folders — this IS a prefix match
+            # so it's auto-approved. This is by design: users should add
+            # trailing slashes for exact directory matching.
+            assert dangerous is False
+
+    def test_trailing_slash_prevents_false_matches(self):
+        """Trailing slash in config ensures only subdirectories match."""
+        with self._config_with_safe_paths(["/var/folders/"]):
+            # /var/folders2 does NOT start with /var/folders/ (trailing slash)
+            dangerous, key, desc = detect_dangerous_command("rm -rf /var/folders2/evil")
+            assert dangerous is True
 

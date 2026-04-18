@@ -141,10 +141,18 @@ def test_auth_add_nous_oauth_persists_pool_entry(tmp_path, monkeypatch):
     auth_add_command(_Args())
 
     payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+
+    # Pool has exactly one canonical `device_code` entry — not a duplicate
+    # pair of `manual:device_code` + `device_code` (the latter would be
+    # materialised by _seed_from_singletons on every load_pool).
     entries = payload["credential_pool"]["nous"]
-    entry = next(item for item in entries if item["source"] == "manual:device_code")
-    assert entry["label"] == "nous@example.com"
-    assert entry["source"] == "manual:device_code"
+    device_code_entries = [
+        item for item in entries if item["source"] == "device_code"
+    ]
+    assert len(device_code_entries) == 1, entries
+    assert not any(item["source"] == "manual:device_code" for item in entries)
+    entry = device_code_entries[0]
+    assert entry["source"] == "device_code"
     assert entry["agent_key"] == "ak-test"
     assert entry["portal_base_url"] == "https://portal.example.com"
 

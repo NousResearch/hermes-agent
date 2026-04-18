@@ -1444,13 +1444,8 @@ def _nous_poller(session_id: str) -> None:
             auth_state, min_key_ttl_seconds=300, timeout_seconds=15.0,
             force_refresh=False, force_mint=True,
         )
-        from agent.credential_pool import SOURCE_MANUAL
         from hermes_cli.auth import persist_nous_credentials
-        persist_nous_credentials(
-            full_state,
-            label="dashboard device_code",
-            source=f"{SOURCE_MANUAL}:dashboard_device_code",
-        )
+        persist_nous_credentials(full_state)
         with _oauth_sessions_lock:
             sess["status"] = "approved"
         _log.info("oauth/device: nous login completed (session=%s)", session_id)

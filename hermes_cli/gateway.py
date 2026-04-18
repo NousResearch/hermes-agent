@@ -245,8 +245,9 @@ def _scan_gateway_pids(exclude_pids: set[int], all_profiles: bool = False) -> li
                             pass
                     current_cmd = ""
         else:
+            ps_command = ["ps", "-A", "-ww", "-o", "pid=,command="] if is_macos() else ["ps", "-A", "eww", "-o", "pid=,command="]
             result = subprocess.run(
-                ["ps", "-A", "eww", "-o", "pid=,command="],
+                ps_command,
                 capture_output=True,
                 text=True,
                 timeout=10,

@@ -252,10 +252,11 @@ def test_install_linux_gateway_from_setup_system_choice_as_root_installs(monkeyp
 def test_find_gateway_pids_falls_back_to_pid_file_when_process_scan_fails(monkeypatch):
     monkeypatch.setattr(gateway, "_get_service_pids", lambda: set())
     monkeypatch.setattr(gateway, "is_windows", lambda: False)
+    monkeypatch.setattr(gateway, "is_macos", lambda: False)
     monkeypatch.setattr("gateway.status.get_running_pid", lambda: 321)
 
     def fake_run(cmd, **kwargs):
-        if cmd[:4] == ["ps", "-A", "eww", "-o"]:
+        if cmd[:4] in (["ps", "-A", "eww", "-o"], ["ps", "-A", "-ww", "-o"]):
             return SimpleNamespace(returncode=1, stdout="", stderr="ps failed")
         raise AssertionError(f"Unexpected command: {cmd}")
 
@@ -352,3 +353,43 @@ class TestWaitForGatewayExit:
 
         assert killed == 2
         assert calls == [(11, True), (22, True)]
+
+    def test_find_gateway_pids_uses_macos_ps_flags(self, monkeypatch):
+        commands = []
+
+        def fake_run(cmd, capture_output=True, text=True, timeout=10):
+            commands.append(cmd)
+            return SimpleNamespace(returncode=0, stdout="123 /usr/bin/python -m hermes_cli.main gateway run --replace\n", stderr="")
+
+        monkeypatch.setattr(gateway, "is_windows", lambda: False)
+        monkeypatch.setattr(gateway, "is_macos", lambda: True)
+        monkeypatch.setattr(gateway, "_get_service_pids", lambda: [])
+        monkeypatch.setattr(gateway, "_profile_arg", lambda home: "")
+        monkeypatch.setattr(gateway, "get_hermes_home", lambda: SimpleNamespace(resolve=lambda: SimpleNamespace(__str__=lambda self: "/Users/blank/.hermes")))
+        monkeypatch.setattr(gateway.subprocess, "run", fake_run)
+        monkeypatch.setattr(gateway.os, "getpid", lambda: 999)
+
+        pids = gateway.find_gateway_pids()
+
+        assert pids == [123]
+        assert commands == [["ps", "-A", "-ww", "-o", "pid=,command="]]
+
+    def test_find_gateway_pids_uses_linux_ps_flags(self, monkeypatch):
+        commands = []
+
+        def fake_run(cmd, capture_output=True, text=True, timeout=10):
+            commands.append(cmd)
+            return SimpleNamespace(returncode=0, stdout="123 /usr/bin/python -m hermes_cli.main gateway run --replace\n", stderr="")
+
+        monkeypatch.setattr(gateway, "is_windows", lambda: False)
+        monkeypatch.setattr(gateway, "is_macos", lambda: False)
+        monkeypatch.setattr(gateway, "_get_service_pids", lambda: [])
+        monkeypatch.setattr(gateway, "_profile_arg", lambda home: "")
+        monkeypatch.setattr(gateway, "get_hermes_home", lambda: SimpleNamespace(resolve=lambda: SimpleNamespace(__str__=lambda self: "/Users/blank/.hermes")))
+        monkeypatch.setattr(gateway.subprocess, "run", fake_run)
+        monkeypatch.setattr(gateway.os, "getpid", lambda: 999)
+
+        pids = gateway.find_gateway_pids()
+
+        assert pids == [123]
+        assert commands == [["ps", "-A", "eww", "-o", "pid=,command="]]

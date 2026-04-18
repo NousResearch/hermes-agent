@@ -20,7 +20,8 @@
     "@askjo/camofox-browser": "^1.5.2"
   },
   "overrides": {
-    "lodash": "4.18.1"
+    "lodash": "4.18.1",
+    "basic-ftp": "5.3.0"
   },
   "engines": {
     "node": ">=20.0.0"

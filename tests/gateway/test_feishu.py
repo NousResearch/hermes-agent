@@ -2291,7 +2291,12 @@ class TestAdapterBehavior(unittest.TestCase):
         payload = json.loads(adapter._build_post_payload("# 标题\n访问 [文档](https://example.com)"))
 
         elements = payload["zh_cn"]["content"][0]
-        self.assertEqual(elements, [{"tag": "md", "text": "# 标题\n访问 [文档](https://example.com)"}])
+        # Feishu's ``md`` grammar does not render ATX headings, so ``# 标题``
+        # is rewritten as a bold line so the emphasis survives rendering.
+        self.assertEqual(
+            elements,
+            [{"tag": "md", "text": "**标题**\n访问 [文档](https://example.com)"}],
+        )
 
     @patch.dict(os.environ, {}, clear=True)
     def test_build_post_payload_wraps_markdown_in_md_tag(self):
@@ -2503,6 +2508,117 @@ class TestAdapterBehavior(unittest.TestCase):
             rows,
             [[{"tag": "md", "text": "---\n1. 第一项\n<u>下划线</u>\n~~删除线~~"}]],
         )
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_transform_text_for_feishu_rewrites_headings_and_br(self):
+        from gateway.platforms.feishu import _transform_text_for_feishu
+
+        # Feishu renders neither ATX headings nor ``<br>`` tags, so both are
+        # rewritten (``#`` to bold, ``<br>`` to newline) before sending.
+        out = _transform_text_for_feishu("# H1\n## H2\nline a<br>line b<br/>line c")
+        self.assertIn("**H1**", out)
+        self.assertIn("**H2**", out)
+        self.assertNotIn("#", out)
+        self.assertNotIn("<br", out.lower())
+        self.assertIn("line a\nline b\nline c", out)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_build_outbound_payload_routes_tables_to_interactive_card(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        content = "| col1 | col2 |\n| --- | --- |\n| a | b |\n| c | d |"
+        msg_type, payload = adapter._build_outbound_payload(content)
+        self.assertEqual(msg_type, "interactive")
+        card = json.loads(payload)
+        self.assertEqual(card["schema"], "2.0")
+        table_elem = next(e for e in card["body"]["elements"] if e["tag"] == "table")
+        self.assertEqual(
+            [c["display_name"] for c in table_elem["columns"]],
+            ["col1", "col2"],
+        )
+        self.assertEqual(
+            [[row["col_0"], row["col_1"]] for row in table_elem["rows"]],
+            [["a", "b"], ["c", "d"]],
+        )
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_build_outbound_payload_keeps_non_table_markdown_on_post(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        msg_type, payload = adapter._build_outbound_payload(
+            "可以用 **粗体** 和 *斜体*。"
+        )
+        self.assertEqual(msg_type, "post")
+        element = json.loads(payload)["zh_cn"]["content"][0][0]
+        # Inline-only markdown passes through unchanged — no headings/<br> to rewrite.
+        self.assertEqual(element["text"], "可以用 **粗体** 和 *斜体*。")
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_card_splits_text_and_tables_in_order(self):
+        from gateway.platforms.feishu import _build_markdown_card_payload
+
+        content = (
+            "# 标题\n"
+            "正文段落\n\n"
+            "| a | b |\n| --- | --- |\n| 1 | 2 |\n\n"
+            "结尾。"
+        )
+        card = json.loads(_build_markdown_card_payload(content))
+        tags = [e["tag"] for e in card["body"]["elements"]]
+        self.assertEqual(tags, ["markdown", "table", "markdown"])
+        self.assertIn("**标题**", card["body"]["elements"][0]["content"])
+        self.assertEqual(card["body"]["elements"][2]["content"], "结尾。")
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_card_table_preserves_inline_markdown_in_cells(self):
+        from gateway.platforms.feishu import _build_markdown_card_payload
+
+        content = "| 功能 | 描述 |\n| --- | --- |\n| **粗体** | `code` |"
+        card = json.loads(_build_markdown_card_payload(content))
+        table_elem = next(e for e in card["body"]["elements"] if e["tag"] == "table")
+        row = table_elem["rows"][0]
+        # Cell text is stored verbatim; Feishu's text cell renders **bold**/`code`.
+        self.assertEqual(row["col_0"], "**粗体**")
+        self.assertEqual(row["col_1"], "`code`")
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_send_uses_interactive_card_for_table_markdown(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {}
+
+        class _MessageAPI:
+            def create(self, request):
+                captured["request"] = request
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_table"),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(v1=SimpleNamespace(message=_MessageAPI()))
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        table_content = "| col1 | col2 |\n| --- | --- |\n| a | b |"
+        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(adapter.send(chat_id="oc_chat", content=table_content))
+
+        self.assertTrue(result.success)
+        self.assertEqual(captured["request"].request_body.msg_type, "interactive")
+        card = json.loads(captured["request"].request_body.content)
+        self.assertEqual(card["schema"], "2.0")
+        table_elem = next(e for e in card["body"]["elements"] if e["tag"] == "table")
+        self.assertEqual(len(table_elem["columns"]), 2)
+        self.assertEqual(len(table_elem["rows"]), 1)
 
 
 @unittest.skipUnless(_HAS_LARK_OAPI, "lark-oapi not installed")

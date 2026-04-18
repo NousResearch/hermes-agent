@@ -237,6 +237,13 @@ class TestCLIStatusBar:
         cli_obj._spinner_text = ""
         assert cli_obj._spinner_widget_height(width=90) == 0
 
+    def test_spinner_height_uses_display_width_for_wide_characters(self):
+        cli_obj = _make_cli()
+        cli_obj._spinner_text = "你" * 40
+        cli_obj._tool_start_time = 0
+
+        assert cli_obj._spinner_widget_height(width=64) == 2
+
     def test_voice_status_bar_compacts_on_narrow_terminals(self):
         cli_obj = _make_cli()
         cli_obj._voice_mode = True

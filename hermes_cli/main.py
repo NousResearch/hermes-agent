@@ -4985,8 +4985,187 @@ def _update_node_dependencies() -> None:
             print(f"    {stderr.splitlines()[-1]}")
 
 
+class _UpdateOutputStream:
+    """Stream wrapper used during ``hermes update`` to survive terminal loss.
+
+    Wraps the process's original stdout/stderr so that:
+
+    * Every write is also mirrored to an append-only log file
+      (``~/.hermes/logs/update.log``) that users can inspect after the
+      terminal disconnects.
+    * Writes to the original stream that fail with ``BrokenPipeError`` /
+      ``OSError`` / ``ValueError`` (closed file) no longer cascade into
+      process exit — the update keeps going, only the on-screen output
+      stops.
+
+    Combined with ``SIGHUP -> SIG_IGN`` installed by
+    ``_install_hangup_protection``, this makes ``hermes update`` safe to
+    run in a plain SSH session that might disconnect mid-install.
+    """
+
+    def __init__(self, original, log_file):
+        self._original = original
+        self._log = log_file
+        self._original_broken = False
+
+    def write(self, data):
+        # Mirror to the log file first — it's the most reliable destination.
+        if self._log is not None:
+            try:
+                self._log.write(data)
+            except Exception:
+                # Log errors should never abort the update.
+                pass
+
+        if self._original_broken:
+            return len(data) if isinstance(data, (str, bytes)) else 0
+
+        try:
+            return self._original.write(data)
+        except (BrokenPipeError, OSError, ValueError):
+            # Terminal vanished (SSH disconnect, shell close).  Stop trying
+            # to write to it, but keep the update running.
+            self._original_broken = True
+            return len(data) if isinstance(data, (str, bytes)) else 0
+
+    def flush(self):
+        if self._log is not None:
+            try:
+                self._log.flush()
+            except Exception:
+                pass
+        if self._original_broken:
+            return
+        try:
+            self._original.flush()
+        except (BrokenPipeError, OSError, ValueError):
+            self._original_broken = True
+
+    def isatty(self):
+        if self._original_broken:
+            return False
+        try:
+            return self._original.isatty()
+        except Exception:
+            return False
+
+    def fileno(self):
+        # Some tools probe fileno(); defer to the underlying stream and let
+        # callers handle failures (same behaviour as the unwrapped stream).
+        return self._original.fileno()
+
+    def __getattr__(self, name):
+        return getattr(self._original, name)
+
+
+def _install_hangup_protection(gateway_mode: bool = False):
+    """Protect ``cmd_update`` from SIGHUP and broken terminal pipes.
+
+    Users commonly run ``hermes update`` in an SSH session or a terminal
+    that may close mid-install.  Without protection, ``SIGHUP`` from the
+    terminal kills the Python process during ``pip install`` and leaves
+    the venv half-installed; the documented workaround ("use screen /
+    tmux") shouldn't be required for something as routine as an update.
+
+    Protections installed:
+
+    1. ``SIGHUP`` is set to ``SIG_IGN``.  POSIX preserves ``SIG_IGN``
+       across ``exec()``, so pip and git subprocesses also stop dying on
+       hangup.
+    2. ``sys.stdout`` / ``sys.stderr`` are wrapped to mirror output to
+       ``~/.hermes/logs/update.log`` and to silently absorb
+       ``BrokenPipeError`` when the terminal vanishes.
+
+    ``SIGINT`` (Ctrl-C) and ``SIGTERM`` (systemd shutdown) are
+    **intentionally left alone** — those are legitimate cancellation
+    signals the user or OS sent on purpose.
+
+    In gateway mode (``hermes update --gateway``) the update is already
+    spawned detached from a terminal, so this function is a no-op.
+
+    Returns a dict that ``cmd_update`` can pass to
+    ``_finalize_update_output`` on exit.  Returning a dict rather than a
+    tuple keeps the call site forward-compatible with future additions.
+    """
+    state = {
+        "prev_stdout": sys.stdout,
+        "prev_stderr": sys.stderr,
+        "log_file": None,
+        "installed": False,
+    }
+
+    if gateway_mode:
+        return state
+
+    import signal as _signal
+
+    # (1) Ignore SIGHUP for the remainder of this process.
+    if hasattr(_signal, "SIGHUP"):
+        try:
+            _signal.signal(_signal.SIGHUP, _signal.SIG_IGN)
+        except (ValueError, OSError):
+            # Called from a non-main thread — not fatal.  The update still
+            # runs, just without hangup protection.
+            pass
+
+    # (2) Mirror output to update.log and wrap stdio for broken-pipe
+    # tolerance.  Any failure here is non-fatal; we just skip the wrap.
+    try:
+        from hermes_cli.config import get_hermes_home
+
+        logs_dir = get_hermes_home() / "logs"
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        log_path = logs_dir / "update.log"
+        log_file = open(log_path, "a", buffering=1, encoding="utf-8")
+
+        import datetime as _dt
+
+        log_file.write(
+            f"\n=== hermes update started "
+            f"{_dt.datetime.now().isoformat(timespec='seconds')} ===\n"
+        )
+
+        state["log_file"] = log_file
+        sys.stdout = _UpdateOutputStream(state["prev_stdout"], log_file)
+        sys.stderr = _UpdateOutputStream(state["prev_stderr"], log_file)
+        state["installed"] = True
+    except Exception:
+        # Leave stdio untouched on any setup failure.  Update continues
+        # without mirroring.
+        state["log_file"] = None
+
+    return state
+
+
+def _finalize_update_output(state):
+    """Restore stdio and close the update.log handle opened by ``_install_hangup_protection``."""
+    if not state:
+        return
+    if state.get("installed"):
+        try:
+            sys.stdout = state.get("prev_stdout", sys.stdout)
+        except Exception:
+            pass
+        try:
+            sys.stderr = state.get("prev_stderr", sys.stderr)
+        except Exception:
+            pass
+    log_file = state.get("log_file")
+    if log_file is not None:
+        try:
+            log_file.flush()
+            log_file.close()
+        except Exception:
+            pass
+
+
 def cmd_update(args):
-    """Update Hermes Agent to the latest version."""
+    """Update Hermes Agent to the latest version.
+
+    Thin wrapper around ``_cmd_update_impl``: installs hangup protection,
+    runs the update, then restores stdio on the way out (even on
+    ``sys.exit`` or unhandled exceptions).
+    """
     from hermes_cli.config import is_managed, managed_error
 
     if is_managed():
@@ -4994,6 +5173,20 @@ def cmd_update(args):
         return
 
     gateway_mode = getattr(args, "gateway", False)
+
+    # Protect against mid-update terminal disconnects (SIGHUP) and tolerate
+    # writes to a closed stdout.  No-op in gateway mode.  See
+    # _install_hangup_protection for rationale.
+    _update_io_state = _install_hangup_protection(gateway_mode=gateway_mode)
+    try:
+        _cmd_update_impl(args, gateway_mode=gateway_mode)
+    finally:
+        _finalize_update_output(_update_io_state)
+
+
+def _cmd_update_impl(args, gateway_mode: bool):
+    """Body of ``cmd_update`` — kept separate so the wrapper can always
+    restore stdio even on ``sys.exit``."""
     # In gateway mode, use file-based IPC for prompts instead of stdin
     gw_input_fn = (
         (lambda prompt, default="": _gateway_prompt(prompt, default))

@@ -3987,6 +3987,12 @@ class GatewayRunner:
             message_type=MessageType.TEXT,
             source=source,
             raw_message=event.raw_message,
+            message_id=event.message_id,
+            metadata=dict(getattr(event, "metadata", None) or {}) or None,
+            reply_to_message_id=getattr(event, "reply_to_message_id", None),
+            reply_to_text=getattr(event, "reply_to_text", None),
+            auto_skill=getattr(event, "auto_skill", None),
+            timestamp=getattr(event, "timestamp", None),
         )
         
         # Let the normal message handler process it

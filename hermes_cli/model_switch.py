@@ -1107,13 +1107,23 @@ def list_authenticated_providers(
         for slug, grp in groups.items():
             if slug.lower() in seen_slugs:
                 continue
+            models = grp["models"]
+            # If no saved models, try live discovery from the endpoint
+            if not models:
+                try:
+                    from hermes_cli.models import provider_model_ids
+                    live = provider_model_ids(slug)
+                    if live:
+                        models = live
+                except Exception:
+                    pass
             results.append({
                 "slug": slug,
                 "name": grp["name"],
                 "is_current": slug == current_provider,
                 "is_user_defined": True,
-                "models": grp["models"],
-                "total_models": len(grp["models"]),
+                "models": models,
+                "total_models": len(models),
                 "source": "user-config",
                 "api_url": grp["api_url"],
             })

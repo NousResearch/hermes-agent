@@ -1332,6 +1332,20 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
             live = fetch_api_models(api_key, base_url)
             if live:
                 return live
+    if normalized.startswith("custom:"):
+        # Named custom provider (e.g. custom:lmstudio) — look up in config
+        from hermes_cli.config import get_compatible_custom_providers, load_config
+        custom_name = normalized[7:].strip().lower().replace(" ", "-")
+        for entry in get_compatible_custom_providers(load_config()):
+            name = (entry.get("name") or "").strip().lower().replace(" ", "-")
+            if name == custom_name:
+                base_url = entry.get("base_url", "")
+                api_key = entry.get("api_key", "")
+                if base_url:
+                    live = fetch_api_models(api_key, base_url)
+                    if live:
+                        return live
+                break
     return list(_PROVIDER_MODELS.get(normalized, []))
 
 

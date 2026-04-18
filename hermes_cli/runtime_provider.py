@@ -277,11 +277,12 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
         return None
     if not requested_norm.startswith("custom:"):
         try:
-            auth_mod.resolve_provider(requested_norm)
+            resolved = auth_mod.resolve_provider(requested_norm)
         except AuthError:
             pass
         else:
-            return None
+            if resolved != "custom":
+                return None
 
     config = load_config()
     

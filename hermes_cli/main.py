@@ -1467,7 +1467,8 @@ def select_provider_and_model(args=None):
     )
     if _has_saved_custom_list:
         ordered.append(("remove-custom", "Remove a saved custom provider"))
-    ordered.append(("cancel", "Cancel"))
+    ordered.append(("aux-config", "Configure auxiliary models..."))
+    ordered.append(("cancel", "Leave unchanged"))
 
     provider_idx = _prompt_provider_choice(
         [label for _, label in ordered],
@@ -1478,6 +1479,10 @@ def select_provider_and_model(args=None):
         return
 
     selected_provider = ordered[provider_idx][0]
+
+    if selected_provider == "aux-config":
+        _aux_config_menu()
+        return
 
     # Step 2: Provider-specific setup + model selection
     if selected_provider == "openrouter":
@@ -1577,6 +1582,328 @@ def _clear_stale_openai_base_url():
             if len(stale_url) > 40
             else f"Cleared stale OPENAI_BASE_URL from .env (was: {stale_url})"
         )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Auxiliary model configuration
+#
+# Hermes uses lightweight "auxiliary" models for side tasks (vision analysis,
+# context compression, web extraction, session search, etc.). Each task has
+# its own provider+model pair in config.yaml under `auxiliary.<task>`.
+#
+# The UI lives behind "Configure auxiliary models..." at the bottom of the
+# `hermes model` provider picker. It does NOT re-run credential setup — it
+# only routes already-authenticated providers to specific aux tasks. Users
+# configure new providers through the normal `hermes model` flow first.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# (task_key, display_name, short_description)
+_AUX_TASKS: list[tuple[str, str, str]] = [
+    ("vision",           "Vision",           "image/screenshot analysis"),
+    ("compression",      "Compression",      "context summarization"),
+    ("web_extract",      "Web extract",      "web page summarization"),
+    ("session_search",   "Session search",   "past-conversation recall"),
+    ("approval",         "Approval",         "smart command approval"),
+    ("mcp",              "MCP",              "MCP tool reasoning"),
+    ("flush_memories",   "Flush memories",   "memory consolidation"),
+    ("title_generation", "Title generation", "session titles"),
+    ("skills_hub",       "Skills hub",       "skills search/install"),
+]
+
+
+def _format_aux_current(task_cfg: dict) -> str:
+    """Render the current aux config for display in the task menu."""
+    if not isinstance(task_cfg, dict):
+        return "auto"
+    base_url = str(task_cfg.get("base_url") or "").strip()
+    provider = str(task_cfg.get("provider") or "auto").strip() or "auto"
+    model = str(task_cfg.get("model") or "").strip()
+    if base_url:
+        short = base_url.replace("https://", "").replace("http://", "").rstrip("/")
+        return f"custom ({short})" + (f" · {model}" if model else "")
+    if provider == "auto":
+        return "auto" + (f" · {model}" if model else "")
+    if model:
+        return f"{provider} · {model}"
+    return provider
+
+
+def _save_aux_choice(
+    task: str,
+    *,
+    provider: str,
+    model: str = "",
+    base_url: str = "",
+    api_key: str = "",
+) -> None:
+    """Persist an auxiliary task's provider/model to config.yaml.
+
+    Only writes the four routing fields — timeout, download_timeout, and any
+    other task-specific settings are preserved untouched. The main model
+    config (``model.default``/``model.provider``) is never modified.
+    """
+    from hermes_cli.config import load_config, save_config
+
+    cfg = load_config()
+    aux = cfg.setdefault("auxiliary", {})
+    if not isinstance(aux, dict):
+        aux = {}
+        cfg["auxiliary"] = aux
+    entry = aux.setdefault(task, {})
+    if not isinstance(entry, dict):
+        entry = {}
+        aux[task] = entry
+    entry["provider"] = provider
+    entry["model"] = model or ""
+    entry["base_url"] = base_url or ""
+    entry["api_key"] = api_key or ""
+    save_config(cfg)
+
+
+def _reset_aux_to_auto() -> int:
+    """Reset every known aux task back to auto/empty. Returns number reset."""
+    from hermes_cli.config import load_config, save_config
+
+    cfg = load_config()
+    aux = cfg.setdefault("auxiliary", {})
+    if not isinstance(aux, dict):
+        aux = {}
+        cfg["auxiliary"] = aux
+    count = 0
+    for task, _name, _desc in _AUX_TASKS:
+        entry = aux.setdefault(task, {})
+        if not isinstance(entry, dict):
+            entry = {}
+            aux[task] = entry
+        changed = False
+        if entry.get("provider") not in (None, "", "auto"):
+            entry["provider"] = "auto"
+            changed = True
+        for field in ("model", "base_url", "api_key"):
+            if entry.get(field):
+                entry[field] = ""
+                changed = True
+        # Preserve timeout/download_timeout — those are user-tuned, not routing
+        if changed:
+            count += 1
+    save_config(cfg)
+    return count
+
+
+def _aux_config_menu() -> None:
+    """Top-level auxiliary-model picker — choose a task to configure.
+
+    Loops until the user picks "Back" so multiple tasks can be configured
+    without returning to the main provider menu.
+    """
+    from hermes_cli.config import load_config
+
+    while True:
+        cfg = load_config()
+        aux = cfg.get("auxiliary", {}) if isinstance(cfg.get("auxiliary"), dict) else {}
+
+        print()
+        print("  Auxiliary models — side-task routing")
+        print()
+        print("  Hermes uses small, fast models for vision, compression, web")
+        print("  extraction, and other side tasks. \"auto\" lets Hermes pick the")
+        print("  best available backend automatically (OpenRouter → Nous Portal")
+        print("  → your main provider). You rarely need to change these —")
+        print("  override only if you want a specific model for a task.")
+        print()
+
+        # Build the task menu with current settings inline
+        name_col = max(len(name) for _, name, _ in _AUX_TASKS) + 2
+        desc_col = max(len(desc) for _, _, desc in _AUX_TASKS) + 4
+        entries: list[tuple[str, str]] = []
+        for task_key, name, desc in _AUX_TASKS:
+            task_cfg = aux.get(task_key, {}) if isinstance(aux.get(task_key), dict) else {}
+            current = _format_aux_current(task_cfg)
+            label = f"{name.ljust(name_col)}{('(' + desc + ')').ljust(desc_col)}{current}"
+            entries.append((task_key, label))
+        entries.append(("__reset__", "Reset all to auto"))
+        entries.append(("__back__",  "Back"))
+
+        idx = _prompt_provider_choice(
+            [label for _, label in entries], default=0,
+        )
+        if idx is None:
+            return
+        key = entries[idx][0]
+        if key == "__back__":
+            return
+        if key == "__reset__":
+            n = _reset_aux_to_auto()
+            if n:
+                print(f"Reset {n} auxiliary task(s) to auto.")
+            else:
+                print("All auxiliary tasks were already set to auto.")
+            print()
+            continue
+        # Otherwise configure the specific task
+        _aux_select_for_task(key)
+
+
+def _aux_select_for_task(task: str) -> None:
+    """Pick a provider + model for a single auxiliary task and persist it.
+
+    Uses ``list_authenticated_providers()`` to only show providers the user
+    has already configured. This avoids re-running OAuth/credential flows
+    inside the aux picker — users set up new providers through the normal
+    ``hermes model`` flow, then route aux tasks to them here.
+    """
+    from hermes_cli.config import load_config
+    from hermes_cli.model_switch import list_authenticated_providers
+
+    cfg = load_config()
+    aux = cfg.get("auxiliary", {}) if isinstance(cfg.get("auxiliary"), dict) else {}
+    task_cfg = aux.get(task, {}) if isinstance(aux.get(task), dict) else {}
+    current_provider = str(task_cfg.get("provider") or "auto").strip() or "auto"
+    current_model = str(task_cfg.get("model") or "").strip()
+    current_base_url = str(task_cfg.get("base_url") or "").strip()
+
+    display_name = next((name for key, name, _ in _AUX_TASKS if key == task), task)
+
+    # Gather authenticated providers (has credentials + curated model list)
+    try:
+        providers = list_authenticated_providers(current_provider=current_provider)
+    except Exception as exc:
+        print(f"Could not detect authenticated providers: {exc}")
+        providers = []
+
+    entries: list[tuple[str, str, list[str]]] = []  # (slug, label, models)
+    # "auto" always first
+    auto_marker = "  ← current" if current_provider == "auto" and not current_base_url else ""
+    entries.append(("__auto__", f"auto (recommended){auto_marker}", []))
+
+    for p in providers:
+        slug = p.get("slug", "")
+        name = p.get("name") or slug
+        total = p.get("total_models", 0)
+        models = p.get("models") or []
+        model_hint = f" — {total} models" if total else ""
+        marker = "  ← current" if slug == current_provider and not current_base_url else ""
+        entries.append((slug, f"{name}{model_hint}{marker}", list(models)))
+
+    # Custom endpoint (raw base_url)
+    custom_marker = "  ← current" if current_base_url else ""
+    entries.append(("__custom__", f"Custom endpoint (direct URL){custom_marker}", []))
+    entries.append(("__back__", "Back", []))
+
+    print()
+    print(f"  Configure {display_name} — current: {_format_aux_current(task_cfg)}")
+    print()
+
+    idx = _prompt_provider_choice([label for _, label, _ in entries], default=0)
+    if idx is None:
+        return
+    slug, _label, models = entries[idx]
+
+    if slug == "__back__":
+        return
+
+    if slug == "__auto__":
+        _save_aux_choice(task, provider="auto", model="", base_url="", api_key="")
+        print(f"{display_name}: reset to auto.")
+        return
+
+    if slug == "__custom__":
+        _aux_flow_custom_endpoint(task, task_cfg)
+        return
+
+    # Regular provider — pick a model from its curated list
+    _aux_flow_provider_model(task, slug, models, current_model)
+
+
+def _aux_flow_provider_model(
+    task: str,
+    provider_slug: str,
+    curated_models: list,
+    current_model: str = "",
+) -> None:
+    """Prompt for a model under an already-authenticated provider, save to aux."""
+    from hermes_cli.auth import _prompt_model_selection
+    from hermes_cli.models import get_pricing_for_provider
+
+    display_name = next((name for key, name, _ in _AUX_TASKS if key == task), task)
+
+    # Fetch live pricing for this provider (non-blocking)
+    pricing: dict = {}
+    try:
+        pricing = get_pricing_for_provider(provider_slug) or {}
+    except Exception:
+        pricing = {}
+
+    model_list = list(curated_models)
+
+    # Let the user pick a model. _prompt_model_selection supports "Enter custom
+    # model name" and cancel.  When there's no curated list (rare), fall back
+    # to a raw input prompt.
+    if not model_list:
+        print(f"No curated model list for {provider_slug}.")
+        print("Enter a model slug manually (blank = use provider default):")
+        try:
+            val = input("Model: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            return
+        selected = val or ""
+    else:
+        selected = _prompt_model_selection(
+            model_list, current_model=current_model, pricing=pricing,
+        )
+        if selected is None:
+            print("No change.")
+            return
+
+    _save_aux_choice(task, provider=provider_slug, model=selected or "",
+                     base_url="", api_key="")
+    if selected:
+        print(f"{display_name}: {provider_slug} · {selected}")
+    else:
+        print(f"{display_name}: {provider_slug} (provider default model)")
+
+
+def _aux_flow_custom_endpoint(task: str, task_cfg: dict) -> None:
+    """Prompt for a direct OpenAI-compatible base_url + optional api_key/model."""
+    import getpass
+
+    display_name = next((name for key, name, _ in _AUX_TASKS if key == task), task)
+    current_base_url = str(task_cfg.get("base_url") or "").strip()
+    current_model = str(task_cfg.get("model") or "").strip()
+
+    print()
+    print(f"  Custom endpoint for {display_name}")
+    print("  Provide an OpenAI-compatible base URL (e.g. http://localhost:11434/v1)")
+    print()
+    try:
+        url_prompt = f"Base URL [{current_base_url}]: " if current_base_url else "Base URL: "
+        url = input(url_prompt).strip()
+    except (KeyboardInterrupt, EOFError):
+        print()
+        return
+    url = url or current_base_url
+    if not url:
+        print("No URL provided. No change.")
+        return
+    try:
+        model_prompt = f"Model slug (optional) [{current_model}]: " if current_model else "Model slug (optional): "
+        model = input(model_prompt).strip()
+    except (KeyboardInterrupt, EOFError):
+        print()
+        return
+    model = model or current_model
+    try:
+        api_key = getpass.getpass("API key (optional, blank = use OPENAI_API_KEY): ").strip()
+    except (KeyboardInterrupt, EOFError):
+        print()
+        return
+
+    _save_aux_choice(
+        task, provider="custom", model=model, base_url=url, api_key=api_key,
+    )
+    short_url = url.replace("https://", "").replace("http://", "").rstrip("/")
+    print(f"{display_name}: custom ({short_url})" + (f" · {model}" if model else ""))
 
 
 def _prompt_provider_choice(choices, *, default=0):

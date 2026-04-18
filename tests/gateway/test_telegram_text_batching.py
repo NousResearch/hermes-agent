@@ -32,11 +32,29 @@ def _make_adapter():
     return adapter
 
 
-def _make_event(text: str, chat_id: str = "12345") -> MessageEvent:
+def _make_event(
+    text: str,
+    chat_id: str = "12345",
+    *,
+    message_id: str | None = None,
+    reply_to_message_id: str | None = None,
+    reply_to_text: str | None = None,
+    metadata: dict | None = None,
+    thread_id: str | None = None,
+) -> MessageEvent:
     return MessageEvent(
         text=text,
         message_type=MessageType.TEXT,
-        source=SessionSource(platform=Platform.TELEGRAM, chat_id=chat_id, chat_type="dm"),
+        source=SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id=chat_id,
+            chat_type="dm",
+            thread_id=thread_id,
+        ),
+        message_id=message_id,
+        reply_to_message_id=reply_to_message_id,
+        reply_to_text=reply_to_text,
+        metadata=metadata,
     )
 
 
@@ -119,3 +137,68 @@ class TestTextBatching:
 
         assert len(adapter._pending_text_batches) == 0
         assert len(adapter._pending_text_batch_tasks) == 0
+
+    @pytest.mark.asyncio
+    async def test_incompatible_reply_context_flushes_current_batch_immediately(self):
+        adapter = _make_adapter()
+
+        adapter._enqueue_text_event(
+            _make_event(
+                "reply chunk 1",
+                message_id="m1",
+                reply_to_message_id="bot-msg-1",
+                reply_to_text="上一条",
+            )
+        )
+        adapter._enqueue_text_event(
+            _make_event(
+                "reply chunk 2",
+                message_id="m2",
+                reply_to_message_id="bot-msg-2",
+                reply_to_text="另一条",
+            )
+        )
+
+        await asyncio.sleep(0.05)
+        assert adapter.handle_message.call_count == 1
+        first = adapter.handle_message.call_args_list[0].args[0]
+        assert first.text == "reply chunk 1"
+        assert first.reply_to_message_id == "bot-msg-1"
+
+        await asyncio.sleep(0.2)
+        assert adapter.handle_message.call_count == 2
+        second = adapter.handle_message.call_args_list[1].args[0]
+        assert second.text == "reply chunk 2"
+        assert second.reply_to_message_id == "bot-msg-2"
+
+    @pytest.mark.asyncio
+    async def test_compatible_batch_keeps_latest_event_context(self):
+        adapter = _make_adapter()
+
+        adapter._enqueue_text_event(
+            _make_event(
+                "chunk 1",
+                message_id="m1",
+                metadata={"explicit_addressed": False},
+                reply_to_message_id="bot-msg-1",
+                reply_to_text="上一条",
+            )
+        )
+        adapter._enqueue_text_event(
+            _make_event(
+                "chunk 2",
+                message_id="m2",
+                metadata={"explicit_addressed": True, "address_reason": "reply_to_bot"},
+                reply_to_message_id="bot-msg-1",
+                reply_to_text="上一条",
+            )
+        )
+
+        await asyncio.sleep(0.2)
+
+        adapter.handle_message.assert_called_once()
+        dispatched = adapter.handle_message.call_args.args[0]
+        assert dispatched.text == "chunk 1\nchunk 2"
+        assert dispatched.message_id == "m2"
+        assert dispatched.metadata["explicit_addressed"] is True
+        assert dispatched.metadata["address_reason"] == "reply_to_bot"

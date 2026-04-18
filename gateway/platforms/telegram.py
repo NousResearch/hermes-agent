@@ -2150,12 +2150,29 @@ class TelegramAdapter(BasePlatformAdapter):
         if existing is None:
             self._pending_text_batches[key] = event
         else:
-            # Append text from the follow-up chunk
-            if event.text:
-                existing.text = f"{existing.text}\n{event.text}" if existing.text else event.text
-            # Merge any media that might be attached
-            if event.ensure_attachments():
-                existing.extend_attachments(event.attachments)
+            same_reply_context = (
+                existing.reply_to_message_id == event.reply_to_message_id
+                and existing.reply_to_text == event.reply_to_text
+                and existing.source.thread_id == event.source.thread_id
+            )
+            if not same_reply_context:
+                prior_task = self._pending_text_batch_tasks.get(key)
+                if prior_task and not prior_task.done():
+                    prior_task.cancel()
+                logger.info(
+                    "[Telegram] Flushing incompatible text batch %s before starting a new one",
+                    key,
+                )
+                asyncio.create_task(self.handle_message(existing))
+                self._pending_text_batches[key] = event
+            else:
+                # Append text from the follow-up chunk
+                if event.text:
+                    existing.text = f"{existing.text}\n{event.text}" if existing.text else event.text
+                # Merge any media that might be attached
+                if event.ensure_attachments():
+                    existing.extend_attachments(event.attachments)
+                self._merge_text_pending_event(existing, event)
 
         # Cancel any pending flush and restart the timer
         prior_task = self._pending_text_batch_tasks.get(key)

@@ -2149,7 +2149,8 @@ class TestRetryExhaustion:
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
-            patch("run_agent.time", self._make_fast_time_mock()),
+            patch.object(agent, "_degrade_current_runtime_and_try_fallback", return_value=False),
+            patch("run_agent.jittered_backoff", return_value=0),
         ):
             result = agent.run_conversation("hello")
         assert result.get("completed") is False, (
@@ -2184,13 +2185,16 @@ class TestRetryExhaustion:
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
-            patch("run_agent.time", self._make_fast_time_mock()),
+            patch.object(agent, "_try_recover_primary_transport", return_value=False),
+            patch.object(agent, "_degrade_current_runtime_and_try_fallback", return_value=False),
+            patch("run_agent.jittered_backoff", return_value=0),
         ):
             result = agent.run_conversation("hello")
         assert result.get("completed") is False
         assert result.get("failed") is True
         assert "error" in result
         assert "rate limited" in result["error"]
+        assert agent.client.chat.completions.create.call_count == 3
 
 
 # ---------------------------------------------------------------------------
@@ -3444,13 +3448,16 @@ class TestInterruptVprintForceTrue:
 
     def test_run_conversation_forces_api_interrupt_message(self, agent):
         self._setup_agent(agent)
+        agent._stream_callback = lambda _delta: None
+        printed = []
 
         def interrupt_side_effect(_api_kwargs):
             agent._interrupt_requested = True
             raise InterruptedError("Agent interrupted during API call")
 
         with (
-            patch.object(agent, "_vprint") as mock_vprint,
+            patch("builtins.print", side_effect=lambda *args, **_kwargs: printed.append(" ".join(str(a) for a in args))),
+            patch.object(agent, "_should_use_streaming_api_call", return_value=False),
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
@@ -3460,12 +3467,7 @@ class TestInterruptVprintForceTrue:
             result = agent.run_conversation("hello")
 
         assert result["interrupted"] is True
-        assert any(
-            call.args
-            and "Interrupted during API call" in call.args[0]
-            and call.kwargs.get("force") is True
-            for call in mock_vprint.call_args_list
-        )
+        assert any("Interrupted during API call" in line for line in printed)
 
     def test_tool_skip_interrupt_message_is_forced(self, agent):
         assistant_message = SimpleNamespace(
@@ -3475,9 +3477,11 @@ class TestInterruptVprintForceTrue:
             ]
         )
         agent._interrupt_requested = True
+        agent._stream_callback = lambda _delta: None
         messages = []
+        printed = []
 
-        with patch.object(agent, "_vprint") as mock_vprint:
+        with patch("builtins.print", side_effect=lambda *args, **_kwargs: printed.append(" ".join(str(a) for a in args))):
             agent._execute_tool_calls_sequential(
                 assistant_message,
                 messages,
@@ -3485,12 +3489,7 @@ class TestInterruptVprintForceTrue:
                 api_call_count=1,
             )
 
-        assert any(
-            call.args
-            and "Interrupt: skipping 2 tool call(s)" in call.args[0]
-            and call.kwargs.get("force") is True
-            for call in mock_vprint.call_args_list
-        )
+        assert any("Interrupt: skipping 2 tool call(s)" in line for line in printed)
         assert len(messages) == 2
         assert all(msg["role"] == "tool" for msg in messages)
         assert all("skipped due to user interrupt" in msg["content"] for msg in messages)
@@ -3530,11 +3529,14 @@ class TestAnthropicInterruptHandler:
         interrupter = threading.Thread(target=_trigger_interrupt, daemon=True)
         interrupter.start()
 
-        with patch("agent.anthropic_adapter.build_anthropic_client", return_value=new_client) as rebuild:
-            with pytest.raises(InterruptedError, match="Agent interrupted during API call"):
-                agent._interruptible_api_call({"model": "claude-sonnet-4"})
+        try:
+            with patch("agent.anthropic_adapter.build_anthropic_client", return_value=new_client) as rebuild:
+                with pytest.raises(InterruptedError, match="Agent interrupted during API call"):
+                    agent._interruptible_api_call({"model": "claude-sonnet-4"})
+        finally:
+            released.set()
+            interrupter.join(timeout=1)
 
-        interrupter.join(timeout=1)
         old_client.close.assert_called_once()
         rebuild.assert_called_once_with("sk-ant-api03-test", "https://api.anthropic.com")
         assert agent._anthropic_client is new_client
@@ -3582,11 +3584,14 @@ class TestAnthropicInterruptHandler:
         interrupter = threading.Thread(target=_trigger_interrupt, daemon=True)
         interrupter.start()
 
-        with patch("agent.anthropic_adapter.build_anthropic_client", return_value=new_client) as rebuild:
-            with pytest.raises(InterruptedError, match="Agent interrupted during streaming API call"):
-                agent._interruptible_streaming_api_call({"model": "claude-sonnet-4"})
+        try:
+            with patch("agent.anthropic_adapter.build_anthropic_client", return_value=new_client) as rebuild:
+                with pytest.raises(InterruptedError, match="Agent interrupted during streaming API call"):
+                    agent._interruptible_streaming_api_call({"model": "claude-sonnet-4"})
+        finally:
+            released.set()
+            interrupter.join(timeout=1)
 
-        interrupter.join(timeout=1)
         old_client.close.assert_called_once()
         rebuild.assert_called_once_with("sk-ant-api03-test", "https://api.anthropic.com")
         assert agent._anthropic_client is new_client
@@ -3911,36 +3916,67 @@ class TestMemoryNudgeCounterPersistence:
         assert a._turns_since_memory == 0
         assert a._iters_since_skill == 0
 
-    def test_counters_persist_across_run_conversation_calls(self, agent_with_memory_tool):
+    def test_memory_review_triggers_only_after_accumulated_turns(self, agent_with_memory_tool):
         agent = agent_with_memory_tool
         agent._cached_system_prompt = "You are helpful."
         agent._use_prompt_caching = False
         agent.tool_delay = 0
         agent.compression_enabled = False
         agent.save_trajectories = False
-        agent.valid_tool_names = {"web_search", "memory", "skill_manage"}
+        agent.valid_tool_names = {"web_search", "memory"}
         agent._memory_store = object()
-        agent._memory_nudge_interval = 100
-        agent._skill_nudge_interval = 100
-        agent._turns_since_memory = 2
-        agent._iters_since_skill = 3
+        agent._memory_nudge_interval = 2
+        agent._turns_since_memory = 0
 
         def _response(*_args, **_kwargs):
             return _mock_response(content="ok", finish_reason="stop")
 
         with (
             patch.object(agent, "_interruptible_api_call", side_effect=_response),
+            patch.object(agent, "_spawn_background_review") as mock_review,
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
             first = agent.run_conversation("hello")
+            mock_review.assert_not_called()
             second = agent.run_conversation("hello again")
 
         assert first["completed"] is True
         assert second["completed"] is True
-        assert agent._turns_since_memory == 4
-        assert agent._iters_since_skill == 5
+        mock_review.assert_called_once()
+        assert mock_review.call_args.kwargs["review_memory"] is True
+        assert mock_review.call_args.kwargs["review_skills"] is False
+
+    def test_skill_review_triggers_only_after_accumulated_turns(self, agent):
+        agent._cached_system_prompt = "You are helpful."
+        agent._use_prompt_caching = False
+        agent.tool_delay = 0
+        agent.compression_enabled = False
+        agent.save_trajectories = False
+        agent.valid_tool_names = {"web_search", "skill_manage"}
+        agent._skill_nudge_interval = 2
+        agent._iters_since_skill = 0
+
+        def _response(*_args, **_kwargs):
+            return _mock_response(content="ok", finish_reason="stop")
+
+        with (
+            patch.object(agent, "_interruptible_api_call", side_effect=_response),
+            patch.object(agent, "_spawn_background_review") as mock_review,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            first = agent.run_conversation("hello")
+            mock_review.assert_not_called()
+            second = agent.run_conversation("hello again")
+
+        assert first["completed"] is True
+        assert second["completed"] is True
+        mock_review.assert_called_once()
+        assert mock_review.call_args.kwargs["review_memory"] is False
+        assert mock_review.call_args.kwargs["review_skills"] is True
 
 
 class TestDeadRetryCode:
@@ -3954,22 +3990,13 @@ class TestDeadRetryCode:
         agent.save_trajectories = False
         agent.client.chat.completions.create.side_effect = RuntimeError("rate limited")
 
-        mock_time = MagicMock()
-        _t = [1000.0]
-
-        def _advancing_time():
-            _t[0] += 500.0
-            return _t[0]
-
-        mock_time.time.side_effect = _advancing_time
-        mock_time.sleep = MagicMock()
-        mock_time.monotonic.return_value = 12345.0
-
         with (
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
-            patch("run_agent.time", mock_time),
+            patch.object(agent, "_try_recover_primary_transport", return_value=False),
+            patch.object(agent, "_degrade_current_runtime_and_try_fallback", return_value=False),
+            patch("run_agent.jittered_backoff", return_value=0),
         ):
             result = agent.run_conversation("hello")
 

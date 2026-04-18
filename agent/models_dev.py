@@ -435,26 +435,40 @@ _NOISE_PATTERNS: re.Pattern = re.compile(
     re.IGNORECASE,
 )
 
-# Google-hosted Gemma models currently have very low TPM quotas for agent-style
-# traffic (for example 15K/16K TPM tiers in AI Studio) and are not practical as
-# normal Hermes picks even though they advertise large context windows. Keep the
-# capability metadata available for direct/manual use, but hide them from the
-# Gemini model catalogs we surface in setup and model selection.
-_GOOGLE_GEMMA_HIDDEN_MODELS = frozenset({
+# Google's live Gemini catalogs currently include a mix of stale slugs and
+# Gemma models whose TPM quotas are too small for normal Hermes agent traffic.
+# Keep capability metadata available for direct/manual use, but hide these from
+# the Gemini model catalogs we surface in setup and model selection.
+_GOOGLE_HIDDEN_MODELS = frozenset({
+    # Low-TPM Gemma models that trip Google input-token quota walls under
+    # agent-style traffic despite advertising large context windows.
     "gemma-4-31b-it",
+    "gemma-4-26b-it",
     "gemma-4-26b-a4b-it",
     "gemma-3-1b",
+    "gemma-3-1b-it",
     "gemma-3-2b",
+    "gemma-3-2b-it",
     "gemma-3-4b",
+    "gemma-3-4b-it",
     "gemma-3-12b",
+    "gemma-3-12b-it",
     "gemma-3-27b",
+    "gemma-3-27b-it",
+    # Stale/retired Google slugs that still surface through models.dev-backed
+    # Gemini selection but 404 on the current Google endpoints.
+    "gemini-1.5-flash",
+    "gemini-1.5-pro",
+    "gemini-1.5-flash-8b",
+    "gemini-2.0-flash",
+    "gemini-2.0-flash-lite",
 })
 
 
 def _should_hide_from_provider_catalog(provider: str, model_id: str) -> bool:
     provider_lower = (provider or "").strip().lower()
     model_lower = (model_id or "").strip().lower()
-    if provider_lower in {"gemini", "google"} and model_lower in _GOOGLE_GEMMA_HIDDEN_MODELS:
+    if provider_lower in {"gemini", "google"} and model_lower in _GOOGLE_HIDDEN_MODELS:
         return True
     return False
 

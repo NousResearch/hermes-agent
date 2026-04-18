@@ -76,7 +76,7 @@ termux = [
   "hermes-agent[honcho]",
   "hermes-agent[acp]",
 ]
-dingtalk = ["dingtalk-stream>=0.1.0,<1", "qrcode>=7.0,<8"]
+dingtalk = ["dingtalk-stream>=0.20,<1", "alibabacloud-dingtalk>=2.0.0", "qrcode>=7.0,<8"]
 feishu = ["lark-oapi>=1.5.3,<2", "qrcode>=7.0,<8"]
 web = ["fastapi>=0.104.0,<1", "uvicorn[standard]>=0.24.0,<1"]
 rl = [

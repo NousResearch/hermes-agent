@@ -207,7 +207,7 @@ class HonchoMemoryProvider(MemoryProvider):
         self._turn_count = 0
         self._injection_frequency = "every-turn"  # or "first-turn"
         self._context_cadence = 1   # minimum turns between context API calls
-        self._dialectic_cadence = 1  # minimum turns between dialectic API calls
+        self._dialectic_cadence = 1  # backwards-compat fallback; wizard writes 2 on new configs
         self._dialectic_depth = 1   # how many .chat() calls per dialectic cycle (1-3)
         self._dialectic_depth_levels: list[str] | None = None  # per-pass reasoning levels
         self._reasoning_heuristic: bool = True  # scale base level by query length
@@ -304,6 +304,10 @@ class HonchoMemoryProvider(MemoryProvider):
                 raw = cfg.raw or {}
                 self._injection_frequency = raw.get("injectionFrequency", "every-turn")
                 self._context_cadence = int(raw.get("contextCadence", 1))
+                # Backwards-compat: unset dialecticCadence falls back to 1
+                # (every turn) so existing honcho.json configs without the key
+                # behave as they did before. New setups via `hermes honcho setup`
+                # get dialecticCadence=2 written explicitly by the wizard.
                 self._dialectic_cadence = int(raw.get("dialecticCadence", 1))
                 self._dialectic_depth = max(1, min(cfg.dialectic_depth, 3))
                 self._dialectic_depth_levels = cfg.dialectic_depth_levels
@@ -844,9 +848,7 @@ class HonchoMemoryProvider(MemoryProvider):
     def _apply_reasoning_heuristic(self, base: str, query: str) -> str:
         """Scale `base` up by query length, clamped at reasoning_level_cap.
 
-        Char-count heuristic: +1 at >=120 chars, +2 at >=400. Ceiling is
-        reasoning_level_cap (default 'high' — 'max' is reserved for
-        explicit tool-path selection).
+        Char-count heuristic: +1 at >=120 chars, +2 at >=400.
         """
         if not self._reasoning_heuristic or not query:
             return base

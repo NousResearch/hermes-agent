@@ -77,7 +77,7 @@ Cost and depth are controlled by three independent knobs:
 | Knob | Controls | Default |
 |------|----------|---------|
 | `contextCadence` | Turns between `context()` API calls (base layer refresh) | `1` |
-| `dialecticCadence` | Turns between `peer.chat()` LLM calls (dialectic layer refresh) | `1` (code default) / `2` (setup wizard default) |
+| `dialecticCadence` | Turns between `peer.chat()` LLM calls (dialectic layer refresh) | `2` (recommended 1–5) |
 | `dialecticDepth` | Number of `.chat()` passes per dialectic invocation (1–3) | `1` |
 
 These are orthogonal — you can have frequent context refreshes with infrequent dialectic, or deep multi-pass dialectic at low frequency. Example: `contextCadence: 1, dialecticCadence: 5, dialecticDepth: 2` refreshes base context every turn, runs dialectic every 5 turns, and each dialectic run makes 2 passes.
@@ -100,7 +100,7 @@ On session init, Honcho fires a dialectic call in the background at the full con
 
 ### Query-Adaptive Reasoning Level
 
-The auto-injected dialectic scales `dialecticReasoningLevel` by query length: +1 level at ≥120 chars, +2 at ≥400, clamped at `reasoningLevelCap` (default `"high"`). Disable with `reasoningHeuristic: false` to pin every auto call to `dialecticReasoningLevel`. `"max"` is reserved for explicit tool-path selection via `honcho_reasoning`.
+The auto-injected dialectic scales `dialecticReasoningLevel` by query length: +1 level at ≥120 chars, +2 at ≥400, clamped at `reasoningLevelCap` (default `"high"`). Disable with `reasoningHeuristic: false` to pin every auto call to `dialecticReasoningLevel`. Available levels: `minimal`, `low`, `medium`, `high`, `max`.
 
 ## Configuration Options
 
@@ -112,7 +112,7 @@ Honcho is configured in `~/.honcho/config.json` (global) or `$HERMES_HOME/honcho
 |-----|---------|-------------|
 | `contextTokens` | `null` (uncapped) | Token budget for auto-injected context per turn. Set to an integer (e.g. 1200) to cap. Truncates at word boundaries |
 | `contextCadence` | `1` | Minimum turns between `context()` API calls (base layer refresh) |
-| `dialecticCadence` | `1` (wizard sets `2`) | Minimum turns between `peer.chat()` LLM calls (dialectic layer). Code default fires every turn when the key is unset; the setup wizard pre-fills `2`. In `tools` mode, irrelevant — model calls explicitly |
+| `dialecticCadence` | `2` | Minimum turns between `peer.chat()` LLM calls (dialectic layer). Recommended 1–5. In `tools` mode, irrelevant — model calls explicitly |
 | `dialecticDepth` | `1` | Number of `.chat()` passes per dialectic invocation. Clamped to 1–3 |
 | `dialecticDepthLevels` | `null` | Optional array of reasoning levels per pass, e.g. `["minimal", "low", "medium"]`. Overrides proportional defaults |
 | `dialecticReasoningLevel` | `'low'` | Base reasoning level: `minimal`, `low`, `medium`, `high`, `max` |
@@ -183,7 +183,7 @@ Common patterns:
 | AI shouldn't re-model the user from its own replies | `"ai": {"observeMe": true, "observeOthers": false}` |
 | Strong persona the AI peer shouldn't update from self-observation | `"ai": {"observeMe": false, "observeOthers": true}` |
 
-Server-side toggles set via the Honcho dashboard win over local defaults — Hermes syncs them back at session init.
+Server-side toggles set via the [Honcho dashboard](https://app.honcho.dev) win over local defaults — Hermes syncs them back at session init.
 
 ## Tools
 

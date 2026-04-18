@@ -426,6 +426,10 @@ DEFAULT_CONFIG = {
             # so the server maps it to a persistent Firefox profile automatically.
             # When false (default), each session gets a random userId (ephemeral).
             "managed_persistence": False,
+            "takeover": {
+                "mint_url": "",
+                "default_ttl_seconds": 900,
+            },
         },
     },
 
@@ -804,6 +808,7 @@ ENV_VARS_BY_VERSION: Dict[int, List[str]] = {
         "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_ALLOWED_USERS"],
     10: ["TAVILY_API_KEY"],
     11: ["TERMINAL_MODAL_MODE"],
+    18: ["CAMOFOX_TAKEOVER_MINT_URL", "CAMOFOX_TAKEOVER_DEFAULT_TTL"],
 }
 
 # Required environment variables with metadata for migration prompts.
@@ -1256,7 +1261,23 @@ OPTIONAL_ENV_VARS = {
         "description": "Camofox browser server URL for local anti-detection browsing (e.g. http://localhost:9377)",
         "prompt": "Camofox server URL",
         "url": "https://github.com/jo-inc/camofox-browser",
-        "tools": ["browser_navigate", "browser_click"],
+        "tools": ["browser_navigate", "browser_click", "browser_takeover"],
+        "password": False,
+        "category": "tool",
+    },
+    "CAMOFOX_TAKEOVER_MINT_URL": {
+        "description": "HTTP endpoint that mints temporary takeover links for the live Camofox browser session",
+        "prompt": "Camofox takeover mint URL",
+        "url": None,
+        "tools": ["browser_takeover"],
+        "password": False,
+        "category": "tool",
+    },
+    "CAMOFOX_TAKEOVER_DEFAULT_TTL": {
+        "description": "Default lifetime for Camofox takeover links in seconds (optional, default 900)",
+        "prompt": "Camofox takeover TTL (seconds)",
+        "url": None,
+        "tools": ["browser_takeover"],
         "password": False,
         "category": "tool",
     },

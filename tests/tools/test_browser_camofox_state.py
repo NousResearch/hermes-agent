@@ -59,6 +59,13 @@ class TestCamofoxConfigDefaults:
         browser_cfg = DEFAULT_CONFIG["browser"]
         assert browser_cfg["camofox"]["managed_persistence"] is False
 
+    def test_default_config_includes_takeover_defaults(self):
+        from hermes_cli.config import DEFAULT_CONFIG
+
+        takeover_cfg = DEFAULT_CONFIG["browser"]["camofox"]["takeover"]
+        assert takeover_cfg["mint_url"] == ""
+        assert takeover_cfg["default_ttl_seconds"] == 900
+
     def test_config_version_matches_current_schema(self):
         from hermes_cli.config import DEFAULT_CONFIG
 

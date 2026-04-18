@@ -8,6 +8,7 @@ import { TextInput } from './textInput.js'
 
 const OPTS = ['once', 'session', 'always', 'deny'] as const
 const LABELS = { always: 'Always allow', deny: 'Deny', once: 'Allow once', session: 'Allow this session' } as const
+const CMD_PREVIEW_LINES = 10
 
 export function ApprovalPrompt({ onChoice, req, t }: ApprovalPromptProps) {
   const [sel, setSel] = useState(0)
@@ -34,13 +35,28 @@ export function ApprovalPrompt({ onChoice, req, t }: ApprovalPromptProps) {
     }
   })
 
+  const rawLines = req.command.split('\n')
+  const shown = rawLines.slice(0, CMD_PREVIEW_LINES)
+  const overflow = rawLines.length - shown.length
+
   return (
     <Box borderColor={t.color.warn} borderStyle="double" flexDirection="column" paddingX={1}>
       <Text bold color={t.color.warn}>
         ⚠ approval required · {req.description}
       </Text>
 
-      <Text color={t.color.cornsilk}> {req.command}</Text>
+      <Box flexDirection="column" paddingLeft={1}>
+        {shown.map((line, i) => (
+          <Text color={t.color.cornsilk} key={i} wrap="truncate-end">
+            {line || ' '}
+          </Text>
+        ))}
+
+        {overflow > 0 ? (
+          <Text color={t.color.dim}>… +{overflow} more line{overflow === 1 ? '' : 's'} (full text above)</Text>
+        ) : null}
+      </Box>
+
       <Text />
 
       {OPTS.map((o, i) => (

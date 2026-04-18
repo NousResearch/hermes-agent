@@ -21,6 +21,7 @@ Usage:
 """
 
 import asyncio
+import ast
 import base64
 import concurrent.futures
 import copy
@@ -4460,6 +4461,278 @@ class AIAgent:
         else:
             finish_reason = "stop"
         return assistant_message, finish_reason
+
+    _TEXTUAL_TOOL_CALL_BLOCK_RE = re.compile(
+        r"<(?P<tag>(?:[A-Za-z_][\w.-]*:)?tool_call)\b[^>]*>\s*(?P<body>.*?)\s*</(?P=tag)\s*>",
+        re.IGNORECASE | re.DOTALL,
+    )
+    _TEXTUAL_TOOL_CALL_OPEN_RE = re.compile(
+        r"<(?P<tag>(?:[A-Za-z_][\w.-]*:)?tool_call)\b[^>]*>",
+        re.IGNORECASE,
+    )
+    _TEXTUAL_TOOL_CALL_CLOSE_RE = re.compile(r"</(?:[A-Za-z_][\w.-]*:)?tool_call\s*>", re.IGNORECASE)
+    _TEXTUAL_INVOKE_BLOCK_RE = re.compile(
+        r"<invoke(?P<attrs>\s+[^>]*)?>\s*(?P<body>.*?)\s*</invoke\s*>",
+        re.IGNORECASE | re.DOTALL,
+    )
+    _TEXTUAL_INVOKE_OPEN_RE = re.compile(r"<invoke(?P<attrs>\s+[^>]*)?>", re.IGNORECASE)
+    _TEXTUAL_INVOKE_CLOSE_RE = re.compile(r"</invoke\s*>", re.IGNORECASE)
+    _TEXTUAL_ATTR_RE = re.compile(
+        r"([A-Za-z_][\w.-]*)\s*=\s*(?:\"([^\"]*)\"|'([^']*)'|([^\s>]+))"
+    )
+
+    def _should_attempt_textual_tool_call_recovery(self, content: str) -> bool:
+        """Conservatively gate textual tool-call recovery to MiniMax-like outputs."""
+        if not isinstance(content, str) or "<" not in content:
+            return False
+
+        lowered = content.lower()
+        if "<minimax:tool_call" in lowered or "<invoke" in lowered:
+            return True
+
+        model_hint = f"{(self.model or '').lower()} {(self.provider or '').lower()}"
+        return "minimax" in model_hint and "<tool_call" in lowered
+
+    def _parse_jsonish_text(self, raw: str) -> Any:
+        """Parse JSON-like text from provider payloads with tolerant fallbacks."""
+        text = (raw or "").strip()
+        if not text:
+            return {}
+
+        if text.startswith("```"):
+            text = re.sub(
+                r"^```(?:json)?\s*|\s*```$",
+                "",
+                text,
+                flags=re.IGNORECASE | re.DOTALL,
+            ).strip()
+
+        candidates = [text]
+        first_obj = text.find("{")
+        last_obj = text.rfind("}")
+        if first_obj != -1 and last_obj > first_obj:
+            obj_candidate = text[first_obj:last_obj + 1]
+            if obj_candidate not in candidates:
+                candidates.append(obj_candidate)
+
+        for candidate in candidates:
+            try:
+                return json.loads(candidate)
+            except Exception:
+                continue
+
+        for candidate in candidates:
+            try:
+                parsed = ast.literal_eval(candidate)
+            except Exception:
+                continue
+            if isinstance(parsed, tuple):
+                return list(parsed)
+            if isinstance(parsed, (dict, list, str, int, float, bool)) or parsed is None:
+                return parsed
+
+        return None
+
+    def _coerce_tool_arguments_json(self, args_value: Any) -> str:
+        """Coerce recovered tool arguments into a valid JSON string."""
+        if args_value is None:
+            return "{}"
+
+        if isinstance(args_value, (dict, list)):
+            return json.dumps(args_value, ensure_ascii=False)
+
+        if isinstance(args_value, str):
+            stripped = args_value.strip()
+            if not stripped:
+                return "{}"
+
+            parsed = self._parse_jsonish_text(stripped)
+            if isinstance(parsed, (dict, list)):
+                return json.dumps(parsed, ensure_ascii=False)
+
+            try:
+                json.loads(stripped)
+                return stripped
+            except Exception:
+                return json.dumps({"input": stripped}, ensure_ascii=False)
+
+        return json.dumps(args_value, ensure_ascii=False)
+
+    def _extract_tag_attributes(self, raw_attrs: str) -> Dict[str, str]:
+        """Extract XML-like attributes from <invoke ...> tags."""
+        attrs: Dict[str, str] = {}
+        if not isinstance(raw_attrs, str) or not raw_attrs.strip():
+            return attrs
+
+        for match in self._TEXTUAL_ATTR_RE.finditer(raw_attrs):
+            key = (match.group(1) or "").strip().lower()
+            value = match.group(2) or match.group(3) or match.group(4) or ""
+            if key and value:
+                attrs[key] = value
+        return attrs
+
+    def _normalize_textual_tool_call_payload(
+        self,
+        payload: str,
+        attrs: Optional[Dict[str, str]] = None,
+    ) -> tuple[Optional[str], Any]:
+        """Normalize textual tag payloads into (tool_name, arguments)."""
+        attrs = attrs or {}
+        attr_name = (
+            attrs.get("name")
+            or attrs.get("tool")
+            or attrs.get("function")
+            or attrs.get("function_name")
+        )
+        parsed = self._parse_jsonish_text(payload)
+
+        if isinstance(parsed, dict):
+            function_block = parsed.get("function")
+            if isinstance(function_block, dict):
+                name = function_block.get("name") or parsed.get("name") or attr_name
+                arguments = function_block.get("arguments")
+                if arguments is None:
+                    arguments = function_block.get("args")
+                if arguments is None:
+                    arguments = parsed.get("arguments")
+                if arguments is None:
+                    arguments = parsed.get("args")
+                if arguments is None:
+                    arguments = parsed.get("parameters")
+                if arguments is None:
+                    arguments = parsed.get("input")
+                if arguments is None:
+                    arguments = {}
+                return name, arguments
+
+            name = (
+                parsed.get("name")
+                or parsed.get("tool_name")
+                or parsed.get("tool")
+                or parsed.get("function_name")
+                or attr_name
+            )
+            explicit_args = any(k in parsed for k in ("arguments", "args", "parameters", "input"))
+            if explicit_args:
+                arguments = parsed.get("arguments")
+                if arguments is None:
+                    arguments = parsed.get("args")
+                if arguments is None:
+                    arguments = parsed.get("parameters")
+                if arguments is None:
+                    arguments = parsed.get("input")
+            elif attr_name:
+                arguments = parsed
+            else:
+                arguments = {}
+            return name, arguments
+
+        if attr_name:
+            if parsed is None:
+                stripped_payload = (payload or "").strip()
+                arguments = stripped_payload if stripped_payload else {}
+            else:
+                arguments = parsed
+            return attr_name, arguments
+
+        return None, None
+
+    def _recover_textual_tool_calls(self, assistant_message: Any, finish_reason: str) -> tuple[Any, str]:
+        """Recover tool calls from textual tags when providers omit structured tool_calls."""
+        if getattr(assistant_message, "tool_calls", None):
+            return assistant_message, finish_reason
+
+        content = getattr(assistant_message, "content", None)
+        if not self._should_attempt_textual_tool_call_recovery(content):
+            return assistant_message, finish_reason
+
+        recovered_calls: List[Any] = []
+        removal_spans: List[tuple[int, int]] = []
+        seen: set[tuple[str, str]] = set()
+
+        def _append_candidate(raw_name: Optional[str], raw_args: Any, span: tuple[int, int]) -> None:
+            if not isinstance(raw_name, str) or not raw_name.strip():
+                return
+
+            tool_name = raw_name.strip()
+            if tool_name not in self.valid_tool_names:
+                repaired = self._repair_tool_call(tool_name)
+                if repaired:
+                    tool_name = repaired
+            if tool_name not in self.valid_tool_names:
+                return
+
+            arguments = self._coerce_tool_arguments_json(raw_args)
+            dedupe_key = (tool_name, arguments)
+            if dedupe_key in seen:
+                return
+            seen.add(dedupe_key)
+
+            call_id = self._deterministic_call_id(tool_name, arguments, len(recovered_calls))
+            recovered_calls.append(
+                SimpleNamespace(
+                    id=call_id,
+                    call_id=call_id,
+                    response_item_id=None,
+                    type="function",
+                    function=SimpleNamespace(name=tool_name, arguments=arguments),
+                )
+            )
+            removal_spans.append(span)
+
+        for match in self._TEXTUAL_TOOL_CALL_BLOCK_RE.finditer(content):
+            name, arguments = self._normalize_textual_tool_call_payload(match.group("body"), {})
+            _append_candidate(name, arguments, match.span())
+
+        for match in self._TEXTUAL_INVOKE_BLOCK_RE.finditer(content):
+            attrs = self._extract_tag_attributes(match.group("attrs") or "")
+            name, arguments = self._normalize_textual_tool_call_payload(match.group("body"), attrs)
+            _append_candidate(name, arguments, match.span())
+
+        # Fallback for truncated responses where the closing tag is missing.
+        last_tool_open = None
+        for match in self._TEXTUAL_TOOL_CALL_OPEN_RE.finditer(content):
+            last_tool_open = match
+        if last_tool_open and not self._TEXTUAL_TOOL_CALL_CLOSE_RE.search(content[last_tool_open.end():]):
+            name, arguments = self._normalize_textual_tool_call_payload(content[last_tool_open.end():], {})
+            _append_candidate(name, arguments, (last_tool_open.start(), len(content)))
+
+        last_invoke_open = None
+        for match in self._TEXTUAL_INVOKE_OPEN_RE.finditer(content):
+            last_invoke_open = match
+        if last_invoke_open and not self._TEXTUAL_INVOKE_CLOSE_RE.search(content[last_invoke_open.end():]):
+            attrs = self._extract_tag_attributes(last_invoke_open.group("attrs") or "")
+            name, arguments = self._normalize_textual_tool_call_payload(content[last_invoke_open.end():], attrs)
+            _append_candidate(name, arguments, (last_invoke_open.start(), len(content)))
+
+        if not recovered_calls:
+            return assistant_message, finish_reason
+
+        cleaned_content = content
+        for start, end in sorted(removal_spans, key=lambda span: span[0], reverse=True):
+            cleaned_content = cleaned_content[:start] + cleaned_content[end:]
+        cleaned_content = re.sub(r"\n{3,}", "\n\n", cleaned_content).strip()
+
+        try:
+            assistant_message.tool_calls = recovered_calls
+            assistant_message.content = cleaned_content
+        except Exception:
+            assistant_message = SimpleNamespace(
+                content=cleaned_content,
+                tool_calls=recovered_calls,
+                reasoning=getattr(assistant_message, "reasoning", None),
+                reasoning_content=getattr(assistant_message, "reasoning_content", None),
+                reasoning_details=getattr(assistant_message, "reasoning_details", None),
+                codex_reasoning_items=getattr(assistant_message, "codex_reasoning_items", None),
+            )
+
+        logger.info(
+            "Recovered %d textual tool call(s) from assistant content (model=%s provider=%s)",
+            len(recovered_calls),
+            self.model,
+            self.provider,
+        )
+        return assistant_message, "tool_calls"
 
     def _thread_identity(self) -> str:
         thread = threading.current_thread()
@@ -10827,6 +11100,12 @@ class AIAgent:
                     }
                 elif hasattr(self, "_codex_incomplete_retries"):
                     self._codex_incomplete_retries = 0
+
+                if self.api_mode in ("chat_completions", "bedrock_converse"):
+                    assistant_message, finish_reason = self._recover_textual_tool_calls(
+                        assistant_message,
+                        finish_reason,
+                    )
                 
                 # Check for tool calls
                 if assistant_message.tool_calls:

@@ -206,6 +206,26 @@ def _hermetic_environment(tmp_path, monkeypatch):
     for name in _HERMES_BEHAVIORAL_VARS:
         monkeypatch.delenv(name, raising=False)
 
+    # 2b. Reset session contextvars. Within a single xdist worker, a prior
+    #     test that called ``set_session_vars``/``clear_session_vars`` leaves
+    #     the ContextVars set to a concrete value (often ``""``), which
+    #     shadows ``os.environ`` in ``get_session_env``. That makes tests
+    #     non-hermetic and order-dependent. Force them back to ``_UNSET``.
+    try:
+        from gateway import session_context as _sc
+        for _var in (
+            _sc._SESSION_PLATFORM,
+            _sc._SESSION_CHAT_ID,
+            _sc._SESSION_CHAT_NAME,
+            _sc._SESSION_THREAD_ID,
+            _sc._SESSION_USER_ID,
+            _sc._SESSION_USER_NAME,
+            _sc._SESSION_KEY,
+        ):
+            _var.set(_sc._UNSET)
+    except Exception:
+        pass
+
     # 3. Redirect HERMES_HOME to a per-test tempdir. Code that reads
     #    ``~/.hermes/*`` via ``get_hermes_home()`` now gets the tempdir.
     #

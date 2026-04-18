@@ -273,6 +273,7 @@ class TestDelegateTask(unittest.TestCase):
                 toolsets=None,
                 model=None,
                 max_iterations=10,
+                task_count=1,
                 parent_agent=parent,
             )
 
@@ -293,6 +294,7 @@ class TestDelegateTask(unittest.TestCase):
                 toolsets=None,
                 model=None,
                 max_iterations=10,
+                task_count=1,
                 parent_agent=parent,
             )
 
@@ -362,6 +364,7 @@ class TestToolNamePreservation(unittest.TestCase):
                     toolsets=None,
                     model=None,
                     max_iterations=10,
+                    task_count=1,
                     parent_agent=parent,
                 )
             except NameError as exc:
@@ -999,6 +1002,7 @@ class TestChildCredentialPoolResolution(unittest.TestCase):
                 toolsets=["terminal"],
                 model=None,
                 max_iterations=10,
+                task_count=1,
                 parent_agent=parent,
             )
 
@@ -1224,7 +1228,7 @@ class TestDelegationReasoningEffort(unittest.TestCase):
 
         _build_child_agent(
             task_index=0, goal="test", context=None, toolsets=None,
-            model=None, max_iterations=50, parent_agent=parent,
+            model=None, max_iterations=50, task_count=1, parent_agent=parent,
         )
         call_kwargs = MockAgent.call_args[1]
         self.assertEqual(call_kwargs["reasoning_config"], {"enabled": True, "effort": "xhigh"})
@@ -1240,7 +1244,7 @@ class TestDelegationReasoningEffort(unittest.TestCase):
 
         _build_child_agent(
             task_index=0, goal="test", context=None, toolsets=None,
-            model=None, max_iterations=50, parent_agent=parent,
+            model=None, max_iterations=50, task_count=1, parent_agent=parent,
         )
         call_kwargs = MockAgent.call_args[1]
         self.assertEqual(call_kwargs["reasoning_config"], {"enabled": True, "effort": "low"})
@@ -1256,7 +1260,7 @@ class TestDelegationReasoningEffort(unittest.TestCase):
 
         _build_child_agent(
             task_index=0, goal="test", context=None, toolsets=None,
-            model=None, max_iterations=50, parent_agent=parent,
+            model=None, max_iterations=50, task_count=1, parent_agent=parent,
         )
         call_kwargs = MockAgent.call_args[1]
         self.assertEqual(call_kwargs["reasoning_config"], {"enabled": False})
@@ -1272,7 +1276,7 @@ class TestDelegationReasoningEffort(unittest.TestCase):
 
         _build_child_agent(
             task_index=0, goal="test", context=None, toolsets=None,
-            model=None, max_iterations=50, parent_agent=parent,
+            model=None, max_iterations=50, task_count=1, parent_agent=parent,
         )
         call_kwargs = MockAgent.call_args[1]
         self.assertEqual(call_kwargs["reasoning_config"], {"enabled": True, "effort": "medium"})

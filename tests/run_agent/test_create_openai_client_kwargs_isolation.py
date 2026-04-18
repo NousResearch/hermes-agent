@@ -56,3 +56,24 @@ def test_create_openai_client_skips_custom_http_client_for_codex_backend(mock_op
 
     assert result is client
     assert "http_client" not in mock_openai.call_args.kwargs
+
+
+@patch("run_agent.OpenAI")
+def test_create_openai_client_keeps_custom_http_client_for_non_chatgpt_codex_urls(mock_openai):
+    client = MagicMock()
+    mock_openai.return_value = client
+    agent = AIAgent(
+        api_key="test-key",
+        base_url="https://proxy.example.com/v1",
+        provider="openai-codex",
+        model="gpt-5.4",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+
+    kwargs = {"api_key": "test-key", "base_url": "https://proxy.example.com/v1"}
+    result = agent._create_openai_client(kwargs, reason="test", shared=False)
+
+    assert result is client
+    assert "http_client" in mock_openai.call_args.kwargs

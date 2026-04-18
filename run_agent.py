@@ -4569,10 +4569,7 @@ class AIAgent:
         # Tests in ``tests/run_agent/test_create_openai_client_reuse.py`` and
         # ``tests/run_agent/test_sequential_chats_live.py`` pin this invariant.
         _base_url_lower = str(client_kwargs.get("base_url", "")).lower()
-        _is_codex_backend = (
-            self.provider == "openai-codex"
-            or "chatgpt.com/backend-api/codex" in _base_url_lower
-        )
+        _is_codex_backend = "chatgpt.com/backend-api/codex" in _base_url_lower
         if "http_client" not in client_kwargs and not _is_codex_backend:
             try:
                 import httpx as _httpx

@@ -823,8 +823,11 @@ def _settle_prewarm(provider):
         provider._prefetch_thread.join(timeout=3.0)
     with provider._prefetch_lock:
         provider._prefetch_result = ""
+        provider._prefetch_result_fired_at = -999
     provider._prefetch_thread = None
+    provider._prefetch_thread_started_at = 0.0
     provider._last_dialectic_turn = -999
+    provider._dialectic_empty_streak = 0
     if getattr(provider, "_manager", None) is not None:
         try:
             provider._manager.dialectic_query.reset_mock()
@@ -1227,26 +1230,28 @@ class TestDialecticCadenceAdvancesOnSuccess:
 
     def test_in_flight_thread_is_not_stacked(self):
         import threading as _threading
+        import time as _time
         provider = self._make_provider()
         provider._session_key = "test"
         provider._turn_count = 10
         provider._last_dialectic_turn = 0
 
-        # Simulate a prior thread still running
+        # Simulate a prior thread still running (fresh, not stale)
         hold = _threading.Event()
 
         def _block():
             hold.wait(timeout=5.0)
 
-        stale = _threading.Thread(target=_block, daemon=True)
-        stale.start()
-        provider._prefetch_thread = stale
+        fresh = _threading.Thread(target=_block, daemon=True)
+        fresh.start()
+        provider._prefetch_thread = fresh
+        provider._prefetch_thread_started_at = _time.monotonic()  # fresh start
 
         provider.queue_prefetch("hello")
         # Should have short-circuited — no new dialectic call
         assert provider._manager.dialectic_query.call_count == 0
         hold.set()
-        stale.join(timeout=2.0)
+        fresh.join(timeout=2.0)
 
 
 class TestSessionStartDialecticPrewarm:
@@ -1319,6 +1324,147 @@ class TestSessionStartDialecticPrewarm:
         result = p.prefetch("hello world")
         assert "sync recovery" in result
         assert p._manager.dialectic_query.call_count == 1
+
+
+class TestDialecticLiveness:
+    """Liveness + observability: stale-thread recovery, stale-result discard,
+    empty-streak backoff, and the snapshot method used for diagnostics."""
+
+    @staticmethod
+    def _make_provider(cfg_extra=None):
+        from unittest.mock import patch, MagicMock
+        from plugins.memory.honcho.client import HonchoClientConfig
+
+        defaults = dict(api_key="test-key", enabled=True, recall_mode="hybrid", timeout=2.0)
+        if cfg_extra:
+            defaults.update(cfg_extra)
+        cfg = HonchoClientConfig(**defaults)
+        provider = HonchoMemoryProvider()
+        mock_manager = MagicMock()
+        mock_manager.get_or_create.return_value = MagicMock(messages=[])
+        mock_manager.get_prefetch_context.return_value = None
+        mock_manager.pop_context_result.return_value = None
+        mock_manager.dialectic_query.return_value = ""  # default: silent
+
+        with patch("plugins.memory.honcho.client.HonchoClientConfig.from_global_config", return_value=cfg), \
+             patch("plugins.memory.honcho.client.get_honcho_client", return_value=MagicMock()), \
+             patch("plugins.memory.honcho.session.HonchoSessionManager", return_value=mock_manager), \
+             patch("hermes_constants.get_hermes_home", return_value=MagicMock()):
+            provider.initialize(session_id="test-liveness")
+        _settle_prewarm(provider)
+        return provider
+
+    def test_stale_thread_is_treated_as_dead(self):
+        """A thread older than timeout × multiplier no longer blocks new fires."""
+        import threading as _threading
+        p = self._make_provider()
+        p._session_key = "test"
+        p._turn_count = 10
+        p._last_dialectic_turn = 0
+        p._manager.dialectic_query.return_value = "fresh synthesis"
+
+        # Plant an alive thread with an old timestamp (stale)
+        hold = _threading.Event()
+        stuck = _threading.Thread(target=lambda: hold.wait(timeout=10.0), daemon=True)
+        stuck.start()
+        p._prefetch_thread = stuck
+        # timeout=2.0, multiplier=2.0, so anything older than 4s is stale
+        p._prefetch_thread_started_at = 0.0  # very old (1970 monotonic baseline)
+
+        p.queue_prefetch("hello")
+        # New thread should have been spawned since stuck one is stale
+        assert p._prefetch_thread is not stuck, "stale thread must be recycled"
+        if p._prefetch_thread:
+            p._prefetch_thread.join(timeout=2.0)
+        assert p._manager.dialectic_query.call_count == 1
+        hold.set()
+        stuck.join(timeout=2.0)
+
+    def test_stale_pending_result_is_discarded_on_read(self):
+        """A pending dialectic result from many turns ago is discarded
+        instead of injected against a fresh conversational pivot."""
+        p = self._make_provider(cfg_extra={"raw": {"dialecticCadence": 2}})
+        p._session_key = "test"
+        p._base_context_cache = "base ctx"
+        with p._prefetch_lock:
+            p._prefetch_result = "ancient synthesis"
+            p._prefetch_result_fired_at = 1
+        # cadence=2, multiplier=2 → stale after 4 turns since fire
+        p._turn_count = 10
+        p._last_dialectic_turn = 1  # prevents sync first-turn path
+
+        result = p.prefetch("what's new")
+        assert "ancient synthesis" not in result, "stale pending must be discarded"
+        # Cache slot cleared
+        with p._prefetch_lock:
+            assert p._prefetch_result == ""
+            assert p._prefetch_result_fired_at == -999
+
+    def test_fresh_pending_result_is_kept(self):
+        """A pending result within the staleness window is injected normally."""
+        p = self._make_provider(cfg_extra={"raw": {"dialecticCadence": 3}})
+        p._session_key = "test"
+        p._base_context_cache = ""
+        with p._prefetch_lock:
+            p._prefetch_result = "recent synthesis"
+            p._prefetch_result_fired_at = 8
+        p._turn_count = 9  # 1 turn since fire, well within cadence × 2 = 6
+        p._last_dialectic_turn = 8
+
+        result = p.prefetch("what's new")
+        assert "recent synthesis" in result
+
+    def test_empty_streak_widens_effective_cadence(self):
+        """After N empty returns, the gate waits cadence + N turns."""
+        p = self._make_provider(cfg_extra={"raw": {"dialecticCadence": 1}})
+        p._dialectic_empty_streak = 3
+        # cadence=1, streak=3 → effective = 4
+        assert p._effective_cadence() == 4
+
+    def test_backoff_is_capped(self):
+        """Effective cadence is capped at cadence × _BACKOFF_MAX."""
+        p = self._make_provider(cfg_extra={"raw": {"dialecticCadence": 2}})
+        p._dialectic_empty_streak = 100
+        # cadence=2, ceiling = 2 × 8 = 16
+        assert p._effective_cadence() == 16
+
+    def test_success_resets_empty_streak(self):
+        """A non-empty result zeroes the streak so healthy operation restores
+        the base cadence immediately."""
+        p = self._make_provider(cfg_extra={"raw": {"dialecticCadence": 1}})
+        p._session_key = "test"
+        p._dialectic_empty_streak = 5
+        p._turn_count = 10
+        p._last_dialectic_turn = 0
+        p._manager.dialectic_query.return_value = "real output"
+
+        p.queue_prefetch("hello")
+        if p._prefetch_thread:
+            p._prefetch_thread.join(timeout=2.0)
+        assert p._dialectic_empty_streak == 0
+        assert p._last_dialectic_turn == 10
+
+    def test_empty_result_increments_streak(self):
+        p = self._make_provider(cfg_extra={"raw": {"dialecticCadence": 1}})
+        p._session_key = "test"
+        p._turn_count = 5
+        p._last_dialectic_turn = 0
+        p._manager.dialectic_query.return_value = ""  # empty
+
+        p.queue_prefetch("hello")
+        if p._prefetch_thread:
+            p._prefetch_thread.join(timeout=2.0)
+        assert p._dialectic_empty_streak == 1
+        assert p._last_dialectic_turn == 0  # cadence not advanced
+
+    def test_liveness_snapshot_shape(self):
+        p = self._make_provider()
+        snap = p.liveness_snapshot()
+        for key in (
+            "turn_count", "last_dialectic_turn", "pending_result_fired_at",
+            "empty_streak", "effective_cadence", "thread_alive", "thread_age_seconds",
+        ):
+            assert key in snap
 
 
 class TestDialecticLifecycleSmoke:

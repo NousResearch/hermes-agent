@@ -25,9 +25,11 @@ from hermes_cli.auth import (
     resolve_gemini_oauth_runtime_credentials,
     resolve_api_key_provider_credentials,
     resolve_external_process_provider_credentials,
+    resolve_near_ai_runtime_credentials,
     has_usable_secret,
 )
-from hermes_cli.config import get_compatible_custom_providers, load_config
+from hermes_cli.attestation import verify_attestation as _verify_attestation
+from hermes_cli.config import get_compatible_custom_providers, get_attestation_config, load_config
 from hermes_constants import OPENROUTER_BASE_URL
 from utils import base_url_host_matches, base_url_hostname
 
@@ -218,6 +220,21 @@ def _resolve_runtime_from_pool_entry(
         api_mode = "codex_responses"
     elif provider == "nous":
         api_mode = "chat_completions"
+    elif provider == "near-ai":
+        api_mode = "chat_completions"
+        if not base_url:
+            creds = resolve_near_ai_runtime_credentials()
+            base_url = creds.get("base_url", "").rstrip("/")
+            if not api_key:
+                api_key = creds.get("api_key", "")
+        att_config = get_attestation_config("near-ai")
+        if att_config.get("enabled"):
+            att_creds = {"api_key": api_key, "base_url": base_url}
+            report = _verify_attestation("near-ai", att_creds, att_config)
+            if not report.valid and att_config.get("strict"):
+                raise RuntimeError(f"TEE attestation failed: {report.error}")
+            if not report.valid:
+                logger.warning("TEE attestation warning: %s", report.error)
     elif provider == "copilot":
         api_mode = _copilot_runtime_api_mode(model_cfg, getattr(entry, "runtime_api_key", ""))
         base_url = base_url or PROVIDER_REGISTRY["copilot"].inference_base_url

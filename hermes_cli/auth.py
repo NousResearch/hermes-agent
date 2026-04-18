@@ -144,6 +144,8 @@ class ProviderConfig:
     api_key_env_vars: tuple = ()
     # Optional env var for base URL override
     base_url_env_var: str = ""
+    # Optional attestation configuration for TEE providers
+    attestation_config: Optional[Dict[str, Any]] = None
 
 
 PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
@@ -414,7 +416,37 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("AZURE_FOUNDRY_API_KEY",),
         base_url_env_var="AZURE_FOUNDRY_BASE_URL",
     ),
+    "near-ai": ProviderConfig(
+        id="near-ai",
+        name="NEAR AI (TEE-attested)",
+        auth_type="api_key",
+        inference_base_url="https://cloud-api.near.ai/v1",
+        api_key_env_vars=("NEAR_API_KEY",),
+        base_url_env_var="NEAR_BASE_URL",
+        attestation_config={
+            "type": "tdx",
+            "endpoint": "/attestation/report",
+            "verifier": "nearai",
+        },
+    ),
 }
+
+
+def resolve_near_ai_runtime_credentials() -> Dict[str, Any]:
+    """Resolve NEAR AI API key and base URL from env / registry."""
+    provider_id = "near-ai"
+    pconfig = PROVIDER_REGISTRY.get(provider_id)
+    if not pconfig:
+        raise AuthError(f"Provider '{provider_id}' not found in registry.", provider=provider_id, code="invalid_provider")
+    api_key = ""
+    for env_var in pconfig.api_key_env_vars:
+        api_key = os.environ.get(env_var, "")
+        if api_key:
+            break
+    base_url = os.environ.get(pconfig.base_url_env_var, "") if pconfig.base_url_env_var else ""
+    if not base_url:
+        base_url = pconfig.inference_base_url
+    return {"provider": provider_id, "api_key": api_key, "base_url": base_url, "source": "env", "key_id": ""}
 
 
 # =============================================================================

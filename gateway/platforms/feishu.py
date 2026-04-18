@@ -2082,7 +2082,11 @@ class FeishuAdapter(BasePlatformAdapter):
         if CallBackCard is not None:
             card = CallBackCard()
             card.type = "raw"
-            card.data = self._build_resolved_approval_card(choice=choice, user_name=user_name)
+            # CallBackCard.data with type="raw" must be a JSON string, not a dict.
+            card.data = json.dumps(
+                self._build_resolved_approval_card(choice=choice, user_name=user_name),
+                ensure_ascii=False,
+            )
             response.card = card
         return response
 

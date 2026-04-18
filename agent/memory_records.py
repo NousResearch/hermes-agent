@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass, field
 from enum import Enum
 import re
@@ -70,11 +71,12 @@ class MemoryRecord:
     revision: int = 1
 
     def __post_init__(self) -> None:
-        self.content = self.content.strip()
+        self.record_id = _require_non_empty_string(self.record_id, field_name="record_id")
+        self.content = _require_non_empty_string(self.content, field_name="content")
         self.summary = _strip_or_none(self.summary)
         self.topic_key = _strip_or_none(self.topic_key)
-        self.source = self.source.strip()
-        self.source_kind = self.source_kind.strip()
+        self.source = _require_non_empty_string(self.source, field_name="source")
+        self.source_kind = _require_non_empty_string(self.source_kind, field_name="source_kind")
         self.conflicts_with = list(self.conflicts_with)
         self.tags = list(self.tags)
         self.metadata = dict(self.metadata)
@@ -99,23 +101,23 @@ class MemoryRecord:
             "salience_tier": self.salience_tier.value,
             "status": self.status.value,
             "supersedes": self.supersedes,
-            "conflicts_with": self.conflicts_with,
-            "tags": self.tags,
-            "metadata": self.metadata,
+            "conflicts_with": deepcopy(self.conflicts_with),
+            "tags": deepcopy(self.tags),
+            "metadata": deepcopy(self.metadata),
             "revision": self.revision,
         }
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any]) -> "MemoryRecord":
         return cls(
-            record_id=str(payload["record_id"]),
+            record_id=_required_payload_string(payload, "record_id"),
             memory_type=MemoryType(payload["memory_type"]),
             scope=MemoryScope(payload["scope"]),
             topic_key=payload.get("topic_key"),
-            content=str(payload["content"]),
+            content=_required_payload_string(payload, "content"),
             summary=payload.get("summary"),
-            source=str(payload["source"]),
-            source_kind=str(payload["source_kind"]),
+            source=_required_payload_string(payload, "source"),
+            source_kind=_required_payload_string(payload, "source_kind"),
             created_at=payload.get("created_at"),
             last_confirmed_at=payload.get("last_confirmed_at"),
             last_used_at=payload.get("last_used_at"),
@@ -148,7 +150,7 @@ class EpisodeRecord(MemoryRecord):
 
     def __post_init__(self) -> None:
         super().__post_init__()
-        self.task_signature = self.task_signature.strip()
+        self.task_signature = _normalize_optional_string(self.task_signature, default="")
         self.problem_summary = _strip_or_none(self.problem_summary)
         self.approach_summary = _strip_or_none(self.approach_summary)
         self.key_actions = list(self.key_actions)
@@ -156,7 +158,7 @@ class EpisodeRecord(MemoryRecord):
         self.outcome = _strip_or_none(self.outcome)
         self.outcome_evidence = _strip_or_none(self.outcome_evidence)
         self.failure_notes = _strip_or_none(self.failure_notes)
-        self.validation_status = self.validation_status.strip() or "candidate"
+        self.validation_status = _normalize_optional_string(self.validation_status, default="candidate")
         self.reuse_count = int(self.reuse_count)
         self.source_session_id = _strip_or_none(self.source_session_id)
 
@@ -167,8 +169,8 @@ class EpisodeRecord(MemoryRecord):
                 "task_signature": self.task_signature,
                 "problem_summary": self.problem_summary,
                 "approach_summary": self.approach_summary,
-                "key_actions": self.key_actions,
-                "tools_used": self.tools_used,
+                "key_actions": deepcopy(self.key_actions),
+                "tools_used": deepcopy(self.tools_used),
                 "outcome": self.outcome,
                 "outcome_evidence": self.outcome_evidence,
                 "failure_notes": self.failure_notes,
@@ -182,14 +184,14 @@ class EpisodeRecord(MemoryRecord):
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any]) -> "EpisodeRecord":
         return cls(
-            record_id=str(payload["record_id"]),
+            record_id=_required_payload_string(payload, "record_id"),
             memory_type=MemoryType(payload.get("memory_type", MemoryType.EPISODIC.value)),
             scope=MemoryScope(payload["scope"]),
             topic_key=payload.get("topic_key"),
-            content=str(payload["content"]),
+            content=_required_payload_string(payload, "content"),
             summary=payload.get("summary"),
-            source=str(payload["source"]),
-            source_kind=str(payload["source_kind"]),
+            source=_required_payload_string(payload, "source"),
+            source_kind=_required_payload_string(payload, "source_kind"),
             created_at=payload.get("created_at"),
             last_confirmed_at=payload.get("last_confirmed_at"),
             last_used_at=payload.get("last_used_at"),
@@ -203,7 +205,7 @@ class EpisodeRecord(MemoryRecord):
             tags=list(payload.get("tags", [])),
             metadata=dict(payload.get("metadata", {})),
             revision=int(payload.get("revision", 1)),
-            task_signature=str(payload.get("task_signature", "")),
+            task_signature=_optional_payload_string(payload, "task_signature", default=""),
             problem_summary=payload.get("problem_summary"),
             approach_summary=payload.get("approach_summary"),
             key_actions=list(payload.get("key_actions", [])),
@@ -211,7 +213,7 @@ class EpisodeRecord(MemoryRecord):
             outcome=payload.get("outcome"),
             outcome_evidence=payload.get("outcome_evidence"),
             failure_notes=payload.get("failure_notes"),
-            validation_status=str(payload.get("validation_status", "candidate")),
+            validation_status=_optional_payload_string(payload, "validation_status", default="candidate"),
             reuse_count=int(payload.get("reuse_count", 0)),
             source_session_id=payload.get("source_session_id"),
         )
@@ -229,7 +231,7 @@ def records_from_sidecar_payload(payload: Mapping[str, Any]) -> list[MemoryRecor
     for item in payload.get("records", []):
         if not isinstance(item, Mapping):
             continue
-        if item.get("memory_type") == MemoryType.EPISODIC.value and "task_signature" in item:
+        if _is_episode_payload(item):
             records.append(EpisodeRecord.from_dict(item))
         else:
             records.append(MemoryRecord.from_dict(item))
@@ -286,6 +288,56 @@ def _slugify(value: str) -> str:
     if not words:
         return "entry"
     return "-".join(words[:4])
+
+
+def _required_payload_string(payload: Mapping[str, Any], field_name: str) -> str:
+    try:
+        value = payload[field_name]
+    except KeyError as exc:
+        raise KeyError(field_name) from exc
+    return _require_non_empty_string(value, field_name=field_name)
+
+
+def _optional_payload_string(payload: Mapping[str, Any], field_name: str, default: str = "") -> str:
+    value = payload.get(field_name, default)
+    if value is None:
+        return default
+    return _normalize_optional_string(value, default=default)
+
+
+def _require_non_empty_string(value: Any, *, field_name: str) -> str:
+    if not isinstance(value, str):
+        raise TypeError(f"{field_name} must be a string")
+    stripped = value.strip()
+    if not stripped:
+        raise ValueError(f"{field_name} must be a non-empty string")
+    return stripped
+
+
+def _normalize_optional_string(value: Any, *, default: str = "") -> str:
+    if not isinstance(value, str):
+        raise TypeError("optional string field must be a string")
+    stripped = value.strip()
+    return stripped or default
+
+
+def _is_episode_payload(payload: Mapping[str, Any]) -> bool:
+    if payload.get("memory_type") == MemoryType.EPISODIC.value:
+        return True
+    episode_fields = {
+        "task_signature",
+        "problem_summary",
+        "approach_summary",
+        "key_actions",
+        "tools_used",
+        "outcome",
+        "outcome_evidence",
+        "failure_notes",
+        "validation_status",
+        "reuse_count",
+        "source_session_id",
+    }
+    return any(field_name in payload for field_name in episode_fields)
 
 
 def _strip_or_none(value: Optional[str]) -> Optional[str]:

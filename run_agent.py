@@ -6419,13 +6419,33 @@ class AIAgent:
         return transformed
 
     def _anthropic_preserve_dots(self) -> bool:
-        """True when using an anthropic-compatible endpoint that preserves dots in model names.
-        Alibaba/DashScope keeps dots (e.g. qwen3.5-plus).
-        MiniMax keeps dots (e.g. MiniMax-M2.7).
-        OpenCode Go/Zen keeps dots for non-Claude models (e.g. minimax-m2.5-free).
-        ZAI/Zhipu keeps dots (e.g. glm-4.7, glm-5.1)."""
+        """
+        Determine whether to skip model name normalization for the current provider.
+
+        The native Anthropic API expects model names in hyphenated format
+        (e.g. claude-sonnet-4-5), so the normalize logic converts dots to
+        hyphens — which is correct for that case.
+
+        Third-party providers that speak the Anthropic protocol forward the
+        model name as-is, where dots carry real meaning. Normalizing those
+        would break the request with HTTP 404, so we skip normalization for:
+
+        1. Any provider using api_mode=anthropic_messages that is not the
+           native Anthropic provider (catches all custom/compatible endpoints).
+        2. Known providers by name: alibaba, minimax, minimax-cn, opencode-go,
+           opencode-zen, zai (legacy fallback for cases where api_mode is not set).
+        3. Known base URLs: dashscope, aliyuncs, minimax, opencode.ai/zen/,
+           bigmodel.cn (legacy fallback for url-based detection).
+
+        Returns True if normalization should be skipped (dots preserved).
+        """
+        # Primary: any third-party Anthropic-compatible provider
+        if getattr(self, "api_mode", "") == "anthropic_messages" and getattr(self, "provider", "") != "anthropic":
+            return True
+        # Legacy fallback: known provider names
         if (getattr(self, "provider", "") or "").lower() in {"alibaba", "minimax", "minimax-cn", "opencode-go", "opencode-zen", "zai"}:
             return True
+        # Legacy fallback: known base URLs
         base = (getattr(self, "base_url", "") or "").lower()
         return "dashscope" in base or "aliyuncs" in base or "minimax" in base or "opencode.ai/zen/" in base or "bigmodel.cn" in base
 

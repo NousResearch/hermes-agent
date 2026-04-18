@@ -27,14 +27,18 @@ const quietRpc = async <T extends Record<string, any> = Record<string, any>>(
   }
 }
 
-const applyDisplay = (cfg: ConfigFullResponse | null, setBell: (v: boolean) => void) => {
+export const applyDisplay = (cfg: ConfigFullResponse | null, setBell: (v: boolean) => void) => {
   const d = cfg?.config?.display ?? {}
 
   setBell(!!d.bell_on_complete)
   patchUiState({
     compact: !!d.tui_compact,
     detailsMode: resolveDetailsMode(d),
-    statusBar: d.tui_statusbar !== false
+    inlineDiffs: d.inline_diffs !== false,
+    showCost: !!d.show_cost,
+    showReasoning: !!d.show_reasoning,
+    statusBar: d.tui_statusbar !== false,
+    streaming: d.streaming !== false
   })
 }
 

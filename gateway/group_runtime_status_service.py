@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from gateway.group_control_plane import build_group_runtime_snapshot
+
 
 def unique_report_targets(values: list[Any]) -> list[str]:
     targets: list[str] = []
@@ -57,7 +59,6 @@ def build_qq_group_runtime_status_details(
     effective_daily_enabled = bool(
         policy.get("daily_report_enabled") or (overlay or {}).get("daily_report_enabled")
     )
-    can_reply_in_group = effective_mode not in {"collect_only", "disabled"}
     daily_targets = unique_report_targets(
         [policy.get("daily_report_target")]
         + worker_report_targets(
@@ -73,17 +74,17 @@ def build_qq_group_runtime_status_details(
             "manual_report_target",
         )
     )
-    return {
-        "platform_label": "QQ 群",
-        "target_label": group_id,
-        "effective_mode": effective_mode,
-        "can_reply_in_group": can_reply_in_group,
-        "archive_enabled": effective_archive_enabled,
-        "daily_report_enabled": effective_daily_enabled,
-        "daily_targets": daily_targets,
-        "manual_targets": manual_targets,
-        "worker_names": worker_names,
-    }
+    snapshot = build_group_runtime_snapshot(
+        platform_label="QQ 群",
+        target_label=group_id,
+        effective_mode=effective_mode,
+        archive_enabled=effective_archive_enabled,
+        daily_report_enabled=effective_daily_enabled,
+        daily_targets=daily_targets,
+        manual_targets=manual_targets,
+        worker_names=worker_names,
+    )
+    return snapshot.to_status_details()
 
 
 def build_weixin_group_runtime_status_details(
@@ -97,21 +98,20 @@ def build_weixin_group_runtime_status_details(
     effective_mode = str(policy.get("mode") or "default").strip() or "default"
     effective_archive_enabled = bool(policy.get("archive_enabled"))
     effective_daily_enabled = bool(policy.get("daily_report_enabled"))
-    can_reply_in_group = effective_mode not in {"collect_only", "disabled"}
     daily_targets = unique_report_targets(
         list((reporting.get("effective_targets") or {}).get("daily_report_targets") or [])
     )
     manual_targets = unique_report_targets(
         list((reporting.get("effective_targets") or {}).get("manual_report_targets") or [])
     )
-    return {
-        "platform_label": "微信群",
-        "target_label": target,
-        "effective_mode": effective_mode,
-        "can_reply_in_group": can_reply_in_group,
-        "archive_enabled": effective_archive_enabled,
-        "daily_report_enabled": effective_daily_enabled,
-        "daily_targets": daily_targets,
-        "manual_targets": manual_targets,
-        "worker_names": [],
-    }
+    snapshot = build_group_runtime_snapshot(
+        platform_label="微信群",
+        target_label=target,
+        effective_mode=effective_mode,
+        archive_enabled=effective_archive_enabled,
+        daily_report_enabled=effective_daily_enabled,
+        daily_targets=daily_targets,
+        manual_targets=manual_targets,
+        worker_names=[],
+    )
+    return snapshot.to_status_details()

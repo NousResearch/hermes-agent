@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from gateway.group_control_plane import NormalizedGroupControlRequest
 from gateway.group_control_intents import (
     has_followup_group_reference,
     looks_like_group_chat_enable_request,
@@ -54,39 +55,49 @@ def match_group_control_request(
         return None, missing_target_message
 
     if report_now:
-        return (
-            {
-                "action": "deliver_report",
-                "target": target,
-                "delivery_target": report_target_resolver(
-                    source,
-                    normalized_body,
-                    prefer_dm=False,
-                ),
-            },
-            None,
+        request = NormalizedGroupControlRequest(
+            action="deliver_report",
+            target=target,
+            delivery_target=report_target_resolver(
+                source,
+                normalized_body,
+                prefer_dm=False,
+            ),
         )
+        return request.to_tool_args(), None
 
-    tool_args: dict[str, object] = {"target": target}
+    action = ""
     if disable_listen:
-        tool_args["action"] = "resume_chat" if allow_chat else "disable_group"
+        action = "resume_chat" if allow_chat else "disable_group"
     elif allow_chat:
-        tool_args["action"] = "resume_chat"
+        action = "resume_chat"
     elif enable_listen:
-        tool_args["action"] = collect_only_action
+        action = collect_only_action
 
+    request = NormalizedGroupControlRequest(
+        action=action,
+        target=target,
+    )
     if enable_report:
         report_target = report_target_resolver(
             source,
             normalized_body,
             prefer_dm=True,
         )
-        tool_args["daily_report_enabled"] = True
-        tool_args["daily_report_target"] = report_target
-        tool_args["manual_report_target"] = report_target
+        request = NormalizedGroupControlRequest(
+            action=action,
+            target=target,
+            daily_report_enabled=True,
+            daily_report_target=report_target,
+            manual_report_target=report_target,
+        )
     elif disable_report:
-        tool_args["daily_report_enabled"] = False
+        request = NormalizedGroupControlRequest(
+            action=action,
+            target=target,
+            daily_report_enabled=False,
+        )
 
-    if "action" not in tool_args:
+    if not request.action:
         return None, None
-    return tool_args, None
+    return request.to_tool_args(), None

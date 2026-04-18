@@ -37,6 +37,7 @@ def _make_runner():
     runner.adapters = {Platform.TELEGRAM: _FakeAdapter()}
     runner._running_agents = {}
     runner._running_agents_ts = {}
+    runner._running_agent_tokens = {}
     runner._pending_messages = {}
     runner._pending_approvals = {}
     runner._voice_mode = {}
@@ -81,7 +82,7 @@ async def test_sentinel_placed_before_agent_setup():
     # Patch _handle_message_with_agent to capture state at entry
     sentinel_was_set = False
 
-    async def mock_inner(self_inner, ev, src, qk):
+    async def mock_inner(self_inner, ev, src, qk, owner_token):
         nonlocal sentinel_was_set
         sentinel_was_set = runner._running_agents.get(qk) is _AGENT_PENDING_SENTINEL
         return "ok"
@@ -105,7 +106,7 @@ async def test_sentinel_cleaned_up_after_handler_returns():
     event = _make_event()
     session_key = build_session_key(event.source)
 
-    async def mock_inner(self_inner, ev, src, qk):
+    async def mock_inner(self_inner, ev, src, qk, owner_token):
         return "ok"
 
     with patch.object(GatewayRunner, "_handle_message_with_agent", mock_inner):
@@ -127,7 +128,7 @@ async def test_sentinel_cleaned_up_on_exception():
     event = _make_event()
     session_key = build_session_key(event.source)
 
-    async def mock_inner(self_inner, ev, src, qk):
+    async def mock_inner(self_inner, ev, src, qk, owner_token):
         raise RuntimeError("boom")
 
     with patch.object(GatewayRunner, "_handle_message_with_agent", mock_inner):
@@ -154,7 +155,7 @@ async def test_second_message_during_sentinel_queued_not_duplicate():
 
     barrier = asyncio.Event()
 
-    async def slow_inner(self_inner, ev, src, qk):
+    async def slow_inner(self_inner, ev, src, qk, owner_token):
         # Simulate slow setup — wait until test tells us to proceed
         await barrier.wait()
         return "ok"
@@ -333,7 +334,7 @@ async def test_stop_during_sentinel_force_cleans_session():
 
     barrier = asyncio.Event()
 
-    async def slow_inner(self_inner, ev, src, qk):
+    async def slow_inner(self_inner, ev, src, qk, owner_token):
         await barrier.wait()
         return "ok"
 
@@ -428,6 +429,42 @@ async def test_stop_clears_pending_messages():
     # Pending messages must be cleared
     assert session_key not in runner._pending_messages
     adapter.get_pending_message.assert_called_once_with(session_key)
+
+
+# ------------------------------------------------------------------
+# Test 6d: stale runs cannot resurrect or clear newer slots
+# ------------------------------------------------------------------
+def test_stale_owner_token_cannot_promote_old_run_after_stop():
+    runner = _make_runner()
+    session_key = build_session_key(_make_event().source)
+
+    old_token = runner._claim_running_agent_slot(session_key)
+    runner._release_running_agent_state(session_key)
+    fresh_token = runner._claim_running_agent_slot(session_key)
+
+    stale_agent = MagicMock(name="stale_agent")
+    promoted = runner._promote_running_agent_slot(session_key, old_token, stale_agent)
+
+    assert promoted is False
+    assert runner._running_agents[session_key] is _AGENT_PENDING_SENTINEL
+    assert runner._running_agent_tokens[session_key] == fresh_token
+
+
+def test_stale_owner_token_cannot_clear_newer_run_state():
+    runner = _make_runner()
+    session_key = build_session_key(_make_event().source)
+
+    old_token = runner._claim_running_agent_slot(session_key)
+    runner._release_running_agent_state(session_key)
+    new_token = runner._claim_running_agent_slot(session_key)
+    new_agent = MagicMock(name="new_agent")
+    assert runner._promote_running_agent_slot(session_key, new_token, new_agent) is True
+
+    released = runner._release_running_agent_state(session_key, old_token)
+
+    assert released is False
+    assert runner._running_agents[session_key] is new_agent
+    assert runner._running_agent_tokens[session_key] == new_token
 
 
 # ------------------------------------------------------------------

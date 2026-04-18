@@ -571,6 +571,7 @@ class GatewayRunner:
     # Class-level defaults so partial construction in tests doesn't
     # blow up on attribute access.
     _running_agents_ts: Dict[str, float] = {}
+    _running_agent_tokens: Dict[str, object] = {}
     _busy_input_mode: str = "interrupt"
     _restart_drain_timeout: float = DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
     _exit_code: Optional[int] = None
@@ -623,6 +624,7 @@ class GatewayRunner:
         # Key: session_key, Value: AIAgent instance
         self._running_agents: Dict[str, Any] = {}
         self._running_agents_ts: Dict[str, float] = {}  # start timestamp per session
+        self._running_agent_tokens: Dict[str, object] = {}  # per-run owner token per session
         self._pending_messages: Dict[str, str] = {}  # Queued messages during interrupt
         self._busy_ack_ts: Dict[str, float] = {}  # last busy-ack timestamp per session (debounce)
 
@@ -3464,24 +3466,21 @@ class GatewayRunner:
         # message arriving during any of those yields would pass the
         # "already running" guard and spin up a duplicate agent for the
         # same session — corrupting the transcript.
-        self._running_agents[_quick_key] = _AGENT_PENDING_SENTINEL
-        self._running_agents_ts[_quick_key] = time.time()
+        _owner_token = self._claim_running_agent_slot(_quick_key)
 
         try:
-            return await self._handle_message_with_agent(event, source, _quick_key)
+            return await self._handle_message_with_agent(event, source, _quick_key, _owner_token)
         finally:
             # If _run_agent replaced the sentinel with a real agent and
             # then cleaned it up, this is a no-op.  If we exited early
             # (exception, command fallthrough, etc.) the sentinel must
             # not linger or the session would be permanently locked out.
             if self._running_agents.get(_quick_key) is _AGENT_PENDING_SENTINEL:
-                self._release_running_agent_state(_quick_key)
+                self._release_running_agent_state(_quick_key, _owner_token)
             else:
                 # Agent path already cleaned _running_agents; make sure
                 # the paired metadata dicts are gone too.
-                self._running_agents_ts.pop(_quick_key, None)
-                if hasattr(self, "_busy_ack_ts"):
-                    self._busy_ack_ts.pop(_quick_key, None)
+                self._release_running_agent_state(_quick_key, _owner_token)
 
     async def _prepare_inbound_message_text(
         self,
@@ -3639,7 +3638,7 @@ class GatewayRunner:
 
         return message_text
 
-    async def _handle_message_with_agent(self, event, source, _quick_key: str):
+    async def _handle_message_with_agent(self, event, source, _quick_key: str, owner_token: object | None):
         """Inner handler that runs under the _running_agents sentinel guard."""
         _msg_start_time = time.time()
         _platform_name = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
@@ -4114,6 +4113,7 @@ class GatewayRunner:
                 source=source,
                 session_id=session_entry.session_id,
                 session_key=session_key,
+                owner_token=owner_token,
                 event_message_id=event.message_id,
                 channel_prompt=event.channel_prompt,
             )
@@ -8217,8 +8217,40 @@ class GatewayRunner:
         override = self._session_model_overrides.get(session_key)
         return override is not None and override.get("model") == agent_model
 
-    def _release_running_agent_state(self, session_key: str) -> None:
+    def _claim_running_agent_slot(
+        self,
+        session_key: str,
+        agent: Any = _AGENT_PENDING_SENTINEL,
+    ) -> object | None:
+        """Claim the running-agent slot for one logical run and return its owner token."""
+        if not session_key:
+            return None
+        if "_running_agent_tokens" not in self.__dict__:
+            self._running_agent_tokens = {}
+        owner_token = object()
+        self._running_agents[session_key] = agent
+        self._running_agents_ts[session_key] = time.time()
+        self._running_agent_tokens[session_key] = owner_token
+        return owner_token
+
+    def _promote_running_agent_slot(self, session_key: str, owner_token: object | None, agent: Any) -> bool:
+        """Promote a claimed slot from sentinel to real agent only if ownership still matches."""
+        if not session_key or owner_token is None:
+            return False
+        tokens = getattr(self, "_running_agent_tokens", {})
+        if tokens.get(session_key) is not owner_token:
+            return False
+        self._running_agents[session_key] = agent
+        if self._draining:
+            self._update_runtime_status("draining")
+        return True
+
+    def _release_running_agent_state(self, session_key: str, owner_token: object | None = None) -> bool:
         """Pop ALL per-running-agent state entries for ``session_key``.
+
+        When ``owner_token`` is provided, only clear the slot if that token still
+        owns it. This prevents an older async run from resurrecting or deleting a
+        newer run's slot after `/stop` or `/new` invalidated the original owner.
 
         Replaces ad-hoc ``del self._running_agents[key]`` calls scattered
         across the gateway.  Those sites had drifted: some popped only
@@ -8235,11 +8267,17 @@ class GatewayRunner:
         touched here — those have their own lifecycles.
         """
         if not session_key:
-            return
+            return False
+        tokens = getattr(self, "_running_agent_tokens", {})
+        if owner_token is not None and tokens.get(session_key) is not owner_token:
+            return False
         self._running_agents.pop(session_key, None)
         self._running_agents_ts.pop(session_key, None)
+        if tokens:
+            tokens.pop(session_key, None)
         if hasattr(self, "_busy_ack_ts"):
             self._busy_ack_ts.pop(session_key, None)
+        return True
 
     def _evict_cached_agent(self, session_key: str) -> None:
         """Remove a cached agent for a session (called on /new, /model, etc)."""
@@ -8663,6 +8701,7 @@ class GatewayRunner:
         source: SessionSource,
         session_id: str,
         session_key: str = None,
+        owner_token: object | None = None,
         _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None,
         channel_prompt: Optional[str] = None,
@@ -9598,9 +9637,7 @@ class GatewayRunner:
             while agent_holder[0] is None:
                 await asyncio.sleep(0.05)
             if session_key:
-                self._running_agents[session_key] = agent_holder[0]
-                if self._draining:
-                    self._update_runtime_status("draining")
+                self._promote_running_agent_slot(session_key, owner_token, agent_holder[0])
         
         tracking_task = asyncio.create_task(track_agent())
         
@@ -10052,6 +10089,7 @@ class GatewayRunner:
                     source=next_source,
                     session_id=session_id,
                     session_key=session_key,
+                    owner_token=owner_token,
                     _interrupt_depth=_interrupt_depth + 1,
                     event_message_id=next_message_id,
                     channel_prompt=next_channel_prompt,
@@ -10077,7 +10115,7 @@ class GatewayRunner:
             # Clean up tracking
             tracking_task.cancel()
             if session_key:
-                self._release_running_agent_state(session_key)
+                self._release_running_agent_state(session_key, owner_token)
             if self._draining:
                 self._update_runtime_status("draining")
             

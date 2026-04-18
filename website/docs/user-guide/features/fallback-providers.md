@@ -61,18 +61,18 @@ Both `provider` and `model` are **required**. If either is missing, the fallback
 | Arcee AI | `arcee` | `ARCEEAI_API_KEY` |
 | Alibaba / DashScope | `alibaba` | `DASHSCOPE_API_KEY` |
 | Hugging Face | `huggingface` | `HF_TOKEN` |
-| Custom endpoint | `custom` | `base_url` + `api_key_env` (see below) |
+| Custom endpoint | `custom` | `base_url` + `key_env` (see below) |
 
 ### Custom Endpoint Fallback
 
-For a custom OpenAI-compatible endpoint, add `base_url` and optionally `api_key_env`:
+For a custom OpenAI-compatible endpoint, add `base_url` and optionally `key_env`:
 
 ```yaml
 fallback_model:
   provider: custom
   model: my-local-model
   base_url: http://localhost:8000/v1
-  api_key_env: MY_LOCAL_KEY          # env var name containing the API key
+  key_env: MY_LOCAL_KEY              # env var name containing the API key
 ```
 
 ### When Fallback Triggers
@@ -128,7 +128,7 @@ fallback_model:
   provider: custom
   model: llama-3.1-70b
   base_url: http://localhost:8000/v1
-  api_key_env: LOCAL_API_KEY
+  key_env: LOCAL_API_KEY
 ```
 
 **Codex OAuth as fallback:**

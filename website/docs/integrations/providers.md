@@ -1052,11 +1052,11 @@ custom_providers:
     # api_key omitted — Hermes uses "no-key-required" for keyless local servers
   - name: work
     base_url: https://gpu-server.internal.corp/v1
-    api_key: corp-api-key
+    key_env: CORP_API_KEY
     api_mode: chat_completions   # optional, auto-detected from URL
   - name: anthropic-proxy
     base_url: https://proxy.example.com/anthropic
-    api_key: proxy-key
+    key_env: ANTHROPIC_PROXY_KEY
     api_mode: anthropic_messages  # for Anthropic-compatible proxies
 ```
 
@@ -1154,7 +1154,7 @@ fallback_model:
   provider: openrouter                    # required
   model: anthropic/claude-sonnet-4        # required
   # base_url: http://localhost:8000/v1    # optional, for custom endpoints
-  # api_key_env: MY_CUSTOM_KEY           # optional, env var name for custom endpoint API key
+  # key_env: MY_CUSTOM_KEY               # optional, env var name for custom endpoint API key
 ```
 
 When activated, the fallback swaps the model and provider mid-session without losing your conversation. It fires **at most once** per session.
@@ -1178,7 +1178,7 @@ smart_model_routing:
     provider: openrouter
     model: google/gemini-2.5-flash
     # base_url: http://localhost:8000/v1  # optional custom endpoint
-    # api_key_env: MY_CUSTOM_KEY          # optional env var name for that endpoint's API key
+    # key_env: MY_CUSTOM_KEY              # optional env var name for that endpoint's API key
 ```
 
 How it works:

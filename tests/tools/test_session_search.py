@@ -324,3 +324,56 @@ class TestSessionSearch:
         assert result["count"] == 0
         assert result["results"] == []
         assert result["sessions_searched"] == 0
+
+    def test_empty_query_recent_mode_excludes_current_parent_lineage(self):
+        """Recent browsing should exclude the active child session's parent/root session."""
+        from unittest.mock import MagicMock
+        from tools.session_search_tool import session_search
+
+        mock_db = MagicMock()
+        current_child_sid = "child_session_with_longer_id"
+        current_root_sid = "root_sid"
+        unrelated_sid = "other_sid"
+
+        mock_db.list_sessions_rich.return_value = [
+            {
+                "id": current_root_sid,
+                "title": "Current root",
+                "source": "cli",
+                "started_at": 1709500000,
+                "last_active": 1709500100,
+                "message_count": 10,
+                "preview": "current lineage root",
+                "parent_session_id": None,
+            },
+            {
+                "id": unrelated_sid,
+                "title": "Older session",
+                "source": "cli",
+                "started_at": 1709400000,
+                "last_active": 1709400100,
+                "message_count": 5,
+                "preview": "unrelated session",
+                "parent_session_id": None,
+            },
+        ]
+
+        def _get_session(session_id):
+            if session_id == current_child_sid:
+                return {"parent_session_id": current_root_sid}
+            if session_id == current_root_sid:
+                return {"parent_session_id": None}
+            return None
+
+        mock_db.get_session.side_effect = _get_session
+
+        result = json.loads(session_search(
+            query="",
+            db=mock_db,
+            current_session_id=current_child_sid,
+        ))
+
+        assert result["success"] is True
+        assert result["mode"] == "recent"
+        assert [entry["session_id"] for entry in result["results"]] == [unrelated_sid]
+        assert current_root_sid not in [entry["session_id"] for entry in result["results"]]

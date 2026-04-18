@@ -242,25 +242,42 @@ async def _summarize_session(
 _HIDDEN_SESSION_SOURCES = ("tool",)
 
 
+def _resolve_to_parent_session(db, session_id: Optional[str]) -> Optional[str]:
+    """Walk a session's parent chain and return the root session ID."""
+    if not session_id:
+        return session_id
+
+    visited = set()
+    sid = session_id
+    while sid and sid not in visited:
+        visited.add(sid)
+        try:
+            session = db.get_session(sid)
+            if not session:
+                break
+            parent = session.get("parent_session_id")
+            if not parent:
+                break
+            sid = parent
+        except Exception as e:
+            logging.debug(
+                "Error resolving parent for session %s: %s",
+                sid,
+                e,
+                exc_info=True,
+            )
+            break
+
+    return sid or session_id
+
+
 def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str:
     """Return metadata for the most recent sessions (no LLM calls)."""
     try:
         sessions = db.list_sessions_rich(limit=limit + 5, exclude_sources=list(_HIDDEN_SESSION_SOURCES))  # fetch extra to skip current
 
         # Resolve current session lineage to exclude it
-        current_root = None
-        if current_session_id:
-            try:
-                sid = current_session_id
-                visited = set()
-                while sid and sid not in visited:
-                    visited.add(sid)
-                    s = db.get_session(sid)
-                    parent = s.get("parent_session_id") if s else None
-                    sid = parent if parent else None
-                current_root = max(visited, key=len) if visited else current_session_id
-            except Exception:
-                current_root = current_session_id
+        current_root = _resolve_to_parent_session(db, current_session_id)
 
         results = []
         for s in sessions:
@@ -345,33 +362,8 @@ def session_search(
 
         # Resolve child sessions to their parent — delegation stores detailed
         # content in child sessions, but the user's conversation is the parent.
-        def _resolve_to_parent(session_id: str) -> str:
-            """Walk delegation chain to find the root parent session ID."""
-            visited = set()
-            sid = session_id
-            while sid and sid not in visited:
-                visited.add(sid)
-                try:
-                    session = db.get_session(sid)
-                    if not session:
-                        break
-                    parent = session.get("parent_session_id")
-                    if parent:
-                        sid = parent
-                    else:
-                        break
-                except Exception as e:
-                    logging.debug(
-                        "Error resolving parent for session %s: %s",
-                        sid,
-                        e,
-                        exc_info=True,
-                    )
-                    break
-            return sid
-
         current_lineage_root = (
-            _resolve_to_parent(current_session_id) if current_session_id else None
+            _resolve_to_parent_session(db, current_session_id) if current_session_id else None
         )
 
         # Group by resolved (parent) session_id, dedup, skip the current
@@ -380,7 +372,7 @@ def session_search(
         seen_sessions = {}
         for result in raw_results:
             raw_sid = result["session_id"]
-            resolved_sid = _resolve_to_parent(raw_sid)
+            resolved_sid = _resolve_to_parent_session(db, raw_sid)
             # Skip the current session lineage — the agent already has that
             # context, even if older turns live in parent fragments.
             if current_lineage_root and resolved_sid == current_lineage_root:

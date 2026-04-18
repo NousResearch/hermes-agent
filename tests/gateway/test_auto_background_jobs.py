@@ -94,8 +94,6 @@ def _make_runner(*, auto_background_work: bool = True, employee_routes=None):
     runner._pending_messages = {}
     runner._pending_approvals = {}
     runner._background_tasks = set()
-    runner._managed_background_jobs = {}
-    runner._managed_background_jobs_by_chat = {}
     runner._session_db = MagicMock()
     runner._session_db.get_session_title.return_value = None
     runner._reasoning_config = None
@@ -124,6 +122,16 @@ def _make_runner(*, auto_background_work: bool = True, employee_routes=None):
         return_value={"launcher_type": "subprocess", "launcher_pid": 4321}
     )
     return runner
+
+
+def _list_durable_jobs(runner):
+    return runner._get_background_job_store().list_jobs()
+
+
+def _latest_durable_job(runner):
+    jobs = _list_durable_jobs(runner)
+    assert jobs
+    return jobs[-1]
 
 
 def _install_background_store(runner, tmp_path):
@@ -187,8 +195,7 @@ async def test_handle_message_auto_backgrounds_long_work_request():
 
     assert "转后台" in result
     assert runner._run_agent.await_count == 0
-    assert len(runner._managed_background_jobs) == 1
-    job = next(iter(runner._managed_background_jobs.values()))
+    job = _latest_durable_job(runner)
     assert job["kind"] == "auto"
     assert job["status"] == "queued"
 
@@ -220,8 +227,7 @@ async def test_handle_message_dispatches_design_polish_to_tiezhu_worker_when_heu
 
     assert "铁柱" in result
     assert runner._run_agent.await_count == 0
-    assert len(runner._managed_background_jobs) == 1
-    job = next(iter(runner._managed_background_jobs.values()))
+    job = _latest_durable_job(runner)
     assert job["kind"] == "auto"
     assert job["worker_name"] == "铁柱"
     assert job["preloaded_skills"] == ["frontend-design-pro"]
@@ -257,7 +263,7 @@ async def test_handle_message_uses_recent_context_for_short_design_follow_up_whe
         result = await runner._handle_message(event)
 
     assert "铁柱" in result
-    job = next(iter(runner._managed_background_jobs.values()))
+    job = _latest_durable_job(runner)
     assert job["worker_name"] == "铁柱"
     assert job["preloaded_skills"] == ["frontend-design-pro"]
 
@@ -284,8 +290,7 @@ async def test_handle_message_employee_followup_does_not_route_to_intel_worker_c
     control_mock.assert_not_called()
     assert "铁柱" in result
     assert runner._run_agent.await_count == 0
-    assert len(runner._managed_background_jobs) == 1
-    job = next(iter(runner._managed_background_jobs.values()))
+    job = _latest_durable_job(runner)
     assert job["worker_name"] == "铁柱"
     assert job["preloaded_skills"] == ["frontend-design-pro"]
 
@@ -352,7 +357,7 @@ async def test_handle_message_does_not_route_new_server_task_to_tiezhu_from_stal
 
     assert "转后台" in result
     assert "铁柱" not in result
-    job = next(iter(runner._managed_background_jobs.values()))
+    job = _latest_durable_job(runner)
     assert job["worker_name"] == ""
     assert job["preloaded_skills"] == []
 
@@ -366,7 +371,7 @@ async def test_handle_message_default_employee_route_requires_explicit_worker_me
 
     runner._run_agent.assert_awaited_once()
     assert result == "前台回复"
-    assert runner._managed_background_jobs == {}
+    assert _list_durable_jobs(runner) == []
 
 
 @pytest.mark.asyncio
@@ -378,7 +383,7 @@ async def test_handle_message_plain_worker_name_ping_does_not_dispatch_backgroun
 
     runner._run_agent.assert_awaited_once()
     assert result == "前台回复"
-    assert runner._managed_background_jobs == {}
+    assert _list_durable_jobs(runner) == []
 
 
 @pytest.mark.asyncio
@@ -394,7 +399,7 @@ async def test_handle_message_does_not_auto_background_bare_continue_without_wor
 
     runner._run_agent.assert_awaited_once()
     assert result == "前台回复"
-    assert runner._managed_background_jobs == {}
+    assert _list_durable_jobs(runner) == []
 
 
 @pytest.mark.asyncio
@@ -406,7 +411,7 @@ async def test_handle_message_keeps_short_casual_chat_in_foreground():
 
     runner._run_agent.assert_awaited_once()
     assert not result or "后台" not in result
-    assert runner._managed_background_jobs == {}
+    assert _list_durable_jobs(runner) == []
 
 
 @pytest.mark.asyncio
@@ -1550,7 +1555,7 @@ async def test_group_technical_discussion_with_implementation_word_stays_in_fore
 
     runner._run_agent.assert_awaited_once()
     assert result == "前台回复"
-    assert runner._managed_background_jobs == {}
+    assert _list_durable_jobs(runner) == []
 
 
 @pytest.mark.asyncio
@@ -1566,7 +1571,7 @@ async def test_group_explicit_maga_assignment_stays_foreground_without_configure
 
     runner._run_agent.assert_awaited_once()
     assert result == "前台回复"
-    assert runner._managed_background_jobs == {}
+    assert _list_durable_jobs(runner) == []
 
 
 @pytest.mark.asyncio

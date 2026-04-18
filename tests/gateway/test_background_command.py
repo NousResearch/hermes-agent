@@ -44,8 +44,6 @@ def _make_runner():
     runner._session_model_overrides = {}
     runner._running_agents = {}
     runner._background_tasks = set()
-    runner._managed_background_jobs = {}
-    runner._managed_background_jobs_by_chat = {}
     runner._load_reasoning_config = lambda: None
     runner._launch_background_worker = MagicMock(
         return_value={"launcher_type": "subprocess", "launcher_pid": 4321}

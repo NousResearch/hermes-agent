@@ -72,13 +72,12 @@ def _collect_background_jobs(
     *,
     now_ts: float,
 ) -> tuple[dict[str, int], list[dict[str, Any]], dict[str, dict[str, Any]]]:
-    runner._ensure_background_job_state()
     jobs_by_id: dict[str, dict[str, Any]] = {}
     try:
         store = runner._get_background_job_store()
         all_jobs = store.list_jobs()
     except Exception:
-        all_jobs = list(getattr(runner, "_managed_background_jobs", {}).values())
+        all_jobs = []
     for job in all_jobs:
         if not isinstance(job, dict):
             continue

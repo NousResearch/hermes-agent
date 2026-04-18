@@ -209,8 +209,6 @@ def _make_runner(*, busy_input_mode: str):
     runner._pending_approvals = {}
     runner._voice_mode = {}
     runner._background_tasks = set()
-    runner._managed_background_jobs = {}
-    runner._managed_background_jobs_by_chat = {}
     runner._failed_platforms = {}
     runner._update_prompt_pending = {}
     runner._session_model_overrides = {}

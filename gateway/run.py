@@ -1308,8 +1308,6 @@ class GatewayRunner:
 
         # Track background tasks to prevent garbage collection mid-execution
         self._background_tasks: set = set()
-        self._managed_background_jobs: Dict[str, Dict[str, Any]] = {}
-        self._managed_background_jobs_by_chat: Dict[str, List[str]] = {}
         self._background_job_store = BackgroundJobStore()
         self._direct_control_router = DirectControlRouter(self)
         self._auto_vision_cache: Dict[str, Dict[str, Any]] = {}
@@ -2662,11 +2660,7 @@ class GatewayRunner:
         return ""
 
     def _ensure_background_job_state(self) -> None:
-        """Initialize background-job registries for tests and older runner state."""
-        if not hasattr(self, "_managed_background_jobs"):
-            self._managed_background_jobs = {}
-        if not hasattr(self, "_managed_background_jobs_by_chat"):
-            self._managed_background_jobs_by_chat = {}
+        """Initialize background-job runtime state for tests and older runner state."""
         if not hasattr(self, "_background_tasks"):
             self._background_tasks = set()
         if not hasattr(self, "_background_job_store") or self._background_job_store is None:
@@ -2702,7 +2696,6 @@ class GatewayRunner:
         active_only: bool = False,
     ) -> List[Dict[str, Any]]:
         """Return managed background jobs associated with the source chat."""
-        self._ensure_background_job_state()
         chat_key = self._background_job_chat_key(source)
         scope_key = self._background_job_scope_key(source)
         try:
@@ -2717,18 +2710,6 @@ class GatewayRunner:
             durable_jobs,
             key=lambda item: _safe_float(item.get("created_at"), 0.0),
         )
-
-    def _refresh_managed_background_job_cache(self, job: Dict[str, Any]) -> None:
-        """Mirror durable background job state into the legacy in-memory cache."""
-        self._ensure_background_job_state()
-        task_id = str(job.get("task_id") or "").strip()
-        chat_key = str(job.get("chat_key") or "").strip()
-        if not task_id or not chat_key:
-            return
-        self._managed_background_jobs[task_id] = dict(job)
-        task_ids = self._managed_background_jobs_by_chat.setdefault(chat_key, [])
-        if task_id not in task_ids:
-            task_ids.append(task_id)
 
     def _launch_background_worker(self, task_id: str) -> Dict[str, Any]:
         """Launch an external worker for a durable background job."""
@@ -3265,9 +3246,7 @@ class GatewayRunner:
         is_admin_user: Optional[bool] = None,
     ) -> str:
         return shared_start_background_job(
-            ensure_background_job_state=self._ensure_background_job_state,
             store=self._get_background_job_store(),
-            refresh_cache=self._refresh_managed_background_job_cache,
             launch_worker=self._launch_background_worker,
             prompt=prompt,
             source=source,
@@ -4882,8 +4861,6 @@ class GatewayRunner:
             except Exception as exc:
                 logger.warning("Failed to stop external background job %s: %s", task_id, exc)
                 job = self._get_background_job_store().mark_job_cancelling(task_id) or job
-            job["updated_at"] = time.time()
-            self._refresh_managed_background_job_cache(job)
             return f"⏹️ Requested stop for background job `{task_id}`."
 
         return "No active task to stop."

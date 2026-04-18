@@ -66,8 +66,6 @@ def _make_runner(tmp_path: Path):
     runner._pending_messages = {}
     runner._pending_approvals = {}
     runner._background_tasks = set()
-    runner._managed_background_jobs = {}
-    runner._managed_background_jobs_by_chat = {}
     runner._session_db = None
     runner._reasoning_config = None
     runner._provider_routing = {}

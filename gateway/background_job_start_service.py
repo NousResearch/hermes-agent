@@ -14,9 +14,7 @@ def new_background_task_id() -> str:
 
 def start_background_job(
     *,
-    ensure_background_job_state: Callable[[], None],
     store: Any,
-    refresh_cache: Callable[[dict[str, Any]], None],
     launch_worker: Callable[[str], dict[str, Any]],
     prompt: str,
     source: Any,
@@ -32,9 +30,8 @@ def start_background_job(
     logger=None,
 ) -> str:
     """Persist and launch one durable managed background job."""
-    ensure_background_job_state()
     task_id = task_id_factory()
-    record = store.create_job(
+    store.create_job(
         task_id=task_id,
         prompt=prompt,
         source=source,
@@ -47,14 +44,11 @@ def start_background_job(
         admin_user_ids=list(admin_user_ids or []),
         is_admin_user=is_admin_user,
     )
-    refresh_cache(record)
     try:
         metadata = launch_worker(task_id)
-        record = store.update_job_launcher(task_id, metadata) or record
-        refresh_cache(record)
+        store.update_job_launcher(task_id, metadata)
     except Exception as exc:
         if logger is not None:
             logger.exception("Failed to launch background worker for %s", task_id)
-        record = store.mark_job_failed(task_id, error=str(exc)) or record
-        refresh_cache(record)
+        store.mark_job_failed(task_id, error=str(exc))
     return task_id

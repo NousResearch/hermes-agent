@@ -124,7 +124,6 @@ async def deliver_background_job_updates_once(runner: Any) -> None:
     )
     for job in jobs:
         task_id = str(job.get("task_id") or "")
-        runner._refresh_managed_background_job_cache(job)
         source_data = job.get("source") or {}
         try:
             source = SessionSource.from_dict(source_data)
@@ -243,6 +242,4 @@ async def recover_stale_background_jobs_once(
         queued_grace_seconds=queued_grace_seconds,
         heartbeat_stale_seconds=heartbeat_stale_seconds,
     )
-    for job in recovered:
-        runner._refresh_managed_background_job_cache(job)
     return recovered

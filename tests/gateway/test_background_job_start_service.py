@@ -21,14 +21,10 @@ class _Store:
 
 
 def test_start_background_job_persists_and_launches_worker():
-    calls = []
     store = _Store()
-    refreshed = []
 
     task_id = start_background_job(
-        ensure_background_job_state=lambda: calls.append("ensure"),
         store=store,
-        refresh_cache=lambda record: refreshed.append(dict(record)),
         launch_worker=lambda current_task_id: {
             "launcher_type": "subprocess",
             "launcher_pid": 4321,
@@ -42,7 +38,6 @@ def test_start_background_job_persists_and_launches_worker():
     )
 
     assert task_id == "bg_test_001"
-    assert calls == ["ensure"]
     assert store.created["task_id"] == "bg_test_001"
     assert store.created["preloaded_skills"] == ["frontend-design"]
     assert store.launcher_updates == [
@@ -55,17 +50,13 @@ def test_start_background_job_persists_and_launches_worker():
             },
         )
     ]
-    assert [record["status"] for record in refreshed] == ["queued", "queued"]
 
 
 def test_start_background_job_marks_failure_when_launcher_raises():
     store = _Store()
-    refreshed = []
 
     task_id = start_background_job(
-        ensure_background_job_state=lambda: None,
         store=store,
-        refresh_cache=lambda record: refreshed.append(dict(record)),
         launch_worker=lambda _task_id: (_ for _ in ()).throw(RuntimeError("boom")),
         prompt="继续排查 gateway 问题",
         source={"platform": "qq"},
@@ -74,4 +65,3 @@ def test_start_background_job_marks_failure_when_launcher_raises():
 
     assert task_id == "bg_test_002"
     assert store.failures == [("bg_test_002", "boom")]
-    assert [record["status"] for record in refreshed] == ["queued", "failed"]

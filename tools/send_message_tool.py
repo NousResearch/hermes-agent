@@ -685,6 +685,16 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         return _error(f"Telegram send failed: {e}")
 
 
+def _derive_forum_thread_name(message: str) -> str:
+    """Derive a thread name from the first line of the message, capped at 100 chars."""
+    first_line = message.strip().split("\n", 1)[0].strip()
+    # Strip common markdown heading prefixes
+    first_line = first_line.lstrip("#").strip()
+    if not first_line:
+        first_line = "New Post"
+    return first_line[:100]
+
+
 async def _send_discord(token, chat_id, message, thread_id=None, media_files=None):
     """Send a single message via Discord REST API (no websocket client needed).
 
@@ -692,6 +702,12 @@ async def _send_discord(token, chat_id, message, thread_id=None, media_files=Non
 
     When thread_id is provided, the message is sent directly to that thread
     via the /channels/{thread_id}/messages endpoint.
+
+    Forum channels (type 15) reject POST /messages — auto-create a thread
+    post instead via POST /channels/{id}/threads.
+
+    Channel type is resolved from the channel directory first; only falls
+    back to a GET /channels/{id} probe when the directory has no entry.
 
     Media files are uploaded one-by-one via multipart/form-data after the
     text message is sent (same pattern as Telegram).
@@ -704,16 +720,73 @@ async def _send_discord(token, chat_id, message, thread_id=None, media_files=Non
         from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
         _proxy = resolve_proxy_url(platform_env_var="DISCORD_PROXY")
         _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(_proxy)
+        headers = {"Authorization": f"Bot {token}", "Content-Type": "application/json"}
+
         # Thread endpoint: Discord threads are channels; send directly to the thread ID.
         if thread_id:
             url = f"https://discord.com/api/v10/channels/{thread_id}/messages"
         else:
+            # Check if the target channel is a forum channel (type 15).
+            # Forum channels reject POST /messages — create a thread post instead.
+            # Try the channel directory first; fall back to an API probe only
+            # when the directory has no entry.
+            _channel_type = None
+            try:
+                from gateway.channel_directory import lookup_channel_type
+                _channel_type = lookup_channel_type("discord", chat_id)
+            except Exception:
+                pass
+
+            if _channel_type == "forum":
+                is_forum = True
+            elif _channel_type is not None:
+                # Known non-forum type — skip the probe.
+                is_forum = False
+            else:
+                is_forum = False
+                try:
+                    info_url = f"https://discord.com/api/v10/channels/{chat_id}"
+                    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15), **_sess_kw) as info_sess:
+                        async with info_sess.get(info_url, headers=headers, **_req_kw) as info_resp:
+                            if info_resp.status == 200:
+                                info = await info_resp.json()
+                                is_forum = info.get("type") == 15
+                except Exception:
+                    logger.debug("Failed to probe channel type for %s", chat_id, exc_info=True)
+
+
+            if is_forum:
+                thread_name = _derive_forum_thread_name(message)
+                thread_url = f"https://discord.com/api/v10/channels/{chat_id}/threads"
+                async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30), **_sess_kw) as session:
+                    async with session.post(
+                        thread_url,
+                        headers=headers,
+                        json={
+                            "name": thread_name,
+                            "message": {"content": message},
+                        },
+                        **_req_kw,
+                    ) as resp:
+                        if resp.status not in (200, 201):
+                            body = await resp.text()
+                            return _error(f"Discord forum thread creation error ({resp.status}): {body}")
+                        data = await resp.json()
+                thread_id_created = data.get("id")
+                starter_msg_id = (data.get("message") or {}).get("id", thread_id_created)
+                return {
+                    "success": True,
+                    "platform": "discord",
+                    "chat_id": chat_id,
+                    "thread_id": thread_id_created,
+                    "message_id": starter_msg_id,
+                }
+
             url = f"https://discord.com/api/v10/channels/{chat_id}/messages"
         auth_headers = {"Authorization": f"Bot {token}"}
         media_files = media_files or []
         last_data = None
         warnings = []
-
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30), **_sess_kw) as session:
             # Send text message (skip if empty and media is present)
             if message.strip() or not media_files:

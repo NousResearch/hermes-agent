@@ -12,7 +12,7 @@
       devShells.default = pkgs.mkShell {
         inputsFrom = packages;
         packages = with pkgs; [
-          python311 uv nodejs_22 ripgrep git openssh ffmpeg
+          python312 uv nodejs_22 ripgrep git openssh ffmpeg
         ];
 
         shellHook = let

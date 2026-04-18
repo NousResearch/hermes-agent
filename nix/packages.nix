@@ -18,6 +18,10 @@
         filter = path: _type: !(pkgs.lib.hasInfix "/index-cache/" path);
       };
 
+      hermesWeb = pkgs.callPackage ./web.nix {
+        npm-lockfile-fix = inputs'.npm-lockfile-fix.packages.default;
+      };
+
       runtimeDeps = with pkgs; [
         nodejs_22
         ripgrep
@@ -52,6 +56,7 @@
 
             mkdir -p $out/share/hermes-agent $out/bin
             cp -r ${bundledSkills} $out/share/hermes-agent/skills
+            cp -r ${hermesWeb} $out/share/hermes-agent/web_dist
 
             # copy pre-built TUI (same layout as dev: ui-tui/dist/ + node_modules/)
             mkdir -p $out/ui-tui
@@ -62,6 +67,7 @@
                 makeWrapper ${hermesVenv}/bin/${name} $out/bin/${name} \
                   --suffix PATH : "${runtimePath}" \
                   --set HERMES_BUNDLED_SKILLS $out/share/hermes-agent/skills \
+                  --set HERMES_WEB_DIST $out/share/hermes-agent/web_dist \
                   --set HERMES_TUI_DIR $out/ui-tui \
                   --set HERMES_PYTHON ${hermesVenv}/bin/python3 \
                   --set HERMES_NODE ${pkgs.nodejs_22}/bin/node
@@ -81,7 +87,7 @@
             STAMP_VALUE="${pyprojectHash}:${uvLockHash}"
             if [ ! -f "$STAMP" ] || [ "$(cat "$STAMP")" != "$STAMP_VALUE" ]; then
               echo "hermes-agent: installing Python dependencies..."
-              uv venv .venv --python ${pkgs.python311}/bin/python3 2>/dev/null || true
+              uv venv .venv --python ${pkgs.python312}/bin/python3 2>/dev/null || true
               source .venv/bin/activate
               uv pip install -e ".[all]"
               [ -d mini-swe-agent ] && uv pip install -e ./mini-swe-agent 2>/dev/null || true
@@ -104,6 +110,7 @@
         };
 
         tui = hermesTui;
+        web = hermesWeb;
       };
     };
 }

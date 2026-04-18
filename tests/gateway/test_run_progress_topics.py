@@ -20,6 +20,8 @@ class ProgressCaptureAdapter(BasePlatformAdapter):
         self.sent = []
         self.edits = []
         self.typing = []
+        self.created_consumers = []
+        self.enable_custom_stream_consumer = False
 
     async def connect(self) -> bool:
         return True
@@ -56,6 +58,44 @@ class ProgressCaptureAdapter(BasePlatformAdapter):
 
     async def get_chat_info(self, chat_id: str):
         return {"id": chat_id}
+
+    def create_stream_consumer(self, chat_id, metadata=None):
+        if not self.enable_custom_stream_consumer:
+            return None
+        consumer = CaptureStreamConsumer(chat_id=chat_id, metadata=metadata)
+        self.created_consumers.append(consumer)
+        return consumer
+
+
+class CaptureStreamConsumer:
+    def __init__(self, *, chat_id, metadata=None):
+        self.chat_id = chat_id
+        self.metadata = metadata or {}
+        self.completion_meta = None
+        self.finished = False
+        self.final_response_sent = False
+        self._commentary = []
+
+    def on_delta(self, text):
+        return None
+
+    def on_commentary(self, text):
+        if text:
+            self._commentary.append(text)
+
+    def on_segment_break(self):
+        return None
+
+    async def run(self):
+        while not self.finished:
+            await asyncio.sleep(0.01)
+
+    def set_completion_meta(self, **kwargs):
+        self.completion_meta = kwargs
+
+    def finish(self):
+        self.finished = True
+        self.final_response_sent = True
 
 
 class FakeAgent:
@@ -430,6 +470,26 @@ class StreamingRefineAgent:
             self.stream_delta_callback(" Final answer.")
         return {
             "final_response": "Continuing to refine: Final answer.",
+            "response_previewed": True,
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class StreamingMetaAgent:
+    def __init__(self, **kwargs):
+        self.stream_delta_callback = kwargs.get("stream_delta_callback")
+        self.tools = []
+        self.model = "gpt-5-codex"
+        self.context_compressor = SimpleNamespace(last_prompt_tokens=12345, context_length=200000)
+        self.session_prompt_tokens = 12345
+        self.session_completion_tokens = 678
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        if self.stream_delta_callback:
+            self.stream_delta_callback("Codex says hi")
+        return {
+            "final_response": "Codex says hi",
             "response_previewed": True,
             "messages": [],
             "api_calls": 1,
@@ -928,6 +988,55 @@ async def test_keep_typing_stops_immediately_when_interrupt_event_is_set():
     ]
     assert len(normal_typing_calls) == 1
     assert len(stopped_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_run_agent_streaming_sets_completion_meta(monkeypatch, tmp_path):
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = StreamingMetaAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(
+        gateway_run,
+        "_resolve_runtime_agent_kwargs",
+        lambda: {"api_key": "***", "provider": "openai-codex"},
+    )
+
+    adapter = ProgressCaptureAdapter()
+    adapter.enable_custom_stream_consumer = True
+    runner = _make_runner(adapter)
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="-1001",
+        chat_type="group",
+        thread_id="17585",
+    )
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-stream-meta",
+        session_key="agent:main:telegram:group:-1001:17585",
+    )
+
+    assert result["final_response"] == "Codex says hi"
+    assert adapter.created_consumers
+    consumer = adapter.created_consumers[0]
+    assert consumer.finished is True
+    assert consumer.completion_meta is not None
+    assert consumer.completion_meta["final_text"] == "Codex says hi"
+    assert consumer.completion_meta["model_label"] == "gpt-5-codex"
+    assert consumer.completion_meta["footer_text"] is None
+    assert isinstance(consumer.completion_meta["elapsed_seconds"], float)
+    assert consumer.completion_meta["elapsed_seconds"] >= 0
 
 
 @pytest.mark.asyncio

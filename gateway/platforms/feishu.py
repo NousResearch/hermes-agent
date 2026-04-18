@@ -8,7 +8,7 @@ Supports:
 - Gateway allowlist integration via FEISHU_ALLOWED_USERS
 - Persistent dedup state across restarts
 - Per-chat serial message processing (matches openclaw createChatQueue)
-- Persistent ACK emoji reaction on inbound messages
+- Typing-reaction indicator on inbound messages
 - Reaction events routed as synthetic text events (matches openclaw)
 - Interactive card button-click events routed as synthetic COMMAND events
 - Webhook anomaly tracking (matches openclaw createWebhookAnomalyTracker)
@@ -190,7 +190,8 @@ _APPROVAL_LABEL_MAP: Dict[str, str] = {
 }
 _FEISHU_BOT_MSG_TRACK_SIZE = 512                   # LRU size for tracking sent message IDs
 _FEISHU_REPLY_FALLBACK_CODES = frozenset({230011, 231003})  # reply target withdrawn/missing → create fallback
-_FEISHU_ACK_EMOJI = "OK"
+_FEISHU_TYPING_EMOJI = "Typing"
+_FEISHU_TYPING_MIN_VISIBLE_SECONDS = 1.2
 
 # QR onboarding constants
 _ONBOARD_ACCOUNTS_URLS = {
@@ -1126,6 +1127,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._pending_drain_scheduled = False
         self._pending_inbound_max_depth = 1000  # cap queue; drop oldest beyond
         self._chat_locks: Dict[str, asyncio.Lock] = {}  # chat_id → lock (per-chat serial processing)
+        self._pending_typing_reactions: Dict[str, tuple[str, float]] = {}  # inbound message_id → (typing reaction_id, created_at_monotonic)
         self._sent_message_ids_to_chat: Dict[str, str] = {}  # message_id → chat_id (for reaction routing)
         self._sent_message_id_order: List[str] = []  # LRU order for _sent_message_ids_to_chat
         self._chat_info_cache: Dict[str, Dict[str, Any]] = {}
@@ -1142,6 +1144,18 @@ class FeishuAdapter(BasePlatformAdapter):
         self._approval_state: Dict[int, Dict[str, str]] = {}
         self._approval_counter = itertools.count(1)
         self._load_seen_message_ids()
+
+    def create_stream_consumer(self, chat_id: str, metadata: Optional[Dict[str, Any]] = None) -> Any:
+        """Return a Feishu interactive-card stream consumer when enabled."""
+        extra = self.config.extra or {}
+        streaming_enabled = extra.get("interactive_card_streaming", extra.get("streaming", True))
+        render_mode = str(extra.get("render_mode", extra.get("renderMode", "card")) or "card").strip().lower()
+        if streaming_enabled is False or render_mode == "raw":
+            return None
+
+        from gateway.platforms.feishu_streaming_card import FeishuCardStreamConsumer
+
+        return FeishuCardStreamConsumer(adapter=self, chat_id=chat_id, metadata=metadata)
 
     @staticmethod
     def _load_settings(extra: Dict[str, Any]) -> FeishuAdapterSettings:
@@ -2051,11 +2065,11 @@ class FeishuAdapter(BasePlatformAdapter):
             emoji_type,
         )
         # Only process reactions from real users. Ignore app/bot-generated reactions
-        # and Hermes' own ACK emoji to avoid feedback loops.
+        # and Hermes' own typing emoji to avoid feedback loops.
         loop = self._loop
         if (
             operator_type in {"bot", "app"}
-            or emoji_type == _FEISHU_ACK_EMOJI
+            or emoji_type == _FEISHU_TYPING_EMOJI
             or not message_id
             or loop is None
             or bool(getattr(loop, "is_closed", lambda: False)())
@@ -2279,23 +2293,24 @@ class FeishuAdapter(BasePlatformAdapter):
 
     async def _handle_message_with_guards(self, event: MessageEvent) -> None:
         """Dispatch a single event through the agent pipeline with per-chat serialization
-        and a persistent ACK emoji reaction before processing starts.
+        and a transient typing emoji reaction before processing starts.
 
         - Per-chat lock: ensures messages in the same chat are processed one at a time
           (matches openclaw's createChatQueue serial queue behaviour).
-        - ACK indicator: adds a CHECK reaction to the triggering message before handing
-          off to the agent and leaves it in place as a receipt marker.
+        - Typing indicator: adds a Typing reaction to the triggering message before handing
+          off to the agent and clears it only when an actual reply is sent.
         """
         chat_id = getattr(event.source, "chat_id", "") or "" if event.source else ""
         chat_lock = self._get_chat_lock(chat_id)
         async with chat_lock:
             message_id = event.message_id
             if message_id:
-                await self._add_ack_reaction(message_id)
+                reaction_id = await self._add_typing_reaction(message_id)
+                self._register_typing_reaction(message_id, reaction_id)
             await self.handle_message(event)
 
-    async def _add_ack_reaction(self, message_id: str) -> Optional[str]:
-        """Add a persistent ACK emoji reaction to signal the message was received."""
+    async def _add_typing_reaction(self, message_id: str) -> Optional[str]:
+        """Add the transient Typing reaction used as the Feishu typing indicator."""
         if not self._client or not message_id:
             return None
         try:
@@ -2305,7 +2320,7 @@ class FeishuAdapter(BasePlatformAdapter):
             )
             body = (
                 CreateMessageReactionRequestBody.builder()
-                .reaction_type({"emoji_type": _FEISHU_ACK_EMOJI})
+                .reaction_type({"emoji_type": _FEISHU_TYPING_EMOJI})
                 .build()
             )
             request = (
@@ -2319,14 +2334,102 @@ class FeishuAdapter(BasePlatformAdapter):
                 data = getattr(response, "data", None)
                 return getattr(data, "reaction_id", None)
             logger.warning(
-                "[Feishu] Failed to add ack reaction to %s: code=%s msg=%s",
+                "[Feishu] Failed to add typing reaction to %s: code=%s msg=%s",
                 message_id,
                 getattr(response, "code", None),
                 getattr(response, "msg", None),
             )
         except Exception:
-            logger.warning("[Feishu] Failed to add ack reaction to %s", message_id, exc_info=True)
+            logger.warning("[Feishu] Failed to add typing reaction to %s", message_id, exc_info=True)
         return None
+
+    def _register_typing_reaction(self, message_id: Optional[str], reaction_id: Optional[str]) -> None:
+        """Track an inbound Typing reaction until a reply is actually emitted."""
+        if not message_id or not reaction_id:
+            return
+        self._pending_typing_reactions[str(message_id)] = (str(reaction_id), time.monotonic())
+
+    @staticmethod
+    def _resolve_typing_source_message_id(reply_to: Optional[str], metadata: Optional[Dict[str, Any]]) -> Optional[str]:
+        if reply_to:
+            return reply_to
+        if isinstance(metadata, dict):
+            for key in ("source_message_id", "reply_to_message_id", "typing_source_message_id"):
+                value = metadata.get(key)
+                if value:
+                    return str(value)
+        return None
+
+    @staticmethod
+    def _typing_source_message_id(reply_to: Optional[str], metadata: Optional[Dict[str, Any]]) -> Optional[str]:
+        """Backward-compatible wrapper for older call sites/tests."""
+        return FeishuAdapter._resolve_typing_source_message_id(reply_to, metadata)
+
+    def _schedule_typing_cleanup_after_outbound(
+        self,
+        *,
+        reply_to: Optional[str],
+        metadata: Optional[Dict[str, Any]],
+    ) -> None:
+        """Best-effort async cleanup of the Typing reaction after a reply is delivered."""
+        typing_source_message_id = self._resolve_typing_source_message_id(reply_to, metadata)
+        if not typing_source_message_id:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = self._loop
+        if loop is None or bool(getattr(loop, "is_closed", lambda: False)()):
+            return
+        loop.create_task(self._clear_pending_typing_reaction(typing_source_message_id))
+
+    async def _clear_pending_typing_reaction(self, message_id: Optional[str]) -> None:
+        """Remove any pending Typing reaction associated with an inbound message."""
+        if not message_id:
+            return
+        pending = self._pending_typing_reactions.pop(message_id, None)
+        if not pending:
+            return
+        reaction_id, created_at = pending
+        remaining = _FEISHU_TYPING_MIN_VISIBLE_SECONDS - (time.monotonic() - created_at)
+        if remaining > 0:
+            await asyncio.sleep(remaining)
+        await self._delete_reaction(message_id=message_id, reaction_id=reaction_id)
+
+    async def _delete_reaction(self, *, message_id: str, reaction_id: str) -> None:
+        """Delete a Feishu message reaction, ignoring cleanup failures."""
+        if not self._client or not message_id or not reaction_id:
+            return
+        try:
+            from lark_oapi.api.im.v1 import DeleteMessageReactionRequest
+
+            request = (
+                DeleteMessageReactionRequest.builder()
+                .message_id(message_id)
+                .reaction_id(reaction_id)
+                .build()
+            )
+            response = await asyncio.to_thread(self._client.im.v1.message_reaction.delete, request)
+            if response and getattr(response, "success", lambda: False)():
+                return
+            logger.warning(
+                "[Feishu] Failed to delete typing reaction %s on %s: code=%s msg=%s",
+                reaction_id,
+                message_id,
+                getattr(response, "code", None),
+                getattr(response, "msg", None),
+            )
+        except Exception:
+            logger.warning(
+                "[Feishu] Failed to delete typing reaction %s on %s",
+                reaction_id,
+                message_id,
+                exc_info=True,
+            )
+
+    async def on_processing_complete(self, event: MessageEvent, outcome: Any) -> None:
+        """Fallback cleanup for rare paths that finish without sending a reply."""
+        await self._clear_pending_typing_reaction(getattr(event, "message_id", None))
 
     # =========================================================================
     # Webhook server and security
@@ -3220,6 +3323,15 @@ class FeishuAdapter(BasePlatformAdapter):
             logger.warning("[Feishu] Failed to fetch parent message %s", message_id, exc_info=True)
             return None
 
+    def _store_message_text_cache(self, message_id: Optional[str], text: Optional[str]) -> None:
+        if not message_id:
+            return
+        normalized = str(text or "").strip()
+        if normalized:
+            self._message_text_cache[message_id] = normalized
+        else:
+            self._message_text_cache.pop(message_id, None)
+
     def _extract_text_from_raw_content(self, *, msg_type: str, raw_content: str) -> Optional[str]:
         normalized = normalize_feishu_message(message_type=msg_type, raw_content=raw_content)
         if normalized.text_content:
@@ -3560,16 +3672,20 @@ class FeishuAdapter(BasePlatformAdapter):
                 uuid_value=str(uuid.uuid4()),
             )
             request = self._build_reply_message_request(reply_to, body)
-            return await asyncio.to_thread(self._client.im.v1.message.reply, request)
+            response = await asyncio.to_thread(self._client.im.v1.message.reply, request)
+        else:
+            body = self._build_create_message_body(
+                receive_id=chat_id,
+                msg_type=msg_type,
+                content=payload,
+                uuid_value=str(uuid.uuid4()),
+            )
+            request = self._build_create_message_request("chat_id", body)
+            response = await asyncio.to_thread(self._client.im.v1.message.create, request)
 
-        body = self._build_create_message_body(
-            receive_id=chat_id,
-            msg_type=msg_type,
-            content=payload,
-            uuid_value=str(uuid.uuid4()),
-        )
-        request = self._build_create_message_request("chat_id", body)
-        return await asyncio.to_thread(self._client.im.v1.message.create, request)
+        if self._response_succeeded(response):
+            self._schedule_typing_cleanup_after_outbound(reply_to=reply_to, metadata=metadata)
+        return response
 
     @staticmethod
     def _response_succeeded(response: Any) -> bool:

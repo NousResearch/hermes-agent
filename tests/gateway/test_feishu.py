@@ -639,7 +639,7 @@ class TestAdapterBehavior(unittest.TestCase):
 
     @patch.dict(os.environ, {}, clear=True)
     @unittest.skipUnless(_HAS_LARK_OAPI, "lark-oapi not installed")
-    def test_add_ack_reaction_uses_ok_emoji(self):
+    def test_add_typing_reaction_uses_typing_emoji(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter
 
@@ -662,13 +662,13 @@ class TestAdapterBehavior(unittest.TestCase):
             return func(*args, **kwargs)
 
         with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
-            reaction_id = asyncio.run(adapter._add_ack_reaction("om_msg"))
+            reaction_id = asyncio.run(adapter._add_typing_reaction("om_msg"))
 
         self.assertEqual(reaction_id, "r_typing")
-        self.assertEqual(captured["request"].request_body.reaction_type["emoji_type"], "OK")
+        self.assertEqual(captured["request"].request_body.reaction_type["emoji_type"], "Typing")
 
     @patch.dict(os.environ, {}, clear=True)
-    def test_add_ack_reaction_logs_warning_on_failure(self):
+    def test_add_typing_reaction_logs_warning_on_failure(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter
 
@@ -689,16 +689,16 @@ class TestAdapterBehavior(unittest.TestCase):
             patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct),
             self.assertLogs("gateway.platforms.feishu", level="WARNING") as logs,
         ):
-            reaction_id = asyncio.run(adapter._add_ack_reaction("om_msg"))
+            reaction_id = asyncio.run(adapter._add_typing_reaction("om_msg"))
 
         self.assertIsNone(reaction_id)
         self.assertTrue(
-            any("Failed to add ack reaction to om_msg" in entry for entry in logs.output),
+            any("Failed to add typing reaction to om_msg" in entry for entry in logs.output),
             logs.output,
         )
 
     @patch.dict(os.environ, {}, clear=True)
-    def test_ack_reaction_events_are_ignored_to_avoid_feedback_loops(self):
+    def test_typing_reaction_events_are_ignored_to_avoid_feedback_loops(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter
 
@@ -707,7 +707,7 @@ class TestAdapterBehavior(unittest.TestCase):
         event = SimpleNamespace(
             message_id="om_msg",
             operator_type="user",
-            reaction_type=SimpleNamespace(emoji_type="OK"),
+            reaction_type=SimpleNamespace(emoji_type="Typing"),
         )
         data = SimpleNamespace(event=event)
 
@@ -715,6 +715,123 @@ class TestAdapterBehavior(unittest.TestCase):
             adapter._on_reaction_event("im.message.reaction.created_v1", data)
 
         run_threadsafe.assert_not_called()
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_store_message_text_cache_updates_and_clears_values(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._store_message_text_cache("om_msg", " hello ")
+        self.assertEqual(adapter._message_text_cache["om_msg"], "hello")
+        adapter._store_message_text_cache("om_msg", "")
+        self.assertNotIn("om_msg", adapter._message_text_cache)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_create_stream_consumer_returns_card_consumer_when_enabled(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig(extra={"interactive_card_streaming": True}))
+        consumer = adapter.create_stream_consumer("oc_chat", metadata={"source_message_id": "om_src"})
+        self.assertIsNotNone(consumer)
+        self.assertEqual(consumer.metadata.get("source_message_id"), "om_src")
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_create_stream_consumer_returns_none_for_raw_render_mode(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig(extra={"render_mode": "raw"}))
+        consumer = adapter.create_stream_consumer("oc_chat", metadata=None)
+        self.assertIsNone(consumer)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_typing_source_message_id_prefers_reply_to_then_metadata(self):
+        from gateway.platforms.feishu import FeishuAdapter
+
+        self.assertEqual(
+            FeishuAdapter._typing_source_message_id("om_reply", {"source_message_id": "om_src"}),
+            "om_reply",
+        )
+        self.assertEqual(
+            FeishuAdapter._typing_source_message_id(None, {"source_message_id": "om_src"}),
+            "om_src",
+        )
+        self.assertEqual(
+            FeishuAdapter._typing_source_message_id(None, {"typing_source_message_id": "om_alt"}),
+            "om_alt",
+        )
+        self.assertIsNone(FeishuAdapter._typing_source_message_id(None, None))
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_clear_pending_typing_reaction_deletes_registered_reaction(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._pending_typing_reactions["om_msg"] = ("r1", 0.0)
+
+        async def _fake_delete(*, message_id, reaction_id):
+            self.assertEqual(message_id, "om_msg")
+            self.assertEqual(reaction_id, "r1")
+
+        with patch("gateway.platforms.feishu.time.monotonic", return_value=10.0), patch.object(
+            adapter, "_delete_reaction", side_effect=_fake_delete
+        ) as delete_mock:
+            asyncio.run(adapter._clear_pending_typing_reaction("om_msg"))
+
+        delete_mock.assert_called_once()
+        self.assertNotIn("om_msg", adapter._pending_typing_reactions)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_on_processing_complete_clears_pending_typing_reaction(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        event = SimpleNamespace(message_id="om_msg")
+
+        with patch.object(adapter, "_clear_pending_typing_reaction", new=AsyncMock()) as clear_mock:
+            asyncio.run(adapter.on_processing_complete(event, outcome=None))
+
+        clear_mock.assert_awaited_once_with("om_msg")
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_send_raw_message_schedules_typing_cleanup_only_after_success(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        success_response = Mock()
+        success_response.success.return_value = True
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    message=SimpleNamespace(reply=Mock(return_value=success_response))
+                )
+            )
+        )
+
+        def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with (
+            patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct),
+            patch.object(adapter, "_schedule_typing_cleanup_after_outbound") as schedule_mock,
+        ):
+            response = asyncio.run(
+                adapter._send_raw_message(
+                    chat_id="oc_chat",
+                    msg_type="text",
+                    payload='{"text":"hi"}',
+                    reply_to="om_reply",
+                    metadata={"source_message_id": "om_src"},
+                )
+            )
+
+        self.assertIs(response, success_response)
+        schedule_mock.assert_called_once_with(reply_to="om_reply", metadata={"source_message_id": "om_src"})
 
     @patch.dict(os.environ, {"FEISHU_GROUP_POLICY": "open"}, clear=True)
     def test_group_message_requires_mentions_even_when_policy_open(self):

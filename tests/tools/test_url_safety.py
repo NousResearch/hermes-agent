@@ -198,7 +198,35 @@ class TestIsBlockedIp:
     @pytest.mark.parametrize("ip_str", [
         "8.8.8.8", "93.184.216.34", "1.1.1.1", "100.0.0.1",
         "2606:4700::1", "2001:4860:4860::8888",
+        # NAT64 Well-Known Prefix (RFC 6052, 64:ff9b::/96) — these are
+        # synthesized IPv6 representations of PUBLIC IPv4 services
+        # reachable via an upstream NAT64 translator. Python's
+        # ipaddress.is_reserved returns True for the prefix, but the
+        # embedded IPv4 (low 32 bits) is public. Must be allowed.
+        "64:ff9b::2.19.248.139",   # blogs.nvidia.com
+        "64:ff9b::8.8.8.8",        # Google DNS
+        "64:ff9b::1.1.1.1",        # Cloudflare DNS
+        "64:ff9b::0.0.0.0",        # prefix boundary
+        "64:ff9b::ffff:ffff",      # upper end of embedded IPv4
     ])
     def test_allowed_ips(self, ip_str):
         ip = ipaddress.ip_address(ip_str)
         assert _is_blocked_ip(ip) is False, f"{ip_str} should be allowed"
+
+    def test_nat64_url_allowed_end_to_end(self):
+        """`is_safe_url` must accept a hostname that resolves to a NAT64
+        synthesized IPv6 address alongside a public IPv4 address (common
+        dual-stack-lite DNS result from consumer ISPs)."""
+        with patch("socket.getaddrinfo", return_value=[
+            (2,  1, 6, "", ("2.19.248.139", 0)),
+            (10, 1, 6, "", ("64:ff9b::213:f88b", 0, 0, 0)),
+        ]):
+            assert is_safe_url("https://blogs.nvidia.com/") is True
+
+    def test_nat64_only_resolution_allowed(self):
+        """IPv6-only host on a DS-Lite network gets ONLY NAT64 addresses
+        back. Must still pass — the upstream IPv4 target is public."""
+        with patch("socket.getaddrinfo", return_value=[
+            (10, 1, 6, "", ("64:ff9b::8.8.8.8", 0, 0, 0)),
+        ]):
+            assert is_safe_url("https://dns.google/") is True

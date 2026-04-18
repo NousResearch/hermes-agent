@@ -42,9 +42,19 @@ _TRUSTED_PRIVATE_IP_HOSTS = frozenset({
 # VPNs, and some cloud internal networks.
 _CGNAT_NETWORK = ipaddress.ip_network("100.64.0.0/10")
 
+# 64:ff9b::/96 (NAT64 Well-Known Prefix, RFC 6052) is flagged by
+# ipaddress.is_reserved but represents public IPv4 services reachable via
+# an upstream NAT64 translator. Blocking it is a false-positive SSRF —
+# the embedded IPv4 address is public (e.g. many consumer ISPs on dual-stack
+# lite return NAT64 synthesized IPv6 addresses for any public IPv4 AAAA
+# lookup). Explicitly allow.
+_NAT64_NETWORK = ipaddress.ip_network("64:ff9b::/96")
+
 
 def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     """Return True if the IP should be blocked for SSRF protection."""
+    if isinstance(ip, ipaddress.IPv6Address) and ip in _NAT64_NETWORK:
+        return False
     if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
         return True
     if ip.is_multicast or ip.is_unspecified:

@@ -138,3 +138,11 @@
   - `tests/gateway/test_group_control_requests.py -q -k 'enables_report_when_collect_only_specifies_delivery_target or does_not_enable_daily_report_from_query_tail or returns_collect_only_and_report_targets_for_admin'`：`3 passed`
   - `tests/gateway/test_auto_background_jobs.py -q -k 'test_admin_weixin_group_can_orally_enable_collect_only'`：`1 passed`
   - `tests/gateway/test_group_control_requests.py tests/gateway/test_group_control_intents.py tests/gateway/test_auto_background_jobs.py tests/tools/test_weixin_control_tool.py -q -k 'weixin or group_control or report_target or does_not_enable_daily_report_from_query_tail or orally_enable_collect_only'`：`28 passed`
+
+## 2026-04-19 ACP / config-version 收口
+
+- 已修复：
+  - `tests/acp/` 在缺少可选依赖 `acp` 时改为 collection-level ignore，不再让全量测试在收集阶段报错
+  - `tests/tools/test_browser_camofox_state.py` 的配置版本断言已同步到当前默认值 `14`
+- 已验证：
+  - `tests/acp tests/tools/test_browser_camofox_state.py tests/tools/test_voice_cli_integration.py -q`：`83 passed`

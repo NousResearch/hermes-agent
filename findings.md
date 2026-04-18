@@ -72,6 +72,9 @@
 - 2026-04-19 Weixin 既有失败排查：
   - `这个群切到监听采集，日报发我私聊` 能识别 `collect_only` 和投递目标，但不会把“明确日报投递目标”视为“开启日报”
   - 根因在共享 `group_control_requests`：此前只有命中 `GROUP_REPORT_ENABLE_TERMS` 才会附带 `daily_report_*`，没有覆盖“enable_listen + 明确日报投递目标”这个自然口头表达
+- 2026-04-19 全量测试收口补丁：
+  - ACP 相关测试目录在缺少可选依赖 `acp` 时会直接 collection error，更合理的行为是跳过该目录
+  - `tests/tools/test_browser_camofox_state.py` 中 `_config_version` 断言仍停留在 13，当前真实默认值已经是 14
 - 相关回归：
   - QQ 相关/新增链路：`170 passed`
   - 全量仓库：`37 failed, 9361 passed, 87 skipped, 6 errors`

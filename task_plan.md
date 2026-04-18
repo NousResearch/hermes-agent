@@ -12,7 +12,7 @@
 | 2. 设计并实现 intel assignment 数据模型与状态机 | completed | 已新增 worker store、状态转换、群 membership 对账 |
 | 3. 提供统一控制工具，支持招募/停用/查状态/立即汇报 | completed | 已新增 `qq_intel_control` |
 | 4. 将 assignment 与群监听/日报/投递联动 | completed | 已接入 NapCat runtime overlay、调度对账、日报投递 |
-| 5. 回归验证与部署说明 | in_progress | 相关链路已绿；已补委派/审批/QQ总控收口与群文件并入口；全量仓库存在既有失败项需单独处理；本轮继续收口 `qq_intel` 与群控口头误判 |
+| 5. 回归验证与部署说明 | in_progress | 相关链路已绿；已补委派/审批/QQ总控收口与群文件并入口；当前继续按全量失败簇逐批收口（ACP optional、配置版本漂移等） |
 
 ## Decisions
 

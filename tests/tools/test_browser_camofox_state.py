@@ -62,4 +62,4 @@ class TestCamofoxConfigDefaults:
     def test_config_version_unchanged(self):
         from hermes_cli.config import DEFAULT_CONFIG
 
-        assert DEFAULT_CONFIG["_config_version"] == 13
+        assert DEFAULT_CONFIG["_config_version"] == 14

@@ -5604,6 +5604,35 @@ def cmd_update(args):
         except Exception as e:
             logger.debug("Gateway restart during update failed: %s", e)
 
+        # Warn if legacy Hermes gateway unit files are still installed.
+        # When both hermes.service (from a pre-rename install) and the
+        # current hermes-gateway.service are enabled, they SIGTERM-fight
+        # for the same bot token (see PR #11909). Flagging here means
+        # every `hermes update` surfaces the issue until the user migrates.
+        try:
+            from hermes_cli.gateway import (
+                has_legacy_hermes_units,
+                _find_legacy_hermes_units,
+                supports_systemd_services,
+            )
+
+            if supports_systemd_services() and has_legacy_hermes_units():
+                print()
+                print("⚠ Legacy Hermes gateway unit(s) detected:")
+                for name, path, is_sys in _find_legacy_hermes_units():
+                    scope = "system" if is_sys else "user"
+                    print(f"    {path}  ({scope} scope)")
+                print()
+                print("  These pre-rename units (hermes.service) fight the current")
+                print("  hermes-gateway.service for the bot token and cause SIGTERM")
+                print("  flap loops. Remove them with:")
+                print()
+                print("    hermes gateway migrate-legacy")
+                print()
+                print("  (add `sudo` if any are in system scope)")
+        except Exception as e:
+            logger.debug("Legacy unit check during update failed: %s", e)
+
         print()
         print("Tip: You can now select a provider and model:")
         print("  hermes model              # Select provider and model")

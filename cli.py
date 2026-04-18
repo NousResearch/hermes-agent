@@ -10067,8 +10067,36 @@ class HermesCLI:
         
         # Register signal handlers for graceful shutdown on SSH disconnect / SIGTERM
         def _signal_handler(signum, frame):
-            """Handle SIGHUP/SIGTERM by triggering graceful cleanup."""
+            """Handle SIGHUP/SIGTERM by triggering graceful cleanup.
+
+            Calls ``self.agent.interrupt()`` first so the agent daemon
+            thread's poll loop sees the per-thread interrupt and kills the
+            tool's subprocess group via ``_kill_process`` (os.killpg).
+            Without this, the main thread dies from KeyboardInterrupt and
+            the daemon thread is killed with it — before it can run one
+            more poll iteration to clean up the subprocess, which was
+            spawned with ``os.setsid`` and therefore survives as an orphan
+            with PPID=1.
+
+            Grace window (``HERMES_SIGTERM_GRACE``, default 1.5 s) gives
+            the daemon time to: detect the interrupt (next 200 ms poll) →
+            call _kill_process (SIGTERM + 1 s wait + SIGKILL if needed) →
+            return from _wait_for_process.  ``time.sleep`` releases the
+            GIL so the daemon actually runs during the window.
+            """
             logger.debug("Received signal %s, triggering graceful shutdown", signum)
+            try:
+                if getattr(self, "agent", None) and getattr(self, "_agent_running", False):
+                    self.agent.interrupt(f"received signal {signum}")
+                    import time as _t
+                    try:
+                        _grace = float(os.getenv("HERMES_SIGTERM_GRACE", "1.5"))
+                    except (TypeError, ValueError):
+                        _grace = 1.5
+                    if _grace > 0:
+                        _t.sleep(_grace)
+            except Exception:
+                pass  # never block signal handling
             raise KeyboardInterrupt()
         
         try:
@@ -10371,6 +10399,45 @@ def main(
     
     # Register cleanup for single-query mode (interactive mode registers in run())
     atexit.register(_run_cleanup)
+
+    # Also install signal handlers in single-query / `-q` mode.  Interactive
+    # mode registers its own inside HermesCLI.run(), but `-q` runs
+    # cli.agent.run_conversation() below and AIAgent spawns worker threads
+    # for tools — so when SIGTERM arrives on the main thread, raising
+    # KeyboardInterrupt only unwinds the main thread, not the worker
+    # running _wait_for_process.  Python then exits, the child subprocess
+    # (spawned with os.setsid, its own process group) is reparented to
+    # init and keeps running as an orphan.
+    #
+    # Fix: route SIGTERM/SIGHUP through agent.interrupt() which sets the
+    # per-thread interrupt flag the worker's poll loop checks every 200 ms.
+    # Give the worker a grace window to call _kill_process (SIGTERM to the
+    # process group, then SIGKILL after 1 s), then raise KeyboardInterrupt
+    # so main unwinds normally.  HERMES_SIGTERM_GRACE overrides the 1.5 s
+    # default for debugging.
+    def _signal_handler_q(signum, frame):
+        logger.debug("Received signal %s in single-query mode", signum)
+        try:
+            _agent = getattr(cli, "agent", None)
+            if _agent is not None:
+                _agent.interrupt(f"received signal {signum}")
+                import time as _t
+                try:
+                    _grace = float(os.getenv("HERMES_SIGTERM_GRACE", "1.5"))
+                except (TypeError, ValueError):
+                    _grace = 1.5
+                if _grace > 0:
+                    _t.sleep(_grace)
+        except Exception:
+            pass  # never block signal handling
+        raise KeyboardInterrupt()
+    try:
+        import signal as _signal
+        _signal.signal(_signal.SIGTERM, _signal_handler_q)
+        if hasattr(_signal, "SIGHUP"):
+            _signal.signal(_signal.SIGHUP, _signal_handler_q)
+    except Exception:
+        pass  # signal handler may fail in restricted environments
     
     # Handle single query mode
     if query or image:

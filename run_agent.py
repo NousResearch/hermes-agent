@@ -831,6 +831,16 @@ class AIAgent:
         self._execution_thread_id: int | None = None  # Set at run_conversation() start
         self._interrupt_thread_signal_pending = False
         self._client_lock = threading.RLock()
+
+        # Concurrent-tool worker thread tracking.  `_execute_tool_calls_concurrent`
+        # runs each tool on its own ThreadPoolExecutor worker — those worker
+        # threads have tids distinct from `_execution_thread_id`, so
+        # `_set_interrupt(True, _execution_thread_id)` alone does NOT cause
+        # `is_interrupted()` inside the worker to return True.  Track the
+        # workers here so `interrupt()` / `clear_interrupt()` can fan out to
+        # their tids explicitly.
+        self._tool_worker_threads: set[int] = set()
+        self._tool_worker_threads_lock = threading.Lock()
         
         # Subagent delegation state
         self._delegate_depth = 0        # 0 = top-level agent, incremented for children
@@ -3191,6 +3201,25 @@ class AIAgent:
             # interrupt signal until startup completes instead of targeting
             # the caller thread by mistake.
             self._interrupt_thread_signal_pending = True
+        # Fan out to concurrent-tool worker threads.  Those workers run tools
+        # on their own tids (ThreadPoolExecutor workers), so `is_interrupted()`
+        # inside a tool only sees an interrupt when their specific tid is in
+        # the `_interrupted_threads` set.  Without this propagation, an
+        # already-running concurrent tool (e.g. a terminal command hung on
+        # network I/O) never notices the interrupt and has to run to its own
+        # timeout.  See `_run_tool` for the matching entry/exit bookkeeping.
+        # `getattr` fallback covers test stubs that build AIAgent via
+        # object.__new__ and skip __init__.
+        _tracker = getattr(self, "_tool_worker_threads", None)
+        _tracker_lock = getattr(self, "_tool_worker_threads_lock", None)
+        if _tracker is not None and _tracker_lock is not None:
+            with _tracker_lock:
+                _worker_tids = list(_tracker)
+            for _wtid in _worker_tids:
+                try:
+                    _set_interrupt(True, _wtid)
+                except Exception:
+                    pass
         # Propagate interrupt to any running child agents (subagent delegation)
         with self._active_children_lock:
             children_copy = list(self._active_children)
@@ -3209,6 +3238,23 @@ class AIAgent:
         self._interrupt_thread_signal_pending = False
         if self._execution_thread_id is not None:
             _set_interrupt(False, self._execution_thread_id)
+        # Also clear any concurrent-tool worker thread bits.  Tracked
+        # workers normally clear their own bit on exit, but an explicit
+        # clear here guarantees no stale interrupt can survive a turn
+        # boundary and fire on a subsequent, unrelated tool call that
+        # happens to get scheduled onto the same recycled worker tid.
+        # `getattr` fallback covers test stubs that build AIAgent via
+        # object.__new__ and skip __init__.
+        _tracker = getattr(self, "_tool_worker_threads", None)
+        _tracker_lock = getattr(self, "_tool_worker_threads_lock", None)
+        if _tracker is not None and _tracker_lock is not None:
+            with _tracker_lock:
+                _worker_tids = list(_tracker)
+            for _wtid in _worker_tids:
+                try:
+                    _set_interrupt(False, _wtid)
+                except Exception:
+                    pass
 
     def _touch_activity(self, desc: str) -> None:
         """Update the last-activity timestamp and description (thread-safe)."""
@@ -7653,6 +7699,22 @@ class AIAgent:
 
         def _run_tool(index, tool_call, function_name, function_args):
             """Worker function executed in a thread."""
+            # Register this worker tid so the agent can fan out an interrupt
+            # to it — see AIAgent.interrupt().  Must happen first thing, and
+            # must be paired with discard + clear in the finally block.
+            _worker_tid = threading.current_thread().ident
+            with self._tool_worker_threads_lock:
+                self._tool_worker_threads.add(_worker_tid)
+            # Race: if the agent was interrupted between fan-out (which
+            # snapshotted an empty/earlier set) and our registration, apply
+            # the interrupt to our own tid now so is_interrupted() inside
+            # the tool returns True on the next poll.
+            if self._interrupt_requested:
+                try:
+                    from tools.interrupt import set_interrupt as _sif
+                    _sif(True, _worker_tid)
+                except Exception:
+                    pass
             # Set the activity callback on THIS worker thread so
             # _wait_for_process (terminal commands) can fire heartbeats.
             # The callback is thread-local; the main thread's callback
@@ -7675,6 +7737,16 @@ class AIAgent:
             else:
                 logger.info("tool %s completed (%.2fs, %d chars)", function_name, duration, len(result))
             results[index] = (function_name, function_args, result, duration, is_error)
+            # Tear down worker-tid tracking.  Clear any interrupt bit we may
+            # have set so the next task scheduled onto this recycled tid
+            # starts with a clean slate.
+            with self._tool_worker_threads_lock:
+                self._tool_worker_threads.discard(_worker_tid)
+            try:
+                from tools.interrupt import set_interrupt as _sif
+                _sif(False, _worker_tid)
+            except Exception:
+                pass
 
         # Start spinner for CLI mode (skip when TUI handles tool progress)
         spinner = None

@@ -23,6 +23,19 @@ from tools.interrupt import is_interrupted
 
 logger = logging.getLogger(__name__)
 
+# Opt-in debug tracing for the interrupt/activity/poll machinery.  Set
+# HERMES_DEBUG_INTERRUPT=1 to log loop entry/exit, periodic heartbeats, and
+# every is_interrupted() state change from _wait_for_process.  Off by default
+# to avoid flooding production gateway logs.
+_DEBUG_INTERRUPT = bool(os.getenv("HERMES_DEBUG_INTERRUPT"))
+
+if _DEBUG_INTERRUPT:
+    # AIAgent's quiet_mode path (run_agent.py) forces the `tools` logger to
+    # ERROR on CLI startup, which would silently swallow every trace we emit.
+    # Force this module's own logger back to INFO so the trace is visible in
+    # agent.log regardless of quiet-mode.  Scoped to the opt-in case only.
+    logger.setLevel(logging.INFO)
+
 # Thread-local activity callback.  The agent sets this before a tool call so
 # long-running _wait_for_process loops can report liveness to the gateway.
 _activity_callback_local = threading.local()
@@ -413,6 +426,13 @@ class BaseEnvironment(ABC):
         Fires the ``activity_callback`` (if set on this instance) every 10s
         while the process is running so the gateway's inactivity timeout
         doesn't kill long-running commands.
+
+        Also wraps the poll loop in a ``try/finally`` that guarantees we
+        call ``self._kill_process(proc)`` if we exit via ``KeyboardInterrupt``
+        or ``SystemExit``.  Without this, the local backend (which spawns
+        subprocesses with ``os.setsid`` into their own process group) leaves
+        an orphan with ``PPID=1`` when python is shut down mid-tool — the
+        ``sleep 300``-survives-30-min bug Physikal and I both hit.
         """
         output_chunks: list[str] = []
 
@@ -437,28 +457,101 @@ class BaseEnvironment(ABC):
             "start": _now,
         }
 
-        while proc.poll() is None:
-            if is_interrupted():
+        # --- Debug tracing (opt-in via HERMES_DEBUG_INTERRUPT=1) -------------
+        # Captures loop entry/exit, interrupt state changes, and periodic
+        # heartbeats so we can diagnose "agent never sees the interrupt"
+        # reports without reproducing locally.
+        _tid = threading.current_thread().ident
+        _pid = getattr(proc, "pid", None)
+        _iter_count = 0
+        _last_heartbeat = _now
+        _last_interrupt_state = False
+        _cb_was_none = _get_activity_callback() is None
+        if _DEBUG_INTERRUPT:
+            logger.info(
+                "[interrupt-debug] _wait_for_process ENTER tid=%s pid=%s "
+                "timeout=%ss activity_cb=%s initial_interrupt=%s",
+                _tid, _pid, timeout,
+                "set" if not _cb_was_none else "MISSING",
+                is_interrupted(),
+            )
+
+        try:
+            while proc.poll() is None:
+                _iter_count += 1
+                if is_interrupted():
+                    if _DEBUG_INTERRUPT:
+                        logger.info(
+                            "[interrupt-debug] _wait_for_process INTERRUPT DETECTED "
+                            "tid=%s pid=%s iter=%d elapsed=%.1fs — killing process group",
+                            _tid, _pid, _iter_count, time.monotonic() - _activity_state["start"],
+                        )
+                    self._kill_process(proc)
+                    drain_thread.join(timeout=2)
+                    return {
+                        "output": "".join(output_chunks) + "\n[Command interrupted]",
+                        "returncode": 130,
+                    }
+                if time.monotonic() > deadline:
+                    if _DEBUG_INTERRUPT:
+                        logger.info(
+                            "[interrupt-debug] _wait_for_process TIMEOUT "
+                            "tid=%s pid=%s iter=%d timeout=%ss",
+                            _tid, _pid, _iter_count, timeout,
+                        )
+                    self._kill_process(proc)
+                    drain_thread.join(timeout=2)
+                    partial = "".join(output_chunks)
+                    timeout_msg = f"\n[Command timed out after {timeout}s]"
+                    return {
+                        "output": partial + timeout_msg
+                        if partial
+                        else timeout_msg.lstrip(),
+                        "returncode": 124,
+                    }
+                # Periodic activity touch so the gateway knows we're alive
+                touch_activity_if_due(_activity_state, "terminal command running")
+
+                # Heartbeat every ~30s: proves the loop is alive and reports
+                # the activity-callback state (thread-local, can get clobbered
+                # by nested tool calls or executor thread reuse).
+                if _DEBUG_INTERRUPT and time.monotonic() - _last_heartbeat >= 30.0:
+                    _cb_now_none = _get_activity_callback() is None
+                    logger.info(
+                        "[interrupt-debug] _wait_for_process HEARTBEAT "
+                        "tid=%s pid=%s iter=%d elapsed=%.0fs "
+                        "interrupt=%s activity_cb=%s%s",
+                        _tid, _pid, _iter_count,
+                        time.monotonic() - _activity_state["start"],
+                        is_interrupted(),
+                        "set" if not _cb_now_none else "MISSING",
+                        " (LOST during run)" if _cb_now_none and not _cb_was_none else "",
+                    )
+                    _last_heartbeat = time.monotonic()
+                    _cb_was_none = _cb_now_none
+
+                time.sleep(0.2)
+        except (KeyboardInterrupt, SystemExit):
+            # Signal arrived (SIGTERM/SIGHUP/SIGINT) or sys.exit() was called
+            # while we were polling.  The local backend spawns subprocesses
+            # with os.setsid, which puts them in their own process group — so
+            # if we let the interrupt propagate without killing the child,
+            # python exits and the child is reparented to init (PPID=1) and
+            # keeps running as an orphan.  Killing the process group here
+            # guarantees the tool's side effects stop when the agent stops.
+            if _DEBUG_INTERRUPT:
+                logger.info(
+                    "[interrupt-debug] _wait_for_process EXCEPTION_EXIT "
+                    "tid=%s pid=%s iter=%d elapsed=%.1fs — killing subprocess group before re-raise",
+                    _tid, _pid, _iter_count,
+                    time.monotonic() - _activity_state["start"],
+                )
+            try:
                 self._kill_process(proc)
                 drain_thread.join(timeout=2)
-                return {
-                    "output": "".join(output_chunks) + "\n[Command interrupted]",
-                    "returncode": 130,
-                }
-            if time.monotonic() > deadline:
-                self._kill_process(proc)
-                drain_thread.join(timeout=2)
-                partial = "".join(output_chunks)
-                timeout_msg = f"\n[Command timed out after {timeout}s]"
-                return {
-                    "output": partial + timeout_msg
-                    if partial
-                    else timeout_msg.lstrip(),
-                    "returncode": 124,
-                }
-            # Periodic activity touch so the gateway knows we're alive
-            touch_activity_if_due(_activity_state, "terminal command running")
-            time.sleep(0.2)
+            except Exception:
+                pass  # cleanup is best-effort
+            raise
 
         drain_thread.join(timeout=5)
 
@@ -466,6 +559,15 @@ class BaseEnvironment(ABC):
             proc.stdout.close()
         except Exception:
             pass
+
+        if _DEBUG_INTERRUPT:
+            logger.info(
+                "[interrupt-debug] _wait_for_process EXIT (natural) "
+                "tid=%s pid=%s iter=%d elapsed=%.1fs returncode=%s",
+                _tid, _pid, _iter_count,
+                time.monotonic() - _activity_state["start"],
+                proc.returncode,
+            )
 
         return {"output": "".join(output_chunks), "returncode": proc.returncode}
 

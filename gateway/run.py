@@ -211,6 +211,9 @@ from gateway.agent_lifecycle_runtime_service import (
 from gateway.agent_progress_runtime_service import (
     build_gateway_progress_runtime as shared_build_gateway_progress_runtime,
 )
+from gateway.agent_sync_runtime_service import (
+    execute_gateway_sync_turn_for_runner,
+)
 from gateway.agent_turn_runtime_service import (
     prepare_gateway_cached_turn_agent as shared_prepare_gateway_cached_turn_agent,
 )
@@ -237,8 +240,6 @@ from gateway.background_job_start_service import (
     start_background_job as shared_start_background_job,
 )
 from gateway.auto_background_runtime_service import (
-    format_auto_background_ack as shared_format_auto_background_ack,
-    resolve_auto_background_dispatch as shared_resolve_auto_background_dispatch,
     resolve_employee_background_dispatch as shared_resolve_employee_background_dispatch,
 )
 from gateway.attachment_message_runtime_service import (
@@ -256,10 +257,7 @@ from gateway.auto_vision_runtime_service import (
     get_auto_vision_cache_entry as shared_get_auto_vision_cache_entry,
     image_vision_inputs_from_event as shared_image_vision_inputs_from_event,
     mark_auto_vision_cooldown as shared_mark_auto_vision_cooldown,
-    media_ref_suffix as shared_media_ref_suffix,
     prune_auto_vision_state as shared_prune_auto_vision_state,
-    should_prefer_remote_auto_vision_source as shared_should_prefer_remote_auto_vision_source,
-    should_skip_auto_vision_media as shared_should_skip_auto_vision_media,
 )
 from gateway.direct_control_router import (
     DIRECT_CONTROL_ROUTER_METHODS as SHARED_DIRECT_CONTROL_ROUTER_METHODS,
@@ -282,9 +280,6 @@ from gateway.group_control_intents import (
     looks_like_group_listen_enable_request,
     looks_like_group_runtime_status_query as looks_like_shared_group_runtime_status_query,
 )
-from gateway.session_hygiene_runtime_service import (
-    maybe_auto_compress_session_history as shared_maybe_auto_compress_session_history,
-)
 from gateway.message_preprocessing_runtime_service import (
     is_shared_thread_session as shared_is_shared_thread_session,
     prepend_reply_context_if_missing as shared_prepend_reply_context_if_missing,
@@ -306,6 +301,9 @@ from gateway.agent_response_runtime_service import (
 from gateway.agent_delivery_runtime_service import (
     finalize_gateway_agent_delivery as shared_finalize_gateway_agent_delivery,
 )
+from gateway.message_turn_context_runtime_service import (
+    prepare_gateway_message_turn_context,
+)
 from gateway.transcript_persistence_runtime_service import (
     persist_gateway_agent_transcript as shared_persist_gateway_agent_transcript,
 )
@@ -313,16 +311,8 @@ from gateway.context_reference_runtime_service import (
     GatewayContextReferenceOutcome,
     expand_gateway_context_references as shared_expand_gateway_context_references,
 )
-from gateway.onboarding_runtime_service import (
-    append_first_message_onboarding_note as shared_append_first_message_onboarding_note,
-    build_home_channel_prompt as shared_build_home_channel_prompt,
-    home_channel_env_var_name as shared_home_channel_env_var_name,
-    should_prompt_for_home_channel as shared_should_prompt_for_home_channel,
-)
 from gateway.shared_group_history_runtime_service import (
     DEFAULT_SHARED_GROUP_VISIBLE_HISTORY_LIMIT as SHARED_DEFAULT_GROUP_VISIBLE_HISTORY_LIMIT,
-    is_shared_group_internal_artifact as shared_is_shared_group_internal_artifact,
-    prepare_history_for_agent as shared_prepare_history_for_agent,
     simplify_shared_group_history_for_agent as shared_simplify_shared_group_history_for_agent,
 )
 from gateway.group_target_intents import (
@@ -435,8 +425,6 @@ _AUTO_VISION_IMAGE_ONLY_INLINE_WAIT_SECONDS = 8.0
 _AUTO_VISION_CACHE_TTL_SECONDS = 3600.0
 _AUTO_VISION_MAX_INFLIGHT_TASKS = 4
 _AUTO_VISION_MAX_CACHE_ENTRIES = 256
-def _is_shared_group_internal_artifact(content: Any) -> bool:
-    return shared_is_shared_group_internal_artifact(content)
 
 
 def _should_forward_agent_status(
@@ -466,27 +454,6 @@ def _image_vision_inputs_from_event(event: MessageEvent) -> List[str]:
     return shared_image_vision_inputs_from_event(event)
 
 
-def _should_prefer_remote_auto_vision_source(image_ref: str) -> bool:
-    return shared_should_prefer_remote_auto_vision_source(image_ref)
-
-
-def _should_skip_auto_vision_media(
-    *,
-    path: str,
-    media_type: str,
-    preferred_source: str = "",
-) -> bool:
-    return shared_should_skip_auto_vision_media(
-        path=path,
-        media_type=media_type,
-        preferred_source=preferred_source,
-    )
-
-
-def _media_ref_suffix(ref: str) -> str:
-    return shared_media_ref_suffix(ref)
-
-
 def _simplify_shared_group_history_for_agent(
     history: List[Dict[str, Any]],
     *,
@@ -502,134 +469,6 @@ def _simplify_shared_group_history_for_agent(
 def _resolve_runtime_agent_kwargs() -> dict:
     """Resolve provider credentials for gateway-created AIAgent instances."""
     return shared_resolve_runtime_agent_kwargs()
-
-
-def _is_shared_thread_session(
-    *,
-    source: SessionSource,
-    thread_sessions_per_user: bool,
-) -> bool:
-    return shared_is_shared_thread_session(
-        source=source,
-        thread_sessions_per_user=thread_sessions_per_user,
-    )
-
-
-def _prepend_reply_context_if_missing(
-    *,
-    message_text: str,
-    event: MessageEvent,
-    history: List[Dict[str, Any]],
-) -> str:
-    return shared_prepend_reply_context_if_missing(
-        message_text=message_text,
-        reply_to_text=getattr(event, "reply_to_text", None),
-        reply_to_message_id=getattr(event, "reply_to_message_id", None),
-        history=history,
-    )
-
-
-def _prepend_shared_thread_sender(
-    *,
-    message_text: str,
-    source: SessionSource,
-    thread_sessions_per_user: bool,
-) -> str:
-    return shared_prepend_shared_thread_sender(
-        message_text=message_text,
-        user_name=source.user_name,
-        shared_thread=_is_shared_thread_session(
-            source=source,
-            thread_sessions_per_user=thread_sessions_per_user,
-        ),
-    )
-
-
-def _has_visible_image_attachments(attachments: List[Any]) -> bool:
-    return shared_has_visible_image_attachments(attachments)
-
-
-def _collect_audio_paths(
-    attachments: List[Any],
-    *,
-    message_type: MessageType,
-) -> List[str]:
-    return shared_collect_audio_paths(
-        attachments,
-        message_type=message_type,
-        voice_type=MessageType.VOICE,
-        audio_type=MessageType.AUDIO,
-    )
-
-
-def _prepend_document_context_notes(
-    message_text: str,
-    *,
-    attachments: List[Any],
-    message_type: MessageType,
-) -> str:
-    return shared_prepend_document_context_notes(
-        message_text,
-        attachments=attachments,
-        message_type=message_type,
-        document_type=MessageType.DOCUMENT,
-    )
-
-
-def _append_first_message_onboarding_note(
-    context_prompt: str,
-    *,
-    history: List[Dict[str, Any]],
-    has_any_sessions: bool,
-) -> str:
-    return shared_append_first_message_onboarding_note(
-        context_prompt,
-        history=history,
-        has_any_sessions=has_any_sessions,
-    )
-
-
-def _should_prompt_for_home_channel(
-    *,
-    history: List[Dict[str, Any]],
-    platform: Optional[Platform],
-) -> bool:
-    env_key = shared_home_channel_env_var_name(platform)
-    configured = bool(env_key and os.getenv(env_key))
-    return shared_should_prompt_for_home_channel(
-        history=history,
-        platform=platform,
-        home_channel_configured=configured,
-    )
-
-
-def _append_discord_voice_channel_context(
-    context_prompt: str,
-    *,
-    source: SessionSource,
-    guild_id: Optional[int],
-    adapter: Any,
-) -> str:
-    return shared_append_discord_voice_channel_context(
-        context_prompt,
-        platform=source.platform,
-        guild_id=guild_id,
-        adapter=adapter,
-    )
-
-
-def _build_agent_start_hook_context(
-    *,
-    source: SessionSource,
-    session_id: str,
-    message_text: str,
-) -> Dict[str, Any]:
-    return shared_build_agent_start_hook_context(
-        platform=source.platform,
-        user_id=source.user_id,
-        session_id=session_id,
-        message_text=message_text,
-    )
 
 
 async def _expand_gateway_context_references(
@@ -3779,211 +3618,28 @@ class GatewayRunner:
         if direct_shortcut_response is not None:
             return direct_shortcut_response
         
-        # Read privacy.redact_pii from config (re-read per message)
-        _redact_pii = False
-        try:
-            import yaml as _pii_yaml
-            with open(_config_path, encoding="utf-8") as _pf:
-                _pcfg = _pii_yaml.safe_load(_pf) or {}
-            _redact_pii = bool((_pcfg.get("privacy") or {}).get("redact_pii", False))
-        except Exception:
-            pass
-
-        # Build the context prompt to inject
-        context_prompt = build_session_context_prompt(context, redact_pii=_redact_pii)
-        explicit_group_reply_note = _explicit_group_reply_context_note(event)
-        if explicit_group_reply_note:
-            context_prompt = f"{context_prompt}\n\n{explicit_group_reply_note}"
-        
-        # If the previous session expired and was auto-reset, prepend a notice
-        # so the agent knows this is a fresh conversation (not an intentional /reset).
-        if getattr(session_entry, 'was_auto_reset', False):
-            reset_reason = getattr(session_entry, 'auto_reset_reason', None) or 'idle'
-            if reset_reason == "daily":
-                context_note = "[System note: The user's session was automatically reset by the daily schedule. This is a fresh conversation with no prior context.]"
-            else:
-                context_note = "[System note: The user's previous session expired due to inactivity. This is a fresh conversation with no prior context.]"
-            context_prompt = context_note + "\n\n" + context_prompt
-
-            # Send a user-facing notification explaining the reset, unless:
-            # - notifications are disabled in config
-            # - the platform is excluded (e.g. api_server, webhook)
-            # - the expired session had no activity (nothing was cleared)
-            try:
-                policy = self.session_store.config.get_reset_policy(
-                    platform=source.platform,
-                    session_type=getattr(source, 'chat_type', 'dm'),
-                )
-                platform_name = source.platform.value if source.platform else ""
-                had_activity = getattr(session_entry, 'reset_had_activity', False)
-                should_notify = (
-                    policy.notify
-                    and had_activity
-                    and platform_name not in policy.notify_exclude_platforms
-                )
-                if should_notify:
-                    adapter = self.adapters.get(source.platform)
-                    if adapter:
-                        if reset_reason == "daily":
-                            reason_text = f"daily schedule at {policy.at_hour}:00"
-                        else:
-                            hours = policy.idle_minutes // 60
-                            mins = policy.idle_minutes % 60
-                            duration = f"{hours}h" if not mins else f"{hours}h {mins}m" if hours else f"{mins}m"
-                            reason_text = f"inactive for {duration}"
-                        notice = (
-                            f"◐ Session automatically reset ({reason_text}). "
-                            f"Conversation history cleared.\n"
-                            f"Use /resume to browse and restore a previous session.\n"
-                            f"Adjust reset timing in config.yaml under session_reset."
-                        )
-                        try:
-                            session_info = self._format_session_info()
-                            if session_info:
-                                notice = f"{notice}\n\n{session_info}"
-                        except Exception:
-                            pass
-                        await adapter.send(
-                            source.chat_id, notice,
-                            metadata=getattr(event, 'metadata', None),
-                        )
-            except Exception as e:
-                logger.debug("Auto-reset notification failed (non-fatal): %s", e)
-
-            session_entry.was_auto_reset = False
-            session_entry.auto_reset_reason = None
-
-        # Auto-load skill for DM topic bindings (e.g., Telegram Private Chat Topics)
-        # Only inject on NEW sessions — for ongoing conversations the skill content
-        # is already in the conversation history from the first message.
-        if _is_new_session and getattr(event, "auto_skill", None):
-            try:
-                from agent.skill_commands import _load_skill_payload, _build_skill_message
-                _skill_name = event.auto_skill
-                _loaded = _load_skill_payload(_skill_name, task_id=_quick_key)
-                if _loaded:
-                    _loaded_skill, _skill_dir, _display_name = _loaded
-                    _activation_note = (
-                        f'[SYSTEM: This conversation is in a topic with the "{_display_name}" skill '
-                        f"auto-loaded. Follow its instructions for the duration of this session.]"
-                    )
-                    _skill_msg = _build_skill_message(
-                        _loaded_skill, _skill_dir, _activation_note,
-                        user_instruction=event.text,
-                    )
-                    if _skill_msg:
-                        event.text = _skill_msg
-                        logger.info(
-                            "[Gateway] Auto-loaded skill '%s' for DM topic session %s",
-                            _skill_name, session_key,
-                        )
-                else:
-                    logger.warning(
-                        "[Gateway] DM topic skill '%s' not found in available skills",
-                        _skill_name,
-                    )
-            except Exception as e:
-                logger.warning("[Gateway] Failed to auto-load topic skill '%s': %s", event.auto_skill, e)
-
-        # Load conversation history from transcript
-        history_for_agent = shared_prepare_history_for_agent(
-            history,
-            shared_session_kind=getattr(context, "shared_session_kind", None),
-            session_id=session_entry.session_id,
-            logger=logger,
-            visible_limit=_SHARED_GROUP_VISIBLE_HISTORY_LIMIT,
-        )
-
-        background_message_text = event.text or ""
-        background_message_text = _prepend_shared_thread_sender(
-            message_text=background_message_text,
-            source=source,
-            thread_sessions_per_user=bool(
-                getattr(self.config, "thread_sessions_per_user", False)
-            ),
-        )
-        background_message_text = _prepend_reply_context_if_missing(
-            message_text=background_message_text,
+        prepared_turn_context = await prepare_gateway_message_turn_context(
+            runner=self,
             event=event,
-            history=history,
-        )
-        background_dispatch = shared_resolve_auto_background_dispatch(
-            event,
-            background_message_text,
-            auto_background_work_enabled=self._get_auto_background_work(
-                getattr(event.source, "platform", None)
-            ),
-            employee_routes=get_employee_routes(
-                self.config,
-                platform=getattr(event.source, "platform", Platform.QQ_NAPCAT),
-            ),
-            conversation_history=list(history_for_agent or []),
-        )
-        if background_dispatch:
-            task_id = shared_start_background_job(
-                store=self._get_background_job_store(),
-                launch_worker=self._launch_background_worker,
-                prompt=background_message_text,
-                source=source,
-                conversation_history=list(history_for_agent or []),
-                context_prompt=context_prompt,
-                session_key=session_key,
-                job_kind="auto",
-                worker_name=str(background_dispatch.get("worker_name") or ""),
-                preloaded_skills=list(background_dispatch.get("preloaded_skills") or []),
-                admin_user_ids=context.admin_user_ids,
-                is_admin_user=context.is_admin_user,
-                logger=logger,
-            )
-            return shared_format_auto_background_ack(
-                background_message_text,
-                task_id,
-                worker_name=str(background_dispatch.get("worker_name") or ""),
-            )
-
-        history = await shared_maybe_auto_compress_session_history(
-            history=history,
+            source=source,
+            context=context,
             session_entry=session_entry,
-            session_store=self.session_store,
+            session_key=session_key,
+            history=history,
+            is_new_session=_is_new_session,
+            config_path=_config_path,
             hermes_home=_hermes_home,
-            runtime_agent_kwargs_loader=_resolve_runtime_agent_kwargs,
             logger=logger,
+            explicit_group_reply_note=_explicit_group_reply_context_note(event),
+            visible_limit=_SHARED_GROUP_VISIBLE_HISTORY_LIMIT,
+            runtime_agent_kwargs_loader=_resolve_runtime_agent_kwargs,
+            build_session_context_prompt_fn=build_session_context_prompt,
         )
-
-        # First-message onboarding -- only on the very first interaction ever
-        context_prompt = _append_first_message_onboarding_note(
-            context_prompt,
-            history=history,
-            has_any_sessions=self.session_store.has_any_sessions(),
-        )
-        
-        # One-time prompt if no home channel is set for this platform
-        # Skip for webhooks - they deliver directly to configured targets (github_comment, etc.)
-        if _should_prompt_for_home_channel(
-            history=history,
-            platform=source.platform,
-        ):
-            adapter = self.adapters.get(source.platform)
-            if adapter and source.platform is not None:
-                await adapter.send(
-                    source.chat_id,
-                    shared_build_home_channel_prompt(source.platform),
-                )
-        
-        # -----------------------------------------------------------------
-        # Voice channel awareness — inject current voice channel state
-        # into context so the agent knows who is in the channel and who
-        # is speaking, without needing a separate tool call.
-        # -----------------------------------------------------------------
-        if source.platform == Platform.DISCORD:
-            adapter = self.adapters.get(Platform.DISCORD)
-            guild_id = self._get_guild_id(event)
-            context_prompt = _append_discord_voice_channel_context(
-                context_prompt,
-                source=source,
-                guild_id=guild_id,
-                adapter=adapter,
-            )
+        context_prompt = prepared_turn_context.context_prompt
+        history = prepared_turn_context.history
+        history_for_agent = prepared_turn_context.history_for_agent
+        if prepared_turn_context.auto_background_response:
+            return prepared_turn_context.auto_background_response
 
         # -----------------------------------------------------------------
         # Auto-analyze images sent by the user
@@ -4008,7 +3664,7 @@ class GatewayRunner:
         # tell participants apart.  Skip for DMs (single-user by nature) and
         # when per-user thread isolation is explicitly enabled.
         # -----------------------------------------------------------------
-        _is_shared_thread = _is_shared_thread_session(
+        _is_shared_thread = shared_is_shared_thread_session(
             source=source,
             thread_sessions_per_user=bool(
                 getattr(self.config, "thread_sessions_per_user", False)
@@ -4016,7 +3672,7 @@ class GatewayRunner:
         )
         attachments = event.ensure_attachments()
 
-        if _has_visible_image_attachments(attachments):
+        if shared_has_visible_image_attachments(attachments):
             image_paths = _image_vision_inputs_from_event(event)
             if image_paths:
                 message_text = await self._enrich_message_with_vision(
@@ -4031,9 +3687,11 @@ class GatewayRunner:
         # Auto-transcribe voice/audio messages sent by the user
         # -----------------------------------------------------------------
         if attachments:
-            audio_paths = _collect_audio_paths(
+            audio_paths = shared_collect_audio_paths(
                 attachments,
                 message_type=event.message_type,
+                voice_type=MessageType.VOICE,
+                audio_type=MessageType.AUDIO,
             )
             if audio_paths:
                 message_text = await self._enrich_message_with_transcription(
@@ -4074,10 +3732,11 @@ class GatewayRunner:
         # -----------------------------------------------------------------
         # Enrich document messages with context notes for the agent
         # -----------------------------------------------------------------
-        message_text = _prepend_document_context_notes(
+        message_text = shared_prepend_document_context_notes(
             message_text,
             attachments=attachments,
             message_type=event.message_type,
+            document_type=MessageType.DOCUMENT,
         )
 
         # -----------------------------------------------------------------
@@ -4087,9 +3746,10 @@ class GatewayRunner:
         # or background task, the agent has no context about what's being
         # referenced. Prepend the quoted text so the agent understands. (#1594)
         # -----------------------------------------------------------------
-        message_text = _prepend_reply_context_if_missing(
+        message_text = shared_prepend_reply_context_if_missing(
             message_text=message_text,
-            event=event,
+            reply_to_text=getattr(event, "reply_to_text", None),
+            reply_to_message_id=getattr(event, "reply_to_message_id", None),
             history=history,
         )
 
@@ -4100,8 +3760,9 @@ class GatewayRunner:
         )
 
         try:
-            hook_ctx = _build_agent_start_hook_context(
-                source=source,
+            hook_ctx = shared_build_agent_start_hook_context(
+                platform=source.platform,
+                user_id=source.user_id,
                 session_id=session_entry.session_id,
                 message_text=message_text,
             )
@@ -7626,99 +7287,33 @@ class GatewayRunner:
             # read *and* reassign the outer `_run_agent` parameter without
             # triggering an UnboundLocalError during runtime resolution.
             nonlocal message
-
-            # Pass session_key to process registry via env var so background
-            # processes can be mapped back to this gateway session
-            os.environ["HERMES_SESSION_KEY"] = session_key or ""
-
-            try:
-                prepared_runtime = shared_prepare_gateway_sync_turn_runtime(
-                    env_path=_env_path,
-                    load_dotenv_fn=load_dotenv,
-                    resolve_runtime_agent_kwargs_fn=_resolve_runtime_agent_kwargs,
-                    load_reasoning_config_fn=self._load_reasoning_config,
-                    source=source,
-                    user_message=message,
-                    context_prompt=context_prompt,
-                    gateway_ephemeral_system_prompt=getattr(self, "_ephemeral_system_prompt", ""),
-                    provider_routing=getattr(self, "_provider_routing", {}),
-                    fallback_model=getattr(self, "_fallback_model", None),
-                    smart_model_routing=getattr(self, "_smart_model_routing", {}),
-                    user_config=user_config,
-                    model=_resolve_gateway_model(user_config),
-                    enabled_toolsets=enabled_toolsets,
-                )
-            except Exception as exc:
-                return {
-                    "final_response": f"⚠️ Provider authentication failed: {exc}",
-                    "messages": [],
-                    "api_calls": 0,
-                    "tools": [],
-                }
-
-            runtime_spec = prepared_runtime.runtime_spec
-            reasoning_config = prepared_runtime.reasoning_config
-            max_iterations = prepared_runtime.max_iterations
-            self._reasoning_config = reasoning_config
-
-            prepared_agent = shared_prepare_gateway_cached_turn_agent(
-                runtime_spec=runtime_spec,
-                session_key=session_key,
-                session_id=session_id,
+            return execute_gateway_sync_turn_for_runner(
+                self,
+                message=message,
+                context_prompt=context_prompt,
+                history=history,
                 source=source,
+                session_id=session_id,
+                session_key=session_key,
+                user_config=user_config,
+                enabled_toolsets=enabled_toolsets,
                 progress_runtime=progress_runtime,
-                reasoning_config=reasoning_config,
-                streaming_config=getattr(getattr(self, "config", None), "streaming", None),
-                adapter=self.adapters.get(source.platform),
-                thread_metadata={"thread_id": _progress_thread_id} if _progress_thread_id else None,
-                stream_consumer_holder=stream_consumer_holder,
-                cache=getattr(self, "_agent_cache", None),
-                cache_lock=getattr(self, "_agent_cache_lock", None),
-                create_agent=lambda: create_gateway_agent(
-                    runtime_spec=runtime_spec,
-                    session_id=session_id,
-                    source=source,
-                    session_db=self._session_db,
-                    prefill_messages=self._prefill_messages or None,
-                    max_iterations=max_iterations,
-                    enabled_toolsets=runtime_spec.enabled_toolsets,
-                    quiet_mode=True,
-                    verbose_logging=False,
-                ),
                 status_adapter=_status_adapter,
                 status_chat_id=_status_chat_id,
                 status_thread_metadata=_status_thread_metadata,
                 loop_for_step=_loop_for_step,
-                logger=logger,
-            )
-            agent = prepared_agent.agent
-            _stream_consumer = prepared_agent.stream_consumer
-
-            # Store agent reference for interrupt support
-            agent_holder[0] = agent
-            # Capture the full tool definitions for transcript logging
-            tools_holder[0] = agent.tools if hasattr(agent, 'tools') else None
-
-            outcome = shared_execute_gateway_sync_turn(
-                agent=agent,
-                message=message,
-                history=history,
-                session_id=session_id,
-                session_key=session_key,
                 admin_user_ids=admin_user_ids,
                 is_admin_user=is_admin_user,
-                status_adapter=_status_adapter,
-                status_chat_id=_status_chat_id,
-                status_thread_metadata=_status_thread_metadata,
-                loop_for_step=_loop_for_step,
-                logger=logger,
-                admin_only_message_builder=lambda action: self._admin_only_message(
-                    source,
-                    action,
-                ),
-                stream_consumer=_stream_consumer,
-                session_store=getattr(self, "session_store", None),
-                session_db=self._session_db,
+                raw_message=raw_message,
+                event=event,
+                env_path=_env_path,
+                load_dotenv_fn=load_dotenv,
+                resolve_runtime_agent_kwargs_fn=_resolve_runtime_agent_kwargs,
+                resolve_gateway_model_fn=_resolve_gateway_model,
+                prepare_sync_runtime_fn=shared_prepare_gateway_sync_turn_runtime,
+                prepare_cached_turn_agent_fn=shared_prepare_gateway_cached_turn_agent,
+                create_gateway_agent_fn=create_gateway_agent,
+                execute_sync_turn_fn=shared_execute_gateway_sync_turn,
                 empty_response_fallback=lambda empty_kind: _empty_response_fallback(
                     source,
                     message,
@@ -7727,10 +7322,12 @@ class GatewayRunner:
                     raw_message=raw_message,
                     event=event,
                 ),
-                pending_model_notes=getattr(self, "_pending_model_notes", {}),
+                agent_holder=agent_holder,
+                result_holder=result_holder,
+                tools_holder=tools_holder,
+                stream_consumer_holder=stream_consumer_holder,
+                logger=logger,
             )
-            result_holder[0] = outcome.result
-            return outcome.final_result
         
         runtime_tasks = shared_start_gateway_agent_runtime_tasks(
             tool_progress_enabled=tool_progress_enabled,

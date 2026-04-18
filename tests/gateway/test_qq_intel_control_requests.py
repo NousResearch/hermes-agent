@@ -103,6 +103,101 @@ def test_match_qq_intel_control_request_can_report_known_worker_with_timing_pref
     }
 
 
+def test_extract_qq_worker_name_supports_explicit_worker_status_query():
+    assert extract_qq_worker_name("员工钢镚还在吗") == "钢镚"
+
+
+def test_match_qq_intel_control_request_can_query_explicit_worker_with_hai_zaima():
+    source = _make_source()
+
+    tool_args, error = match_qq_intel_control_request(
+        source=source,
+        body="员工钢镚还在吗",
+        admin_ids_configured=True,
+        is_admin_user=True,
+        looks_like_joined_group_list_query=lambda body: False,
+        extract_worker_name=extract_qq_worker_name,
+        looks_like_worker_context=lambda body: True,
+        known_worker_names=["钢镚"],
+        target_extractor=lambda current_source, body: None,
+        report_target_resolver=lambda current_source, body, prefer_dm: "current_user_dm",
+        hire_objective_extractor=lambda body, worker_name, target_group: None,
+    )
+
+    assert error is None
+    assert tool_args == {
+        "action": "get_worker",
+        "worker_name": "钢镚",
+    }
+
+
+def test_match_qq_intel_control_request_does_not_treat_bare_status_phrase_as_worker_name():
+    source = _make_source()
+
+    tool_args, error = match_qq_intel_control_request(
+        source=source,
+        body="那个情报员还在吗",
+        admin_ids_configured=True,
+        is_admin_user=True,
+        looks_like_joined_group_list_query=lambda body: False,
+        extract_worker_name=extract_qq_worker_name,
+        looks_like_worker_context=lambda body: True,
+        known_worker_names=["钢镚"],
+        target_extractor=lambda current_source, body: None,
+        report_target_resolver=lambda current_source, body, prefer_dm: "current_user_dm",
+        hire_objective_extractor=lambda body, worker_name, target_group: None,
+    )
+
+    assert tool_args is None
+    assert error is None
+
+
+def test_match_qq_intel_control_request_does_not_treat_bot_alias_as_known_worker_without_explicit_prefix():
+    source = _make_source()
+
+    tool_args, error = match_qq_intel_control_request(
+        source=source,
+        body="让马哥现在汇报",
+        admin_ids_configured=True,
+        is_admin_user=True,
+        looks_like_joined_group_list_query=lambda body: False,
+        extract_worker_name=extract_qq_worker_name,
+        looks_like_worker_context=lambda body: True,
+        known_worker_names=["马哥"],
+        target_extractor=lambda current_source, body: None,
+        report_target_resolver=lambda current_source, body, prefer_dm: "current_user_dm",
+        hire_objective_extractor=lambda body, worker_name, target_group: None,
+    )
+
+    assert tool_args is None
+    assert error is None
+
+
+def test_match_qq_intel_control_request_allows_explicit_worker_marker_for_bot_alias():
+    source = _make_source()
+
+    tool_args, error = match_qq_intel_control_request(
+        source=source,
+        body="让情报员马哥现在汇报",
+        admin_ids_configured=True,
+        is_admin_user=True,
+        looks_like_joined_group_list_query=lambda body: False,
+        extract_worker_name=extract_qq_worker_name,
+        looks_like_worker_context=lambda body: True,
+        known_worker_names=["马哥"],
+        target_extractor=lambda current_source, body: None,
+        report_target_resolver=lambda current_source, body, prefer_dm: "current_user_dm",
+        hire_objective_extractor=lambda body, worker_name, target_group: None,
+    )
+
+    assert error is None
+    assert tool_args == {
+        "action": "run_report_now",
+        "worker_name": "马哥",
+        "manual_report_target": "current_user_dm",
+    }
+
+
 def test_match_qq_intel_control_request_requires_target_for_hire():
     source = _make_source()
 

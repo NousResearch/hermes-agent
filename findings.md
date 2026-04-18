@@ -1,27 +1,65 @@
 # Findings
 
-- Prior work already added QQ-specific tests for `require_mention`, `mention_patterns`, follow-up windows, and reply-to-bot behavior.
-- `gateway/platforms/base.py` already exposes `_record_successful_response_context(event, sent_message_ids)` for adapters to override after successful delivery.
-- Remote QQ config already has admin user and home channel set, but group replies are still blocked because group allowance and mention-gating rollout are incomplete.
-- `gateway/platforms/qq_napcat.py` already has basic `require_mention` and text-cleaning helpers, but it still lacks reply-to-bot detection, follow-up windows, and successful-response tracking.
-- `gateway/config.py` already parses `QQ_NAPCAT_REQUIRE_MENTION` and `QQ_NAPCAT_MENTION_PATTERNS` from env overrides, but YAML bridging does not yet copy `require_mention` or `mention_patterns` from `config.yaml` into the QQ platform config or env bridge map.
-- Implemented QQ group follow-up gating in `gateway/platforms/qq_napcat.py`:
-  - reply segments populate `MessageEvent.reply_to_message_id`
-  - group follow-up windows open per `(group_id, user_id)` after a successful bot reply
-  - replies to recently sent bot messages are accepted even from another user in the same group
-- Implemented QQ config bridging in `gateway/config.py`:
-  - YAML and env both support `require_mention` and `mention_patterns`
-  - mention-pattern strings are normalized to avoid doubled regex escapes like `\\\\s`
-- Remote targeted verification passed after sync: `40 passed` for `tests/gateway/test_qq_napcat.py` and `tests/gateway/test_config.py`.
-- Remote QQ config now has `allow_all_groups: true`, `require_mention: true`, `mention_patterns: ['^\\s*马噶\\b']`, and a `[[NO_REPLY]]` system prompt for `马噶`.
-- QQ 私聊故障的根因在 `gateway/run.py`：`_run_agent()` 内部的 `run_sync()` 使用了未定义的 `context.admin_user_ids` / `context.is_admin_user`，导致任何进入 agent 的私聊消息都可能抛 `NameError`.
-- 修复方式是把 `admin_user_ids` 和 `is_admin_user` 作为显式参数从 `_handle_message_with_agent()` 传入 `_run_agent()`，再由审批桥接调用 `set_current_admin_policy(...)`。
-- 新增回归测试 `tests/gateway/test_reasoning_command.py::TestReasoningCommand::test_run_agent_passes_admin_policy_to_gateway_approval`，先红后绿，确保审批上下文不会再次丢失。
-- 用户澄清了命名语义：`马哥 / 老马 / 马屌 / 马逼 / 小马 / 马户` 都是对机器人“马噶”的别名，不是管理员称呼。
-- 已把该语义写入远端 `qq_napcat.system_prompt`，并把 `mention_patterns` 扩展为这些别名，确保群里直接喊这些名字也会命中 QQ 唤醒门控。
-- 本地 `gateway/session.py` 也补了提示：当当前用户是管理员时，模型不要机械复述原始 QQ 号和权限元数据，要自然称呼，不要把内部权限块原样说出来。
-- `pay.kxaug` 不是单纯慢，而是在当前 Hermes 负载下会出现“HTTP 200 但 assistant.content 为空”的空回；这和用户实际看到的“已处理但不说话”现象一致。
-- `api.888933` 对极简裸请求是通的，但 Hermes 默认 developer prompt + skills 列表负载下会触发 `HTTP 403: Your request was blocked`；因此不能直接拿它做唯一主端点。
-- `wududu.edu.kg` 上的 `glm-5.1` 能通过 Hermes `AIAgent` 的最小真实运行验证，当前是三者里唯一能稳定完成主对话链路的端点。
-- 现在最稳的生产配置不是“坚持用用户最后口头指定的 pay 主端点”，而是“用经实测能通过 Hermes 全负载的 glm 主端点，再把两个 gpt-5.4 端点挂到 fallback 链上”。
-- 识图链路与文本主对话链路表现不同：`pay.kxaug` 的 gpt-5.4 文本对话空回，但此前远端实际图片分析成功；因此当前保守策略是让 vision 暂留 pay，文本主链路迁到 glm。
+- 当前 QQ 群底座已具备：
+  - `gateway/qq_group_policies.py`：群监听/采集/日报/目标配置
+  - `gateway/qq_group_archive.py`：原始采集、日报 rollup、即时快照、清理
+  - `tools/qq_group_policy_tool.py` / `tools/qq_group_archive_tool.py`：可口头控制
+  - `cron/scheduler.py`：日报 rollup 后自动投递
+- NapCat 现有代码支持：
+  - `get_group_list`
+  - `send_group_msg` / `send_private_msg`
+  - `get_group_member_info`
+  - 群文件、群管接口
+- 当前代码库中未发现现成的“主动加群/加好友/查询陌生人资料/处理好友申请”工具封装。
+- 现有群监听优化已经支持 project group batching / collect-only / 按群策略覆盖 allowlist。
+- 更合理的抽象是：
+  - shared archive per group
+  - multiple intel assignments referencing one group
+  - assignment-level daily/manual/notify targets
+  - scheduler reconciliation for membership/status transitions
+- 已实现的新层：
+  - `gateway/qq_intel_assignments.py`：worker/mission 状态持久化
+  - `tools/qq_intel_tool.py`：统一 control-plane 工具
+  - `gateway/platforms/qq_napcat.py`：active intel worker 的 collect-only runtime overlay
+  - `cron/scheduler.py`：membership 对账、assignment 日报投递、状态通知
+- 需求盘点（截至 2026-04-13）：
+  - 已完成：
+    - 可口头招募/暂停/恢复/停止/查询情报员任务
+    - 可按群设置 `collect_only` / `project_mode` / `disabled`
+    - 群采集支持原始消息归档、日报 rollup、汇报投递、raw 清理
+    - 情报员支持 `awaiting_group_approval` / `active_collecting` / `paused` / `stopped` / `failed` / `rejected`
+    - 已入群检测和 scheduler 对账已接入
+    - QQ 群禁言/踢人已有专用工具，并要求董事长授权
+    - project group batching 已落地：按群防抖、最小模型间隔、多人消息合并
+  - 部分完成：
+    - 系统内部仍保留 `qq_social_control` / `qq_intel_control` / `qq_group_policy` / `qq_group_archive` / `qq_group_moderation` / `qq_group_file` 这些底层工具做兼容分发，但模型侧现在已经优先收束到 `qq_control`
+  - 未完成：
+    - 主动加好友
+    - 主动申请加群
+    - 真正意义上的“员工 = skill 实例化调度”；当前采用的是更稳妥的 assignment/store 架构，而不是 skill 实体
+- 新增 QQ 社交入口控制面（2026-04-13）：
+  - `gateway/qq_social_requests.py`：持久化 request 事件（friend/group）
+  - `tools/qq_social_tool.py`：`qq_social_control`
+  - `gateway/platforms/qq_napcat.py`：已接入 `post_type=request` 事件采集
+  - 当前已支持：
+    - 查看待处理好友/群请求
+    - 批准/拒绝请求
+    - 查询陌生人资料（`get_stranger_info`）
+    - 查看好友列表（`get_friend_list`）
+  - 当前仍未支持：
+    - 主动发起加好友
+    - 主动申请加群
+- 2026-04-13 收口修复：
+  - `delegate_task` 子代理现已明确禁止用 `rm -rf` / `git clean -fdx` 一类方式清理共享目录来做研究任务准备
+  - QQ gateway 在危险命令审批挂起时，若收到显式追问，会自动拒绝挂起命令并切到新的追问
+  - 长耗时状态提示会暴露 `waiting for approval: <command>`，便于判断是真卡住还是在等董事长拍板
+  - `qq_control` 已纳入 QQ 群文件操作，并在模型侧隐藏 `qq_group_file`，进一步收束到单一总控入口
+- 2026-04-18 口头控制误判收口：
+  - `那个情报员还在吗` 会被错误解析成 `worker_name=还在吗`，直接触发 `get_worker`
+  - `员工钢镚还在吗` / `员工钢镚什么状态` 之前会把状态词吞进 worker 名，导致显式状态查询失效
+  - bot 可见别名（`马嘎` / `马哥` / `老马` 等）如果恰好存在同名 worker，会被 `qq_intel` 当成已知 worker 直接截获
+  - 即使 `qq_intel` 让路，QQ 群控的 `report_now` 无目标分支仍会把 `让马哥现在汇报` 这类 bot 对话抢走并返回缺少群目标错误
+- 相关回归：
+  - QQ 相关/新增链路：`170 passed`
+  - 全量仓库：`37 failed, 9361 passed, 87 skipped, 6 errors`
+  - 全量失败主要集中在 ACP 缺依赖、CLI/UI、SSR F 安全测试、转录依赖、若干既有 provider/环境测试，和本轮 QQ 情报员改动不在同一改动面。

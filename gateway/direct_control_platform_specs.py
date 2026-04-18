@@ -15,6 +15,7 @@ from gateway.group_runtime_status_service import (
     build_qq_group_runtime_status_details,
     build_weixin_group_runtime_status_details,
 )
+from gateway.qq_intents import _QQ_VISIBLE_NAME_ALIASES
 from gateway.qq_group_policies import get_group_policy
 from gateway.qq_intel_assignments import get_group_monitoring_overlay
 from gateway.send_runtime_service import (
@@ -118,7 +119,8 @@ QQ_ADMIN_GROUP_CONTROL_SPEC = AdminGroupControlPlatformSpec(
     collect_only_action="enable_collect_only",
     target_key="group_id",
     strip_group_prefix=True,
-    unresolved_target_guard=lambda body: any(marker in body for marker in ("情报员", "员工")),
+    unresolved_target_guard=lambda body: any(marker in body for marker in ("情报员", "员工"))
+    or any(alias in body for alias in _QQ_VISIBLE_NAME_ALIASES),
 )
 
 

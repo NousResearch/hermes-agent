@@ -370,6 +370,40 @@ def test_admin_qq_intel_shortcut_requires_explicit_worker_context():
 
 
 @pytest.mark.asyncio
+async def test_admin_dm_bare_intel_status_phrase_falls_back_to_agent():
+    runner = _make_runner(auto_background_work=True)
+    runner.config.platforms[Platform.QQ_NAPCAT].extra["admin_users"] = ["179033731"]
+    event = _make_event("那个情报员还在吗")
+
+    with patch("tools.qq_control_tool.qq_control_tool") as control_mock:
+        result = await runner._handle_message(event)
+
+    control_mock.assert_not_called()
+    runner._run_agent.assert_awaited_once()
+    assert result == "前台回复"
+
+
+@pytest.mark.asyncio
+async def test_admin_dm_bot_alias_intel_phrase_falls_back_to_agent():
+    runner = _make_runner(auto_background_work=True)
+    runner.config.platforms[Platform.QQ_NAPCAT].extra["admin_users"] = ["179033731"]
+    event = _make_event("让马哥现在汇报")
+
+    with (
+        patch(
+            "gateway.direct_control_router.list_intel_workers",
+            return_value=[{"worker_name": "马哥"}],
+        ),
+        patch("tools.qq_control_tool.qq_control_tool") as control_mock,
+    ):
+        result = await runner._handle_message(event)
+
+    control_mock.assert_not_called()
+    runner._run_agent.assert_awaited_once()
+    assert result == "前台回复"
+
+
+@pytest.mark.asyncio
 async def test_handle_message_does_not_route_new_server_task_to_tiezhu_from_stale_design_history():
     runner = _make_runner(
         auto_background_work=True,

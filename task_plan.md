@@ -1,25 +1,29 @@
 # Task Plan
 
 ## Goal
-Finish QQ NapCat group reply gating so group messages can wake Hermes when relevant without requiring repeated `@` mentions after a recent bot reply, while still preserving silent drop behavior for irrelevant follow-ups.
+
+实现一套面向 QQ/NapCat 的情报员任务系统，让马噶能口头管理“员工/任务/状态/汇报”，同时保持底层群监听、采集、日报、清理与投递逻辑低耦合、可测试、可审计。
 
 ## Phases
-- [completed] Inspect current QQ adapter, config bridge, and tests.
-- [completed] Implement config and adapter changes.
-- [completed] Run targeted verification and fix failures.
-- [completed] Sync to remote host, update config, restart, and verify service behavior.
 
-## Constraints
-- Do not revert unrelated dirty worktree changes.
-- Use `apply_patch` for manual file edits.
-- Remote Python commands must activate `venv`.
-- Remote verification is the reliable test environment.
+| Phase | Status | Notes |
+|---|---|---|
+| 1. 补齐群策略/归档/日报底座 | completed | 已支持报告目标、即时快照、自动日报投递 |
+| 2. 设计并实现 intel assignment 数据模型与状态机 | completed | 已新增 worker store、状态转换、群 membership 对账 |
+| 3. 提供统一控制工具，支持招募/停用/查状态/立即汇报 | completed | 已新增 `qq_intel_control` |
+| 4. 将 assignment 与群监听/日报/投递联动 | completed | 已接入 NapCat runtime overlay、调度对账、日报投递 |
+| 5. 回归验证与部署说明 | in_progress | 相关链路已绿；已补委派/审批/QQ总控收口与群文件并入口；全量仓库存在既有失败项需单独处理；本轮继续收口 `qq_intel` 与群控口头误判 |
 
-## Notes
-- Existing admin-only dangerous-operation controls are already deployed remotely.
-- QQ bot name should be `马噶`.
-- Dangerous operations must remain admin-only for QQ `179033731`.
-- Final runtime configuration was revised after live endpoint validation:
-  - Primary text model: `glm-5.1 @ https://wududu.edu.kg/v1`
-  - Fallback chain: `api.888933 gpt-5.4` → `pay.kxaug gpt-5.4`
-  - Vision remains on `pay.kxaug gpt-5.4` until a second endpoint is proven on real image traffic.
+## Decisions
+
+- 对外保持一个 bot：马噶。
+- 对模型层优先暴露统一 control-plane 工具，不直接暴露大量底层实现细节。
+- 群策略负责底层路由/采集约束；情报员 assignment 负责“谁在执行什么任务”和汇报行为。
+- 原始采集按群共享，日报/快照可被多个 assignment 复用，避免重复打模型与重复采集。
+- 当前“主动加群/好友申请处理”不伪造实现；assignment 先以 `awaiting_group_approval` 真实表达等待状态。
+
+## Open Risks
+
+- NapCat/OneBot 现有代码中没有现成的“主动加群”能力，assignment 的入群流程需要真实反映当前能力边界。
+- 如果多个 assignment 监听同一群，自动日报投递应按 assignment 分发，不能只依赖单一群策略目标。
+- 全量测试当前存在一批与本轮无关的既有失败与缺依赖，不能把“全量不绿”归因到本轮 QQ 情报员改动。

@@ -1,50 +1,87 @@
 # Progress
 
-## 2026-04-10
-- Resumed the QQ NapCat group-gating task from the previous interrupted session.
-- Loaded process skills and created persistent planning files.
-- Next step: inspect current file state before patching implementation.
-- Reproduced QQ-targeted red tests on the remote `venv` environment: 4 failures across QQ group mention gating and QQ config/env bridging.
-- Confirmed root causes:
-  - `gateway/platforms/qq_napcat.py` only supports direct mention/pattern gating and text cleanup partially; it does not track bot replies or follow-up windows.
-  - `gateway/config.py` does not yet bridge `require_mention` / `mention_patterns` from `qq_napcat:` YAML, and QQ mention patterns need normalization after YAML/env parsing.
-- Patched `gateway/config.py` to bridge QQ `require_mention` and `mention_patterns` from YAML and env, and normalized doubled regex escapes for mention patterns.
-- Patched `gateway/platforms/qq_napcat.py` to track recent bot replies in groups, allow same-user follow-up windows, allow replies to recent bot messages, and attach `reply_to_message_id` to normalized events.
-- Synced the changed files to `root@888933.xyz`, ran remote targeted tests, and got `40 passed in 1.38s`.
-- Updated `/root/.hermes/config.yaml`, saved backup `/root/.hermes/config.yaml.bak-20260409-183221`, restarted `hermes-gateway`, and confirmed `systemctl is-active` returns `active`.
-- 用户随后反馈 QQ 私聊报错：`NameError: name 'context' is not defined`。
-- 先新增了回归测试，远端红测结果为 `_run_agent()` 不接受 `admin_user_ids` 参数。
-- 修复 `gateway/run.py` 后，远端运行：
-  - `python -m pytest -n 0 tests/gateway/test_reasoning_command.py::TestReasoningCommand::test_run_agent_reloads_reasoning_config_per_message tests/gateway/test_reasoning_command.py::TestReasoningCommand::test_run_agent_passes_admin_policy_to_gateway_approval tests/gateway/test_approve_deny_commands.py -q`
-  - 结果：`28 passed, 1 warning`
-- 之后重启了 `hermes-gateway`，重启后的最近日志里没有再出现新的 `context` NameError。
-- 用户进一步要求把马噶设成“东北暴躁老哥”人格，并明确说明 `马哥 / 老马 / 马屌 / 马逼 / 小马 / 马户` 都是马噶的别名。
-- 为此：
-  - 在 `gateway/session.py` 增加会话提示，避免模型机械复述管理员身份块；
-  - 在远端 `/root/.hermes/config.yaml` 更新 `qq_napcat.system_prompt` 和 `mention_patterns`；
-  - 重启 `hermes-gateway` 并确认配置已被 `load_gateway_config()` / `QqNapCatAdapter` 读入。
+## 2026-04-13
 
-## 2026-04-11
-- 承接 QQ 可靠性与运行时硬化方案，先补跑远端残留校验并确认新代码已经部署到 `root@888933.xyz`。
-- 本地跑了一组覆盖 QQ / 审批 / fallback / 共享群上下文 / 配置 / 识图的回归：
-  - `python -m pytest tests/gateway/test_qq_napcat.py tests/gateway/test_busy_input_mode.py tests/gateway/test_model_identity_query.py tests/gateway/test_shared_group_history.py tests/gateway/test_no_reply_marker.py tests/gateway/test_approve_deny_commands.py tests/tools/test_approval.py tests/tools/test_vision_tools.py tests/run_agent/test_fallback_model.py tests/run_agent/test_primary_runtime_restore.py tests/run_agent/test_run_agent.py tests/hermes_cli/test_config.py tests/hermes_cli/test_config_validation.py tests/test_hermes_state.py tests/cron/test_scheduler.py -q`
-  - 初次结果：`3 failed, 797 passed`
-- 失败点全部来自审批模块测试断言仍然写死英文 `"administrator"` / `"timed out"`，而实现已切成中文文案；只修正测试，不改运行逻辑。
-- 复跑同一组回归，结果：`800 passed, 20 warnings in 24.31s`。
-- 对三个候选主端点做了真实运行负载排查：
-  - `https://pay.kxaug.xyz/v1`：直连 `chat/completions` 和 `responses` 都可返回 `200`，但正文为空；用 Hermes `AIAgent` 实测得到 `'(empty)'`。
-  - `https://api.888933.xyz/v1`：裸 `chat/completions` 可返回 `pong`，但 Hermes 全量系统提示下触发 `HTTP 403: Your request was blocked`。
-  - `https://wududu.edu.kg/v1` + `glm-5.1`：Hermes `AIAgent` 最小问答实测可正常返回 `pong`。
-- 因此把本地与线上 `~/.hermes/config.yaml` 收敛为：
-  - 主模型：`glm-5.1 @ https://wududu.edu.kg/v1`
-  - 主上下文：`205000`
-  - fallback 链：`api.888933 gpt-5.4` → `pay.kxaug gpt-5.4`
-  - 文本类辅助模型（compression / approval / flush_memories）切到 `glm-5.1 @ wududu`
-  - 识图仍保留 `gpt-5.4 @ pay.kxaug`，因为此前实际跑通过
-  - 本地 QQ 唤醒词补齐 `马嘎`
-- 远端操作：
-  - 备份 `/root/.hermes/config.yaml`
-  - 同步本地配置到远端
-  - 通过 `python -m hermes_cli.main gateway run --replace` 重启 gateway
-  - 重启后远端 `gateway_state.json` 显示 `qq_napcat: connected`
-  - 用远端实际运行时再测一次 Hermes 最小问答，返回 `pong`
+- 已完成 QQ 群底座增强：
+  - 群策略支持 `daily_report_target` / `manual_report_target` / `purge_raw_after_rollup`
+  - 归档工具支持 `snapshot_report` / `deliver_report`
+  - 调度器支持 QQ 群日报自动投递
+- 已验证：
+  - 定向测试 `82 passed`
+  - 扩展回归 `151 passed`
+- 当前进行中：
+  - 已完成情报员 assignment 模型
+  - 已完成统一控制工具与状态机联动
+  - 正在整理部署与剩余边界说明
+
+## 2026-04-13 收口修复
+
+- 已补委派/审批体验修复：
+  - 子代理提示词明确禁止删除共享目录、repo cache、workspace root
+  - QQ 会话在“危险命令审批挂起”期间收到显式追问时，会先拒绝挂起命令，再切到新消息
+  - 长耗时提示会展示 `waiting for approval: ...`，不再只显示 `Still working`
+- 已补模型侧 QQ 总控收口：
+  - `model_tools.get_tool_definitions()` 在 `qq_control` 可用时，会隐藏 `qq_social_control` / `qq_intel_control` / `qq_group_policy` / `qq_group_archive` / `qq_group_moderation`
+  - `agent.prompt_builder.build_platform_tool_guidance()` 已明确提示 QQ 场景优先走 `qq_control`，不要自己写脚本
+- 已补统一总控对群文件的覆盖：
+  - `qq_control` 新增 QQ 群文件动作映射，支持 `list_files` / `upload_file` / `delete_file` / `find_file` / `get_file_url` / `forward_file` 等入口
+  - 模型侧在 `qq_control` 可用时，也会隐藏底层 `qq_group_file`
+- 已验证：
+  - `tests/tools/test_delegate.py tests/gateway/test_busy_input_mode.py tests/tools/test_qq_control_tool.py tests/test_model_tools.py tests/run_agent/test_run_agent.py tests/tools/test_qq_group_file_tool.py`
+  - `369 passed`
+
+## 本轮新增
+
+- 新增 [gateway/qq_intel_assignments.py](/home/dtamade/projects/hermes-agent/gateway/qq_intel_assignments.py)
+- 新增 [tools/qq_intel_tool.py](/home/dtamade/projects/hermes-agent/tools/qq_intel_tool.py)
+- 新增测试：
+  - [tests/gateway/test_qq_intel_assignments.py](/home/dtamade/projects/hermes-agent/tests/gateway/test_qq_intel_assignments.py)
+  - [tests/tools/test_qq_intel_tool.py](/home/dtamade/projects/hermes-agent/tests/tools/test_qq_intel_tool.py)
+
+## 验证
+
+- 相关链路回归：`159 passed`
+- 全量测试：`37 failed, 9361 passed, 87 skipped, 6 errors`
+- 结论：本轮 QQ 情报员系统相关链路是绿的；仓库全量目前不处于可直接宣称“全绿”的状态。
+
+## 2026-04-13 追加盘点
+
+- 已修复：
+  - `resume_worker` 恢复暂停任务时，已在群内的 worker 现在会回到 `active_collecting`
+  - 从群会话招募 worker 时，`manual_report_target` / `notify_target` 默认优先落到当前管理员私聊
+  - scheduler 自动发送情报员日报后，会同步回写 `last_report_at`
+- 已验证：
+  - `tests/gateway/test_qq_intel_assignments.py tests/tools/test_qq_intel_tool.py`：`7 passed`
+  - QQ/intel 回归：`162 passed`
+- 当前剩余边界：
+  - 还没有主动加群/加好友能力
+  - 控制面仍拆成 `qq_social_control` + `qq_intel_control` + `qq_group_policy` + `qq_group_archive` + `qq_group_moderation`
+
+## 2026-04-13 社交入口补齐
+
+- 新增 [gateway/qq_social_requests.py](/home/dtamade/projects/hermes-agent/gateway/qq_social_requests.py)
+- 新增 [tools/qq_social_tool.py](/home/dtamade/projects/hermes-agent/tools/qq_social_tool.py)
+- NapCat adapter 已接入 `request` 事件持久化
+- 已支持：
+  - 列出待处理好友/群请求
+  - 批准/拒绝请求
+  - 查询陌生人资料
+  - 查看好友列表
+- 已验证：
+  - `tests/gateway/test_qq_social_requests.py tests/tools/test_qq_social_tool.py`：`7 passed`
+  - 扩展 QQ 回归：`170 passed`
+
+## 2026-04-18 qq_intel / 群控口头误判收口
+
+- 已修复：
+  - `qq_intel` worker 名提取新增状态问句边界，`员工钢镚还在吗` / `员工钢镚什么状态` 会正确命中 `get_worker`
+  - 裸状态短句不再把 `还在吗` / `什么状态` 当成 worker 名；`那个情报员还在吗` 会回落到前台模型
+  - bot 可见别名在非显式 `情报员/员工` 语境下不再被当成已知 worker；`让马哥现在汇报` 会回落到前台
+  - QQ 群控在“无群目标 + 明显是 bot/员工指令”时会让路，不再用 `现在汇报` 直接抢走普通对话
+- 已新增测试：
+  - [tests/gateway/test_qq_intel_control_requests.py](/home/dtamade/projects/hermes-agent/tests/gateway/test_qq_intel_control_requests.py)
+  - [tests/gateway/test_auto_background_jobs.py](/home/dtamade/projects/hermes-agent/tests/gateway/test_auto_background_jobs.py)
+- 已验证：
+  - `tests/gateway/test_qq_intel_control_requests.py tests/gateway/test_auto_background_jobs.py tests/gateway/test_group_control_requests.py tests/gateway/test_group_control_intents.py tests/gateway/test_group_runtime_status_requests.py -q -k 'bot_alias or bare_intel_status_phrase_falls_back_to_agent or admin_dm_can_orally_query_intel_worker_status or group_control or intel_control_request'`：`29 passed`
+  - `tests/gateway/test_qq_intel_control_requests.py tests/gateway/test_qq_intel_runtime_service.py tests/gateway/test_group_control_requests.py tests/gateway/test_group_control_runtime_service.py tests/gateway/test_group_control_intents.py tests/gateway/test_group_runtime_status_requests.py tests/gateway/test_group_runtime_status_runtime_service.py tests/gateway/test_auto_background_jobs.py -q -k 'not weixin and (intel or group_control or runtime_status or bare_intel_status_phrase_falls_back_to_agent or bot_alias or admin_dm_can_orally_query_intel_worker_status)'`：`60 passed`
+  - 说明：`tests/gateway/test_auto_background_jobs.py` 全文件仍存在 1 条与本轮改动面无关的既有 Weixin 失败：`test_admin_weixin_group_can_orally_enable_collect_only`

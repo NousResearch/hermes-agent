@@ -14,17 +14,52 @@ from gateway.qq_intents import (
     _QQ_INTEL_STOP_TERMS,
     _QQ_INTEL_WORKER_NAME_STOPWORDS,
     _QQ_INTEL_WORKER_STATUS_QUERY_TERMS,
+    _QQ_VISIBLE_NAME_ALIASES,
 )
 
-_QQ_INTEL_WORKER_BOUNDARY = (
-    r"(?=(?:现在|马上|立刻|先|暂停|恢复|停止|继续|汇报|回报|状态|情况|任务|监听|采集|潜伏|刺探|，|,|。|；|;|\s|$))"
+_QQ_INTEL_WORKER_BOUNDARY_TERMS = tuple(
+    sorted(
+        {
+            "现在",
+            "马上",
+            "立刻",
+            "先",
+            "暂停",
+            "恢复",
+            "停止",
+            "继续",
+            "汇报",
+            "回报",
+            "状态",
+            "情况",
+            "任务",
+            "监听",
+            "采集",
+            "潜伏",
+            "刺探",
+            *_QQ_INTEL_WORKER_STATUS_QUERY_TERMS,
+        },
+        key=len,
+        reverse=True,
+    )
 )
-_QQ_INTEL_WORKER_TRAILING_TOKENS_RE = re.compile(r"(?:现在|马上|立刻|先)+$")
+_QQ_INTEL_WORKER_BOUNDARY = (
+    r"(?=(?:"
+    + "|".join(re.escape(term) for term in _QQ_INTEL_WORKER_BOUNDARY_TERMS)
+    + r"|，|,|。|；|;|\s|$))"
+)
+_QQ_INTEL_WORKER_SURROUNDING_TOKENS_RE = re.compile(r"^(?:现在|马上|立刻|先)+|(?:现在|马上|立刻|先)+$")
+_QQ_INTEL_INVALID_WORKER_NAME_TERMS = frozenset(_QQ_INTEL_WORKER_NAME_STOPWORDS) | frozenset(
+    _QQ_INTEL_WORKER_STATUS_QUERY_TERMS
+)
+_QQ_VISIBLE_BOT_ALIAS_NAMES = frozenset(
+    alias.lstrip("@").strip() for alias in _QQ_VISIBLE_NAME_ALIASES if alias.lstrip("@").strip()
+)
 
 
 def _normalize_qq_worker_name_candidate(candidate: str) -> str:
-    normalized = _QQ_INTEL_WORKER_TRAILING_TOKENS_RE.sub("", str(candidate or "").strip()).strip()
-    if normalized in _QQ_INTEL_WORKER_NAME_STOPWORDS:
+    normalized = _QQ_INTEL_WORKER_SURROUNDING_TOKENS_RE.sub("", str(candidate or "").strip()).strip()
+    if normalized in _QQ_INTEL_INVALID_WORKER_NAME_TERMS:
         return ""
     return normalized
 
@@ -118,13 +153,18 @@ def match_qq_intel_control_request(
 
     explicit_worker_context = any(marker in normalized_body for marker in ("情报员", "员工"))
     worker_name = str(extract_worker_name(normalized_body) or "").strip()
-    has_intel_context = bool(looks_like_worker_context(normalized_body))
+    has_worker_status_query = any(term in normalized_body for term in _QQ_INTEL_WORKER_STATUS_QUERY_TERMS)
+    has_intel_context = bool(looks_like_worker_context(normalized_body)) or (
+        explicit_worker_context and has_worker_status_query
+    )
     normalized_known_names = {
         str(name or "").strip()
         for name in (known_worker_names or [])
         if str(name or "").strip()
     }
-    worker_reference_is_explicit = explicit_worker_context or worker_name in normalized_known_names
+    worker_reference_is_explicit = explicit_worker_context or (
+        worker_name in normalized_known_names and worker_name not in _QQ_VISIBLE_BOT_ALIAS_NAMES
+    )
 
     if worker_name and has_intel_context and worker_reference_is_explicit:
         if any(term in normalized_body for term in _QQ_INTEL_PAUSE_TERMS):

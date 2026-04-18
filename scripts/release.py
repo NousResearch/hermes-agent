@@ -266,6 +266,7 @@ AUTHOR_MAP = {
     "limkuan24@gmail.com": "WideLee",
     "aviralarora002@gmail.com": "AviArora02-commits",
     "junminliu@gmail.com": "JimLiu",
+    "jarvischer@gmail.com": "maxchernin",
 }
 
 

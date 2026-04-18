@@ -451,6 +451,10 @@ class MCPOAuthManager:
     def __init__(self) -> None:
         self._entries: dict[str, _ProviderEntry] = {}
         self._entries_lock = threading.Lock()
+        # Holds strong references to in-flight 401 handler tasks so the
+        # event loop's weak-reference bookkeeping cannot GC them mid-run
+        # and leave `await pending` waiters hanging forever.
+        self._inflight_tasks: set[asyncio.Task] = set()
 
     # -- Provider construction / caching -------------------------------------
 
@@ -677,7 +681,9 @@ class MCPOAuthManager:
                     finally:
                         entry.pending_401.pop(key, None)
 
-                asyncio.create_task(_do_handle())
+                task = asyncio.create_task(_do_handle())
+                self._inflight_tasks.add(task)
+                task.add_done_callback(self._inflight_tasks.discard)
 
         try:
             return await pending

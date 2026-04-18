@@ -495,7 +495,7 @@ def test_persist_nous_credentials_writes_both_pool_and_providers(tmp_path, monke
     agent failed with "Non-retryable client error". Both stores must stay
     in sync at write time.
     """
-    from hermes_cli.auth import persist_nous_credentials
+    from hermes_cli.auth import persist_nous_credentials, NOUS_DEVICE_CODE_SOURCE
 
     hermes_home = tmp_path / "hermes"
     hermes_home.mkdir(parents=True, exist_ok=True)
@@ -504,38 +504,35 @@ def test_persist_nous_credentials_writes_both_pool_and_providers(tmp_path, monke
     }))
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
-    creds = _full_state_fixture()
-    entry = persist_nous_credentials(
-        creds, label="test-label", source="manual:device_code",
-    )
+    entry = persist_nous_credentials(_full_state_fixture())
 
     assert entry is not None
     assert entry.provider == "nous"
+    assert entry.source == NOUS_DEVICE_CODE_SOURCE
 
     payload = json.loads((hermes_home / "auth.json").read_text())
 
-    # providers.nous populated with the full state (new behavior)
+    # providers.nous populated with the full state (new behaviour)
     singleton = payload["providers"]["nous"]
     assert singleton["access_token"] == "access-tok"
     assert singleton["refresh_token"] == "refresh-tok"
     assert singleton["agent_key"] == "agent-key-value"
     assert singleton["agent_key_expires_at"] == "2026-04-18T22:00:00+00:00"
 
-    # credential_pool.nous populated with the pool entry
+    # credential_pool.nous has exactly one canonical device_code entry
     pool_entries = payload["credential_pool"]["nous"]
-    pool_entry = next(
-        item for item in pool_entries if item["source"] == "manual:device_code"
-    )
-    assert pool_entry["label"] == "test-label"
+    assert len(pool_entries) == 1, pool_entries
+    pool_entry = pool_entries[0]
+    assert pool_entry["source"] == NOUS_DEVICE_CODE_SOURCE
     assert pool_entry["agent_key"] == "agent-key-value"
-    assert pool_entry["base_url"] == "https://inference.example.com/v1"
+    assert pool_entry["inference_base_url"] == "https://inference.example.com/v1"
 
 
 def test_persist_nous_credentials_allows_recovery_from_401(tmp_path, monkeypatch):
     """End-to-end: after persisting via the helper, resolve_nous_runtime_credentials
     must succeed (not raise "Hermes is not logged into Nous Portal").
 
-    This is the exact path that ran_agent.py's `_try_refresh_nous_client_credentials`
+    This is the exact path that run_agent.py's `_try_refresh_nous_client_credentials`
     calls after a Nous 401 — before the fix it would raise AuthError because
     providers.nous was empty.
     """
@@ -548,11 +545,7 @@ def test_persist_nous_credentials_allows_recovery_from_401(tmp_path, monkeypatch
     }))
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
-    persist_nous_credentials(
-        _full_state_fixture(),
-        label="recovery-test",
-        source="manual:device_code",
-    )
+    persist_nous_credentials(_full_state_fixture())
 
     # Stub the network-touching steps so we don't actually contact the
     # portal — the point of this test is that state lookup succeeds and
@@ -575,9 +568,17 @@ def test_persist_nous_credentials_allows_recovery_from_401(tmp_path, monkeypatch
     assert creds["api_key"] == "new-agent-key"
 
 
-def test_persist_nous_credentials_preserves_existing_providers_entry(tmp_path, monkeypatch):
-    """Calling persist twice must upsert providers.nous (not duplicate or crash)."""
-    from hermes_cli.auth import persist_nous_credentials
+def test_persist_nous_credentials_idempotent_no_duplicate_pool_entries(tmp_path, monkeypatch):
+    """Re-running persist must upsert — not accumulate duplicate device_code rows.
+
+    Regression guard for the review comment on PR #11858: before normalisation,
+    the helper wrote `manual:device_code` while `_seed_from_singletons` wrote
+    `device_code`, so the pool grew a second duplicate entry on every
+    ``load_pool()``. The helper now writes providers.nous and lets seeding
+    materialise the pool entry under the canonical ``device_code`` source, so
+    two persists still leave the pool with exactly one row.
+    """
+    from hermes_cli.auth import persist_nous_credentials, NOUS_DEVICE_CODE_SOURCE
 
     hermes_home = tmp_path / "hermes"
     hermes_home.mkdir(parents=True, exist_ok=True)
@@ -587,12 +588,12 @@ def test_persist_nous_credentials_preserves_existing_providers_entry(tmp_path, m
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
     first = _full_state_fixture()
-    persist_nous_credentials(first, label="first", source="manual:device_code")
+    persist_nous_credentials(first)
 
     second = _full_state_fixture()
     second["access_token"] = "access-second"
     second["agent_key"] = "agent-key-second"
-    persist_nous_credentials(second, label="second", source="manual:device_code")
+    persist_nous_credentials(second)
 
     payload = json.loads((hermes_home / "auth.json").read_text())
 
@@ -600,8 +601,35 @@ def test_persist_nous_credentials_preserves_existing_providers_entry(tmp_path, m
     assert payload["providers"]["nous"]["access_token"] == "access-second"
     assert payload["providers"]["nous"]["agent_key"] == "agent-key-second"
 
-    # credential_pool.nous has both entries (pool = multi-credential)
+    # credential_pool.nous has exactly one entry, carrying the latest agent_key
     pool_entries = payload["credential_pool"]["nous"]
-    labels = [e.get("label") for e in pool_entries]
-    assert "first" in labels
-    assert "second" in labels
+    assert len(pool_entries) == 1, pool_entries
+    assert pool_entries[0]["source"] == NOUS_DEVICE_CODE_SOURCE
+    assert pool_entries[0]["agent_key"] == "agent-key-second"
+    # And no stray `manual:device_code` / `manual:dashboard_device_code` rows
+    assert not any(
+        e["source"].startswith("manual:") for e in pool_entries
+    )
+
+
+def test_persist_nous_credentials_reloads_pool_after_singleton_write(tmp_path, monkeypatch):
+    """The entry returned by the helper must come from a fresh ``load_pool`` so
+    callers observe the canonical seeded state, including any legacy entries
+    that ``_seed_from_singletons`` pruned or upserted.
+    """
+    from hermes_cli.auth import persist_nous_credentials, NOUS_DEVICE_CODE_SOURCE
+
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    (hermes_home / "auth.json").write_text(json.dumps({
+        "version": 1, "providers": {},
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    entry = persist_nous_credentials(_full_state_fixture())
+    assert entry is not None
+    assert entry.source == NOUS_DEVICE_CODE_SOURCE
+    # Label derived by _seed_from_singletons via label_from_token; we don't
+    # assert its exact value, just that the helper returned a real entry.
+    assert entry.access_token == "access-tok"
+    assert entry.agent_key == "agent-key-value"

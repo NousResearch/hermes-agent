@@ -35,6 +35,7 @@ from hermes_cli.providers import (
 from hermes_cli.model_normalize import (
     normalize_model_for_provider,
 )
+from agent.context_length_config import resolve_display_context_length
 from agent.models_dev import (
     ModelCapabilities,
     ModelInfo,
@@ -96,61 +97,50 @@ def _check_hermes_model_warning(model_name: str) -> str:
 # Resolved dynamically against the live models.dev catalog.
 # ---------------------------------------------------------------------------
 
+
 class ModelIdentity(NamedTuple):
     """Vendor slug and family prefix used for catalog resolution."""
+
     vendor: str
     family: str
 
 
 MODEL_ALIASES: dict[str, ModelIdentity] = {
     # Anthropic
-    "sonnet":    ModelIdentity("anthropic", "claude-sonnet"),
-    "opus":      ModelIdentity("anthropic", "claude-opus"),
-    "haiku":     ModelIdentity("anthropic", "claude-haiku"),
-    "claude":    ModelIdentity("anthropic", "claude"),
-
+    "sonnet": ModelIdentity("anthropic", "claude-sonnet"),
+    "opus": ModelIdentity("anthropic", "claude-opus"),
+    "haiku": ModelIdentity("anthropic", "claude-haiku"),
+    "claude": ModelIdentity("anthropic", "claude"),
     # OpenAI
-    "gpt5":      ModelIdentity("openai", "gpt-5"),
-    "gpt":       ModelIdentity("openai", "gpt"),
-    "codex":     ModelIdentity("openai", "codex"),
-    "o3":        ModelIdentity("openai", "o3"),
-    "o4":        ModelIdentity("openai", "o4"),
-
+    "gpt5": ModelIdentity("openai", "gpt-5"),
+    "gpt": ModelIdentity("openai", "gpt"),
+    "codex": ModelIdentity("openai", "codex"),
+    "o3": ModelIdentity("openai", "o3"),
+    "o4": ModelIdentity("openai", "o4"),
     # Google
-    "gemini":    ModelIdentity("google", "gemini"),
-
+    "gemini": ModelIdentity("google", "gemini"),
     # DeepSeek
-    "deepseek":  ModelIdentity("deepseek", "deepseek-chat"),
-
+    "deepseek": ModelIdentity("deepseek", "deepseek-chat"),
     # X.AI
-    "grok":      ModelIdentity("x-ai", "grok"),
-
+    "grok": ModelIdentity("x-ai", "grok"),
     # Meta
-    "llama":     ModelIdentity("meta-llama", "llama"),
-
+    "llama": ModelIdentity("meta-llama", "llama"),
     # Qwen / Alibaba
-    "qwen":      ModelIdentity("qwen", "qwen"),
-
+    "qwen": ModelIdentity("qwen", "qwen"),
     # MiniMax
-    "minimax":   ModelIdentity("minimax", "minimax"),
-
+    "minimax": ModelIdentity("minimax", "minimax"),
     # Nvidia
-    "nemotron":  ModelIdentity("nvidia", "nemotron"),
-
+    "nemotron": ModelIdentity("nvidia", "nemotron"),
     # Moonshot / Kimi
-    "kimi":      ModelIdentity("moonshotai", "kimi"),
-
+    "kimi": ModelIdentity("moonshotai", "kimi"),
     # Z.AI / GLM
-    "glm":       ModelIdentity("z-ai", "glm"),
-
+    "glm": ModelIdentity("z-ai", "glm"),
     # StepFun
-    "step":      ModelIdentity("stepfun", "step"),
-
+    "step": ModelIdentity("stepfun", "step"),
     # Xiaomi
-    "mimo":      ModelIdentity("xiaomi", "mimo"),
-
+    "mimo": ModelIdentity("xiaomi", "mimo"),
     # Arcee
-    "trinity":   ModelIdentity("arcee-ai", "trinity"),
+    "trinity": ModelIdentity("arcee-ai", "trinity"),
 }
 
 
@@ -162,8 +152,10 @@ MODEL_ALIASES: dict[str, ModelIdentity] = {
 # These can also be loaded from config.yaml ``model_aliases:`` section.
 # ---------------------------------------------------------------------------
 
+
 class DirectAlias(NamedTuple):
     """Exact model mapping that bypasses catalog resolution."""
+
     model: str
     provider: str
     base_url: str
@@ -194,6 +186,7 @@ def _load_direct_aliases() -> dict[str, DirectAlias]:
     merged = dict(_BUILTIN_DIRECT_ALIASES)
     try:
         from hermes_cli.config import load_config
+
         cfg = load_config()
         user_aliases = cfg.get("model_aliases")
         if isinstance(user_aliases, dict):
@@ -205,7 +198,9 @@ def _load_direct_aliases() -> dict[str, DirectAlias]:
                 base_url = entry.get("base_url", "")
                 if model:
                     merged[name.strip().lower()] = DirectAlias(
-                        model=model, provider=provider, base_url=base_url,
+                        model=model,
+                        provider=provider,
+                        base_url=base_url,
                     )
     except Exception:
         pass
@@ -222,6 +217,7 @@ def _ensure_direct_aliases() -> None:
 # ---------------------------------------------------------------------------
 # Result dataclasses
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class ModelSwitchResult:
@@ -240,6 +236,7 @@ class ModelSwitchResult:
     resolved_via_alias: str = ""
     capabilities: Optional[ModelCapabilities] = None
     model_info: Optional[ModelInfo] = None
+    display_context_length: Optional[int] = None
     is_global: bool = False
 
 
@@ -257,6 +254,7 @@ class CustomAutoResult:
 # ---------------------------------------------------------------------------
 # Flag parsing
 # ---------------------------------------------------------------------------
+
 
 def parse_model_flags(raw_args: str) -> tuple[str, str, bool]:
     """Parse --provider and --global flags from /model command args.
@@ -277,7 +275,10 @@ def parse_model_flags(raw_args: str) -> tuple[str, str, bool]:
     # Normalize Unicode dashes (Telegram/iOS auto-converts -- to em/en dash)
     # A single Unicode dash before a flag keyword becomes "--"
     import re as _re
-    raw_args = _re.sub(r'[\u2012\u2013\u2014\u2015](provider|global)', r'--\1', raw_args)
+
+    raw_args = _re.sub(
+        r"[\u2012\u2013\u2014\u2015](provider|global)", r"--\1", raw_args
+    )
 
     # Extract --global
     if "--global" in raw_args:
@@ -303,6 +304,7 @@ def parse_model_flags(raw_args: str) -> tuple[str, str, bool]:
 # ---------------------------------------------------------------------------
 # Alias resolution
 # ---------------------------------------------------------------------------
+
 
 def resolve_alias(
     raw_input: str,
@@ -408,6 +410,7 @@ def _resolve_alias_fallback(
 # Core model-switching pipeline
 # ---------------------------------------------------------------------------
 
+
 def switch_model(
     raw_input: str,
     current_provider: str,
@@ -418,6 +421,7 @@ def switch_model(
     explicit_provider: str = "",
     user_providers: dict = None,
     custom_providers: list | None = None,
+    agent_cfg: dict | None = None,
 ) -> ModelSwitchResult:
     """Core model-switching pipeline shared between CLI and gateway.
 
@@ -452,6 +456,8 @@ def switch_model(
         explicit_provider: From --provider flag (empty = no explicit provider).
         user_providers: The ``providers:`` dict from config.yaml (for user endpoints).
         custom_providers: The ``custom_providers:`` list from config.yaml.
+        agent_cfg: Full config.yaml payload when the caller has it, used for
+            config-aware display metadata such as context length.
 
     Returns:
         ModelSwitchResult with all information the caller needs.
@@ -487,6 +493,7 @@ def switch_model(
             # Check for common config issues that cause provider resolution failures
             try:
                 from hermes_cli.config import validate_config_structure
+
                 _cfg_issues = validate_config_structure()
                 if _cfg_issues:
                     _switch_err += "\n\nRun 'hermes doctor' — config issues detected:"
@@ -506,6 +513,7 @@ def switch_model(
         if not new_model:
             if pdef.base_url:
                 from hermes_cli.runtime_provider import _auto_detect_local_model
+
                 detected = _auto_detect_local_model(pdef.base_url)
                 if detected:
                     new_model = detected
@@ -548,7 +556,9 @@ def switch_model(
             target_provider, new_model, resolved_alias = alias_result
             logger.debug(
                 "Alias '%s' resolved to %s on %s",
-                resolved_alias, new_model, target_provider,
+                resolved_alias,
+                new_model,
+                target_provider,
             )
         else:
             # --- Step b: Alias exists but not on current provider -> fallback ---
@@ -564,7 +574,9 @@ def switch_model(
                     target_provider, new_model, resolved_alias = fallback_result
                     logger.debug(
                         "Alias '%s' resolved via fallback to %s on %s",
-                        resolved_alias, new_model, target_provider,
+                        resolved_alias,
+                        new_model,
+                        target_provider,
                     )
                 else:
                     identity = MODEL_ALIASES[key]
@@ -583,15 +595,20 @@ def switch_model(
                 # is already in vendor/model format and the colon is a variant
                 # tag (:free, :extended, :fast) that must be preserved.
                 colon_pos = raw_input.find(":")
-                if colon_pos > 0 and "/" not in raw_input and is_aggregator(current_provider):
+                if (
+                    colon_pos > 0
+                    and "/" not in raw_input
+                    and is_aggregator(current_provider)
+                ):
                     left = raw_input[:colon_pos].strip().lower()
-                    right = raw_input[colon_pos + 1:].strip()
+                    right = raw_input[colon_pos + 1 :].strip()
                     if left and right:
                         # Colons become slashes for aggregator slugs
                         new_model = f"{left}/{right}"
                         logger.debug(
                             "Converted vendor:model '%s' to aggregator slug '%s'",
-                            raw_input, new_model,
+                            raw_input,
+                            new_model,
                         )
 
         # --- Step d: Aggregator catalog search ---
@@ -617,11 +634,7 @@ def switch_model(
             "localhost" in _base or "127.0.0.1" in _base
         )
 
-        if (
-            target_provider == current_provider
-            and not is_custom
-            and not resolved_alias
-        ):
+        if target_provider == current_provider and not is_custom and not resolved_alias:
             detected = detect_provider_for_model(new_model, current_provider)
             if detected:
                 target_provider, new_model = detected
@@ -771,6 +784,14 @@ def switch_model(
         resolved_via_alias=resolved_alias,
         capabilities=capabilities,
         model_info=model_info,
+        display_context_length=resolve_display_context_length(
+            model=new_model,
+            provider=target_provider,
+            base_url=base_url,
+            api_key=api_key,
+            model_info=model_info,
+            agent_cfg=agent_cfg,
+        ),
         is_global=is_global,
     )
 
@@ -778,6 +799,7 @@ def switch_model(
 # ---------------------------------------------------------------------------
 # Authenticated providers listing (for /model no-args display)
 # ---------------------------------------------------------------------------
+
 
 def list_authenticated_providers(
     current_provider: str = "",
@@ -813,7 +835,9 @@ def list_authenticated_providers(
 
     results: List[dict] = []
     seen_slugs: set = set()  # lowercase-normalized to catch case variants (#9545)
-    seen_mdev_ids: set = set()  # prevent duplicate entries for aliases (e.g. kimi-coding + kimi-coding-cn)
+    seen_mdev_ids: set = (
+        set()
+    )  # prevent duplicate entries for aliases (e.g. kimi-coding + kimi-coding-cn)
 
     data = fetch_models_dev()
 
@@ -826,6 +850,7 @@ def list_authenticated_providers(
     # Ollama Cloud uses dynamic discovery (no static curated list)
     if "ollama-cloud" not in curated:
         from hermes_cli.models import fetch_ollama_cloud_models
+
         curated["ollama-cloud"] = fetch_ollama_cloud_models()
 
     # --- 1. Check Hermes-mapped providers ---
@@ -864,15 +889,17 @@ def list_authenticated_providers(
         pinfo = _mdev_pinfo(mdev_id)
         display_name = pinfo.name if pinfo else mdev_id
 
-        results.append({
-            "slug": slug,
-            "name": display_name,
-            "is_current": slug == current_provider or mdev_id == current_provider,
-            "is_user_defined": False,
-            "models": top,
-            "total_models": total,
-            "source": "built-in",
-        })
+        results.append(
+            {
+                "slug": slug,
+                "name": display_name,
+                "is_current": slug == current_provider or mdev_id == current_provider,
+                "is_user_defined": False,
+                "models": top,
+                "total_models": total,
+                "source": "built-in",
+            }
+        )
         seen_slugs.add(slug.lower())
         seen_mdev_ids.add(mdev_id)
 
@@ -913,12 +940,15 @@ def list_authenticated_providers(
         if not has_creds:
             try:
                 from hermes_cli.auth import _load_auth_store
+
                 store = _load_auth_store()
                 providers_store = store.get("providers", {})
                 pool_store = store.get("credential_pool", {})
                 if store and (
-                    pid in providers_store or hermes_slug in providers_store
-                    or pid in pool_store or hermes_slug in pool_store
+                    pid in providers_store
+                    or hermes_slug in providers_store
+                    or pid in pool_store
+                    or hermes_slug in pool_store
                 ):
                     has_creds = True
             except Exception as exc:
@@ -930,11 +960,14 @@ def list_authenticated_providers(
         if not has_creds:
             try:
                 from agent.credential_pool import load_pool
+
                 pool = load_pool(hermes_slug)
                 if pool.has_credentials():
                     has_creds = True
             except Exception as exc:
-                logger.debug("Credential pool check failed for %s: %s", hermes_slug, exc)
+                logger.debug(
+                    "Credential pool check failed for %s: %s", hermes_slug, exc
+                )
         # Fallback: check external credential files directly.
         # The credential pool gates anthropic behind
         # is_provider_explicitly_configured() to prevent auxiliary tasks
@@ -948,10 +981,12 @@ def list_authenticated_providers(
                     read_claude_code_credentials,
                     read_hermes_oauth_credentials,
                 )
+
                 hermes_creds = read_hermes_oauth_credentials()
                 cc_creds = read_claude_code_credentials()
-                if (hermes_creds and hermes_creds.get("accessToken")) or \
-                   (cc_creds and cc_creds.get("accessToken")):
+                if (hermes_creds and hermes_creds.get("accessToken")) or (
+                    cc_creds and cc_creds.get("accessToken")
+                ):
                     has_creds = True
             except Exception as exc:
                 logger.debug("Anthropic external creds check failed: %s", exc)
@@ -963,15 +998,18 @@ def list_authenticated_providers(
         total = len(model_ids)
         top = model_ids[:max_models]
 
-        results.append({
-            "slug": hermes_slug,
-            "name": get_label(hermes_slug),
-            "is_current": hermes_slug == current_provider or pid == current_provider,
-            "is_user_defined": False,
-            "models": top,
-            "total_models": total,
-            "source": "hermes",
-        })
+        results.append(
+            {
+                "slug": hermes_slug,
+                "name": get_label(hermes_slug),
+                "is_current": hermes_slug == current_provider
+                or pid == current_provider,
+                "is_user_defined": False,
+                "models": top,
+                "total_models": total,
+                "source": "hermes",
+            }
+        )
         seen_slugs.add(pid.lower())
         seen_slugs.add(hermes_slug.lower())
 
@@ -992,17 +1030,19 @@ def list_authenticated_providers(
         _cp_config = _auth_registry.get(_cp.slug)
         _cp_has_creds = False
         if _cp_config and _cp_config.api_key_env_vars:
-            _cp_has_creds = any(os.environ.get(ev) for ev in _cp_config.api_key_env_vars)
+            _cp_has_creds = any(
+                os.environ.get(ev) for ev in _cp_config.api_key_env_vars
+            )
         # Also check auth store and credential pool
         if not _cp_has_creds:
             try:
                 from hermes_cli.auth import _load_auth_store
+
                 _cp_store = _load_auth_store()
                 _cp_providers_store = _cp_store.get("providers", {})
                 _cp_pool_store = _cp_store.get("credential_pool", {})
                 if _cp_store and (
-                    _cp.slug in _cp_providers_store
-                    or _cp.slug in _cp_pool_store
+                    _cp.slug in _cp_providers_store or _cp.slug in _cp_pool_store
                 ):
                     _cp_has_creds = True
             except Exception:
@@ -1010,6 +1050,7 @@ def list_authenticated_providers(
         if not _cp_has_creds:
             try:
                 from agent.credential_pool import load_pool
+
                 _cp_pool = load_pool(_cp.slug)
                 if _cp_pool.has_credentials():
                     _cp_has_creds = True
@@ -1023,15 +1064,17 @@ def list_authenticated_providers(
         _cp_total = len(_cp_model_ids)
         _cp_top = _cp_model_ids[:max_models]
 
-        results.append({
-            "slug": _cp.slug,
-            "name": _cp.label,
-            "is_current": _cp.slug == current_provider,
-            "is_user_defined": False,
-            "models": _cp_top,
-            "total_models": _cp_total,
-            "source": "canonical",
-        })
+        results.append(
+            {
+                "slug": _cp.slug,
+                "name": _cp.label,
+                "is_current": _cp.slug == current_provider,
+                "is_user_defined": False,
+                "models": _cp_top,
+                "total_models": _cp_total,
+                "source": "canonical",
+            }
+        )
         seen_slugs.add(_cp.slug.lower())
 
     # --- 3. User-defined endpoints from config ---
@@ -1056,16 +1099,18 @@ def list_authenticated_providers(
 
             # Try to probe /v1/models if URL is set (but don't block on it)
             # For now just show what we know from config
-            results.append({
-                "slug": ep_name,
-                "name": display_name,
-                "is_current": ep_name == current_provider,
-                "is_user_defined": True,
-                "models": models_list,
-                "total_models": len(models_list) if models_list else 0,
-                "source": "user-config",
-                "api_url": api_url,
-            })
+            results.append(
+                {
+                    "slug": ep_name,
+                    "name": display_name,
+                    "is_current": ep_name == current_provider,
+                    "is_user_defined": True,
+                    "models": models_list,
+                    "total_models": len(models_list) if models_list else 0,
+                    "source": "user-config",
+                    "api_url": api_url,
+                }
+            )
 
     # --- 4. Saved custom providers from config ---
     # Each ``custom_providers`` entry represents one model under a named
@@ -1107,16 +1152,18 @@ def list_authenticated_providers(
         for slug, grp in groups.items():
             if slug.lower() in seen_slugs:
                 continue
-            results.append({
-                "slug": slug,
-                "name": grp["name"],
-                "is_current": slug == current_provider,
-                "is_user_defined": True,
-                "models": grp["models"],
-                "total_models": len(grp["models"]),
-                "source": "user-config",
-                "api_url": grp["api_url"],
-            })
+            results.append(
+                {
+                    "slug": slug,
+                    "name": grp["name"],
+                    "is_current": slug == current_provider,
+                    "is_user_defined": True,
+                    "models": grp["models"],
+                    "total_models": len(grp["models"]),
+                    "source": "user-config",
+                    "api_url": grp["api_url"],
+                }
+            )
             seen_slugs.add(slug.lower())
 
     # Sort: current provider first, then by model count descending

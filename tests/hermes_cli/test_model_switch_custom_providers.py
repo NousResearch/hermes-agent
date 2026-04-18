@@ -75,9 +75,13 @@ def test_switch_model_accepts_explicit_named_custom_provider(monkeypatch):
             "api_mode": "chat_completions",
         },
     )
-    monkeypatch.setattr("hermes_cli.models.validate_requested_model", lambda *a, **k: _MOCK_VALIDATION)
+    monkeypatch.setattr(
+        "hermes_cli.models.validate_requested_model", lambda *a, **k: _MOCK_VALIDATION
+    )
     monkeypatch.setattr("hermes_cli.model_switch.get_model_info", lambda *a, **k: None)
-    monkeypatch.setattr("hermes_cli.model_switch.get_model_capabilities", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.get_model_capabilities", lambda *a, **k: None
+    )
 
     result = switch_model(
         raw_input="rotator-openrouter-coding",
@@ -104,6 +108,59 @@ def test_switch_model_accepts_explicit_named_custom_provider(monkeypatch):
     assert result.api_key == "no-key-required"
 
 
+def test_switch_model_returns_display_context_length_from_custom_provider_config(
+    monkeypatch,
+):
+    """Display metadata should surface the same custom-provider context override used at runtime."""
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda requested: {
+            "provider": "custom",
+            "api_key": "no-key-required",
+            "base_url": "http://127.0.0.1:4141/v1",
+            "api_mode": "chat_completions",
+        },
+    )
+    monkeypatch.setattr(
+        "hermes_cli.models.validate_requested_model", lambda *a, **k: _MOCK_VALIDATION
+    )
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_info", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.get_model_capabilities", lambda *a, **k: None
+    )
+
+    result = switch_model(
+        raw_input="rotator-openrouter-coding",
+        current_provider="openai-codex",
+        current_model="gpt-5.4",
+        current_base_url="https://chatgpt.com/backend-api/codex",
+        current_api_key="",
+        explicit_provider="custom:local-(127.0.0.1:4141)",
+        user_providers={},
+        custom_providers=[
+            {
+                "name": "Local (127.0.0.1:4141)",
+                "base_url": "http://127.0.0.1:4141/v1",
+                "model": "rotator-openrouter-coding",
+                "context_length": 262144,
+            }
+        ],
+        agent_cfg={
+            "custom_providers": [
+                {
+                    "name": "Local (127.0.0.1:4141)",
+                    "base_url": "http://127.0.0.1:4141/v1",
+                    "model": "rotator-openrouter-coding",
+                    "context_length": 262144,
+                }
+            ]
+        },
+    )
+
+    assert result.success is True
+    assert result.display_context_length == 262144
+
+
 def test_list_groups_same_name_custom_providers_into_one_row(monkeypatch):
     """Multiple custom_providers entries sharing a name should produce one row
     with all models collected, not N duplicate rows."""
@@ -114,11 +171,31 @@ def test_list_groups_same_name_custom_providers_into_one_row(monkeypatch):
         current_provider="openrouter",
         user_providers={},
         custom_providers=[
-            {"name": "Ollama Cloud", "base_url": "https://ollama.com/v1", "model": "qwen3-coder:480b-cloud"},
-            {"name": "Ollama Cloud", "base_url": "https://ollama.com/v1", "model": "glm-5.1:cloud"},
-            {"name": "Ollama Cloud", "base_url": "https://ollama.com/v1", "model": "kimi-k2.5"},
-            {"name": "Ollama Cloud", "base_url": "https://ollama.com/v1", "model": "minimax-m2.7:cloud"},
-            {"name": "Moonshot", "base_url": "https://api.moonshot.ai/v1", "model": "kimi-k2-thinking"},
+            {
+                "name": "Ollama Cloud",
+                "base_url": "https://ollama.com/v1",
+                "model": "qwen3-coder:480b-cloud",
+            },
+            {
+                "name": "Ollama Cloud",
+                "base_url": "https://ollama.com/v1",
+                "model": "glm-5.1:cloud",
+            },
+            {
+                "name": "Ollama Cloud",
+                "base_url": "https://ollama.com/v1",
+                "model": "kimi-k2.5",
+            },
+            {
+                "name": "Ollama Cloud",
+                "base_url": "https://ollama.com/v1",
+                "model": "minimax-m2.7:cloud",
+            },
+            {
+                "name": "Moonshot",
+                "base_url": "https://api.moonshot.ai/v1",
+                "model": "kimi-k2-thinking",
+            },
         ],
         max_models=50,
     )
@@ -126,7 +203,10 @@ def test_list_groups_same_name_custom_providers_into_one_row(monkeypatch):
     ollama_rows = [p for p in providers if p["name"] == "Ollama Cloud"]
     assert len(ollama_rows) == 1, f"Expected 1 Ollama Cloud row, got {len(ollama_rows)}"
     assert ollama_rows[0]["models"] == [
-        "qwen3-coder:480b-cloud", "glm-5.1:cloud", "kimi-k2.5", "minimax-m2.7:cloud"
+        "qwen3-coder:480b-cloud",
+        "glm-5.1:cloud",
+        "kimi-k2.5",
+        "minimax-m2.7:cloud",
     ]
     assert ollama_rows[0]["total_models"] == 4
 
@@ -145,9 +225,21 @@ def test_list_deduplicates_same_model_in_group(monkeypatch):
         current_provider="openrouter",
         user_providers={},
         custom_providers=[
-            {"name": "MyProvider", "base_url": "http://localhost:11434/v1", "model": "llama3"},
-            {"name": "MyProvider", "base_url": "http://localhost:11434/v1", "model": "llama3"},
-            {"name": "MyProvider", "base_url": "http://localhost:11434/v1", "model": "mistral"},
+            {
+                "name": "MyProvider",
+                "base_url": "http://localhost:11434/v1",
+                "model": "llama3",
+            },
+            {
+                "name": "MyProvider",
+                "base_url": "http://localhost:11434/v1",
+                "model": "llama3",
+            },
+            {
+                "name": "MyProvider",
+                "base_url": "http://localhost:11434/v1",
+                "model": "mistral",
+            },
         ],
         max_models=50,
     )

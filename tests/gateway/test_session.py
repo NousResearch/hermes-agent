@@ -1124,15 +1124,23 @@ class TestProfileScopedSessionKeys:
         with patch("hermes_cli.profiles.get_active_profile_name", return_value="custom"):
             assert build_session_key(source) == "agent:custom:telegram:dm:99"
 
-    def test_hermes_cli_import_failure_falls_back_to_default(self):
-        """If hermes_cli.profiles can't be imported (narrow unit-test contexts),
-        we must not raise — fall back to legacy agent:main prefix."""
+    def test_active_profile_resolution_failure_falls_back_to_default(self):
+        """Any exception from ``get_active_profile_name`` — ``ImportError``,
+        ``OSError`` from a missing ``HERMES_HOME``, or anything else — must
+        degrade gracefully to the legacy ``agent:main`` prefix rather than
+        propagate and break session-key construction for every inbound
+        message."""
         source = SessionSource(
             platform=Platform.TELEGRAM, chat_id="99", chat_type="dm"
         )
         with patch(
             "hermes_cli.profiles.get_active_profile_name",
             side_effect=ImportError("simulated"),
+        ):
+            assert build_session_key(source) == "agent:main:telegram:dm:99"
+        with patch(
+            "hermes_cli.profiles.get_active_profile_name",
+            side_effect=RuntimeError("HERMES_HOME missing"),
         ):
             assert build_session_key(source) == "agent:main:telegram:dm:99"
 

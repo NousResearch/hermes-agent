@@ -412,5 +412,56 @@ def test_parse_session_key_too_short():
 
 
 def test_parse_session_key_wrong_prefix():
+    """parts[0] must be ``agent`` and parts[1] must be a non-empty profile scope."""
+    # Wrong leading namespace
     assert _parse_session_key("cron:main:telegram:dm:123") is None
-    assert _parse_session_key("agent:cron:telegram:dm:123") is None
+    assert _parse_session_key("other:main:telegram:dm:123") is None
+    # Empty profile scope (parts[1] falsy)
+    assert _parse_session_key("agent::telegram:dm:123") is None
+
+
+# ---------------------------------------------------------------------------
+# Regression coverage for #12099:  _parse_session_key must accept session
+# keys emitted by ``build_session_key`` under named profiles, not just the
+# legacy ``agent:main`` default.  Before this fix, keys like
+# ``agent:coder:telegram:dm:99`` returned ``None``, which silently broke
+# shutdown notifications and synthetic process-event routing for users on
+# named profiles.
+# ---------------------------------------------------------------------------
+
+def test_parse_session_key_named_profile_dm():
+    """Named-profile DM keys parse the same as default-profile keys."""
+    result = _parse_session_key("agent:coder:telegram:dm:99")
+    assert result == {"platform": "telegram", "chat_type": "dm", "chat_id": "99"}
+
+
+def test_parse_session_key_named_profile_group():
+    """Named-profile group keys parse correctly."""
+    result = _parse_session_key("agent:coder:discord:group:guild-123")
+    assert result == {"platform": "discord", "chat_type": "group", "chat_id": "guild-123"}
+
+
+def test_parse_session_key_named_profile_dm_with_thread():
+    """Thread extraction still works under named profiles."""
+    result = _parse_session_key("agent:coder:telegram:dm:99:topic-1")
+    assert result == {
+        "platform": "telegram",
+        "chat_type": "dm",
+        "chat_id": "99",
+        "thread_id": "topic-1",
+    }
+
+
+def test_parse_session_key_named_profile_matches_default_routing():
+    """The platform/chat_id a notification router cares about must not
+    depend on whether the user is on the default or a named profile."""
+    default_parsed = _parse_session_key("agent:main:telegram:dm:99")
+    coder_parsed = _parse_session_key("agent:coder:telegram:dm:99")
+    assert default_parsed == coder_parsed
+
+
+def test_parse_session_key_custom_profile_value():
+    """``get_active_profile_name`` returns ``"custom"`` for unusual
+    HERMES_HOME paths; the parser must accept that scope too."""
+    result = _parse_session_key("agent:custom:slack:dm:U123")
+    assert result == {"platform": "slack", "chat_type": "dm", "chat_id": "U123"}

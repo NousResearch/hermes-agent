@@ -1029,9 +1029,12 @@ def _parse_session_key(session_key: str) -> "dict | None":
     """Parse a session key into its component parts.
 
     Session keys follow the format
-    ``agent:main:{platform}:{chat_type}:{chat_id}[:{extra}...]``.
-    Returns a dict with ``platform``, ``chat_type``, ``chat_id``, and
-    optionally ``thread_id`` keys, or None if the key doesn't match.
+    ``agent:<profile>:<platform>:<chat_type>:<chat_id>[:<extra>...]``
+    where ``<profile>`` is ``main`` for the default profile and the
+    profile name for named profiles — see
+    ``gateway.session.build_session_key``.  Returns a dict with
+    ``platform``, ``chat_type``, ``chat_id``, and optionally ``thread_id``
+    keys, or ``None`` if the key doesn't match the structural shape.
 
     The 6th element is only returned as ``thread_id`` for chat types where
     it is unambiguous (``dm`` and ``thread``).  For group/channel sessions
@@ -1039,7 +1042,12 @@ def _parse_session_key(session_key: str) -> "dict | None":
     thread_id, so we leave ``thread_id`` out to avoid mis-routing.
     """
     parts = session_key.split(":")
-    if len(parts) >= 5 and parts[0] == "agent" and parts[1] == "main":
+    # parts[1] used to be a strict ``"main"`` match; the profile-aware
+    # key shape introduced for #12099 means any non-empty scope
+    # (``main`` for the default profile, ``<profile_name>`` otherwise)
+    # is a valid parse.  Structural checks remain — parts[0] must be
+    # ``agent`` and the key must have at least 5 colon-separated fields.
+    if len(parts) >= 5 and parts[0] == "agent" and parts[1]:
         result = {
             "platform": parts[2],
             "chat_type": parts[3],

@@ -265,6 +265,9 @@ from gateway.command_preprocessing_runtime_service import (
     preprocess_gateway_command,
 )
 from gateway.employee_routes import get_employee_routes
+from gateway.running_agent_staleness_runtime_service import (
+    evict_stale_gateway_running_agent,
+)
 from gateway.runtime_status_service import (
     build_runtime_status_summary as shared_build_runtime_status_summary,
     render_status_command as shared_render_status_command,
@@ -2907,58 +2910,13 @@ class GatewayRunner:
         # simultaneous updates. Do NOT interrupt for photo-only follow-ups here;
         # let the adapter-level batching/queueing logic absorb them.
 
-        # Staleness eviction: detect leaked locks from hung/crashed handlers.
-        # With inactivity-based timeout, active tasks can run for hours, so
-        # wall-clock age alone isn't sufficient.  Evict only when the agent
-        # has been *idle* beyond the inactivity threshold (or when the agent
-        # object has no activity tracker and wall-clock age is extreme).
-        _raw_stale_timeout = float(os.getenv("HERMES_AGENT_TIMEOUT", 1800))
-        _stale_ts = self._running_agents_ts.get(_quick_key, 0)
-        if _quick_key in self._running_agents and _stale_ts:
-            _stale_age = time.time() - _stale_ts
-            _stale_agent = self._running_agents.get(_quick_key)
-            # Never evict the pending sentinel — it was just placed moments
-            # ago during the async setup phase before the real agent is
-            # created.  Sentinels have no get_activity_summary(), so the
-            # idle check below must stay conservative or tests/mocks and
-            # partially-constructed agents get evicted spuriously.
-            _stale_idle = 0.0
-            _stale_detail = ""
-            if _stale_agent and hasattr(_stale_agent, "get_activity_summary"):
-                try:
-                    _sa = _stale_agent.get_activity_summary()
-                    if isinstance(_sa, dict):
-                        _stale_idle = _safe_float(
-                            _sa.get("seconds_since_activity"),
-                            float("inf"),
-                        )
-                        _stale_detail = (
-                            f" | last_activity={_sa.get('last_activity_desc', 'unknown')} "
-                            f"({_stale_idle:.0f}s ago) "
-                            f"| iteration={_sa.get('api_call_count', 0)}/{_sa.get('max_iterations', 0)}"
-                        )
-                except Exception:
-                    pass
-            # Evict if: agent is idle beyond timeout, OR wall-clock age is
-            # extreme (10x timeout or 2h, whichever is larger — catches
-            # cases where the agent object was garbage-collected).
-            _wall_ttl = max(_raw_stale_timeout * 10, 7200) if _raw_stale_timeout > 0 else float("inf")
-            _should_evict = (
-                _stale_agent is not _AGENT_PENDING_SENTINEL
-                and (
-                    (_raw_stale_timeout > 0 and _stale_idle >= _raw_stale_timeout)
-                    or _stale_age > _wall_ttl
-                )
-            )
-            if _should_evict:
-                logger.warning(
-                    "Evicting stale _running_agents entry for %s "
-                    "(age: %.0fs, idle: %.0fs, timeout: %.0fs)%s",
-                    _quick_key[:30], _stale_age, _stale_idle,
-                    _raw_stale_timeout, _stale_detail,
-                )
-                del self._running_agents[_quick_key]
-                self._running_agents_ts.pop(_quick_key, None)
+        evict_stale_gateway_running_agent(
+            session_key=_quick_key,
+            running_agents=self._running_agents,
+            running_agents_ts=self._running_agents_ts,
+            pending_agent_sentinel=_AGENT_PENDING_SENTINEL,
+            logger=logger,
+        )
 
         if _quick_key in self._running_agents:
             busy_result = await handle_gateway_busy_followup(

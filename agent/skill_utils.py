@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from hermes_constants import get_config_path, get_skills_dir
+from hermes_constants import get_config_path, get_skills_dir, get_subprocess_home
 
 logger = logging.getLogger(__name__)
 
@@ -395,6 +395,7 @@ def resolve_skill_config_values(
             pass
 
     resolved: Dict[str, Any] = {}
+    subprocess_home = get_subprocess_home()
     for var in config_vars:
         logical_key = var["key"]
         storage_key = f"{SKILL_CONFIG_PREFIX}.{logical_key}"
@@ -403,9 +404,18 @@ def resolve_skill_config_values(
         if value is None or (isinstance(value, str) and not value.strip()):
             value = var.get("default", "")
 
-        # Expand ~ in path-like values
+        # Expand env vars first.
+        # For user-content paths (e.g. ~/wiki), prefer Hermes subprocess HOME
+        # over the Python process HOME so injected skill config matches the
+        # actual runtime environment used by terminal/background tools.
         if isinstance(value, str) and ("~" in value or "${" in value):
-            value = os.path.expanduser(os.path.expandvars(value))
+            expanded = os.path.expandvars(value)
+            if subprocess_home and expanded.startswith("~/"):
+                value = os.path.join(subprocess_home, expanded[2:])
+            elif subprocess_home and expanded == "~":
+                value = subprocess_home
+            else:
+                value = os.path.expanduser(expanded)
 
         resolved[logical_key] = value
 

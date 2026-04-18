@@ -13,11 +13,12 @@ def test_run_direct_shortcut_handlers_preserves_canonical_order():
         _try_handle_admin_weixin_send_shortcut=MagicMock(return_value=None),
         _try_handle_admin_qq_group_runtime_status=MagicMock(return_value=None),
         _try_handle_admin_qq_group_control=MagicMock(return_value="group-control"),
+        _try_handle_admin_qq_group_moderation=MagicMock(return_value=None),
         _try_handle_admin_weixin_group_runtime_status=MagicMock(return_value=None),
         _try_handle_admin_weixin_group_control=MagicMock(return_value=None),
+        _try_handle_admin_weixin_group_moderation=MagicMock(return_value=None),
         _try_handle_admin_qq_intel_control=MagicMock(return_value="intel-control"),
         _try_handle_admin_qq_social_control=MagicMock(return_value=None),
-        _try_handle_admin_qq_group_moderation=MagicMock(return_value=None),
     )
 
     result = run_direct_shortcut_handlers(runner, event)
@@ -37,11 +38,12 @@ def test_run_direct_shortcut_handlers_passes_history_only_to_history_aware_handl
         _try_handle_admin_weixin_send_shortcut=MagicMock(return_value=None),
         _try_handle_admin_qq_group_runtime_status=MagicMock(return_value=None),
         _try_handle_admin_qq_group_control=MagicMock(return_value=None),
+        _try_handle_admin_qq_group_moderation=MagicMock(return_value=None),
         _try_handle_admin_weixin_group_runtime_status=MagicMock(return_value=None),
         _try_handle_admin_weixin_group_control=MagicMock(return_value=None),
+        _try_handle_admin_weixin_group_moderation=MagicMock(return_value=None),
         _try_handle_admin_qq_intel_control=MagicMock(return_value=None),
         _try_handle_admin_qq_social_control=MagicMock(return_value=None),
-        _try_handle_admin_qq_group_moderation=MagicMock(return_value=None),
     )
 
     result = run_direct_shortcut_handlers(
@@ -97,11 +99,12 @@ def test_run_direct_shortcut_handlers_records_trace_for_handled_shortcut():
         _try_handle_admin_weixin_send_shortcut=MagicMock(return_value=None),
         _try_handle_admin_qq_group_runtime_status=MagicMock(return_value=None),
         _try_handle_admin_qq_group_control=MagicMock(return_value="已切成监听"),
+        _try_handle_admin_qq_group_moderation=MagicMock(return_value=None),
         _try_handle_admin_weixin_group_runtime_status=MagicMock(return_value=None),
         _try_handle_admin_weixin_group_control=MagicMock(return_value=None),
+        _try_handle_admin_weixin_group_moderation=MagicMock(return_value=None),
         _try_handle_admin_qq_intel_control=MagicMock(return_value=None),
         _try_handle_admin_qq_social_control=MagicMock(return_value=None),
-        _try_handle_admin_qq_group_moderation=MagicMock(return_value=None),
     )
 
     result = run_direct_shortcut_handlers(runner, event)

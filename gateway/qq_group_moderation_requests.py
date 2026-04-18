@@ -92,6 +92,8 @@ def match_qq_group_moderation_request(
     user_query_extractor,
     reason_extractor,
     duration_extractor,
+    current_group_target_formatter=None,
+    missing_target_message: str = "要禁言/踢人，请直接说清群号，或者在目标群里明确说“这个群”。",
 ) -> tuple[dict[str, object] | None, str | None]:
     normalized_body = str(body or "").strip()
     if not normalized_body:
@@ -112,9 +114,10 @@ def match_qq_group_moderation_request(
     if not target and getattr(source, "chat_type", "") == "group":
         current_group_id = str(getattr(source, "chat_id", "") or "").strip()
         if current_group_id:
-            target = f"group:{current_group_id}"
+            formatter = current_group_target_formatter or (lambda chat_id: f"group:{chat_id}")
+            target = formatter(current_group_id)
     if not target:
-        return None, "要禁言/踢人，请直接说清群号，或者在目标群里明确说“这个群”。"
+        return None, missing_target_message
 
     user_query = str(user_query_extractor(normalized_body) or "").strip()
     if not user_query:

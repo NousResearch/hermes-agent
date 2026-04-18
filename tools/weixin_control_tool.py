@@ -10,7 +10,7 @@ from tools.control_plane_helpers import (
 )
 from tools.employee_route_tool import EMPLOYEE_ROUTE_CONTROL_PROPERTIES, employee_route_tool
 from tools.group_control_schema import build_group_control_properties
-from tools.registry import registry, tool_error
+from tools.registry import registry, tool_error, tool_result
 from tools.send_message_tool import _check_send_message, send_message_tool
 from tools.weixin_group_archive_tool import weixin_group_archive_tool
 from tools.weixin_group_policy_tool import weixin_group_policy_tool
@@ -43,8 +43,17 @@ _EMPLOYEE_ROUTE_ACTIONS = {
     "clear_employee_route",
 }
 
+_GROUP_MODERATION_ACTIONS = {
+    "mute_user",
+    "kick_user",
+}
+
 _ACTION_ALIASES = {
     "send": "send_message",
+    "mute": "mute_user",
+    "mute_member": "mute_user",
+    "kick": "kick_user",
+    "kick_member": "kick_user",
     "collect-only": "set_policy",
     "collect_only": "set_policy",
     "no_reply": "set_policy",
@@ -130,11 +139,38 @@ WEIXIN_CONTROL_SPEC = ControlPlaneSpec(
     aliases=_ACTION_ALIASES,
     route_specs_factory=_weixin_control_route_specs,
     properties=_WEIXIN_CONTROL_PROPERTIES,
-    extra_actions={"send", "collect_only", "no_reply", "report_now"},
+    extra_actions={
+        "send",
+        "collect_only",
+        "no_reply",
+        "report_now",
+        "mute",
+        "mute_member",
+        "mute_user",
+        "kick",
+        "kick_member",
+        "kick_user",
+    },
     normalize_args=_normalize_control_args,
 )
 
 WEIXIN_CONTROL_SCHEMA = build_control_schema_from_spec(WEIXIN_CONTROL_SPEC)
+
+
+def _unsupported_weixin_control_action(payload: dict) -> str:
+    action = str(payload.get("action") or "").strip().lower()
+    if action in _GROUP_MODERATION_ACTIONS:
+        return tool_result(
+            success=False,
+            platform="weixin",
+            action=action,
+            capability="not_capable",
+            target=str(payload.get("target") or "").strip(),
+            detail="微信群暂不支持禁言/踢人。",
+        )
+    return tool_error(
+        "Unsupported Weixin control action. Use send_message, employee-route, group policy, or archive/report actions."
+    )
 
 
 def weixin_control_tool(args, **kw):
@@ -145,9 +181,7 @@ def weixin_control_tool(args, **kw):
     return run_control_plane(
         dict(args),
         spec=WEIXIN_CONTROL_SPEC,
-        unsupported=lambda _payload: tool_error(
-            "Unsupported Weixin control action. Use send_message, employee-route, group policy, or archive/report actions."
-        ),
+        unsupported=_unsupported_weixin_control_action,
     )
 
 

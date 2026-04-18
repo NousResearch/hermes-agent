@@ -103,3 +103,42 @@ def test_routes_employee_route_action_to_employee_route_tool():
             "worker_name": "阿旺",
         }
     )
+
+
+def test_returns_structured_not_capable_for_group_moderation_action():
+    result = json.loads(
+        weixin_control_tool(
+            {
+                "action": "mute_user",
+                "target": "project@chatroom",
+                "user_query": "广告哥",
+                "reason": "广告",
+            }
+        )
+    )
+
+    assert result == {
+        "success": False,
+        "platform": "weixin",
+        "action": "mute_user",
+        "capability": "not_capable",
+        "target": "project@chatroom",
+        "detail": "微信群暂不支持禁言/踢人。",
+    }
+
+
+def test_normalizes_group_moderation_alias_to_structured_not_capable_result():
+    result = json.loads(
+        weixin_control_tool(
+            {
+                "action": "kick",
+                "target": "project@chatroom",
+                "user_query": "广告哥",
+                "reason": "广告",
+            }
+        )
+    )
+
+    assert result["action"] == "kick_user"
+    assert result["capability"] == "not_capable"
+    assert result["target"] == "project@chatroom"

@@ -344,10 +344,13 @@ def test_direct_gateway_shortcuts_prioritize_group_control_over_intel_control():
     runner._try_handle_runtime_status_shortcut = MagicMock(return_value=None)
     runner._try_handle_admin_qq_send_shortcut = MagicMock(return_value=None)
     runner._try_handle_admin_qq_group_control = MagicMock(return_value="group-control")
+    runner._try_handle_admin_qq_group_moderation = MagicMock(return_value=None)
+    runner._try_handle_admin_weixin_group_runtime_status = MagicMock(return_value=None)
+    runner._try_handle_admin_weixin_group_control = MagicMock(return_value=None)
+    runner._try_handle_admin_weixin_group_moderation = MagicMock(return_value=None)
     runner._try_handle_admin_qq_intel_control = MagicMock(return_value="intel-control")
     runner._try_handle_admin_qq_social_control = MagicMock(return_value=None)
     runner._try_handle_admin_qq_group_runtime_status = MagicMock(return_value=None)
-    runner._try_handle_admin_qq_group_moderation = MagicMock(return_value=None)
 
     result = try_handle_direct_gateway_shortcuts(runner, event)
 
@@ -1805,6 +1808,53 @@ async def test_admin_group_can_orally_kick_member_via_control_plane():
     assert args["target"] == "group:726109087"
     assert args["user_query"] == "广告哥"
     assert args["reason"] == "广告"
+
+
+@pytest.mark.asyncio
+async def test_admin_weixin_group_moderation_returns_explicit_not_capable_reply():
+    runner = _make_runner(auto_background_work=True)
+    runner.config.platforms[Platform.WEIXIN] = PlatformConfig(
+        enabled=True,
+        token="***",
+        extra={"admin_users": ["179033731"]},
+    )
+    runner.adapters[Platform.WEIXIN] = MagicMock()
+    event = MessageEvent(
+        text="把广告哥踢了，原因广告。",
+        source=SessionSource(
+            platform=Platform.WEIXIN,
+            user_id="179033731",
+            user_name="發發發",
+            chat_id="project@chatroom",
+            chat_type="group",
+        ),
+        message_id="wx-1",
+        message_type=MessageType.TEXT,
+    )
+
+    with patch(
+        "tools.weixin_control_tool.weixin_control_tool",
+        return_value=json.dumps(
+            {
+                "success": False,
+                "platform": "weixin",
+                "action": "kick_user",
+                "capability": "not_capable",
+                "detail": "微信群暂不支持禁言/踢人。",
+            },
+            ensure_ascii=False,
+        ),
+    ) as control_mock:
+        result = await runner._handle_message(event)
+
+    runner._run_agent.assert_not_awaited()
+    assert result == "微信群暂不支持禁言/踢人。"
+    assert control_mock.call_args.args[0] == {
+        "action": "kick_user",
+        "target": "project@chatroom",
+        "user_query": "广告哥",
+        "reason": "广告",
+    }
 
 
 @pytest.mark.asyncio

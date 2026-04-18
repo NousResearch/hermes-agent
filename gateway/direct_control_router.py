@@ -9,12 +9,15 @@ from typing import Any, Optional
 from gateway.config import Platform
 from gateway.direct_control_platform_specs import (
     AdminGroupControlPlatformSpec,
+    AdminGroupModerationPlatformSpec,
     AdminGroupRuntimeStatusSpec,
     AdminSendPlatformSpec,
     QQ_ADMIN_GROUP_CONTROL_SPEC,
+    QQ_ADMIN_GROUP_MODERATION_SPEC,
     QQ_ADMIN_GROUP_RUNTIME_STATUS_SPEC,
     QQ_ADMIN_SEND_SPEC,
     WEIXIN_ADMIN_GROUP_CONTROL_SPEC,
+    WEIXIN_ADMIN_GROUP_MODERATION_SPEC,
     WEIXIN_ADMIN_GROUP_RUNTIME_STATUS_SPEC,
     WEIXIN_ADMIN_SEND_SPEC,
 )
@@ -31,9 +34,8 @@ from gateway.group_control_runtime_service import (
     run_admin_group_control_shortcut,
 )
 from gateway.group_moderation_runtime_service import (
-    format_admin_qq_group_moderation_reply,
-    match_admin_qq_group_moderation_request as shared_match_admin_qq_group_moderation_request,
-    run_admin_qq_group_moderation_shortcut,
+    match_admin_platform_group_moderation_request,
+    run_admin_platform_group_moderation_shortcut,
 )
 from gateway.group_reply_formatters import (
     format_admin_group_control_reply,
@@ -77,6 +79,7 @@ DIRECT_CONTROL_ROUTER_METHODS = frozenset(
         "_try_handle_admin_qq_group_control",
         "_try_handle_admin_weixin_group_control",
         "_try_handle_admin_qq_group_moderation",
+        "_try_handle_admin_weixin_group_moderation",
         "_try_handle_admin_qq_social_control",
     }
 )
@@ -494,47 +497,95 @@ class DirectControlRouter:
             reply_formatter=self._format_admin_weixin_group_control_reply,
         )
 
-    def _match_admin_qq_group_moderation_request(
+    def _match_admin_platform_group_moderation_request(
         self,
         event: MessageEvent,
+        *,
+        spec: AdminGroupModerationPlatformSpec,
     ) -> tuple[dict[str, Any] | None, str | None]:
         context = build_admin_platform_text_context(
             event,
-            platform=Platform.QQ_NAPCAT,
+            platform=spec.platform,
             configured_admin_user_ids_fn=self.owner._configured_admin_user_ids,
             is_admin_user_fn=self.owner._is_admin_user,
         )
-        return shared_match_admin_qq_group_moderation_request(
+        return match_admin_platform_group_moderation_request(
             source=context["source"],
             body=context["body"],
             admin_ids_configured=context["admin_ids_configured"],
             is_admin_user=context["is_admin_user"],
-            admin_only_message=self.owner._admin_only_message(context["source"], "操作 QQ 群禁言/踢人"),
+            admin_only_message=self.owner._admin_only_message(context["source"], spec.admin_action_label),
+            spec=spec,
         )
 
-    @staticmethod
-    def _format_admin_qq_group_moderation_reply(tool_args: dict[str, Any], result: dict[str, Any]) -> str:
-        return format_admin_qq_group_moderation_reply(tool_args, result)
+    def _match_admin_qq_group_moderation_request(
+        self,
+        event: MessageEvent,
+    ) -> tuple[dict[str, Any] | None, str | None]:
+        return self._match_admin_platform_group_moderation_request(
+            event,
+            spec=QQ_ADMIN_GROUP_MODERATION_SPEC,
+        )
+
+    def _match_admin_weixin_group_moderation_request(
+        self,
+        event: MessageEvent,
+    ) -> tuple[dict[str, Any] | None, str | None]:
+        return self._match_admin_platform_group_moderation_request(
+            event,
+            spec=WEIXIN_ADMIN_GROUP_MODERATION_SPEC,
+        )
+
+    def _try_handle_admin_platform_group_moderation(
+        self,
+        event: MessageEvent,
+        *,
+        matcher,
+        tool_runner,
+        spec: AdminGroupModerationPlatformSpec,
+    ) -> str | None:
+        tool_args, shortcut_error = matcher(event)
+        return run_admin_platform_group_moderation_shortcut(
+            tool_args=tool_args,
+            shortcut_error=shortcut_error,
+            tool_runner=tool_runner,
+            logger=logger,
+            spec=spec,
+        )
 
     def _try_handle_admin_qq_group_moderation(self, event: MessageEvent) -> str | None:
-        tool_args, shortcut_error = self._match_admin_qq_group_moderation_request(event)
-
         try:
             from tools.qq_control_tool import qq_control_tool
 
-            return run_admin_qq_group_moderation_shortcut(
-                tool_args=tool_args,
-                shortcut_error=shortcut_error,
+            return self._try_handle_admin_platform_group_moderation(
+                event,
+                matcher=self._match_admin_qq_group_moderation_request,
                 tool_runner=lambda current_tool_args: (
-                    (lambda raw: json.loads(raw) if isinstance(raw, str) else (raw or {}))(
-                        qq_control_tool(current_tool_args)
-                    )
+                    (lambda raw: json.loads(raw) if isinstance(raw, str) else (raw or {}))(qq_control_tool(current_tool_args))
                 ),
-                logger=logger,
+                spec=QQ_ADMIN_GROUP_MODERATION_SPEC,
             )
         except Exception as exc:
             logger.warning("Admin QQ oral moderation shortcut bootstrap failed: %s", exc)
-            return f"QQ 群管理执行失败：{exc}"
+            return f"{QQ_ADMIN_GROUP_MODERATION_SPEC.error_prefix}：{exc}"
+
+    def _try_handle_admin_weixin_group_moderation(self, event: MessageEvent) -> str | None:
+        try:
+            from tools.weixin_control_tool import weixin_control_tool
+
+            return self._try_handle_admin_platform_group_moderation(
+                event,
+                matcher=self._match_admin_weixin_group_moderation_request,
+                tool_runner=lambda current_tool_args: (
+                    (lambda raw: json.loads(raw) if isinstance(raw, str) else (raw or {}))(
+                        weixin_control_tool(current_tool_args)
+                    )
+                ),
+                spec=WEIXIN_ADMIN_GROUP_MODERATION_SPEC,
+            )
+        except Exception as exc:
+            logger.warning("Admin Weixin oral moderation shortcut bootstrap failed: %s", exc)
+            return f"{WEIXIN_ADMIN_GROUP_MODERATION_SPEC.error_prefix}：{exc}"
 
     def _match_admin_qq_social_control_request(
         self,

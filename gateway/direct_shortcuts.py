@@ -29,11 +29,12 @@ DIRECT_SHORTCUT_HANDLER_SPECS: tuple[DirectShortcutHandlerSpec, ...] = (
     DirectShortcutHandlerSpec("_try_handle_admin_weixin_send_shortcut", passes_history=True),
     DirectShortcutHandlerSpec("_try_handle_admin_qq_group_runtime_status", passes_history=True),
     DirectShortcutHandlerSpec("_try_handle_admin_qq_group_control"),
+    DirectShortcutHandlerSpec("_try_handle_admin_qq_group_moderation"),
     DirectShortcutHandlerSpec("_try_handle_admin_weixin_group_runtime_status", passes_history=True),
     DirectShortcutHandlerSpec("_try_handle_admin_weixin_group_control"),
+    DirectShortcutHandlerSpec("_try_handle_admin_weixin_group_moderation"),
     DirectShortcutHandlerSpec("_try_handle_admin_qq_intel_control"),
     DirectShortcutHandlerSpec("_try_handle_admin_qq_social_control"),
-    DirectShortcutHandlerSpec("_try_handle_admin_qq_group_moderation"),
 )
 
 

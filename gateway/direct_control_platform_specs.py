@@ -64,6 +64,18 @@ class AdminGroupRuntimeStatusSpec:
     status_loader: Callable[[str], dict[str, Any]]
 
 
+@dataclass(frozen=True)
+class AdminGroupModerationPlatformSpec:
+    platform: Platform
+    platform_label: str
+    error_prefix: str
+    target_extractor: Callable[[Any, str], str | None]
+    missing_target_message: str
+    admin_action_label: str
+    current_group_target_formatter: Callable[[str], str]
+    reply_target_normalizer: Callable[[Any], str]
+
+
 QQ_ADMIN_SEND_SPEC = AdminSendPlatformSpec(
     platform=Platform.QQ_NAPCAT,
     platform_label="QQ 群",
@@ -166,4 +178,28 @@ WEIXIN_ADMIN_GROUP_RUNTIME_STATUS_SPEC = AdminGroupRuntimeStatusSpec(
         get_group_policy_fn=get_weixin_group_policy,
         describe_group_reporting_fn=WeixinGroupArchiveStore().describe_group_reporting,
     ),
+)
+
+
+QQ_ADMIN_GROUP_MODERATION_SPEC = AdminGroupModerationPlatformSpec(
+    platform=Platform.QQ_NAPCAT,
+    platform_label="QQ 群",
+    error_prefix="QQ 群管理执行失败",
+    target_extractor=extract_qq_group_target,
+    missing_target_message="要禁言/踢人，请直接说清群号，或者在目标群里明确说“这个群”。",
+    admin_action_label="操作 QQ 群禁言/踢人",
+    current_group_target_formatter=lambda chat_id: f"group:{str(chat_id).strip()}",
+    reply_target_normalizer=lambda value: str(value or "").replace("group:", "").strip(),
+)
+
+
+WEIXIN_ADMIN_GROUP_MODERATION_SPEC = AdminGroupModerationPlatformSpec(
+    platform=Platform.WEIXIN,
+    platform_label="微信群",
+    error_prefix="微信群管理执行失败",
+    target_extractor=extract_weixin_group_target,
+    missing_target_message="要禁言/踢人，请直接说清 chatroom，或者在目标群里明确说“这个群”。",
+    admin_action_label="操作微信群禁言/踢人",
+    current_group_target_formatter=lambda chat_id: str(chat_id or "").strip(),
+    reply_target_normalizer=lambda value: str(value or "").replace("weixin:", "").strip(),
 )

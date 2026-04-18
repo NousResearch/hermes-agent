@@ -2162,7 +2162,11 @@ def refresh_nous_oauth_from_state(
 NOUS_DEVICE_CODE_SOURCE = "device_code"
 
 
-def persist_nous_credentials(creds: Dict[str, Any]):
+def persist_nous_credentials(
+    creds: Dict[str, Any],
+    *,
+    label: Optional[str] = None,
+):
     """Persist minted Nous OAuth credentials as the singleton provider state
     and ensure the credential pool is in sync.
 
@@ -2183,14 +2187,25 @@ def persist_nous_credentials(creds: Dict[str, Any]):
     entry from the singleton.  Re-running login upserts the same entry in
     place; the pool never accumulates duplicate device_code rows.
 
+    ``label`` is an optional user-chosen display name (from
+    ``hermes auth add nous --label <name>``).  It gets embedded in the
+    singleton state so that ``_seed_from_singletons`` uses it as the pool
+    entry's label on every subsequent ``load_pool("nous")`` instead of the
+    auto-derived token fingerprint.  When ``None``, the auto-derived label
+    via ``label_from_token`` is used (unchanged default behaviour).
+
     Returns the upserted :class:`PooledCredential` entry (or ``None`` if
     seeding somehow produced no match — shouldn't happen).
     """
     from agent.credential_pool import load_pool
 
+    state = dict(creds)
+    if label and str(label).strip():
+        state["label"] = str(label).strip()
+
     with _auth_store_lock():
         auth_store = _load_auth_store()
-        _save_provider_state(auth_store, "nous", creds)
+        _save_provider_state(auth_store, "nous", state)
         _save_auth_store(auth_store)
 
     pool = load_pool("nous")

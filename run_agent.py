@@ -37,7 +37,7 @@ import time
 import threading
 from types import SimpleNamespace
 import uuid
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Mapping
 from openai import OpenAI
 import fire
 from datetime import datetime
@@ -78,6 +78,21 @@ from hermes_constants import OPENROUTER_BASE_URL
 from agent.memory_manager import build_memory_context_block
 from agent.retry_utils import jittered_backoff
 from agent.error_classifier import classify_api_error, FailoverReason
+from agent.run_state_store import RunStateStore
+from agent.runtime_events import (
+    ARTIFACT_CREATED,
+    FINAL_RESPONSE_DELIVERED,
+    INTERRUPTION_CREATED,
+    INTERRUPTION_RESUMED,
+    STEP_COMPLETED,
+    STEP_FAILED,
+    STEP_STARTED,
+    TOOL_CALL_COMPLETED,
+    TOOL_CALL_FAILED,
+    TOOL_CALL_STARTED,
+    make_event,
+)
+from agent.runtime_types import ArtifactRecord, InterruptionRecord, RunRecord, RunStepRecord
 from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY, PLATFORM_HINTS,
     MEMORY_GUIDANCE, SESSION_SEARCH_GUIDANCE, SKILLS_GUIDANCE,
@@ -1091,6 +1106,9 @@ class AIAgent:
         
         # SQLite session store (optional -- provided by CLI or gateway)
         self._session_db = session_db
+        self._runtime_store = RunStateStore(session_db) if session_db else None
+        self._active_run_id = None
+        self._runtime_step_index = 0
         self._parent_session_id = parent_session_id
         self._last_flushed_db_idx = 0  # tracks DB-write cursor to prevent duplicate writes
         if self._session_db:
@@ -2029,6 +2047,159 @@ class AIAgent:
             marker in assistant_text for marker in workspace_markers
         )
         return (user_targets_workspace or assistant_targets_workspace) and assistant_mentions_action
+
+    def _extract_reply_context_text(self, reply_context: Any = None) -> str:
+        """Extract replied-to text from platform reply metadata when available."""
+        if isinstance(reply_context, str):
+            return reply_context.strip()
+        if not isinstance(reply_context, Mapping):
+            return ""
+
+        candidates = [
+            reply_context.get("reply_to_text"),
+            reply_context.get("text"),
+            reply_context.get("caption"),
+        ]
+
+        raw_message = reply_context.get("raw_message")
+        if raw_message is not None:
+            candidates.extend([
+                getattr(raw_message, "text", None),
+                getattr(raw_message, "caption", None),
+            ])
+            nested = getattr(raw_message, "reply_to_message", None)
+            if nested is not None:
+                candidates.extend([
+                    getattr(nested, "text", None),
+                    getattr(nested, "caption", None),
+                ])
+
+        for candidate in candidates:
+            if isinstance(candidate, str) and candidate.strip():
+                return candidate.strip()
+        return ""
+
+    def _reply_context_suggests_continuation(
+        self,
+        user_message: str,
+        reply_context: Any = None,
+    ) -> bool:
+        """Use reply metadata to bias short reply turns toward continuation."""
+        text = (user_message or "").strip()
+        if not text or len(text) > 32:
+            return False
+
+        reply_text = self._extract_reply_context_text(reply_context).lower()
+        if not reply_text:
+            return False
+
+        task_markers = (
+            "请", "帮我", "帮我", "麻烦", "需要你", "你来", "继续", "修复", "排查", "检查",
+            "分析", "实现", "处理", "修改", "补测", "测试", "回归", "收口", "提交",
+            "实现", "完成", "调查", "review", "fix", "debug", "investigate", "analyze",
+            "implement", "update", "modify", "patch", "test", "regression", "verify",
+            "continue", "resume", "finish", "complete",
+        )
+        format_markers = (
+            "输出要求", "约束", "背景", "context", "requirements", "requirement",
+            "task:", "任务", "请你", "请按", "只在", "优先", "不要修改",
+        )
+        return any(marker in reply_text for marker in task_markers) and any(
+            marker in reply_text for marker in format_markers
+        )
+
+    def _is_continuation_request(self, user_message: str, reply_context: Any = None) -> bool:
+        """Return True when the user is asking us to continue prior execution.
+
+        This intentionally matches terse follow-up commands such as
+        "继续做", "接着上次", "再自己修", "继续回归测试", and English variants like
+        "continue" / "keep going". These messages often arrive after context
+        compression or session resume, where relying on free-form summary text
+        alone makes continuation fragile.
+
+        When the message is a short reply to an earlier task instruction/template,
+        reply metadata can also signal continuation intent even if the new text is
+        terse by itself.
+        """
+        text = (user_message or "").strip().lower()
+        if not text:
+            return False
+
+        direct_patterns = (
+            r"^继续(?:做|干|处理|推进|执行|修|改|查|看|测|测试|回归测试|收口)?$",
+            r"^接着(?:做|干|处理|推进|执行|修|改|查|看|测|测试|回归测试|收口|上次)?$",
+            r"^接着上次(?:做|继续|推进|处理)?$",
+            r"^继续上次(?:做|继续|推进|处理)?$",
+            r"^再自己(?:做|修|改|查|看|测|测试|回归测试|收口).*$",
+            r"^继续.*回归测试.*$",
+            r"^继续.*收口.*$",
+            r"^continue(?: working| with it| on it)?$",
+            r"^keep going(?: on it)?$",
+            r"^go on$",
+            r"^resume(?: work)?$",
+        )
+        if any(re.match(pattern, text) for pattern in direct_patterns):
+            return True
+
+        keyword_hits = [
+            "继续", "接着", "上次", "再自己", "回归测试", "收口",
+            "continue", "keep going", "resume",
+        ]
+        if any(token in text for token in keyword_hits):
+            return True
+
+        return self._reply_context_suggests_continuation(user_message, reply_context)
+
+    def _build_continuation_user_message(self, user_message: str, reply_context: Any = None) -> str:
+        """Strengthen terse continuation requests with structured task state.
+
+        We only augment API-facing input when the user is clearly asking to
+        continue and we have unfinished todo items. The persisted transcript
+        keeps the original user wording, while the live model gets an explicit
+        reminder to resume execution instead of replying with a generic ack.
+        """
+        if not self._is_continuation_request(user_message, reply_context=reply_context):
+            return user_message
+
+        if not getattr(self, "_todo_store", None) or not self._todo_store.has_items():
+            return user_message
+
+        snapshot = self._todo_store.format_for_injection()
+        if not snapshot:
+            return user_message
+
+        pending = []
+        in_progress = []
+        completed = 0
+        for item in getattr(self._todo_store, "_items", []) or []:
+            if not isinstance(item, dict):
+                continue
+            status = str(item.get("status") or "").strip().lower()
+            content = str(item.get("content") or "").strip()
+            if not content:
+                continue
+            if status == "in_progress":
+                in_progress.append(content)
+            elif status == "pending":
+                pending.append(content)
+            elif status == "completed":
+                completed += 1
+
+        focus_items = in_progress or pending
+        focus_block = "\n".join(f"- {content}" for content in focus_items[:5]) or "- No unfinished todo content available"
+
+        return (
+            f"{user_message}\n\n"
+            "[Continuation intent detected]\n"
+            "The user is asking you to continue prior execution, not to restate the plan.\n"
+            "Resume from unfinished work immediately. Prefer taking the next concrete action/tool call over giving a generic acknowledgement.\n"
+            "If the unfinished work is in validation, regression testing, or final closure, do that first and report the result.\n"
+            f"Completed todo items already recorded: {completed}\n"
+            "Highest-priority unfinished todo items:\n"
+            f"{focus_block}\n\n"
+            "Recovered todo state:\n"
+            f"{snapshot}"
+        )
     
     
     def _extract_reasoning(self, assistant_message) -> Optional[str]:
@@ -2579,7 +2750,54 @@ class AIAgent:
             return
         
         trajectory = self._convert_to_trajectory_format(messages, user_query, completed)
-        _save_trajectory_to_file(trajectory, self.model, completed)
+        trajectory_path = _save_trajectory_to_file(trajectory, self.model, completed)
+        self._runtime_register_artifact(
+            artifact_type="trajectory",
+            path_or_ref=trajectory_path,
+            produced_by="assistant",
+            purpose="conversation_trajectory",
+            is_final=completed,
+            delivered=False,
+        )
+
+    def _runtime_register_artifact(
+        self,
+        *,
+        artifact_type: str,
+        path_or_ref: Optional[str],
+        produced_by: Optional[str],
+        purpose: Optional[str],
+        is_final: bool,
+        delivered: bool,
+        step_id: Optional[str] = None,
+    ) -> None:
+        if not self._runtime_store or not self._active_run_id or not path_or_ref:
+            return
+        try:
+            record = ArtifactRecord.create(
+                run_id=self._active_run_id,
+                step_id=step_id,
+                artifact_type=artifact_type,
+                path_or_ref=path_or_ref,
+                produced_by=produced_by,
+                purpose=purpose,
+                is_final=is_final,
+                delivered=delivered,
+            )
+            self._runtime_store.create_artifact(record)
+            self._runtime_append_event(
+                ARTIFACT_CREATED,
+                step_id=step_id,
+                artifact_id=record.id,
+                artifact_type=artifact_type,
+                path_or_ref=path_or_ref,
+                produced_by=produced_by,
+                purpose=purpose,
+                is_final=is_final,
+                delivered=delivered,
+            )
+        except Exception as exc:
+            logger.debug("Failed to register runtime artifact %s: %s", artifact_type, exc)
     
     @staticmethod
     def _summarize_api_error(error: Exception) -> str:
@@ -5064,7 +5282,6 @@ class AIAgent:
             stream_kwargs = {
                 **api_kwargs,
                 "stream": True,
-                "stream_options": {"include_usage": True},
                 "timeout": _httpx.Timeout(
                     connect=30.0,
                     read=_stream_read_timeout,
@@ -5072,6 +5289,8 @@ class AIAgent:
                     pool=30.0,
                 ),
             }
+            if not is_local_endpoint(getattr(self, "base_url", "") or ""):
+                stream_kwargs["stream_options"] = {"include_usage": True}
             request_client_holder["client"] = self._create_request_openai_client(
                 reason="chat_completion_stream_request"
             )
@@ -6889,7 +7108,7 @@ class AIAgent:
             self._executing_tools = False
 
     def _invoke_tool(self, function_name: str, function_args: dict, effective_task_id: str,
-                     tool_call_id: Optional[str] = None) -> str:
+                     tool_call_id: Optional[str] = None, step_id: Optional[str] = None) -> str:
         """Invoke a single tool and return the result string. No display logic.
 
         Handles both agent-level tools (todo, memory, etc.) and registry-dispatched
@@ -6967,13 +7186,22 @@ class AIAgent:
                 parent_agent=self,
             )
         else:
-            return handle_function_call(
-                function_name, function_args, effective_task_id,
-                tool_call_id=tool_call_id,
-                session_id=self.session_id or "",
-                enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
-                skip_pre_tool_call_hook=True,
-            )
+            hook_tokens = self._runtime_bind_approval_hooks(step_id)
+            try:
+                return handle_function_call(
+                    function_name, function_args, effective_task_id,
+                    tool_call_id=tool_call_id,
+                    session_id=self.session_id or "",
+                    enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
+                    skip_pre_tool_call_hook=True,
+                )
+            finally:
+                if hook_tokens:
+                    try:
+                        from tools.approval import reset_runtime_interruption_hooks
+                        reset_runtime_interruption_hooks(hook_tokens)
+                    except Exception as exc:
+                        logger.debug("Failed to reset runtime approval hooks: %s", exc)
 
     def _execute_tool_calls_concurrent(self, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
         """Execute multiple tool calls concurrently using a thread pool.
@@ -7065,6 +7293,20 @@ class AIAgent:
                 except Exception as cb_err:
                     logging.debug(f"Tool start callback error: {cb_err}")
 
+        runtime_steps = [None] * num_tools
+        for i, (tc, name, args) in enumerate(parsed_calls):
+            runtime_steps[i] = self._runtime_start_step(
+                "tool_execution",
+                input_summary=json.dumps(args, ensure_ascii=False),
+                tool_name=name,
+            )
+            self._runtime_append_event(
+                TOOL_CALL_STARTED,
+                step_id=runtime_steps[i],
+                tool_name=name,
+                tool_call_id=tc.id,
+            )
+
         # ── Concurrent execution ─────────────────────────────────────────
         # Each slot holds (function_name, function_args, function_result, duration, error_flag)
         results = [None] * num_tools
@@ -7073,7 +7315,13 @@ class AIAgent:
             """Worker function executed in a thread."""
             start = time.time()
             try:
-                result = self._invoke_tool(function_name, function_args, effective_task_id, tool_call.id)
+                result = self._invoke_tool(
+                    function_name,
+                    function_args,
+                    effective_task_id,
+                    tool_call.id,
+                    step_id=runtime_steps[index],
+                )
             except Exception as tool_error:
                 result = f"Error executing tool '{function_name}': {tool_error}"
                 logger.error("_invoke_tool raised for %s: %s", function_name, tool_error, exc_info=True)
@@ -7122,6 +7370,20 @@ class AIAgent:
                 if is_error:
                     result_preview = function_result[:200] if len(function_result) > 200 else function_result
                     logger.warning("Tool %s returned error (%.2fs): %s", function_name, tool_duration, result_preview)
+                self._runtime_append_event(
+                    TOOL_CALL_FAILED if is_error else TOOL_CALL_COMPLETED,
+                    step_id=runtime_steps[i],
+                    tool_name=function_name,
+                    tool_call_id=tc.id,
+                    duration_seconds=tool_duration,
+                )
+                self._runtime_finish_step(
+                    runtime_steps[i],
+                    status="failed" if is_error else "completed",
+                    output_summary=function_result,
+                    error=function_result if is_error else None,
+                    tool_name=function_name,
+                )
 
                 if self.tool_progress_callback:
                     try:
@@ -7268,6 +7530,18 @@ class AIAgent:
                 except Exception as cb_err:
                     logging.debug(f"Tool start callback error: {cb_err}")
 
+            tool_step_id = self._runtime_start_step(
+                "tool_execution",
+                input_summary=json.dumps(function_args, ensure_ascii=False),
+                tool_name=function_name,
+            )
+            self._runtime_append_event(
+                TOOL_CALL_STARTED,
+                step_id=tool_step_id,
+                tool_name=function_name,
+                tool_call_id=tool_call.id,
+            )
+
             # Checkpoint: snapshot working dir before file-mutating tools
             if _block_msg is None and function_name in ("write_file", "patch") and self._checkpoint_mgr.enabled:
                 try:
@@ -7338,11 +7612,31 @@ class AIAgent:
                     self._vprint(f"  {_get_cute_tool_message_impl('memory', function_args, tool_duration, result=function_result)}")
             elif function_name == "clarify":
                 from tools.clarify_tool import clarify_tool as _clarify_tool
-                function_result = _clarify_tool(
-                    question=function_args.get("question", ""),
-                    choices=function_args.get("choices"),
-                    callback=self.clarify_callback,
+                clarify_interruption_id = self._runtime_open_interruption(
+                    reason_type="waiting_user",
+                    waiting_on="clarify",
+                    state="waiting_human",
+                    next_step="request_clarification",
+                    step_id=tool_step_id,
+                    snapshot={
+                        "question": function_args.get("question", ""),
+                        "choices": function_args.get("choices"),
+                        "tool_call_id": tool_call.id,
+                    },
                 )
+                try:
+                    function_result = _clarify_tool(
+                        question=function_args.get("question", ""),
+                        choices=function_args.get("choices"),
+                        callback=self.clarify_callback,
+                    )
+                finally:
+                    self._runtime_resume_interruption(
+                        clarify_interruption_id,
+                        state="executing",
+                        next_step="run_again",
+                        step_id=tool_step_id,
+                    )
                 tool_duration = time.time() - tool_start_time
                 if self._should_emit_quiet_tool_messages():
                     self._vprint(f"  {_get_cute_tool_message_impl('clarify', function_args, tool_duration, result=function_result)}")
@@ -7436,13 +7730,22 @@ class AIAgent:
                     spinner.start()
                 _spinner_result = None
                 try:
-                    function_result = handle_function_call(
-                        function_name, function_args, effective_task_id,
-                        tool_call_id=tool_call.id,
-                        session_id=self.session_id or "",
-                        enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
-                        skip_pre_tool_call_hook=True,
-                    )
+                    hook_tokens = self._runtime_bind_approval_hooks(tool_step_id)
+                    try:
+                        function_result = handle_function_call(
+                            function_name, function_args, effective_task_id,
+                            tool_call_id=tool_call.id,
+                            session_id=self.session_id or "",
+                            enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
+                            skip_pre_tool_call_hook=True,
+                        )
+                    finally:
+                        if hook_tokens:
+                            try:
+                                from tools.approval import reset_runtime_interruption_hooks
+                                reset_runtime_interruption_hooks(hook_tokens)
+                            except Exception as exc:
+                                logger.debug("Failed to reset runtime approval hooks: %s", exc)
                     _spinner_result = function_result
                 except Exception as tool_error:
                     function_result = f"Error executing tool '{function_name}': {tool_error}"
@@ -7456,13 +7759,22 @@ class AIAgent:
                         self._vprint(f"  {cute_msg}")
             else:
                 try:
-                    function_result = handle_function_call(
-                        function_name, function_args, effective_task_id,
-                        tool_call_id=tool_call.id,
-                        session_id=self.session_id or "",
-                        enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
-                        skip_pre_tool_call_hook=True,
-                    )
+                    hook_tokens = self._runtime_bind_approval_hooks(tool_step_id)
+                    try:
+                        function_result = handle_function_call(
+                            function_name, function_args, effective_task_id,
+                            tool_call_id=tool_call.id,
+                            session_id=self.session_id or "",
+                            enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
+                            skip_pre_tool_call_hook=True,
+                        )
+                    finally:
+                        if hook_tokens:
+                            try:
+                                from tools.approval import reset_runtime_interruption_hooks
+                                reset_runtime_interruption_hooks(hook_tokens)
+                            except Exception as exc:
+                                logger.debug("Failed to reset runtime approval hooks: %s", exc)
                 except Exception as tool_error:
                     function_result = f"Error executing tool '{function_name}': {tool_error}"
                     logger.error("handle_function_call raised for %s: %s", function_name, tool_error, exc_info=True)
@@ -7479,6 +7791,21 @@ class AIAgent:
                 logger.warning("Tool %s returned error (%.2fs): %s", function_name, tool_duration, result_preview)
             else:
                 logger.info("tool %s completed (%.2fs, %d chars)", function_name, tool_duration, len(function_result))
+
+            self._runtime_append_event(
+                TOOL_CALL_FAILED if _is_error_result else TOOL_CALL_COMPLETED,
+                step_id=tool_step_id,
+                tool_name=function_name,
+                tool_call_id=tool_call.id,
+                duration_seconds=tool_duration,
+            )
+            self._runtime_finish_step(
+                tool_step_id,
+                status="failed" if _is_error_result else "completed",
+                output_summary=function_result,
+                error=function_result if _is_error_result else None,
+                tool_name=function_name,
+            )
 
             if self.tool_progress_callback:
                 try:
@@ -7742,6 +8069,240 @@ class AIAgent:
 
         return final_response
 
+    def _runtime_start_turn(self, user_message: str, effective_task_id: str) -> None:
+        if not self._runtime_store:
+            return
+        try:
+            record = RunRecord.create(
+                session_id=self.session_id,
+                parent_run_id=None,
+                source=self.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
+                user_intent=user_message[:2000] if isinstance(user_message, str) else None,
+                state="intake",
+                next_step="run_again",
+                metadata={"task_id": effective_task_id},
+            )
+            self._runtime_store.create_run(record)
+            self._active_run_id = record.id
+            self._runtime_step_index = 0
+            self._runtime_store.update_run_state(
+                record.id,
+                state="executing",
+                next_step="run_again",
+            )
+        except Exception as exc:
+            logger.debug("Failed to start runtime turn: %s", exc)
+            self._active_run_id = None
+
+    def _runtime_append_event(self, event_type: str, *, step_id: Optional[str] = None, **payload: Any) -> None:
+        if not self._runtime_store or not self._active_run_id:
+            return
+        try:
+            self._runtime_store.append_event(
+                make_event(
+                    run_id=self._active_run_id,
+                    step_id=step_id,
+                    event_type=event_type,
+                    **payload,
+                )
+            )
+        except Exception as exc:
+            logger.debug("Failed to append runtime event %s: %s", event_type, exc)
+
+    def _runtime_start_step(
+        self,
+        step_type: str,
+        *,
+        input_summary: Optional[str] = None,
+        tool_name: Optional[str] = None,
+    ) -> Optional[str]:
+        if not self._runtime_store or not self._active_run_id:
+            return None
+        try:
+            self._runtime_step_index += 1
+            record = RunStepRecord.create(
+                run_id=self._active_run_id,
+                step_index=self._runtime_step_index,
+                step_type=step_type,
+                status="started",
+                input_summary=input_summary[:2000] if isinstance(input_summary, str) else input_summary,
+                tool_name=tool_name,
+            )
+            self._runtime_store.create_step(record)
+            self._runtime_append_event(
+                STEP_STARTED,
+                step_id=record.id,
+                step_type=step_type,
+                tool_name=tool_name,
+            )
+            return record.id
+        except Exception as exc:
+            logger.debug("Failed to start runtime step %s: %s", step_type, exc)
+            return None
+
+    def _runtime_finish_step(
+        self,
+        step_id: Optional[str],
+        *,
+        status: str,
+        output_summary: Optional[str] = None,
+        error: Optional[str] = None,
+        tool_name: Optional[str] = None,
+    ) -> None:
+        if not self._runtime_store or not self._active_run_id or not step_id:
+            return
+        try:
+            self._runtime_store.finish_step(
+                step_id,
+                status=status,
+                output_summary=output_summary[:2000] if isinstance(output_summary, str) else output_summary,
+                error=error[:2000] if isinstance(error, str) else error,
+            )
+            self._runtime_append_event(
+                STEP_COMPLETED if status == "completed" else STEP_FAILED,
+                step_id=step_id,
+                status=status,
+                tool_name=tool_name,
+                error=error,
+            )
+        except Exception as exc:
+            logger.debug("Failed to finish runtime step %s: %s", step_id, exc)
+
+    def _runtime_open_interruption(
+        self,
+        *,
+        reason_type: str,
+        waiting_on: Optional[str],
+        state: str,
+        next_step: str,
+        step_id: Optional[str] = None,
+        snapshot: Optional[dict[str, Any]] = None,
+        resumable: bool = True,
+    ) -> Optional[str]:
+        if not self._runtime_store or not self._active_run_id:
+            return None
+        try:
+            record = InterruptionRecord.create(
+                run_id=self._active_run_id,
+                step_id=step_id,
+                reason_type=reason_type,
+                waiting_on=waiting_on,
+                snapshot=snapshot or {},
+                resumable=resumable,
+            )
+            self._runtime_store.create_interruption(record)
+            self._runtime_store.update_run_state(
+                self._active_run_id,
+                state=state,
+                next_step=next_step,
+            )
+            self._runtime_append_event(
+                INTERRUPTION_CREATED,
+                step_id=step_id,
+                interruption_id=record.id,
+                reason_type=reason_type,
+                waiting_on=waiting_on,
+                state=state,
+            )
+            return record.id
+        except Exception as exc:
+            logger.debug("Failed to open runtime interruption: %s", exc)
+            return None
+
+    def _runtime_resume_interruption(
+        self,
+        interruption_id: Optional[str],
+        *,
+        state: str = "executing",
+        next_step: str = "run_again",
+        step_id: Optional[str] = None,
+    ) -> None:
+        if not self._runtime_store or not self._active_run_id or not interruption_id:
+            return
+        try:
+            self._runtime_store.resume_interruption(interruption_id)
+            self._runtime_store.update_run_state(
+                self._active_run_id,
+                state=state,
+                next_step=next_step,
+            )
+            self._runtime_append_event(
+                INTERRUPTION_RESUMED,
+                step_id=step_id,
+                interruption_id=interruption_id,
+                state=state,
+            )
+        except Exception as exc:
+            logger.debug("Failed to resume runtime interruption %s: %s", interruption_id, exc)
+
+    def _runtime_bind_approval_hooks(self, step_id: Optional[str]):
+        try:
+            from tools.approval import set_runtime_interruption_hooks
+
+            return set_runtime_interruption_hooks(
+                open_hook=lambda **kwargs: self._runtime_open_interruption(step_id=step_id, **kwargs),
+                resume_hook=lambda interruption_id, **kwargs: self._runtime_resume_interruption(
+                    interruption_id,
+                    step_id=step_id,
+                    **kwargs,
+                ),
+            )
+        except Exception as exc:
+            logger.debug("Failed to bind runtime approval hooks: %s", exc)
+            return None
+
+    def _runtime_mark_waiting_for_tool(self) -> None:
+        if not self._runtime_store or not self._active_run_id:
+            return
+        try:
+            self._runtime_store.update_run_state(
+                self._active_run_id,
+                state="waiting_tool",
+                next_step="call_tool",
+            )
+        except Exception as exc:
+            logger.debug("Failed to mark runtime waiting_tool: %s", exc)
+
+    def _runtime_finish_turn(self, *, final_response: Optional[str], completed: bool, interrupted: bool) -> None:
+        if not self._runtime_store or not self._active_run_id:
+            return
+        try:
+            if final_response:
+                finalization_step_id = self._runtime_start_step(
+                    "finalization",
+                    input_summary="deliver final response",
+                )
+                self._runtime_append_event(
+                    FINAL_RESPONSE_DELIVERED,
+                    step_id=finalization_step_id,
+                    response_preview=final_response[:500],
+                    response_length=len(final_response),
+                )
+                self._runtime_finish_step(
+                    finalization_step_id,
+                    status="completed",
+                    output_summary=final_response,
+                )
+            if interrupted:
+                final_status = "cancelled"
+                state = "cancelled"
+            elif completed or final_response:
+                final_status = "completed"
+                state = "completed"
+            else:
+                final_status = "failed"
+                state = "failed"
+            self._runtime_store.finish_run(
+                self._active_run_id,
+                final_status=final_status,
+                state=state,
+            )
+        except Exception as exc:
+            logger.debug("Failed to finish runtime turn: %s", exc)
+        finally:
+            self._active_run_id = None
+            self._runtime_step_index = 0
+
     def run_conversation(
         self,
         user_message: str,
@@ -7798,6 +8359,7 @@ class AIAgent:
         self._persist_user_message_override = persist_user_message
         # Generate unique task_id if not provided to isolate VMs between concurrent tasks
         effective_task_id = task_id or str(uuid.uuid4())
+        self._runtime_start_turn(user_message, effective_task_id)
         
         # Reset retry counters and iteration budget at the start of each turn
         # so subagent usage from a previous turn doesn't eat into the next one.
@@ -7864,6 +8426,30 @@ class AIAgent:
 
         # Preserve the original user message (no nudge injection).
         original_user_message = persist_user_message if persist_user_message is not None else user_message
+
+        reply_context: Any = None
+        if self.platform and self.platform != "cli":
+            reply_context = {
+                "reply_to_text": None,
+                "reply_to_message_id": None,
+                "raw_message": None,
+            }
+            raw_message = os.environ.get("HERMES_REPLY_TO_RAW_MESSAGE")
+            if raw_message:
+                try:
+                    reply_context.update(json.loads(raw_message))
+                except Exception:
+                    reply_context = {"reply_to_text": raw_message}
+            reply_text = os.environ.get("HERMES_REPLY_TO_TEXT")
+            if reply_text:
+                reply_context["reply_to_text"] = reply_text
+            reply_message_id = os.environ.get("HERMES_REPLY_TO_MESSAGE_ID")
+            if reply_message_id:
+                reply_context["reply_to_message_id"] = reply_message_id
+
+        # Strengthen terse continuation/resume requests for the live model call
+        # only. Persisted transcript stays as the user's exact wording.
+        user_message = self._build_continuation_user_message(user_message, reply_context=reply_context)
 
         # Track memory nudge trigger (turn-based, checked here).
         # Skill trigger is checked AFTER the agent loop completes, based on
@@ -8440,6 +9026,27 @@ class AIAgent:
                                 error_details.append("response.choices is None")
                             else:
                                 error_details.append("response.choices is empty")
+                        else:
+                            _choice0 = response.choices[0]
+                            _msg0 = getattr(_choice0, "message", None)
+                            _finish0 = getattr(_choice0, "finish_reason", None)
+                            _content0 = getattr(_msg0, "content", None) if _msg0 is not None else None
+                            _tool_calls0 = getattr(_msg0, "tool_calls", None) if _msg0 is not None else None
+                            _reasoning0 = self._extract_reasoning(_msg0) if _msg0 is not None else None
+                            _stripped0 = self._strip_think_blocks(_content0 or "").strip()
+                            _is_local_empty_stop = (
+                                self.api_mode == "chat_completions"
+                                and is_local_endpoint(getattr(self, "base_url", "") or "")
+                                and _finish0 == "stop"
+                                and not _tool_calls0
+                                and not _stripped0
+                                and not _reasoning0
+                            )
+                            if _is_local_empty_stop:
+                                response_invalid = True
+                                error_details.append(
+                                    "local chat.completions returned empty stop response"
+                                )
 
                     if response_invalid:
                         # Stop spinner before printing error messages
@@ -8544,8 +9151,22 @@ class AIAgent:
                                 "failed": True  # Mark as failure for filtering
                             }
                         
-                        # Backoff before retry — jittered exponential: 5s base, 120s cap
-                        wait_time = jittered_backoff(retry_count, base_delay=5.0, max_delay=120.0)
+                        # Backoff before retry — jittered exponential by default.
+                        # For deterministic invalid local/custom empty-stop responses,
+                        # retry quickly instead of sleeping for long rate-limit style
+                        # delays; these are usually formatting/runtime defects, not a
+                        # transient upstream quota issue.
+                        _fast_invalid_local_retry = any(
+                            "empty stop response" in detail.lower()
+                            for detail in error_details
+                        ) and (
+                            (self._base_url_lower.startswith("http://127.0.0.1") or self._base_url_lower.startswith("http://localhost"))
+                            or (self.provider in {None, "custom", "local"})
+                        )
+                        if _fast_invalid_local_retry:
+                            wait_time = min(0.25 * retry_count, 0.5)
+                        else:
+                            wait_time = jittered_backoff(retry_count, base_delay=5.0, max_delay=120.0)
                         self._vprint(f"{self.log_prefix}⏳ Retrying in {wait_time:.1f}s ({_failure_hint})...", force=True)
                         logging.warning(f"Invalid API response (retry {retry_count}/{max_retries}): {', '.join(error_details)} | Provider: {provider_name}")
                         
@@ -9830,7 +10451,17 @@ class AIAgent:
                     self._codex_incomplete_retries = 0
                 
                 # Check for tool calls
+                model_step_id = self._runtime_start_step(
+                    "model_call",
+                    input_summary=f"api_call={api_call_count}",
+                )
                 if assistant_message.tool_calls:
+                    self._runtime_finish_step(
+                        model_step_id,
+                        status="completed",
+                        output_summary=f"{len(assistant_message.tool_calls)} tool call(s)",
+                    )
+                    self._runtime_mark_waiting_for_tool()
                     if not self.quiet_mode:
                         self._vprint(f"{self.log_prefix}🔧 Processing {len(assistant_message.tool_calls)} tool call(s)...")
                     
@@ -10151,6 +10782,11 @@ class AIAgent:
                     continue
                 
                 else:
+                    self._runtime_finish_step(
+                        model_step_id,
+                        status="completed",
+                        output_summary="final response",
+                    )
                     # No tool calls - this is the final response
                     final_response = assistant_message.content or ""
                     
@@ -10546,6 +11182,11 @@ class AIAgent:
                 break
 
         # Build result with interrupt info if applicable
+        self._runtime_finish_turn(
+            final_response=final_response,
+            completed=completed,
+            interrupted=interrupted,
+        )
         result = {
             "final_response": final_response,
             "last_reasoning": last_reasoning,

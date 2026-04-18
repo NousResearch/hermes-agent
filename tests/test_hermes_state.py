@@ -588,9 +588,260 @@ class TestDeleteAndExport:
         assert isinstance(export, dict)
         assert export["source"] == "cli"
         assert len(export["messages"]) == 2
+        assert export["runtime"] == {
+            "runs": [],
+            "run_steps": [],
+            "run_events": [],
+            "interruptions": [],
+            "delegations": [],
+            "artifacts": [],
+        }
 
-    def test_export_nonexistent(self, db):
+    def test_export_session_includes_runtime_rows(self, db):
+        from agent.run_state_store import RunStateStore
+        from agent.runtime_types import ArtifactRecord, RunRecord
+
+        db.create_session(session_id="s1", source="cli", model="test")
+        db.append_message("s1", role="user", content="Hello")
+        store = RunStateStore(db)
+        run = RunRecord.create(
+            session_id="s1",
+            parent_run_id=None,
+            source="cli",
+            user_intent="export runtime",
+            state="completed",
+            next_step=None,
+            final_status="completed",
+        )
+        store.create_run(run)
+        artifact = ArtifactRecord.create(
+            run_id=run.id,
+            step_id=None,
+            artifact_type="trajectory",
+            path_or_ref="trajectory_samples.jsonl",
+            produced_by="assistant",
+            purpose="conversation_trajectory",
+            is_final=True,
+            delivered=False,
+        )
+        store.create_artifact(artifact)
+
+        export = db.export_session("s1")
+        assert export["runtime"]["runs"][0]["id"] == run.id
+        assert export["runtime"]["artifacts"][0]["path_or_ref"] == "trajectory_samples.jsonl"
+
+    def test_list_runs_for_session_returns_runtime_summary(self, db):
+        from agent.run_state_store import RunStateStore
+        from agent.runtime_types import RunEventRecord, RunRecord, RunStepRecord
+
+        db.create_session(session_id="s1", source="cli", model="test")
+        store = RunStateStore(db)
+        run = RunRecord.create(
+            session_id="s1",
+            parent_run_id=None,
+            source="cli",
+            user_intent="inspect runtime",
+            state="completed",
+            next_step="finalize",
+            final_status="completed",
+            metadata={"origin": "test"},
+        )
+        store.create_run(run)
+        step = RunStepRecord.create(
+            run_id=run.id,
+            step_index=0,
+            step_type="model_call",
+            status="completed",
+            output_summary="done",
+        )
+        store.create_step(step)
+        event = RunEventRecord.create(
+            run_id=run.id,
+            step_id=step.id,
+            event_type="FinalResponseDelivered",
+            payload={"preview": "ok"},
+        )
+        store.append_event(event)
+
+        runs = db.list_runs_for_session("s1")
+
+        assert len(runs) == 1
+        assert runs[0]["id"] == run.id
+        assert runs[0]["metadata"] == {"origin": "test"}
+        assert runs[0]["step_count"] == 1
+        assert runs[0]["event_count"] == 1
+        assert runs[0]["artifact_count"] == 0
+
+    def test_get_run_timeline_returns_enriched_events(self, db):
+        from agent.run_state_store import RunStateStore
+        from agent.runtime_types import RunEventRecord, RunRecord, RunStepRecord
+
+        db.create_session(session_id="s1", source="cli", model="test")
+        store = RunStateStore(db)
+        run = RunRecord.create(
+            session_id="s1",
+            parent_run_id=None,
+            source="cli",
+            user_intent="timeline runtime",
+            state="completed",
+            next_step=None,
+            final_status="completed",
+        )
+        store.create_run(run)
+        step = RunStepRecord.create(
+            run_id=run.id,
+            step_index=3,
+            step_type="tool_execution",
+            status="completed",
+            tool_name="web_search",
+        )
+        store.create_step(step)
+        event = RunEventRecord.create(
+            run_id=run.id,
+            step_id=step.id,
+            event_type="ToolCallCompleted",
+            payload={"tool_name": "web_search", "result": "ok"},
+        )
+        store.append_event(event)
+
+        timeline = db.get_run_timeline(run.id)
+
+        assert timeline is not None
+        assert timeline["run"]["id"] == run.id
+        assert len(timeline["timeline"]) == 1
+        assert timeline["timeline"][0]["event_type"] == "ToolCallCompleted"
+        assert timeline["timeline"][0]["step_id"] == step.id
+        assert timeline["timeline"][0]["step_index"] == 3
+        assert timeline["timeline"][0]["step_type"] == "tool_execution"
+        assert timeline["timeline"][0]["tool_name"] == "web_search"
+        assert timeline["timeline"][0]["payload"] == {"tool_name": "web_search", "result": "ok"}
+
+    def test_get_run_returns_full_runtime_detail(self, db):
+        from agent.run_state_store import RunStateStore
+        from agent.runtime_types import (
+            ArtifactRecord,
+            DelegationRecord,
+            InterruptionRecord,
+            RunEventRecord,
+            RunRecord,
+            RunStepRecord,
+        )
+
+        db.create_session(session_id="s1", source="cli", model="test")
+        db.append_message("s1", role="user", content="hello")
+        store = RunStateStore(db)
+        run = RunRecord.create(
+            session_id="s1",
+            parent_run_id=None,
+            source="cli",
+            user_intent="full runtime detail",
+            state="completed",
+            next_step=None,
+            final_status="completed",
+            metadata={"origin": "test"},
+        )
+        store.create_run(run)
+        step = RunStepRecord.create(
+            run_id=run.id,
+            step_index=1,
+            step_type="tool_execution",
+            status="completed",
+            tool_name="web_search",
+        )
+        store.create_step(step)
+        event = RunEventRecord.create(
+            run_id=run.id,
+            step_id=step.id,
+            event_type="ToolCallCompleted",
+            payload={"tool_name": "web_search", "result": "ok"},
+        )
+        store.append_event(event)
+        interruption = InterruptionRecord.create(
+            run_id=run.id,
+            step_id=step.id,
+            reason_type="waiting_user",
+            waiting_on="clarify",
+            snapshot={"question": "go?", "state": "waiting_human", "next_step": "request_clarification"},
+            resumable=True,
+            status="open",
+        )
+        store.create_interruption(interruption)
+        delegation = DelegationRecord.create(
+            parent_run_id=run.id,
+            child_session_id="child-1",
+            goal="research",
+            context_summary="ctx",
+            allowed_toolsets=["web"],
+            side_effect_policy=None,
+            status="completed",
+            expected_output_type="summary",
+            verification_status="verified",
+        )
+        store.create_delegation(delegation)
+        artifact = ArtifactRecord.create(
+            run_id=run.id,
+            step_id=step.id,
+            artifact_type="trajectory",
+            path_or_ref="trajectory.jsonl",
+            produced_by="assistant",
+            purpose="conversation_trajectory",
+            is_final=True,
+            delivered=False,
+        )
+        store.create_artifact(artifact)
+
+        detail = db.get_run(run.id)
+
+        assert detail is not None
+        assert detail["run"]["id"] == run.id
+        assert detail["run"]["metadata"] == {"origin": "test"}
+        assert detail["steps"][0]["id"] == step.id
+        assert detail["events"][0]["payload"] == {"tool_name": "web_search", "result": "ok"}
+        assert detail["interruptions"][0]["snapshot"] == {
+            "question": "go?",
+            "state": "waiting_human",
+            "next_step": "request_clarification",
+        }
+        assert detail["delegations"][0]["allowed_toolsets"] == ["web"]
+        assert detail["artifacts"][0]["path_or_ref"] == "trajectory.jsonl"
+
+    def test_export_run_returns_session_messages_and_runtime_detail(self, db):
+        from agent.run_state_store import RunStateStore
+        from agent.runtime_types import RunRecord, RunStepRecord
+
+        db.create_session(session_id="s1", source="cli", model="test")
+        db.append_message("s1", role="user", content="hello")
+        db.append_message("s1", role="assistant", content="world")
+        store = RunStateStore(db)
+        run = RunRecord.create(
+            session_id="s1",
+            parent_run_id=None,
+            source="cli",
+            user_intent="export run",
+            state="completed",
+            next_step=None,
+            final_status="completed",
+        )
+        store.create_run(run)
+        step = RunStepRecord.create(
+            run_id=run.id,
+            step_index=0,
+            step_type="model_call",
+            status="completed",
+        )
+        store.create_step(step)
+
+        export = db.export_run(run.id)
+
+        assert export is not None
+        assert export["session"]["id"] == "s1"
+        assert len(export["messages"]) == 2
+        assert export["runtime"]["run"]["id"] == run.id
+        assert export["runtime"]["steps"][0]["id"] == step.id
+
+    def test_export_session_missing_returns_none(self, db):
         assert db.export_session("nope") is None
+        assert db.export_run("nope-run") is None
 
     def test_export_all(self, db):
         db.create_session(session_id="s1", source="cli")
@@ -935,7 +1186,7 @@ class TestSchemaInit:
     def test_schema_version(self, db):
         cursor = db._conn.execute("SELECT version FROM schema_version")
         version = cursor.fetchone()[0]
-        assert version == 6
+        assert version == 7
 
     def test_title_column_exists(self, db):
         """Verify the title column was created in the sessions table."""
@@ -991,12 +1242,12 @@ class TestSchemaInit:
         conn.commit()
         conn.close()
 
-        # Open with SessionDB — should migrate to v6
+        # Open with SessionDB — should migrate to v7
         migrated_db = SessionDB(db_path=db_path)
 
         # Verify migration
         cursor = migrated_db._conn.execute("SELECT version FROM schema_version")
-        assert cursor.fetchone()[0] == 6
+        assert cursor.fetchone()[0] == 7
 
         # Verify title column exists and is NULL for existing sessions
         session = migrated_db.get_session("existing")
@@ -1375,3 +1626,92 @@ class TestConcurrentWriteSafety:
         assert "30" in src, (
             "SQLite timeout should be at least 30s to handle CLI/gateway lock contention"
         )
+
+
+class TestRuntimeKernelPersistence:
+    def test_runtime_tables_exist(self, db):
+        cursor = db._conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+        )
+        tables = {row[0] for row in cursor.fetchall()}
+        assert "runs" in tables
+        assert "run_steps" in tables
+        assert "run_events" in tables
+        assert "interruptions" in tables
+        assert "delegations" in tables
+        assert "artifacts" in tables
+
+    def test_schema_version_includes_runtime_kernel(self, db):
+        cursor = db._conn.execute("SELECT version FROM schema_version")
+        version = cursor.fetchone()[0]
+        assert version == 7
+
+    def test_migration_from_v6_adds_runtime_kernel_tables(self, tmp_path):
+        import sqlite3
+
+        db_path = tmp_path / "migrate_runtime_v6.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.executescript("""
+            CREATE TABLE schema_version (version INTEGER NOT NULL);
+            INSERT INTO schema_version (version) VALUES (6);
+
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                source TEXT NOT NULL,
+                user_id TEXT,
+                model TEXT,
+                model_config TEXT,
+                system_prompt TEXT,
+                parent_session_id TEXT,
+                started_at REAL NOT NULL,
+                ended_at REAL,
+                end_reason TEXT,
+                message_count INTEGER DEFAULT 0,
+                tool_call_count INTEGER DEFAULT 0,
+                input_tokens INTEGER DEFAULT 0,
+                output_tokens INTEGER DEFAULT 0,
+                cache_read_tokens INTEGER DEFAULT 0,
+                cache_write_tokens INTEGER DEFAULT 0,
+                reasoning_tokens INTEGER DEFAULT 0,
+                billing_provider TEXT,
+                billing_base_url TEXT,
+                billing_mode TEXT,
+                estimated_cost_usd REAL,
+                actual_cost_usd REAL,
+                cost_status TEXT,
+                cost_source TEXT,
+                pricing_version TEXT,
+                title TEXT
+            );
+
+            CREATE TABLE messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT,
+                tool_call_id TEXT,
+                tool_calls TEXT,
+                tool_name TEXT,
+                timestamp REAL NOT NULL,
+                token_count INTEGER,
+                finish_reason TEXT,
+                reasoning TEXT,
+                reasoning_details TEXT,
+                codex_reasoning_items TEXT
+            );
+        """)
+        conn.commit()
+        conn.close()
+
+        migrated_db = SessionDB(db_path=db_path)
+        cursor = migrated_db._conn.execute("SELECT version FROM schema_version")
+        assert cursor.fetchone()[0] == 7
+
+        tables = {
+            row[0]
+            for row in migrated_db._conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        assert {"runs", "run_steps", "run_events", "interruptions", "delegations", "artifacts"} <= tables
+        migrated_db.close()

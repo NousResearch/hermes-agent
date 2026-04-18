@@ -527,10 +527,19 @@ def _cmd_cleanup(args):
         print_success("No OpenClaw directories found. Nothing to clean up.")
         return
 
-    # Warn if OpenClaw is still running — archiving while the service is
-    # active causes it to recreate an empty skeleton directory (#8502).
-    running = _detect_openclaw_processes()
-    if running:
+    running_check_performed = False
+    running_archival_allowed = True
+
+    def _confirm_openclaw_stopped() -> bool:
+        nonlocal running_check_performed, running_archival_allowed
+        if running_check_performed:
+            return running_archival_allowed
+
+        running_check_performed = True
+        running = _detect_openclaw_processes()
+        if not running:
+            return True
+
         print()
         print_error("OpenClaw appears to be still running:")
         for detail in running:
@@ -541,13 +550,17 @@ def _cmd_cleanup(args):
         )
         print_info("Stop OpenClaw first: systemctl --user stop openclaw-gateway.service")
         print()
-        if not auto_yes:
-            if not sys.stdin.isatty():
-                print_info("Non-interactive session — aborting. Stop OpenClaw and re-run.")
-                return
-            if not prompt_yes_no("Proceed anyway?", default=False):
-                print_info("Aborted. Stop OpenClaw first, then re-run: hermes claw cleanup")
-                return
+        if auto_yes:
+            return True
+        if not sys.stdin.isatty():
+            print_info("Non-interactive session — aborting. Stop OpenClaw and re-run.")
+            running_archival_allowed = False
+            return False
+        if not prompt_yes_no("Proceed anyway?", default=False):
+            print_info("Aborted. Stop OpenClaw first, then re-run: hermes claw cleanup")
+            running_archival_allowed = False
+            return False
+        return True
 
     total_archived = 0
 
@@ -603,6 +616,8 @@ def _cmd_cleanup(args):
             print_info("To execute, re-run with: hermes claw cleanup --yes")
         else:
             if auto_yes or prompt_yes_no(f"Archive {source_dir}?", default=True):
+                if not _confirm_openclaw_stopped():
+                    return
                 try:
                     archive_path = _archive_directory(source_dir)
                     print_success(f"Archived: {source_dir} → {archive_path}")

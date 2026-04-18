@@ -135,8 +135,14 @@ def _find_whisper_binary() -> Optional[str]:
     return _find_binary("whisper")
 
 
-def _get_local_command_template() -> Optional[str]:
+def _get_explicit_local_command_template() -> Optional[str]:
+    """Return only an explicitly configured local STT command template."""
     configured = os.getenv(LOCAL_STT_COMMAND_ENV, "").strip()
+    return configured or None
+
+
+def _get_local_command_template() -> Optional[str]:
+    configured = _get_explicit_local_command_template()
     if configured:
         return configured
 
@@ -179,7 +185,7 @@ def _get_provider(stt_config: dict) -> str:
         if provider == "local":
             if _HAS_FASTER_WHISPER:
                 return "local"
-            if _has_local_command():
+            if _get_explicit_local_command_template():
                 return "local_command"
             logger.warning(
                 "STT provider 'local' configured but unavailable "
@@ -188,7 +194,7 @@ def _get_provider(stt_config: dict) -> str:
             return "none"
 
         if provider == "local_command":
-            if _has_local_command():
+            if _get_explicit_local_command_template():
                 return "local_command"
             if _HAS_FASTER_WHISPER:
                 logger.info("Local STT command unavailable, using local faster-whisper")

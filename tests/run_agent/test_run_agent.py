@@ -642,6 +642,37 @@ class TestHydrateTodoStore:
         assert not agent._todo_store.has_items()
 
 
+class TestContinuationUserMessage:
+    def test_detects_chinese_continuation_requests(self, agent):
+        assert agent._is_continuation_request("继续做") is True
+        assert agent._is_continuation_request("再自己回归测试") is True
+        assert agent._is_continuation_request("hello") is False
+
+    def test_builds_augmented_message_when_unfinished_todos_exist(self, agent):
+        agent._todo_store.write([
+            {"id": "1", "content": "收口首页入口", "status": "completed"},
+            {"id": "2", "content": "回归测试 docs build", "status": "in_progress"},
+            {"id": "3", "content": "补充续做型指令测试", "status": "pending"},
+        ])
+
+        enriched = agent._build_continuation_user_message("继续做")
+
+        assert enriched.startswith("继续做\n\n[Continuation intent detected]")
+        assert "Resume from unfinished work immediately" in enriched
+        assert "Completed todo items already recorded: 1" in enriched
+        assert "- 回归测试 docs build" in enriched
+        assert "Recovered todo state:" in enriched
+        assert "补充续做型指令测试" in enriched
+
+    def test_leaves_message_unchanged_without_unfinished_todos(self, agent):
+        agent._todo_store.write([
+            {"id": "1", "content": "已经做完", "status": "completed"},
+        ])
+
+        assert agent._build_continuation_user_message("继续做") == "继续做"
+        assert agent._build_continuation_user_message("看看这个") == "看看这个"
+
+
 class TestBuildSystemPrompt:
     def test_always_has_identity(self, agent):
         prompt = agent._build_system_prompt()
@@ -1855,7 +1886,6 @@ class TestRunConversation:
     def test_truly_empty_response_retries_3_times_then_empty(self, agent):
         """Truly empty response (no content, no reasoning) retries 3 times then falls through to (empty)."""
         self._setup_agent(agent)
-        agent.base_url = "http://127.0.0.1:1234/v1"
         empty_resp = _mock_response(content=None, finish_reason="stop")
         # 4 responses: 1 original + 3 nudge retries, all empty
         agent.client.chat.completions.create.side_effect = [
@@ -1871,10 +1901,25 @@ class TestRunConversation:
         assert result["final_response"] == "(empty)"
         assert result["api_calls"] == 4  # 1 original + 3 retries
 
+    def test_truly_empty_local_response_treated_as_invalid(self, agent):
+        """Local/custom chat.completions empty stop responses should not silently complete."""
+        self._setup_agent(agent)
+        agent.base_url = "http://127.0.0.1:1234/v1"
+        empty_resp = _mock_response(content=None, finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [empty_resp, empty_resp, empty_resp]
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("answer me")
+        assert result["completed"] is False
+        assert result.get("failed") is True
+        assert "Invalid API response after 3 retries" in result["error"]
+
     def test_truly_empty_response_succeeds_on_nudge(self, agent):
         """Model produces content after being nudged for empty response."""
         self._setup_agent(agent)
-        agent.base_url = "http://127.0.0.1:1234/v1"
         empty_resp = _mock_response(content=None, finish_reason="stop")
         content_resp = _mock_response(
             content="Here is the actual answer.",
@@ -1934,7 +1979,6 @@ class TestRunConversation:
     def test_empty_response_fallback_also_empty_returns_empty(self, agent):
         """If fallback also returns empty, final response is (empty)."""
         self._setup_agent(agent)
-        agent.base_url = "http://127.0.0.1:1234/v1"
         agent._fallback_chain = [{"provider": "openrouter", "model": "anthropic/claude-sonnet-4"}]
         agent._fallback_index = 0
         agent._fallback_activated = False
@@ -1969,7 +2013,6 @@ class TestRunConversation:
     def test_empty_response_emits_status_for_gateway(self, agent):
         """_emit_status is called during empty retries so gateway users see feedback."""
         self._setup_agent(agent)
-        agent.base_url = "http://127.0.0.1:1234/v1"
 
         empty_resp = _mock_response(content=None, finish_reason="stop")
         # 4 empty: 1 original + 3 retries, all empty, no fallback
@@ -3534,6 +3577,28 @@ class TestStreamingApiCall:
         assert resp.choices[0].message.content is None
         assert resp.choices[0].message.tool_calls is None
 
+    def test_streaming_empty_local_stop_is_treated_as_invalid_by_run_conversation(self, agent):
+        chunks = [_make_chunk(finish_reason="stop")]
+        agent.base_url = "http://127.0.0.1:1234/v1"
+        agent._cached_system_prompt = "You are helpful."
+        agent._use_prompt_caching = False
+        agent.tool_delay = 0
+        agent.compression_enabled = False
+        agent.save_trajectories = False
+        agent.stream_delta_callback = MagicMock()
+        agent.client.chat.completions.create.side_effect = [iter(chunks), iter(chunks), iter(chunks)]
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("answer me")
+
+        assert result["completed"] is False
+        assert result.get("failed") is True
+        assert "Invalid API response after 3 retries" in result["error"]
+
     def test_callback_exception_swallowed(self, agent):
         chunks = [
             _make_chunk(content="Hello"),
@@ -3561,11 +3626,26 @@ class TestStreamingApiCall:
     def test_stream_kwarg_injected(self, agent):
         chunks = [_make_chunk(content="x"), _make_chunk(finish_reason="stop")]
         agent.client.chat.completions.create.return_value = iter(chunks)
+        agent.base_url = "https://api.openai.com/v1"
 
         agent._interruptible_streaming_api_call({"messages": [], "model": "test"})
 
         call_kwargs = agent.client.chat.completions.create.call_args
-        assert call_kwargs[1].get("stream") is True or call_kwargs.kwargs.get("stream") is True
+        kwargs = call_kwargs.kwargs if hasattr(call_kwargs, "kwargs") else call_kwargs[1]
+        assert kwargs.get("stream") is True
+        assert kwargs.get("stream_options") == {"include_usage": True}
+
+    def test_stream_kwarg_omits_include_usage_for_local_endpoint(self, agent):
+        chunks = [_make_chunk(content="x"), _make_chunk(finish_reason="stop")]
+        agent.client.chat.completions.create.return_value = iter(chunks)
+        agent.base_url = "http://127.0.0.1:4000/v1"
+
+        agent._interruptible_streaming_api_call({"messages": [], "model": "test"})
+
+        call_kwargs = agent.client.chat.completions.create.call_args
+        kwargs = call_kwargs.kwargs if hasattr(call_kwargs, "kwargs") else call_kwargs[1]
+        assert kwargs.get("stream") is True
+        assert "stream_options" not in kwargs
 
     def test_api_exception_propagates_no_non_streaming_fallback(self, agent):
         """When streaming fails before any deltas, error propagates to the main retry loop."""

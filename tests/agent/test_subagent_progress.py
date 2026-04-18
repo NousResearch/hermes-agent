@@ -73,14 +73,29 @@ class TestPrintAbove:
 class TestBuildChildProgressCallback:
     """Tests for child progress callback builder."""
 
-    def test_returns_none_when_no_display(self):
-        """Should return None when parent has no spinner or callback."""
+    def test_returns_none_when_no_display_or_heartbeat(self):
+        """Should return None when parent has no spinner, callback, or activity tracker."""
         parent = MagicMock()
         parent._delegate_spinner = None
         parent.tool_progress_callback = None
-        
+        parent._touch_activity = None
+
         cb = _build_child_progress_callback(0, parent)
         assert cb is None
+
+    def test_heartbeat_only_still_returns_callback_and_touches_parent(self):
+        """Heartbeat-only parents should still get a callback so inactivity watchdogs stay alive."""
+        parent = MagicMock()
+        parent._delegate_spinner = None
+        parent.tool_progress_callback = None
+        parent._touch_activity = MagicMock()
+
+        cb = _build_child_progress_callback(0, parent)
+        assert cb is not None
+
+        cb("tool.started", "web_search", "query", {})
+        parent._touch_activity.assert_called_once()
+        assert "delegate child progress: tool" in parent._touch_activity.call_args[0][0]
 
     def test_cli_spinner_tool_event(self):
         """Should print tool line above spinner for CLI path."""

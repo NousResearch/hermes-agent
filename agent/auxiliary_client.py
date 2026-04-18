@@ -637,18 +637,12 @@ def _nous_base_url() -> str:
 def _read_codex_access_token() -> Optional[str]:
     """Read a valid, non-expired Codex OAuth access token from Hermes auth store.
 
-    If a credential pool exists but currently has no selectable runtime entry
-    (for example all pool slots are marked exhausted), fall back to the
-    profile's auth.json token instead of hard-failing. This keeps explicit
-    fallback-to-Codex working when the pool state is stale but the stored OAuth
-    token is still valid.
+    This helper intentionally reads only Hermes-managed auth.json state.
+    Using load_pool()/pool selection here can auto-import tokens from the
+    external Codex CLI store (~/.codex/auth.json), which makes auxiliary
+    auto-detection unexpectedly pick Codex even when the current Hermes profile
+    has no Codex credentials configured.
     """
-    pool_present, entry = _select_pool_entry("openai-codex")
-    if pool_present:
-        token = _pool_runtime_api_key(entry)
-        if token:
-            return token
-
     try:
         from hermes_cli.auth import _read_codex_tokens
         data = _read_codex_tokens()
@@ -1973,7 +1967,28 @@ def _get_cached_client(
     mode where _run_async() may spawn fresh loops in worker threads), the
     cache key for async clients includes the current event loop's identity
     so each loop gets its own client instance.
+
+    ``provider='auto'`` is intentionally NOT cached: auto resolution depends on
+    ambient config/auth/environment state (e.g. OPENROUTER_API_KEY,
+    HERMES_HOME-backed auth/config, Codex/Nous availability, custom endpoints).
+    Reusing a previously resolved auto client after that state changes can route
+    auxiliary calls to the wrong backend. Explicit providers remain cached.
     """
+    runtime = _normalize_main_runtime(main_runtime)
+
+    # Auto mode is context-sensitive; resolve fresh every time instead of trying
+    # to encode all auth/config/env inputs into a cache key.
+    if provider == "auto":
+        return resolve_provider_client(
+            provider,
+            model,
+            async_mode,
+            explicit_base_url=base_url,
+            explicit_api_key=api_key,
+            api_mode=api_mode,
+            main_runtime=runtime,
+        )
+
     # Include loop identity for async clients to prevent cross-loop reuse.
     # httpx.AsyncClient (inside AsyncOpenAI) is bound to the loop where it
     # was created — reusing it on a different loop causes deadlocks (#2681).
@@ -1986,9 +2001,7 @@ def _get_cached_client(
             loop_id = id(current_loop)
         except RuntimeError:
             pass
-    runtime = _normalize_main_runtime(main_runtime)
-    runtime_key = tuple(runtime.get(field, "") for field in _MAIN_RUNTIME_FIELDS) if provider == "auto" else ()
-    cache_key = (provider, async_mode, base_url or "", api_key or "", api_mode or "", loop_id, runtime_key)
+    cache_key = (provider, async_mode, base_url or "", api_key or "", api_mode or "", loop_id)
     with _client_cache_lock:
         if cache_key in _client_cache:
             cached_client, cached_default, cached_loop = _client_cache[cache_key]

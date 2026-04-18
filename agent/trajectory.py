@@ -28,7 +28,7 @@ def has_incomplete_scratchpad(content: str) -> bool:
 
 
 def save_trajectory(trajectory: List[Dict[str, Any]], model: str,
-                    completed: bool, filename: str = None):
+                    completed: bool, filename: str = None) -> str | None:
     """Append a trajectory entry to a JSONL file.
 
     Args:
@@ -52,5 +52,7 @@ def save_trajectory(trajectory: List[Dict[str, Any]], model: str,
         with open(filename, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
         logger.info("Trajectory saved to %s", filename)
+        return filename
     except Exception as e:
         logger.warning("Failed to save trajectory: %s", e)
+        return None

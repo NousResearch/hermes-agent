@@ -27,6 +27,14 @@ _approval_session_key: contextvars.ContextVar[str] = contextvars.ContextVar(
     "approval_session_key",
     default="",
 )
+_runtime_open_interruption_hook: contextvars.ContextVar[object | None] = contextvars.ContextVar(
+    "runtime_open_interruption_hook",
+    default=None,
+)
+_runtime_resume_interruption_hook: contextvars.ContextVar[object | None] = contextvars.ContextVar(
+    "runtime_resume_interruption_hook",
+    default=None,
+)
 
 
 def set_current_session_key(session_key: str) -> contextvars.Token[str]:
@@ -37,6 +45,26 @@ def set_current_session_key(session_key: str) -> contextvars.Token[str]:
 def reset_current_session_key(token: contextvars.Token[str]) -> None:
     """Restore the prior approval session key context."""
     _approval_session_key.reset(token)
+
+
+def set_runtime_interruption_hooks(open_hook=None, resume_hook=None):
+    """Bind runtime interruption hooks for the current execution context.
+
+    Used by run_agent to let approval waits project into runtime interruptions
+    without coupling approval.py to AIAgent internals.
+    """
+    open_token = _runtime_open_interruption_hook.set(open_hook)
+    resume_token = _runtime_resume_interruption_hook.set(resume_hook)
+    return open_token, resume_token
+
+
+def reset_runtime_interruption_hooks(tokens) -> None:
+    """Restore prior runtime interruption hook bindings."""
+    if not tokens:
+        return
+    open_token, resume_token = tokens
+    _runtime_open_interruption_hook.reset(open_token)
+    _runtime_resume_interruption_hook.reset(resume_token)
 
 
 def get_current_session_key(default: str = "default") -> str:
@@ -835,7 +863,38 @@ def check_all_command_guards(command: str, env_type: str,
                 timeout = int(timeout)
             except (ValueError, TypeError):
                 timeout = 300
+            runtime_interruption_id = None
+            try:
+                open_hook = _runtime_open_interruption_hook.get()
+                if open_hook is not None:
+                    runtime_interruption_id = open_hook(
+                        reason_type="approval_required",
+                        waiting_on="exec_approval",
+                        state="waiting_external",
+                        next_step="request_approval",
+                        snapshot={
+                            "command": command,
+                            "description": combined_desc,
+                            "pattern_keys": all_keys,
+                        },
+                        resumable=True,
+                    )
+            except Exception as exc:
+                logger.debug("Runtime approval interruption open hook failed: %s", exc)
+                runtime_interruption_id = None
+
             resolved = entry.event.wait(timeout=timeout)
+
+            try:
+                resume_hook = _runtime_resume_interruption_hook.get()
+                if resume_hook is not None and runtime_interruption_id is not None:
+                    resume_hook(
+                        runtime_interruption_id,
+                        state="executing",
+                        next_step="run_again",
+                    )
+            except Exception as exc:
+                logger.debug("Runtime approval interruption resume hook failed: %s", exc)
 
             # Clean up this entry from the queue
             with _lock:

@@ -687,6 +687,195 @@ def has_conflicting_systemd_units() -> bool:
     return len(get_installed_systemd_scopes()) > 1
 
 
+# Legacy service names from older Hermes installs that predate the
+# hermes-gateway rename. Kept as an explicit allowlist (NOT a glob) so
+# profile units (hermes-gateway-*.service) and unrelated third-party
+# "hermes" units are never matched.
+_LEGACY_SERVICE_NAMES: tuple[str, ...] = ("hermes.service",)
+
+# ExecStart content markers that identify a unit as running our gateway.
+# A legacy unit is only flagged when its file contains one of these.
+_LEGACY_UNIT_EXECSTART_MARKERS: tuple[str, ...] = (
+    "hermes_cli.main gateway",
+    "hermes_cli/main.py gateway",
+    "gateway/run.py",
+    " hermes gateway ",
+    "/hermes gateway ",
+)
+
+
+def _legacy_unit_search_paths() -> list[tuple[bool, Path]]:
+    """Return ``[(is_system, base_dir), ...]`` — directories to scan for legacy units.
+
+    Factored out so tests can monkeypatch the search roots without touching
+    real filesystem paths.
+    """
+    return [
+        (False, Path.home() / ".config" / "systemd" / "user"),
+        (True, Path("/etc/systemd/system")),
+    ]
+
+
+def _find_legacy_hermes_units() -> list[tuple[str, Path, bool]]:
+    """Return ``[(unit_name, unit_path, is_system)]`` for legacy Hermes gateway units.
+
+    Detects unit files installed by older Hermes versions that used a
+    different service name (e.g. ``hermes.service`` before the rename to
+    ``hermes-gateway.service``). When both a legacy unit and the current
+    ``hermes-gateway.service`` are active, they fight over the same bot
+    token — the PR #5646 signal-recovery change turns this into a 30-second
+    SIGTERM flap loop.
+
+    Safety guards:
+
+    * Explicit allowlist of legacy names (no globbing). Profile units such
+      as ``hermes-gateway-coder.service`` and unrelated third-party
+      ``hermes-*`` services are never matched.
+    * ExecStart content check — only flag units that invoke our gateway
+      entrypoint. A user-created ``hermes.service`` running an unrelated
+      binary is left untouched.
+    * Results are returned purely for caller inspection; this function
+      never mutates or removes anything.
+    """
+    results: list[tuple[str, Path, bool]] = []
+    for is_system, base in _legacy_unit_search_paths():
+        for name in _LEGACY_SERVICE_NAMES:
+            unit_path = base / name
+            try:
+                if not unit_path.exists():
+                    continue
+                text = unit_path.read_text(encoding="utf-8", errors="ignore")
+            except (OSError, PermissionError):
+                continue
+            if not any(marker in text for marker in _LEGACY_UNIT_EXECSTART_MARKERS):
+                # Not our gateway — leave alone
+                continue
+            results.append((name, unit_path, is_system))
+    return results
+
+
+def has_legacy_hermes_units() -> bool:
+    """Return True when any legacy Hermes gateway unit files exist."""
+    return bool(_find_legacy_hermes_units())
+
+
+def print_legacy_unit_warning() -> None:
+    """Warn about legacy Hermes gateway unit files if any are installed.
+
+    Idempotent: prints nothing when no legacy units are detected. Safe to
+    call from any status/install/setup path.
+    """
+    legacy = _find_legacy_hermes_units()
+    if not legacy:
+        return
+    print_warning("Legacy Hermes gateway unit(s) detected from an older install:")
+    for name, path, is_system in legacy:
+        scope = "system" if is_system else "user"
+        print_info(f"    {path}  ({scope} scope)")
+    print_info("  These run alongside the current hermes-gateway service and")
+    print_info("  cause SIGTERM flap loops — both try to use the same bot token.")
+    print_info("  Remove them with:")
+    print_info("    hermes gateway migrate-legacy")
+
+
+def remove_legacy_hermes_units(
+    interactive: bool = True,
+    dry_run: bool = False,
+) -> tuple[int, list[Path]]:
+    """Stop, disable, and remove legacy Hermes gateway unit files.
+
+    Iterates over whatever ``_find_legacy_hermes_units()`` returns — which is
+    an explicit allowlist of legacy names (not a glob). Profile units and
+    unrelated third-party services are never touched.
+
+    Args:
+        interactive: When True, prompt before removing. When False, remove
+            without asking (used when another prompt has already confirmed,
+            e.g. from the install flow).
+        dry_run: When True, list what would be removed and return.
+
+    Returns:
+        ``(removed_count, remaining_paths)`` — remaining includes units we
+        couldn't remove (typically system-scope when not running as root).
+    """
+    legacy = _find_legacy_hermes_units()
+    if not legacy:
+        print("No legacy Hermes gateway units found.")
+        return 0, []
+
+    user_units = [(n, p) for n, p, is_sys in legacy if not is_sys]
+    system_units = [(n, p) for n, p, is_sys in legacy if is_sys]
+
+    print()
+    print("Legacy Hermes gateway unit(s) found:")
+    for name, path, is_system in legacy:
+        scope = "system" if is_system else "user"
+        print(f"  {path}  ({scope} scope)")
+    print()
+
+    if dry_run:
+        print("(dry-run — nothing removed)")
+        return 0, [p for _, p, _ in legacy]
+
+    if interactive and not prompt_yes_no("Remove these legacy units?", True):
+        print("Skipped. Run again with: hermes gateway migrate-legacy")
+        return 0, [p for _, p, _ in legacy]
+
+    removed = 0
+    remaining: list[Path] = []
+
+    # User-scope removal
+    for name, path in user_units:
+        try:
+            _run_systemctl(["stop", name], system=False, check=False, timeout=90)
+            _run_systemctl(["disable", name], system=False, check=False, timeout=30)
+            path.unlink(missing_ok=True)
+            print(f"  ✓ Removed {path}")
+            removed += 1
+        except (OSError, RuntimeError) as e:
+            print(f"  ⚠ Could not remove {path}: {e}")
+            remaining.append(path)
+
+    if user_units:
+        try:
+            _run_systemctl(["daemon-reload"], system=False, check=False, timeout=30)
+        except RuntimeError:
+            pass
+
+    # System-scope removal (needs root)
+    if system_units:
+        if os.geteuid() != 0:
+            print()
+            print_warning("System-scope legacy units require root to remove.")
+            print_info("  Re-run with: sudo hermes gateway migrate-legacy")
+            for _, path in system_units:
+                remaining.append(path)
+        else:
+            for name, path in system_units:
+                try:
+                    _run_systemctl(["stop", name], system=True, check=False, timeout=90)
+                    _run_systemctl(["disable", name], system=True, check=False, timeout=30)
+                    path.unlink(missing_ok=True)
+                    print(f"  ✓ Removed {path}")
+                    removed += 1
+                except (OSError, RuntimeError) as e:
+                    print(f"  ⚠ Could not remove {path}: {e}")
+                    remaining.append(path)
+
+            try:
+                _run_systemctl(["daemon-reload"], system=True, check=False, timeout=30)
+            except RuntimeError:
+                pass
+
+    print()
+    if remaining:
+        print_warning(f"{len(remaining)} legacy unit(s) still present — see messages above.")
+    else:
+        print_success(f"Removed {removed} legacy unit(s).")
+
+    return removed, remaining
+
+
 def print_systemd_scope_conflict_warning() -> None:
     scopes = get_installed_systemd_scopes()
     if len(scopes) < 2:
@@ -1220,6 +1409,19 @@ def systemd_install(force: bool = False, system: bool = False, run_as_user: str 
     if system:
         _require_root_for_system_service("install")
 
+    # Offer to remove legacy units (hermes.service from pre-rename installs)
+    # before installing the new hermes-gateway.service. If both remain, they
+    # flap-fight for the Telegram bot token on every gateway startup.
+    # Only removes units matching _LEGACY_SERVICE_NAMES + our ExecStart
+    # signature — profile units are never touched.
+    if has_legacy_hermes_units():
+        print()
+        print_legacy_unit_warning()
+        print()
+        if prompt_yes_no("Remove the legacy unit(s) before installing?", True):
+            remove_legacy_hermes_units(interactive=False)
+            print()
+
     unit_path = get_systemd_unit_path(system=system)
     scope_flag = " --system" if system else ""
 
@@ -1258,6 +1460,7 @@ def systemd_install(force: bool = False, system: bool = False, run_as_user: str 
         _ensure_linger_enabled()
 
     print_systemd_scope_conflict_warning()
+    print_legacy_unit_warning()
 
 
 def systemd_uninstall(system: bool = False):
@@ -1379,6 +1582,10 @@ def systemd_status(deep: bool = False, system: bool = False):
 
     if has_conflicting_systemd_units():
         print_systemd_scope_conflict_warning()
+        print()
+
+    if has_legacy_hermes_units():
+        print_legacy_unit_warning()
         print()
 
     if not systemd_unit_is_current(system=system):
@@ -3137,6 +3344,10 @@ def gateway_setup():
         print_systemd_scope_conflict_warning()
         print()
 
+    if supports_systemd_services() and has_legacy_hermes_units():
+        print_legacy_unit_warning()
+        print()
+
     if service_installed and service_running:
         print_success("Gateway service is installed and running.")
     elif service_installed:
@@ -3594,3 +3805,14 @@ def gateway_command(args):
                 else:
                     print("  hermes gateway install  # Install as user service")
                     print("  sudo hermes gateway install --system  # Install as boot-time system service")
+
+    elif subcmd == "migrate-legacy":
+        # Stop, disable, and remove legacy Hermes gateway unit files from
+        # pre-rename installs (e.g. hermes.service). Profile units and
+        # unrelated third-party services are never touched.
+        dry_run = getattr(args, 'dry_run', False)
+        yes = getattr(args, 'yes', False)
+        if not supports_systemd_services() and not is_macos():
+            print("Legacy unit migration only applies to systemd-based Linux hosts.")
+            return
+        remove_legacy_hermes_units(interactive=not yes, dry_run=dry_run)

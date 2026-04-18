@@ -79,3 +79,27 @@ def test_routes_report_now_alias_to_archive_tool():
             "delivery_target": "current_chat",
         }
     )
+
+
+def test_routes_employee_route_action_to_employee_route_tool():
+    with patch(
+        "tools.weixin_control_tool.employee_route_tool",
+        return_value=json.dumps({"success": True, "tool": "employee-route"}),
+    ) as route_mock:
+        result = json.loads(
+            weixin_control_tool(
+                {
+                    "action": "clear_employee_route",
+                    "worker_name": "阿旺",
+                }
+            )
+        )
+
+    assert result["tool"] == "employee-route"
+    route_mock.assert_called_once_with(
+        {
+            "action": "clear_route",
+            "platform": "weixin",
+            "worker_name": "阿旺",
+        }
+    )

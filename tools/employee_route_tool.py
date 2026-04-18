@@ -28,6 +28,52 @@ _ACTION_ALIASES = {
 }
 
 
+EMPLOYEE_ROUTE_CONTROL_PROPERTIES = {
+    "worker_name": {
+        "type": "string",
+        "description": "Worker name to inspect, update, or remove, such as 铁柱 or 阿旺.",
+    },
+    "aliases": {
+        "type": "array",
+        "items": {"type": "string"},
+        "description": "Optional alternate names for explicit routing, such as 老铁 or 旺财.",
+    },
+    "preloaded_skills": {
+        "type": "array",
+        "items": {"type": "string"},
+        "description": "Skills to preload when this worker is dispatched.",
+    },
+    "match_modes": {
+        "type": "array",
+        "items": {"type": "string", "enum": ["explicit", "heuristic"]},
+        "description": "Routing modes. Use explicit for named assignment only, heuristic for automatic matching.",
+    },
+    "action_terms": {
+        "type": "array",
+        "items": {"type": "string"},
+        "description": "Action hint terms like 打磨, 优化, 排查.",
+    },
+    "subject_terms": {
+        "type": "array",
+        "items": {"type": "string"},
+        "description": "Subject hint terms like 页面, 主页, 服务器.",
+    },
+    "pain_terms": {
+        "type": "array",
+        "items": {"type": "string"},
+        "description": "Pain hint terms like 粗糙, 炸了, 异常.",
+    },
+    "enabled": {
+        "type": "boolean",
+        "description": "Whether the dynamic route stays enabled. Defaults to true for set_route.",
+    },
+    "updated_by": {
+        "type": "string",
+        "description": "Optional operator label override for auditing. Defaults to the current session actor.",
+    },
+}
+
+
 EMPLOYEE_ROUTE_TOOL_SCHEMA = {
     "name": "employee_route_control",
     "description": (

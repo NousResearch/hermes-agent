@@ -8,6 +8,7 @@ from tools.control_plane_helpers import (
     build_control_schema_from_spec,
     run_control_plane,
 )
+from tools.employee_route_tool import EMPLOYEE_ROUTE_CONTROL_PROPERTIES, employee_route_tool
 from tools.group_control_schema import build_group_control_properties
 from tools.registry import registry, tool_error
 from tools.send_message_tool import _check_send_message, send_message_tool
@@ -36,6 +37,12 @@ _GROUP_ARCHIVE_ACTIONS = {
     "deliver_report",
 }
 
+_EMPLOYEE_ROUTE_ACTIONS = {
+    "list_employee_routes",
+    "set_employee_route",
+    "clear_employee_route",
+}
+
 _ACTION_ALIASES = {
     "send": "send_message",
     "collect-only": "set_policy",
@@ -55,6 +62,19 @@ def _weixin_control_route_specs() -> list[ControlRouteSpec]:
             transform=lambda payload: {**payload, "action": "send"},
             handler=send_message_tool,
         ),
+        ControlRouteSpec(
+            actions=_EMPLOYEE_ROUTE_ACTIONS,
+            transform=lambda payload: {
+                **payload,
+                "platform": "weixin",
+                "action": {
+                    "list_employee_routes": "list_routes",
+                    "set_employee_route": "set_route",
+                    "clear_employee_route": "clear_route",
+                }[str(payload.get("action") or "")],
+            },
+            handler=employee_route_tool,
+        ),
         ControlRouteSpec(actions=_GROUP_POLICY_ACTIONS, handler=weixin_group_policy_tool),
         ControlRouteSpec(
             actions={"report_now"},
@@ -73,6 +93,7 @@ _WEIXIN_CONTROL_PROPERTIES = build_group_control_properties(
     ),
     target_group_description="Weixin target group reference such as group@chatroom.",
     file_path_description="Optional local attachment path for send_message.",
+    extra_properties=EMPLOYEE_ROUTE_CONTROL_PROPERTIES,
 )
 _WEIXIN_CONTROL_PROPERTIES["mode"] = {
     "type": "string",
@@ -102,7 +123,7 @@ WEIXIN_CONTROL_SPEC = ControlPlaneSpec(
     description=(
         "Unified Weixin control plane. "
         "Prefer this tool for Weixin operations such as sending messages, "
-        "configuring group listening policy, and inspecting archive/report state. "
+        "configuring group listening policy, managing employee routes, and inspecting archive/report state. "
         "Use this instead of terminal or execute_code for supported Weixin admin work. "
         "Choose one action and provide the related fields."
     ),
@@ -125,7 +146,7 @@ def weixin_control_tool(args, **kw):
         dict(args),
         spec=WEIXIN_CONTROL_SPEC,
         unsupported=lambda _payload: tool_error(
-            "Unsupported Weixin control action. Use send_message, group policy, or archive/report actions."
+            "Unsupported Weixin control action. Use send_message, employee-route, group policy, or archive/report actions."
         ),
     )
 

@@ -11,6 +11,7 @@ from tools.control_plane_helpers import (
     build_control_schema_from_spec,
     run_control_plane,
 )
+from tools.employee_route_tool import EMPLOYEE_ROUTE_CONTROL_PROPERTIES, employee_route_tool
 from tools.group_control_schema import build_group_control_properties
 from tools.qq_group_archive_tool import qq_group_archive_tool
 from tools.qq_group_file_tool import qq_group_file_tool
@@ -44,6 +45,12 @@ _INTEL_ACTIONS = {
     "set_reporting",
     "run_report_now",
     "reconcile_workers",
+}
+
+_EMPLOYEE_ROUTE_ACTIONS = {
+    "list_employee_routes",
+    "set_employee_route",
+    "clear_employee_route",
 }
 
 _GROUP_POLICY_ACTIONS = {
@@ -222,6 +229,19 @@ def _qq_control_route_specs() -> list[ControlRouteSpec]:
             transform=lambda payload: {**payload, "action": "send"},
             handler=send_message_tool,
         ),
+        ControlRouteSpec(
+            actions=_EMPLOYEE_ROUTE_ACTIONS,
+            transform=lambda payload: {
+                **payload,
+                "platform": "qq_napcat",
+                "action": {
+                    "list_employee_routes": "list_routes",
+                    "set_employee_route": "set_route",
+                    "clear_employee_route": "clear_route",
+                }[str(payload.get("action") or "")],
+            },
+            handler=employee_route_tool,
+        ),
         ControlRouteSpec(actions=_SOCIAL_ACTIONS, handler=qq_social_tool),
         ControlRouteSpec(actions=_INTEL_ACTIONS, handler=qq_intel_tool),
         ControlRouteSpec(
@@ -253,6 +273,7 @@ _QQ_CONTROL_PROPERTIES = build_group_control_properties(
     target_group_description="QQ target group reference for hiring an intel worker.",
     file_path_description="Optional local attachment path for send_message or QQ group file upload.",
     extra_properties={
+    **EMPLOYEE_ROUTE_CONTROL_PROPERTIES,
     "folder_id": {
         "type": "string",
         "description": "QQ group file folder id for list/upload/delete_folder actions.",
@@ -317,7 +338,7 @@ QQ_CONTROL_SPEC = ControlPlaneSpec(
     description=(
         "Unified QQ/NapCat control plane. "
         "Prefer this tool for QQ operations such as social requests, group listening policy, "
-        "archive/report inspection, intel worker missions, group file operations, and group moderation. "
+        "archive/report inspection, intel worker missions, employee route management, group file operations, and group moderation. "
         "Use this instead of shell scripts, terminal commands, or execute_code for supported QQ admin work. "
         "Group moderation routed through qq_control still preserves approval and protected-user guardrails. "
         "Choose one action and provide the related fields."
@@ -342,7 +363,7 @@ def qq_control_tool(args, **kw):
         dict(args),
         spec=QQ_CONTROL_SPEC,
         unsupported=lambda _payload: tool_error(
-            "Unsupported QQ control action. Use a social, intel, group policy, archive, group file, or moderation action."
+            "Unsupported QQ control action. Use a social, intel, employee-route, group policy, archive, group file, or moderation action."
         ),
     )
 

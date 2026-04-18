@@ -330,6 +330,36 @@ def test_routes_report_now_alias_to_group_archive_tool_when_group_target_is_pres
     )
 
 
+def test_routes_employee_route_action_to_employee_route_tool():
+    with patch(
+        "tools.qq_control_tool.employee_route_tool",
+        return_value=json.dumps({"success": True, "tool": "employee-route"}),
+    ) as route_mock:
+        result = json.loads(
+            qq_control_tool(
+                {
+                    "action": "set_employee_route",
+                    "worker_name": "铁柱",
+                    "preloaded_skills": ["frontend-design-pro"],
+                    "match_modes": ["explicit", "heuristic"],
+                    "action_terms": ["打磨"],
+                }
+            )
+        )
+
+    assert result["tool"] == "employee-route"
+    route_mock.assert_called_once_with(
+        {
+            "action": "set_route",
+            "platform": "qq_napcat",
+            "worker_name": "铁柱",
+            "preloaded_skills": ["frontend-design-pro"],
+            "match_modes": ["explicit", "heuristic"],
+            "action_terms": ["打磨"],
+        }
+    )
+
+
 def test_get_policy_is_augmented_with_reporting_targets():
     with patch(
         "tools.qq_control_tool.qq_group_policy_tool",

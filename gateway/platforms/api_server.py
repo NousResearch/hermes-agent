@@ -608,6 +608,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_start_callback=None,
         tool_complete_callback=None,
         merchant_mode: bool = False,
+        merchant_id: Optional[str] = None,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -630,6 +631,27 @@ class APIServerAdapter(BasePlatformAdapter):
 
         runtime_kwargs = _resolve_runtime_agent_kwargs()
         model = _resolve_gateway_model()
+
+        # Per-merchant LLM credentials: when a merchant credentials file
+        # exists, use the merchant's access_token as the api_key for the
+        # underlying LLM provider call.  This lets a translation proxy
+        # (e.g. apmzoom-llm-proxy on :8001) forward the JWT verbatim to
+        # the upstream multi-tenant LLM gateway, so the model call carries
+        # the merchant's identity & quota.  Falls back silently to the
+        # gateway-wide api_key when the credentials file is missing/stale.
+        if merchant_mode and merchant_id:
+            try:
+                from hermes_constants import get_hermes_home
+                from pathlib import Path
+                cred_path = Path(get_hermes_home()) / "merchants" / merchant_id / "credentials.json"
+                if cred_path.exists():
+                    import json as _json
+                    cred = _json.loads(cred_path.read_text())
+                    token = cred.get("access_token")
+                    if token:
+                        runtime_kwargs["api_key"] = token
+            except Exception as e:
+                logger.debug("[merchant] credentials lookup failed for %s: %s", merchant_id, e)
 
         user_config = _load_gateway_config()
         enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
@@ -909,6 +931,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_progress_callback=_on_tool_progress,
                 agent_ref=agent_ref,
                 merchant_mode=merchant_mode,
+                merchant_id=merchant_id,
             ))
 
             return await self._write_sse_chat_completion(
@@ -924,6 +947,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
                 merchant_mode=merchant_mode,
+                merchant_id=merchant_id,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -2131,6 +2155,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_complete_callback=None,
         agent_ref: Optional[list] = None,
         merchant_mode: bool = False,
+        merchant_id: Optional[str] = None,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -2154,6 +2179,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_start_callback=tool_start_callback,
                 tool_complete_callback=tool_complete_callback,
                 merchant_mode=merchant_mode,
+                merchant_id=merchant_id,
             )
             if agent_ref is not None:
                 agent_ref[0] = agent

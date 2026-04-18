@@ -6464,7 +6464,7 @@ class AIAgent:
 
         msg = {
             "role": "assistant",
-            "content": assistant_message.content or "",
+            "content": assistant_message.content,
             "reasoning": reasoning_text,
             "finish_reason": finish_reason,
         }
@@ -6540,6 +6540,9 @@ class AIAgent:
                     tc_dict["extra_content"] = extra
                 tool_calls.append(tc_dict)
             msg["tool_calls"] = tool_calls
+            # Some providers require non-None content when tool_calls are present.
+            if msg["content"] is None:
+                msg["content"] = ""
 
         return msg
 

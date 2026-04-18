@@ -539,6 +539,13 @@ DEFAULT_CONFIG = {
             "api_key": "",
             "timeout": 30,
         },
+        "title_generation": {
+            "provider": "auto",
+            "model": "",
+            "base_url": "",
+            "api_key": "",
+            "timeout": 30,
+        },
     },
     
     "display": {

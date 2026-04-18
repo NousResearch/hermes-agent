@@ -10,8 +10,11 @@ Usage:
 """
 
 import asyncio
+import hmac
+import importlib.util
 import json
 import logging
+import os
 import secrets
 import sys
 import threading
@@ -47,13 +50,13 @@ from gateway.status import get_running_pid, read_runtime_status
 try:
     from fastapi import FastAPI, HTTPException, Request
     from fastapi.middleware.cors import CORSMiddleware
-    from fastapi.responses import FileResponse, JSONResponse
+    from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
     from fastapi.staticfiles import StaticFiles
     from pydantic import BaseModel
 except ImportError:
     raise SystemExit(
         "Web UI requires fastapi and uvicorn.\n"
-        "Run 'hermes web' to auto-install, or: pip install hermes-agent[web]"
+        f"Install with: {sys.executable} -m pip install 'fastapi' 'uvicorn[standard]'"
     )
 
 WEB_DIST = Path(__file__).parent / "web_dist"
@@ -83,6 +86,47 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ---------------------------------------------------------------------------
+# Endpoints that do NOT require the session token.  Everything else under
+# /api/ is gated by the auth middleware below.  Keep this list minimal —
+# only truly non-sensitive, read-only endpoints belong here.
+# ---------------------------------------------------------------------------
+_PUBLIC_API_PATHS: frozenset = frozenset({
+    "/api/status",
+    "/api/config/defaults",
+    "/api/config/schema",
+    "/api/model/info",
+    "/api/dashboard/themes",
+    "/api/dashboard/plugins",
+    "/api/dashboard/plugins/rescan",
+})
+
+
+def _require_token(request: Request) -> None:
+    """Validate the ephemeral session token.  Raises 401 on mismatch.
+
+    Uses ``hmac.compare_digest`` to prevent timing side-channels.
+    """
+    auth = request.headers.get("authorization", "")
+    expected = f"Bearer {_SESSION_TOKEN}"
+    if not hmac.compare_digest(auth.encode(), expected.encode()):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    """Require the session token on all /api/ routes except the public list."""
+    path = request.url.path
+    if path.startswith("/api/") and path not in _PUBLIC_API_PATHS and not path.startswith("/api/plugins/"):
+        auth = request.headers.get("authorization", "")
+        expected = f"Bearer {_SESSION_TOKEN}"
+        if not hmac.compare_digest(auth.encode(), expected.encode()):
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Unauthorized"},
+            )
+    return await call_next(request)
 
 
 # ---------------------------------------------------------------------------
@@ -125,6 +169,11 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "type": "select",
         "description": "CLI visual theme",
         "options": ["default", "ares", "mono", "slate"],
+    },
+    "dashboard.theme": {
+        "type": "select",
+        "description": "Web dashboard visual theme",
+        "options": ["default", "midnight", "ember", "mono", "cyberpunk", "rose"],
     },
     "display.resume_display": {
         "type": "select",
@@ -184,6 +233,7 @@ _CATEGORY_MERGE: Dict[str, str] = {
     "approvals": "security",
     "human_delay": "display",
     "smart_model_routing": "agent",
+    "dashboard": "display",
 }
 
 # Display order for tabs — unlisted categories sort alphabetically after these.
@@ -280,12 +330,68 @@ class EnvVarReveal(BaseModel):
     key: str
 
 
+_GATEWAY_HEALTH_URL = os.getenv("GATEWAY_HEALTH_URL")
+_GATEWAY_HEALTH_TIMEOUT = float(os.getenv("GATEWAY_HEALTH_TIMEOUT", "3"))
+
+
+def _probe_gateway_health() -> tuple[bool, dict | None]:
+    """Probe the gateway via its HTTP health endpoint (cross-container).
+
+    Uses ``/health/detailed`` first (returns full state), falling back to
+    the simpler ``/health`` endpoint.  Returns ``(is_alive, body_dict)``.
+
+    Accepts any of these as ``GATEWAY_HEALTH_URL``:
+    - ``http://gateway:8642``                (base URL — recommended)
+    - ``http://gateway:8642/health``         (explicit health path)
+    - ``http://gateway:8642/health/detailed`` (explicit detailed path)
+
+    This is a **blocking** call — run via ``run_in_executor`` from async code.
+    """
+    if not _GATEWAY_HEALTH_URL:
+        return False, None
+
+    # Normalise to base URL so we always probe the right paths regardless of
+    # whether the user included /health or /health/detailed in the env var.
+    base = _GATEWAY_HEALTH_URL.rstrip("/")
+    if base.endswith("/health/detailed"):
+        base = base[: -len("/health/detailed")]
+    elif base.endswith("/health"):
+        base = base[: -len("/health")]
+
+    for path in (f"{base}/health/detailed", f"{base}/health"):
+        try:
+            req = urllib.request.Request(path, method="GET")
+            with urllib.request.urlopen(req, timeout=_GATEWAY_HEALTH_TIMEOUT) as resp:
+                if resp.status == 200:
+                    body = json.loads(resp.read())
+                    return True, body
+        except Exception:
+            continue
+    return False, None
+
+
 @app.get("/api/status")
 async def get_status():
     current_ver, latest_ver = check_config_version()
 
+    # --- Gateway liveness detection ---
+    # Try local PID check first (same-host).  If that fails and a remote
+    # GATEWAY_HEALTH_URL is configured, probe the gateway over HTTP so the
+    # dashboard works when the gateway runs in a separate container.
     gateway_pid = get_running_pid()
     gateway_running = gateway_pid is not None
+    remote_health_body: dict | None = None
+
+    if not gateway_running and _GATEWAY_HEALTH_URL:
+        loop = asyncio.get_event_loop()
+        alive, remote_health_body = await loop.run_in_executor(
+            None, _probe_gateway_health
+        )
+        if alive:
+            gateway_running = True
+            # PID from the remote container (display only — not locally valid)
+            if remote_health_body:
+                gateway_pid = remote_health_body.get("pid")
 
     gateway_state = None
     gateway_platforms: dict = {}
@@ -302,7 +408,12 @@ async def get_status():
     except Exception:
         configured_gateway_platforms = None
 
+    # Prefer the detailed health endpoint response (has full state) when the
+    # local runtime status file is absent or stale (cross-container).
     runtime = read_runtime_status()
+    if runtime is None and remote_health_body and remote_health_body.get("gateway_state"):
+        runtime = remote_health_body
+
     if runtime:
         gateway_state = runtime.get("gateway_state")
         gateway_platforms = runtime.get("platforms") or {}
@@ -317,6 +428,17 @@ async def get_status():
         if not gateway_running:
             gateway_state = gateway_state if gateway_state in ("stopped", "startup_failed") else "stopped"
             gateway_platforms = {}
+        elif gateway_running and remote_health_body is not None:
+            # The health probe confirmed the gateway is alive, but the local
+            # runtime status file may be stale (cross-container).  Override
+            # stopped/None state so the dashboard shows the correct badge.
+            if gateway_state in (None, "stopped"):
+                gateway_state = "running"
+
+    # If there was no runtime info at all but the health probe confirmed alive,
+    # ensure we still report the gateway as running (no shared volume scenario).
+    if gateway_running and gateway_state is None and remote_health_body is not None:
+        gateway_state = "running"
 
     active_sessions = 0
     try:
@@ -345,6 +467,7 @@ async def get_status():
         "latest_config_version": latest_ver,
         "gateway_running": gateway_running,
         "gateway_pid": gateway_pid,
+        "gateway_health_url": _GATEWAY_HEALTH_URL,
         "gateway_state": gateway_state,
         "gateway_platforms": gateway_platforms,
         "gateway_exit_reason": gateway_exit_reason,
@@ -607,17 +730,6 @@ async def update_config(body: ConfigUpdate):
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@app.get("/api/auth/session-token")
-async def get_session_token():
-    """Return the ephemeral session token for this server instance.
-
-    The token protects sensitive endpoints (reveal).  It's served to the SPA
-    which stores it in memory — it's never persisted and dies when the server
-    process exits.  CORS already restricts this to localhost origins.
-    """
-    return {"token": _SESSION_TOKEN}
-
-
 @app.get("/api/env")
 async def get_env_vars():
     env_on_disk = load_env()
@@ -671,9 +783,7 @@ async def reveal_env_var(body: EnvVarReveal, request: Request):
     - Audit logging
     """
     # --- Token check ---
-    auth = request.headers.get("authorization", "")
-    if auth != f"Bearer {_SESSION_TOKEN}":
-        raise HTTPException(status_code=401, detail="Unauthorized")
+    _require_token(request)
 
     # --- Rate limit ---
     now = time.time()
@@ -944,9 +1054,7 @@ async def list_oauth_providers():
 @app.delete("/api/providers/oauth/{provider_id}")
 async def disconnect_oauth_provider(provider_id: str, request: Request):
     """Disconnect an OAuth provider. Token-protected (matches /env/reveal)."""
-    auth = request.headers.get("authorization", "")
-    if auth != f"Bearer {_SESSION_TOKEN}":
-        raise HTTPException(status_code=401, detail="Unauthorized")
+    _require_token(request)
 
     valid_ids = {p["id"] for p in _OAUTH_PROVIDER_CATALOG}
     if provider_id not in valid_ids:
@@ -1336,38 +1444,8 @@ def _nous_poller(session_id: str) -> None:
             auth_state, min_key_ttl_seconds=300, timeout_seconds=15.0,
             force_refresh=False, force_mint=True,
         )
-        # Save into credential pool same as auth_commands.py does
-        from agent.credential_pool import (
-            PooledCredential,
-            load_pool,
-            AUTH_TYPE_OAUTH,
-            SOURCE_MANUAL,
-        )
-        pool = load_pool("nous")
-        entry = PooledCredential.from_dict("nous", {
-            **full_state,
-            "label": "dashboard device_code",
-            "auth_type": AUTH_TYPE_OAUTH,
-            "source": f"{SOURCE_MANUAL}:dashboard_device_code",
-            "base_url": full_state.get("inference_base_url"),
-        })
-        pool.add_entry(entry)
-        # Also persist to auth store so get_nous_auth_status() sees it
-        # (matches what _login_nous in auth.py does for the CLI flow).
-        try:
-            from hermes_cli.auth import (
-                _load_auth_store, _save_provider_state, _save_auth_store,
-                _auth_store_lock,
-            )
-            with _auth_store_lock():
-                auth_store = _load_auth_store()
-                _save_provider_state(auth_store, "nous", full_state)
-                _save_auth_store(auth_store)
-        except Exception as store_exc:
-            _log.warning(
-                "oauth/device: credential pool saved but auth store write failed "
-                "(session=%s): %s", session_id, store_exc,
-            )
+        from hermes_cli.auth import persist_nous_credentials
+        persist_nous_credentials(full_state)
         with _oauth_sessions_lock:
             sess["status"] = "approved"
         _log.info("oauth/device: nous login completed (session=%s)", session_id)
@@ -1518,9 +1596,7 @@ def _codex_full_login_worker(session_id: str) -> None:
 @app.post("/api/providers/oauth/{provider_id}/start")
 async def start_oauth_login(provider_id: str, request: Request):
     """Initiate an OAuth login flow. Token-protected."""
-    auth = request.headers.get("authorization", "")
-    if auth != f"Bearer {_SESSION_TOKEN}":
-        raise HTTPException(status_code=401, detail="Unauthorized")
+    _require_token(request)
     _gc_oauth_sessions()
     valid = {p["id"] for p in _OAUTH_PROVIDER_CATALOG}
     if provider_id not in valid:
@@ -1552,9 +1628,7 @@ class OAuthSubmitBody(BaseModel):
 @app.post("/api/providers/oauth/{provider_id}/submit")
 async def submit_oauth_code(provider_id: str, body: OAuthSubmitBody, request: Request):
     """Submit the auth code for PKCE flows. Token-protected."""
-    auth = request.headers.get("authorization", "")
-    if auth != f"Bearer {_SESSION_TOKEN}":
-        raise HTTPException(status_code=401, detail="Unauthorized")
+    _require_token(request)
     if provider_id == "anthropic":
         return await asyncio.get_event_loop().run_in_executor(
             None, _submit_anthropic_pkce, body.session_id, body.code,
@@ -1582,9 +1656,7 @@ async def poll_oauth_session(provider_id: str, session_id: str):
 @app.delete("/api/providers/oauth/sessions/{session_id}")
 async def cancel_oauth_session(session_id: str, request: Request):
     """Cancel a pending OAuth session. Token-protected."""
-    auth = request.headers.get("authorization", "")
-    if auth != f"Bearer {_SESSION_TOKEN}":
-        raise HTTPException(status_code=401, detail="Unauthorized")
+    _require_token(request)
     with _oauth_sessions_lock:
         sess = _oauth_sessions.pop(session_id, None)
     if sess is None:
@@ -1932,7 +2004,12 @@ async def get_usage_analytics(days: int = 30):
 
 
 def mount_spa(application: FastAPI):
-    """Mount the built SPA. Falls back to index.html for client-side routing."""
+    """Mount the built SPA. Falls back to index.html for client-side routing.
+
+    The session token is injected into index.html via a ``<script>`` tag so
+    the SPA can authenticate against protected API endpoints without a
+    separate (unauthenticated) token-dispensing endpoint.
+    """
     if not WEB_DIST.exists():
         @application.get("/{full_path:path}")
         async def no_frontend(full_path: str):
@@ -1941,6 +2018,20 @@ def mount_spa(application: FastAPI):
                 status_code=404,
             )
         return
+
+    _index_path = WEB_DIST / "index.html"
+
+    def _serve_index():
+        """Return index.html with the session token injected."""
+        html = _index_path.read_text()
+        token_script = (
+            f'<script>window.__HERMES_SESSION_TOKEN__="{_SESSION_TOKEN}";</script>'
+        )
+        html = html.replace("</head>", f"{token_script}</head>", 1)
+        return HTMLResponse(
+            html,
+            headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
+        )
 
     application.mount("/assets", StaticFiles(directory=WEB_DIST / "assets"), name="assets")
 
@@ -1955,24 +2046,263 @@ def mount_spa(application: FastAPI):
             and file_path.is_file()
         ):
             return FileResponse(file_path)
-        return FileResponse(
-            WEB_DIST / "index.html",
-            headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
-        )
+        return _serve_index()
 
+
+# ---------------------------------------------------------------------------
+# Dashboard theme endpoints
+# ---------------------------------------------------------------------------
+
+# Built-in dashboard themes — label + description only.  The actual color
+# definitions live in the frontend (web/src/themes/presets.ts).
+_BUILTIN_DASHBOARD_THEMES = [
+    {"name": "default",   "label": "Hermes Teal",  "description": "Classic dark teal — the canonical Hermes look"},
+    {"name": "midnight",  "label": "Midnight",      "description": "Deep blue-violet with cool accents"},
+    {"name": "ember",     "label": "Ember",          "description": "Warm crimson and bronze — forge vibes"},
+    {"name": "mono",      "label": "Mono",           "description": "Clean grayscale — minimal and focused"},
+    {"name": "cyberpunk", "label": "Cyberpunk",      "description": "Neon green on black — matrix terminal"},
+    {"name": "rose",      "label": "Rosé",           "description": "Soft pink and warm ivory — easy on the eyes"},
+]
+
+
+def _discover_user_themes() -> list:
+    """Scan ~/.hermes/dashboard-themes/*.yaml for user-created themes."""
+    themes_dir = get_hermes_home() / "dashboard-themes"
+    if not themes_dir.is_dir():
+        return []
+    result = []
+    for f in sorted(themes_dir.glob("*.yaml")):
+        try:
+            data = yaml.safe_load(f.read_text(encoding="utf-8"))
+            if isinstance(data, dict) and data.get("name"):
+                result.append({
+                    "name": data["name"],
+                    "label": data.get("label", data["name"]),
+                    "description": data.get("description", ""),
+                })
+        except Exception:
+            continue
+    return result
+
+
+@app.get("/api/dashboard/themes")
+async def get_dashboard_themes():
+    """Return available themes and the currently active one."""
+    config = load_config()
+    active = config.get("dashboard", {}).get("theme", "default")
+    user_themes = _discover_user_themes()
+    # Merge built-in + user, user themes override built-in by name.
+    seen = set()
+    themes = []
+    for t in _BUILTIN_DASHBOARD_THEMES:
+        seen.add(t["name"])
+        themes.append(t)
+    for t in user_themes:
+        if t["name"] not in seen:
+            themes.append(t)
+            seen.add(t["name"])
+    return {"themes": themes, "active": active}
+
+
+class ThemeSetBody(BaseModel):
+    name: str
+
+
+@app.put("/api/dashboard/theme")
+async def set_dashboard_theme(body: ThemeSetBody):
+    """Set the active dashboard theme (persists to config.yaml)."""
+    config = load_config()
+    if "dashboard" not in config:
+        config["dashboard"] = {}
+    config["dashboard"]["theme"] = body.name
+    save_config(config)
+    return {"ok": True, "theme": body.name}
+
+
+# ---------------------------------------------------------------------------
+# Dashboard plugin system
+# ---------------------------------------------------------------------------
+
+def _discover_dashboard_plugins() -> list:
+    """Scan plugins/*/dashboard/manifest.json for dashboard extensions.
+
+    Checks three plugin sources (same as hermes_cli.plugins):
+    1. User plugins:    ~/.hermes/plugins/<name>/dashboard/manifest.json
+    2. Bundled plugins: <repo>/plugins/<name>/dashboard/manifest.json  (memory/, etc.)
+    3. Project plugins: ./.hermes/plugins/  (only if HERMES_ENABLE_PROJECT_PLUGINS)
+    """
+    plugins = []
+    seen_names: set = set()
+
+    search_dirs = [
+        (get_hermes_home() / "plugins", "user"),
+        (PROJECT_ROOT / "plugins" / "memory", "bundled"),
+        (PROJECT_ROOT / "plugins", "bundled"),
+    ]
+    if os.environ.get("HERMES_ENABLE_PROJECT_PLUGINS"):
+        search_dirs.append((Path.cwd() / ".hermes" / "plugins", "project"))
+
+    for plugins_root, source in search_dirs:
+        if not plugins_root.is_dir():
+            continue
+        for child in sorted(plugins_root.iterdir()):
+            if not child.is_dir():
+                continue
+            manifest_file = child / "dashboard" / "manifest.json"
+            if not manifest_file.exists():
+                continue
+            try:
+                data = json.loads(manifest_file.read_text(encoding="utf-8"))
+                name = data.get("name", child.name)
+                if name in seen_names:
+                    continue
+                seen_names.add(name)
+                plugins.append({
+                    "name": name,
+                    "label": data.get("label", name),
+                    "description": data.get("description", ""),
+                    "icon": data.get("icon", "Puzzle"),
+                    "version": data.get("version", "0.0.0"),
+                    "tab": data.get("tab", {"path": f"/{name}", "position": "end"}),
+                    "entry": data.get("entry", "dist/index.js"),
+                    "css": data.get("css"),
+                    "has_api": bool(data.get("api")),
+                    "source": source,
+                    "_dir": str(child / "dashboard"),
+                    "_api_file": data.get("api"),
+                })
+            except Exception as exc:
+                _log.warning("Bad dashboard plugin manifest %s: %s", manifest_file, exc)
+                continue
+    return plugins
+
+
+# Cache discovered plugins per-process (refresh on explicit re-scan).
+_dashboard_plugins_cache: Optional[list] = None
+
+
+def _get_dashboard_plugins(force_rescan: bool = False) -> list:
+    global _dashboard_plugins_cache
+    if _dashboard_plugins_cache is None or force_rescan:
+        _dashboard_plugins_cache = _discover_dashboard_plugins()
+    return _dashboard_plugins_cache
+
+
+@app.get("/api/dashboard/plugins")
+async def get_dashboard_plugins():
+    """Return discovered dashboard plugins."""
+    plugins = _get_dashboard_plugins()
+    # Strip internal fields before sending to frontend.
+    return [
+        {k: v for k, v in p.items() if not k.startswith("_")}
+        for p in plugins
+    ]
+
+
+@app.get("/api/dashboard/plugins/rescan")
+async def rescan_dashboard_plugins():
+    """Force re-scan of dashboard plugins."""
+    plugins = _get_dashboard_plugins(force_rescan=True)
+    return {"ok": True, "count": len(plugins)}
+
+
+@app.get("/dashboard-plugins/{plugin_name}/{file_path:path}")
+async def serve_plugin_asset(plugin_name: str, file_path: str):
+    """Serve static assets from a dashboard plugin directory.
+
+    Only serves files from the plugin's ``dashboard/`` subdirectory.
+    Path traversal is blocked by checking ``resolve().is_relative_to()``.
+    """
+    plugins = _get_dashboard_plugins()
+    plugin = next((p for p in plugins if p["name"] == plugin_name), None)
+    if not plugin:
+        raise HTTPException(status_code=404, detail="Plugin not found")
+
+    base = Path(plugin["_dir"])
+    target = (base / file_path).resolve()
+
+    if not target.is_relative_to(base.resolve()):
+        raise HTTPException(status_code=403, detail="Path traversal blocked")
+    if not target.exists() or not target.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+
+    # Guess content type
+    suffix = target.suffix.lower()
+    content_types = {
+        ".js": "application/javascript",
+        ".mjs": "application/javascript",
+        ".css": "text/css",
+        ".json": "application/json",
+        ".html": "text/html",
+        ".svg": "image/svg+xml",
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".woff2": "font/woff2",
+        ".woff": "font/woff",
+    }
+    media_type = content_types.get(suffix, "application/octet-stream")
+    return FileResponse(target, media_type=media_type)
+
+
+def _mount_plugin_api_routes():
+    """Import and mount backend API routes from plugins that declare them.
+
+    Each plugin's ``api`` field points to a Python file that must expose
+    a ``router`` (FastAPI APIRouter).  Routes are mounted under
+    ``/api/plugins/<name>/``.
+    """
+    for plugin in _get_dashboard_plugins():
+        api_file_name = plugin.get("_api_file")
+        if not api_file_name:
+            continue
+        api_path = Path(plugin["_dir"]) / api_file_name
+        if not api_path.exists():
+            _log.warning("Plugin %s declares api=%s but file not found", plugin["name"], api_file_name)
+            continue
+        try:
+            spec = importlib.util.spec_from_file_location(
+                f"hermes_dashboard_plugin_{plugin['name']}", api_path,
+            )
+            if spec is None or spec.loader is None:
+                continue
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            router = getattr(mod, "router", None)
+            if router is None:
+                _log.warning("Plugin %s api file has no 'router' attribute", plugin["name"])
+                continue
+            app.include_router(router, prefix=f"/api/plugins/{plugin['name']}")
+            _log.info("Mounted plugin API routes: /api/plugins/%s/", plugin["name"])
+        except Exception as exc:
+            _log.warning("Failed to load plugin %s API routes: %s", plugin["name"], exc)
+
+
+# Mount plugin API routes before the SPA catch-all.
+_mount_plugin_api_routes()
 
 mount_spa(app)
 
 
-def start_server(host: str = "127.0.0.1", port: int = 9119, open_browser: bool = True):
+def start_server(
+    host: str = "127.0.0.1",
+    port: int = 9119,
+    open_browser: bool = True,
+    allow_public: bool = False,
+):
     """Start the web UI server."""
     import uvicorn
 
-    if host not in ("127.0.0.1", "localhost", "::1"):
-        import logging
-        logging.warning(
-            "Binding to %s — the web UI exposes config and API keys. "
-            "Only bind to non-localhost if you trust all users on the network.", host,
+    _LOCALHOST = ("127.0.0.1", "localhost", "::1")
+    if host not in _LOCALHOST and not allow_public:
+        raise SystemExit(
+            f"Refusing to bind to {host} — the dashboard exposes API keys "
+            f"and config without robust authentication.\n"
+            f"Use --insecure to override (NOT recommended on untrusted networks)."
+        )
+    if host not in _LOCALHOST:
+        _log.warning(
+            "Binding to %s with --insecure — the dashboard has no robust "
+            "authentication. Only use on trusted networks.", host,
         )
 
     if open_browser:

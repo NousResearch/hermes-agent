@@ -1,16 +1,8 @@
 """Tests for API-key provider support (z.ai/GLM, Kimi, MiniMax, AI Gateway)."""
 
 import os
-import sys
-import types
 
 import pytest
-
-# Ensure dotenv doesn't interfere
-if "dotenv" not in sys.modules:
-    fake_dotenv = types.ModuleType("dotenv")
-    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
-    sys.modules["dotenv"] = fake_dotenv
 
 from hermes_cli.auth import (
     PROVIDER_REGISTRY,
@@ -41,6 +33,7 @@ class TestProviderRegistry:
         ("huggingface", "Hugging Face", "api_key"),
         ("zai", "Z.AI / GLM", "api_key"),
         ("xai", "xAI", "api_key"),
+        ("nvidia", "NVIDIA NIM", "api_key"),
         ("kimi-coding", "Kimi / Moonshot", "api_key"),
         ("minimax", "MiniMax", "api_key"),
         ("minimax-cn", "MiniMax (China)", "api_key"),
@@ -64,6 +57,12 @@ class TestProviderRegistry:
         assert pconfig.api_key_env_vars == ("XAI_API_KEY",)
         assert pconfig.base_url_env_var == "XAI_BASE_URL"
         assert pconfig.inference_base_url == "https://api.x.ai/v1"
+
+    def test_nvidia_env_vars(self):
+        pconfig = PROVIDER_REGISTRY["nvidia"]
+        assert pconfig.api_key_env_vars == ("NVIDIA_API_KEY",)
+        assert pconfig.base_url_env_var == "NVIDIA_BASE_URL"
+        assert pconfig.inference_base_url == "https://integrate.api.nvidia.com/v1"
 
     def test_copilot_env_vars(self):
         pconfig = PROVIDER_REGISTRY["copilot"]

@@ -1130,6 +1130,14 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
         state = _load_provider_state(auth_store, "nous")
         if state:
             active_sources.add("device_code")
+            # Prefer a user-supplied label embedded in the singleton state
+            # (set by persist_nous_credentials(label=...) when the user ran
+            # `hermes auth add nous --label <name>`).  Fall back to the
+            # auto-derived token fingerprint for logins that didn't supply one.
+            custom_label = str(state.get("label") or "").strip()
+            seeded_label = custom_label or label_from_token(
+                state.get("access_token", ""), "device_code"
+            )
             changed |= _upsert_entry(
                 entries,
                 provider,
@@ -1148,11 +1156,79 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
                     "agent_key": state.get("agent_key"),
                     "agent_key_expires_at": state.get("agent_key_expires_at"),
                     "tls": state.get("tls") if isinstance(state.get("tls"), dict) else None,
-                    "label": label_from_token(state.get("access_token", ""), "device_code"),
+                    "label": seeded_label,
                 },
             )
 
+    elif provider == "copilot":
+        # Copilot tokens are resolved dynamically via `gh auth token` or
+        # env vars (COPILOT_GITHUB_TOKEN / GH_TOKEN).  They don't live in
+        # the auth store or credential pool, so we resolve them here.
+        try:
+            from hermes_cli.copilot_auth import resolve_copilot_token
+            token, source = resolve_copilot_token()
+            if token:
+                source_name = "gh_cli" if "gh" in source.lower() else f"env:{source}"
+                active_sources.add(source_name)
+                pconfig = PROVIDER_REGISTRY.get(provider)
+                changed |= _upsert_entry(
+                    entries,
+                    provider,
+                    source_name,
+                    {
+                        "source": source_name,
+                        "auth_type": AUTH_TYPE_API_KEY,
+                        "access_token": token,
+                        "base_url": pconfig.inference_base_url if pconfig else "",
+                        "label": source,
+                    },
+                )
+        except Exception as exc:
+            logger.debug("Copilot token seed failed: %s", exc)
+
+    elif provider == "qwen-oauth":
+        # Qwen OAuth tokens live in ~/.qwen/oauth_creds.json, written by
+        # the Qwen CLI (`qwen auth qwen-oauth`).  They aren't in the
+        # Hermes auth store or env vars, so resolve them here.
+        # Use refresh_if_expiring=False to avoid network calls during
+        # pool loading / provider discovery.
+        try:
+            from hermes_cli.auth import resolve_qwen_runtime_credentials
+            creds = resolve_qwen_runtime_credentials(refresh_if_expiring=False)
+            token = creds.get("api_key", "")
+            if token:
+                source_name = creds.get("source", "qwen-cli")
+                active_sources.add(source_name)
+                changed |= _upsert_entry(
+                    entries,
+                    provider,
+                    source_name,
+                    {
+                        "source": source_name,
+                        "auth_type": AUTH_TYPE_OAUTH,
+                        "access_token": token,
+                        "expires_at_ms": creds.get("expires_at_ms"),
+                        "base_url": creds.get("base_url", ""),
+                        "label": creds.get("auth_file", source_name),
+                    },
+                )
+        except Exception as exc:
+            logger.debug("Qwen OAuth token seed failed: %s", exc)
+
     elif provider == "openai-codex":
+        # Respect user suppression — `hermes auth remove openai-codex` marks
+        # the device_code source as suppressed so it won't be re-seeded from
+        # either the Hermes auth store or ~/.codex/auth.json.  Without this
+        # gate the removal is instantly undone on the next load_pool() call.
+        codex_suppressed = False
+        try:
+            from hermes_cli.auth import is_source_suppressed
+            codex_suppressed = is_source_suppressed(provider, "device_code")
+        except ImportError:
+            pass
+        if codex_suppressed:
+            return changed, active_sources
+
         state = _load_provider_state(auth_store, "openai-codex")
         tokens = state.get("tokens") if isinstance(state, dict) else None
         # Fallback: import from Codex CLI (~/.codex/auth.json) only when the

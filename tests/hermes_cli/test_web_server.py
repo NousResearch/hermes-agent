@@ -108,8 +108,9 @@ class TestWebServerEndpoints:
         except ImportError:
             pytest.skip("fastapi/starlette not installed")
 
-        from hermes_cli.web_server import app
+        from hermes_cli.web_server import app, _SESSION_TOKEN
         self.client = TestClient(app)
+        self.client.headers["Authorization"] = f"Bearer {_SESSION_TOKEN}"
 
     def test_get_status(self):
         resp = self.client.get("/api/status")
@@ -239,9 +240,13 @@ class TestWebServerEndpoints:
 
     def test_reveal_env_var_no_token(self, tmp_path):
         """POST /api/env/reveal without token should return 401."""
+        from starlette.testclient import TestClient
+        from hermes_cli.web_server import app
         from hermes_cli.config import save_env_value
         save_env_value("TEST_REVEAL_NOAUTH", "secret-value")
-        resp = self.client.post(
+        # Use a fresh client WITHOUT the Authorization header
+        unauth_client = TestClient(app)
+        resp = unauth_client.post(
             "/api/env/reveal",
             json={"key": "TEST_REVEAL_NOAUTH"},
         )
@@ -258,12 +263,32 @@ class TestWebServerEndpoints:
         )
         assert resp.status_code == 401
 
-    def test_session_token_endpoint(self):
-        """GET /api/auth/session-token should return a token."""
-        from hermes_cli.web_server import _SESSION_TOKEN
+    def test_session_token_endpoint_removed(self):
+        """GET /api/auth/session-token should no longer exist (token injected via HTML)."""
         resp = self.client.get("/api/auth/session-token")
+        # The endpoint is gone — the catch-all SPA route serves index.html
+        # or the middleware returns 401 for unauthenticated /api/ paths.
+        assert resp.status_code in (200, 404)
+        # Either way, it must NOT return the token as JSON
+        try:
+            data = resp.json()
+            assert "token" not in data
+        except Exception:
+            pass  # Not JSON — that's fine (SPA HTML)
+
+    def test_unauthenticated_api_blocked(self):
+        """API requests without the session token should be rejected."""
+        from starlette.testclient import TestClient
+        from hermes_cli.web_server import app
+        # Create a client WITHOUT the Authorization header
+        unauth_client = TestClient(app)
+        resp = unauth_client.get("/api/env")
+        assert resp.status_code == 401
+        resp = unauth_client.get("/api/config")
+        assert resp.status_code == 401
+        # Public endpoints should still work
+        resp = unauth_client.get("/api/status")
         assert resp.status_code == 200
-        assert resp.json()["token"] == _SESSION_TOKEN
 
     def test_path_traversal_blocked(self):
         """Verify URL-encoded path traversal is blocked."""
@@ -358,8 +383,9 @@ class TestConfigRoundTrip:
             from starlette.testclient import TestClient
         except ImportError:
             pytest.skip("fastapi/starlette not installed")
-        from hermes_cli.web_server import app
+        from hermes_cli.web_server import app, _SESSION_TOKEN
         self.client = TestClient(app)
+        self.client.headers["Authorization"] = f"Bearer {_SESSION_TOKEN}"
 
     def test_get_config_no_internal_keys(self):
         """GET /api/config should not expose _config_version or _model_meta."""
@@ -490,8 +516,9 @@ class TestNewEndpoints:
             from starlette.testclient import TestClient
         except ImportError:
             pytest.skip("fastapi/starlette not installed")
-        from hermes_cli.web_server import app
+        from hermes_cli.web_server import app, _SESSION_TOKEN
         self.client = TestClient(app)
+        self.client.headers["Authorization"] = f"Bearer {_SESSION_TOKEN}"
 
     def test_get_logs_default(self):
         resp = self.client.get("/api/logs")
@@ -668,11 +695,16 @@ class TestNewEndpoints:
         assert isinstance(data["daily"], list)
         assert "total_sessions" in data["totals"]
 
-    def test_session_token_endpoint(self):
-        from hermes_cli.web_server import _SESSION_TOKEN
+    def test_session_token_endpoint_removed(self):
+        """GET /api/auth/session-token no longer exists."""
         resp = self.client.get("/api/auth/session-token")
-        assert resp.status_code == 200
-        assert resp.json()["token"] == _SESSION_TOKEN
+        # Should not return a JSON token object
+        assert resp.status_code in (200, 404)
+        try:
+            data = resp.json()
+            assert "token" not in data
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -952,3 +984,197 @@ class TestModelInfoEndpoint:
         assert resp.status_code == 200
         data = resp.json()
         assert data["auto_context_length"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Gateway health probe tests
+# ---------------------------------------------------------------------------
+
+
+class TestProbeGatewayHealth:
+    """Tests for _probe_gateway_health() — cross-container gateway detection."""
+
+    def test_returns_false_when_no_url_configured(self, monkeypatch):
+        """When GATEWAY_HEALTH_URL is unset, the probe returns (False, None)."""
+        import hermes_cli.web_server as ws
+        monkeypatch.setattr(ws, "_GATEWAY_HEALTH_URL", None)
+        alive, body = ws._probe_gateway_health()
+        assert alive is False
+        assert body is None
+
+    def test_normalizes_url_with_health_suffix(self, monkeypatch):
+        """If the user sets the URL to include /health, it's stripped to base."""
+        import hermes_cli.web_server as ws
+        monkeypatch.setattr(ws, "_GATEWAY_HEALTH_URL", "http://gw:8642/health")
+        monkeypatch.setattr(ws, "_GATEWAY_HEALTH_TIMEOUT", 1)
+        # Both paths should fail (no server), but we verify they were constructed
+        # correctly by checking the URLs attempted.
+        calls = []
+        original_urlopen = ws.urllib.request.urlopen
+
+        def mock_urlopen(req, **kwargs):
+            calls.append(req.full_url)
+            raise ConnectionError("mock")
+
+        monkeypatch.setattr(ws.urllib.request, "urlopen", mock_urlopen)
+        alive, body = ws._probe_gateway_health()
+        assert alive is False
+        assert "http://gw:8642/health/detailed" in calls
+        assert "http://gw:8642/health" in calls
+
+    def test_normalizes_url_with_health_detailed_suffix(self, monkeypatch):
+        """If the user sets the URL to include /health/detailed, it's stripped to base."""
+        import hermes_cli.web_server as ws
+        monkeypatch.setattr(ws, "_GATEWAY_HEALTH_URL", "http://gw:8642/health/detailed")
+        monkeypatch.setattr(ws, "_GATEWAY_HEALTH_TIMEOUT", 1)
+        calls = []
+
+        def mock_urlopen(req, **kwargs):
+            calls.append(req.full_url)
+            raise ConnectionError("mock")
+
+        monkeypatch.setattr(ws.urllib.request, "urlopen", mock_urlopen)
+        ws._probe_gateway_health()
+        assert "http://gw:8642/health/detailed" in calls
+        assert "http://gw:8642/health" in calls
+
+    def test_successful_detailed_probe(self, monkeypatch):
+        """Successful /health/detailed probe returns (True, body_dict)."""
+        import hermes_cli.web_server as ws
+        monkeypatch.setattr(ws, "_GATEWAY_HEALTH_URL", "http://gw:8642")
+        monkeypatch.setattr(ws, "_GATEWAY_HEALTH_TIMEOUT", 1)
+
+        response_body = json.dumps({
+            "status": "ok",
+            "gateway_state": "running",
+            "pid": 42,
+        })
+
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.read.return_value = response_body.encode()
+        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        monkeypatch.setattr(ws.urllib.request, "urlopen", lambda req, **kw: mock_resp)
+        alive, body = ws._probe_gateway_health()
+        assert alive is True
+        assert body["status"] == "ok"
+        assert body["pid"] == 42
+
+    def test_detailed_fails_falls_back_to_simple_health(self, monkeypatch):
+        """If /health/detailed fails, falls back to /health."""
+        import hermes_cli.web_server as ws
+        monkeypatch.setattr(ws, "_GATEWAY_HEALTH_URL", "http://gw:8642")
+        monkeypatch.setattr(ws, "_GATEWAY_HEALTH_TIMEOUT", 1)
+
+        call_count = [0]
+
+        def mock_urlopen(req, **kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                raise ConnectionError("detailed failed")
+            mock_resp = MagicMock()
+            mock_resp.status = 200
+            mock_resp.read.return_value = json.dumps({"status": "ok"}).encode()
+            mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+            mock_resp.__exit__ = MagicMock(return_value=False)
+            return mock_resp
+
+        monkeypatch.setattr(ws.urllib.request, "urlopen", mock_urlopen)
+        alive, body = ws._probe_gateway_health()
+        assert alive is True
+        assert body["status"] == "ok"
+        assert call_count[0] == 2
+
+
+class TestStatusRemoteGateway:
+    """Tests for /api/status with remote gateway health fallback."""
+
+    @pytest.fixture(autouse=True)
+    def _setup_test_client(self):
+        try:
+            from starlette.testclient import TestClient
+        except ImportError:
+            pytest.skip("fastapi/starlette not installed")
+
+        from hermes_cli.web_server import app, _SESSION_TOKEN
+        self.client = TestClient(app)
+        self.client.headers["Authorization"] = f"Bearer {_SESSION_TOKEN}"
+
+    def test_status_falls_back_to_remote_probe(self, monkeypatch):
+        """When local PID check fails and remote probe succeeds, gateway shows running."""
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws, "get_running_pid", lambda: None)
+        monkeypatch.setattr(ws, "read_runtime_status", lambda: None)
+        monkeypatch.setattr(ws, "_GATEWAY_HEALTH_URL", "http://gw:8642")
+        monkeypatch.setattr(ws, "_probe_gateway_health", lambda: (True, {
+            "status": "ok",
+            "gateway_state": "running",
+            "platforms": {"telegram": {"state": "connected"}},
+            "pid": 999,
+        }))
+
+        resp = self.client.get("/api/status")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["gateway_running"] is True
+        assert data["gateway_pid"] == 999
+        assert data["gateway_state"] == "running"
+        assert data["gateway_health_url"] == "http://gw:8642"
+
+    def test_status_remote_probe_not_attempted_when_local_pid_found(self, monkeypatch):
+        """When local PID check succeeds, the remote probe is never called."""
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws, "get_running_pid", lambda: 1234)
+        monkeypatch.setattr(ws, "read_runtime_status", lambda: {
+            "gateway_state": "running",
+            "platforms": {},
+        })
+        monkeypatch.setattr(ws, "_GATEWAY_HEALTH_URL", "http://gw:8642")
+        probe_called = [False]
+        original = ws._probe_gateway_health
+
+        def track_probe():
+            probe_called[0] = True
+            return original()
+
+        monkeypatch.setattr(ws, "_probe_gateway_health", track_probe)
+
+        resp = self.client.get("/api/status")
+        assert resp.status_code == 200
+        assert not probe_called[0]
+
+    def test_status_remote_probe_not_attempted_when_no_url(self, monkeypatch):
+        """When GATEWAY_HEALTH_URL is unset, no probe is attempted."""
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws, "get_running_pid", lambda: None)
+        monkeypatch.setattr(ws, "read_runtime_status", lambda: None)
+        monkeypatch.setattr(ws, "_GATEWAY_HEALTH_URL", None)
+
+        resp = self.client.get("/api/status")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["gateway_running"] is False
+        assert data["gateway_health_url"] is None
+
+    def test_status_remote_running_null_pid(self, monkeypatch):
+        """Remote gateway running but PID not in response — pid should be None."""
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws, "get_running_pid", lambda: None)
+        monkeypatch.setattr(ws, "read_runtime_status", lambda: None)
+        monkeypatch.setattr(ws, "_GATEWAY_HEALTH_URL", "http://gw:8642")
+        monkeypatch.setattr(ws, "_probe_gateway_health", lambda: (True, {
+            "status": "ok",
+        }))
+
+        resp = self.client.get("/api/status")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["gateway_running"] is True
+        assert data["gateway_pid"] is None
+        assert data["gateway_state"] == "running"

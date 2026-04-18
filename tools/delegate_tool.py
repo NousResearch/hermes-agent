@@ -199,7 +199,7 @@ def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
     return [t for t in toolsets if t not in blocked_toolset_names]
 
 
-def _build_child_progress_callback(task_index: int, parent_agent, task_count: int = 1) -> Optional[callable]:
+def _build_child_progress_callback(task_index: int, goal: str, parent_agent, task_count: int = 1) -> Optional[callable]:
     """Build a callback that relays child agent tool calls to the parent display.
 
     Two display paths:
@@ -222,6 +222,7 @@ def _build_child_progress_callback(task_index: int, parent_agent, task_count: in
 
     # Show 1-indexed prefix only in batch mode (multiple tasks)
     prefix = f"[{task_index + 1}] " if task_count > 1 else ""
+    goal_label = (goal or "").strip()
 
     # Gateway: batch tool names, flush periodically
     _BATCH_SIZE = 5
@@ -235,9 +236,40 @@ def _build_child_progress_callback(task_index: int, parent_agent, task_count: in
         except Exception as e:
             logger.debug("Parent activity touch failed: %s", e)
 
+    def _relay(event_type: str, tool_name: str = None, preview: str = None, args=None, **kwargs):
+        if not parent_cb:
+            return
+        try:
+            parent_cb(
+                event_type,
+                tool_name,
+                preview,
+                args,
+                task_index=task_index,
+                task_count=task_count,
+                goal=goal_label,
+                **kwargs,
+            )
+        except Exception as e:
+            logger.debug("Parent callback failed: %s", e)
+
     def _callback(event_type: str, tool_name: str = None, preview: str = None, args=None, **kwargs):
         # event_type is one of: "tool.started", "tool.completed",
-        # "reasoning.available", "_thinking", "subagent_progress"
+        # "reasoning.available", "_thinking", "subagent.*"
+
+        if event_type == "subagent.start":
+            if spinner and goal_label:
+                short = (goal_label[:55] + "...") if len(goal_label) > 55 else goal_label
+                try:
+                    spinner.print_above(f" {prefix}├─ 🔀 {short}")
+                except Exception as e:
+                    logger.debug("Spinner print_above failed: %s", e)
+            _relay("subagent.start", preview=preview or goal_label or "", **kwargs)
+            return
+
+        if event_type == "subagent.complete":
+            _relay("subagent.complete", preview=preview, **kwargs)
+            return
 
         # "_thinking" / reasoning events
         if event_type in ("_thinking", "reasoning.available"):
@@ -252,7 +284,7 @@ def _build_child_progress_callback(task_index: int, parent_agent, task_count: in
                     spinner.print_above(f" {prefix}├─ 💭 \"{short}\"")
                 except Exception as e:
                     logger.debug("Spinner print_above failed: %s", e)
-            # Don't relay thinking to gateway (too noisy for chat)
+            _relay("subagent.thinking", preview=text)
             return
 
         # tool.completed — no display needed here (spinner shows on started)
@@ -276,13 +308,11 @@ def _build_child_progress_callback(task_index: int, parent_agent, task_count: in
                 logger.debug("Spinner print_above failed: %s", e)
 
         if parent_cb:
+            _relay("subagent.tool", tool_name, preview, args)
             _batch.append(tool_name or "")
             if len(_batch) >= _BATCH_SIZE:
                 summary = ", ".join(_batch)
-                try:
-                    parent_cb("subagent_progress", f"🔀 {prefix}{summary}")
-                except Exception as e:
-                    logger.debug("Parent callback failed: %s", e)
+                _relay("subagent.progress", preview=f"🔀 {prefix}{summary}")
                 _batch.clear()
 
     def _flush():
@@ -290,10 +320,7 @@ def _build_child_progress_callback(task_index: int, parent_agent, task_count: in
         if parent_cb and _batch:
             summary = ", ".join(_batch)
             _touch(f"delegate child progress: flush {prefix}{summary[:80]}")
-            try:
-                parent_cb("subagent_progress", f"🔀 {prefix}{summary}")
-            except Exception as e:
-                logger.debug("Parent callback flush failed: %s", e)
+            _relay("subagent.progress", preview=f"🔀 {prefix}{summary}")
             _batch.clear()
 
     _callback._flush = _flush
@@ -364,7 +391,7 @@ def _build_child_agent(
         parent_api_key = parent_agent._client_kwargs.get("api_key")
 
     # Build progress callback to relay tool calls to parent display
-    child_progress_cb = _build_child_progress_callback(task_index, parent_agent, task_count=task_count)
+    child_progress_cb = _build_child_progress_callback(task_index, goal, parent_agent, task_count=task_count)
 
     # Each subagent gets its own iteration budget capped at max_iterations
     # (configurable via delegation.max_iterations, default 50).  This means
@@ -503,35 +530,39 @@ def _run_single_child(
     # starts and the gateway eventually kills the agent for "no activity".
     _heartbeat_stop = threading.Event()
 
+    def _describe_child_activity() -> str:
+        desc = f"delegate_task: subagent {task_index} working"
+        try:
+            child_summary = child.get_activity_summary()
+            child_tool = child_summary.get("current_tool")
+            child_iter = child_summary.get("api_call_count", 0)
+            child_max = child_summary.get("max_iterations", 0)
+            if child_tool:
+                return (
+                    f"delegate_task: subagent running {child_tool} "
+                    f"(iteration {child_iter}/{child_max})"
+                )
+            child_desc = child_summary.get("last_activity_desc", "")
+            if child_desc:
+                return (
+                    f"delegate_task: subagent {child_desc} "
+                    f"(iteration {child_iter}/{child_max})"
+                )
+        except Exception:
+            pass
+        return desc
+
+    def _touch_child_activity() -> None:
+        if not callable(touch_parent_activity):
+            return
+        try:
+            touch_parent_activity(_describe_child_activity())
+        except Exception:
+            pass
+
     def _heartbeat_loop():
         while not _heartbeat_stop.wait(_HEARTBEAT_INTERVAL):
-            if not callable(touch_parent_activity):
-                continue
-            # Pull detail from the child's own activity tracker
-            desc = f"delegate_task: subagent {task_index} working"
-            try:
-                child_summary = child.get_activity_summary()
-                child_tool = child_summary.get("current_tool")
-                child_iter = child_summary.get("api_call_count", 0)
-                child_max = child_summary.get("max_iterations", 0)
-                if child_tool:
-                    desc = (
-                        f"delegate_task: subagent running {child_tool} "
-                        f"(iteration {child_iter}/{child_max})"
-                    )
-                else:
-                    child_desc = child_summary.get("last_activity_desc", "")
-                    if child_desc:
-                        desc = (
-                            f"delegate_task: subagent {child_desc} "
-                            f"(iteration {child_iter}/{child_max})"
-                        )
-            except Exception:
-                pass
-            try:
-                touch_parent_activity(desc)
-            except Exception:
-                pass
+            _touch_child_activity()
 
     _heartbeat_thread = threading.Thread(target=_heartbeat_loop, daemon=True)
     _heartbeat_thread.start()
@@ -539,10 +570,17 @@ def _run_single_child(
     if callable(touch_parent_activity):
         try:
             touch_parent_activity(f"delegate child started: task {task_index + 1}")
+            _touch_child_activity()
         except Exception as exc:
             logger.debug("Parent activity touch failed at child start: %s", exc)
 
     try:
+        if child_progress_cb:
+            try:
+                child_progress_cb("subagent.start", preview=goal)
+            except Exception as e:
+                logger.debug("Progress callback start failed: %s", e)
+
         result = child.run_conversation(user_message=goal)
 
         # Flush any remaining batched progress to gateway
@@ -642,6 +680,17 @@ def _run_single_child(
                 touch_parent_activity(f"delegate child finished: task {task_index + 1} ({status})")
             except Exception as exc:
                 logger.debug("Parent activity touch failed at child finish: %s", exc)
+        if child_progress_cb:
+            try:
+                child_progress_cb(
+                    "subagent.complete",
+                    preview=summary[:160] if summary else entry.get("error", ""),
+                    status=status,
+                    duration_seconds=duration,
+                    summary=summary[:500] if summary else entry.get("error", ""),
+                )
+            except Exception as e:
+                logger.debug("Progress callback completion failed: %s", e)
 
         return entry
 
@@ -653,6 +702,17 @@ def _run_single_child(
             except Exception as touch_exc:
                 logger.debug("Parent activity touch failed at child error: %s", touch_exc)
         logging.exception(f"[subagent-{task_index}] failed")
+        if child_progress_cb:
+            try:
+                child_progress_cb(
+                    "subagent.complete",
+                    preview=str(exc),
+                    status="failed",
+                    duration_seconds=duration,
+                    summary=str(exc),
+                )
+            except Exception as e:
+                logger.debug("Progress callback failure relay failed: %s", e)
         return {
             "task_index": task_index,
             "status": "error",
@@ -797,11 +857,16 @@ def delegate_task(
     try:
         for i, t in enumerate(task_list):
             child = _build_child_agent(
-                task_index=i, goal=t["goal"], context=t.get("context"),
-                toolsets=t.get("toolsets") or toolsets, model=creds["model"],
-                max_iterations=effective_max_iter, parent_agent=parent_agent,
+                task_index=i,
+                goal=t["goal"],
+                context=t.get("context"),
+                toolsets=t.get("toolsets") or toolsets,
+                model=creds["model"],
+                max_iterations=effective_max_iter,
                 task_count=n_tasks,
-                override_provider=creds["provider"], override_base_url=creds["base_url"],
+                parent_agent=parent_agent,
+                override_provider=creds["provider"],
+                override_base_url=creds["base_url"],
                 override_api_key=creds["api_key"],
                 override_api_mode=creds["api_mode"],
                 override_acp_command=t.get("acp_command") or acp_command,
@@ -848,45 +913,86 @@ def delegate_task(
                 futures[future] = i
                 future_meta[future] = delegation_id
 
-            for future in as_completed(futures):
-                try:
-                    entry = future.result()
-                except Exception as exc:
-                    idx = futures[future]
-                    entry = {
-                        "task_index": idx,
-                        "status": "error",
-                        "summary": None,
-                        "error": str(exc),
-                        "api_calls": 0,
-                        "duration_seconds": 0,
-                    }
-                _persist_delegation_finish(parent_agent, future_meta.get(future), entry)
-                results.append(entry)
-                completed_count += 1
+            # Poll futures with interrupt checking.  as_completed() blocks
+            # until ALL futures finish — if a child agent gets stuck,
+            # the parent blocks forever even after interrupt propagation.
+            # Instead, use wait() with a short timeout so we can bail
+            # when the parent is interrupted.
+            pending = set(futures.keys())
+            while pending:
+                if getattr(parent_agent, "_interrupt_requested", False) is True:
+                    # Parent interrupted — collect whatever finished and
+                    # abandon the rest.  Children already received the
+                    # interrupt signal; we just can't wait forever.
+                    for f in pending:
+                        idx = futures[f]
+                        if f.done():
+                            try:
+                                entry = f.result()
+                            except Exception as exc:
+                                entry = {
+                                    "task_index": idx,
+                                    "status": "error",
+                                    "summary": None,
+                                    "error": str(exc),
+                                    "api_calls": 0,
+                                    "duration_seconds": 0,
+                                }
+                        else:
+                            entry = {
+                                "task_index": idx,
+                                "status": "interrupted",
+                                "summary": None,
+                                "error": "Parent agent interrupted — child did not finish in time",
+                                "api_calls": 0,
+                                "duration_seconds": 0,
+                            }
+                        _persist_delegation_finish(parent_agent, future_meta.get(f), entry)
+                        results.append(entry)
+                        completed_count += 1
+                    break
 
-                # Print per-task completion line above the spinner
-                idx = entry["task_index"]
-                label = task_labels[idx] if idx < len(task_labels) else f"Task {idx}"
-                dur = entry.get("duration_seconds", 0)
-                status = entry.get("status", "?")
-                icon = "✓" if status == "completed" else "✗"
-                remaining = n_tasks - completed_count
-                completion_line = f"{icon} [{idx+1}/{n_tasks}] {label}  ({dur}s)"
-                if spinner_ref:
+                from concurrent.futures import wait as _cf_wait, FIRST_COMPLETED
+                done, pending = _cf_wait(pending, timeout=0.5, return_when=FIRST_COMPLETED)
+                for future in done:
                     try:
-                        spinner_ref.print_above(completion_line)
-                    except Exception:
+                        entry = future.result()
+                    except Exception as exc:
+                        idx = futures[future]
+                        entry = {
+                            "task_index": idx,
+                            "status": "error",
+                            "summary": None,
+                            "error": str(exc),
+                            "api_calls": 0,
+                            "duration_seconds": 0,
+                        }
+                    _persist_delegation_finish(parent_agent, future_meta.get(future), entry)
+                    results.append(entry)
+                    completed_count += 1
+
+                    # Print per-task completion line above the spinner
+                    idx = entry["task_index"]
+                    label = task_labels[idx] if idx < len(task_labels) else f"Task {idx}"
+                    dur = entry.get("duration_seconds", 0)
+                    status = entry.get("status", "?")
+                    icon = "✓" if status == "completed" else "✗"
+                    remaining = n_tasks - completed_count
+                    completion_line = f"{icon} [{idx+1}/{n_tasks}] {label}  ({dur}s)"
+                    if spinner_ref:
+                        try:
+                            spinner_ref.print_above(completion_line)
+                        except Exception:
+                            print(f"  {completion_line}")
+                    else:
                         print(f"  {completion_line}")
-                else:
-                    print(f"  {completion_line}")
 
-                # Update spinner text to show remaining count
-                if spinner_ref and remaining > 0:
-                    try:
-                        spinner_ref.update_text(f"🔀 {remaining} task{'s' if remaining != 1 else ''} remaining")
-                    except Exception as e:
-                        logger.debug("Spinner update_text failed: %s", e)
+                    # Update spinner text to show remaining count
+                    if spinner_ref and remaining > 0:
+                        try:
+                            spinner_ref.update_text(f"🔀 {remaining} task{'s' if remaining != 1 else ''} remaining")
+                        except Exception as e:
+                            logger.debug("Spinner update_text failed: %s", e)
 
         # Sort by task_index so results match input order
         results.sort(key=lambda r: r["task_index"])

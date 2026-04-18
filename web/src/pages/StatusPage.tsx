@@ -53,7 +53,9 @@ export default function StatusPage() {
   };
 
   function gatewayValue(): string {
-    if (status!.gateway_running) return `${t.status.pid} ${status!.gateway_pid}`;
+    if (status!.gateway_running && status!.gateway_health_url) return status!.gateway_health_url;
+    if (status!.gateway_running && status!.gateway_pid) return `${t.status.pid} ${status!.gateway_pid}`;
+    if (status!.gateway_running) return t.status.runningRemote;
     if (status!.gateway_state === "startup_failed") return t.status.startFailed;
     return t.status.notRunning;
   }
@@ -136,14 +138,14 @@ export default function StatusPage() {
 
       <div className="grid gap-4 sm:grid-cols-3">
         {items.map(({ icon: Icon, label, value, badgeText, badgeVariant }) => (
-          <Card key={label}>
+          <Card key={label} className="min-w-0 overflow-hidden">
             <CardHeader className="flex flex-row items-center justify-between pb-2">
               <CardTitle className="text-sm font-medium">{label}</CardTitle>
               <Icon className="h-4 w-4 text-muted-foreground" />
             </CardHeader>
 
             <CardContent>
-              <div className="text-2xl font-bold font-display">{value}</div>
+              <div className="text-2xl font-bold font-display truncate" title={value}>{value}</div>
 
               {badgeText && (
                 <Badge variant={badgeVariant} className="mt-2">

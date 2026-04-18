@@ -80,6 +80,7 @@ export const zh: Translations = {
     notRunning: "未运行",
     startFailed: "启动失败",
     pid: "进程",
+    runningRemote: "运行中（远程）",
     noneRunning: "无",
     gatewayFailedToStart: "网关启动失败",
     lastUpdate: "最后更新",
@@ -170,8 +171,10 @@ export const zh: Translations = {
     noSkills: "未找到技能。技能从 ~/.hermes/skills/ 加载",
     noSkillsMatch: "没有匹配的技能。",
     skillCount: "{count} 个技能",
+    resultCount: "{count} 个结果",
     noDescription: "暂无描述。",
     toolsets: "工具集",
+    toolsetLabel: "{name} 工具集",
     noToolsetsMatch: "没有匹配的工具集。",
     setupNeeded: "需要配置",
     disabledForCli: "CLI 已禁用",
@@ -271,5 +274,10 @@ export const zh: Translations = {
 
   language: {
     switchTo: "切换到英文",
+  },
+
+  theme: {
+    title: "主题",
+    switchTheme: "切换主题",
   },
 };

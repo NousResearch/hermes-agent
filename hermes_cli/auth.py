@@ -70,12 +70,17 @@ DEFAULT_CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
 DEFAULT_QWEN_BASE_URL = "https://portal.qwen.ai/v1"
 DEFAULT_GITHUB_MODELS_BASE_URL = "https://api.githubcopilot.com"
 DEFAULT_COPILOT_ACP_BASE_URL = "acp://copilot"
+DEFAULT_OLLAMA_CLOUD_BASE_URL = "https://ollama.com/v1"
 CODEX_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 CODEX_OAUTH_TOKEN_URL = "https://auth.openai.com/oauth/token"
 CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120
 QWEN_OAUTH_CLIENT_ID = "f0304373b74a44d2b584a3fb70ca9e56"
 QWEN_OAUTH_TOKEN_URL = "https://chat.qwen.ai/api/v1/oauth2/token"
 QWEN_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120
+
+# Google Gemini OAuth (google-gemini-cli provider, Cloud Code Assist backend)
+DEFAULT_GEMINI_CLOUDCODE_BASE_URL = "cloudcode-pa://google"
+GEMINI_OAUTH_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 60  # refresh 60s before expiry
 
 
 # =============================================================================
@@ -120,6 +125,12 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         name="Qwen OAuth",
         auth_type="oauth_external",
         inference_base_url=DEFAULT_QWEN_BASE_URL,
+    ),
+    "google-gemini-cli": ProviderConfig(
+        id="google-gemini-cli",
+        name="Google Gemini (OAuth)",
+        auth_type="oauth_external",
+        inference_base_url=DEFAULT_GEMINI_CLOUDCODE_BASE_URL,
     ),
     "copilot": ProviderConfig(
         id="copilot",
@@ -222,6 +233,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("XAI_API_KEY",),
         base_url_env_var="XAI_BASE_URL",
     ),
+    "nvidia": ProviderConfig(
+        id="nvidia",
+        name="NVIDIA NIM",
+        auth_type="api_key",
+        inference_base_url="https://integrate.api.nvidia.com/v1",
+        api_key_env_vars=("NVIDIA_API_KEY",),
+        base_url_env_var="NVIDIA_BASE_URL",
+    ),
     "ai-gateway": ProviderConfig(
         id="ai-gateway",
         name="Vercel AI Gateway",
@@ -273,6 +292,22 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         inference_base_url="https://api.xiaomimimo.com/v1",
         api_key_env_vars=("XIAOMI_API_KEY",),
         base_url_env_var="XIAOMI_BASE_URL",
+    ),
+    "ollama-cloud": ProviderConfig(
+        id="ollama-cloud",
+        name="Ollama Cloud",
+        auth_type="api_key",
+        inference_base_url=DEFAULT_OLLAMA_CLOUD_BASE_URL,
+        api_key_env_vars=("OLLAMA_API_KEY",),
+        base_url_env_var="OLLAMA_BASE_URL",
+    ),
+    "bedrock": ProviderConfig(
+        id="bedrock",
+        name="AWS Bedrock",
+        auth_type="aws_sdk",
+        inference_base_url="https://bedrock-runtime.us-east-1.amazonaws.com",
+        api_key_env_vars=(),
+        base_url_env_var="BEDROCK_BASE_URL",
     ),
 }
 
@@ -383,13 +418,16 @@ def _resolve_api_key_provider_secret(
 # Z.AI has separate billing for general vs coding plans, and global vs China
 # endpoints.  A key that works on one may return "Insufficient balance" on
 # another.  We probe at setup time and store the working endpoint.
+# Each entry lists candidate models to try in order — newer coding plan accounts
+# may only have access to recent models (glm-5.1, glm-5v-turbo) while older
+# ones still use glm-4.7.
 
 ZAI_ENDPOINTS = [
-    # (id, base_url, default_model, label)
-    ("global",        "https://api.z.ai/api/paas/v4",        "glm-5",   "Global"),
-    ("cn",            "https://open.bigmodel.cn/api/paas/v4", "glm-5",   "China"),
-    ("coding-global", "https://api.z.ai/api/coding/paas/v4",  "glm-4.7", "Global (Coding Plan)"),
-    ("coding-cn",     "https://open.bigmodel.cn/api/coding/paas/v4", "glm-4.7", "China (Coding Plan)"),
+    # (id, base_url, probe_models, label)
+    ("global",        "https://api.z.ai/api/paas/v4",        ["glm-5"],   "Global"),
+    ("cn",            "https://open.bigmodel.cn/api/paas/v4", ["glm-5"],   "China"),
+    ("coding-global", "https://api.z.ai/api/coding/paas/v4",  ["glm-5.1", "glm-5v-turbo", "glm-4.7"], "Global (Coding Plan)"),
+    ("coding-cn",     "https://open.bigmodel.cn/api/coding/paas/v4", ["glm-5.1", "glm-5v-turbo", "glm-4.7"], "China (Coding Plan)"),
 ]
 
 
@@ -397,35 +435,37 @@ def detect_zai_endpoint(api_key: str, timeout: float = 8.0) -> Optional[Dict[str
     """Probe z.ai endpoints to find one that accepts this API key.
 
     Returns {"id": ..., "base_url": ..., "model": ..., "label": ...} for the
-    first working endpoint, or None if all fail.
+    first working endpoint, or None if all fail.  For endpoints with multiple
+    candidate models, tries each in order and returns the first that succeeds.
     """
-    for ep_id, base_url, model, label in ZAI_ENDPOINTS:
-        try:
-            resp = httpx.post(
-                f"{base_url}/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": model,
-                    "stream": False,
-                    "max_tokens": 1,
-                    "messages": [{"role": "user", "content": "ping"}],
-                },
-                timeout=timeout,
-            )
-            if resp.status_code == 200:
-                logger.debug("Z.AI endpoint probe: %s (%s) OK", ep_id, base_url)
-                return {
-                    "id": ep_id,
-                    "base_url": base_url,
-                    "model": model,
-                    "label": label,
-                }
-            logger.debug("Z.AI endpoint probe: %s returned %s", ep_id, resp.status_code)
-        except Exception as exc:
-            logger.debug("Z.AI endpoint probe: %s failed: %s", ep_id, exc)
+    for ep_id, base_url, probe_models, label in ZAI_ENDPOINTS:
+        for model in probe_models:
+            try:
+                resp = httpx.post(
+                    f"{base_url}/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": model,
+                        "stream": False,
+                        "max_tokens": 1,
+                        "messages": [{"role": "user", "content": "ping"}],
+                    },
+                    timeout=timeout,
+                )
+                if resp.status_code == 200:
+                    logger.debug("Z.AI endpoint probe: %s (%s) model=%s OK", ep_id, base_url, model)
+                    return {
+                        "id": ep_id,
+                        "base_url": base_url,
+                        "model": model,
+                        "label": label,
+                    }
+                logger.debug("Z.AI endpoint probe: %s model=%s returned %s", ep_id, model, resp.status_code)
+            except Exception as exc:
+                logger.debug("Z.AI endpoint probe: %s model=%s failed: %s", ep_id, model, exc)
     return None
 
 
@@ -741,6 +781,28 @@ def is_source_suppressed(provider_id: str, source: str) -> bool:
         return False
 
 
+def unsuppress_credential_source(provider_id: str, source: str) -> bool:
+    """Clear a suppression marker so the source will be re-seeded on the next load.
+
+    Returns True if a marker was cleared, False if no marker existed.
+    """
+    with _auth_store_lock():
+        auth_store = _load_auth_store()
+        suppressed = auth_store.get("suppressed_sources")
+        if not isinstance(suppressed, dict):
+            return False
+        provider_list = suppressed.get(provider_id)
+        if not isinstance(provider_list, list) or source not in provider_list:
+            return False
+        provider_list.remove(source)
+        if not provider_list:
+            suppressed.pop(provider_id, None)
+        if not suppressed:
+            auth_store.pop("suppressed_sources", None)
+        _save_auth_store(auth_store)
+        return True
+
+
 def get_provider_auth_state(provider_id: str) -> Optional[Dict[str, Any]]:
     """Return persisted auth state for a provider, or None."""
     auth_store = _load_auth_store()
@@ -906,6 +968,7 @@ def resolve_provider(
     _PROVIDER_ALIASES = {
         "glm": "zai", "z-ai": "zai", "z.ai": "zai", "zhipu": "zai",
         "google": "gemini", "google-gemini": "gemini", "google-ai-studio": "gemini",
+        "x-ai": "xai", "x.ai": "xai", "grok": "xai",
         "kimi": "kimi-coding", "kimi-for-coding": "kimi-coding", "moonshot": "kimi-coding",
         "kimi-cn": "kimi-coding-cn", "moonshot-cn": "kimi-coding-cn",
         "arcee-ai": "arcee", "arceeai": "arcee",
@@ -916,14 +979,16 @@ def resolve_provider(
         "github-copilot-acp": "copilot-acp", "copilot-acp-agent": "copilot-acp",
         "aigateway": "ai-gateway", "vercel": "ai-gateway", "vercel-ai-gateway": "ai-gateway",
         "opencode": "opencode-zen", "zen": "opencode-zen",
-        "qwen-portal": "qwen-oauth", "qwen-cli": "qwen-oauth", "qwen-oauth": "qwen-oauth",
+        "qwen-portal": "qwen-oauth", "qwen-cli": "qwen-oauth", "qwen-oauth": "qwen-oauth", "google-gemini-cli": "google-gemini-cli", "gemini-cli": "google-gemini-cli", "gemini-oauth": "google-gemini-cli",
         "hf": "huggingface", "hugging-face": "huggingface", "huggingface-hub": "huggingface",
         "mimo": "xiaomi", "xiaomi-mimo": "xiaomi",
+        "aws": "bedrock", "aws-bedrock": "bedrock", "amazon-bedrock": "bedrock", "amazon": "bedrock",
         "go": "opencode-go", "opencode-go-sub": "opencode-go",
         "kilo": "kilocode", "kilo-code": "kilocode", "kilo-gateway": "kilocode",
         # Local server aliases — route through the generic custom provider
         "lmstudio": "custom", "lm-studio": "custom", "lm_studio": "custom",
-        "ollama": "custom", "vllm": "custom", "llamacpp": "custom",
+        "ollama": "custom", "ollama_cloud": "ollama-cloud",
+        "vllm": "custom", "llamacpp": "custom",
         "llama.cpp": "custom", "llama-cpp": "custom",
     }
     normalized = _PROVIDER_ALIASES.get(normalized, normalized)
@@ -974,6 +1039,15 @@ def resolve_provider(
         for env_var in pconfig.api_key_env_vars:
             if has_usable_secret(os.getenv(env_var, "")):
                 return pid
+
+    # AWS Bedrock — detect via boto3 credential chain (IAM roles, SSO, env vars).
+    # This runs after API-key providers so explicit keys always win.
+    try:
+        from agent.bedrock_adapter import has_aws_credentials
+        if has_aws_credentials():
+            return "bedrock"
+    except ImportError:
+        pass  # boto3 not installed — skip Bedrock auto-detection
 
     raise AuthError(
         "No inference provider configured. Run 'hermes model' to choose a "
@@ -1215,6 +1289,83 @@ def get_qwen_auth_status() -> Dict[str, Any]:
             "auth_file": str(auth_path),
             "error": str(exc),
         }
+
+
+# =============================================================================
+# Google Gemini OAuth (google-gemini-cli) — PKCE flow + Cloud Code Assist.
+#
+# Tokens live in ~/.hermes/auth/google_oauth.json (managed by agent.google_oauth).
+# The `base_url` here is the marker "cloudcode-pa://google" that run_agent.py
+# uses to construct a GeminiCloudCodeClient instead of the default OpenAI SDK.
+# Actual HTTP traffic goes to https://cloudcode-pa.googleapis.com/v1internal:*.
+# =============================================================================
+
+def resolve_gemini_oauth_runtime_credentials(
+    *,
+    force_refresh: bool = False,
+) -> Dict[str, Any]:
+    """Resolve runtime OAuth creds for google-gemini-cli."""
+    try:
+        from agent.google_oauth import (
+            GoogleOAuthError,
+            _credentials_path,
+            get_valid_access_token,
+            load_credentials,
+        )
+    except ImportError as exc:
+        raise AuthError(
+            f"agent.google_oauth is not importable: {exc}",
+            provider="google-gemini-cli",
+            code="google_oauth_module_missing",
+        ) from exc
+
+    try:
+        access_token = get_valid_access_token(force_refresh=force_refresh)
+    except GoogleOAuthError as exc:
+        raise AuthError(
+            str(exc),
+            provider="google-gemini-cli",
+            code=exc.code,
+        ) from exc
+
+    creds = load_credentials()
+    base_url = DEFAULT_GEMINI_CLOUDCODE_BASE_URL
+    return {
+        "provider": "google-gemini-cli",
+        "base_url": base_url,
+        "api_key": access_token,
+        "source": "google-oauth",
+        "expires_at_ms": (creds.expires_ms if creds else None),
+        "auth_file": str(_credentials_path()),
+        "email": (creds.email if creds else "") or "",
+        "project_id": (creds.project_id if creds else "") or "",
+    }
+
+
+def get_gemini_oauth_auth_status() -> Dict[str, Any]:
+    """Return a status dict for `hermes auth list` / `hermes status`."""
+    try:
+        from agent.google_oauth import _credentials_path, load_credentials
+    except ImportError:
+        return {"logged_in": False, "error": "agent.google_oauth unavailable"}
+    auth_path = _credentials_path()
+    creds = load_credentials()
+    if creds is None or not creds.access_token:
+        return {
+            "logged_in": False,
+            "auth_file": str(auth_path),
+            "error": "not logged in",
+        }
+    return {
+        "logged_in": True,
+        "auth_file": str(auth_path),
+        "source": "google-oauth",
+        "api_key": creds.access_token,
+        "expires_at_ms": creds.expires_ms,
+        "email": creds.email,
+        "project_id": creds.project_id,
+    }
+
 
 
 # =============================================================================
@@ -2008,6 +2159,62 @@ def refresh_nous_oauth_from_state(
     )
 
 
+NOUS_DEVICE_CODE_SOURCE = "device_code"
+
+
+def persist_nous_credentials(
+    creds: Dict[str, Any],
+    *,
+    label: Optional[str] = None,
+):
+    """Persist minted Nous OAuth credentials as the singleton provider state
+    and ensure the credential pool is in sync.
+
+    Nous credentials are read at runtime from two independent locations:
+
+    - ``providers.nous``: singleton state read by
+      ``resolve_nous_runtime_credentials()`` during 401 recovery and by
+      ``_seed_from_singletons()`` during pool load.
+    - ``credential_pool.nous``: used by the runtime ``pool.select()`` path.
+
+    Historically ``hermes auth add nous`` wrote a ``manual:device_code`` pool
+    entry only, skipping ``providers.nous``.  When the 24h agent_key TTL
+    expired, the recovery path read the empty singleton state and raised
+    ``AuthError`` silently (``logger.debug`` at INFO level).
+
+    This helper writes ``providers.nous`` then calls ``load_pool("nous")`` so
+    ``_seed_from_singletons`` materialises the canonical ``device_code`` pool
+    entry from the singleton.  Re-running login upserts the same entry in
+    place; the pool never accumulates duplicate device_code rows.
+
+    ``label`` is an optional user-chosen display name (from
+    ``hermes auth add nous --label <name>``).  It gets embedded in the
+    singleton state so that ``_seed_from_singletons`` uses it as the pool
+    entry's label on every subsequent ``load_pool("nous")`` instead of the
+    auto-derived token fingerprint.  When ``None``, the auto-derived label
+    via ``label_from_token`` is used (unchanged default behaviour).
+
+    Returns the upserted :class:`PooledCredential` entry (or ``None`` if
+    seeding somehow produced no match — shouldn't happen).
+    """
+    from agent.credential_pool import load_pool
+
+    state = dict(creds)
+    if label and str(label).strip():
+        state["label"] = str(label).strip()
+
+    with _auth_store_lock():
+        auth_store = _load_auth_store()
+        _save_provider_state(auth_store, "nous", state)
+        _save_auth_store(auth_store)
+
+    pool = load_pool("nous")
+    return next(
+        (e for e in pool.entries() if e.source == NOUS_DEVICE_CODE_SOURCE),
+        None,
+    )
+
+
 def resolve_nous_runtime_credentials(
     *,
     min_key_ttl_seconds: int = DEFAULT_AGENT_KEY_MIN_TTL_SECONDS,
@@ -2379,7 +2586,7 @@ def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
     if pconfig.base_url_env_var:
         env_url = os.getenv(pconfig.base_url_env_var, "").strip()
 
-    if provider_id == "kimi-coding":
+    if provider_id in ("kimi-coding", "kimi-coding-cn"):
         base_url = _resolve_kimi_base_url(api_key, pconfig.inference_base_url, env_url)
     elif env_url:
         base_url = env_url
@@ -2435,12 +2642,21 @@ def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
         return get_codex_auth_status()
     if target == "qwen-oauth":
         return get_qwen_auth_status()
+    if target == "google-gemini-cli":
+        return get_gemini_oauth_auth_status()
     if target == "copilot-acp":
         return get_external_process_provider_status(target)
     # API-key providers
     pconfig = PROVIDER_REGISTRY.get(target)
     if pconfig and pconfig.auth_type == "api_key":
         return get_api_key_provider_status(target)
+    # AWS SDK providers (Bedrock) — check via boto3 credential chain
+    if pconfig and pconfig.auth_type == "aws_sdk":
+        try:
+            from agent.bedrock_adapter import has_aws_credentials
+            return {"logged_in": has_aws_credentials(), "provider": target}
+        except ImportError:
+            return {"logged_in": False, "provider": target, "error": "boto3 not installed"}
     return {"logged_in": False}
 
 
@@ -2465,7 +2681,7 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
     if pconfig.base_url_env_var:
         env_url = os.getenv(pconfig.base_url_env_var, "").strip()
 
-    if provider_id == "kimi-coding":
+    if provider_id in ("kimi-coding", "kimi-coding-cn"):
         base_url = _resolve_kimi_base_url(api_key, pconfig.inference_base_url, env_url)
     elif provider_id == "zai":
         base_url = _resolve_zai_base_url(api_key, pconfig.inference_base_url, env_url)
@@ -3167,6 +3383,14 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
 
         inference_base_url = auth_state["inference_base_url"]
 
+        # Snapshot the prior active_provider BEFORE _save_provider_state
+        # overwrites it to "nous".  If the user picks "Skip (keep current)"
+        # during model selection below, we restore this so the user's previous
+        # provider (e.g. openrouter) is preserved.
+        with _auth_store_lock():
+            _prior_store = _load_auth_store()
+            prior_active_provider = _prior_store.get("active_provider")
+
         with _auth_store_lock():
             auth_store = _load_auth_store()
             _save_provider_state(auth_store, "nous", auth_state)
@@ -3226,6 +3450,27 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
             print(f"Login succeeded, but could not fetch available models. Reason: {message}")
 
         # Write provider + model atomically so config is never mismatched.
+        # If no model was selected (user picked "Skip (keep current)",
+        # model list fetch failed, or no curated models were available),
+        # preserve the user's previous provider — don't silently switch
+        # them to Nous with a mismatched model.  The Nous OAuth tokens
+        # stay saved for future use.
+        if not selected_model:
+            # Restore the prior active_provider that _save_provider_state
+            # overwrote to "nous".  config.yaml model.provider is left
+            # untouched, so the user's previous provider is fully preserved.
+            with _auth_store_lock():
+                auth_store = _load_auth_store()
+                if prior_active_provider:
+                    auth_store["active_provider"] = prior_active_provider
+                else:
+                    auth_store.pop("active_provider", None)
+                _save_auth_store(auth_store)
+            print()
+            print("No provider change. Nous credentials saved for future use.")
+            print("  Run `hermes model` again to switch to Nous Portal.")
+            return
+
         config_path = _update_config_for_provider(
             "nous", inference_base_url, default_model=selected_model,
         )

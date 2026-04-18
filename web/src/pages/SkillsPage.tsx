@@ -3,10 +3,17 @@ import {
   Package,
   Search,
   Wrench,
-  ChevronDown,
   ChevronRight,
-  Filter,
   X,
+  Cpu,
+  Globe,
+  Shield,
+  Eye,
+  Paintbrush,
+  Brain,
+  Blocks,
+  Code,
+  Zap,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import type { SkillInfo, ToolsetInfo } from "@/lib/api";
@@ -21,13 +28,6 @@ import { useI18n } from "@/i18n";
 /* ------------------------------------------------------------------ */
 /*  Types & helpers                                                    */
 /* ------------------------------------------------------------------ */
-
-interface CategoryGroup {
-  name: string;        // display name
-  key: string;         // raw key (or "__none__")
-  skills: SkillInfo[];
-  enabledCount: number;
-}
 
 const CATEGORY_LABELS: Record<string, string> = {
   mlops: "MLOps",
@@ -55,7 +55,25 @@ function prettyCategory(raw: string | null | undefined, generalLabel: string): s
     .join(" ");
 }
 
+const TOOLSET_ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
+  computer: Cpu,
+  web: Globe,
+  security: Shield,
+  vision: Eye,
+  design: Paintbrush,
+  ai: Brain,
+  integration: Blocks,
+  code: Code,
+  automation: Zap,
+};
 
+function toolsetIcon(name: string): React.ComponentType<{ className?: string }> {
+  const lower = name.toLowerCase();
+  for (const [key, icon] of Object.entries(TOOLSET_ICONS)) {
+    if (lower.includes(key)) return icon;
+  }
+  return Wrench;
+}
 
 /* ------------------------------------------------------------------ */
 /*  Component                                                          */
@@ -66,10 +84,9 @@ export default function SkillsPage() {
   const [toolsets, setToolsets] = useState<ToolsetInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
+  const [view, setView] = useState<"skills" | "toolsets">("skills");
   const [activeCategory, setActiveCategory] = useState<string | null>(null);
   const [togglingSkills, setTogglingSkills] = useState<Set<string>>(new Set());
-  // Start collapsed by default
-  const [collapsedCategories, setCollapsedCategories] = useState<Set<string> | "all">("all");
   const { toast, showToast } = useToast();
   const { t } = useI18n();
 
@@ -110,41 +127,27 @@ export default function SkillsPage() {
 
   /* ---- Derived data ---- */
   const lowerSearch = search.toLowerCase();
+  const isSearching = search.trim().length > 0;
 
-  const filteredSkills = useMemo(() => {
-    return skills.filter((s) => {
-      const matchesSearch =
-        !search ||
+  const searchMatchedSkills = useMemo(() => {
+    if (!isSearching) return [];
+    return skills.filter(
+      (s) =>
         s.name.toLowerCase().includes(lowerSearch) ||
         s.description.toLowerCase().includes(lowerSearch) ||
-        (s.category ?? "").toLowerCase().includes(lowerSearch);
-      const matchesCategory =
-        !activeCategory ||
-        (activeCategory === "__none__" ? !s.category : s.category === activeCategory);
-      return matchesSearch && matchesCategory;
-    });
-  }, [skills, search, lowerSearch, activeCategory]);
+        (s.category ?? "").toLowerCase().includes(lowerSearch)
+    );
+  }, [skills, isSearching, lowerSearch]);
 
-  const categoryGroups: CategoryGroup[] = useMemo(() => {
-    const map = new Map<string, SkillInfo[]>();
-    for (const s of filteredSkills) {
-      const key = s.category || "__none__";
-      if (!map.has(key)) map.set(key, []);
-      map.get(key)!.push(s);
-    }
-    // Sort: General first, then alphabetical
-    const entries = [...map.entries()].sort((a, b) => {
-      if (a[0] === "__none__") return -1;
-      if (b[0] === "__none__") return 1;
-      return a[0].localeCompare(b[0]);
-    });
-    return entries.map(([key, list]) => ({
-      key,
-      name: prettyCategory(key === "__none__" ? null : key, t.common.general),
-      skills: list.sort((a, b) => a.name.localeCompare(b.name)),
-      enabledCount: list.filter((s) => s.enabled).length,
-    }));
-  }, [filteredSkills]);
+  const activeSkills = useMemo(() => {
+    if (isSearching) return [];
+    if (!activeCategory) return [...skills].sort((a, b) => a.name.localeCompare(b.name));
+    return skills
+      .filter((s) =>
+        activeCategory === "__none__" ? !s.category : s.category === activeCategory
+      )
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [skills, activeCategory, isSearching]);
 
   const allCategories = useMemo(() => {
     const cats = new Map<string, number>();
@@ -159,7 +162,7 @@ export default function SkillsPage() {
         return a[0].localeCompare(b[0]);
       })
       .map(([key, count]) => ({ key, name: prettyCategory(key === "__none__" ? null : key, t.common.general), count }));
-  }, [skills]);
+  }, [skills, t]);
 
   const enabledCount = skills.filter((s) => s.enabled).length;
 
@@ -173,26 +176,6 @@ export default function SkillsPage() {
     );
   }, [toolsets, search, lowerSearch]);
 
-  const isCollapsed = (key: string): boolean => {
-    if (collapsedCategories === "all") return true;
-    return collapsedCategories.has(key);
-  };
-
-  const toggleCollapse = (key: string) => {
-    setCollapsedCategories((prev) => {
-      if (prev === "all") {
-        // Switching from "all collapsed" → expand just this one
-        const allKeys = new Set(categoryGroups.map((g) => g.key));
-        allKeys.delete(key);
-        return allKeys;
-      }
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
-    });
-  };
-
   /* ---- Loading ---- */
   if (loading) {
     return (
@@ -203,10 +186,10 @@ export default function SkillsPage() {
   }
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="flex flex-col gap-4">
       <Toast toast={toast} />
 
-      {/* ═══════════════ Header + Search ═══════════════ */}
+      {/* ═══════════════ Header ═══════════════ */}
       <div className="flex items-center justify-between gap-4">
         <div className="flex items-center gap-3">
           <Package className="h-5 w-5 text-muted-foreground" />
@@ -217,225 +200,266 @@ export default function SkillsPage() {
         </div>
       </div>
 
-      {/* ═══════════════ Search + Category Filter ═══════════════ */}
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-        <div className="relative flex-1">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-          <Input
-            className="pl-9"
-            placeholder={t.skills.searchPlaceholder}
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-          />
-          {search && (
-            <button
-              type="button"
-              className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-              onClick={() => setSearch("")}
-            >
-              <X className="h-4 w-4" />
-            </button>
+      {/* ═══════════════ Sidebar + Content ═══════════════ */}
+      <div className="flex flex-col sm:flex-row gap-4" style={{ minHeight: "calc(100vh - 180px)" }}>
+        {/* ---- Sidebar ---- */}
+        <div className="sm:w-52 sm:shrink-0">
+          <div className="sm:sticky sm:top-[72px] flex flex-col gap-1">
+            {/* Search */}
+            <div className="relative mb-2 hidden sm:block">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+              <Input
+                className="pl-8 h-8 text-xs"
+                placeholder={t.common.search}
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+              />
+              {search && (
+                <button
+                  type="button"
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                  onClick={() => setSearch("")}
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              )}
+            </div>
+
+            {/* Top-level nav */}
+            <div className="flex sm:flex-col gap-1 overflow-x-auto sm:overflow-x-visible scrollbar-none pb-1 sm:pb-0">
+              <button
+                type="button"
+                onClick={() => { setView("skills"); setActiveCategory(null); setSearch(""); }}
+                className={`group flex items-center gap-2 px-2.5 py-1.5 text-left text-xs transition-colors cursor-pointer ${
+                  view === "skills" && !isSearching
+                    ? "bg-primary/10 text-primary font-medium"
+                    : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
+                }`}
+              >
+                <Package className="h-3.5 w-3.5 shrink-0" />
+                <span className="flex-1 truncate">{t.skills.all} ({skills.length})</span>
+                {view === "skills" && !isSearching && <ChevronRight className="h-3 w-3 text-primary/50 shrink-0" />}
+              </button>
+
+              {/* Skill categories (nested under All Skills) */}
+              {view === "skills" && !isSearching && allCategories.map(({ key, name, count }) => {
+                const isActive = activeCategory === key;
+                return (
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={() => setActiveCategory(activeCategory === key ? null : key)}
+                    className={`group flex items-center gap-2 px-2.5 py-1 pl-7 text-left text-[11px] transition-colors cursor-pointer ${
+                      isActive
+                        ? "text-primary font-medium"
+                        : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
+                    }`}
+                  >
+                    <span className="flex-1 truncate">{name}</span>
+                    <span className={`text-[10px] tabular-nums ${isActive ? "text-primary/60" : "text-muted-foreground/50"}`}>
+                      {count}
+                    </span>
+                  </button>
+                );
+              })}
+
+              <button
+                type="button"
+                onClick={() => { setView("toolsets"); setSearch(""); }}
+                className={`group flex items-center gap-2 px-2.5 py-1.5 text-left text-xs transition-colors cursor-pointer ${
+                  view === "toolsets"
+                    ? "bg-primary/10 text-primary font-medium"
+                    : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
+                }`}
+              >
+                <Wrench className="h-3.5 w-3.5 shrink-0" />
+                <span className="flex-1 truncate">{t.skills.toolsets} ({toolsets.length})</span>
+                {view === "toolsets" && <ChevronRight className="h-3 w-3 text-primary/50 shrink-0" />}
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* ---- Content ---- */}
+        <div className="flex-1 min-w-0">
+          {isSearching ? (
+            /* Search results */
+            <Card>
+              <CardHeader className="py-3 px-4">
+                <div className="flex items-center justify-between">
+                  <CardTitle className="text-sm flex items-center gap-2">
+                    <Search className="h-4 w-4" />
+                    {t.skills.title}
+                  </CardTitle>
+                  <Badge variant="secondary" className="text-[10px]">
+                    {t.skills.resultCount.replace("{count}", String(searchMatchedSkills.length)).replace("{s}", searchMatchedSkills.length !== 1 ? "s" : "")}
+                  </Badge>
+                </div>
+              </CardHeader>
+              <CardContent className="px-4 pb-4">
+                {searchMatchedSkills.length === 0 ? (
+                  <p className="text-sm text-muted-foreground text-center py-8">
+                    {t.skills.noSkillsMatch}
+                  </p>
+                ) : (
+                  <div className="grid gap-1">
+                    {searchMatchedSkills.map((skill) => (
+                      <SkillRow
+                        key={skill.name}
+                        skill={skill}
+                        toggling={togglingSkills.has(skill.name)}
+                        onToggle={() => handleToggleSkill(skill)}
+                        noDescriptionLabel={t.skills.noDescription}
+                      />
+                    ))}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          ) : view === "skills" ? (
+            /* Skills list */
+            <Card>
+              <CardHeader className="py-3 px-4">
+                <div className="flex items-center justify-between">
+                  <CardTitle className="text-sm flex items-center gap-2">
+                    <Package className="h-4 w-4" />
+                    {activeCategory
+                      ? prettyCategory(activeCategory === "__none__" ? null : activeCategory, t.common.general)
+                      : t.skills.all}
+                  </CardTitle>
+                  <Badge variant="secondary" className="text-[10px]">
+                    {activeSkills.length} {t.skills.skillCount.replace("{count}", String(activeSkills.length)).replace("{s}", activeSkills.length !== 1 ? "s" : "")}
+                  </Badge>
+                </div>
+              </CardHeader>
+              <CardContent className="px-4 pb-4">
+                {activeSkills.length === 0 ? (
+                  <p className="text-sm text-muted-foreground text-center py-8">
+                    {skills.length === 0 ? t.skills.noSkills : t.skills.noSkillsMatch}
+                  </p>
+                ) : (
+                  <div className="grid gap-1">
+                    {activeSkills.map((skill) => (
+                      <SkillRow
+                        key={skill.name}
+                        skill={skill}
+                        toggling={togglingSkills.has(skill.name)}
+                        onToggle={() => handleToggleSkill(skill)}
+                        noDescriptionLabel={t.skills.noDescription}
+                      />
+                    ))}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          ) : (
+            /* Toolsets grid */
+            <>
+              {filteredToolsets.length === 0 ? (
+                <Card>
+                  <CardContent className="py-8 text-center text-sm text-muted-foreground">
+                    {t.skills.noToolsetsMatch}
+                  </CardContent>
+                </Card>
+              ) : (
+                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                  {filteredToolsets.map((ts) => {
+                    const TsIcon = toolsetIcon(ts.name);
+                    const labelText = ts.label.replace(/^[\p{Emoji}\s]+/u, "").trim() || ts.name;
+
+                    return (
+                      <Card key={ts.name} className="relative">
+                        <CardContent className="py-4">
+                          <div className="flex items-start gap-3">
+                            <TsIcon className="h-5 w-5 text-muted-foreground shrink-0 mt-0.5" />
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2 mb-1">
+                                <span className="font-medium text-sm">{labelText}</span>
+                                <Badge
+                                  variant={ts.enabled ? "success" : "outline"}
+                                  className="text-[10px]"
+                                >
+                                  {ts.enabled ? t.common.active : t.common.inactive}
+                                </Badge>
+                              </div>
+                              <p className="text-xs text-muted-foreground mb-2">
+                                {ts.description}
+                              </p>
+                              {ts.enabled && !ts.configured && (
+                                <p className="text-[10px] text-amber-300/80 mb-2">
+                                  {t.skills.setupNeeded}
+                                </p>
+                              )}
+                              {ts.tools.length > 0 && (
+                                <div className="flex flex-wrap gap-1">
+                                  {ts.tools.map((tool) => (
+                                    <Badge
+                                      key={tool}
+                                      variant="secondary"
+                                      className="text-[10px] font-mono"
+                                    >
+                                      {tool}
+                                    </Badge>
+                                  ))}
+                                </div>
+                              )}
+                              {ts.tools.length === 0 && (
+                                <span className="text-[10px] text-muted-foreground/60">
+                                  {ts.enabled ? t.skills.toolsetLabel.replace("{name}", ts.name) : t.skills.disabledForCli}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        </CardContent>
+                      </Card>
+                    );
+                  })}
+                </div>
+              )}
+            </>
           )}
         </div>
       </div>
-
-      {/* Category pills */}
-      {allCategories.length > 1 && (
-        <div className="flex items-center gap-2 flex-wrap">
-          <Filter className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-          <button
-            type="button"
-            className={`inline-flex items-center px-3 py-1 text-xs font-medium transition-colors cursor-pointer ${
-              !activeCategory
-                ? "bg-primary text-primary-foreground"
-                : "bg-secondary text-secondary-foreground hover:bg-secondary/80"
-            }`}
-            onClick={() => setActiveCategory(null)}
-          >
-            {t.skills.all} ({skills.length})
-          </button>
-          {allCategories.map(({ key, name, count }) => (
-            <button
-              key={key}
-              type="button"
-              className={`inline-flex items-center px-3 py-1 text-xs font-medium transition-colors cursor-pointer ${
-                activeCategory === key
-                  ? "bg-primary text-primary-foreground"
-                  : "bg-secondary text-secondary-foreground hover:bg-secondary/80"
-              }`}
-              onClick={() =>
-                setActiveCategory(activeCategory === key ? null : key)
-              }
-            >
-              {name}
-              <span className="ml-1 opacity-60">{count}</span>
-            </button>
-          ))}
-        </div>
-      )}
-
-      {/* ═══════════════ Skills by Category ═══════════════ */}
-      <section className="flex flex-col gap-3">
-
-        {filteredSkills.length === 0 ? (
-          <Card>
-            <CardContent className="py-12 text-center text-sm text-muted-foreground">
-              {skills.length === 0
-                ? t.skills.noSkills
-                : t.skills.noSkillsMatch}
-            </CardContent>
-          </Card>
-        ) : (
-          categoryGroups.map(({ key, name, skills: catSkills, enabledCount: catEnabled }) => {
-            const collapsed = isCollapsed(key);
-            return (
-              <Card key={key}>
-                <CardHeader
-                  className="cursor-pointer select-none py-3 px-4"
-                  onClick={() => toggleCollapse(key)}
-                >
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      {collapsed ? (
-                        <ChevronRight className="h-4 w-4 text-muted-foreground" />
-                      ) : (
-                        <ChevronDown className="h-4 w-4 text-muted-foreground" />
-                      )}
-                      <CardTitle className="text-sm font-medium">{name}</CardTitle>
-                      <Badge variant="secondary" className="text-[10px] font-normal">
-                        {t.skills.skillCount.replace("{count}", String(catSkills.length)).replace("{s}", catSkills.length !== 1 ? "s" : "")}
-                      </Badge>
-                    </div>
-                    <Badge
-                      variant={catEnabled === catSkills.length ? "success" : "outline"}
-                      className="text-[10px]"
-                    >
-                      {t.skills.enabledOf.replace("{enabled}", String(catEnabled)).replace("{total}", String(catSkills.length))}
-                    </Badge>
-                  </div>
-                </CardHeader>
-
-                {collapsed ? (
-                  /* Peek: show first few skill names so collapsed isn't blank */
-                  <div className="px-4 pb-3 flex items-center min-h-[28px]">
-                    <p className="text-xs text-muted-foreground/60 truncate leading-normal">
-                      {catSkills.slice(0, 4).map((s) => s.name).join(", ")}
-                      {catSkills.length > 4 && `, ${t.skills.more.replace("{count}", String(catSkills.length - 4))}`}
-                    </p>
-                  </div>
-                ) : (
-                  <CardContent className="pt-0 px-4 pb-3">
-                    <div className="grid gap-1">
-                      {catSkills.map((skill) => (
-                        <div
-                          key={skill.name}
-                          className="group flex items-start gap-3 rounded-md px-3 py-2.5 transition-colors hover:bg-muted/40"
-                        >
-                          <div className="pt-0.5 shrink-0">
-                            <Switch
-                              checked={skill.enabled}
-                              onCheckedChange={() => handleToggleSkill(skill)}
-                              disabled={togglingSkills.has(skill.name)}
-                            />
-                          </div>
-
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-center gap-2 mb-0.5">
-                              <span
-                                className={`font-mono-ui text-sm ${
-                                  skill.enabled
-                                    ? "text-foreground"
-                                    : "text-muted-foreground"
-                                }`}
-                              >
-                                {skill.name}
-                              </span>
-                            </div>
-                            <p className="text-xs text-muted-foreground leading-relaxed line-clamp-2">
-                              {skill.description || t.skills.noDescription}
-                            </p>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </CardContent>
-                )}
-              </Card>
-            );
-          })
-        )}
-      </section>
-
-      {/* ═══════════════ Toolsets ═══════════════ */}
-      <section className="flex flex-col gap-4">
-        <h2 className="text-sm font-medium text-muted-foreground flex items-center gap-2">
-          <Wrench className="h-4 w-4" />
-          {t.skills.toolsets} ({filteredToolsets.length})
-        </h2>
-
-        {filteredToolsets.length === 0 ? (
-          <Card>
-            <CardContent className="py-8 text-center text-sm text-muted-foreground">
-              {t.skills.noToolsetsMatch}
-            </CardContent>
-          </Card>
-        ) : (
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            {filteredToolsets.map((ts) => {
-              // Strip emoji prefix from label for cleaner display
-              const labelText = ts.label.replace(/^[\p{Emoji}\s]+/u, "").trim() || ts.name;
-              const emoji = ts.label.match(/^[\p{Emoji}]+/u)?.[0] || "🔧";
-
-              return (
-                <Card key={ts.name} className="relative overflow-hidden">
-                  <CardContent className="py-4">
-                    <div className="flex items-start gap-3">
-                      <div className="text-2xl shrink-0 leading-none mt-0.5">{emoji}</div>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 mb-1">
-                          <span className="font-medium text-sm">{labelText}</span>
-                          <Badge
-                            variant={ts.enabled ? "success" : "outline"}
-                            className="text-[10px]"
-                          >
-                            {ts.enabled ? t.common.active : t.common.inactive}
-                          </Badge>
-                        </div>
-                        <p className="text-xs text-muted-foreground mb-2">
-                          {ts.description}
-                        </p>
-                        {ts.enabled && !ts.configured && (
-                          <p className="text-[10px] text-amber-300/80 mb-2">
-                            {t.skills.setupNeeded}
-                          </p>
-                        )}
-                        {ts.tools.length > 0 && (
-                          <div className="flex flex-wrap gap-1">
-                            {ts.tools.map((tool) => (
-                              <Badge
-                                key={tool}
-                                variant="secondary"
-                                className="text-[10px] font-mono"
-                              >
-                                {tool}
-                              </Badge>
-                            ))}
-                          </div>
-                        )}
-                        {ts.tools.length === 0 && (
-                          <span className="text-[10px] text-muted-foreground/60">
-                            {ts.enabled ? `${ts.name} toolset` : t.skills.disabledForCli}
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                  </CardContent>
-                </Card>
-              );
-            })}
-          </div>
-        )}
-      </section>
     </div>
   );
+}
+
+function SkillRow({
+  skill,
+  toggling,
+  onToggle,
+  noDescriptionLabel,
+}: SkillRowProps) {
+  return (
+    <div className="group flex items-start gap-3 px-3 py-2.5 transition-colors hover:bg-muted/40">
+      <div className="pt-0.5 shrink-0">
+        <Switch
+          checked={skill.enabled}
+          onCheckedChange={onToggle}
+          disabled={toggling}
+        />
+      </div>
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2 mb-0.5">
+          <span
+            className={`font-mono-ui text-sm ${
+              skill.enabled ? "text-foreground" : "text-muted-foreground"
+            }`}
+          >
+            {skill.name}
+          </span>
+        </div>
+        <p className="text-xs text-muted-foreground leading-relaxed line-clamp-2">
+          {skill.description || noDescriptionLabel}
+        </p>
+      </div>
+    </div>
+  );
+}
+
+interface SkillRowProps {
+  skill: SkillInfo;
+  toggling: boolean;
+  onToggle: () => void;
+  noDescriptionLabel: string;
 }

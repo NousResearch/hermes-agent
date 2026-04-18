@@ -63,6 +63,7 @@ CONFIGURABLE_TOOLSETS = [
     ("clarify",         "❓ Clarifying Questions",      "clarify"),
     ("delegation",      "👥 Task Delegation",           "delegate_task"),
     ("cronjob",         "⏰ Cron Jobs",                 "create/list/update/pause/resume/run, with optional attached skills"),
+    ("messaging",       "📨 Cross-Platform Messaging",  "send_message"),
     ("rl",              "🧪 RL Training",               "Tinker-Atropos training tools"),
     ("homeassistant",    "🏠 Home Assistant",           "smart home device control"),
 ]
@@ -121,6 +122,7 @@ TOOL_CATEGORIES = {
         "providers": [
             {
                 "name": "Nous Subscription",
+                "badge": "subscription",
                 "tag": "Managed OpenAI TTS billed to your subscription",
                 "env_vars": [],
                 "tts_provider": "openai",
@@ -130,21 +132,32 @@ TOOL_CATEGORIES = {
             },
             {
                 "name": "Microsoft Edge TTS",
-                "tag": "Free - no API key needed",
+                "badge": "★ recommended · free",
+                "tag": "Good quality, no API key needed",
                 "env_vars": [],
                 "tts_provider": "edge",
             },
             {
                 "name": "OpenAI TTS",
-                "tag": "Premium - high quality voices",
+                "badge": "paid",
+                "tag": "High quality voices",
                 "env_vars": [
                     {"key": "VOICE_TOOLS_OPENAI_KEY", "prompt": "OpenAI API key", "url": "https://platform.openai.com/api-keys"},
                 ],
                 "tts_provider": "openai",
             },
             {
+                "name": "xAI TTS",
+                "tag": "Grok voices - requires xAI API key",
+                "env_vars": [
+                    {"key": "XAI_API_KEY", "prompt": "xAI API key", "url": "https://console.x.ai/"},
+                ],
+                "tts_provider": "xai",
+            },
+            {
                 "name": "ElevenLabs",
-                "tag": "Premium - most natural voices",
+                "badge": "paid",
+                "tag": "Most natural voices",
                 "env_vars": [
                     {"key": "ELEVENLABS_API_KEY", "prompt": "ElevenLabs API key", "url": "https://elevenlabs.io/app/settings/api-keys"},
                 ],
@@ -152,11 +165,21 @@ TOOL_CATEGORIES = {
             },
             {
                 "name": "Mistral (Voxtral TTS)",
-                "tag": "Multilingual, native Opus, needs MISTRAL_API_KEY",
+                "badge": "paid",
+                "tag": "Multilingual, native Opus",
                 "env_vars": [
                     {"key": "MISTRAL_API_KEY", "prompt": "Mistral API key", "url": "https://console.mistral.ai/"},
                 ],
                 "tts_provider": "mistral",
+            },
+            {
+                "name": "Google Gemini TTS",
+                "badge": "preview",
+                "tag": "30 prebuilt voices, controllable via prompts",
+                "env_vars": [
+                    {"key": "GEMINI_API_KEY", "prompt": "Gemini API key", "url": "https://aistudio.google.com/app/apikey"},
+                ],
+                "tts_provider": "gemini",
             },
         ],
     },
@@ -168,6 +191,7 @@ TOOL_CATEGORIES = {
         "providers": [
             {
                 "name": "Nous Subscription",
+                "badge": "subscription",
                 "tag": "Managed Firecrawl billed to your subscription",
                 "web_backend": "firecrawl",
                 "env_vars": [],
@@ -177,7 +201,8 @@ TOOL_CATEGORIES = {
             },
             {
                 "name": "Firecrawl Cloud",
-                "tag": "Hosted service - search, extract, and crawl",
+                "badge": "★ recommended",
+                "tag": "Full-featured search, extract, and crawl",
                 "web_backend": "firecrawl",
                 "env_vars": [
                     {"key": "FIRECRAWL_API_KEY", "prompt": "Firecrawl API key", "url": "https://firecrawl.dev"},
@@ -185,7 +210,8 @@ TOOL_CATEGORIES = {
             },
             {
                 "name": "Exa",
-                "tag": "AI-native search and contents",
+                "badge": "paid",
+                "tag": "Neural search with semantic understanding",
                 "web_backend": "exa",
                 "env_vars": [
                     {"key": "EXA_API_KEY", "prompt": "Exa API key", "url": "https://exa.ai"},
@@ -193,7 +219,8 @@ TOOL_CATEGORIES = {
             },
             {
                 "name": "Parallel",
-                "tag": "AI-native search and extract",
+                "badge": "paid",
+                "tag": "AI-powered search and extract",
                 "web_backend": "parallel",
                 "env_vars": [
                     {"key": "PARALLEL_API_KEY", "prompt": "Parallel API key", "url": "https://parallel.ai"},
@@ -201,7 +228,8 @@ TOOL_CATEGORIES = {
             },
             {
                 "name": "Tavily",
-                "tag": "AI-native search, extract, and crawl",
+                "badge": "free tier",
+                "tag": "Search, extract, and crawl — 1000 free searches/mo",
                 "web_backend": "tavily",
                 "env_vars": [
                     {"key": "TAVILY_API_KEY", "prompt": "Tavily API key", "url": "https://app.tavily.com/home"},
@@ -209,7 +237,8 @@ TOOL_CATEGORIES = {
             },
             {
                 "name": "Firecrawl Self-Hosted",
-                "tag": "Free - run your own instance",
+                "badge": "free · self-hosted",
+                "tag": "Run your own Firecrawl instance (Docker)",
                 "web_backend": "firecrawl",
                 "env_vars": [
                     {"key": "FIRECRAWL_API_URL", "prompt": "Your Firecrawl instance URL (e.g., http://localhost:3002)"},
@@ -223,18 +252,22 @@ TOOL_CATEGORIES = {
         "providers": [
             {
                 "name": "Nous Subscription",
+                "badge": "subscription",
                 "tag": "Managed FAL image generation billed to your subscription",
                 "env_vars": [],
                 "requires_nous_auth": True,
                 "managed_nous_feature": "image_gen",
                 "override_env_vars": ["FAL_KEY"],
+                "imagegen_backend": "fal",
             },
             {
                 "name": "FAL.ai",
-                "tag": "FLUX 2 Pro with auto-upscaling",
+                "badge": "paid",
+                "tag": "Pick from flux-2-klein, flux-2-pro, gpt-image, nano-banana, etc.",
                 "env_vars": [
                     {"key": "FAL_KEY", "prompt": "FAL API key", "url": "https://fal.ai/dashboard/keys"},
                 ],
+                "imagegen_backend": "fal",
             },
         ],
     },
@@ -244,6 +277,7 @@ TOOL_CATEGORIES = {
         "providers": [
             {
                 "name": "Nous Subscription (Browser Use cloud)",
+                "badge": "subscription",
                 "tag": "Managed Browser Use billed to your subscription",
                 "env_vars": [],
                 "browser_provider": "browser-use",
@@ -254,14 +288,16 @@ TOOL_CATEGORIES = {
             },
             {
                 "name": "Local Browser",
-                "tag": "Free headless Chromium (no API key needed)",
+                "badge": "★ recommended · free",
+                "tag": "Headless Chromium, no API key needed",
                 "env_vars": [],
                 "browser_provider": "local",
                 "post_setup": "agent_browser",
             },
             {
                 "name": "Browserbase",
-                "tag": "Cloud browser with stealth & proxies",
+                "badge": "paid",
+                "tag": "Cloud browser with stealth and proxies",
                 "env_vars": [
                     {"key": "BROWSERBASE_API_KEY", "prompt": "Browserbase API key", "url": "https://browserbase.com"},
                     {"key": "BROWSERBASE_PROJECT_ID", "prompt": "Browserbase project ID"},
@@ -271,6 +307,7 @@ TOOL_CATEGORIES = {
             },
             {
                 "name": "Browser Use",
+                "badge": "paid",
                 "tag": "Cloud browser with remote execution",
                 "env_vars": [
                     {"key": "BROWSER_USE_API_KEY", "prompt": "Browser Use API key", "url": "https://browser-use.com"},
@@ -280,6 +317,7 @@ TOOL_CATEGORIES = {
             },
             {
                 "name": "Firecrawl",
+                "badge": "paid",
                 "tag": "Cloud browser with remote execution",
                 "env_vars": [
                     {"key": "FIRECRAWL_API_KEY", "prompt": "Firecrawl API key", "url": "https://firecrawl.dev"},
@@ -289,7 +327,8 @@ TOOL_CATEGORIES = {
             },
             {
                 "name": "Camofox",
-                "tag": "Local anti-detection browser (Firefox/Camoufox)",
+                "badge": "free · local",
+                "tag": "Anti-detection browser (Firefox/Camoufox)",
                 "env_vars": [
                     {"key": "CAMOFOX_URL", "prompt": "Camofox server URL", "default": "http://localhost:9377",
                      "url": "https://github.com/jo-inc/camofox-browser"},
@@ -362,7 +401,7 @@ def _run_post_setup(post_setup_key: str):
             _print_warning("    Node.js not found - browser tools require: npm install (in hermes-agent directory)")
 
     elif post_setup_key == "camofox":
-        camofox_dir = PROJECT_ROOT / "node_modules" / "@askjo" / "camoufox-browser"
+        camofox_dir = PROJECT_ROOT / "node_modules" / "@askjo" / "camofox-browser"
         if not camofox_dir.exists() and shutil.which("npm"):
             _print_info("    Installing Camofox browser server...")
             import subprocess
@@ -376,7 +415,7 @@ def _run_post_setup(post_setup_key: str):
                 _print_warning("    npm install failed - run manually: npm install")
         if camofox_dir.exists():
             _print_info("    Start the Camofox server:")
-            _print_info("      npx @askjo/camoufox-browser")
+            _print_info("      npx @askjo/camofox-browser")
             _print_info("    First run downloads the Camoufox engine (~300MB)")
             _print_info("    Or use Docker: docker run -p 9377:9377 -e CAMOFOX_PORT=9377 jo-inc/camofox-browser")
         elif not shutil.which("npm"):
@@ -473,7 +512,7 @@ def _get_platform_tools(
     """Resolve which individual toolset names are enabled for a platform."""
     from toolsets import resolve_toolset
 
-    platform_toolsets = config.get("platform_toolsets", {})
+    platform_toolsets = config.get("platform_toolsets") or {}
     toolset_names = platform_toolsets.get(platform)
 
     if toolset_names is None or not isinstance(toolset_names, list):
@@ -838,7 +877,8 @@ def _configure_tool_category(ts_key: str, cat: dict, config: dict):
         # Plain text labels only (no ANSI codes in menu items)
         provider_choices = []
         for p in providers:
-            tag = f" ({p['tag']})" if p.get("tag") else ""
+            badge = f" [{p['badge']}]" if p.get("badge") else ""
+            tag = f" — {p['tag']}" if p.get("tag") else ""
             configured = ""
             env_vars = p.get("env_vars", [])
             if not env_vars or all(get_env_value(v["key"]) for v in env_vars):
@@ -848,7 +888,7 @@ def _configure_tool_category(ts_key: str, cat: dict, config: dict):
                     configured = ""
                 else:
                     configured = " [configured]"
-            provider_choices.append(f"{p['name']}{tag}{configured}")
+            provider_choices.append(f"{p['name']}{badge}{tag}{configured}")
 
         # Add skip option
         provider_choices.append("Skip — keep defaults / configure later")
@@ -912,6 +952,106 @@ def _detect_active_provider_index(providers: list, config: dict) -> int:
     return 0
 
 
+# ─── Image Generation Model Pickers ───────────────────────────────────────────
+#
+# IMAGEGEN_BACKENDS is a per-backend catalog. Each entry exposes:
+#   - config_key:        top-level config.yaml key for this backend's settings
+#   - model_catalog_fn:  returns an OrderedDict-like {model_id: metadata}
+#   - default_model:     fallback when nothing is configured
+#
+# This prepares for future imagegen backends (Replicate, Stability, etc.):
+# each new backend registers its own entry; the FAL provider entry in
+# TOOL_CATEGORIES tags itself with `imagegen_backend: "fal"` to select the
+# right catalog at picker time.
+
+
+def _fal_model_catalog():
+    """Lazy-load the FAL model catalog from the tool module."""
+    from tools.image_generation_tool import FAL_MODELS, DEFAULT_MODEL
+    return FAL_MODELS, DEFAULT_MODEL
+
+
+IMAGEGEN_BACKENDS = {
+    "fal": {
+        "display": "FAL.ai",
+        "config_key": "image_gen",
+        "catalog_fn": _fal_model_catalog,
+    },
+}
+
+
+def _format_imagegen_model_row(model_id: str, meta: dict, widths: dict) -> str:
+    """Format a single picker row with column-aligned speed / strengths / price."""
+    return (
+        f"{model_id:<{widths['model']}}  "
+        f"{meta.get('speed', ''):<{widths['speed']}}  "
+        f"{meta.get('strengths', ''):<{widths['strengths']}}  "
+        f"{meta.get('price', '')}"
+    )
+
+
+def _configure_imagegen_model(backend_name: str, config: dict) -> None:
+    """Prompt the user to pick a model for the given imagegen backend.
+
+    Writes selection to ``config[backend_config_key]["model"]``. Safe to
+    call even when stdin is not a TTY — curses_radiolist falls back to
+    keeping the current selection.
+    """
+    backend = IMAGEGEN_BACKENDS.get(backend_name)
+    if not backend:
+        return
+
+    catalog, default_model = backend["catalog_fn"]()
+    if not catalog:
+        return
+
+    cfg_key = backend["config_key"]
+    cur_cfg = config.setdefault(cfg_key, {})
+    if not isinstance(cur_cfg, dict):
+        cur_cfg = {}
+        config[cfg_key] = cur_cfg
+    current_model = cur_cfg.get("model") or default_model
+    if current_model not in catalog:
+        current_model = default_model
+
+    model_ids = list(catalog.keys())
+    # Put current model at the top so the cursor lands on it by default.
+    ordered = [current_model] + [m for m in model_ids if m != current_model]
+
+    # Column widths
+    widths = {
+        "model": max(len(m) for m in model_ids),
+        "speed": max((len(catalog[m].get("speed", "")) for m in model_ids), default=6),
+        "strengths": max((len(catalog[m].get("strengths", "")) for m in model_ids), default=0),
+    }
+
+    print()
+    header = (
+        f"  {'Model':<{widths['model']}}  "
+        f"{'Speed':<{widths['speed']}}  "
+        f"{'Strengths':<{widths['strengths']}}  "
+        f"Price"
+    )
+    print(color(header, Colors.CYAN))
+
+    rows = []
+    for mid in ordered:
+        row = _format_imagegen_model_row(mid, catalog[mid], widths)
+        if mid == current_model:
+            row += "  ← currently in use"
+        rows.append(row)
+
+    idx = _prompt_choice(
+        f"  Choose {backend['display']} model:",
+        rows,
+        default=0,
+    )
+
+    chosen = ordered[idx]
+    cur_cfg["model"] = chosen
+    _print_success(f"  Model set to: {chosen}")
+
+
 def _configure_provider(provider: dict, config: dict):
     """Configure a single provider - prompt for API keys and set config."""
     env_vars = provider.get("env_vars", [])
@@ -925,22 +1065,42 @@ def _configure_provider(provider: dict, config: dict):
 
     # Set TTS provider in config if applicable
     if provider.get("tts_provider"):
-        config.setdefault("tts", {})["provider"] = provider["tts_provider"]
+        tts_cfg = config.setdefault("tts", {})
+        tts_cfg["provider"] = provider["tts_provider"]
+        tts_cfg["use_gateway"] = bool(managed_feature)
 
     # Set browser cloud provider in config if applicable
     if "browser_provider" in provider:
         bp = provider["browser_provider"]
+        browser_cfg = config.setdefault("browser", {})
         if bp == "local":
-            config.setdefault("browser", {})["cloud_provider"] = "local"
+            browser_cfg["cloud_provider"] = "local"
             _print_success("  Browser set to local mode")
         elif bp:
-            config.setdefault("browser", {})["cloud_provider"] = bp
+            browser_cfg["cloud_provider"] = bp
             _print_success(f"  Browser cloud provider set to: {bp}")
+        browser_cfg["use_gateway"] = bool(managed_feature)
 
     # Set web search backend in config if applicable
     if provider.get("web_backend"):
-        config.setdefault("web", {})["backend"] = provider["web_backend"]
+        web_cfg = config.setdefault("web", {})
+        web_cfg["backend"] = provider["web_backend"]
+        web_cfg["use_gateway"] = bool(managed_feature)
         _print_success(f"  Web backend set to: {provider['web_backend']}")
+
+    # For tools without a specific config key (e.g. image_gen), still
+    # track use_gateway so the runtime knows the user's intent.
+    if managed_feature and managed_feature not in ("web", "tts", "browser"):
+        config.setdefault(managed_feature, {})["use_gateway"] = True
+    elif not managed_feature:
+        # User picked a non-gateway provider — find which category this
+        # belongs to and clear use_gateway if it was previously set.
+        for cat_key, cat in TOOL_CATEGORIES.items():
+            if provider in cat.get("providers", []):
+                section = config.get(cat_key)
+                if isinstance(section, dict) and section.get("use_gateway"):
+                    section["use_gateway"] = False
+                break
 
     if not env_vars:
         if provider.get("post_setup"):
@@ -948,11 +1108,10 @@ def _configure_provider(provider: dict, config: dict):
         _print_success(f"  {provider['name']} - no configuration needed!")
         if managed_feature:
             _print_info("  Requests for this tool will be billed to your Nous subscription.")
-            override_envs = provider.get("override_env_vars", [])
-            if any(get_env_value(env_var) for env_var in override_envs):
-                _print_warning(
-                    "  Direct credentials are still configured and may take precedence until you remove them from ~/.hermes/.env."
-                )
+        # Imagegen backends prompt for model selection after backend pick.
+        backend = provider.get("imagegen_backend")
+        if backend:
+            _configure_imagegen_model(backend, config)
         return
 
     # Prompt for each required env var
@@ -987,6 +1146,10 @@ def _configure_provider(provider: dict, config: dict):
 
     if all_configured:
         _print_success(f"  {provider['name']} configured!")
+        # Imagegen backends prompt for model selection after env vars are in.
+        backend = provider.get("imagegen_backend")
+        if backend:
+            _configure_imagegen_model(backend, config)
 
 
 def _configure_simple_requirements(ts_key: str):
@@ -1104,7 +1267,8 @@ def _configure_tool_category_for_reconfig(ts_key: str, cat: dict, config: dict):
 
         provider_choices = []
         for p in providers:
-            tag = f" ({p['tag']})" if p.get("tag") else ""
+            badge = f" [{p['badge']}]" if p.get("badge") else ""
+            tag = f" — {p['tag']}" if p.get("tag") else ""
             configured = ""
             env_vars = p.get("env_vars", [])
             if not env_vars or all(get_env_value(v["key"]) for v in env_vars):
@@ -1114,7 +1278,7 @@ def _configure_tool_category_for_reconfig(ts_key: str, cat: dict, config: dict):
                     configured = ""
                 else:
                     configured = " [configured]"
-            provider_choices.append(f"{p['name']}{tag}{configured}")
+            provider_choices.append(f"{p['name']}{badge}{tag}{configured}")
 
         default_idx = _detect_active_provider_index(providers, config)
 
@@ -1157,11 +1321,10 @@ def _reconfigure_provider(provider: dict, config: dict):
         _print_success(f"  {provider['name']} - no configuration needed!")
         if managed_feature:
             _print_info("  Requests for this tool will be billed to your Nous subscription.")
-            override_envs = provider.get("override_env_vars", [])
-            if any(get_env_value(env_var) for env_var in override_envs):
-                _print_warning(
-                    "  Direct credentials are still configured and may take precedence until you remove them from ~/.hermes/.env."
-                )
+        # Imagegen backends prompt for model selection on reconfig too.
+        backend = provider.get("imagegen_backend")
+        if backend:
+            _configure_imagegen_model(backend, config)
         return
 
     for var in env_vars:
@@ -1178,6 +1341,11 @@ def _reconfigure_provider(provider: dict, config: dict):
             _print_success("    Updated")
         else:
             _print_info("    Kept current")
+
+    # Imagegen backends prompt for model selection on reconfig too.
+    backend = provider.get("imagegen_backend")
+    if backend:
+        _configure_imagegen_model(backend, config)
 
 
 def _reconfigure_simple_requirements(ts_key: str):

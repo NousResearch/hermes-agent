@@ -116,6 +116,22 @@ class TestValidateToolset:
     def test_invalid(self):
         assert validate_toolset("nonexistent") is False
 
+    def test_mcp_alias_uses_live_registry(self, monkeypatch):
+        reg = ToolRegistry()
+        reg.register(
+            name="mcp_dynserver_ping",
+            toolset="mcp-dynserver",
+            schema=_make_schema("mcp_dynserver_ping", "Ping"),
+            handler=_dummy_handler,
+        )
+        reg.register_toolset_alias("dynserver", "mcp-dynserver")
+
+        monkeypatch.setattr("tools.registry.registry", reg)
+
+        assert validate_toolset("dynserver") is True
+        assert validate_toolset("mcp-dynserver") is True
+        assert "mcp_dynserver_ping" in resolve_toolset("dynserver")
+
 
 class TestGetToolsetInfo:
     def test_leaf(self):
@@ -148,6 +164,23 @@ class TestCreateCustomToolset:
             assert validate_toolset("_test_custom") is True
         finally:
             del TOOLSETS["_test_custom"]
+
+
+class TestRegistryOwnedToolsets:
+    def test_registry_membership_is_live(self, monkeypatch):
+        reg = ToolRegistry()
+        reg.register(
+            name="test_live_toolset_tool",
+            toolset="test-live-toolset",
+            schema=_make_schema("test_live_toolset_tool", "Live"),
+            handler=_dummy_handler,
+        )
+
+        monkeypatch.setattr("tools.registry.registry", reg)
+
+        assert validate_toolset("test-live-toolset") is True
+        assert get_toolset("test-live-toolset")["tools"] == ["test_live_toolset_tool"]
+        assert resolve_toolset("test-live-toolset") == ["test_live_toolset_tool"]
 
 
 class TestToolsetConsistency:

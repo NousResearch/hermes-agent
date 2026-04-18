@@ -16,6 +16,7 @@ The tested Termux bundle installs:
 - the Hermes CLI
 - cron support
 - PTY/background terminal support
+- Telegram gateway support (manual / best-effort background runs)
 - MCP support
 - Honcho memory support
 - ACP support
@@ -34,6 +35,7 @@ A few features still need desktop/server-style dependencies that are not publish
 - the `voice` extra is blocked by `faster-whisper -> ctranslate2`, and `ctranslate2` does not publish Android wheels
 - automatic browser / Playwright bootstrap is skipped in the Termux installer
 - Docker-based terminal isolation is not available inside Termux
+- Android may still suspend Termux background jobs, so gateway persistence is best-effort rather than a normal managed service
 
 That does not stop Hermes from working well as a phone-native CLI agent — it just means the recommended mobile install is intentionally narrower than the desktop/server install.
 
@@ -152,11 +154,14 @@ hermes setup
 
 ### Install optional Node dependencies manually
 
-The tested Termux path skips Node/browser bootstrap on purpose. If you want to experiment later:
+The tested Termux path skips Node/browser bootstrap on purpose. If you want to experiment with browser tooling later:
 
 ```bash
+pkg install nodejs-lts
 npm install
 ```
+
+The browser tool automatically includes Termux directories (`/data/data/com.termux/files/usr/bin`) in its PATH search, so `agent-browser` and `npx` are discovered without any extra PATH configuration.
 
 Treat browser / WhatsApp tooling on Android as experimental until documented otherwise.
 

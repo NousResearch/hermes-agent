@@ -480,6 +480,141 @@ class TestFTS5Search:
 
 
 # =========================================================================
+# CJK (Chinese/Japanese/Korean) LIKE fallback
+# =========================================================================
+
+class TestCJKSearchFallback:
+    """Regression tests for CJK search (see #11511).
+
+    SQLite FTS5's default tokenizer treats contiguous CJK runs as a single
+    token ("和其他agent的聊天记录" → one token), so substring queries like
+    "记忆断裂" return 0 rows despite the data being present. SessionDB falls
+    back to LIKE substring matching whenever FTS5 returns no results and
+    the query contains CJK characters.
+    """
+
+    def test_cjk_detection_covers_all_ranges(self):
+        from hermes_state import SessionDB
+        f = SessionDB._contains_cjk
+        # Chinese (CJK Unified Ideographs)
+        assert f("记忆断裂") is True
+        # Japanese Hiragana + Katakana
+        assert f("こんにちは") is True
+        assert f("カタカナ") is True
+        # Korean Hangul syllables (both early and late — guards against
+        # the \ud7a0-\ud7af typo seen in one of the duplicate PRs)
+        assert f("안녕하세요") is True
+        assert f("기억") is True
+        # Non-CJK
+        assert f("hello world") is False
+        assert f("日本語mixedwithenglish") is True
+        assert f("") is False
+
+    def test_chinese_multichar_query_returns_results(self, db):
+        """The headline bug: multi-char Chinese query must not return []."""
+        db.create_session(session_id="s1", source="cli")
+        db.append_message(
+            "s1", role="user",
+            content="昨天和其他Agent的聊天记录，记忆断裂问题复现了",
+        )
+        results = db.search_messages("记忆断裂")
+        assert len(results) == 1
+        assert results[0]["session_id"] == "s1"
+
+    def test_chinese_bigram_query(self, db):
+        db.create_session(session_id="s1", source="telegram")
+        db.append_message("s1", role="user", content="今天讨论A2A通信协议的实现")
+        results = db.search_messages("通信")
+        assert len(results) == 1
+
+    def test_korean_query_returns_results(self, db):
+        """Guards against Hangul range typos (\\uac00-\\ud7af, not \\ud7a0-)."""
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="안녕하세요 반갑습니다")
+        results = db.search_messages("안녕")
+        assert len(results) == 1
+
+    def test_japanese_query_returns_results(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="こんにちは世界")
+        assert len(db.search_messages("こんにちは")) == 1
+        assert len(db.search_messages("世界")) == 1
+
+    def test_cjk_fallback_preserves_source_filter(self, db):
+        """Guards against the SQL-builder bug where filter clauses land
+        after LIMIT/OFFSET (seen in one of the duplicate PRs)."""
+        db.create_session(session_id="s1", source="cli")
+        db.create_session(session_id="s2", source="telegram")
+        db.append_message("s1", role="user", content="记忆断裂在CLI")
+        db.append_message("s2", role="user", content="记忆断裂在Telegram")
+
+        results = db.search_messages("记忆断裂", source_filter=["telegram"])
+        assert len(results) == 1
+        assert results[0]["source"] == "telegram"
+
+    def test_cjk_fallback_preserves_exclude_sources(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.create_session(session_id="s2", source="tool")
+        db.append_message("s1", role="user", content="记忆断裂在CLI")
+        db.append_message("s2", role="assistant", content="记忆断裂在tool")
+
+        results = db.search_messages("记忆断裂", exclude_sources=["tool"])
+        sources = {r["source"] for r in results}
+        assert "tool" not in sources
+        assert "cli" in sources
+
+    def test_cjk_fallback_preserves_role_filter(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="用户说的记忆断裂")
+        db.append_message("s1", role="assistant", content="助手说的记忆断裂")
+
+        results = db.search_messages("记忆断裂", role_filter=["assistant"])
+        assert len(results) == 1
+        assert results[0]["role"] == "assistant"
+
+    def test_cjk_snippet_is_centered_on_match(self, db):
+        """Snippet should contain the search term, not just the first N chars."""
+        db.create_session(session_id="s1", source="cli")
+        long_prefix = "这是一段很长的前缀用来把匹配位置推到文档中间" * 3
+        long_suffix = "这是一段很长的后缀内容填充剩余空间" * 3
+        db.append_message(
+            "s1", role="user",
+            content=f"{long_prefix}记忆断裂{long_suffix}",
+        )
+        results = db.search_messages("记忆断裂")
+        assert len(results) == 1
+        # The centered substr() snippet must include the matched term.
+        assert "记忆断裂" in results[0]["snippet"]
+
+    def test_english_query_still_uses_fts5_fast_path(self, db):
+        """English queries must not trigger the LIKE fallback (fast path regression)."""
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="Deploy docker containers")
+        results = db.search_messages("docker")
+        assert len(results) == 1
+        # No CJK in query → LIKE fallback must not run. We don't assert this
+        # directly (no instrumentation), but the FTS5 path produces an
+        # FTS5-style snippet with highlight markers when the term is short.
+        # At minimum: english queries must still match.
+
+    def test_cjk_query_with_no_matches_returns_empty(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="unrelated English content")
+        results = db.search_messages("记忆断裂")
+        assert results == []
+
+    def test_mixed_cjk_english_query(self, db):
+        """Mixed queries should still fall back to LIKE when FTS5 misses."""
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="讨论Agent通信协议")
+        # "Agent通信" is CJK+English — FTS5 default tokenizer indexes the
+        # whole CJK run with embedded "agent" as separate tokens; the LIKE
+        # fallback handles the substring correctly.
+        results = db.search_messages("Agent通信")
+        assert len(results) == 1
+
+
+# =========================================================================
 # Session search and listing
 # =========================================================================
 

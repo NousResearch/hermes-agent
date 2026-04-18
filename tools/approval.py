@@ -14,6 +14,7 @@ import os
 import re
 import sys
 import threading
+import time
 import unicodedata
 from typing import Optional
 
@@ -115,7 +116,7 @@ DANGEROUS_PATTERNS = [
     (r'\bDELETE\s+FROM\b(?!.*\bWHERE\b)', "SQL DELETE without WHERE"),
     (r'\bTRUNCATE\s+(TABLE)?\s*\w', "SQL TRUNCATE"),
     (r'>\s*/etc/', "overwrite system config"),
-    (r'\bsystemctl\s+(stop|disable|mask)\b', "stop/disable system service"),
+    (r'\bsystemctl\s+(-[^\s]+\s+)*(stop|restart|disable|mask)\b', "stop/restart system service"),
     (r'\bkill\s+-9\s+-1\b', "kill all processes"),
     (r'\bpkill\s+-9\b', "force kill processes"),
     (r':\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:', "fork bomb"),
@@ -129,6 +130,11 @@ DANGEROUS_PATTERNS = [
     (r'\bxargs\s+.*\brm\b', "xargs with rm"),
     (r'\bfind\b.*-exec\s+(/\S*/)?rm\b', "find -exec rm"),
     (r'\bfind\b.*-delete\b', "find -delete"),
+    # Gateway lifecycle protection: prevent the agent from killing its own
+    # gateway process.  These commands trigger a gateway restart/stop that
+    # terminates all running agents mid-work.
+    (r'\bhermes\s+gateway\s+(stop|restart)\b', "stop/restart hermes gateway (kills running agents)"),
+    (r'\bhermes\s+update\b', "hermes update (restarts gateway, kills running agents)"),
     # Gateway protection: never start gateway outside systemd management
     (r'gateway\s+run\b.*(&\s*$|&\s*;|\bdisown\b|\bsetsid\b)', "start gateway outside systemd (use 'systemctl --user restart hermes-gateway')"),
     (r'\bnohup\b.*gateway\s+run\b', "start gateway outside systemd (use 'systemctl --user restart hermes-gateway')"),
@@ -564,12 +570,7 @@ def _smart_approve(command: str, description: str) -> str:
     (openai/codex#13860).
     """
     try:
-        from agent.auxiliary_client import get_text_auxiliary_client, auxiliary_max_tokens_param
-
-        client, model = get_text_auxiliary_client(task="approval")
-        if not client or not model:
-            logger.debug("Smart approvals: no aux client available, escalating")
-            return "escalate"
+        from agent.auxiliary_client import call_llm
 
         prompt = f"""You are a security reviewer for an AI coding agent. A terminal command was flagged by pattern matching as potentially dangerous.
 
@@ -585,11 +586,11 @@ Rules:
 
 Respond with exactly one word: APPROVE, DENY, or ESCALATE"""
 
-        response = client.chat.completions.create(
-            model=model,
+        response = call_llm(
+            task="approval",
             messages=[{"role": "user", "content": prompt}],
-            **auxiliary_max_tokens_param(16),
             temperature=0,
+            max_tokens=16,
         )
 
         answer = (response.choices[0].message.content or "").strip().upper()
@@ -857,12 +858,20 @@ def check_all_command_guards(command: str, env_type: str,
                     "description": combined_desc,
                 }
 
-            # Block until the user responds or timeout (default 5 min)
+            # Block until the user responds or timeout (default 5 min).
+            # Poll in short slices so we can fire activity heartbeats every
+            # ~10s to the agent's inactivity tracker.  Without this, the
+            # blocking event.wait() never touches activity, and the
+            # gateway's inactivity watchdog (agent.gateway_timeout, default
+            # 1800s) kills the agent while the user is still responding to
+            # the approval prompt.  Mirrors the _wait_for_process() cadence
+            # in tools/environments/base.py.
             timeout = _get_approval_config().get("gateway_timeout", 300)
             try:
                 timeout = int(timeout)
             except (ValueError, TypeError):
                 timeout = 300
+
             runtime_interruption_id = None
             try:
                 open_hook = _runtime_open_interruption_hook.get()
@@ -883,7 +892,26 @@ def check_all_command_guards(command: str, env_type: str,
                 logger.debug("Runtime approval interruption open hook failed: %s", exc)
                 runtime_interruption_id = None
 
-            resolved = entry.event.wait(timeout=timeout)
+            try:
+                from tools.environments.base import touch_activity_if_due
+            except Exception:  # pragma: no cover
+                touch_activity_if_due = None
+
+            _now = time.monotonic()
+            _deadline = _now + max(timeout, 0)
+            _activity_state = {"last_touch": _now, "start": _now}
+            resolved = False
+            while True:
+                _remaining = _deadline - time.monotonic()
+                if _remaining <= 0:
+                    break
+                if entry.event.wait(timeout=min(1.0, _remaining)):
+                    resolved = True
+                    break
+                if touch_activity_if_due is not None:
+                    touch_activity_if_due(
+                        _activity_state, "waiting for user approval"
+                    )
 
             try:
                 resume_hook = _runtime_resume_interruption_hook.get()

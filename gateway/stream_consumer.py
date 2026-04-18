@@ -43,6 +43,7 @@ class StreamConsumerConfig:
     edit_interval: float = 1.0
     buffer_threshold: int = 40
     cursor: str = " ▉"
+    buffer_only: bool = False
 
 
 class GatewayStreamConsumer:
@@ -99,6 +100,14 @@ class GatewayStreamConsumer:
         self._flood_strikes = 0         # Consecutive flood-control edit failures
         self._current_edit_interval = self.cfg.edit_interval  # Adaptive backoff
         self._final_response_sent = False
+        # Cache adapter lifecycle capability: only platforms that need an
+        # explicit finalize call (e.g. DingTalk AI Cards) force us to make
+        # a redundant final edit.  Everyone else keeps the fast path.
+        # Use ``is True`` (not ``bool(...)``) so MagicMock attribute access
+        # in tests doesn't incorrectly enable this path.
+        self._adapter_requires_finalize: bool = (
+            getattr(adapter, "REQUIRES_EDIT_FINALIZE", False) is True
+        )
 
         # Think-block filter state (mirrors CLI's _stream_delta tag suppression)
         self._in_think_block = False
@@ -295,10 +304,13 @@ class GatewayStreamConsumer:
                     got_done
                     or got_segment_break
                     or commentary_text is not None
-                    or (elapsed >= self._current_edit_interval
-                        and self._accumulated)
-                    or len(self._accumulated) >= self.cfg.buffer_threshold
                 )
+                if not self.cfg.buffer_only:
+                    should_edit = should_edit or (
+                        (elapsed >= self._current_edit_interval
+                            and self._accumulated)
+                        or len(self._accumulated) >= self.cfg.buffer_threshold
+                    )
 
                 current_update_visible = False
                 if should_edit and self._accumulated:
@@ -357,7 +369,16 @@ class GatewayStreamConsumer:
                     if not got_done and not got_segment_break and commentary_text is None:
                         display_text += self.cfg.cursor
 
-                    current_update_visible = await self._send_or_edit(display_text)
+                    # Segment break: finalize the current message so platforms
+                    # that need explicit closure (e.g. DingTalk AI Cards) don't
+                    # leave the previous segment stuck in a loading state when
+                    # the next segment (tool progress, next chunk) creates a
+                    # new message below it.  got_done has its own finalize
+                    # path below so we don't finalize here for it.
+                    current_update_visible = await self._send_or_edit(
+                        display_text,
+                        finalize=got_segment_break,
+                    )
                     self._last_edit_time = time.monotonic()
 
                 if got_done:
@@ -368,10 +389,22 @@ class GatewayStreamConsumer:
                     if self._accumulated:
                         if self._fallback_final_send:
                             await self._send_fallback_final(self._accumulated)
-                        elif current_update_visible:
+                        elif (
+                            current_update_visible
+                            and not self._adapter_requires_finalize
+                        ):
+                            # Mid-stream edit above already delivered the
+                            # final accumulated content.  Skip the redundant
+                            # final edit — but only for adapters that don't
+                            # need an explicit finalize signal.
                             self._final_response_sent = True
                         elif self._message_id:
-                            self._final_response_sent = await self._send_or_edit(self._accumulated)
+                            # Either the mid-stream edit didn't run (no
+                            # visible update this tick) OR the adapter needs
+                            # explicit finalize=True to close the stream.
+                            self._final_response_sent = await self._send_or_edit(
+                                self._accumulated, finalize=True,
+                            )
                         elif not self._already_sent:
                             self._final_response_sent = await self._send_or_edit(self._accumulated)
                     return
@@ -403,18 +436,20 @@ class GatewayStreamConsumer:
 
         except asyncio.CancelledError:
             # Best-effort final edit on cancellation
+            _best_effort_ok = False
             if self._accumulated and self._message_id:
                 try:
-                    await self._send_or_edit(self._accumulated)
+                    _best_effort_ok = bool(await self._send_or_edit(self._accumulated))
                 except Exception:
                     pass
-            # If we delivered any content before being cancelled, mark the
-            # final response as sent so the gateway's already_sent check
-            # doesn't trigger a duplicate message.  The 5-second
-            # stream_task timeout (gateway/run.py) can cancel us while
-            # waiting on a slow Telegram API call — without this flag the
-            # gateway falls through to the normal send path.
-            if self._already_sent:
+            # Only confirm final delivery if the best-effort send above
+            # actually succeeded OR if the final response was already
+            # confirmed before we were cancelled.  Previously this
+            # promoted any partial send (already_sent=True) to
+            # final_response_sent — which suppressed the gateway's
+            # fallback send even when only intermediate text (e.g.
+            # "Let me search…") had been delivered, not the real answer.
+            if _best_effort_ok and not self._final_response_sent:
                 self._final_response_sent = True
         except Exception as e:
             logger.error("Stream consumer error: %s", e)
@@ -513,9 +548,17 @@ class GatewayStreamConsumer:
         self._fallback_final_send = False
         if not continuation.strip():
             # Nothing new to send — the visible partial already matches final text.
-            self._already_sent = True
-            self._final_response_sent = True
-            return
+            # BUT: if final_text itself has meaningful content (e.g. a timeout
+            # message after a long tool call), the prefix-based continuation
+            # calculation may wrongly conclude "already shown" because the
+            # streamed prefix was from a *previous* segment (before the tool
+            # boundary).  In that case, send the full final_text as-is (#10807).
+            if final_text.strip() and final_text != self._visible_prefix():
+                continuation = final_text
+            else:
+                self._already_sent = True
+                self._final_response_sent = True
+                return
 
         raw_limit = getattr(self.adapter, "MAX_MESSAGE_LENGTH", 4096)
         safe_limit = max(500, raw_limit - 100)
@@ -609,19 +652,25 @@ class GatewayStreamConsumer:
                 content=text,
                 metadata=self.metadata,
             )
-            if result.success:
-                self._already_sent = True
-                return True
+            # Note: do NOT set _already_sent = True here.
+            # Commentary messages are interim status updates (e.g. "Using browser
+            # tool..."), not the final response. Setting already_sent would cause
+            # the final response to be incorrectly suppressed when there are
+            # multiple tool calls. See: https://github.com/NousResearch/hermes-agent/issues/10454
+            return result.success
         except Exception as e:
             logger.error("Commentary send error: %s", e)
-        return False
+            return False
 
-    async def _send_or_edit(self, text: str) -> bool:
+    async def _send_or_edit(self, text: str, *, finalize: bool = False) -> bool:
         """Send or edit the streaming message.
 
         Returns True if the text was successfully delivered (sent or edited),
         False otherwise.  Callers like the overflow split loop use this to
         decide whether to advance past the delivered chunk.
+
+        ``finalize`` is True when this is the last edit in a streaming
+        sequence.
         """
         # Strip MEDIA: directives so they don't appear as visible text.
         # Media files are delivered as native attachments after the stream
@@ -655,14 +704,22 @@ class GatewayStreamConsumer:
         try:
             if self._message_id is not None:
                 if self._edit_supported:
-                    # Skip if text is identical to what we last sent
-                    if text == self._last_sent_text:
+                    # Skip if text is identical to what we last sent.
+                    # Exception: adapters that require an explicit finalize
+                    # call (REQUIRES_EDIT_FINALIZE) must still receive the
+                    # finalize=True edit even when content is unchanged, so
+                    # their streaming UI can transition out of the in-
+                    # progress state.  Everyone else short-circuits.
+                    if text == self._last_sent_text and not (
+                        finalize and self._adapter_requires_finalize
+                    ):
                         return True
                     # Edit existing message
                     result = await self.adapter.edit_message(
                         chat_id=self.chat_id,
                         message_id=self._message_id,
                         content=text,
+                        finalize=finalize,
                     )
                     if result.success:
                         self._already_sent = True

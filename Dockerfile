@@ -31,6 +31,12 @@ RUN npm install --prefer-offline --no-audit && \
     npm install --prefer-offline --no-audit && \
     npm cache clean --force
 
+# Build the web/ dashboard so FastAPI at :9119 can serve the Vite assets
+RUN cd /opt/hermes/web && \
+    npm install --prefer-offline --no-audit && \
+    npm run build && \
+    npm cache clean --force
+
 # Hand ownership to hermes user, then install Python deps in a virtualenv
 RUN chown -R hermes:hermes /opt/hermes
 USER hermes

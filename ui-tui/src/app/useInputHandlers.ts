@@ -8,6 +8,9 @@ import type {
   VoiceRecordResponse
 } from '../gatewayTypes.js'
 
+import { writeOsc52Clipboard } from '../lib/osc52.js'
+
+import { getInputSelection } from './inputSelectionStore.js'
 import type { InputHandlerContext, InputHandlerResult } from './interfaces.js'
 import { $isBlocked, $overlayState, patchOverlayState } from './overlayStore.js'
 import { turnController } from './turnController.js'
@@ -245,6 +248,15 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
     if (isCtrl(key, ch, 'c')) {
       if (terminal.hasSelection) {
         return copySelection()
+      }
+
+      const inputSel = getInputSelection()
+
+      if (inputSel && inputSel.end > inputSel.start) {
+        writeOsc52Clipboard(inputSel.value.slice(inputSel.start, inputSel.end))
+        inputSel.clear()
+
+        return
       }
 
       if (live.busy && live.sid) {

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any, Callable, Iterable
 
+from gateway.group_control_intents import has_followup_group_reference
+
 
 def match_group_runtime_status_request(
     *,
@@ -27,4 +29,6 @@ def match_group_runtime_status_request(
     target = target_extractor(source, normalized_body)
     if target:
         return target
+    if not has_followup_group_reference(normalized_body):
+        return None
     return history_target_extractor(source, conversation_history) or None

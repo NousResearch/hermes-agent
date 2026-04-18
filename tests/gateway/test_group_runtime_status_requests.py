@@ -56,6 +56,25 @@ def test_match_group_runtime_status_request_can_fall_back_to_recent_history_targ
     assert target == "group:192903718"
 
 
+def test_match_group_runtime_status_request_does_not_steal_recent_history_without_group_reference():
+    source = _make_source(chat_type="dm", chat_id="179033731")
+
+    target = match_group_runtime_status_request(
+        source=source,
+        body="能说话吗 不是监听模式了吗",
+        conversation_history=[
+            {"role": "user", "content": "往 QQ 群 192903718 发：绿帽哥！"},
+        ],
+        admin_ids_configured=True,
+        is_admin_user=True,
+        looks_like_group_runtime_status_query=lambda body: True,
+        target_extractor=lambda source, body: None,
+        history_target_extractor=lambda source, history: "group:192903718",
+    )
+
+    assert target is None
+
+
 def test_match_group_runtime_status_request_returns_none_for_non_admin_or_non_query():
     source = _make_source()
 

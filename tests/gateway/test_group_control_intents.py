@@ -1,4 +1,5 @@
 from gateway.group_control_intents import (
+    has_followup_group_reference,
     has_current_group_reference,
     looks_like_group_chat_enable_request,
     looks_like_group_listen_disable_request,
@@ -18,6 +19,12 @@ def test_has_current_group_reference_matches_shared_current_group_terms():
     assert has_current_group_reference("这个群只监听，不要聊天")
     assert has_current_group_reference("当前群日报先关掉")
     assert not has_current_group_reference("726109087 这个项目群只监听")
+
+
+def test_has_followup_group_reference_accepts_group_deictic_words():
+    assert has_followup_group_reference("你现在在群里能说话吗")
+    assert has_followup_group_reference("那个群日报开了吗")
+    assert not has_followup_group_reference("能说话吗")
 
 
 def test_listen_disable_request_supports_resume_chat_wording():

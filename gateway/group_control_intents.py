@@ -18,10 +18,30 @@ from gateway.shared_oral_intents import (
     GROUP_STATUS_QUERY_TERMS,
 )
 
+_FOLLOWUP_GROUP_REFERENCE_TERMS = (
+    "这个群",
+    "这群",
+    "当前群",
+    "本群",
+    "那个群",
+    "那群",
+    "该群",
+    "群里",
+    "在群里",
+)
+
 
 def has_current_group_reference(message_text: str) -> bool:
     body = str(message_text or "").strip()
     return bool(body) and any(term in body for term in GROUP_CURRENT_TARGET_TERMS)
+
+
+def has_followup_group_reference(message_text: str) -> bool:
+    body = str(message_text or "").strip()
+    return bool(body) and (
+        has_current_group_reference(body)
+        or any(term in body for term in _FOLLOWUP_GROUP_REFERENCE_TERMS)
+    )
 
 
 def strip_current_group_reference_terms(message_text: str) -> str:

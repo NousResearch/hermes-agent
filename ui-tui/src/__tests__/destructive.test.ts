@@ -3,6 +3,10 @@ import { describe, expect, it } from 'vitest'
 import { CONFIRM_WINDOW_MS, createDestructiveGate } from '../domain/destructive.js'
 
 describe('createDestructiveGate', () => {
+  it('uses a generous default window so real humans can retype (#4069)', () => {
+    expect(CONFIRM_WINDOW_MS).toBeGreaterThanOrEqual(15_000)
+  })
+
   it('first request is not confirmed — it arms the gate', () => {
     const g = createDestructiveGate()
     expect(g.request('clear', 0)).toBe(false)
@@ -11,13 +15,22 @@ describe('createDestructiveGate', () => {
   it('second request within window with same key is confirmed', () => {
     const g = createDestructiveGate()
     g.request('clear', 0)
-    expect(g.request('clear', 2_500)).toBe(true)
+    expect(g.request('clear', CONFIRM_WINDOW_MS - 1)).toBe(true)
   })
 
   it('second request outside the window re-arms and is not confirmed', () => {
     const g = createDestructiveGate()
     g.request('clear', 0)
     expect(g.request('clear', CONFIRM_WINDOW_MS + 1)).toBe(false)
+  })
+
+  it('armed() reports the pending key while fresh, null otherwise', () => {
+    const g = createDestructiveGate(100)
+    expect(g.armed()).toBe(null)
+    g.request('clear')
+    expect(g.armed()).toBe('clear')
+    g.reset()
+    expect(g.armed()).toBe(null)
   })
 
   it('different key re-arms the gate, does not confirm', () => {

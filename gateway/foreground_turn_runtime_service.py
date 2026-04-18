@@ -119,6 +119,8 @@ async def prepare_gateway_foreground_message(
                 raw_message_text,
                 image_paths,
             )
+            if not raw_message_text.strip() and not str(message_text or "").strip():
+                message_text = auto_vision_degraded_note("", False)
         elif not raw_message_text.strip():
             message_text = auto_vision_degraded_note("", False)
 

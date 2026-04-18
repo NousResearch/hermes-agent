@@ -6,6 +6,7 @@ import asyncio
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Dict, Optional
 
+from gateway.auto_vision_runtime_service import auto_vision_degraded_note
 from gateway.platforms.base import MessageEvent
 
 _DEFAULT_INLINE_WAIT_SECONDS = 0.75
@@ -49,48 +50,64 @@ class VisionOrchestrator:
             "Include any text, code, data, objects, people, layout, colors, "
             "and any other notable visual information."
         )
-        tasks = [
-            asyncio.create_task(
-                analyze_image(
-                    image_ref=str(attachment.analysis_ref or attachment.remote_url or attachment.local_path),
-                    user_prompt=prompt,
-                    model=None,
-                )
+        tasks: list[tuple[str, asyncio.Task[Dict[str, Any]]]] = [
+            (
+                str(attachment.analysis_ref or attachment.remote_url or attachment.local_path),
+                asyncio.create_task(
+                    analyze_image(
+                        image_ref=str(
+                            attachment.analysis_ref or attachment.remote_url or attachment.local_path
+                        ),
+                        user_prompt=prompt,
+                        model=None,
+                    )
+                ),
             )
             for attachment in images
         ]
-        try:
-            results = await asyncio.wait_for(asyncio.gather(*tasks), timeout=timeout)
-        except asyncio.TimeoutError:
-            for task in tasks:
-                task.cancel()
-            if has_user_text:
-                return VisionTurnOutcome(enriched_text=user_text)
-            return VisionTurnOutcome(
-                enriched_text="",
-                direct_reply="这张图片这轮还没处理出来，你稍后再发一次，或者补一句你要我看什么。",
-            )
 
-        descriptions = [
-            str(item.get("analysis") or "").strip()
-            for item in results
-            if bool(item.get("success")) and str(item.get("analysis") or "").strip()
-        ]
-        if descriptions:
-            prefix = "\n\n".join(
-                f"[The user sent an image~ Here's what I can see:\n{description}]"
-                for description in descriptions
+        completed_tasks: set[asyncio.Task[Dict[str, Any]]] = set()
+        if tasks and timeout > 0:
+            done, pending = await asyncio.wait(
+                [task for _, task in tasks],
+                timeout=timeout,
             )
+            completed_tasks = set(done)
+            for task in pending:
+                task.cancel()
+        elif tasks:
+            for _, task in tasks:
+                task.cancel()
+
+        enriched_parts: list[str] = []
+        for image_ref, task in tasks:
+            task_result: Dict[str, Any] | None = None
+            if task in completed_tasks or task.done():
+                try:
+                    task_result = task.result()
+                except Exception:
+                    task_result = None
+
+            if task_result and bool(task_result.get("success")):
+                description = str(task_result.get("analysis") or "").strip()
+                if description:
+                    enriched_parts.append(
+                        f"[The user sent an image~ Here's what I can see:\n{description}]"
+                    )
+                    continue
+
+            if task.done():
+                enriched_parts.append(auto_vision_degraded_note(image_ref, pending=False))
+            else:
+                enriched_parts.append(auto_vision_degraded_note(image_ref, pending=True))
+
+        if enriched_parts:
+            prefix = "\n\n".join(enriched_parts)
             if user_text:
                 return VisionTurnOutcome(enriched_text=f"{prefix}\n\n{user_text}")
             return VisionTurnOutcome(enriched_text=prefix)
 
-        if has_user_text:
-            return VisionTurnOutcome(enriched_text=user_text)
-        return VisionTurnOutcome(
-            enriched_text="",
-            direct_reply="这张图片这轮没识别出来，你重发一下，或者补一句你要我重点看什么。",
-        )
+        return VisionTurnOutcome(enriched_text=user_text)
 
     def _inline_wait_seconds(self, *, chat_type: str, has_user_text: bool) -> float:
         cfg = (((self._config_loader() or {}).get("auxiliary") or {}).get("vision") or {})

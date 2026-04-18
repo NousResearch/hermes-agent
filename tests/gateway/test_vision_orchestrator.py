@@ -46,7 +46,7 @@ async def test_image_only_turn_waits_for_analysis_result():
 
 
 @pytest.mark.asyncio
-async def test_image_only_turn_returns_direct_fallback_when_analysis_fails():
+async def test_image_only_turn_returns_degraded_note_when_analysis_fails():
     from gateway.vision_orchestrator import VisionOrchestrator
 
     orchestrator = VisionOrchestrator(config_loader=lambda: {})
@@ -72,9 +72,8 @@ async def test_image_only_turn_returns_direct_fallback_when_analysis_fails():
         analyze_image=analyze,
     )
 
-    assert outcome.enriched_text == ""
-    assert outcome.direct_reply
-    assert "图片" in outcome.direct_reply
+    assert outcome.direct_reply is None
+    assert outcome.enriched_text == "[Image attached; no verified image description is available for this turn.]"
 
 
 @pytest.mark.asyncio
@@ -120,4 +119,5 @@ async def test_text_plus_image_turn_does_not_block_on_pending_analysis(monkeypat
 
     assert outcome.direct_reply is None
     assert outcome.enriched_text.endswith("看下这个界面")
+    assert "[Image attached; no verified image description is available yet.]" in outcome.enriched_text
     assert "产品界面" not in outcome.enriched_text

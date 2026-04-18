@@ -221,6 +221,64 @@ def test_auto_vision_degraded_note_for_local_cache_does_not_suggest_tool_loop():
 
 
 @pytest.mark.asyncio
+async def test_foreground_turn_image_only_falls_back_to_degraded_note_when_enrichment_returns_empty(
+    monkeypatch,
+):
+    from gateway.foreground_turn_runtime_service import prepare_gateway_foreground_message
+
+    event = MessageEvent(
+        text="",
+        message_type=MessageType.PHOTO,
+        source=SessionSource(platform=Platform.QQ_NAPCAT, chat_id="1", chat_type="group"),
+        attachments=[
+            MessageAttachment(
+                kind="image",
+                mime_type="image/png",
+                local_path="/tmp/demo.png",
+                analysis_ref="/tmp/demo.png",
+            )
+        ],
+    )
+
+    async def _fake_prelude(**kwargs):
+        return SimpleNamespace(
+            hook_ctx=kwargs.get("hook_ctx") or {},
+            message_text=kwargs["message_text"],
+            blocked=False,
+        )
+
+    monkeypatch.setattr(
+        "gateway.foreground_turn_runtime_service.run_gateway_agent_prelude",
+        _fake_prelude,
+    )
+
+    prepared = await prepare_gateway_foreground_message(
+        event=event,
+        source=event.source,
+        session_id="sess-1",
+        history=[],
+        thread_sessions_per_user=False,
+        hooks=SimpleNamespace(),
+        adapters={},
+        image_vision_inputs_from_event=lambda _event: ["/tmp/demo.png"],
+        enrich_message_with_vision=AsyncMock(return_value=""),
+        auto_vision_degraded_note=lambda _path, pending: (
+            "[Image attached; no verified image description is available yet.]"
+            if pending
+            else "[Image attached; no verified image description is available for this turn.]"
+        ),
+        enrich_message_with_transcription=AsyncMock(side_effect=lambda text, _paths: text),
+        has_setup_skill=lambda: False,
+        expand_context_references=AsyncMock(return_value=""),
+    )
+
+    assert (
+        prepared.message_text
+        == "[Image attached; no verified image description is available for this turn.]"
+    )
+
+
+@pytest.mark.asyncio
 async def test_auto_vision_enrichment_times_out_and_degrades_gracefully(monkeypatch):
     runner = GatewayRunner.__new__(GatewayRunner)
     runner.config = SimpleNamespace()

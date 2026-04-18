@@ -251,6 +251,14 @@ class HonchoClientConfig:
     # matching dialectic_depth length. When None, uses proportional defaults
     # derived from dialectic_reasoning_level.
     dialectic_depth_levels: list[str] | None = None
+    # Reasoning-level heuristic for auto-injected dialectic calls. When true,
+    # scales the base level up on longer queries (restored from pre-#10619
+    # behavior; see plugins/memory/honcho/__init__.py for thresholds).
+    # Never auto-selects a level above reasoning_level_cap.
+    reasoning_heuristic: bool = True
+    # Ceiling for heuristic-selected reasoning level. "max" is reserved for
+    # explicit tool-path selection; default "high" matches the old behavior.
+    reasoning_level_cap: str = "high"
     # Honcho API limits — configurable for self-hosted instances
     # Max chars per message sent via add_messages() (Honcho cloud: 25000)
     message_max_chars: int = 25000
@@ -445,6 +453,16 @@ class HonchoClientConfig:
                 host_block.get("dialecticDepthLevels"),
                 raw.get("dialecticDepthLevels"),
                 depth=_parse_dialectic_depth(host_block.get("dialecticDepth"), raw.get("dialecticDepth")),
+            ),
+            reasoning_heuristic=_resolve_bool(
+                host_block.get("reasoningHeuristic"),
+                raw.get("reasoningHeuristic"),
+                default=True,
+            ),
+            reasoning_level_cap=(
+                host_block.get("reasoningLevelCap")
+                or raw.get("reasoningLevelCap")
+                or "high"
             ),
             message_max_chars=int(
                 host_block.get("messageMaxChars")

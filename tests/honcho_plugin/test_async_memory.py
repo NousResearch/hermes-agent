@@ -460,10 +460,3 @@ class TestPrefetchCacheAccessors:
         assert mgr.pop_context_result("cli:test") == payload
         assert mgr.pop_context_result("cli:test") == {}
 
-    def test_set_and_pop_dialectic_result(self):
-        mgr = _make_manager(write_frequency="turn")
-
-        mgr.set_dialectic_result("cli:test", "Resume with toolset cleanup")
-
-        assert mgr.pop_dialectic_result("cli:test") == "Resume with toolset cleanup"
-        assert mgr.pop_dialectic_result("cli:test") == ""

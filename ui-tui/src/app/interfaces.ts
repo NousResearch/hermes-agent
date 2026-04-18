@@ -78,9 +78,13 @@ export interface UiState {
   compact: boolean
   detailsMode: DetailsMode
   info: null | SessionInfo
+  inlineDiffs: boolean
+  showCost: boolean
+  showReasoning: boolean
   sid: null | string
   status: string
   statusBar: boolean
+  streaming: boolean
   theme: Theme
   usage: Usage
 }

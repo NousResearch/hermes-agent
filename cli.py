@@ -698,7 +698,12 @@ def _run_cleanup():
 _active_worktree: Optional[Dict[str, str]] = None
 
 
+# Cache branch lookups briefly to keep the status bar fresh without
+# repeatedly spawning git subprocesses during rapid UI updates.
 _BRANCH_CACHE_TTL_SECONDS = 2.0
+# When trimming status-bar paths, we fall back to an all-dots string when the
+# available width is too small to fit the ellipsis marker ("...") plus a prefix.
+MIN_ELLIPSIS_WIDTH = 3
 _cached_workspace_branch: tuple[str, float, Optional[str]] | None = None
 
 
@@ -728,9 +733,9 @@ def _shorten_status_path(path: Path, max_width: int = 34) -> str:
         tail_text = f".../{tail}"
         if len(tail_text) <= max_width:
             return tail_text
-    if max_width <= 3:
+    if max_width <= MIN_ELLIPSIS_WIDTH:
         return "." * max_width
-    return f"{display[: max_width - 3]}..."
+    return f"{display[: max_width - MIN_ELLIPSIS_WIDTH]}..."
 
 
 def _resolve_git_branch(resolved: Path) -> Optional[str]:

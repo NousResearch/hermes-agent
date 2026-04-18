@@ -66,6 +66,8 @@ try:
         GetMessageRequest,
         GetMessageResourceRequest,
         P2ImMessageMessageReadV1,
+        PatchMessageRequest,
+        PatchMessageRequestBody,
         ReplyMessageRequest,
         ReplyMessageRequestBody,
         UpdateMessageRequest,
@@ -118,6 +120,8 @@ _MARKDOWN_HINT_RE = re.compile(
     r"(^#{1,6}\s)|(^\s*[-*]\s)|(^\s*\d+\.\s)|(^\s*---+\s*$)|(```)|(`[^`\n]+`)|(\*\*[^*\n].+?\*\*)|(~~[^~\n].+?~~)|(<u>.+?</u>)|(\*[^*\n]+\*)|(\[[^\]]+\]\([^)]+\))|(^>\s)",
     re.MULTILINE,
 )
+# Matches a markdown table: at least two |-| rows followed by content rows.
+_TABLE_RE = re.compile(r"^\s*\|[:\- ]+\|", re.MULTILINE)
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _MENTION_RE = re.compile(r"@_user_\d+")
 _MULTISPACE_RE = re.compile(r"[ \t]{2,}")
@@ -367,7 +371,7 @@ def _render_text_element(element: Dict[str, Any]) -> str:
     if _is_style_enabled(style_dict, "code"):
         return _wrap_inline_code(text)
 
-    rendered = _escape_markdown_text(text)
+    rendered = text
     if not rendered:
         return ""
     if _is_style_enabled(style_dict, "bold"):
@@ -445,6 +449,24 @@ def _build_markdown_post_payload(content: str) -> str:
         },
         ensure_ascii=False,
     )
+
+
+def _build_markdown_card_payload(content: str) -> str:
+    """Build a Feishu interactive card payload with markdown content.
+
+    Feishu card elements with ``tag: "markdown"`` render full markdown
+    (including tables), whereas post ``tag: "md"`` elements do not.
+    """
+    card: Dict[str, Any] = {
+        "config": {"wide_screen_mode": True},
+        "elements": [
+            {
+                "tag": "markdown",
+                "content": content,
+            }
+        ],
+    }
+    return json.dumps(card, ensure_ascii=False)
 
 
 def parse_feishu_post_payload(payload: Any) -> FeishuPostParseResult:
@@ -541,8 +563,7 @@ def _render_post_element(
         label = str(element.get("text", href) or "").strip()
         if not label:
             return ""
-        escaped_label = _escape_markdown_text(label)
-        return f"[{escaped_label}]({href})" if href else escaped_label
+        return f"[{label}]({href})" if href else label
     if tag == "at":
         mentioned_id = (
             str(element.get("open_id", "")).strip()
@@ -556,7 +577,7 @@ def _render_post_element(
             or str(element.get("text", "")).strip()
             or mentioned_id
         )
-        return f"@{_escape_markdown_text(display_name)}" if display_name else "@"
+        return f"@{display_name}" if display_name else "@"
     if tag in {"img", "image"}:
         image_key = str(element.get("image_key", "")).strip()
         if image_key and image_key not in image_keys:
@@ -608,7 +629,7 @@ def _render_nested_post(
     mentioned_ids: List[str],
 ) -> str:
     if isinstance(value, str):
-        return _escape_markdown_text(value)
+        return value
     if isinstance(value, list):
         return " ".join(
             part
@@ -1010,11 +1031,20 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
     if original_configure is not None:
         setattr(ws_client, "_configure", _configure_with_overrides)
     _apply_runtime_ws_overrides()
+    stopped_exc: Optional[Exception] = None
     try:
         ws_client.start()
-    except Exception:
-        pass
+    except Exception as exc:
+        stopped_exc = exc
     finally:
+        # Signal to the main loop that the WS client has stopped. This unblocks
+        # any watchdog that is monitoring self._ws_stopped so systemd can restart
+        # the process on keepalive ping timeout or unrecoverable connection errors.
+        adapter._ws_stopped = True
+        if stopped_exc:
+            logger.warning("[Feishu] WS client loop exited with error: %s", stopped_exc)
+        else:
+            logger.warning("[Feishu] WS client loop exited (ping timeout / connection lost)")
         ws_client_module.websockets.connect = original_connect
         if original_configure is not None:
             setattr(ws_client, "_configure", original_configure)
@@ -1061,6 +1091,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._ws_client: Optional[Any] = None
         self._ws_future: Optional[asyncio.Future] = None
         self._ws_thread_loop: Optional[asyncio.AbstractEventLoop] = None
+        self._ws_stopped: bool = False  # set True when WS client loop exits (ping timeout / unrecoverable)
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._webhook_runner: Optional[Any] = None
         self._webhook_site: Optional[Any] = None
@@ -2096,6 +2127,41 @@ class FeishuAdapter(BasePlatformAdapter):
             )
         except Exception as exc:
             logger.error("Failed to resolve gateway approval from Feishu button: %s", exc)
+        # Patch the card message so all chat participants see the resolved state.
+        # Uses PATCH (not PUT) per Feishu API requirements for interactive cards.
+        await self._patch_approval_card(approval_id, state, choice, user_name)
+
+    async def _patch_approval_card(
+        self, approval_id: Any, state: Dict[str, str], choice: str, user_name: str,
+    ) -> None:
+        """Patch the approval card message to show the resolved (approved/denied) state.
+
+        Uses PATCH /im/v1/messages/{message_id} (instead of PUT) per Feishu API
+        requirements for updating interactive card messages. Error 200340 ("message not
+        found" / permission denied) was observed when using the PUT endpoint.
+        """
+        message_id = state.get("message_id") if state else None
+        if not message_id:
+            logger.debug("[Feishu] No message_id in approval state for %s", approval_id)
+            return
+
+        if not self._client:
+            logger.debug("[Feishu] No client available for card patch")
+            return
+
+        try:
+            card = self._build_resolved_approval_card(choice=choice, user_name=user_name)
+            content = json.dumps(card, ensure_ascii=False)
+            body = self._build_patch_message_body(content=content)
+            request = self._build_patch_message_request(message_id=message_id, request_body=body)
+            response = await asyncio.to_thread(self._client.im.v1.message.patch, request)
+            if getattr(response, "success", lambda: False)():
+                logger.info("[Feishu] Patched approval card %s (choice=%s)", message_id, choice)
+            else:
+                code = getattr(response, "code", None)
+                logger.warning("[Feishu] Failed to patch approval card %s: code=%s", message_id, code)
+        except Exception as exc:
+            logger.warning("[Feishu] Exception patching approval card %s: %s", message_id, exc)
 
     async def _handle_reaction_event(self, event_type: str, data: Any) -> None:
         """Fetch the reacted-to message; if it was sent by this bot, emit a synthetic text event."""
@@ -3364,10 +3430,31 @@ class FeishuAdapter(BasePlatformAdapter):
     # =========================================================================
 
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
+        # Tables and code-heavy content must use interactive card format regardless
+        # of whether they also contain other markdown hints.
+        if self._should_send_as_card(content):
+            return "interactive", _build_markdown_card_payload(content)
         if _MARKDOWN_HINT_RE.search(content):
             return "post", _build_markdown_post_payload(content)
         text_payload = {"text": content}
         return "text", json.dumps(text_payload, ensure_ascii=False)
+
+    @staticmethod
+    def _should_send_as_card(content: str) -> bool:
+        """Return True when content should be sent as an interactive card.
+
+        Feishu post ``md`` elements do not support tables, so any content
+        containing a markdown table is routed to card format instead.
+        Code-heavy content is also sent as a card for better rendering.
+        """
+        if _TABLE_RE.search(content):
+            return True
+        # Count code block opening fences as a heuristic for code-heavy content.
+        # Each code block starts with ``` optionally followed by a language tag.
+        code_block_count = len(re.findall(r"^\s*```[^`\n]", content, re.MULTILINE))
+        if code_block_count >= 3:
+            return True
+        return False
 
     async def _send_uploaded_file_message(
         self,
@@ -3729,6 +3816,30 @@ class FeishuAdapter(BasePlatformAdapter):
         if "UpdateMessageRequest" in globals():
             return (
                 UpdateMessageRequest.builder()
+                .message_id(message_id)
+                .request_body(request_body)
+                .build()
+            )
+        return SimpleNamespace(message_id=message_id, request_body=request_body)
+
+    @staticmethod
+    def _build_patch_message_body(*, content: str) -> Any:
+        """Build request body for PATCH /im/v1/messages/{message_id} (card update)."""
+        if "PatchMessageRequestBody" in globals():
+            return (
+                PatchMessageRequestBody.builder()
+                .msg_type("interactive")
+                .content(content)
+                .build()
+            )
+        return SimpleNamespace(msg_type="interactive", content=content)
+
+    @staticmethod
+    def _build_patch_message_request(message_id: str, request_body: Any) -> Any:
+        """Build PATCH /im/v1/messages/{message_id} request for updating interactive cards."""
+        if "PatchMessageRequest" in globals():
+            return (
+                PatchMessageRequest.builder()
                 .message_id(message_id)
                 .request_body(request_body)
                 .build()

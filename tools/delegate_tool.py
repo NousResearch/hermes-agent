@@ -154,8 +154,10 @@ def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
     }
     return [t for t in toolsets if t not in blocked_toolset_names]
 
+_CALLER_OMITTED = object()
 
-def _build_child_progress_callback(task_index: int, goal_or_parent=None, parent_agent=None, task_count: int = 1) -> Optional[callable]:
+
+def _build_child_progress_callback(task_index: int, goal_or_parent=None, parent_agent=_CALLER_OMITTED, task_count: int = 1) -> Optional[callable]:
     """Build a callback that relays child agent tool calls to the parent display.
 
     Two display paths:
@@ -166,16 +168,23 @@ def _build_child_progress_callback(task_index: int, goal_or_parent=None, parent_
     child agent runs with no progress callback (identical to current behavior).
     """
     # Backward-compat shim:
-    # old call style: _build_child_progress_callback(task_index, parent_agent, task_count=? )
-    # new call style: _build_child_progress_callback(task_index, goal, parent_agent, task_count=?)
+    # legacy call style: _build_child_progress_callback(task_index, parent_agent, task_count=? )
+    # new call style:    _build_child_progress_callback(task_index, goal, parent_agent, task_count=?)
     legacy_mode = False
-    if parent_agent is None and goal_or_parent is not None and not isinstance(goal_or_parent, str):
-        # Legacy call style used by older tests/callers.
+    if parent_agent is _CALLER_OMITTED:
         legacy_mode = True
         parent_agent = goal_or_parent
         goal = ""
     else:
         goal = goal_or_parent or ""
+
+    if parent_agent is None:
+        raise TypeError("parent_agent is required")
+
+    if not hasattr(parent_agent, "_delegate_spinner") and not hasattr(parent_agent, "tool_progress_callback"):
+        raise TypeError(
+            "parent_agent must expose '_delegate_spinner' and/or 'tool_progress_callback'"
+        )
 
     spinner = getattr(parent_agent, '_delegate_spinner', None)
     parent_cb = getattr(parent_agent, 'tool_progress_callback', None)
@@ -314,12 +323,18 @@ def _build_child_agent(
     Build a child AIAgent on the main thread (thread-safe construction).
     Returns the constructed child agent without running it.
 
+    `parent_agent` is required. `task_count` defaults to 1 only for backward
+    compatibility with older direct unit-test call sites.
+
     When override_* params are set (from delegation config), the child uses
     those credentials instead of inheriting from the parent.  This enables
     routing subagents to a different provider:model pair (e.g. cheap/fast
     model on OpenRouter while the parent runs on Nous Portal).
     """
     from run_agent import AIAgent
+
+    if parent_agent is None:
+        raise TypeError("parent_agent is required")
 
     # When no explicit toolsets given, inherit from parent's enabled toolsets
     # so disabled tools (e.g. web) don't leak to subagents.

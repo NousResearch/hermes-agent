@@ -251,6 +251,19 @@ class TestBuildApiKwargsChatCompletionsServiceTier:
         assert "service_tier" not in kwargs
 
 
+class TestBuildApiKwargsKimiFixedTemperature:
+    def test_kimi_for_coding_forces_temperature_on_main_chat_path(self, monkeypatch):
+        agent = _make_agent(
+            monkeypatch,
+            "kimi-coding",
+            base_url="https://api.kimi.com/coding/v1",
+            model="kimi-for-coding",
+        )
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        assert kwargs["temperature"] == 0.6
+
+
 class TestBuildApiKwargsAIGateway:
     def test_uses_chat_completions_format(self, monkeypatch):
         agent = _make_agent(monkeypatch, "ai-gateway", base_url="https://ai-gateway.vercel.sh/v1", model="gpt-4o")

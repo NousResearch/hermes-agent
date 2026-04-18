@@ -2068,19 +2068,34 @@ class HermesCLI:
 
     def _spinner_widget_height(self, width: Optional[int] = None) -> int:
         """Return the visible height for the spinner/status text line above the status bar."""
-        if not getattr(self, "_spinner_text", ""):
+        spinner_line = self._render_spinner_text()
+        if not spinner_line:
             return 0
         if self._use_minimal_tui_chrome(width=width):
             return 0
-        # Compute how many lines the spinner text needs when wrapped.
-        # The rendered text is "  {emoji} {label}  ({elapsed})" — about
-        # len(_spinner_text) + 16 chars for indent + timer suffix.
         width = width or self._get_tui_terminal_width()
         if width and width > 10:
             import math
-            text_len = len(self._spinner_text) + 16  # indent + timer
-            return max(1, math.ceil(text_len / width))
+            text_width = self._status_bar_display_width(spinner_line)
+            return max(1, math.ceil(text_width / width))
         return 1
+
+    def _render_spinner_text(self) -> str:
+        """Return the live spinner/status text exactly as rendered in the TUI."""
+        txt = getattr(self, "_spinner_text", "")
+        if not txt:
+            return ""
+        t0 = getattr(self, "_tool_start_time", 0) or 0
+        if t0 > 0:
+            import time as _time
+            elapsed = _time.monotonic() - t0
+            if elapsed >= 60:
+                _m, _s = int(elapsed // 60), int(elapsed % 60)
+                elapsed_str = f"{_m}m {_s}s"
+            else:
+                elapsed_str = f"{elapsed:.1f}s"
+            return f"  {txt}  ({elapsed_str})"
+        return f"  {txt}"
 
     def _get_voice_status_fragments(self, width: Optional[int] = None):
         """Return the voice status bar fragments for the interactive TUI."""
@@ -9375,21 +9390,10 @@ class HermesCLI:
             return cli_ref._agent_spacer_height()
 
         def get_spinner_text():
-            txt = cli_ref._spinner_text
-            if not txt:
+            spinner_line = cli_ref._render_spinner_text()
+            if not spinner_line:
                 return []
-            # Append live elapsed timer when a tool is running
-            t0 = cli_ref._tool_start_time
-            if t0 > 0:
-                import time as _time
-                elapsed = _time.monotonic() - t0
-                if elapsed >= 60:
-                    _m, _s = int(elapsed // 60), int(elapsed % 60)
-                    elapsed_str = f"{_m}m {_s}s"
-                else:
-                    elapsed_str = f"{elapsed:.1f}s"
-                return [('class:hint', f'  {txt}  ({elapsed_str})')]
-            return [('class:hint', f'  {txt}')]
+            return [('class:hint', spinner_line)]
 
         def get_spinner_height():
             return cli_ref._spinner_widget_height()

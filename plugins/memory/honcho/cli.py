@@ -463,7 +463,8 @@ def cmd_setup(args) -> None:
     current_dialectic = str(hermes_host.get("dialecticCadence") or cfg.get("dialecticCadence") or "2")
     print("\n  Dialectic cadence:")
     print("    How often Honcho rebuilds its user model (LLM call on Honcho backend).")
-    print("    1 = every turn, 2 = every other turn (wizard default), 3+ = sparse.")
+    print("    1 = every turn, 2 = every other turn, 3+ = sparser.")
+    print("    Recommended: 1-5.")
     new_dialectic = _prompt("Dialectic cadence", default=current_dialectic)
     try:
         val = int(new_dialectic)
@@ -471,6 +472,25 @@ def cmd_setup(args) -> None:
             hermes_host["dialecticCadence"] = val
     except (ValueError, TypeError):
         hermes_host["dialecticCadence"] = 2
+
+    # --- 7c. Dialectic reasoning level ---
+    current_reasoning = (
+        hermes_host.get("dialecticReasoningLevel")
+        or cfg.get("dialecticReasoningLevel")
+        or "low"
+    )
+    print("\n  Dialectic reasoning level:")
+    print("    Depth Honcho uses when synthesizing user context on auto-injected calls.")
+    print("    minimal  -- quick factual lookups")
+    print("    low      -- straightforward questions (default)")
+    print("    medium   -- multi-aspect synthesis")
+    print("    high     -- complex behavioral patterns")
+    print("    max      -- thorough audit-level analysis")
+    new_reasoning = _prompt("Reasoning level", default=current_reasoning)
+    if new_reasoning in ("minimal", "low", "medium", "high", "max"):
+        hermes_host["dialecticReasoningLevel"] = new_reasoning
+    else:
+        hermes_host["dialecticReasoningLevel"] = "low"
 
     # --- 8. Session strategy ---
     current_strat = hermes_host.get("sessionStrategy") or cfg.get("sessionStrategy", "per-session")

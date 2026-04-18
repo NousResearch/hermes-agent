@@ -865,8 +865,10 @@ class TestDialecticCadenceDefaults:
         _settle_prewarm(provider)
         return provider
 
-    def test_default_is_1(self):
-        """Default dialectic_cadence is 1 — fires every turn unless overridden."""
+    def test_unset_falls_back_to_1(self):
+        """Unset dialecticCadence falls back to 1 (every turn) for backwards
+        compatibility with existing configs that predate the setting. The
+        setup wizard writes 2 explicitly on new configs."""
         provider = self._make_provider()
         assert provider._dialectic_cadence == 1
 
@@ -1569,8 +1571,7 @@ class TestDialecticLifecycleSmoke:
 
 class TestReasoningHeuristic:
     """Char-count heuristic that scales the auto-injected reasoning level by
-    query length, clamped at reasoning_level_cap. 'max' is reserved for
-    explicit tool-path selection."""
+    query length, clamped at reasoning_level_cap."""
 
     @staticmethod
     def _make_provider(cfg_extra=None):

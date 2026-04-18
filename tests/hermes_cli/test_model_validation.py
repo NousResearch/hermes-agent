@@ -476,6 +476,15 @@ class TestValidateApiFallback:
         assert result["accepted"] is False
         assert result["persist"] is False
 
+    def test_dashscope_catalog_model_accepted_when_api_down(self):
+        with patch("hermes_cli.models.provider_model_ids", return_value=["kimi-k2.5", "glm-5"]):
+            result = _validate("kimi-k2.5", provider="dashscope", api_models=None)
+
+        assert result["accepted"] is True
+        assert result["persist"] is True
+        assert result["recognized"] is True
+        assert "DashScope catalog" in result["message"]
+
     def test_unknown_provider_rejected_when_api_down(self):
         result = _validate("some-model", provider="totally-unknown", api_models=None)
         assert result["accepted"] is False

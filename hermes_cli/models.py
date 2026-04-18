@@ -2190,6 +2190,21 @@ def validate_requested_model(
         except Exception:
             pass  # Fall through to generic warning
 
+    # DashScope's coding endpoint can reject or omit `/models` even when
+    # provider-catalog models remain valid for real requests.
+    if normalized == "alibaba":
+        catalog_models = provider_model_ids(normalized)
+        if requested_for_lookup in set(catalog_models):
+            return {
+                "accepted": True,
+                "persist": True,
+                "recognized": True,
+                "message": (
+                    f"Note: could not reach the Alibaba Cloud (DashScope) API to validate `{requested}`, "
+                    "but this model exists in Hermes' DashScope catalog."
+                ),
+            }
+
     provider_label = _PROVIDER_LABELS.get(normalized, normalized)
     return {
         "accepted": False,

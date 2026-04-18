@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -60,7 +61,8 @@ async def resolve_gateway_non_builtin_command(
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                 )
-                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+                communicate_task = asyncio.create_task(proc.communicate())
+                stdout, stderr = await asyncio.wait_for(communicate_task, timeout=30)
                 output = (stdout or stderr).decode().strip()
                 return GatewayCommandResolutionResult(
                     command=command,
@@ -68,6 +70,20 @@ async def resolve_gateway_non_builtin_command(
                     response=output if output else "Command returned no output.",
                 )
             except asyncio.TimeoutError:
+                if "proc" in locals() and proc.returncode is None:
+                    with contextlib.suppress(ProcessLookupError):
+                        proc.kill()
+                    with contextlib.suppress(ProcessLookupError):
+                        await proc.wait()
+                if "communicate_task" in locals():
+                    with contextlib.suppress(
+                        asyncio.CancelledError,
+                        ProcessLookupError,
+                    ):
+                        await communicate_task
+                elif "proc" in locals():
+                    with contextlib.suppress(ProcessLookupError):
+                        await proc.wait()
                 return GatewayCommandResolutionResult(
                     command=command,
                     handled=True,

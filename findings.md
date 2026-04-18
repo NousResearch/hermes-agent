@@ -75,6 +75,12 @@
 - 2026-04-19 全量测试收口补丁：
   - ACP 相关测试目录在缺少可选依赖 `acp` 时会直接 collection error，更合理的行为是跳过该目录
   - `tests/tools/test_browser_camofox_state.py` 中 `_config_version` 断言仍停留在 13，当前真实默认值已经是 14
+- 2026-04-19 测试噪音/漂移收口：
+  - `tests/e2e/test_telegram_commands.py::test_provider_shows_current_provider` 的 `xfail` 不是单纯过期标记，`gateway.run._handle_provider_command()` 在缺少 `config.yaml` 时确实会访问未绑定的 `model_cfg`
+  - 网关 quick command 超时分支此前会留下未正确收尾的 `communicate()` / subprocess transport；并行全量下可放大成 `Process.communicate was never awaited` 与事件循环关闭告警
+  - Nous auth 的 TLS `ca_bundle` 之前直接把字符串路径传给 `httpx.Client(verify=...)`，会触发 `verify=<str>` deprecation；应在调用前转成 `ssl.SSLContext`
+  - MCP 两处 warning 来自测试本身把 coroutine 交给 patched `_run_on_mcp_loop` 后既不执行也不关闭，不是运行时代码缺陷
+  - `tests/run_agent/test_real_interrupt_subagent.py::test_interrupt_child_during_api_call` 存在竞态：它只等 `run_conversation()` 开始，不等实际 API 调用启动；xdist 下会偶发把 interrupt 发早
 - 相关回归：
   - QQ 相关/新增链路：`170 passed`
   - 全量仓库：`37 failed, 9361 passed, 87 skipped, 6 errors`

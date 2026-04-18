@@ -20,6 +20,7 @@ import logging
 import os
 import shutil
 import shlex
+import ssl
 import stat
 import base64
 import hashlib
@@ -1265,6 +1266,13 @@ def _resolve_verify(
     return True
 
 
+def _httpx_verify_config(verify: bool | str) -> bool | ssl.SSLContext:
+    """Normalize legacy CA bundle path strings into the form httpx expects."""
+    if isinstance(verify, str):
+        return ssl.create_default_context(cafile=verify)
+    return verify
+
+
 # =============================================================================
 # OAuth Device Code Flow — generic, parameterized by provider
 # =============================================================================
@@ -1426,7 +1434,11 @@ def fetch_nous_models(
 ) -> List[str]:
     """Fetch available model IDs from the Nous inference API."""
     timeout = httpx.Timeout(timeout_seconds)
-    with httpx.Client(timeout=timeout, headers={"Accept": "application/json"}, verify=verify) as client:
+    with httpx.Client(
+        timeout=timeout,
+        headers={"Accept": "application/json"},
+        verify=_httpx_verify_config(verify),
+    ) as client:
         response = client.get(
             f"{inference_base_url.rstrip('/')}/models",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -1605,7 +1617,11 @@ def refresh_nous_oauth_pure(
     verify = _resolve_verify(insecure=insecure, ca_bundle=ca_bundle, auth_state=state)
     timeout = httpx.Timeout(timeout_seconds if timeout_seconds else 15.0)
 
-    with httpx.Client(timeout=timeout, headers={"Accept": "application/json"}, verify=verify) as client:
+    with httpx.Client(
+        timeout=timeout,
+        headers={"Accept": "application/json"},
+        verify=_httpx_verify_config(verify),
+    ) as client:
         if force_refresh or _is_expiring(state.get("expires_at"), ACCESS_TOKEN_REFRESH_SKEW_SECONDS):
             refreshed = _refresh_access_token(
                 client=client,
@@ -1752,7 +1768,11 @@ def resolve_nous_runtime_credentials(
             refresh_token_fp=_token_fingerprint(state.get("refresh_token")),
         )
 
-        with httpx.Client(timeout=timeout, headers={"Accept": "application/json"}, verify=verify) as client:
+        with httpx.Client(
+            timeout=timeout,
+            headers={"Accept": "application/json"},
+            verify=_httpx_verify_config(verify),
+        ) as client:
             access_token = state.get("access_token")
             refresh_token = state.get("refresh_token")
 
@@ -2713,7 +2733,11 @@ def _nous_device_code_login(
     elif ca_bundle:
         print(f"TLS verification: custom CA bundle ({ca_bundle})")
 
-    with httpx.Client(timeout=timeout, headers={"Accept": "application/json"}, verify=verify) as client:
+    with httpx.Client(
+        timeout=timeout,
+        headers={"Accept": "application/json"},
+        verify=_httpx_verify_config(verify),
+    ) as client:
         device_data = _request_device_code(
             client=client,
             portal_base_url=portal_base_url,

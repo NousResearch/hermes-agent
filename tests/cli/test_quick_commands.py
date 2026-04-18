@@ -160,10 +160,23 @@ class TestGatewayQuickCommands:
         runner._is_user_authorized = MagicMock(return_value=True)
 
         event = self._make_event("slow")
-        with patch("asyncio.wait_for", side_effect=asyncio.TimeoutError):
+        fake_proc = MagicMock()
+        fake_proc.returncode = None
+        fake_proc.communicate = AsyncMock(return_value=(b"", b""))
+        fake_proc.wait = AsyncMock(return_value=-9)
+
+        def _kill():
+            fake_proc.returncode = -9
+
+        fake_proc.kill.side_effect = _kill
+
+        with patch("asyncio.create_subprocess_shell", new=AsyncMock(return_value=fake_proc)), \
+             patch("asyncio.wait_for", side_effect=asyncio.TimeoutError):
             result = await runner._handle_message(event)
         assert result is not None
         assert "timed out" in result.lower()
+        fake_proc.kill.assert_called_once()
+        fake_proc.wait.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_gateway_config_object_supports_quick_commands(self):

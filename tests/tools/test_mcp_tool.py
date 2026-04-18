@@ -1101,14 +1101,20 @@ class TestConfigurableTimeouts:
 
         try:
             handler = _make_tool_handler("test_srv", "my_tool", 180)
-            with patch("tools.mcp_tool._run_on_mcp_loop") as mock_run:
-                mock_run.return_value = json.dumps({"result": "ok"})
+            seen = {}
+
+            def fake_run(coro, timeout=30):
+                seen["timeout"] = timeout
+                loop = asyncio.new_event_loop()
+                try:
+                    return loop.run_until_complete(coro)
+                finally:
+                    loop.close()
+
+            with patch("tools.mcp_tool._run_on_mcp_loop", side_effect=fake_run):
                 handler({})
                 # Verify timeout=180 was passed
-                call_kwargs = mock_run.call_args
-                assert call_kwargs.kwargs.get("timeout") == 180 or \
-                       (len(call_kwargs.args) > 1 and call_kwargs.args[1] == 180) or \
-                       call_kwargs[1].get("timeout") == 180
+                assert seen["timeout"] == 180
         finally:
             _servers.pop("test_srv", None)
 

@@ -146,3 +146,19 @@
   - `tests/tools/test_browser_camofox_state.py` 的配置版本断言已同步到当前默认值 `14`
 - 已验证：
   - `tests/acp tests/tools/test_browser_camofox_state.py tests/tools/test_voice_cli_integration.py -q`：`83 passed`
+
+## 2026-04-19 全量噪音与漂移收口
+
+- 已修复：
+  - `gateway/command_resolution_runtime_service.py` 的 quick command 超时清理现在会显式终止子进程并等待退出，不再遗留 `communicate()` / transport 噪音
+  - `gateway/run.py` 的 `/provider` 命令在无 `config.yaml` 时不再访问未绑定的 `model_cfg`
+  - `hermes_cli/auth.py` 现在把字符串 `ca_bundle` 转成 `ssl.SSLContext` 再传给 `httpx.Client`
+  - 移除了已暴露真实缺陷的 Telegram `/provider` 过期 `xfail`
+  - MCP probe/tool 两处测试改为显式执行或关闭 coroutine，避免 unawaited warning
+  - 子代理中断集成测试改为等待“API 调用实际开始”事件，消除 xdist 竞态
+- 已验证：
+  - `tests/cli/test_quick_commands.py`：`15 passed`
+  - `tests/tools/test_mcp_probe.py tests/tools/test_mcp_tool.py -q`：`171 passed`
+  - `tests/hermes_cli/test_auth_nous_provider.py::test_refresh_token_persisted_when_mint_returns_insufficient_credits tests/hermes_cli/test_auth_nous_provider.py::test_refresh_token_persisted_when_mint_times_out tests/hermes_cli/test_auth_nous_provider.py::test_mint_retry_uses_latest_rotated_refresh_token tests/e2e/test_telegram_commands.py::TestTelegramSlashCommands::test_provider_shows_current_provider -q`：`4 passed`
+  - `tests/run_agent/test_real_interrupt_subagent.py::TestRealSubagentInterrupt::test_interrupt_child_during_api_call -q`：`1 passed`
+  - 全量测试 `tests/ -q`：`10033 passed, 88 skipped`

@@ -105,10 +105,6 @@ class TestTelegramSlashCommands:
         send_status.assert_called_once()
 
     @pytest.mark.asyncio
-    @pytest.mark.xfail(
-        reason="Bug: _handle_provider_command references unbound model_cfg when config.yaml is absent",
-        strict=False,
-    )
     async def test_provider_shows_current_provider(self, adapter):
         send = await send_and_capture(adapter, "/provider")
 

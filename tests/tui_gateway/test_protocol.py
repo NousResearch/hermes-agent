@@ -245,7 +245,7 @@ def test_slash_exec_rejects_skill_commands(server):
     # Mock scan_skill_commands to return a known skill
     fake_skills = {"/hermes-agent-dev": {"name": "hermes-agent-dev", "description": "Dev workflow"}}
 
-    with patch("agent.skill_commands.scan_skill_commands", return_value=fake_skills):
+    with patch("agent.skill_commands.get_skill_commands", return_value=fake_skills):
         resp = server.handle_request({
             "id": "r1",
             "method": "slash.exec",
@@ -322,6 +322,90 @@ def test_command_dispatch_steer_fallback_sends_message(server):
     result = resp["result"]
     assert result["type"] == "send"
     assert result["message"] == "focus on testing"
+
+
+def test_command_dispatch_retry_finds_last_user_message(server):
+    """command.dispatch /retry walks session['history'] to find the last user message."""
+    sid = "test-session"
+    history = [
+        {"role": "user", "content": "first question"},
+        {"role": "assistant", "content": "first answer"},
+        {"role": "user", "content": "second question"},
+        {"role": "assistant", "content": "second answer"},
+    ]
+    server._sessions[sid] = {
+        "session_key": sid,
+        "agent": None,
+        "history": history,
+        "history_lock": threading.Lock(),
+        "history_version": 0,
+    }
+
+    resp = server.handle_request({
+        "id": "r4",
+        "method": "command.dispatch",
+        "params": {"name": "retry", "session_id": sid},
+    })
+
+    assert "error" not in resp
+    result = resp["result"]
+    assert result["type"] == "send"
+    assert result["message"] == "second question"
+    # Verify history was truncated: everything from last user message onward removed
+    assert len(server._sessions[sid]["history"]) == 2
+    assert server._sessions[sid]["history"][-1]["role"] == "assistant"
+    assert server._sessions[sid]["history_version"] == 1
+
+
+def test_command_dispatch_retry_empty_history(server):
+    """command.dispatch /retry with empty history returns error."""
+    sid = "test-session"
+    server._sessions[sid] = {
+        "session_key": sid,
+        "agent": None,
+        "history": [],
+        "history_lock": threading.Lock(),
+        "history_version": 0,
+    }
+
+    resp = server.handle_request({
+        "id": "r5",
+        "method": "command.dispatch",
+        "params": {"name": "retry", "session_id": sid},
+    })
+
+    assert "error" in resp
+    assert resp["error"]["code"] == 4018
+
+
+def test_command_dispatch_retry_handles_multipart_content(server):
+    """command.dispatch /retry extracts text from multipart content lists."""
+    sid = "test-session"
+    history = [
+        {"role": "user", "content": [
+            {"type": "text", "text": "analyze this"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}}
+        ]},
+        {"role": "assistant", "content": "I see the image."},
+    ]
+    server._sessions[sid] = {
+        "session_key": sid,
+        "agent": None,
+        "history": history,
+        "history_lock": threading.Lock(),
+        "history_version": 0,
+    }
+
+    resp = server.handle_request({
+        "id": "r6",
+        "method": "command.dispatch",
+        "params": {"name": "retry", "session_id": sid},
+    })
+
+    assert "error" not in resp
+    result = resp["result"]
+    assert result["type"] == "send"
+    assert result["message"] == "analyze this"
 
 
 def test_command_dispatch_returns_skill_payload(server):

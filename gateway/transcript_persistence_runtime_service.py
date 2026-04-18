@@ -65,6 +65,32 @@ def extract_new_gateway_transcript_messages(
     )
 
 
+def did_gateway_turn_send_visible_reply(
+    *,
+    agent_result: dict[str, Any],
+    visible_final_response: Any,
+) -> bool:
+    """Return True when this turn produced a genuine visible reply."""
+
+    response_state = str(agent_result.get("response_state") or "").strip().lower()
+    if response_state in {
+        "suppressed",
+        "suppressed_empty",
+        "suppressed_no_reply",
+        "failed_silent",
+        "qq_explicit_fallback",
+    }:
+        return False
+    if agent_result.get("synthetic_fallback"):
+        return False
+    if bool(agent_result.get("suppress_reply")):
+        return False
+    body = str(visible_final_response or "").strip()
+    if not body or body in {"(empty)", "[[NO_REPLY]]"}:
+        return False
+    return True
+
+
 def persist_gateway_agent_transcript(
     *,
     session_store: Any,
@@ -149,6 +175,10 @@ def persist_gateway_agent_transcript(
     session_store.update_session(
         session_key,
         last_prompt_tokens=agent_result.get("last_prompt_tokens", 0),
+        mark_visible_reply=did_gateway_turn_send_visible_reply(
+            agent_result=agent_result,
+            visible_final_response=visible_final_response,
+        ),
     )
 
     return GatewayTranscriptPersistenceResult(

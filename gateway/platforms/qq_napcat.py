@@ -637,11 +637,11 @@ class QqNapCatAdapter(BasePlatformAdapter):
         for entry in entries:
             if getattr(entry, "session_key", None) != session_key:
                 continue
-            updated_at = getattr(entry, "updated_at", None)
-            if updated_at is None:
+            last_visible_reply_at = getattr(entry, "last_visible_reply_at", None)
+            if last_visible_reply_at is None:
                 continue
             try:
-                if updated_at.timestamp() >= cutoff:
+                if last_visible_reply_at.timestamp() >= cutoff:
                     return True
             except Exception:
                 continue

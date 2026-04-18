@@ -770,6 +770,7 @@ async def test_recent_same_user_group_session_allows_follow_up_after_restart():
                         session_id="sess-1",
                         created_at=datetime.now() - timedelta(minutes=5),
                         updated_at=datetime.now() - timedelta(seconds=30),
+                        last_visible_reply_at=datetime.now() - timedelta(seconds=30),
                         platform=Platform.QQ_NAPCAT,
                         chat_type="group",
                     )
@@ -821,6 +822,7 @@ async def test_recent_project_group_session_allows_cross_user_follow_up_after_re
                         session_id="sess-2",
                         created_at=datetime.now() - timedelta(minutes=5),
                         updated_at=datetime.now() - timedelta(seconds=20),
+                        last_visible_reply_at=datetime.now() - timedelta(seconds=20),
                         platform=Platform.QQ_NAPCAT,
                         chat_type="group",
                     )
@@ -835,6 +837,56 @@ async def test_recent_project_group_session_allows_cross_user_follow_up_after_re
     adapter.handle_message.assert_awaited_once()
     event = adapter.handle_message.await_args.args[0]
     assert "BobCard: 那接下来怎么安排" in event.text
+
+
+@pytest.mark.asyncio
+async def test_recent_group_session_without_visible_reply_does_not_restore_follow_up_after_restart():
+    from gateway.platforms.qq_napcat import QqNapCatAdapter
+    from gateway.session import SessionEntry
+
+    adapter = QqNapCatAdapter(
+        PlatformConfig(
+            enabled=True,
+            extra={
+                "ws_url": "ws://127.0.0.1:3001",
+                "allow_all_groups": True,
+                "require_mention": True,
+                "followup_window_seconds": 900,
+            },
+        )
+    )
+    adapter.handle_message = AsyncMock()
+
+    payload = _group_payload(
+        message_id=133,
+        user_id=456789,
+        text="继续说下去",
+        nickname="Alice",
+        card="AliceCard",
+    )
+    session_key = adapter._session_key_for_source(adapter._build_message_event(payload).source)
+    adapter.set_session_store(
+        SimpleNamespace(
+            config=None,
+            list_sessions=MagicMock(
+                return_value=[
+                    SessionEntry(
+                        session_key=session_key,
+                        session_id="sess-3",
+                        created_at=datetime.now() - timedelta(minutes=5),
+                        updated_at=datetime.now() - timedelta(seconds=30),
+                        last_visible_reply_at=None,
+                        platform=Platform.QQ_NAPCAT,
+                        chat_type="group",
+                    )
+                ]
+            ),
+        )
+    )
+
+    await adapter._handle_payload(payload)
+
+    adapter.handle_message.assert_not_awaited()
 
 
 @pytest.mark.asyncio

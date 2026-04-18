@@ -430,6 +430,7 @@ class SessionEntry:
     session_id: str
     created_at: datetime
     updated_at: datetime
+    last_visible_reply_at: Optional[datetime] = None
     
     # Origin metadata for delivery routing
     origin: Optional[SessionSource] = None
@@ -469,6 +470,11 @@ class SessionEntry:
             "session_id": self.session_id,
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
+            "last_visible_reply_at": (
+                self.last_visible_reply_at.isoformat()
+                if self.last_visible_reply_at
+                else None
+            ),
             "display_name": self.display_name,
             "platform": self.platform.value if self.platform else None,
             "chat_type": self.chat_type,
@@ -504,6 +510,11 @@ class SessionEntry:
             session_id=data["session_id"],
             created_at=datetime.fromisoformat(data["created_at"]),
             updated_at=datetime.fromisoformat(data["updated_at"]),
+            last_visible_reply_at=(
+                datetime.fromisoformat(data["last_visible_reply_at"])
+                if data.get("last_visible_reply_at")
+                else None
+            ),
             origin=origin,
             display_name=data.get("display_name"),
             platform=platform,
@@ -892,6 +903,7 @@ class SessionStore:
         self,
         session_key: str,
         last_prompt_tokens: int = None,
+        mark_visible_reply: bool = False,
     ) -> None:
         """Update lightweight session metadata after an interaction."""
         with self._lock:
@@ -899,9 +911,12 @@ class SessionStore:
 
             if session_key in self._entries:
                 entry = self._entries[session_key]
-                entry.updated_at = _now()
+                now = _now()
+                entry.updated_at = now
                 if last_prompt_tokens is not None:
                     entry.last_prompt_tokens = last_prompt_tokens
+                if mark_visible_reply:
+                    entry.last_visible_reply_at = now
                 self._save()
 
     def reset_session(self, session_key: str) -> Optional[SessionEntry]:

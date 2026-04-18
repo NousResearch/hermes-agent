@@ -1094,6 +1094,7 @@ class TestLastPromptTokens:
 
         store.update_session("k1", last_prompt_tokens=85000)
         assert entry.last_prompt_tokens == 85000
+        assert entry.last_visible_reply_at is None
 
     def test_update_session_none_does_not_change(self, tmp_path):
         """update_session with default (None) should not change last_prompt_tokens."""
@@ -1117,6 +1118,7 @@ class TestLastPromptTokens:
 
         store.update_session("k1")  # No last_prompt_tokens arg
         assert entry.last_prompt_tokens == 50000  # unchanged
+        assert entry.last_visible_reply_at is None
 
     def test_update_session_zero_resets(self, tmp_path):
         """update_session with last_prompt_tokens=0 should reset the field."""
@@ -1140,6 +1142,30 @@ class TestLastPromptTokens:
 
         store.update_session("k1", last_prompt_tokens=0)
         assert entry.last_prompt_tokens == 0
+
+    def test_update_session_can_mark_visible_reply(self, tmp_path):
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path, config=config)
+        store._loaded = True
+        store._db = None
+        store._save = MagicMock()
+
+        from gateway.session import SessionEntry
+        from datetime import datetime
+
+        entry = SessionEntry(
+            session_key="k1",
+            session_id="s1",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+        )
+        store._entries = {"k1": entry}
+
+        store.update_session("k1", mark_visible_reply=True)
+
+        assert entry.last_visible_reply_at is not None
+        assert entry.last_visible_reply_at >= entry.created_at
 
 class TestRewriteTranscriptPreservesReasoning:
     """rewrite_transcript must not drop reasoning fields from SQLite."""

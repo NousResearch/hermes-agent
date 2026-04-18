@@ -3,6 +3,7 @@ from unittest.mock import MagicMock, call
 from gateway.transcript_persistence_runtime_service import (
     build_gateway_session_meta_entry,
     did_gateway_agent_fail_early,
+    did_gateway_turn_send_visible_reply,
     extract_new_gateway_transcript_messages,
     persist_gateway_agent_transcript,
 )
@@ -12,6 +13,30 @@ def test_did_gateway_agent_fail_early_requires_failed_without_final_response():
     assert did_gateway_agent_fail_early({"failed": True, "final_response": ""}) is True
     assert did_gateway_agent_fail_early({"failed": True, "final_response": "ok"}) is False
     assert did_gateway_agent_fail_early({"failed": False, "final_response": ""}) is False
+
+
+def test_did_gateway_turn_send_visible_reply_requires_real_visible_response():
+    assert (
+        did_gateway_turn_send_visible_reply(
+            agent_result={"response_state": "sent", "suppress_reply": False},
+            visible_final_response="正常回复",
+        )
+        is True
+    )
+    assert (
+        did_gateway_turn_send_visible_reply(
+            agent_result={"response_state": "qq_explicit_fallback", "synthetic_fallback": True},
+            visible_final_response="我在，你继续说。",
+        )
+        is False
+    )
+    assert (
+        did_gateway_turn_send_visible_reply(
+            agent_result={"response_state": "suppressed_no_reply", "suppress_reply": True},
+            visible_final_response="",
+        )
+        is False
+    )
 
 
 def test_extract_new_gateway_transcript_messages_uses_history_offset_and_sync():
@@ -89,6 +114,7 @@ def test_persist_gateway_agent_transcript_skips_failed_early_transcript_growth()
     session_store.update_session.assert_called_once_with(
         "key-1",
         last_prompt_tokens=12,
+        mark_visible_reply=False,
     )
     logger.info.assert_called_once()
 
@@ -157,6 +183,7 @@ def test_persist_gateway_agent_transcript_writes_session_meta_and_backup_entries
     session_store.update_session.assert_called_once_with(
         "key-1",
         last_prompt_tokens=42,
+        mark_visible_reply=True,
     )
 
 
@@ -206,3 +233,43 @@ def test_persist_gateway_agent_transcript_falls_back_to_simple_user_assistant_en
             },
         ),
     ]
+    session_store.update_session.assert_called_once_with(
+        "key-1",
+        last_prompt_tokens=7,
+        mark_visible_reply=True,
+    )
+
+
+def test_persist_gateway_agent_transcript_does_not_mark_synthetic_fallback_as_visible_reply():
+    session_store = MagicMock()
+
+    persist_gateway_agent_transcript(
+        session_store=session_store,
+        session_id="sess-1",
+        session_key="key-1",
+        platform="qq",
+        history=[{"role": "user", "content": "older"}],
+        agent_result={
+            "history_offset": 2,
+            "final_response": "我在，你继续说。",
+            "last_prompt_tokens": 9,
+            "response_state": "qq_explicit_fallback",
+            "synthetic_fallback": True,
+        },
+        agent_messages=[
+            {"role": "user", "content": "older"},
+            {"role": "assistant", "content": "older-reply"},
+        ],
+        message_text="new message",
+        visible_final_response="我在，你继续说。",
+        resolve_gateway_model=lambda: "gpt-test",
+        sync_visible_final_response=lambda messages, **_: messages,
+        session_db_present=False,
+        timestamp="2026-04-18T03:30:00",
+    )
+
+    session_store.update_session.assert_called_once_with(
+        "key-1",
+        last_prompt_tokens=9,
+        mark_visible_reply=False,
+    )

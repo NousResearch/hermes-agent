@@ -1,0 +1,6 @@
+name: rasputin
+version: 0.1.0
+description: "Rasputin derived-memory sidecar — best-effort recall, mirrored writes, and pre-compaction checkpoint syncing with fail-open behavior."
+hooks:
+  - on_pre_compress
+  - on_memory_write

@@ -1045,16 +1045,40 @@ class BasePlatformAdapter(ABC):
         """
         pass
 
+    # Default: the adapter treats ``finalize=True`` on edit_message as a
+    # no-op and is happy to have the stream consumer skip redundant final
+    # edits.  Subclasses that *require* an explicit finalize call to close
+    # out the message lifecycle (e.g. rich card / AI assistant surfaces
+    # such as DingTalk AI Cards) override this to True (class attribute or
+    # property) so the stream consumer knows not to short-circuit.
+    REQUIRES_EDIT_FINALIZE: bool = False
+
     async def edit_message(
         self,
         chat_id: str,
         message_id: str,
         content: str,
+        *,
+        finalize: bool = False,
     ) -> SendResult:
         """
         Edit a previously sent message. Optional — platforms that don't
         support editing return success=False and callers fall back to
         sending a new message.
+
+        ``finalize`` signals that this is the last edit in a streaming
+        sequence.  Most platforms (Telegram, Slack, Discord, Matrix,
+        etc.) treat it as a no-op because their edit APIs have no notion
+        of message lifecycle state — an edit is an edit.  Platforms that
+        render streaming updates with a distinct "in progress" state and
+        require explicit closure (e.g. rich card / AI assistant surfaces
+        such as DingTalk AI Cards) use it to finalize the message and
+        transition the UI out of the streaming indicator — those should
+        also set ``REQUIRES_EDIT_FINALIZE = True`` so callers route a
+        final edit through even when content is unchanged.  Callers
+        should set ``finalize=True`` on the final edit of a streamed
+        response (typically when ``got_done`` fires in the stream
+        consumer) and leave it ``False`` on intermediate edits.
         """
         return SendResult(success=False, error="Not supported")
 

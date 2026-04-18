@@ -1722,6 +1722,21 @@ class HermesCLI:
         # Inline diff previews for write actions (display.inline_diffs in config.yaml)
         self._inline_diffs_enabled = CLI_CONFIG["display"].get("inline_diffs", True)
 
+        # Submitted multiline user-message preview (display.user_message_preview in config.yaml)
+        _ump = CLI_CONFIG["display"].get("user_message_preview", {})
+        if not isinstance(_ump, dict):
+            _ump = {}
+        try:
+            _ump_first_lines = int(_ump.get("first_lines", 2))
+        except (TypeError, ValueError):
+            _ump_first_lines = 2
+        try:
+            _ump_last_lines = int(_ump.get("last_lines", 2))
+        except (TypeError, ValueError):
+            _ump_last_lines = 2
+        self.user_message_preview_first_lines = max(1, _ump_first_lines)
+        self.user_message_preview_last_lines = max(0, _ump_last_lines)
+
         # Streaming display state
         self._stream_buf = ""        # Partial line buffer for line-buffered rendering
         self._stream_started = False  # True once first delta arrives
@@ -2448,6 +2463,61 @@ class HermesCLI:
         self._reasoning_preview_buf = buf.lstrip() if flush_text else buf
         if flush_text:
             self._emit_reasoning_preview(flush_text)
+
+    def _format_submitted_user_message_preview(self, user_input: str) -> str:
+        """Format the submitted user-message scrollback preview."""
+        lines = user_input.split("\n")
+        if len(lines) <= 1:
+            return f"[bold {_accent_hex()}]●[/] [bold]{_escape(user_input)}[/]"
+
+        first_lines = int(getattr(self, "user_message_preview_first_lines", 2))
+        last_lines = int(getattr(self, "user_message_preview_last_lines", 2))
+        first_lines = max(1, first_lines)
+        last_lines = max(0, last_lines)
+        head = lines[:first_lines]
+        remaining_after_head = max(0, len(lines) - len(head))
+        tail_count = min(last_lines, remaining_after_head)
+        tail = lines[-tail_count:] if tail_count else []
+
+        hidden_middle_count = len(lines) - len(head) - len(tail)
+        if hidden_middle_count < 0:
+            hidden_middle_count = 0
+            tail = []
+
+        preview_lines = [
+            f"[bold {_accent_hex()}]●[/] [bold]{_escape(head[0])}[/]"
+        ]
+        preview_lines.extend(f"[bold]{_escape(line)}[/]" for line in head[1:])
+
+        if hidden_middle_count > 0:
+            noun = "line" if hidden_middle_count == 1 else "lines"
+            preview_lines.append(f"[dim]... (+{hidden_middle_count} more {noun})[/]")
+
+        preview_lines.extend(f"[bold]{_escape(line)}[/]" for line in tail)
+        return "\n".join(preview_lines)
+
+    def _expand_paste_references(self, text: str | None) -> str:
+        """Expand [Pasted text #N -> file] placeholders into file contents."""
+        if not isinstance(text, str) or "[Pasted text #" not in text:
+            return text or ""
+        import re as _re
+
+        paste_ref_re = _re.compile(r'\[Pasted text #\d+: \d+ lines \u2192 (.+?)\]')
+
+        def _expand_ref(match):
+            path = Path(match.group(1))
+            return path.read_text(encoding="utf-8") if path.exists() else match.group(0)
+
+        return paste_ref_re.sub(_expand_ref, text)
+
+    def _print_user_message_preview(self, user_input: str) -> None:
+        """Render a user message using the normal chat scrollback style."""
+        ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
+        text = str(user_input or "")
+        if "\n" in text:
+            ChatConsole().print(self._format_submitted_user_message_preview(text))
+        else:
+            ChatConsole().print(f"[bold {_accent_hex()}]●[/] [bold]{_escape(text)}[/]")
 
     def _stream_reasoning_delta(self, text: str) -> None:
         """Stream reasoning/thinking tokens into a dim box above the response.
@@ -10070,45 +10140,9 @@ class HermesCLI:
                     _paste_ref_re = _re.compile(r'\[Pasted text #\d+: \d+ lines \u2192 (.+?)\]')
                     paste_refs = list(_paste_ref_re.finditer(user_input)) if isinstance(user_input, str) else []
                     if paste_refs:
-                        def _expand_ref(m):
-                            p = Path(m.group(1))
-                            return p.read_text(encoding="utf-8") if p.exists() else m.group(0)
-                        expanded = _paste_ref_re.sub(_expand_ref, user_input)
-                        total_lines = expanded.count('\n') + 1
-                        n_pastes = len(paste_refs)
-                        _user_bar = f"[{_accent_hex()}]{'─' * 40}[/]"
-                        print()
-                        ChatConsole().print(_user_bar)
-                        # Show any surrounding user text alongside the paste summary
-                        split_parts = _paste_ref_re.split(user_input)
-                        visible_user_text = " ".join(
-                            split_parts[i].strip() for i in range(0, len(split_parts), 2) if split_parts[i].strip()
-                        )
-                        if visible_user_text:
-                            ChatConsole().print(
-                                f"[bold {_accent_hex()}]\u25cf[/] [bold]{_escape(visible_user_text)}[/] "
-                                f"[dim]({n_pastes} pasted block{'s' if n_pastes > 1 else ''}, {total_lines} lines total)[/]"
-                            )
-                        else:
-                            ChatConsole().print(
-                                f"[bold {_accent_hex()}]\u25cf[/] [bold]{_escape(f'[Pasted text: {total_lines} lines]')}[/]"
-                            )
-                        user_input = expanded
-                    else:
-                        _user_bar = f"[{_accent_hex()}]{'─' * 40}[/]"
-                        if '\n' in user_input:
-                            first_line = user_input.split('\n')[0]
-                            line_count = user_input.count('\n') + 1
-                            print()
-                            ChatConsole().print(_user_bar)
-                            ChatConsole().print(
-                                f"[bold {_accent_hex()}]●[/] [bold]{_escape(first_line)}[/] "
-                                f"[dim](+{line_count - 1} lines)[/]"
-                            )
-                        else:
-                            print()
-                            ChatConsole().print(_user_bar)
-                            ChatConsole().print(f"[bold {_accent_hex()}]●[/] [bold]{_escape(user_input)}[/]")
+                        user_input = self._expand_paste_references(user_input)
+                    print()
+                    self._print_user_message_preview(user_input)
                     
                     # Show image attachment count
                     if submit_images:

@@ -629,3 +629,10 @@ class TestDiscordChannelPromptsConfig:
         assert raw["_config_version"] == 20
         assert raw["discord"]["auto_thread"] is True
         assert raw["discord"]["channel_prompts"] == {}
+
+
+class TestUserMessagePreviewConfig:
+    def test_default_config_preview_line_counts(self):
+        preview = DEFAULT_CONFIG["display"]["user_message_preview"]
+        assert preview["first_lines"] == 2
+        assert preview["last_lines"] == 2

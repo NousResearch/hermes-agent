@@ -65,6 +65,7 @@ import time
 import requests
 from typing import Dict, Any, Optional, List
 from pathlib import Path
+from urllib.parse import urlparse
 from agent.auxiliary_client import call_llm
 from hermes_constants import get_hermes_home
 
@@ -210,6 +211,96 @@ def _get_extraction_model() -> Optional[str]:
     return os.getenv("AUXILIARY_WEB_EXTRACT_MODEL", "").strip() or None
 
 
+def _is_loopback_host(host: Optional[str]) -> bool:
+    """Return True for local-only CDP hosts we can safely augment from disk."""
+    normalized = (host or "").strip().lower().strip("[]")
+    return normalized in {"127.0.0.1", "localhost", "::1"}
+
+
+@functools.lru_cache(maxsize=1)
+def _devtools_activeport_candidates() -> tuple[Path, ...]:
+    """Likely Chrome/Chromium DevToolsActivePort paths for this OS."""
+    home = Path.home()
+    candidates: list[Path] = []
+
+    if sys.platform == "darwin":
+        app_support = home / "Library" / "Application Support"
+        roots = [
+            app_support / "Google" / "Chrome",
+            app_support / "Google" / "Chrome Beta",
+            app_support / "Google" / "Chrome Dev",
+            app_support / "Chromium",
+        ]
+    elif sys.platform == "win32":
+        local_appdata_raw = os.environ.get("LOCALAPPDATA", "").strip()
+        roots = []
+        if local_appdata_raw:
+            local_appdata = Path(local_appdata_raw).expanduser()
+            roots.extend([
+                local_appdata / "Google" / "Chrome" / "User Data",
+                local_appdata / "Chromium" / "User Data",
+            ])
+    else:
+        xdg_config_home = os.environ.get("XDG_CONFIG_HOME", "").strip()
+        config_root = Path(xdg_config_home).expanduser() if xdg_config_home else home / ".config"
+        roots = [
+            config_root / "google-chrome",
+            config_root / "google-chrome-beta",
+            config_root / "google-chrome-unstable",
+            config_root / "chromium",
+        ]
+
+    for root in roots:
+        candidates.append(root / "DevToolsActivePort")
+
+    return tuple(candidates)
+
+
+def _resolve_devtools_activeport_fallback(discovery_url: str) -> str:
+    """Resolve loopback CDP endpoints from Chrome's DevToolsActivePort file.
+
+    This covers real-user Chrome instances that expose a browser websocket in
+    DevToolsActivePort but do not serve ``/json/version`` on the same port.
+    """
+    try:
+        parsed = urlparse(discovery_url if "://" in discovery_url else f"http://{discovery_url}")
+    except Exception:
+        return ""
+
+    host = parsed.hostname or ""
+    port = parsed.port
+    if not _is_loopback_host(host) or port is None:
+        return ""
+
+    ws_scheme = "wss" if parsed.scheme in {"https", "wss"} else "ws"
+
+    for candidate in _devtools_activeport_candidates():
+        try:
+            lines = candidate.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        if len(lines) < 2:
+            continue
+
+        candidate_port = lines[0].strip()
+        candidate_path = lines[1].strip()
+        if not candidate_port.isdigit() or int(candidate_port) != port:
+            continue
+        if not candidate_path:
+            continue
+
+        if not candidate_path.startswith("/"):
+            candidate_path = "/" + candidate_path
+        if "/devtools/browser/" not in candidate_path:
+            continue
+
+        ws_url = f"{ws_scheme}://{host}:{port}{candidate_path}"
+        logger.info("Resolved CDP endpoint %s via %s -> %s", discovery_url, candidate, ws_url)
+        return ws_url
+
+    return ""
+
+
 def _resolve_cdp_override(cdp_url: str) -> str:
     """Normalize a user-supplied CDP endpoint into a concrete connectable URL.
 
@@ -231,7 +322,9 @@ def _resolve_cdp_override(cdp_url: str) -> str:
         return raw
 
     discovery_url = raw
-    if lowered.startswith(("ws://", "wss://")):
+    if "://" not in raw:
+        discovery_url = f"http://{raw}"
+    elif lowered.startswith(("ws://", "wss://")):
         if raw.count(":") == 2 and raw.rstrip("/").rsplit(":", 1)[-1].isdigit() and "/" not in raw.split(":", 2)[-1]:
             discovery_url = ("http://" if lowered.startswith("ws://") else "https://") + raw.split("://", 1)[1]
         else:
@@ -247,6 +340,9 @@ def _resolve_cdp_override(cdp_url: str) -> str:
         response.raise_for_status()
         payload = response.json()
     except Exception as exc:
+        fallback_ws_url = _resolve_devtools_activeport_fallback(discovery_url)
+        if fallback_ws_url:
+            return fallback_ws_url
         logger.warning("Failed to resolve CDP endpoint %s via %s: %s", raw, version_url, exc)
         return raw
 
@@ -254,6 +350,10 @@ def _resolve_cdp_override(cdp_url: str) -> str:
     if ws_url:
         logger.info("Resolved CDP endpoint %s -> %s", raw, ws_url)
         return ws_url
+
+    fallback_ws_url = _resolve_devtools_activeport_fallback(discovery_url)
+    if fallback_ws_url:
+        return fallback_ws_url
 
     logger.warning("CDP discovery at %s did not return webSocketDebuggerUrl; using raw endpoint", version_url)
     return raw

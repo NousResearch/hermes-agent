@@ -1,3 +1,4 @@
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 
@@ -27,6 +28,19 @@ class TestResolveCdpOverride:
         assert resolved == WS_URL
         mock_get.assert_called_once_with(VERSION_URL, timeout=10)
 
+    def test_resolves_bare_hostport_to_discovery_websocket(self):
+        from tools.browser_tool import _resolve_cdp_override
+
+        response = Mock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {"webSocketDebuggerUrl": WS_URL}
+
+        with patch("tools.browser_tool.requests.get", return_value=response) as mock_get:
+            resolved = _resolve_cdp_override(f"{HOST}:{PORT}")
+
+        assert resolved == WS_URL
+        mock_get.assert_called_once_with(VERSION_URL, timeout=10)
+
     def test_resolves_bare_ws_hostport_to_discovery_websocket(self):
         from tools.browser_tool import _resolve_cdp_override
 
@@ -45,6 +59,25 @@ class TestResolveCdpOverride:
 
         with patch("tools.browser_tool.requests.get", side_effect=RuntimeError("boom")):
             assert _resolve_cdp_override(HTTP_URL) == HTTP_URL
+
+    def test_falls_back_to_devtools_active_port_when_local_json_version_is_unavailable(self, monkeypatch, tmp_path):
+        import tools.browser_tool as browser_tool
+
+        chrome_home = tmp_path / "home"
+        active_port = chrome_home / "Library" / "Application Support" / "Google" / "Chrome" / "DevToolsActivePort"
+        active_port.parent.mkdir(parents=True)
+        active_port.write_text("9222\n/devtools/browser/local-abc\n", encoding="utf-8")
+
+        browser_tool._devtools_activeport_candidates.cache_clear()
+        monkeypatch.setattr(browser_tool.Path, "home", lambda: Path(chrome_home))
+
+        try:
+            with patch("tools.browser_tool.requests.get", side_effect=RuntimeError("404")):
+                resolved = browser_tool._resolve_cdp_override("http://127.0.0.1:9222")
+        finally:
+            browser_tool._devtools_activeport_candidates.cache_clear()
+
+        assert resolved == "ws://127.0.0.1:9222/devtools/browser/local-abc"
 
     def test_normalizes_provider_returned_http_cdp_url_when_creating_session(self, monkeypatch):
         import tools.browser_tool as browser_tool

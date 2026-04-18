@@ -1,6 +1,7 @@
 import { Box, Text } from '@hermes/ink'
 import { memo, type ReactNode, useMemo } from 'react'
 
+import { highlightLine, isHighlightable } from '../lib/syntax.js'
 import type { Theme } from '../theme.js'
 
 const FENCE_RE = /^\s*(`{3,}|~{3,})(.*)$/
@@ -282,11 +283,28 @@ function MdImpl({ compact, t, text }: MdProps) {
         start('code')
 
         const isDiff = lang === 'diff'
+        const highlighted = !isDiff && isHighlightable(lang)
 
         nodes.push(
           <Box flexDirection="column" key={key} paddingLeft={2}>
             {lang && !isDiff && <Text color={t.color.dim}>{'─ ' + lang}</Text>}
             {block.map((l, j) => {
+              if (highlighted) {
+                return (
+                  <Text key={j}>
+                    {highlightLine(l, lang, t).map(([color, text], k) =>
+                      color ? (
+                        <Text color={color} key={k}>
+                          {text}
+                        </Text>
+                      ) : (
+                        <Text key={k}>{text}</Text>
+                      )
+                    )}
+                  </Text>
+                )
+              }
+
               const add = isDiff && l.startsWith('+')
               const del = isDiff && l.startsWith('-')
               const hunk = isDiff && l.startsWith('@@')

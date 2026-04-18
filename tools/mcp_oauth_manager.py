@@ -125,9 +125,27 @@ def _make_hermes_provider_class() -> Optional[type]:
                     self._hermes_server_name, exc,
                 )
 
-            # Delegate to the SDK's auth flow
-            async for item in super().async_auth_flow(request):
-                yield item
+            # Delegate to the SDK's auth flow with bidirectional send/yield
+            # semantics. The httpx auth-flow protocol is a bidirectional
+            # generator: the SDK yields a request, the consumer sends back
+            # the response via ``gen.asend(response)``, and the SDK reads
+            # it as the value of ``response = yield request``. The naive
+            # ``async for item in inner: yield item`` pattern only iterates
+            # via ``__anext__()`` (equivalent to ``asend(None)``), so every
+            # response sent into the wrapper is silently dropped. The inner
+            # SDK generator then sees ``None`` where it expects an
+            # ``httpx.Response`` and crashes on
+            # ``response.status_code`` (mcp/client/auth/oauth2.py:514),
+            # surfacing as ``'NoneType' object has no attribute
+            # 'status_code'`` for every OAuth-protected MCP server.
+            inner = super().async_auth_flow(request)
+            sent = None
+            try:
+                while True:
+                    item = await inner.asend(sent)
+                    sent = yield item
+            except StopAsyncIteration:
+                return
 
     return HermesMCPOAuthProvider
 

@@ -139,3 +139,66 @@ def test_manager_builds_hermes_provider_subclass(tmp_path, monkeypatch):
     assert isinstance(provider, _HERMES_PROVIDER_CLS)
     assert provider._hermes_server_name == "srv"
 
+
+@pytest.mark.asyncio
+async def test_async_auth_flow_proxies_asend_responses(tmp_path, monkeypatch):
+    """Wrapper preserves bidirectional generator semantics.
+
+    httpx drives auth flows by sending Responses back into the generator
+    via ``gen.asend(response)``. The wrapper MUST forward those values
+    into the inner SDK generator's ``response = yield request`` slot. A
+    naive ``async for item in inner: yield item`` only iterates and
+    silently drops every sent value, causing the SDK to see ``None``
+    where it expects an ``httpx.Response`` and crash on
+    ``response.status_code`` (mcp/client/auth/oauth2.py:514).
+
+    Regression test: drives the wrapper through a two-roundtrip cycle and
+    asserts the inner generator received the exact response objects sent
+    via ``asend``.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from tools.mcp_oauth_manager import (
+        _HERMES_PROVIDER_CLS, reset_manager_for_tests,
+    )
+    reset_manager_for_tests()
+    assert _HERMES_PROVIDER_CLS is not None
+
+    received_by_inner: list = []
+
+    async def fake_inner_flow(self, request):
+        received_by_inner.append(("first_request", request))
+        response_a = yield "request_A"
+        received_by_inner.append(("after_first_yield", response_a))
+        response_b = yield "request_B"
+        received_by_inner.append(("after_second_yield", response_b))
+
+    monkeypatch.setattr(
+        _HERMES_PROVIDER_CLS.__bases__[0],
+        "async_auth_flow",
+        fake_inner_flow,
+    )
+
+    # Build a provider without invoking the SDK's real init by calling
+    # __new__ + minimal attribute setup; the wrapper only touches
+    # _hermes_server_name and the manager's disk-watch hook.
+    provider = _HERMES_PROVIDER_CLS.__new__(_HERMES_PROVIDER_CLS)
+    provider._hermes_server_name = "srv"
+
+    flow = provider.async_auth_flow(object())  # request value is opaque to wrapper
+
+    item1 = await flow.__anext__()
+    assert item1 == "request_A"
+    item2 = await flow.asend("RESPONSE_1")
+    assert item2 == "request_B"
+    with pytest.raises(StopAsyncIteration):
+        await flow.asend("RESPONSE_2")
+
+    # The critical assertion: the inner generator must have observed the
+    # responses we sent through the wrapper, not None.
+    assert ("after_first_yield", "RESPONSE_1") in received_by_inner, (
+        f"inner generator did not receive sent response; got {received_by_inner!r}"
+    )
+    assert ("after_second_yield", "RESPONSE_2") in received_by_inner, (
+        f"inner generator did not receive sent response; got {received_by_inner!r}"
+    )
+

@@ -23,7 +23,7 @@ All fields are optional. Missing values inherit from the ``default`` skin.
       banner_dim: "#B8860B"               # Dim/muted text (separators, labels)
       banner_text: "#FFF8DC"              # Body text (tool names, skill names)
       ui_accent: "#FFBF00"               # General UI accent
-      ui_label: "#4dd0e1"                # UI labels
+      ui_label: "#DAA520"                # UI labels (warm gold; teal clashed w/ default banner gold)
       ui_ok: "#4caf50"                   # Success indicators
       ui_error: "#ef5350"                # Error indicators
       ui_warn: "#ffa726"                 # Warning indicators
@@ -163,7 +163,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "banner_dim": "#B8860B",
             "banner_text": "#FFF8DC",
             "ui_accent": "#FFBF00",
-            "ui_label": "#4dd0e1",
+            "ui_label": "#DAA520",
             "ui_ok": "#4caf50",
             "ui_error": "#ef5350",
             "ui_warn": "#ffa726",

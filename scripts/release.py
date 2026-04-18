@@ -44,6 +44,7 @@ AUTHOR_MAP = {
     "teknium@nousresearch.com": "teknium1",
     "127238744+teknium1@users.noreply.github.com": "teknium1",
     # contributors (from noreply pattern)
+    "snreynolds2506@gmail.com": "snreynolds",
     "35742124+0xbyt4@users.noreply.github.com": "0xbyt4",
     "82637225+kshitijk4poor@users.noreply.github.com": "kshitijk4poor",
     "kshitijk4poor@users.noreply.github.com": "kshitijk4poor",
@@ -75,6 +76,7 @@ AUTHOR_MAP = {
     "Asunfly@users.noreply.github.com": "Asunfly",
     # contributors (manual mapping from git names)
     "ahmedsherif95@gmail.com": "asheriif",
+    "liujinkun@bytedance.com": "liujinkun2025",
     "dmayhem93@gmail.com": "dmahan93",
     "samherring99@gmail.com": "samherring99",
     "desaiaum08@gmail.com": "Aum08Desai",
@@ -95,6 +97,7 @@ AUTHOR_MAP = {
     "4317663+helix4u@users.noreply.github.com": "helix4u",
     "331214+counterposition@users.noreply.github.com": "counterposition",
     "blspear@gmail.com": "BrennerSpear",
+    "akhater@gmail.com": "akhater",
     "239876380+handsdiff@users.noreply.github.com": "handsdiff",
     "gpickett00@gmail.com": "gpickett00",
     "mcosma@gmail.com": "wakamex",
@@ -116,6 +119,7 @@ AUTHOR_MAP = {
     "vincentcharlebois@gmail.com": "vincentcharlebois",
     "aryan@synvoid.com": "aryansingh",
     "johnsonblake1@gmail.com": "blakejohnson",
+    "hcn518@gmail.com": "pedh",
     "greer.guthrie@gmail.com": "g-guthrie",
     "kennyx102@gmail.com": "bobashopcashier",
     "shokatalishaikh95@gmail.com": "areu01or00",
@@ -203,6 +207,7 @@ AUTHOR_MAP = {
     "cola-runner@users.noreply.github.com": "cola-runner",
     "ygd58@users.noreply.github.com": "ygd58",
     "vominh1919@users.noreply.github.com": "vominh1919",
+    "iamagenius00@users.noreply.github.com": "iamagenius00",
     "trevmanthony@gmail.com": "trevthefoolish",
     "ziliangpeng@users.noreply.github.com": "ziliangpeng",
     "centripetal-star@users.noreply.github.com": "centripetal-star",
@@ -257,6 +262,8 @@ AUTHOR_MAP = {
     "shenuu@gmail.com": "shenuu",
     "xiayh17@gmail.com": "xiayh0107",
     "asurla@nvidia.com": "anniesurla",
+    "limkuan24@gmail.com": "WideLee",
+    "aviralarora002@gmail.com": "AviArora02-commits",
 }
 
 

@@ -857,6 +857,9 @@ class DiscordAdapter(BasePlatformAdapter):
 
         When metadata contains a thread_id, the message is sent to that
         thread instead of the parent channel identified by chat_id.
+
+        Forum channels (type 15) reject direct messages — a thread post is
+        created automatically.
         """
         if not self._client:
             return SendResult(success=False, error="Not connected")
@@ -881,6 +884,10 @@ class DiscordAdapter(BasePlatformAdapter):
                     channel = await self._client.fetch_channel(int(chat_id))
                 if not channel:
                     return SendResult(success=False, error=f"Channel {chat_id} not found")
+
+            # Forum channels reject channel.send() — create a thread post instead.
+            if self._is_forum_parent(channel):
+                return await self._send_to_forum(channel, content)
 
             # Format and split message if needed
             formatted = self.format_message(content)
@@ -945,6 +952,120 @@ class DiscordAdapter(BasePlatformAdapter):
             logger.error("[%s] Failed to send Discord message: %s", self.name, e, exc_info=True)
             return SendResult(success=False, error=str(e))
 
+    async def _send_to_forum(self, forum_channel: Any, content: str) -> SendResult:
+        """Create a thread post in a forum channel with the message as starter content.
+
+        Forum channels (type 15) don't support direct messages.  Instead we
+        POST to /channels/{forum_id}/threads with a thread name derived from
+        the first line of the message.  Any follow-up chunk failures are
+        reported in ``raw_response['warnings']`` so the caller can surface
+        partial-send issues.
+        """
+        from tools.send_message_tool import _derive_forum_thread_name
+
+        formatted = self.format_message(content)
+        chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+
+        thread_name = _derive_forum_thread_name(content)
+
+        starter_content = chunks[0] if chunks else thread_name
+
+        try:
+            thread = await forum_channel.create_thread(
+                name=thread_name,
+                content=starter_content,
+            )
+        except Exception as e:
+            logger.error("[%s] Failed to create forum thread in %s: %s", self.name, forum_channel.id, e)
+            return SendResult(success=False, error=f"Forum thread creation failed: {e}")
+
+        thread_channel = thread if hasattr(thread, "send") else getattr(thread, "thread", None)
+        thread_id = str(getattr(thread_channel, "id", getattr(thread, "id", "")))
+        starter_msg = getattr(thread, "message", None)
+        message_id = str(getattr(starter_msg, "id", thread_id)) if starter_msg else thread_id
+
+        # Send remaining chunks into the newly created thread.  Track any
+        # per-chunk failures so the caller sees partial-send outcomes.
+        message_ids = [message_id]
+        warnings: list[str] = []
+        for chunk in chunks[1:]:
+            try:
+                msg = await thread_channel.send(content=chunk)
+                message_ids.append(str(msg.id))
+            except Exception as e:
+                warning = f"Failed to send follow-up chunk to forum thread {thread_id}: {e}"
+                logger.warning("[%s] %s", self.name, warning)
+                warnings.append(warning)
+
+        raw_response: Dict[str, Any] = {"message_ids": message_ids, "thread_id": thread_id}
+        if warnings:
+            raw_response["warnings"] = warnings
+
+        return SendResult(
+            success=True,
+            message_id=message_ids[0],
+            raw_response=raw_response,
+        )
+
+    async def _forum_post_file(
+        self,
+        forum_channel: Any,
+        *,
+        thread_name: Optional[str] = None,
+        content: str = "",
+        file: Any = None,
+        files: Optional[list] = None,
+    ) -> SendResult:
+        """Create a forum thread whose starter message carries file attachments.
+
+        Used by the send_voice / send_image_file / send_document paths when
+        the target channel is a forum (type 15).  ``create_thread`` on a
+        ForumChannel accepts the same file/files/content kwargs as
+        ``channel.send``, creating the thread and starter message atomically.
+        """
+        from tools.send_message_tool import _derive_forum_thread_name
+
+        if not thread_name:
+            # Prefer the text content, fall back to the first attached
+            # filename, fall back to the generic default.
+            hint = content or ""
+            if not hint.strip():
+                if file is not None:
+                    hint = getattr(file, "filename", "") or ""
+                elif files:
+                    hint = getattr(files[0], "filename", "") or ""
+            thread_name = _derive_forum_thread_name(hint) if hint.strip() else "New Post"
+
+        kwargs: Dict[str, Any] = {"name": thread_name}
+        if content:
+            kwargs["content"] = content
+        if file is not None:
+            kwargs["file"] = file
+        if files:
+            kwargs["files"] = files
+
+        try:
+            thread = await forum_channel.create_thread(**kwargs)
+        except Exception as e:
+            logger.error(
+                "[%s] Failed to create forum thread with file in %s: %s",
+                self.name,
+                getattr(forum_channel, "id", "?"),
+                e,
+            )
+            return SendResult(success=False, error=f"Forum thread creation failed: {e}")
+
+        thread_channel = thread if hasattr(thread, "send") else getattr(thread, "thread", None)
+        thread_id = str(getattr(thread_channel, "id", getattr(thread, "id", "")))
+        starter_msg = getattr(thread, "message", None)
+        message_id = str(getattr(starter_msg, "id", thread_id)) if starter_msg else thread_id
+
+        return SendResult(
+            success=True,
+            message_id=message_id,
+            raw_response={"thread_id": thread_id},
+        )
+
     async def edit_message(
         self,
         chat_id: str,
@@ -975,7 +1096,11 @@ class DiscordAdapter(BasePlatformAdapter):
         caption: Optional[str] = None,
         file_name: Optional[str] = None,
     ) -> SendResult:
-        """Send a local file as a Discord attachment."""
+        """Send a local file as a Discord attachment.
+
+        Forum channels (type 15) get a new thread whose starter message
+        carries the file — they reject direct POST /messages.
+        """
         if not self._client:
             return SendResult(success=False, error="Not connected")
 
@@ -988,6 +1113,12 @@ class DiscordAdapter(BasePlatformAdapter):
         filename = file_name or os.path.basename(file_path)
         with open(file_path, "rb") as fh:
             file = discord.File(fh, filename=filename)
+            if self._is_forum_parent(channel):
+                return await self._forum_post_file(
+                    channel,
+                    content=(caption or "").strip(),
+                    file=file,
+                )
             msg = await channel.send(content=caption if caption else None, file=file)
         return SendResult(success=True, message_id=str(msg.id))
 
@@ -1035,6 +1166,18 @@ class DiscordAdapter(BasePlatformAdapter):
 
             with open(audio_path, "rb") as f:
                 file_data = f.read()
+
+            # Forum channels (type 15) reject direct POST /messages — the
+            # native voice flag path also targets /messages so it would fail
+            # too.  Create a thread post with the audio as the starter
+            # attachment instead.
+            if self._is_forum_parent(channel):
+                forum_file = discord.File(io.BytesIO(file_data), filename=filename)
+                return await self._forum_post_file(
+                    channel,
+                    content=(caption or "").strip(),
+                    file=forum_file,
+                )
 
             # Try sending as a native voice message via raw API (flags=8192).
             try:
@@ -1488,6 +1631,13 @@ class DiscordAdapter(BasePlatformAdapter):
                     import io
                     file = discord.File(io.BytesIO(image_data), filename=f"image.{ext}")
 
+                    if self._is_forum_parent(channel):
+                        return await self._forum_post_file(
+                            channel,
+                            content=(caption or "").strip(),
+                            file=file,
+                        )
+
                     msg = await channel.send(
                         content=caption if caption else None,
                         file=file,
@@ -1549,6 +1699,13 @@ class DiscordAdapter(BasePlatformAdapter):
 
                     import io
                     file = discord.File(io.BytesIO(animation_data), filename="animation.gif")
+
+                    if self._is_forum_parent(channel):
+                        return await self._forum_post_file(
+                            channel,
+                            content=(caption or "").strip(),
+                            file=file,
+                        )
 
                     msg = await channel.send(
                         content=caption if caption else None,

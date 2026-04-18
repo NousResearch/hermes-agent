@@ -91,7 +91,7 @@ _DEFAULT_PROVIDER_MODELS = {
     "gemini": [
         "gemini-3.1-pro-preview", "gemini-3-flash-preview", "gemini-3.1-flash-lite-preview",
         "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite",
-        "gemma-4-31b-it", "gemma-4-26b-it",
+        "gemma-4-31b-it",
     ],
     "zai": ["glm-5.1", "glm-5", "glm-4.7", "glm-4.5", "glm-4.5-flash"],
     "kimi-coding": ["kimi-k2.5", "kimi-k2-thinking", "kimi-k2-turbo-preview"],
@@ -2005,52 +2005,6 @@ def _setup_wecom_callback():
     _gw_setup()
 
 
-def _setup_qqbot():
-    """Configure QQ Bot gateway."""
-    print_header("QQ Bot")
-    existing = get_env_value("QQ_APP_ID")
-    if existing:
-        print_info("QQ Bot: already configured")
-        if not prompt_yes_no("Reconfigure QQ Bot?", False):
-            return
-
-    print_info("Connects Hermes to QQ via the Official QQ Bot API (v2).")
-    print_info("   Requires a QQ Bot application at q.qq.com")
-    print_info("   Reference: https://bot.q.qq.com/wiki/develop/api-v2/")
-    print()
-
-    app_id = prompt("QQ Bot App ID")
-    if not app_id:
-        print_warning("App ID is required — skipping QQ Bot setup")
-        return
-    save_env_value("QQ_APP_ID", app_id.strip())
-
-    client_secret = prompt("QQ Bot App Secret", password=True)
-    if not client_secret:
-        print_warning("App Secret is required — skipping QQ Bot setup")
-        return
-    save_env_value("QQ_CLIENT_SECRET", client_secret)
-    print_success("QQ Bot credentials saved")
-
-    print()
-    print_info("🔒 Security: Restrict who can DM your bot")
-    print_info("   Use QQ user OpenIDs (found in event payloads)")
-    print()
-    allowed_users = prompt("Allowed user OpenIDs (comma-separated, leave empty for open access)")
-    if allowed_users:
-        save_env_value("QQ_ALLOWED_USERS", allowed_users.replace(" ", ""))
-        print_success("QQ Bot allowlist configured")
-    else:
-        print_info("⚠️  No allowlist set — anyone can DM the bot!")
-
-    print()
-    print_info("📬 Home Channel: OpenID for cron job delivery and notifications.")
-    home_channel = prompt("Home channel OpenID (leave empty to set later)")
-    if home_channel:
-        save_env_value("QQ_HOME_CHANNEL", home_channel)
-
-    print()
-    print_success("QQ Bot configured!")
 
 
 def _setup_bluebubbles():
@@ -2119,12 +2073,9 @@ def _setup_bluebubbles():
 
 
 def _setup_qqbot():
-    """Configure QQ Bot (Official API v2) via standard platform setup."""
-    from hermes_cli.gateway import _PLATFORMS
-    qq_platform = next((p for p in _PLATFORMS if p["key"] == "qqbot"), None)
-    if qq_platform:
-        from hermes_cli.gateway import _setup_standard_platform
-        _setup_standard_platform(qq_platform)
+    """Configure QQ Bot (Official API v2) via gateway setup."""
+    from hermes_cli.gateway import _setup_qqbot as _gateway_setup_qqbot
+    _gateway_setup_qqbot()
 
 
 def _setup_webhooks():
@@ -2264,7 +2215,9 @@ def setup_gateway(config: dict):
             missing_home.append("Slack")
         if get_env_value("BLUEBUBBLES_SERVER_URL") and not get_env_value("BLUEBUBBLES_HOME_CHANNEL"):
             missing_home.append("BlueBubbles")
-        if get_env_value("QQ_APP_ID") and not get_env_value("QQ_HOME_CHANNEL"):
+        if get_env_value("QQ_APP_ID") and not (
+            get_env_value("QQBOT_HOME_CHANNEL") or get_env_value("QQ_HOME_CHANNEL")
+        ):
             missing_home.append("QQBot")
 
         if missing_home:
@@ -2289,8 +2242,10 @@ def setup_gateway(config: dict):
             _is_service_running,
             supports_systemd_services,
             has_conflicting_systemd_units,
+            has_legacy_hermes_units,
             install_linux_gateway_from_setup,
             print_systemd_scope_conflict_warning,
+            print_legacy_unit_warning,
             systemd_start,
             systemd_restart,
             launchd_install,
@@ -2306,6 +2261,10 @@ def setup_gateway(config: dict):
         print()
         if supports_systemd and has_conflicting_systemd_units():
             print_systemd_scope_conflict_warning()
+            print()
+
+        if supports_systemd and has_legacy_hermes_units():
+            print_legacy_unit_warning()
             print()
 
         if service_running:

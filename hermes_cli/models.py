@@ -135,7 +135,6 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "gemini-2.5-flash-lite",
         # Gemma open models (also served via AI Studio)
         "gemma-4-31b-it",
-        "gemma-4-26b-it",
     ],
     "google-gemini-cli": [
         "gemini-2.5-pro",
@@ -2051,8 +2050,8 @@ def validate_requested_model(
                 )
 
             return {
-                "accepted": True,
-                "persist": True,
+                "accepted": False,
+                "persist": False,
                 "recognized": False,
                 "message": message,
             }
@@ -2065,8 +2064,8 @@ def validate_requested_model(
             message += f"\n  If this server expects `/v1`, try base URL: `{probe.get('suggested_base_url')}`"
 
         return {
-            "accepted": True,
-            "persist": True,
+            "accepted": False,
+            "persist": False,
             "recognized": False,
             "message": message,
         }
@@ -2100,12 +2099,11 @@ def validate_requested_model(
             if suggestions:
                 suggestion_text = "\n  Similar models: " + ", ".join(f"`{s}`" for s in suggestions)
             return {
-                "accepted": True,
-                "persist": True,
+                "accepted": False,
+                "persist": False,
                 "recognized": False,
                 "message": (
-                    f"Note: `{requested}` was not found in the OpenAI Codex model listing. "
-                    f"It may still work if your account has access to it."
+                    f"Model `{requested}` was not found in the OpenAI Codex model listing."
                     f"{suggestion_text}"
                 ),
             }
@@ -2144,16 +2142,15 @@ def validate_requested_model(
             if suggestions:
                 suggestion_text = "\n  Similar models: " + ", ".join(f"`{s}`" for s in suggestions)
 
-            return {
-                "accepted": True,
-                "persist": True,
-                "recognized": False,
-                "message": (
-                    f"Note: `{requested}` was not found in this provider's model listing. "
-                    f"It may still work if your plan supports it."
-                    f"{suggestion_text}"
-                ),
-            }
+        return {
+            "accepted": False,
+            "persist": False,
+            "recognized": False,
+            "message": (
+                f"Model `{requested}` was not found in this provider's model listing."
+                f"{suggestion_text}"
+            ),
+        }
 
     # api_models is None — couldn't reach API.  Accept and persist,
     # but warn so typos don't silently break things.
@@ -2195,8 +2192,8 @@ def validate_requested_model(
 
     provider_label = _PROVIDER_LABELS.get(normalized, normalized)
     return {
-        "accepted": True,
-        "persist": True,
+        "accepted": False,
+        "persist": False,
         "recognized": False,
         "message": (
             f"Could not reach the {provider_label} API to validate `{requested}`. "

@@ -6,7 +6,10 @@ Currently supports:
 """
 
 import io
+import json
+import os
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -29,6 +32,119 @@ _MAX_LOG_BYTES = 512_000
 
 # Auto-delete pastes after this many seconds (6 hours).
 _AUTO_DELETE_SECONDS = 21600
+
+
+# ---------------------------------------------------------------------------
+# Pending-deletion tracking (replaces the old fork-and-sleep subprocess).
+# ---------------------------------------------------------------------------
+
+def _pending_file() -> Path:
+    """Path to ``~/.hermes/pastes/pending.json``.
+
+    Each entry: ``{"url": "...", "expire_at": <unix_ts>}``.  Scheduled
+    DELETEs used to be handled by spawning a detached Python process per
+    paste that slept for 6 hours; those accumulated forever if the user
+    ran ``hermes debug share`` repeatedly.  We now persist the schedule
+    to disk and sweep expired entries on the next debug invocation.
+    """
+    return get_hermes_home() / "pastes" / "pending.json"
+
+
+def _load_pending() -> list[dict]:
+    path = _pending_file()
+    if not path.exists():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(data, list):
+            # Filter to well-formed entries only
+            return [
+                e for e in data
+                if isinstance(e, dict) and "url" in e and "expire_at" in e
+            ]
+    except (OSError, ValueError, json.JSONDecodeError):
+        pass
+    return []
+
+
+def _save_pending(entries: list[dict]) -> None:
+    path = _pending_file()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(entries, indent=2), encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError:
+        # Non-fatal — worst case the user has to run ``hermes debug delete``
+        # manually.
+        pass
+
+
+def _record_pending(urls: list[str], delay_seconds: int = _AUTO_DELETE_SECONDS) -> None:
+    """Record *urls* for deletion at ``now + delay_seconds``.
+
+    Only paste.rs URLs are recorded (dpaste.com auto-expires).  Entries
+    are merged into any existing pending.json.
+    """
+    paste_rs_urls = [u for u in urls if _extract_paste_id(u)]
+    if not paste_rs_urls:
+        return
+
+    entries = _load_pending()
+    # Dedupe by URL: keep the later expire_at if same URL appears twice
+    by_url: dict[str, float] = {e["url"]: float(e["expire_at"]) for e in entries}
+    expire_at = time.time() + delay_seconds
+    for u in paste_rs_urls:
+        by_url[u] = max(expire_at, by_url.get(u, 0.0))
+    merged = [{"url": u, "expire_at": ts} for u, ts in by_url.items()]
+    _save_pending(merged)
+
+
+def _sweep_expired_pastes(now: Optional[float] = None) -> tuple[int, int]:
+    """Synchronously DELETE any pending pastes whose ``expire_at`` has passed.
+
+    Returns ``(deleted, remaining)``.  Best-effort: failed deletes stay in
+    the pending file and will be retried on the next sweep.  Silent —
+    intended to be called from every ``hermes debug`` invocation with
+    minimal noise.
+    """
+    entries = _load_pending()
+    if not entries:
+        return (0, 0)
+
+    current = time.time() if now is None else now
+    deleted = 0
+    remaining: list[dict] = []
+
+    for entry in entries:
+        try:
+            expire_at = float(entry.get("expire_at", 0))
+        except (TypeError, ValueError):
+            continue  # drop malformed entries
+        if expire_at > current:
+            remaining.append(entry)
+            continue
+
+        url = entry.get("url", "")
+        try:
+            if delete_paste(url):
+                deleted += 1
+                continue
+        except Exception:
+            # Network hiccup, 404 (already gone), etc. — drop the entry
+            # after a grace period; don't retry forever.
+            pass
+
+        # Retain failed deletes for up to 24h past expiration, then give up.
+        if expire_at + 86400 > current:
+            remaining.append(entry)
+        else:
+            deleted += 1  # count as reaped (paste.rs will GC eventually)
+
+    if deleted:
+        _save_pending(remaining)
+
+    return (deleted, len(remaining))
 
 
 # ---------------------------------------------------------------------------
@@ -90,37 +206,19 @@ def delete_paste(url: str) -> bool:
 
 
 def _schedule_auto_delete(urls: list[str], delay_seconds: int = _AUTO_DELETE_SECONDS):
-    """Spawn a detached process to delete paste.rs pastes after *delay_seconds*.
+    """Record *urls* for deletion ``delay_seconds`` from now.
 
-    The child process is fully detached (``start_new_session=True``) so it
-    survives the parent exiting (important for CLI mode).  Only paste.rs
-    URLs are attempted — dpaste.com pastes auto-expire on their own.
+    Previously this spawned a detached Python subprocess per call that slept
+    for 6 hours and then issued DELETE requests.  Those subprocesses leaked —
+    every ``hermes debug share`` invocation added ~20 MB of resident Python
+    interpreters that never exited until the sleep completed.
+
+    The replacement is stateless: we append to ``~/.hermes/pastes/pending.json``
+    and rely on opportunistic sweeps (``_sweep_expired_pastes``) called from
+    every ``hermes debug`` invocation.  If the user never runs ``hermes debug``
+    again, paste.rs's own retention policy handles cleanup.
     """
-    import subprocess
-
-    paste_rs_urls = [u for u in urls if _extract_paste_id(u)]
-    if not paste_rs_urls:
-        return
-
-    # Build a tiny inline Python script.  No imports beyond stdlib.
-    url_list = ", ".join(f'"{u}"' for u in paste_rs_urls)
-    script = (
-        "import time, urllib.request; "
-        f"time.sleep({delay_seconds}); "
-        f"[urllib.request.urlopen(urllib.request.Request(u, method='DELETE', "
-        f"headers={{'User-Agent': 'hermes-agent/auto-delete'}}), timeout=15) "
-        f"for u in [{url_list}]]"
-    )
-
-    try:
-        subprocess.Popen(
-            [sys.executable, "-c", script],
-            start_new_session=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-    except Exception:
-        pass  # Best-effort; manual delete still available.
+    _record_pending(urls, delay_seconds=delay_seconds)
 
 
 def _delete_hint(url: str) -> str:
@@ -455,6 +553,16 @@ def run_debug_delete(args):
 
 def run_debug(args):
     """Route debug subcommands."""
+    # Opportunistic sweep of expired pastes on every ``hermes debug`` call.
+    # Replaces the old per-paste sleeping subprocess that used to leak as
+    # one orphaned Python interpreter per scheduled deletion.  Silent and
+    # best-effort — any failure is swallowed so ``hermes debug`` stays
+    # reliable even when offline.
+    try:
+        _sweep_expired_pastes()
+    except Exception:
+        pass
+
     subcmd = getattr(args, "debug_command", None)
     if subcmd == "share":
         run_debug_share(args)

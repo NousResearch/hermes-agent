@@ -94,6 +94,17 @@ def _normalize_aux_provider(provider: Optional[str]) -> str:
         return "custom"
     return _PROVIDER_ALIASES.get(normalized, normalized)
 
+
+_FIXED_TEMPERATURE_MODELS: Dict[str, float] = {
+    "kimi-for-coding": 0.6,
+}
+
+
+def _fixed_temperature_for_model(model: Optional[str]) -> Optional[float]:
+    """Return a required temperature override for models with strict contracts."""
+    normalized = (model or "").strip().lower()
+    return _FIXED_TEMPERATURE_MODELS.get(normalized)
+
 # Default auxiliary models for direct API-key providers (cheap/fast for side tasks)
 _API_KEY_PROVIDER_AUX_MODELS: Dict[str, str] = {
     "gemini": "gemini-3-flash-preview",
@@ -734,6 +745,15 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
                 from hermes_cli.models import copilot_default_headers
 
                 extra["default_headers"] = copilot_default_headers()
+            elif "generativelanguage.googleapis.com" in base_url.lower():
+                # Google's OpenAI-compatible endpoint only accepts x-goog-api-key.
+                # Passing api_key= causes the SDK to inject Authorization: Bearer,
+                # which Google rejects with HTTP 400 "Multiple authentication
+                # credentials received". Use a placeholder for api_key and pass
+                # the real key via x-goog-api-key header instead.
+                # Fixes: https://github.com/NousResearch/hermes-agent/issues/7893
+                extra["default_headers"] = {"x-goog-api-key": api_key}
+                api_key = "not-used"
             return OpenAI(api_key=api_key, base_url=base_url, **extra), model
 
         creds = resolve_api_key_provider_credentials(provider_id)
@@ -755,6 +775,15 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
             from hermes_cli.models import copilot_default_headers
 
             extra["default_headers"] = copilot_default_headers()
+        elif "generativelanguage.googleapis.com" in base_url.lower():
+            # Google's OpenAI-compatible endpoint only accepts x-goog-api-key.
+            # Passing api_key= causes the SDK to inject Authorization: Bearer,
+            # which Google rejects with HTTP 400 "Multiple authentication
+            # credentials received". Use a placeholder for api_key and pass
+            # the real key via x-goog-api-key header instead.
+            # Fixes: https://github.com/NousResearch/hermes-agent/issues/7893
+            extra["default_headers"] = {"x-goog-api-key": api_key}
+            api_key = "not-used"
         return OpenAI(api_key=api_key, base_url=base_url, **extra), model
 
     return None, None
@@ -1064,8 +1093,6 @@ _AUTO_PROVIDER_LABELS = {
     "_resolve_api_key_provider": "api-key",
 }
 
-_AGGREGATOR_PROVIDERS = frozenset({"openrouter", "nous"})
-
 _MAIN_RUNTIME_FIELDS = ("provider", "model", "base_url", "api_key", "api_mode")
 
 
@@ -1196,11 +1223,15 @@ def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Option
     """Full auto-detection chain.
 
     Priority:
-      1. If the user's main provider is NOT an aggregator (OpenRouter / Nous),
-         use their main provider + main model directly.  This ensures users on
-         Alibaba, DeepSeek, ZAI, etc. get auxiliary tasks handled by the same
-         provider they already have credentials for — no OpenRouter key needed.
-      2. OpenRouter → Nous → custom → Codex → API-key providers (original chain).
+      1. User's main provider + main model, regardless of provider type.
+         This means auxiliary tasks (compression, vision, web extraction,
+         session search, etc.) use the same model the user configured for
+         chat.  Users on OpenRouter/Nous get their chosen chat model; users
+         on DeepSeek/ZAI/Alibaba get theirs; etc.  Running aux tasks on the
+         user's picked model keeps behavior predictable — no surprise
+         switches to a cheap fallback model for side tasks.
+      2. OpenRouter → Nous → custom → Codex → API-key providers (fallback
+         chain, only used when the main provider has no working client).
     """
     global auxiliary_is_nous, _stale_base_url_warned
     auxiliary_is_nous = False  # Reset — _try_nous() will set True if it wins
@@ -1230,11 +1261,16 @@ def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Option
             )
             _stale_base_url_warned = True
 
-    # ── Step 1: non-aggregator main provider → use main model directly ──
+    # ── Step 1: main provider + main model → use them directly ──
+    #
+    # This is the primary aux backend for every user.  "auto" means
+    # "use my main chat model for side tasks as well" — including users
+    # on aggregators (OpenRouter, Nous) who previously got routed to a
+    # cheap provider-side default.  Explicit per-task overrides set via
+    # config.yaml (auxiliary.<task>.provider) still win over this.
     main_provider = runtime_provider or _read_main_provider()
     main_model = runtime_model or _read_main_model()
     if (main_provider and main_model
-            and main_provider not in _AGGREGATOR_PROVIDERS
             and main_provider not in ("auto", "")):
         resolved_provider = main_provider
         explicit_base_url = None
@@ -1593,6 +1629,15 @@ def resolve_provider_client(
             from hermes_cli.models import copilot_default_headers
 
             headers.update(copilot_default_headers())
+        elif "generativelanguage.googleapis.com" in base_url.lower():
+            # Google's OpenAI-compatible endpoint only accepts x-goog-api-key.
+            # Passing api_key= causes the OpenAI SDK to inject Authorization: Bearer,
+            # which Google rejects with HTTP 400 "Multiple authentication credentials
+            # received". Use a placeholder for api_key and pass the real key via
+            # x-goog-api-key header instead.
+            # Fixes: https://github.com/NousResearch/hermes-agent/issues/7893
+            headers["x-goog-api-key"] = api_key
+            api_key = "not-used"
 
         client = OpenAI(api_key=api_key, base_url=base_url,
                         **({"default_headers": headers} if headers else {}))
@@ -1817,34 +1862,31 @@ def resolve_vision_provider_client(
 
     if requested == "auto":
         # Vision auto-detection order:
-        #   1. Active provider + model (user's main chat config)
-        #   2. OpenRouter  (known vision-capable default model)
-        #   3. Nous Portal (known vision-capable default model)
+        #   1. User's main provider + main model (including aggregators).
+        #      _PROVIDER_VISION_MODELS provides per-provider vision model
+        #      overrides when the provider has a dedicated multimodal model
+        #      that differs from the chat model (e.g. xiaomi → mimo-v2-omni,
+        #      zai → glm-5v-turbo).
+        #   2. OpenRouter  (vision-capable aggregator fallback)
+        #   3. Nous Portal (vision-capable aggregator fallback)
         #   4. Stop
         main_provider = _read_main_provider()
         main_model = _read_main_model()
         if main_provider and main_provider not in ("auto", ""):
-            if main_provider in _VISION_AUTO_PROVIDER_ORDER:
-                # Known strict backend — use its defaults.
-                sync_client, default_model = _resolve_strict_vision_backend(main_provider)
-                if sync_client is not None:
-                    return _finalize(main_provider, sync_client, default_model)
-            else:
-                # Exotic provider (DeepSeek, Alibaba, Xiaomi, named custom, etc.)
-                # Use provider-specific vision model if available, otherwise main model.
-                vision_model = _PROVIDER_VISION_MODELS.get(main_provider, main_model)
-                rpc_client, rpc_model = resolve_provider_client(
-                    main_provider, vision_model,
-                    api_mode=resolved_api_mode)
-                if rpc_client is not None:
-                    logger.info(
-                        "Vision auto-detect: using active provider %s (%s)",
-                        main_provider, rpc_model or vision_model,
-                    )
-                    return _finalize(
-                        main_provider, rpc_client, rpc_model or vision_model)
+            vision_model = _PROVIDER_VISION_MODELS.get(main_provider, main_model)
+            rpc_client, rpc_model = resolve_provider_client(
+                main_provider, vision_model,
+                api_mode=resolved_api_mode)
+            if rpc_client is not None:
+                logger.info(
+                    "Vision auto-detect: using main provider %s (%s)",
+                    main_provider, rpc_model or vision_model,
+                )
+                return _finalize(
+                    main_provider, rpc_client, rpc_model or vision_model)
 
-        # Fall back through aggregators.
+        # Fall back through aggregators (uses their dedicated vision model,
+        # not the user's main model) when main provider has no client.
         for candidate in _VISION_AUTO_PROVIDER_ORDER:
             if candidate == main_provider:
                 continue  # already tried above
@@ -2292,6 +2334,10 @@ def _build_call_kwargs(
         "messages": messages,
         "timeout": timeout,
     }
+
+    fixed_temperature = _fixed_temperature_for_model(model)
+    if fixed_temperature is not None:
+        temperature = fixed_temperature
 
     # Opus 4.7+ rejects any non-default temperature/top_p/top_k — silently
     # drop here so auxiliary callers that hardcode temperature (e.g. 0.3 on

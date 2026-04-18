@@ -161,6 +161,30 @@ class TestCommandBypassActiveSession:
         assert any("handled:status" in r for r in adapter.sent_responses)
 
     @pytest.mark.asyncio
+    async def test_agents_bypasses_guard(self):
+        """/agents must bypass so active-task queries don't interrupt runs."""
+        adapter = _make_adapter()
+        sk = _session_key()
+        adapter._active_sessions[sk] = asyncio.Event()
+
+        await adapter.handle_message(_make_event("/agents"))
+
+        assert sk not in adapter._pending_messages
+        assert any("handled:agents" in r for r in adapter.sent_responses)
+
+    @pytest.mark.asyncio
+    async def test_tasks_alias_bypasses_guard(self):
+        """/tasks alias must bypass active-session guard too."""
+        adapter = _make_adapter()
+        sk = _session_key()
+        adapter._active_sessions[sk] = asyncio.Event()
+
+        await adapter.handle_message(_make_event("/tasks"))
+
+        assert sk not in adapter._pending_messages
+        assert any("handled:tasks" in r for r in adapter.sent_responses)
+
+    @pytest.mark.asyncio
     async def test_background_bypasses_guard(self):
         """/background must bypass so it spawns a parallel task, not an interrupt."""
         adapter = _make_adapter()
@@ -174,6 +198,38 @@ class TestCommandBypassActiveSession:
         )
         assert any("handled:background" in r for r in adapter.sent_responses), (
             "/background response was not sent back to the user"
+        )
+
+    @pytest.mark.asyncio
+    async def test_help_bypasses_guard(self):
+        """/help must bypass so it is not silently dropped as pending slash text."""
+        adapter = _make_adapter()
+        sk = _session_key()
+        adapter._active_sessions[sk] = asyncio.Event()
+
+        await adapter.handle_message(_make_event("/help"))
+
+        assert sk not in adapter._pending_messages, (
+            "/help was queued as a pending message instead of being dispatched"
+        )
+        assert any("handled:help" in r for r in adapter.sent_responses), (
+            "/help response was not sent back to the user"
+        )
+
+    @pytest.mark.asyncio
+    async def test_update_bypasses_guard(self):
+        """/update must bypass so it is not discarded by the pending-command safety net."""
+        adapter = _make_adapter()
+        sk = _session_key()
+        adapter._active_sessions[sk] = asyncio.Event()
+
+        await adapter.handle_message(_make_event("/update"))
+
+        assert sk not in adapter._pending_messages, (
+            "/update was queued as a pending message instead of being dispatched"
+        )
+        assert any("handled:update" in r for r in adapter.sent_responses), (
+            "/update response was not sent back to the user"
         )
 
     @pytest.mark.asyncio

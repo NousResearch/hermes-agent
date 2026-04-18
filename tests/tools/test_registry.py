@@ -296,6 +296,8 @@ class TestBuiltinDiscovery:
             "tools.code_execution_tool",
             "tools.cronjob_tools",
             "tools.delegate_tool",
+            "tools.feishu_doc_tool",
+            "tools.feishu_drive_tool",
             "tools.file_tools",
             "tools.homeassistant_tool",
             "tools.image_generation_tool",

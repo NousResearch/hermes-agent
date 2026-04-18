@@ -4,6 +4,7 @@ from gateway.qq_intents import (
     _QQ_GROUP_ID_EXPLICIT_PATTERNS,
     _QQ_SEND_INLINE_PATTERNS,
     _QQ_VISIBLE_NAME_ALIASES,
+    _looks_like_qq_joined_group_list_query,
 )
 
 
@@ -24,3 +25,8 @@ def test_shared_send_inline_patterns_still_match_target_and_message():
     assert match is not None
     assert match.group(1) == "192903718"
     assert "绿帽哥" in match.group(2)
+
+
+def test_joined_group_list_query_requires_actual_group_list_intent():
+    assert _looks_like_qq_joined_group_list_query("列一下群")
+    assert not _looks_like_qq_joined_group_list_query("列一下群里的部署问题")

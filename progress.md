@@ -85,3 +85,18 @@
   - `tests/gateway/test_qq_intel_control_requests.py tests/gateway/test_auto_background_jobs.py tests/gateway/test_group_control_requests.py tests/gateway/test_group_control_intents.py tests/gateway/test_group_runtime_status_requests.py -q -k 'bot_alias or bare_intel_status_phrase_falls_back_to_agent or admin_dm_can_orally_query_intel_worker_status or group_control or intel_control_request'`：`29 passed`
   - `tests/gateway/test_qq_intel_control_requests.py tests/gateway/test_qq_intel_runtime_service.py tests/gateway/test_group_control_requests.py tests/gateway/test_group_control_runtime_service.py tests/gateway/test_group_control_intents.py tests/gateway/test_group_runtime_status_requests.py tests/gateway/test_group_runtime_status_runtime_service.py tests/gateway/test_auto_background_jobs.py -q -k 'not weixin and (intel or group_control or runtime_status or bare_intel_status_phrase_falls_back_to_agent or bot_alias or admin_dm_can_orally_query_intel_worker_status)'`：`60 passed`
   - 说明：`tests/gateway/test_auto_background_jobs.py` 全文件仍存在 1 条与本轮改动面无关的既有 Weixin 失败：`test_admin_weixin_group_can_orally_enable_collect_only`
+
+## 2026-04-18 第二轮口头控制误判收口
+
+- 已修复：
+  - `列一下群里的部署问题` 不再被误判成 `list_joined_groups`
+  - 隐式已知 worker 口令现在只接受“短控制句”；长任务句如 `让钢镚现在汇报一下这个页面为什么回退了`、`让钢镚继续监听线上部署日志...` 会回落前台
+  - QQ 群控在“无群目标且无明确群指代”时会直接让路，不再因为 `监听/汇报` 抢普通对话
+  - 显式员工路由在存在同名 intel worker 时仍可正常派活，不会被 `resume_worker` 偷走
+- 已新增测试：
+  - [tests/gateway/test_qq_intents.py](/home/dtamade/projects/hermes-agent/tests/gateway/test_qq_intents.py)
+  - [tests/gateway/test_qq_intel_control_requests.py](/home/dtamade/projects/hermes-agent/tests/gateway/test_qq_intel_control_requests.py)
+  - [tests/gateway/test_auto_background_jobs.py](/home/dtamade/projects/hermes-agent/tests/gateway/test_auto_background_jobs.py)
+- 已验证：
+  - `tests/gateway/test_qq_intents.py tests/gateway/test_qq_intel_control_requests.py tests/gateway/test_auto_background_jobs.py -q -k 'joined_group_list_query_requires_actual_group_list_intent or verbose or steal_explicit_employee_route_when_message_is_verbose_task or admin_dm_can_orally_route_named_worker_to_background_job or admin_dm_bot_alias_intel_phrase_falls_back_to_agent or bare_intel_status_phrase_falls_back_to_agent'`：`7 passed`
+  - `tests/gateway/test_qq_intents.py tests/gateway/test_qq_intel_control_requests.py tests/gateway/test_qq_intel_runtime_service.py tests/gateway/test_group_control_requests.py tests/gateway/test_group_control_runtime_service.py tests/gateway/test_group_control_intents.py tests/gateway/test_group_runtime_status_requests.py tests/gateway/test_group_runtime_status_runtime_service.py tests/gateway/test_auto_background_jobs.py -q -k 'not weixin and (qq_intents or intel or group_control or runtime_status or joined_group_list or verbose or bot_alias or bare_intel_status_phrase_falls_back_to_agent or admin_dm_can_orally_query_intel_worker_status or admin_dm_can_orally_list_joined_groups)'`：`69 passed`

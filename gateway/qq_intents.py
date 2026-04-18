@@ -131,6 +131,10 @@ _QQ_GROUP_ID_ANYWHERE_RE = _load_single_pattern("run_patterns", "_QQ_GROUP_ID_AN
 _QQ_GROUP_MODERATION_DURATION_RE = _load_single_pattern("run_patterns", "_QQ_GROUP_MODERATION_DURATION_RE")
 _QQ_GROUP_MODERATION_REASON_RE = _load_single_pattern("run_patterns", "_QQ_GROUP_MODERATION_REASON_RE")
 _QQ_GROUP_MODERATION_USER_PATTERNS = _load_pattern_sequence("run_patterns", "_QQ_GROUP_MODERATION_USER_PATTERNS")
+_QQ_JOINED_GROUP_LIST_AMBIGUOUS_TERMS = frozenset({"列一下群", "列出群"})
+_QQ_JOINED_GROUP_LIST_EXACT_PATTERNS = (
+    re.compile(r"^(?:给我|帮我|麻烦|请)?\s*(?:列一下|列出)\s*(?:加的|加入的|现在加的)?群(?:列表|名单)?[。！!？?\s]*$"),
+)
 
 _QQ_DEFAULT_TRIGGER_ALIASES = _load_term_sequence("napcat_terms", "_QQ_DEFAULT_TRIGGER_ALIASES")
 _QQ_LOW_VALUE_IMAGE_HINTS = _load_term_sequence("napcat_terms", "_QQ_LOW_VALUE_IMAGE_HINTS")
@@ -155,7 +159,11 @@ def _looks_like_qq_runtime_status_query(message_text: str) -> bool:
 
 def _looks_like_qq_joined_group_list_query(message_text: str) -> bool:
     body = str(message_text or "").strip()
-    return bool(body) and any(term in body for term in _QQ_JOINED_GROUP_LIST_TERMS)
+    if not body:
+        return False
+    if any(term in body for term in _QQ_JOINED_GROUP_LIST_TERMS if term not in _QQ_JOINED_GROUP_LIST_AMBIGUOUS_TERMS):
+        return True
+    return any(pattern.search(body) for pattern in _QQ_JOINED_GROUP_LIST_EXACT_PATTERNS)
 
 
 def _looks_like_qq_group_runtime_status_query(message_text: str) -> bool:

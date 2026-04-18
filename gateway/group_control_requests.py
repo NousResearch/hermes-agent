@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from gateway.group_control_intents import (
+    has_followup_group_reference,
     looks_like_group_chat_enable_request,
     looks_like_group_listen_disable_request,
     looks_like_group_listen_enable_request,
@@ -41,6 +42,8 @@ def match_group_control_request(
     if not is_admin_user:
         return None, admin_only_message
     if not target:
+        if not has_followup_group_reference(normalized_body):
+            return None, None
         return None, missing_target_message
 
     if report_now:

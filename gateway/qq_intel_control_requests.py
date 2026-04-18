@@ -55,6 +55,44 @@ _QQ_INTEL_INVALID_WORKER_NAME_TERMS = frozenset(_QQ_INTEL_WORKER_NAME_STOPWORDS)
 _QQ_VISIBLE_BOT_ALIAS_NAMES = frozenset(
     alias.lstrip("@").strip() for alias in _QQ_VISIBLE_NAME_ALIASES if alias.lstrip("@").strip()
 )
+_QQ_INTEL_IMPLICIT_CONTROL_RE = re.compile(
+    r"^让\s*(?P<worker>[A-Za-z0-9_\-\u4e00-\u9fff]{1,20}?)"
+    + _QQ_INTEL_WORKER_BOUNDARY
+    + r"\s*(?:现在|马上|立刻|先)?(?P<action>汇报|回报|暂停|恢复|停止|继续)(?P<suffix>.*)$"
+)
+_QQ_INTEL_IMPLICIT_ALLOWED_SUFFIX_TOKENS = tuple(
+    sorted(
+        {
+            "一下",
+            "任务",
+            "监听",
+            "采集",
+            "潜伏",
+            "刺探",
+            "继续监听",
+            "继续采集",
+            "继续潜伏",
+            "先别监听了",
+            "别监听了",
+            "先别采集了",
+            "别采集了",
+            "私聊向我汇报",
+            "私聊发我",
+            "发我",
+            "给我",
+            "群里汇报",
+            "群内汇报",
+            "发群里",
+            "发到群里",
+            "发到当前群里",
+            "当前群里",
+            "当前群",
+            "在群里",
+        },
+        key=len,
+        reverse=True,
+    )
+)
 
 
 def _normalize_qq_worker_name_candidate(candidate: str) -> str:
@@ -96,6 +134,29 @@ def looks_like_qq_intel_worker_context(message_text: str) -> bool:
     if not body:
         return False
     return any(term in body for term in _QQ_INTEL_CONTEXT_TERMS)
+
+
+def _looks_like_concise_implicit_worker_control(message_text: str, worker_name: str) -> bool:
+    body = str(message_text or "").strip()
+    normalized_worker = str(worker_name or "").strip()
+    if not body or not normalized_worker:
+        return False
+    match = _QQ_INTEL_IMPLICIT_CONTROL_RE.match(body)
+    if not match:
+        return False
+    if _normalize_qq_worker_name_candidate(match.group("worker") or "") != normalized_worker:
+        return False
+    suffix = re.sub(r"[，,。；;！？?!\s]+", "", str(match.group("suffix") or ""))
+    while suffix:
+        matched = False
+        for token in _QQ_INTEL_IMPLICIT_ALLOWED_SUFFIX_TOKENS:
+            if suffix.startswith(token):
+                suffix = suffix[len(token) :]
+                matched = True
+                break
+        if not matched:
+            return False
+    return True
 
 
 def extract_qq_oral_intel_hire_objective(
@@ -162,9 +223,17 @@ def match_qq_intel_control_request(
         for name in (known_worker_names or [])
         if str(name or "").strip()
     }
-    worker_reference_is_explicit = explicit_worker_context or (
-        worker_name in normalized_known_names and worker_name not in _QQ_VISIBLE_BOT_ALIAS_NAMES
+    implicit_known_worker_reference = (
+        worker_name in normalized_known_names
+        and worker_name not in _QQ_VISIBLE_BOT_ALIAS_NAMES
+        and not explicit_worker_context
     )
+    if implicit_known_worker_reference and has_intel_context and not _looks_like_concise_implicit_worker_control(
+        normalized_body,
+        worker_name,
+    ):
+        return None, None
+    worker_reference_is_explicit = explicit_worker_context or implicit_known_worker_reference
 
     if worker_name and has_intel_context and worker_reference_is_explicit:
         if any(term in normalized_body for term in _QQ_INTEL_PAUSE_TERMS):

@@ -404,6 +404,66 @@ async def test_admin_dm_bot_alias_intel_phrase_falls_back_to_agent():
 
 
 @pytest.mark.asyncio
+async def test_admin_dm_verbose_known_worker_report_request_falls_back_to_agent():
+    runner = _make_runner(auto_background_work=True)
+    runner.config.platforms[Platform.QQ_NAPCAT].extra["admin_users"] = ["179033731"]
+    event = _make_event("让钢镚现在汇报一下这个页面为什么回退了")
+
+    with (
+        patch(
+            "gateway.direct_control_router.list_intel_workers",
+            return_value=[{"worker_name": "钢镚"}],
+        ),
+        patch("tools.qq_control_tool.qq_control_tool") as control_mock,
+    ):
+        result = await runner._handle_message(event)
+
+    control_mock.assert_not_called()
+    runner._run_agent.assert_awaited_once()
+    assert result == "前台回复"
+
+
+@pytest.mark.asyncio
+async def test_known_worker_name_does_not_steal_explicit_employee_route_when_message_is_verbose_task():
+    runner = _make_runner(
+        auto_background_work=True,
+        employee_routes=[
+            {
+                "worker_name": "铁柱",
+                "preloaded_skills": ["frontend-design-pro"],
+                "match_modes": ["explicit"],
+            }
+        ],
+    )
+    runner.config.platforms[Platform.QQ_NAPCAT].extra["admin_users"] = ["179033731"]
+    runner.session_store.load_transcript.return_value = [
+        {"role": "assistant", "content": "公司主页还比较粗糙，交给铁柱继续打磨会更合适。"},
+        {"role": "user", "content": "知道了。"},
+    ]
+    event = _make_event("让铁柱继续优化公司主页，做完后向我汇报。")
+
+    with (
+        patch(
+            "gateway.direct_control_router.list_intel_workers",
+            return_value=[{"worker_name": "铁柱"}],
+        ),
+        patch(
+            "gateway.run.asyncio.create_task",
+            side_effect=lambda coro, *args, **kwargs: (coro.close(), MagicMock())[1],
+        ),
+        patch("tools.qq_control_tool.qq_control_tool") as control_mock,
+    ):
+        result = await runner._handle_message(event)
+
+    control_mock.assert_not_called()
+    assert "铁柱" in result
+    assert runner._run_agent.await_count == 0
+    job = _latest_durable_job(runner)
+    assert job["worker_name"] == "铁柱"
+    assert job["preloaded_skills"] == ["frontend-design-pro"]
+
+
+@pytest.mark.asyncio
 async def test_handle_message_does_not_route_new_server_task_to_tiezhu_from_stale_design_history():
     runner = _make_runner(
         auto_background_work=True,

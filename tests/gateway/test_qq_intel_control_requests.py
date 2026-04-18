@@ -198,6 +198,48 @@ def test_match_qq_intel_control_request_allows_explicit_worker_marker_for_bot_al
     }
 
 
+def test_match_qq_intel_control_request_does_not_treat_verbose_report_task_as_run_report_now():
+    source = _make_source()
+
+    tool_args, error = match_qq_intel_control_request(
+        source=source,
+        body="让钢镚现在汇报一下这个页面为什么回退了",
+        admin_ids_configured=True,
+        is_admin_user=True,
+        looks_like_joined_group_list_query=lambda body: False,
+        extract_worker_name=extract_qq_worker_name,
+        looks_like_worker_context=lambda body: True,
+        known_worker_names=["钢镚"],
+        target_extractor=lambda current_source, body: None,
+        report_target_resolver=lambda current_source, body, prefer_dm: "current_user_dm",
+        hire_objective_extractor=lambda body, worker_name, target_group: None,
+    )
+
+    assert tool_args is None
+    assert error is None
+
+
+def test_match_qq_intel_control_request_does_not_treat_verbose_resume_task_as_worker_control():
+    source = _make_source()
+
+    tool_args, error = match_qq_intel_control_request(
+        source=source,
+        body="让钢镚继续监听线上部署日志，查清楚后向我汇报。",
+        admin_ids_configured=True,
+        is_admin_user=True,
+        looks_like_joined_group_list_query=lambda body: False,
+        extract_worker_name=extract_qq_worker_name,
+        looks_like_worker_context=lambda body: True,
+        known_worker_names=["钢镚"],
+        target_extractor=lambda current_source, body: None,
+        report_target_resolver=lambda current_source, body, prefer_dm: "current_user_dm",
+        hire_objective_extractor=lambda body, worker_name, target_group: None,
+    )
+
+    assert tool_args is None
+    assert error is None
+
+
 def test_match_qq_intel_control_request_requires_target_for_hire():
     source = _make_source()
 

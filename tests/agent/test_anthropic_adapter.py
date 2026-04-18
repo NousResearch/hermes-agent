@@ -481,6 +481,56 @@ class TestNormalizeModelName:
         assert normalize_model_name("anthropic/qwen3.5-plus", preserve_dots=True) == "qwen3.5-plus"
         assert normalize_model_name("qwen3.5-flash", preserve_dots=True) == "qwen3.5-flash"
 
+    def test_preserve_dots_for_bedrock_inference_profile_claude(self):
+        """Bedrock cross-region inference-profile Claude IDs (us.anthropic.claude-*,
+        global.anthropic.claude-*, eu./ap./jp.) keep their dotted regional prefix.
+        Collapsing the dots produces an id the AnthropicBedrock SDK rejects with
+        HTTP 400 'The provided model identifier is invalid.'"""
+        # us. cross-region profile
+        assert (
+            normalize_model_name("us.anthropic.claude-sonnet-4-5-20250929-v1:0")
+            == "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+        )
+        assert (
+            normalize_model_name("us.anthropic.claude-opus-4-6-v1:0")
+            == "us.anthropic.claude-opus-4-6-v1:0"
+        )
+        # global. cross-region profile
+        assert (
+            normalize_model_name("global.anthropic.claude-opus-4-6-v1:0")
+            == "global.anthropic.claude-opus-4-6-v1:0"
+        )
+        # Other regional prefixes
+        assert (
+            normalize_model_name("eu.anthropic.claude-sonnet-4-5-20250929-v1:0")
+            == "eu.anthropic.claude-sonnet-4-5-20250929-v1:0"
+        )
+        assert (
+            normalize_model_name("ap.anthropic.claude-sonnet-4-5-20250929-v1:0")
+            == "ap.anthropic.claude-sonnet-4-5-20250929-v1:0"
+        )
+        assert (
+            normalize_model_name("jp.anthropic.claude-sonnet-4-5-20250929-v1:0")
+            == "jp.anthropic.claude-sonnet-4-5-20250929-v1:0"
+        )
+        # anthropic/ prefix stripped first, then the dotted id is preserved
+        assert (
+            normalize_model_name("anthropic/us.anthropic.claude-sonnet-4-5-20250929-v1:0")
+            == "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+        )
+        # preserve_dots=False still preserves the inference-profile id
+        assert (
+            normalize_model_name(
+                "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+                preserve_dots=False,
+            )
+            == "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+        )
+        # Non-Claude Bedrock ids (e.g. Amazon Nova) route through the Converse
+        # API and are not Anthropic inference profiles; the guard must not
+        # match them.
+        assert normalize_model_name("us.amazon.nova-pro-v1:0") == "us-amazon-nova-pro-v1:0"
+
 
 # ---------------------------------------------------------------------------
 # Tool conversion

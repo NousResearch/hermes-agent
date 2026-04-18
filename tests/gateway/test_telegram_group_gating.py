@@ -39,6 +39,10 @@ def _group_message(
     entities=None,
     caption=None,
     caption_entities=None,
+    forum_topic_created=None,
+    forward_origin=None,
+    forward_from=None,
+    forward_from_chat=None,
 ):
     reply_to_message = None
     if reply_to_bot:
@@ -51,6 +55,10 @@ def _group_message(
         message_thread_id=thread_id,
         chat=SimpleNamespace(id=chat_id, type="group"),
         reply_to_message=reply_to_message,
+        forum_topic_created=forum_topic_created,
+        forward_origin=forward_origin,
+        forward_from=forward_from,
+        forward_from_chat=forward_from_chat,
     )
 
 
@@ -102,6 +110,66 @@ def test_invalid_regex_patterns_are_ignored():
 
     assert adapter._should_process_message(_group_message("chompy status")) is True
     assert adapter._should_process_message(_group_message("hello everyone")) is False
+
+
+def test_forum_topic_created_message_bypasses_mention_requirement():
+    """First message of a newly-created forum topic should wake the bot.
+
+    When a user forwards a message into a group to open a new topic, the
+    resulting kickoff message arrives with a ``forum_topic_created`` service
+    payload. Without this bypass, the bot would ignore it and only respond
+    after a second message in the topic.
+    """
+    adapter = _make_adapter(require_mention=True)
+
+    topic_created = SimpleNamespace(name="Research")
+    msg = _group_message(
+        "kickoff content",
+        thread_id=12345,
+        forum_topic_created=topic_created,
+    )
+    assert adapter._should_process_message(msg) is True
+
+
+def test_forwarded_message_bypasses_mention_requirement():
+    """Forwarded messages (the common way to seed a topic) should trigger."""
+    adapter = _make_adapter(require_mention=True)
+
+    # forward_origin (Bot API >= 7.0)
+    forward_origin = SimpleNamespace(type="user", sender_user=SimpleNamespace(id=42))
+    msg_origin = _group_message("some forwarded text", forward_origin=forward_origin)
+    assert adapter._should_process_message(msg_origin) is True
+
+    # legacy forward_from
+    msg_from = _group_message("some forwarded text", forward_from=SimpleNamespace(id=42))
+    assert adapter._should_process_message(msg_from) is True
+
+    # legacy forward_from_chat (forwarded from a channel)
+    msg_from_chat = _group_message(
+        "some forwarded text",
+        forward_from_chat=SimpleNamespace(id=-100, type="channel"),
+    )
+    assert adapter._should_process_message(msg_from_chat) is True
+
+
+def test_ignored_threads_still_drop_forum_topic_created():
+    """Ignored-thread guard wins over forum_topic_created / forward bypass."""
+    adapter = _make_adapter(require_mention=True, ignored_threads=[31])
+
+    topic_created = SimpleNamespace(name="Ignored Topic")
+    msg = _group_message(
+        "kickoff",
+        thread_id=31,
+        forum_topic_created=topic_created,
+    )
+    assert adapter._should_process_message(msg) is False
+
+    forwarded = _group_message(
+        "forwarded",
+        thread_id=31,
+        forward_origin=SimpleNamespace(type="user"),
+    )
+    assert adapter._should_process_message(forwarded) is False
 
 
 def test_config_bridges_telegram_group_settings(monkeypatch, tmp_path):

@@ -4478,6 +4478,44 @@ class HermesCLI:
         _cprint(f"  Original session: {parent_session_id}")
         _cprint(f"  Branch session:   {new_session_id}")
 
+    def _handle_editor_command(self):
+        """Open $EDITOR to compose a long message, then return it for sending."""
+        import shlex
+        import shutil
+        import tempfile
+        editor = os.environ.get("EDITOR") or os.environ.get("VISUAL")
+        if not editor:
+            for cmd in ("nano", "vim", "vi", "code", "notepad"):
+                if shutil.which(cmd):
+                    editor = cmd
+                    break
+        if not editor:
+            _cprint(f"{_DIM}No editor found. Set $EDITOR or install nano/vim.{_RST}")
+            return None
+        tf_path = None
+        try:
+            fd, tf_path = tempfile.mkstemp(suffix=".md", prefix="hermes_")
+            os.close(fd)
+            _cprint(f"{_DIM}Opening {editor}... Save and close to send, leave empty to cancel.{_RST}")
+            import subprocess as _sp
+            _sp.call(shlex.split(editor) + [tf_path])
+            content = Path(tf_path).read_text(encoding="utf-8").strip()
+            if content:
+                _cprint(f"{_DIM}({len(content)} chars from editor){_RST}")
+                return content
+            else:
+                _cprint(f"{_DIM}Editor returned empty content — cancelled.{_RST}")
+                return None
+        except Exception as e:
+            _cprint(f"{_DIM}Editor error: {e}{_RST}")
+            return None
+        finally:
+            if tf_path:
+                try:
+                    os.unlink(tf_path)
+                except OSError:
+                    pass
+
     def save_conversation(self):
         """Save the current conversation to a file."""
         if not self.conversation_history:
@@ -5658,6 +5696,10 @@ class HermesCLI:
             self._status_bar_visible = not self._status_bar_visible
             state = "visible" if self._status_bar_visible else "hidden"
             self.console.print(f"  Status bar {state}")
+        elif canonical == "editor":
+            editor_text = self._handle_editor_command()
+            if editor_text and hasattr(self, '_pending_input'):
+                self._pending_input.put(editor_text)
         elif canonical == "verbose":
             self._toggle_verbose()
         elif canonical == "yolo":

@@ -61,6 +61,14 @@ def test_build_runtime_status_summary_collects_live_runtime_snapshot(tmp_path):
         _ensure_auto_vision_state=lambda: None,
         _prune_auto_vision_state=lambda: None,
         _auto_vision_cooldown_remaining=lambda: (9.0, "timeout"),
+        _build_runtime_group_archive_summary=lambda: {
+            "raw_message_count": 50,
+            "raw_scope_count": 3,
+            "platforms": {
+                "qq_napcat": {"raw_message_count": 42, "raw_scope_count": 2},
+                "weixin": {"raw_message_count": 8, "raw_scope_count": 1},
+            },
+        },
         _load_runtime_qq_archive_stats=lambda: {"raw_message_count": 42},
         _build_runtime_model_summary=lambda: {"configured_model": "gpt-5.4"},
         _build_runtime_approval_summary=lambda: {"pending_count": 1},
@@ -90,6 +98,7 @@ def test_build_runtime_status_summary_collects_live_runtime_snapshot(tmp_path):
     assert summary["background_jobs"]["active"][0]["preview"] == "继续处理线上问题"
     assert summary["auto_vision"]["state"] == "cooldown"
     assert summary["qq_archive"]["raw_message_count"] == 42
+    assert summary["group_archive"]["raw_message_count"] == 50
     assert summary["model"]["configured_model"] == "gpt-5.4"
     assert summary["approvals"]["pending_count"] == 1
     assert summary["group_monitoring"]["platform_counts"] == {"qq_napcat": 1, "weixin": 1}
@@ -141,6 +150,14 @@ def test_render_status_command_renders_status_lines_with_foreground_and_backgrou
         _ensure_auto_vision_state=lambda: None,
         _prune_auto_vision_state=lambda: None,
         _auto_vision_cooldown_remaining=lambda: (0.0, ""),
+        _build_runtime_group_archive_summary=lambda: {
+            "raw_message_count": 50,
+            "raw_scope_count": 3,
+            "platforms": {
+                "qq_napcat": {"raw_message_count": 42, "raw_scope_count": 2},
+                "weixin": {"raw_message_count": 8, "raw_scope_count": 1},
+            },
+        },
         _build_runtime_model_summary=lambda: {
             "configured_model": "gpt-5.4",
             "active_model": "gpt-5.4",
@@ -202,6 +219,7 @@ def test_render_status_command_renders_status_lines_with_foreground_and_backgrou
     assert "Foreground" in result
     assert "delegate_task" in result
     assert "Model" in result
+    assert "Group Archive" in result
     assert "Group Monitoring" in result
     assert "QQ Monitoring" in result
     assert "Direct Shortcuts" in result

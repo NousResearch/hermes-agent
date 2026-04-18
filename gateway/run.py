@@ -278,6 +278,10 @@ from gateway.runtime_status_service import (
 from gateway.runtime_shortcuts_service import (
     build_long_running_status_detail as shared_build_long_running_status_detail,
 )
+from gateway.group_archive_runtime_service import (
+    build_group_archive_runtime_summary as shared_build_group_archive_runtime_summary,
+    build_legacy_qq_archive_summary as shared_build_legacy_qq_archive_summary,
+)
 from gateway.direct_shortcut_trace_runtime_service import (
     build_direct_shortcut_runtime_summary as shared_build_direct_shortcut_runtime_summary,
 )
@@ -2703,6 +2707,12 @@ class GatewayRunner:
             describe_weixin_group_reporting_fn=WeixinGroupArchiveStore().describe_group_reporting,
         )
 
+    def _build_runtime_group_archive_summary(self) -> dict[str, Any]:
+        return shared_build_group_archive_runtime_summary(
+            load_qq_archive_stats_fn=QqGroupArchiveStore().get_runtime_stats,
+            load_weixin_archive_stats_fn=WeixinGroupArchiveStore().get_runtime_stats,
+        )
+
     def _build_runtime_direct_shortcut_summary(self) -> dict[str, Any]:
         return shared_build_direct_shortcut_runtime_summary(self)
 
@@ -2711,9 +2721,10 @@ class GatewayRunner:
             self._build_runtime_group_monitoring_summary()
         )
 
-    @staticmethod
-    def _load_runtime_qq_archive_stats() -> dict[str, Any]:
-        return QqGroupArchiveStore().get_runtime_stats()
+    def _load_runtime_qq_archive_stats(self) -> dict[str, Any]:
+        return shared_build_legacy_qq_archive_summary(
+            self._build_runtime_group_archive_summary()
+        )
 
     def _write_runtime_status_snapshot(self) -> None:
         try:

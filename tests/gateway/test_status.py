@@ -210,6 +210,14 @@ class TestGatewayRuntimeStatus:
                     }
                 ],
             },
+            "group_archive": {
+                "raw_message_count": 50,
+                "raw_scope_count": 3,
+                "platforms": {
+                    "qq_napcat": {"raw_message_count": 42},
+                    "weixin": {"raw_message_count": 8},
+                },
+            },
             "direct_shortcuts": {
                 "recent_count": 1,
                 "recent": [

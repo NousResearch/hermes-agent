@@ -1904,6 +1904,21 @@ def _runtime_health_lines() -> list[str]:
             else:
                 lines.append("ℹ Auto vision: ready")
 
+        group_archive = runtime_summary.get("group_archive")
+        if isinstance(group_archive, dict) and group_archive:
+            raw_count = int(group_archive.get("raw_message_count") or 0)
+            platform_stats = group_archive.get("platforms") or {}
+            platform_bits = []
+            for platform_name in ("qq_napcat", "weixin"):
+                stats = platform_stats.get(platform_name) if isinstance(platform_stats, dict) else None
+                if not isinstance(stats, dict):
+                    continue
+                platform_raw = int(stats.get("raw_message_count") or 0)
+                if platform_raw:
+                    platform_bits.append(f"{platform_name}={platform_raw}")
+            preview = f" ({', '.join(platform_bits)})" if platform_bits else ""
+            lines.append(f"ℹ Group archive: {raw_count} raw msgs{preview}")
+
         qq_archive = runtime_summary.get("qq_archive")
         if isinstance(qq_archive, dict) and qq_archive:
             raw_count = int(qq_archive.get("raw_message_count") or 0)

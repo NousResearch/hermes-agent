@@ -6,6 +6,7 @@ import logging
 import time
 from typing import Any
 
+from gateway.group_archive_runtime_service import build_legacy_qq_archive_summary
 from gateway.group_monitoring_runtime_service import build_legacy_qq_monitoring_summary
 
 
@@ -154,11 +155,26 @@ def build_runtime_status_summary(
         runner,
         now_ts=now_ts,
     )
-    try:
-        qq_archive = runner._load_runtime_qq_archive_stats()
-    except Exception as exc:
-        logger.debug("Failed to collect QQ archive runtime stats: %s", exc)
-        qq_archive = {}
+    group_archive: dict[str, Any] = {}
+    if hasattr(runner, "_build_runtime_group_archive_summary"):
+        try:
+            group_archive = runner._build_runtime_group_archive_summary()
+        except Exception as exc:
+            logger.debug("Failed to collect shared group archive runtime stats: %s", exc)
+            group_archive = {}
+
+    legacy_archive = build_legacy_qq_archive_summary(group_archive) if group_archive else {}
+    if any(
+        bool(legacy_archive.get(key))
+        for key in ("raw_message_count", "raw_group_count", "report_count", "due_rollup_count")
+    ):
+        qq_archive = legacy_archive
+    else:
+        try:
+            qq_archive = runner._load_runtime_qq_archive_stats()
+        except Exception as exc:
+            logger.debug("Failed to collect QQ archive runtime stats: %s", exc)
+            qq_archive = {}
 
     group_monitoring: dict[str, Any] = {}
     if hasattr(runner, "_build_runtime_group_monitoring_summary"):
@@ -194,6 +210,7 @@ def build_runtime_status_summary(
             "active": active_background_jobs[:8],
         },
         "auto_vision": _collect_auto_vision_summary(runner),
+        "group_archive": group_archive,
         "qq_archive": qq_archive,
         "group_monitoring": group_monitoring,
         "qq_monitoring": qq_monitoring,
@@ -346,6 +363,12 @@ def render_status_command(
     )
 
     pending_approval_count = _pending_approval_count(runner, session_key=session_key)
+    group_archive_summary: dict[str, Any] = {}
+    if hasattr(runner, "_build_runtime_group_archive_summary"):
+        try:
+            group_archive_summary = runner._build_runtime_group_archive_summary()
+        except Exception:
+            group_archive_summary = {}
     group_monitoring_summary: dict[str, Any] = {}
     if hasattr(runner, "_build_runtime_group_monitoring_summary"):
         try:
@@ -369,6 +392,7 @@ def render_status_command(
             f"**Pending Approvals:** {pending_approval_count}",
             f"**Auto Vision:** {_auto_vision_label(runner)}",
             "",
+            f"**Group Archive:** {int(group_archive_summary.get('raw_message_count') or 0)} raw msg(s)",
             f"**Group Monitoring:** {shared_monitoring_count} collect_only group(s)",
             f"**QQ Monitoring:** {monitoring_count} collect_only group(s)",
         ]

@@ -268,6 +268,14 @@ class TestRuntimeHealthLines:
                         "due_rollup_count": 1,
                         "report_count": 5,
                     },
+                    "group_archive": {
+                        "raw_message_count": 50,
+                        "raw_scope_count": 3,
+                        "platforms": {
+                            "qq_napcat": {"raw_message_count": 42},
+                            "weixin": {"raw_message_count": 8},
+                        },
+                    },
                     "group_monitoring": {
                         "active_collect_only_groups": 2,
                         "platform_counts": {
@@ -314,6 +322,7 @@ class TestRuntimeHealthLines:
         assert any("delegate_task" in line for line in lines)
         assert any("Background jobs: 2 active / 3 tracked" in line for line in lines)
         assert any("Auto vision: cooldown 18s" in line for line in lines)
+        assert any("Group archive: 50 raw msgs" in line for line in lines)
         assert any("QQ archive: 42 raw msgs" in line for line in lines)
         assert any("Group monitoring: 2 collect-only group" in line for line in lines)
         assert any("Direct shortcuts: 2 recent hit" in line for line in lines)

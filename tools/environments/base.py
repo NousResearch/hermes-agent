@@ -705,6 +705,13 @@ class BaseEnvironment(ABC):
         self._before_execute()
 
         exec_command, sudo_stdin = self._prepare_command(command)
+        # Guard against the `A && B &` subshell-wait trap: bash forks a
+        # subshell for the compound that then waits for an infinite B (a
+        # server, `yes > /dev/null`, etc.), leaking the subshell forever.
+        # Rewriting to `A && { B & }` runs B as a plain background in the
+        # current shell — no subshell wait.
+        from tools.terminal_tool import _rewrite_compound_background
+        exec_command = _rewrite_compound_background(exec_command)
         effective_timeout = timeout or self.timeout
         effective_cwd = cwd or self.cwd
 

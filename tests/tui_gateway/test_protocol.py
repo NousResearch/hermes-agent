@@ -231,3 +231,201 @@ def test_cli_exec_blocked(server, argv):
 ])
 def test_cli_exec_allowed(server, argv):
     assert server._cli_exec_blocked(argv) is None
+
+
+# ── slash.exec skill command interception ────────────────────────────
+
+
+def test_slash_exec_rejects_skill_commands(server):
+    """slash.exec must reject skill commands so the TUI falls through to command.dispatch."""
+    # Register a mock session
+    sid = "test-session"
+    server._sessions[sid] = {"session_key": sid, "agent": None}
+
+    # Mock scan_skill_commands to return a known skill
+    fake_skills = {"/hermes-agent-dev": {"name": "hermes-agent-dev", "description": "Dev workflow"}}
+
+    with patch("agent.skill_commands.get_skill_commands", return_value=fake_skills):
+        resp = server.handle_request({
+            "id": "r1",
+            "method": "slash.exec",
+            "params": {"command": "hermes-agent-dev", "session_id": sid},
+        })
+
+    # Should return an error so the TUI's .catch() fires command.dispatch
+    assert "error" in resp
+    assert resp["error"]["code"] == 4018
+    assert "skill command" in resp["error"]["message"]
+
+
+@pytest.mark.parametrize("cmd", ["retry", "queue hello", "q hello", "steer fix the test", "plan"])
+def test_slash_exec_rejects_pending_input_commands(server, cmd):
+    """slash.exec must reject commands that use _pending_input in the CLI."""
+    sid = "test-session"
+    server._sessions[sid] = {"session_key": sid, "agent": None}
+
+    resp = server.handle_request({
+        "id": "r1",
+        "method": "slash.exec",
+        "params": {"command": cmd, "session_id": sid},
+    })
+
+    assert "error" in resp
+    assert resp["error"]["code"] == 4018
+    assert "pending-input command" in resp["error"]["message"]
+
+
+def test_command_dispatch_queue_sends_message(server):
+    """command.dispatch /queue returns {type: 'send', message: ...} for the TUI."""
+    sid = "test-session"
+    server._sessions[sid] = {"session_key": sid}
+
+    resp = server.handle_request({
+        "id": "r1",
+        "method": "command.dispatch",
+        "params": {"name": "queue", "arg": "tell me about quantum computing", "session_id": sid},
+    })
+
+    assert "error" not in resp
+    result = resp["result"]
+    assert result["type"] == "send"
+    assert result["message"] == "tell me about quantum computing"
+
+
+def test_command_dispatch_queue_requires_arg(server):
+    """command.dispatch /queue without an argument returns an error."""
+    sid = "test-session"
+    server._sessions[sid] = {"session_key": sid}
+
+    resp = server.handle_request({
+        "id": "r2",
+        "method": "command.dispatch",
+        "params": {"name": "queue", "arg": "", "session_id": sid},
+    })
+
+    assert "error" in resp
+    assert resp["error"]["code"] == 4004
+
+
+def test_command_dispatch_steer_fallback_sends_message(server):
+    """command.dispatch /steer with no active agent falls back to send."""
+    sid = "test-session"
+    server._sessions[sid] = {"session_key": sid, "agent": None}
+
+    resp = server.handle_request({
+        "id": "r3",
+        "method": "command.dispatch",
+        "params": {"name": "steer", "arg": "focus on testing", "session_id": sid},
+    })
+
+    assert "error" not in resp
+    result = resp["result"]
+    assert result["type"] == "send"
+    assert result["message"] == "focus on testing"
+
+
+def test_command_dispatch_retry_finds_last_user_message(server):
+    """command.dispatch /retry walks session['history'] to find the last user message."""
+    sid = "test-session"
+    history = [
+        {"role": "user", "content": "first question"},
+        {"role": "assistant", "content": "first answer"},
+        {"role": "user", "content": "second question"},
+        {"role": "assistant", "content": "second answer"},
+    ]
+    server._sessions[sid] = {
+        "session_key": sid,
+        "agent": None,
+        "history": history,
+        "history_lock": threading.Lock(),
+        "history_version": 0,
+    }
+
+    resp = server.handle_request({
+        "id": "r4",
+        "method": "command.dispatch",
+        "params": {"name": "retry", "session_id": sid},
+    })
+
+    assert "error" not in resp
+    result = resp["result"]
+    assert result["type"] == "send"
+    assert result["message"] == "second question"
+    # Verify history was truncated: everything from last user message onward removed
+    assert len(server._sessions[sid]["history"]) == 2
+    assert server._sessions[sid]["history"][-1]["role"] == "assistant"
+    assert server._sessions[sid]["history_version"] == 1
+
+
+def test_command_dispatch_retry_empty_history(server):
+    """command.dispatch /retry with empty history returns error."""
+    sid = "test-session"
+    server._sessions[sid] = {
+        "session_key": sid,
+        "agent": None,
+        "history": [],
+        "history_lock": threading.Lock(),
+        "history_version": 0,
+    }
+
+    resp = server.handle_request({
+        "id": "r5",
+        "method": "command.dispatch",
+        "params": {"name": "retry", "session_id": sid},
+    })
+
+    assert "error" in resp
+    assert resp["error"]["code"] == 4018
+
+
+def test_command_dispatch_retry_handles_multipart_content(server):
+    """command.dispatch /retry extracts text from multipart content lists."""
+    sid = "test-session"
+    history = [
+        {"role": "user", "content": [
+            {"type": "text", "text": "analyze this"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}}
+        ]},
+        {"role": "assistant", "content": "I see the image."},
+    ]
+    server._sessions[sid] = {
+        "session_key": sid,
+        "agent": None,
+        "history": history,
+        "history_lock": threading.Lock(),
+        "history_version": 0,
+    }
+
+    resp = server.handle_request({
+        "id": "r6",
+        "method": "command.dispatch",
+        "params": {"name": "retry", "session_id": sid},
+    })
+
+    assert "error" not in resp
+    result = resp["result"]
+    assert result["type"] == "send"
+    assert result["message"] == "analyze this"
+
+
+def test_command_dispatch_returns_skill_payload(server):
+    """command.dispatch returns structured skill payload for the TUI to send()."""
+    sid = "test-session"
+    server._sessions[sid] = {"session_key": sid}
+
+    fake_skills = {"/hermes-agent-dev": {"name": "hermes-agent-dev", "description": "Dev workflow"}}
+    fake_msg = "Loaded skill content here"
+
+    with patch("agent.skill_commands.scan_skill_commands", return_value=fake_skills), \
+         patch("agent.skill_commands.build_skill_invocation_message", return_value=fake_msg):
+        resp = server.handle_request({
+            "id": "r2",
+            "method": "command.dispatch",
+            "params": {"name": "hermes-agent-dev", "session_id": sid},
+        })
+
+    assert "error" not in resp
+    result = resp["result"]
+    assert result["type"] == "skill"
+    assert result["message"] == fake_msg
+    assert result["name"] == "hermes-agent-dev"

@@ -17,6 +17,26 @@ describe('createSlashHandler', () => {
     expect(getOverlayState().picker).toBe(true)
   })
 
+  it('opens the skills hub locally for bare /skills', () => {
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/skills')).toBe(true)
+    expect(getOverlayState().skillsHub).toBe(true)
+    expect(ctx.gateway.rpc).not.toHaveBeenCalled()
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+  })
+
+  it('falls through /skills with args to slash.exec without opening overlay', () => {
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/skills install foo')).toBe(true)
+    expect(getOverlayState().skillsHub).toBe(false)
+    expect(ctx.gateway.rpc).toHaveBeenCalledWith('slash.exec', {
+      command: 'skills install foo',
+      session_id: null
+    })
+  })
+
   it('cycles details mode and persists it', async () => {
     const ctx = buildCtx()
 

@@ -1,7 +1,29 @@
-import type { ToolsConfigureResponse } from '../../../gatewayTypes.js'
+import type { SlashExecResponse, ToolsConfigureResponse } from '../../../gatewayTypes.js'
+import { patchOverlayState } from '../../overlayStore.js'
 import type { SlashCommand } from '../types.js'
 
 export const opsCommands: SlashCommand[] = [
+  {
+    help: 'browse, inspect, and install skills',
+    name: 'skills',
+    run: (arg, ctx) => {
+      if (!arg.trim()) {
+        return patchOverlayState({ skillsHub: true })
+      }
+
+      ctx.gateway
+        .rpc<SlashExecResponse>('slash.exec', { command: `skills ${arg}`, session_id: ctx.sid })
+        .then(
+          ctx.guarded<SlashExecResponse>(r => {
+            if (r.output) {
+              ctx.transcript.page(r.output, 'Skills')
+            }
+          })
+        )
+        .catch(ctx.guardedErr)
+    }
+  },
+
   {
     help: 'enable or disable tools (client-side history reset on change)',
     name: 'tools',

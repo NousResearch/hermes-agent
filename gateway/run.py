@@ -2361,8 +2361,10 @@ class GatewayRunner:
             return False
         return bool(self._source_identity_candidates(source) & admin_ids)
 
-    def _admin_only_message(self, source: SessionSource, action: str) -> Optional[str]:
+    def _admin_only_message(self, source: SessionSource | None, action: str) -> Optional[str]:
         """Return an admin-only rejection message when the user is not an admin."""
+        if source is None:
+            return None
         admin_ids = self._configured_admin_user_ids(source.platform)
         if not admin_ids or self._is_admin_user(source):
             return None

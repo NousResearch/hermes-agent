@@ -3,6 +3,7 @@
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
+import logging
 
 import pytest
 
@@ -112,7 +113,7 @@ async def test_status_command_includes_session_title_when_present():
 
 
 @pytest.mark.asyncio
-async def test_handle_message_persists_agent_token_counts(monkeypatch):
+async def test_handle_message_persists_agent_token_counts(monkeypatch, caplog):
     import gateway.run as gateway_run
 
     session_entry = SessionEntry(
@@ -144,13 +145,16 @@ async def test_handle_message_persists_agent_token_counts(monkeypatch):
         lambda *_args, **_kwargs: 100000,
     )
 
-    result = await runner._handle_message(_make_event("hello"))
+    with caplog.at_level(logging.WARNING):
+        result = await runner._handle_message(_make_event("hello"))
 
     assert result == "ok"
     runner.session_store.update_session.assert_called_once_with(
         session_entry.session_key,
         last_prompt_tokens=80,
+        mark_visible_reply=True,
     )
+    assert "Direct gateway shortcut handler" not in caplog.text
 
 
 

@@ -139,6 +139,128 @@ class TestStreamingAccumulator:
 
     @patch("run_agent.AIAgent._create_request_openai_client")
     @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_tool_name_not_duplicated_when_resent_per_chunk(self, mock_close, mock_create):
+        """MiniMax M2.7 via NVIDIA NIM sends the full name in every chunk — must not concatenate.
+
+        Bug #8259: name += delta produced "read_fileread_file", "terminalterminal", etc.
+        """
+        from run_agent import AIAgent
+
+        chunks = [
+            _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(index=0, tc_id="call_nim", name="read_file")
+            ]),
+            _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(index=0, tc_id="call_nim", name="read_file", arguments='{"path":')
+            ]),
+            _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(index=0, tc_id="call_nim", name="read_file", arguments=' "x.py"}')
+            ]),
+            _make_stream_chunk(finish_reason="tool_calls"),
+        ]
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = iter(chunks)
+        mock_create.return_value = mock_client
+
+        agent = AIAgent(
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        response = agent._interruptible_streaming_api_call({})
+
+        tc = response.choices[0].message.tool_calls
+        assert tc is not None
+        assert len(tc) == 1
+        assert tc[0].function.name == "read_file"
+        assert tc[0].function.arguments == '{"path": "x.py"}'
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_tool_name_accumulated_from_split_chunks(self, mock_close, mock_create):
+        """Name delivered incrementally across chunks is still assembled correctly."""
+        from run_agent import AIAgent
+
+        chunks = [
+            _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(index=0, tc_id="call_split", name="read_")
+            ]),
+            _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(index=0, name="file", arguments='{"path":')
+            ]),
+            _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(index=0, arguments=' "x.py"}')
+            ]),
+            _make_stream_chunk(finish_reason="tool_calls"),
+        ]
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = iter(chunks)
+        mock_create.return_value = mock_client
+
+        agent = AIAgent(
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        response = agent._interruptible_streaming_api_call({})
+
+        tc = response.choices[0].message.tool_calls
+        assert tc is not None
+        assert tc[0].function.name == "read_file"
+        assert tc[0].function.arguments == '{"path": "x.py"}'
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_tool_name_split_then_repeated_suffix(self, mock_close, mock_create):
+        """Split name delivery where the last piece is later resent doesn't corrupt the name."""
+        from run_agent import AIAgent
+
+        chunks = [
+            _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(index=0, tc_id="call_x", name="read_")
+            ]),
+            _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(index=0, name="file")
+            ]),
+            # Provider resends "file" again — should be ignored
+            _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(index=0, name="file", arguments='{"path": "x.py"}')
+            ]),
+            _make_stream_chunk(finish_reason="tool_calls"),
+        ]
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = iter(chunks)
+        mock_create.return_value = mock_client
+
+        agent = AIAgent(
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        response = agent._interruptible_streaming_api_call({})
+
+        tc = response.choices[0].message.tool_calls
+        assert tc is not None
+        assert tc[0].function.name == "read_file"
+        assert tc[0].function.arguments == '{"path": "x.py"}'
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
     def test_tool_call_extra_content_preserved(self, mock_close, mock_create):
         """Streamed tool calls preserve provider-specific extra_content metadata."""
         from run_agent import AIAgent

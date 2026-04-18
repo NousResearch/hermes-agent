@@ -209,6 +209,24 @@ async def test_ignores_own_messages_case_insensitively(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_ignores_own_reactions_case_insensitively():
+    """Own reactions should not be deduplicated or logged as inbound work."""
+    adapter = _make_adapter()
+    adapter._user_id = "@Hermes:example.org"
+    adapter._user_id_normalized = adapter._user_id.lower()
+    reaction = SimpleNamespace(
+        sender="@hermes:example.org",
+        event_id="$reaction1",
+        room_id="!room1:example.org",
+        content={"m.relates_to": {"event_id": "$evt1", "key": "👍"}},
+    )
+
+    await adapter._on_reaction(reaction)
+
+    assert "$reaction1" not in adapter._processed_events_set
+
+
+@pytest.mark.asyncio
 async def test_require_mention_default_processes_mentioned(monkeypatch):
     """Default: messages with mention are processed, mention stripped."""
     monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)

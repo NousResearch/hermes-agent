@@ -2159,52 +2159,45 @@ def refresh_nous_oauth_from_state(
     )
 
 
-def persist_nous_credentials(
-    creds: Dict[str, Any],
-    *,
-    label: str,
-    source: str,
-):
-    """Persist minted Nous OAuth credentials to both auth-store sections.
+NOUS_DEVICE_CODE_SOURCE = "device_code"
+
+
+def persist_nous_credentials(creds: Dict[str, Any]):
+    """Persist minted Nous OAuth credentials as the singleton provider state
+    and ensure the credential pool is in sync.
 
     Nous credentials are read at runtime from two independent locations:
 
-    - ``credential_pool.nous``: used by the runtime ``pool.select()`` path that
-      services outbound inference requests.
-    - ``providers.nous``: used by ``resolve_nous_runtime_credentials()`` — the
-      singleton-state reader invoked during 401 recovery and dashboard status
-      checks.
+    - ``providers.nous``: singleton state read by
+      ``resolve_nous_runtime_credentials()`` during 401 recovery and by
+      ``_seed_from_singletons()`` during pool load.
+    - ``credential_pool.nous``: used by the runtime ``pool.select()`` path.
 
-    Historically ``hermes auth add nous`` wrote only to the pool while the web
-    dashboard device-code flow wrote to both, so CLI-provisioned profiles
-    failed silently when the recovery path was later consulted.  This helper
-    is the single source of truth for CLI/web device-code persistence: both
-    stores are always written together.
+    Historically ``hermes auth add nous`` wrote a ``manual:device_code`` pool
+    entry only, skipping ``providers.nous``.  When the 24h agent_key TTL
+    expired, the recovery path read the empty singleton state and raised
+    ``AuthError`` silently (``logger.debug`` at INFO level).
 
-    Returns the added :class:`PooledCredential` entry.
+    This helper writes ``providers.nous`` then calls ``load_pool("nous")`` so
+    ``_seed_from_singletons`` materialises the canonical ``device_code`` pool
+    entry from the singleton.  Re-running login upserts the same entry in
+    place; the pool never accumulates duplicate device_code rows.
+
+    Returns the upserted :class:`PooledCredential` entry (or ``None`` if
+    seeding somehow produced no match — shouldn't happen).
     """
-    from agent.credential_pool import (
-        PooledCredential,
-        load_pool,
-        AUTH_TYPE_OAUTH,
-    )
-
-    pool = load_pool("nous")
-    entry = PooledCredential.from_dict("nous", {
-        **creds,
-        "label": label,
-        "auth_type": AUTH_TYPE_OAUTH,
-        "source": source,
-        "base_url": creds.get("inference_base_url"),
-    })
-    pool.add_entry(entry)
+    from agent.credential_pool import load_pool
 
     with _auth_store_lock():
         auth_store = _load_auth_store()
         _save_provider_state(auth_store, "nous", creds)
         _save_auth_store(auth_store)
 
-    return entry
+    pool = load_pool("nous")
+    return next(
+        (e for e in pool.entries() if e.source == NOUS_DEVICE_CODE_SOURCE),
+        None,
+    )
 
 
 def resolve_nous_runtime_credentials(

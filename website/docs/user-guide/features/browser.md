@@ -163,6 +163,10 @@ When Camofox runs in headed mode (with a visible browser window), it exposes a V
 
 Instead of a cloud provider, you can attach Hermes browser tools to your own running Chrome instance via the Chrome DevTools Protocol (CDP). This is useful when you want to see what the agent is doing in real-time, interact with pages that require your own cookies/sessions, or avoid cloud browser costs.
 
+:::note
+`/browser connect` is an **interactive-CLI slash command** — it is not dispatched by the gateway. If you try to run it inside a WebUI, Telegram, Discord, or other gateway chat, the message will be sent to the agent as plain text and the command will not execute. Start Hermes from the terminal (`hermes` or `hermes chat`) and issue `/browser connect` there.
+:::
+
 In the CLI, use:
 
 ```
@@ -175,14 +179,27 @@ In the CLI, use:
 If Chrome isn't already running with remote debugging, Hermes will attempt to auto-launch it with `--remote-debugging-port=9222`.
 
 :::tip
-To start Chrome manually with CDP enabled:
+To start Chrome manually with CDP enabled, use a dedicated user-data-dir so the debug port actually comes up even if Chrome is already running with your normal profile:
+
 ```bash
 # Linux
-google-chrome --remote-debugging-port=9222
+google-chrome \
+  --remote-debugging-port=9222 \
+  --user-data-dir=$HOME/.hermes/chrome-debug \
+  --no-first-run \
+  --no-default-browser-check &
 
 # macOS
-"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --remote-debugging-port=9222
+"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+  --remote-debugging-port=9222 \
+  --user-data-dir="$HOME/.hermes/chrome-debug" \
+  --no-first-run \
+  --no-default-browser-check &
 ```
+
+Then launch the Hermes CLI and run `/browser connect`.
+
+**Why `--user-data-dir`?** Without it, launching Chrome while a regular Chrome instance is already running typically opens a new window on the existing process — and that existing process was not started with `--remote-debugging-port`, so port 9222 never opens. A dedicated user-data-dir forces a fresh Chrome process where the debug port actually listens. `--no-first-run --no-default-browser-check` skips the first-launch wizard for the fresh profile.
 :::
 
 When connected via CDP, all browser tools (`browser_navigate`, `browser_click`, etc.) operate on your live Chrome instance instead of spinning up a cloud session.

@@ -862,9 +862,7 @@ class TestDialecticCadenceDefaults:
         return provider
 
     def test_default_is_1(self):
-        """Default dialectic_cadence should be 1 (every turn) — restored from
-        pre-#10619 behavior to avoid a silent regression on upgrade for users
-        who never set dialecticCadence explicitly."""
+        """Default dialectic_cadence is 1 — fires every turn unless overridden."""
         provider = self._make_provider()
         assert provider._dialectic_cadence == 1
 
@@ -1112,10 +1110,7 @@ class TestDialecticDepth:
 
 
 class TestTrivialPromptHeuristic:
-    """Trivial prompts ('ok', 'y', slash commands) must short-circuit injection.
-
-    Restored after accidental removal during the two-layer prefetch refactor.
-    """
+    """Trivial prompts ('ok', 'y', slash commands) must short-circuit injection."""
 
     @staticmethod
     def _make_provider():
@@ -1173,11 +1168,9 @@ class TestTrivialPromptHeuristic:
 
 
 class TestDialecticCadenceAdvancesOnSuccess:
-    """Cadence tracker must only advance when the dialectic call actually returned.
-
-    A silent failure (empty result, API blip) used to burn the full cadence window
-    before retrying — making it look like dialectic 'never fires again'.
-    """
+    """Cadence tracker advances only when the dialectic call returns a
+    non-empty result. Empty results (transient API error, sparse representation)
+    must retry on the next eligible turn instead of waiting the full cadence."""
 
     @staticmethod
     def _make_provider():
@@ -1329,13 +1322,9 @@ class TestSessionStartDialecticPrewarm:
 
 
 class TestDialecticLifecycleSmoke:
-    """End-to-end smoke: walks a realistic multi-turn session through every
-    behavior we care about — prewarm → turn 1 consume → trivial skip → cadence
-    fire → silent-failure retry → heuristic bump → session-end flush.
-
-    This is the 'velvet circuit' test: one provider, one flow, one set of
-    assertions. If the suite above lies about intent, this one catches it.
-    """
+    """End-to-end smoke walking a multi-turn session through prewarm,
+    turn 1 consume, trivial skip, cadence fire, empty-result retry,
+    heuristic bump, and session-end flush."""
 
     @staticmethod
     def _make_provider(cfg_extra=None):
@@ -1473,11 +1462,9 @@ class TestDialecticLifecycleSmoke:
 
 
 class TestReasoningHeuristic:
-    """Restored char-count heuristic for auto-injected dialectic reasoning level.
-
-    Pre-9a0ab34c behavior: scale base up by query length, capped at
-    reasoning_level_cap. 'max' is reserved for explicit tool-path selection.
-    """
+    """Char-count heuristic that scales the auto-injected reasoning level by
+    query length, clamped at reasoning_level_cap. 'max' is reserved for
+    explicit tool-path selection."""
 
     @staticmethod
     def _make_provider(cfg_extra=None):

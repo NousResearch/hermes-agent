@@ -463,7 +463,7 @@ def cmd_setup(args) -> None:
     current_dialectic = str(hermes_host.get("dialecticCadence") or cfg.get("dialecticCadence") or "1")
     print("\n  Dialectic cadence:")
     print("    How often Honcho rebuilds its user model (LLM call on Honcho backend).")
-    print("    1 = every turn (default), 3+ = sparse (cost-saving).")
+    print("    1 = every turn (default), 3+ = sparse.")
     new_dialectic = _prompt("Dialectic cadence", default=current_dialectic)
     try:
         val = int(new_dialectic)

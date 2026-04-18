@@ -330,11 +330,26 @@ class ShellFileOperations(FileOperations):
     def __init__(self, terminal_env, cwd: str = None):
         """
         Initialize file operations with a terminal environment.
-        
+
         Args:
             terminal_env: Any object with execute(command, cwd) method.
                          Returns {"output": str, "returncode": int}
-            cwd: Working directory (defaults to env's cwd or current directory)
+            cwd: Optional explicit fallback cwd when the terminal env has
+                 no cwd attribute (rare — most backends track cwd live).
+
+        Note:
+            Every _exec() call prefers the LIVE ``terminal_env.cwd`` over
+            ``self.cwd`` so ``cd`` commands run via the terminal tool are
+            picked up immediately.  ``self.cwd`` is only used as a fallback
+            when the env has no cwd at all — it is NOT the authoritative
+            cwd, despite being settable at init time.
+
+            Historical bug (fixed): prior versions of this class used the
+            init-time cwd for every _exec() call, which caused relative
+            paths passed to patch/read/write to target the wrong directory
+            after the user ran ``cd`` in the terminal.  Patches would
+            claim success and return a plausible diff but land in the
+            original directory, producing apparent silent failures.
         """
         self.env = terminal_env
         # Determine cwd from various possible sources.
@@ -343,25 +358,37 @@ class ShellFileOperations(FileOperations):
         # If nothing provides a cwd, use "/" as a safe universal default.
         self.cwd = cwd or getattr(terminal_env, 'cwd', None) or \
                    getattr(getattr(terminal_env, 'config', None), 'cwd', None) or "/"
-        
+
         # Cache for command availability checks
         self._command_cache: Dict[str, bool] = {}
     
     def _exec(self, command: str, cwd: str = None, timeout: int = None,
               stdin_data: str = None) -> ExecuteResult:
         """Execute command via terminal backend.
-        
+
         Args:
             stdin_data: If provided, piped to the process's stdin instead of
                         embedding in the command string. Bypasses ARG_MAX.
+
+        Cwd resolution order (critical — see class docstring):
+          1. Explicit ``cwd`` arg (if provided)
+          2. Live ``self.env.cwd`` (tracks ``cd`` commands run via terminal)
+          3. Init-time ``self.cwd`` (fallback when env has no cwd attribute)
+
+        This ordering ensures relative paths in file operations follow the
+        terminal's current directory — not the directory this file_ops was
+        originally created in.  See test_file_ops_cwd_tracking.py.
         """
         kwargs = {}
         if timeout:
             kwargs['timeout'] = timeout
         if stdin_data is not None:
             kwargs['stdin_data'] = stdin_data
-        
-        result = self.env.execute(command, cwd=cwd or self.cwd, **kwargs)
+
+        # Resolve cwd from the live env so `cd` commands are picked up.
+        # Fall through to init-time self.cwd only if the env doesn't track cwd.
+        effective_cwd = cwd or getattr(self.env, 'cwd', None) or self.cwd
+        result = self.env.execute(command, cwd=effective_cwd, **kwargs)
         return ExecuteResult(
             stdout=result.get("output", ""),
             exit_code=result.get("returncode", 0)

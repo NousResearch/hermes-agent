@@ -4558,6 +4558,12 @@ class AIAgent:
         # the agent hangs until manually killed.  Probes after 30s idle, retry
         # every 10s, give up after 3 → dead peer detected within ~60s.
         #
+        # Proxy interaction (#11609): handing httpx an explicit ``transport=``
+        # makes it skip env-proxy mount construction, so HTTPS_PROXY / system
+        # proxy users silently direct-connect. Rather than reimplement httpx's
+        # trust_env proxy resolution, skip keepalive injection whenever a proxy
+        # is configured and let the SDK build its default proxy-aware client.
+        #
         # Safety against #10933: the ``client_kwargs = dict(client_kwargs)``
         # above means this injection only lands in the local per-call copy,
         # never back into ``self._client_kwargs``.  Each ``_create_openai_client``
@@ -4568,7 +4574,7 @@ class AIAgent:
         # constructs a fresh one — no stale closed transport can be reused.
         # Tests in ``tests/run_agent/test_create_openai_client_reuse.py`` and
         # ``tests/run_agent/test_sequential_chats_live.py`` pin this invariant.
-        if "http_client" not in client_kwargs:
+        if "http_client" not in client_kwargs and not self._has_proxy_configured():
             try:
                 import httpx as _httpx
                 import socket as _socket
@@ -4596,6 +4602,58 @@ class AIAgent:
         return client
 
     @staticmethod
+    def _has_proxy_configured() -> bool:
+        """Return True when any outbound HTTP proxy is configured."""
+        try:
+            import urllib.request as _urlreq
+
+            proxies = _urlreq.getproxies()
+        except Exception:
+            return False
+        return any(
+            str(proxies.get(key) or "").strip()
+            for key in ("http", "https", "all")
+        )
+
+    @staticmethod
+    def _iter_client_sockets(http_client: Any):
+        """Yield every live TCP socket owned by an httpx client."""
+        if http_client is None:
+            return
+        transports = []
+        default_transport = getattr(http_client, "_transport", None)
+        if default_transport is not None:
+            transports.append(default_transport)
+        mounts = getattr(http_client, "_mounts", None) or {}
+        for mount_transport in mounts.values():
+            if mount_transport is not None:
+                transports.append(mount_transport)
+        for transport in transports:
+            pool = getattr(transport, "_pool", None)
+            if pool is None:
+                continue
+            connections = (
+                getattr(pool, "_connections", None)
+                or getattr(pool, "_pool", None)
+                or []
+            )
+            for conn in list(connections):
+                stream = (
+                    getattr(conn, "_network_stream", None)
+                    or getattr(conn, "_stream", None)
+                )
+                if stream is None:
+                    continue
+                sock = getattr(stream, "_sock", None)
+                if sock is None:
+                    nested = getattr(stream, "stream", None)
+                    if nested is not None:
+                        sock = getattr(nested, "_sock", None)
+                if sock is None:
+                    continue
+                yield sock
+
+    @staticmethod
     def _force_close_tcp_sockets(client: Any) -> int:
         """Force-close underlying TCP sockets to prevent CLOSE-WAIT accumulation.
 
@@ -4612,35 +4670,7 @@ class AIAgent:
         closed = 0
         try:
             http_client = getattr(client, "_client", None)
-            if http_client is None:
-                return 0
-            transport = getattr(http_client, "_transport", None)
-            if transport is None:
-                return 0
-            pool = getattr(transport, "_pool", None)
-            if pool is None:
-                return 0
-            # httpx uses httpcore connection pools; connections live in
-            # _connections (list) or _pool (list) depending on version.
-            connections = (
-                getattr(pool, "_connections", None)
-                or getattr(pool, "_pool", None)
-                or []
-            )
-            for conn in list(connections):
-                stream = (
-                    getattr(conn, "_network_stream", None)
-                    or getattr(conn, "_stream", None)
-                )
-                if stream is None:
-                    continue
-                sock = getattr(stream, "_sock", None)
-                if sock is None:
-                    sock = getattr(stream, "stream", None)
-                    if sock is not None:
-                        sock = getattr(sock, "_sock", None)
-                if sock is None:
-                    continue
+            for sock in AIAgent._iter_client_sockets(http_client):
                 try:
                     sock.shutdown(_socket.SHUT_RDWR)
                 except OSError:
@@ -4723,39 +4753,15 @@ class AIAgent:
         client = getattr(self, "client", None)
         if client is None:
             return False
+        import socket as _socket
+
         try:
             http_client = getattr(client, "_client", None)
             if http_client is None:
                 return False
-            transport = getattr(http_client, "_transport", None)
-            if transport is None:
-                return False
-            pool = getattr(transport, "_pool", None)
-            if pool is None:
-                return False
-            connections = (
-                getattr(pool, "_connections", None)
-                or getattr(pool, "_pool", None)
-                or []
-            )
             dead_count = 0
-            for conn in list(connections):
-                # Check for connections that are idle but have closed sockets
-                stream = (
-                    getattr(conn, "_network_stream", None)
-                    or getattr(conn, "_stream", None)
-                )
-                if stream is None:
-                    continue
-                sock = getattr(stream, "_sock", None)
-                if sock is None:
-                    sock = getattr(stream, "stream", None)
-                    if sock is not None:
-                        sock = getattr(sock, "_sock", None)
-                if sock is None:
-                    continue
+            for sock in AIAgent._iter_client_sockets(http_client):
                 # Probe socket health with a non-blocking recv peek
-                import socket as _socket
                 try:
                     sock.setblocking(False)
                     data = sock.recv(1, _socket.MSG_PEEK | _socket.MSG_DONTWAIT)

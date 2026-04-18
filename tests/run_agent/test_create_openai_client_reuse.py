@@ -186,3 +186,175 @@ def test_replace_primary_openai_client_survives_repeated_rebuilds():
         "Some _create_openai_client calls returned the same object across "
         "a teardown — rebuild is not producing fresh clients"
     )
+
+
+def _stub_proxies(monkeypatch, proxies):
+    """Stub urllib's proxy discovery so tests stay hermetic."""
+    import urllib.request
+
+    monkeypatch.setattr(urllib.request, "getproxies", lambda: dict(proxies))
+    for name in (
+        "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+        "http_proxy", "https_proxy", "all_proxy", "no_proxy",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
+def _has_keepalive(transport):
+    if transport is None:
+        return False
+    pool = getattr(transport, "_pool", None)
+    return bool(getattr(pool, "_socket_options", None))
+
+
+def test_create_openai_client_skips_injection_when_https_proxy_set(monkeypatch):
+    agent = _make_agent()
+    constructed: list = []
+    fake_openai = _make_fake_openai_factory(constructed)
+    _stub_proxies(monkeypatch, {"https": "http://127.0.0.1:7897"})
+
+    with patch("run_agent.OpenAI", fake_openai):
+        agent._create_openai_client(
+            {
+                "api_key": "test-key-value",
+                "base_url": "https://api.example.com/v1",
+            },
+            reason="proxy_env_https",
+            shared=False,
+        )
+
+    assert len(constructed) == 1
+    assert "http_client" not in constructed[0]._kwargs
+    assert constructed[0]._http_client is None, (
+        "Proxy-configured clients must delegate to the SDK default transport "
+        "so httpx can apply trust_env proxy mounts."
+    )
+
+
+def test_create_openai_client_skips_injection_for_each_proxy_key(monkeypatch):
+    agent = _make_agent()
+
+    for key in ("http", "https", "all"):
+        constructed: list = []
+        fake_openai = _make_fake_openai_factory(constructed)
+        _stub_proxies(monkeypatch, {key: "http://127.0.0.1:7897"})
+
+        with patch("run_agent.OpenAI", fake_openai):
+            agent._create_openai_client(
+                {
+                    "api_key": "test-key-value",
+                    "base_url": "https://api.example.com/v1",
+                },
+                reason=f"proxy_{key}",
+                shared=False,
+            )
+
+        assert constructed[0]._http_client is None
+
+
+def test_create_openai_client_keepalive_direct_path_when_no_proxy(monkeypatch):
+    agent = _make_agent()
+    constructed: list = []
+    fake_openai = _make_fake_openai_factory(constructed)
+    _stub_proxies(monkeypatch, {})
+
+    with patch("run_agent.OpenAI", fake_openai):
+        agent._create_openai_client(
+            {
+                "api_key": "test-key-value",
+                "base_url": "https://api.example.com/v1",
+            },
+            reason="no_proxy_keepalive",
+            shared=False,
+        )
+
+    http_client = constructed[0]._http_client
+    assert http_client is not None
+    assert _has_keepalive(http_client._transport), (
+        "Direct-connect path lost keepalive socket options."
+    )
+
+
+def test_has_proxy_configured_matches_urllib_getproxies(monkeypatch):
+    _stub_proxies(monkeypatch, {})
+    assert AIAgent._has_proxy_configured() is False
+
+    _stub_proxies(monkeypatch, {"https": "http://10.0.0.1:8080"})
+    assert AIAgent._has_proxy_configured() is True
+
+    _stub_proxies(monkeypatch, {})
+    assert AIAgent._has_proxy_configured() is False
+
+    _stub_proxies(monkeypatch, {"no": "localhost"})
+    assert AIAgent._has_proxy_configured() is False
+
+
+def test_create_openai_client_skips_injection_for_system_proxy(monkeypatch):
+    agent = _make_agent()
+    constructed: list = []
+    fake_openai = _make_fake_openai_factory(constructed)
+    _stub_proxies(monkeypatch, {"https": "http://10.0.0.1:8080"})
+
+    with patch("run_agent.OpenAI", fake_openai):
+        agent._create_openai_client(
+            {
+                "api_key": "test-key-value",
+                "base_url": "https://api.example.com/v1",
+            },
+            reason="system_proxy",
+            shared=False,
+        )
+
+    assert constructed[0]._http_client is None, (
+        "System-level proxy config should also suppress keepalive transport "
+        "injection."
+    )
+
+
+def _fake_httpx_client_with_mock_sockets(default_sock, mount_sock):
+    from types import SimpleNamespace
+
+    def _conn(sock):
+        stream = SimpleNamespace(_sock=sock)
+        return SimpleNamespace(_network_stream=stream)
+
+    def _transport(sock):
+        pool = SimpleNamespace(_connections=[_conn(sock)])
+        return SimpleNamespace(_pool=pool)
+
+    class _URLPattern:
+        def __init__(self, pattern):
+            self._pattern = pattern
+
+    mounts = {_URLPattern("https://"): _transport(mount_sock)}
+    return SimpleNamespace(
+        _transport=_transport(default_sock),
+        _mounts=mounts,
+    )
+
+
+def test_iter_client_sockets_covers_mounts():
+    default_sock = MagicMock(name="default_sock")
+    mount_sock = MagicMock(name="mount_sock")
+    http_client = _fake_httpx_client_with_mock_sockets(default_sock, mount_sock)
+
+    seen = list(AIAgent._iter_client_sockets(http_client))
+    assert default_sock in seen
+    assert mount_sock in seen, (
+        "Proxy-mount sockets must be included in client socket iteration."
+    )
+
+
+def test_force_close_tcp_sockets_closes_mount_sockets():
+    default_sock = MagicMock(name="default_sock")
+    mount_sock = MagicMock(name="mount_sock")
+    http_client = _fake_httpx_client_with_mock_sockets(default_sock, mount_sock)
+    fake_openai = MagicMock(_client=http_client)
+
+    closed = AIAgent._force_close_tcp_sockets(fake_openai)
+
+    assert closed == 2
+    default_sock.shutdown.assert_called_once()
+    default_sock.close.assert_called_once()
+    mount_sock.shutdown.assert_called_once()
+    mount_sock.close.assert_called_once()

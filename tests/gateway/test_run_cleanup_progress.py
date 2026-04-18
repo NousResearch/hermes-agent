@@ -121,6 +121,26 @@ class ProgressAgent:
         return {"final_response": "done", "messages": [], "api_calls": 1}
 
 
+class DelegateWaitingAgent:
+    """Stays alive long enough for the heartbeat loop to inspect it."""
+
+    def __init__(self, **kwargs):
+        self.tools = []
+
+    def get_activity_summary(self):
+        return {
+            "api_call_count": 4,
+            "max_iterations": 200,
+            "current_tool": "delegate_task",
+            "last_activity_desc": "delegate_task",
+            "seconds_since_activity": 4200,
+        }
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        time.sleep(0.5)
+        return {"final_response": "done", "messages": [], "api_calls": 1}
+
+
 class FailingAgent:
     def __init__(self, **kwargs):
         self.tool_progress_callback = kwargs.get("tool_progress_callback")
@@ -198,6 +218,54 @@ def _install_fakes(monkeypatch, agent_cls, *, cleanup_on: bool):
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_softens_stale_delegate_status(monkeypatch, tmp_path):
+    """The live heartbeat uses the shared delegate-wait wording."""
+    # Leave enough time for the separately scheduled ownership tracker to
+    # replace the pending sentinel with the live agent before the first tick.
+    monkeypatch.setenv("HERMES_AGENT_NOTIFY_INTERVAL", "0.15")
+    adapter = CleanupCaptureAdapter()
+    runner = _make_runner(adapter)
+    gateway_run = _install_fakes(monkeypatch, DelegateWaitingAgent, cleanup_on=False)
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(
+        gateway_run,
+        "_load_gateway_config",
+        lambda: {
+            "display": {
+                "platforms": {
+                    "telegram": {
+                        "busy_ack_detail": True,
+                        "long_running_notifications": True,
+                    }
+                }
+            }
+        },
+    )
+
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="-1001")
+    session_key = "agent:main:telegram:group:-1001"
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-1",
+        session_key=session_key,
+    )
+
+    heartbeat_texts = [entry["content"] for entry in adapter.sent]
+    heartbeat_texts.extend(entry["content"] for entry in adapter.edits)
+
+    assert result["final_response"] == "done"
+    assert heartbeat_texts
+    assert any("waiting on delegated task" in text for text in heartbeat_texts)
+    assert any("parent idle 70 min" in text for text in heartbeat_texts)
+    assert all("delegate_task" not in text for text in heartbeat_texts)
+    assert all("iteration 4/200" not in text for text in heartbeat_texts)
 
 
 @pytest.mark.asyncio

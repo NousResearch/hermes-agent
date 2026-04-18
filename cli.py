@@ -7588,8 +7588,12 @@ class HermesCLI:
             self._invalidate()
             return
 
+        # Set confirmed state for visual feedback
+        state["confirmed_choice"] = chosen
+        state["confirmed_at"] = time.monotonic()
+
+        # Put result in queue so the approval callback unblocks
         state["response_queue"].put(chosen)
-        self._approval_state = None
         self._invalidate()
 
     def _get_approval_display_fragments(self):
@@ -7605,6 +7609,14 @@ class HermesCLI:
         state = self._approval_state
         if not state:
             return []
+
+        # Auto-dismiss after 300ms confirmation feedback
+        confirmed = state.get("confirmed_choice")
+        if confirmed:
+            elapsed = time.monotonic() - state.get("confirmed_at", 0)
+            if elapsed >= 0.3:
+                self._approval_state = None
+                return []
 
         def _panel_box_width(title_text: str, content_lines: list[str], min_width: int = 46, max_width: int = 76) -> int:
             term_cols = shutil.get_terminal_size((100, 20)).columns
@@ -7665,9 +7677,16 @@ class HermesCLI:
 
         # (choice_index, wrapped_line) so we can re-apply selected styling below
         choice_wrapped: list[tuple[int, str]] = []
+        confirmed_choice = state.get("confirmed_choice")
         for i, choice in enumerate(choices):
             label = choice_labels.get(choice, choice)
-            prefix = '❯ ' if i == selected else '  '
+            if confirmed_choice:
+                if confirmed_choice == choice:
+                    prefix = '✓ '
+                else:
+                    prefix = '  '
+            else:
+                prefix = '❯ ' if i == selected else '  '
             for wrapped in _wrap_panel_text(f"{prefix}{label}", inner_text_width, subsequent_indent="  "):
                 choice_wrapped.append((i, wrapped))
 
@@ -7734,7 +7753,13 @@ class HermesCLI:
             _append_blank_panel_line(lines, 'class:approval-border', box_width)
 
         for i, wrapped in choice_wrapped:
-            style = 'class:approval-selected' if i == selected else 'class:approval-choice'
+            if confirmed_choice:
+                if confirmed_choice == choices[i]:
+                    style = 'class:approval-confirmed'
+                else:
+                    style = 'class:approval-dimmed'
+            else:
+                style = 'class:approval-selected' if i == selected else 'class:approval-choice'
             _append_panel_line(lines, 'class:approval-border', style, wrapped, box_width)
 
         if desc_wrapped:
@@ -7742,7 +7767,6 @@ class HermesCLI:
                 _append_blank_panel_line(lines, 'class:approval-border', box_width)
             for wrapped in desc_wrapped:
                 _append_panel_line(lines, 'class:approval-border', 'class:approval-desc', wrapped, box_width)
-
         lines.append(('class:approval-border', '╰' + ('─' * box_width) + '╯\n'))
         return lines
 
@@ -8654,7 +8678,7 @@ class HermesCLI:
                 return
 
             # --- Approval selection: confirm the highlighted choice ---
-            if self._approval_state:
+            if self._approval_state and not self._approval_state.get("confirmed_choice"):
                 self._handle_approval_selection()
                 event.app.invalidate()
                 return
@@ -8796,15 +8820,15 @@ class HermesCLI:
 
         # --- Dangerous command approval: arrow-key navigation ---
 
-        @kb.add('up', filter=Condition(lambda: bool(self._approval_state)))
+        @kb.add('up', filter=Condition(lambda: bool(self._approval_state) and not self._approval_state.get("confirmed_choice")))
         def approval_up(event):
-            if self._approval_state:
+            if self._approval_state and not self._approval_state.get("confirmed_choice"):
                 self._approval_state["selected"] = max(0, self._approval_state["selected"] - 1)
                 event.app.invalidate()
 
-        @kb.add('down', filter=Condition(lambda: bool(self._approval_state)))
+        @kb.add('down', filter=Condition(lambda: bool(self._approval_state) and not self._approval_state.get("confirmed_choice")))
         def approval_down(event):
-            if self._approval_state:
+            if self._approval_state and not self._approval_state.get("confirmed_choice"):
                 max_idx = len(self._approval_state["choices"]) - 1
                 self._approval_state["selected"] = min(max_idx, self._approval_state["selected"] + 1)
                 event.app.invalidate()
@@ -9809,6 +9833,8 @@ class HermesCLI:
             'approval-cmd': '#AAAAAA italic',
             'approval-choice': '#AAAAAA',
             'approval-selected': '#FFD700 bold',
+            'approval-confirmed': '#4CAF50 bold',
+            'approval-dimmed': '#555555',
             # Voice mode
             'voice-prompt': '#87CEEB',
             'voice-recording': '#FF4444 bold',

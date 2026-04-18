@@ -813,6 +813,8 @@ def get_prompt_toolkit_style_overrides() -> Dict[str, str]:
         "approval-cmd": f"{dim} italic",
         "approval-choice": dim,
         "approval-selected": f"{title} bold",
+        "approval-confirmed": "#4CAF50 bold",
+        "approval-dimmed": "#555555",
         "voice-status": f"bg:{voice_bg} {label}",
         "voice-status-recording": f"bg:{voice_bg} {error} bold",
     }

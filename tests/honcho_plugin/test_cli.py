@@ -26,6 +26,9 @@ class TestCmdStatus:
             write_frequency = "async"
             session_strategy = "per-session"
             context_tokens = 800
+            dialectic_reasoning_level = "low"
+            reasoning_level_cap = "high"
+            reasoning_heuristic = True
 
             def resolve_session_name(self):
                 return "hermes"

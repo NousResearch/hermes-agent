@@ -15,6 +15,7 @@ import logging
 import os
 import subprocess
 import sys
+from dataclasses import dataclass
 from datetime import timedelta
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
@@ -47,6 +48,12 @@ from gateway.runtime_canary import (
     run_runtime_canary,
 )
 from gateway.status import read_runtime_status
+from gateway.group_reporting_pipeline import (
+    GroupReportDeliveryPlan,
+    build_policy_report_delivery_plans,
+    collect_reports_for_delivery_retry,
+    execute_report_delivery_plans,
+)
 from gateway.qq_group_archive import (
     QqGroupArchiveStore,
     format_group_report_for_delivery,
@@ -73,6 +80,22 @@ _KNOWN_DELIVERY_PLATFORMS = frozenset({
     "matrix", "mattermost", "homeassistant", "dingtalk", "feishu",
     "wecom", "sms", "email", "webhook",
 })
+
+
+@dataclass(frozen=True)
+class _GroupReportPlatformSpec:
+    platform: str
+    label: str
+    entity_key: str
+    retry_lookback_days: int
+    store_factory: Any
+    rollup_runner: Any
+    policy_loader: Any
+    format_report: Any
+    build_policy_job: Any
+    has_successful_delivery: Any
+    record_delivery: Any
+    extra_plan_builder: Any = None
 
 from cron.jobs import (
     advance_next_run,
@@ -444,60 +467,149 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     return None
 
 
-def _deliver_qq_group_daily_reports(reports: list[dict], adapters=None, loop=None) -> list[dict]:
-    """Deliver newly rolled up QQ group reports to configured report targets."""
-    store = QqGroupArchiveStore()
-    outcomes: list[dict] = []
-    for report in reports or []:
-        group_id = str(report.get("group_id") or "").strip()
-        report_date = str(report.get("report_date") or "").strip()
-        if not group_id or not report_date:
-            continue
+def _build_group_report_platform_specs() -> tuple[_GroupReportPlatformSpec, ...]:
+    return (
+        _GroupReportPlatformSpec(
+            platform="qq_napcat",
+            label="QQ",
+            entity_key="group_id",
+            retry_lookback_days=_QQ_GROUP_REPORT_RETRY_LOOKBACK_DAYS,
+            store_factory=QqGroupArchiveStore,
+            rollup_runner=run_due_qq_group_rollups,
+            policy_loader=get_group_policy,
+            format_report=format_group_report_for_delivery,
+            build_policy_job=lambda entity_id, report_date, target: {
+                "id": f"qq-group-daily-report:{entity_id}:{report_date}",
+                "name": f"qq-group-daily-report:{entity_id}",
+                "deliver": target,
+            },
+            has_successful_delivery=lambda store, entity_id, report_date, delivery_key: (
+                store.has_successful_report_delivery(
+                    group_id=entity_id,
+                    report_date=report_date,
+                    delivery_key=delivery_key,
+                )
+            ),
+            record_delivery=lambda store, entity_id, report_date, delivery_key, target, error: (
+                store.record_report_delivery(
+                    group_id=entity_id,
+                    report_date=report_date,
+                    delivery_key=delivery_key,
+                    target=target,
+                    error=error,
+                )
+            ),
+            extra_plan_builder=lambda reports, store: _build_qq_intel_worker_report_delivery_plans(
+                reports,
+                store=store,
+            ),
+        ),
+        _GroupReportPlatformSpec(
+            platform="weixin",
+            label="Weixin",
+            entity_key="chat_id",
+            retry_lookback_days=_WEIXIN_GROUP_REPORT_RETRY_LOOKBACK_DAYS,
+            store_factory=WeixinGroupArchiveStore,
+            rollup_runner=run_due_weixin_group_rollups,
+            policy_loader=get_weixin_group_policy,
+            format_report=format_weixin_group_report_for_delivery,
+            build_policy_job=lambda entity_id, report_date, target: {
+                "id": f"weixin-group-daily-report:{entity_id}:{report_date}",
+                "name": f"weixin-group-daily-report:{entity_id}",
+                "deliver": target,
+            },
+            has_successful_delivery=lambda store, entity_id, report_date, delivery_key: (
+                store.has_successful_report_delivery(
+                    chat_id=entity_id,
+                    report_date=report_date,
+                    delivery_key=delivery_key,
+                )
+            ),
+            record_delivery=lambda store, entity_id, report_date, delivery_key, target, error: (
+                store.record_report_delivery(
+                    chat_id=entity_id,
+                    report_date=report_date,
+                    delivery_key=delivery_key,
+                    target=target,
+                    error=error,
+                )
+            ),
+        ),
+    )
 
-        policy = get_group_policy(group_id)
-        target = str(policy.get("daily_report_target") or "").strip()
-        if not target:
-            continue
-        delivery_key = f"policy:{target}"
-        if store.has_successful_report_delivery(
-            group_id=group_id,
-            report_date=report_date,
-            delivery_key=delivery_key,
-        ):
-            continue
 
-        content = format_group_report_for_delivery(
-            report,
-            group_name=policy.get("group_name"),
-        )
-        job = {
-            "id": f"qq-group-daily-report:{group_id}:{report_date}",
-            "name": f"qq-group-daily-report:{group_id}",
-            "deliver": target,
-        }
-        error = _deliver_result(job, content, adapters=adapters, loop=loop)
-        store.record_report_delivery(
-            group_id=group_id,
-            report_date=report_date,
-            delivery_key=delivery_key,
-            target=target,
-            error=error,
-        )
-        outcomes.append(
-            {
-                "group_id": group_id,
-                "report_date": report_date,
-                "target": target,
-                "error": error,
-            }
-        )
+def _collect_reports_for_delivery_retry(
+    reports: list[dict],
+    *,
+    spec: _GroupReportPlatformSpec,
+    store=None,
+    now=None,
+) -> list[dict]:
+    archive_store = store or spec.store_factory()
+    return collect_reports_for_delivery_retry(
+        reports,
+        entity_key=spec.entity_key,
+        list_reports=lambda limit: archive_store.list_reports(limit=limit),
+        lookback_days=spec.retry_lookback_days,
+        now=now or _hermes_now(),
+    )
+
+
+def _build_policy_report_delivery_plans(
+    reports: list[dict],
+    *,
+    spec: _GroupReportPlatformSpec,
+    store,
+) -> list[GroupReportDeliveryPlan]:
+    return build_policy_report_delivery_plans(
+        reports,
+        platform=spec.platform,
+        entity_key=spec.entity_key,
+        get_policy=spec.policy_loader,
+        has_successful_delivery=lambda entity_id, report_date, delivery_key: spec.has_successful_delivery(
+            store,
+            entity_id,
+            report_date,
+            delivery_key,
+        ),
+        format_report=spec.format_report,
+        build_job=spec.build_policy_job,
+    )
+
+
+def _deliver_report_plans(
+    plans: list[GroupReportDeliveryPlan],
+    *,
+    spec: _GroupReportPlatformSpec,
+    store,
+    adapters=None,
+    loop=None,
+) -> list[dict]:
+    outcomes = execute_report_delivery_plans(
+        plans,
+        deliver_result=_deliver_result,
+        record_delivery=lambda entity_id, report_date, delivery_key, target, error: spec.record_delivery(
+            store,
+            entity_id,
+            report_date,
+            delivery_key,
+            target,
+            error,
+        ),
+        adapters=adapters,
+        loop=loop,
+    )
+    for outcome in outcomes:
+        outcome[spec.entity_key] = outcome["entity_id"]
     return outcomes
 
 
-def _deliver_qq_intel_worker_reports(reports: list[dict], adapters=None, loop=None) -> list[dict]:
-    """Deliver rolled-up QQ reports to active intel workers assigned to that group."""
-    store = QqGroupArchiveStore()
-    outcomes: list[dict] = []
+def _build_qq_intel_worker_report_delivery_plans(
+    reports: list[dict],
+    *,
+    store: QqGroupArchiveStore,
+) -> list[GroupReportDeliveryPlan]:
+    plans: list[GroupReportDeliveryPlan] = []
     for report in reports or []:
         group_id = str(report.get("group_id") or "").strip()
         report_date = str(report.get("report_date") or "").strip()
@@ -515,137 +627,29 @@ def _deliver_qq_intel_worker_reports(reports: list[dict], adapters=None, loop=No
                 delivery_key=delivery_key,
             ):
                 continue
-            content = _format_intel_delivery_content(worker, report)
-            job = {
-                "id": f"qq-intel-report:{group_id}:{report_date}:{worker_name}",
-                "name": f"qq-intel-report:{worker_name}",
-                "deliver": target,
-            }
-            error = _deliver_result(job, content, adapters=adapters, loop=loop)
-            store.record_report_delivery(
-                group_id=group_id,
-                report_date=report_date,
-                delivery_key=delivery_key,
-                target=target,
-                error=error,
-            )
-            if error is None:
-                update_intel_worker(
-                    worker_name,
-                    last_report_at=_hermes_now().isoformat(),
-                    updated_by="scheduler",
+            plans.append(
+                GroupReportDeliveryPlan(
+                    platform="qq_napcat",
+                    kind="worker_daily",
+                    entity_id=group_id,
+                    report_date=report_date,
+                    delivery_key=delivery_key,
+                    target=target,
+                    job={
+                        "id": f"qq-intel-report:{group_id}:{report_date}:{worker_name}",
+                        "name": f"qq-intel-report:{worker_name}",
+                        "deliver": target,
+                    },
+                    content=_format_intel_delivery_content(worker, report),
+                    metadata={"worker_name": worker_name},
+                    on_success=lambda worker_name=worker_name: update_intel_worker(
+                        worker_name,
+                        last_report_at=_hermes_now().isoformat(),
+                        updated_by="scheduler",
+                    ),
                 )
-            outcomes.append(
-                {
-                    "worker_name": worker_name,
-                    "group_id": group_id,
-                    "report_date": report_date,
-                    "target": target,
-                    "error": error,
-                }
             )
-    return outcomes
-
-
-def _deliver_weixin_group_daily_reports(reports: list[dict], adapters=None, loop=None) -> list[dict]:
-    """Deliver newly rolled up Weixin group reports to configured report targets."""
-    store = WeixinGroupArchiveStore()
-    outcomes: list[dict] = []
-    for report in reports or []:
-        chat_id = str(report.get("chat_id") or "").strip()
-        report_date = str(report.get("report_date") or "").strip()
-        if not chat_id or not report_date:
-            continue
-
-        policy = get_weixin_group_policy(chat_id)
-        target = str(policy.get("daily_report_target") or "").strip()
-        if not target:
-            continue
-        delivery_key = f"policy:{target}"
-        delivery_state = store.get_report_delivery(
-            chat_id=chat_id,
-            report_date=report_date,
-            delivery_key=delivery_key,
-        )
-        if delivery_state and str(delivery_state.get("delivered_at") or "").strip():
-            continue
-
-        content = format_weixin_group_report_for_delivery(
-            report,
-            group_name=policy.get("group_name"),
-        )
-        job = {
-            "id": f"weixin-group-daily-report:{chat_id}:{report_date}",
-            "name": f"weixin-group-daily-report:{chat_id}",
-            "deliver": target,
-        }
-        error = _deliver_result(job, content, adapters=adapters, loop=loop)
-        store.record_report_delivery(
-            chat_id=chat_id,
-            report_date=report_date,
-            delivery_key=delivery_key,
-            target=target,
-            error=error,
-        )
-        outcomes.append(
-            {
-                "chat_id": chat_id,
-                "report_date": report_date,
-                "target": target,
-                "error": error,
-            }
-        )
-    return outcomes
-
-
-def _collect_qq_reports_for_delivery_retry(
-    reports: list[dict],
-    *,
-    store: QqGroupArchiveStore | None = None,
-    now=None,
-) -> list[dict]:
-    archive_store = store or QqGroupArchiveStore()
-    merged: dict[tuple[str, str], dict] = {}
-    for report in reports or []:
-        group_id = str(report.get("group_id") or "").strip()
-        report_date = str(report.get("report_date") or "").strip()
-        if group_id and report_date:
-            merged[(group_id, report_date)] = report
-
-    current_time = now or _hermes_now()
-    cutoff_date = (current_time.date() - timedelta(days=_QQ_GROUP_REPORT_RETRY_LOOKBACK_DAYS)).isoformat()
-    for report in archive_store.list_reports(limit=512):
-        group_id = str(report.get("group_id") or "").strip()
-        report_date = str(report.get("report_date") or "").strip()
-        if not group_id or not report_date or report_date < cutoff_date:
-            continue
-        merged.setdefault((group_id, report_date), report)
-    return list(merged.values())
-
-
-def _collect_weixin_reports_for_delivery_retry(
-    reports: list[dict],
-    *,
-    store: WeixinGroupArchiveStore | None = None,
-    now=None,
-) -> list[dict]:
-    archive_store = store or WeixinGroupArchiveStore()
-    merged: dict[tuple[str, str], dict] = {}
-    for report in reports or []:
-        chat_id = str(report.get("chat_id") or "").strip()
-        report_date = str(report.get("report_date") or "").strip()
-        if chat_id and report_date:
-            merged[(chat_id, report_date)] = report
-
-    current_time = now or _hermes_now()
-    cutoff_date = (current_time.date() - timedelta(days=_WEIXIN_GROUP_REPORT_RETRY_LOOKBACK_DAYS)).isoformat()
-    for report in archive_store.list_reports(limit=512):
-        chat_id = str(report.get("chat_id") or "").strip()
-        report_date = str(report.get("report_date") or "").strip()
-        if not chat_id or not report_date or report_date < cutoff_date:
-            continue
-        merged.setdefault((chat_id, report_date), report)
-    return list(merged.values())
+    return plans
 
 
 def _format_intel_delivery_content(worker: dict, report: dict) -> str:
@@ -1370,72 +1374,66 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
             elif reconcile_result.get("error"):
                 logger.warning("QQ intel reconcile failed: %s", reconcile_result.get("error"))
 
-            rollup_result = run_due_qq_group_rollups()
-            rollup_failures = rollup_result.get("failures") or []
-            if rollup_result.get("rolled_up_count") or rollup_failures:
-                logger.info(
-                    "QQ group rollups: reports=%d purged=%d failures=%d",
-                    int(rollup_result.get("rolled_up_count") or 0),
-                    int(rollup_result.get("purged_raw_messages") or 0),
-                    len(rollup_failures),
-                )
-            delivery_reports = _collect_qq_reports_for_delivery_retry(
-                list(rollup_result.get("reports") or [])
-            )
-            for delivery in _deliver_qq_group_daily_reports(
-                delivery_reports,
-                adapters=adapters,
-                loop=loop,
-            ):
-                if delivery.get("error"):
-                    logger.warning(
-                        "QQ group daily report delivery failed for %s/%s -> %s: %s",
-                        delivery.get("group_id"),
-                        delivery.get("report_date"),
-                        delivery.get("target"),
-                        delivery.get("error"),
-                    )
-            for delivery in _deliver_qq_intel_worker_reports(
-                delivery_reports,
-                adapters=adapters,
-                loop=loop,
-            ):
-                if delivery.get("error"):
-                    logger.warning(
-                        "QQ intel report delivery failed for %s/%s -> %s: %s",
-                        delivery.get("worker_name"),
-                        delivery.get("report_date"),
-                        delivery.get("target"),
-                        delivery.get("error"),
+            for report_spec in _build_group_report_platform_specs():
+                store = report_spec.store_factory()
+                rollup_result = report_spec.rollup_runner()
+                rollup_failures = rollup_result.get("failures") or []
+                if rollup_result.get("rolled_up_count") or rollup_failures:
+                    logger.info(
+                        "%s group rollups: reports=%d purged=%d failures=%d",
+                        report_spec.label,
+                        int(rollup_result.get("rolled_up_count") or 0),
+                        int(rollup_result.get("purged_raw_messages") or 0),
+                        len(rollup_failures),
                     )
 
-            weixin_rollup_result = run_due_weixin_group_rollups()
-            weixin_rollup_failures = weixin_rollup_result.get("failures") or []
-            if weixin_rollup_result.get("rolled_up_count") or weixin_rollup_failures:
-                logger.info(
-                    "Weixin group rollups: reports=%d purged=%d failures=%d",
-                    int(weixin_rollup_result.get("rolled_up_count") or 0),
-                    int(weixin_rollup_result.get("purged_raw_messages") or 0),
-                    len(weixin_rollup_failures),
+                delivery_reports = _collect_reports_for_delivery_retry(
+                    list(rollup_result.get("reports") or []),
+                    spec=report_spec,
+                    store=store,
                 )
-            weixin_delivery_reports = _collect_weixin_reports_for_delivery_retry(
-                list(weixin_rollup_result.get("reports") or [])
-            )
-            for delivery in _deliver_weixin_group_daily_reports(
-                weixin_delivery_reports,
-                adapters=adapters,
-                loop=loop,
-            ):
-                if delivery.get("error"):
-                    logger.warning(
-                        "Weixin group daily report delivery failed for %s/%s -> %s: %s",
-                        delivery.get("chat_id"),
-                        delivery.get("report_date"),
-                        delivery.get("target"),
-                        delivery.get("error"),
-                    )
+                policy_outcomes = _deliver_report_plans(
+                    _build_policy_report_delivery_plans(
+                        delivery_reports,
+                        spec=report_spec,
+                        store=store,
+                    ),
+                    spec=report_spec,
+                    store=store,
+                    adapters=adapters,
+                    loop=loop,
+                )
+                for delivery in policy_outcomes:
+                    if delivery.get("error"):
+                        logger.warning(
+                            "%s group daily report delivery failed for %s/%s -> %s: %s",
+                            report_spec.label,
+                            delivery.get(report_spec.entity_key),
+                            delivery.get("report_date"),
+                            delivery.get("target"),
+                            delivery.get("error"),
+                        )
+
+                extra_plan_builder = report_spec.extra_plan_builder
+                if not callable(extra_plan_builder):
+                    continue
+                for delivery in _deliver_report_plans(
+                    extra_plan_builder(delivery_reports, store),
+                    spec=report_spec,
+                    store=store,
+                    adapters=adapters,
+                    loop=loop,
+                ):
+                    if delivery.get("error"):
+                        logger.warning(
+                            "QQ intel report delivery failed for %s/%s -> %s: %s",
+                            delivery.get("worker_name"),
+                            delivery.get("report_date"),
+                            delivery.get("target"),
+                            delivery.get("error"),
+                        )
         except Exception as exc:
-            logger.warning("QQ group rollup maintenance failed: %s", exc)
+            logger.warning("Group rollup maintenance failed: %s", exc)
 
         due_jobs = get_due_jobs()
 

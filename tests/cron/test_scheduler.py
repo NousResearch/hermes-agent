@@ -12,6 +12,8 @@ import pytest
 from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, run_job, SILENT_MARKER, _build_job_prompt
 from gateway.qq_group_archive import QqGroupArchiveStore
 from gateway.qq_group_policies import set_group_policy
+from gateway.weixin_group_archive import WeixinGroupArchiveStore
+from gateway.weixin_group_policies import set_group_policy as set_weixin_group_policy
 
 try:
     from zoneinfo import ZoneInfo
@@ -1609,6 +1611,154 @@ class TestTickBackgroundMaintenance:
         deliver_mock.assert_not_called()
         reset_cache()
 
+    def test_tick_delivers_weixin_group_daily_reports_to_policy_targets(self):
+        report = {
+            "chat_id": "project@chatroom",
+            "report_date": "2026-04-12",
+            "created_at": "2026-04-13T00:00:00+08:00",
+            "summary_text": "2026-04-12 微信群 project@chatroom 日报",
+            "summary": {"total_messages": 3, "unique_speakers": 2},
+        }
+        with patch(
+            "cron.scheduler.run_due_weixin_group_rollups",
+            return_value={
+                "success": True,
+                "reports": [report],
+                "rolled_up_count": 1,
+                "purged_raw_messages": 3,
+                "failures": [],
+            },
+        ), \
+            patch("cron.scheduler.get_weixin_group_policy", return_value={
+                "chat_id": "project@chatroom",
+                "group_name": "项目群",
+                "daily_report_target": "weixin:wxid_admin",
+            }), \
+            patch("cron.scheduler._deliver_result", return_value=None) as deliver_mock, \
+            patch("cron.scheduler.list_active_daily_report_workers_for_group", return_value=[]), \
+            patch("cron.scheduler.get_due_jobs", return_value=[]):
+            from cron.scheduler import tick
+
+            executed = tick(verbose=False)
+
+        assert executed == 0
+        deliver_mock.assert_called_once()
+        job_arg, content_arg = deliver_mock.call_args.args[:2]
+        assert job_arg["deliver"] == "weixin:wxid_admin"
+        assert "项目群" in content_arg
+
+    def test_tick_retries_persisted_weixin_group_daily_report_after_previous_delivery_failure(self, monkeypatch):
+        monkeypatch.setenv("HERMES_TIMEZONE", "Asia/Shanghai")
+        from hermes_time import reset_cache
+
+        reset_cache()
+        store = WeixinGroupArchiveStore()
+        set_weixin_group_policy(
+            "project@chatroom",
+            mode="collect_only",
+            daily_report_enabled=True,
+            daily_report_target="weixin:wxid_admin",
+            updated_by="test",
+        )
+        store.archive_inbound_message(
+            chat_id="project@chatroom",
+            message_id="wx-991",
+            observed_at="2026-04-12T10:00:00+08:00",
+            user_id="wxid_a",
+            user_name="A",
+            text="昨天的微信情报",
+            media_types=[],
+        )
+        store.rollup_daily(chat_id="project@chatroom", report_date="2026-04-12")
+        store.record_report_delivery(
+            chat_id="project@chatroom",
+            report_date="2026-04-12",
+            delivery_key="policy:weixin:wxid_admin",
+            target="weixin:wxid_admin",
+            error="network timeout",
+        )
+
+        with patch(
+            "cron.scheduler.run_due_weixin_group_rollups",
+            return_value={
+                "success": True,
+                "reports": [],
+                "rolled_up_count": 0,
+                "purged_raw_messages": 0,
+                "failures": [],
+            },
+        ), \
+            patch("cron.scheduler.list_active_daily_report_workers_for_group", return_value=[]), \
+            patch("cron.scheduler._deliver_result", return_value=None) as deliver_mock, \
+            patch("cron.scheduler.get_due_jobs", return_value=[]):
+            from cron.scheduler import tick
+
+            executed = tick(verbose=False)
+
+        assert executed == 0
+        deliver_mock.assert_called_once()
+        job_arg, content_arg = deliver_mock.call_args.args[:2]
+        assert job_arg["deliver"] == "weixin:wxid_admin"
+        assert "微信群日报" in content_arg
+        assert store.has_successful_report_delivery(
+            chat_id="project@chatroom",
+            report_date="2026-04-12",
+            delivery_key="policy:weixin:wxid_admin",
+        ) is True
+        reset_cache()
+
+    def test_tick_does_not_redeliver_successfully_delivered_weixin_group_daily_report(self, monkeypatch):
+        monkeypatch.setenv("HERMES_TIMEZONE", "Asia/Shanghai")
+        from hermes_time import reset_cache
+
+        reset_cache()
+        store = WeixinGroupArchiveStore()
+        set_weixin_group_policy(
+            "project@chatroom",
+            mode="collect_only",
+            daily_report_enabled=True,
+            daily_report_target="weixin:wxid_admin",
+            updated_by="test",
+        )
+        store.archive_inbound_message(
+            chat_id="project@chatroom",
+            message_id="wx-992",
+            observed_at="2026-04-12T11:00:00+08:00",
+            user_id="wxid_a",
+            user_name="A",
+            text="已经送达过的微信群日报",
+            media_types=[],
+        )
+        store.rollup_daily(chat_id="project@chatroom", report_date="2026-04-12")
+        store.record_report_delivery(
+            chat_id="project@chatroom",
+            report_date="2026-04-12",
+            delivery_key="policy:weixin:wxid_admin",
+            target="weixin:wxid_admin",
+            error=None,
+        )
+
+        with patch(
+            "cron.scheduler.run_due_weixin_group_rollups",
+            return_value={
+                "success": True,
+                "reports": [],
+                "rolled_up_count": 0,
+                "purged_raw_messages": 0,
+                "failures": [],
+            },
+        ), \
+            patch("cron.scheduler.list_active_daily_report_workers_for_group", return_value=[]), \
+            patch("cron.scheduler._deliver_result", return_value=None) as deliver_mock, \
+            patch("cron.scheduler.get_due_jobs", return_value=[]):
+            from cron.scheduler import tick
+
+            executed = tick(verbose=False)
+
+        assert executed == 0
+        deliver_mock.assert_not_called()
+        reset_cache()
+
     def test_tick_reconciles_qq_intel_workers_and_notifies_status_changes(self):
         with patch(
             "cron.scheduler._reconcile_qq_intel_workers",
@@ -1695,10 +1845,7 @@ class TestRuntimeCanaryTick:
         calls = []
 
         monkeypatch.setattr(scheduler, "_reconcile_qq_intel_workers", lambda adapters=None, loop=None: {})
-        monkeypatch.setattr(scheduler, "run_due_qq_group_rollups", lambda: {})
-        monkeypatch.setattr(scheduler, "_collect_qq_reports_for_delivery_retry", lambda reports: [])
-        monkeypatch.setattr(scheduler, "_deliver_qq_group_daily_reports", lambda reports, adapters=None, loop=None: [])
-        monkeypatch.setattr(scheduler, "_deliver_qq_intel_worker_reports", lambda reports, adapters=None, loop=None: [])
+        monkeypatch.setattr(scheduler, "_build_group_report_platform_specs", lambda: ())
         monkeypatch.setattr(
             scheduler,
             "run_runtime_canary_tick",

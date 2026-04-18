@@ -207,6 +207,19 @@ class WeixinGroupArchiveStore:
             )
         )
 
+    def has_successful_report_delivery(
+        self,
+        *,
+        chat_id: str,
+        report_date: str,
+        delivery_key: str,
+    ) -> bool:
+        return self._store.has_successful_report_delivery(
+            scope_key=_weixin_scope_key(chat_id),
+            report_date=report_date,
+            delivery_key=delivery_key,
+        )
+
     def record_report_delivery(
         self,
         *,

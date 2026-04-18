@@ -782,15 +782,6 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
                 from hermes_cli.models import copilot_default_headers
 
                 extra["default_headers"] = copilot_default_headers()
-            elif "generativelanguage.googleapis.com" in base_url.lower():
-                # Google's OpenAI-compatible endpoint only accepts x-goog-api-key.
-                # Passing api_key= causes the SDK to inject Authorization: Bearer,
-                # which Google rejects with HTTP 400 "Multiple authentication
-                # credentials received". Use a placeholder for api_key and pass
-                # the real key via x-goog-api-key header instead.
-                # Fixes: https://github.com/NousResearch/hermes-agent/issues/7893
-                extra["default_headers"] = {"x-goog-api-key": api_key}
-                api_key = "not-used"
             return OpenAI(api_key=api_key, base_url=base_url, **extra), model
 
         creds = resolve_api_key_provider_credentials(provider_id)
@@ -812,15 +803,6 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
             from hermes_cli.models import copilot_default_headers
 
             extra["default_headers"] = copilot_default_headers()
-        elif "generativelanguage.googleapis.com" in base_url.lower():
-            # Google's OpenAI-compatible endpoint only accepts x-goog-api-key.
-            # Passing api_key= causes the SDK to inject Authorization: Bearer,
-            # which Google rejects with HTTP 400 "Multiple authentication
-            # credentials received". Use a placeholder for api_key and pass
-            # the real key via x-goog-api-key header instead.
-            # Fixes: https://github.com/NousResearch/hermes-agent/issues/7893
-            extra["default_headers"] = {"x-goog-api-key": api_key}
-            api_key = "not-used"
         return OpenAI(api_key=api_key, base_url=base_url, **extra), model
 
     return None, None
@@ -1666,16 +1648,6 @@ def resolve_provider_client(
             from hermes_cli.models import copilot_default_headers
 
             headers.update(copilot_default_headers())
-        elif "generativelanguage.googleapis.com" in base_url.lower():
-            # Google's OpenAI-compatible endpoint only accepts x-goog-api-key.
-            # Passing api_key= causes the OpenAI SDK to inject Authorization: Bearer,
-            # which Google rejects with HTTP 400 "Multiple authentication credentials
-            # received". Use a placeholder for api_key and pass the real key via
-            # x-goog-api-key header instead.
-            # Fixes: https://github.com/NousResearch/hermes-agent/issues/7893
-            headers["x-goog-api-key"] = api_key
-            api_key = "not-used"
-
         client = OpenAI(api_key=api_key, base_url=base_url,
                         **({"default_headers": headers} if headers else {}))
 

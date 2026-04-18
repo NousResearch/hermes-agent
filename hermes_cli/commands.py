@@ -640,8 +640,25 @@ def discord_skill_commands_by_category(
         - *uncategorized*: ``[(name, description, cmd_key), ...]``
         - *hidden_count*: skills dropped due to Discord group limits
           (25 subcommand groups, 25 subcommands per group)
+
+    Notes:
+        Discord enforces a hard max payload size for one command definition
+        (currently 8000 chars). Large skill catalogs can exceed it even while
+        staying inside 25x25 command count limits. We therefore cap the total
+        number of registered ``/skill`` subcommands and shorten descriptions.
     """
     from pathlib import Path as _P
+
+    def _safe_int_env(name: str, default: int) -> int:
+        try:
+            return int(os.getenv(name, str(default)).strip())
+        except Exception:
+            return default
+
+    # Keep descriptions concise to stay under Discord's command payload cap.
+    _DESC_LIMIT = max(12, min(100, _safe_int_env("DISCORD_SKILL_DESC_LIMIT", 32)))
+    # Global cap across all /skill subcommands (uncategorized + grouped).
+    _MAX_TOTAL_SKILL_SUBCOMMANDS = max(1, _safe_int_env("DISCORD_SKILL_SUBCOMMAND_LIMIT", 40))
 
     _platform_disabled: set[str] = set()
     try:
@@ -686,9 +703,9 @@ def discord_skill_commands_by_category(
                 continue
             _names_used.add(discord_name)
 
-            desc = info.get("description", "")
-            if len(desc) > 100:
-                desc = desc[:97] + "..."
+            desc = str(info.get("description", "") or "Run Hermes skill").strip()
+            if len(desc) > _DESC_LIMIT:
+                desc = desc[:_DESC_LIMIT - 3] + "..."
 
             # Determine category from the relative path within SKILLS_DIR.
             # e.g. creative/ascii-art/SKILL.md → parts = ("creative", "ascii-art")
@@ -725,6 +742,32 @@ def discord_skill_commands_by_category(
     if len(uncategorized) > remaining_slots:
         hidden += len(uncategorized) - remaining_slots
         uncategorized = uncategorized[:remaining_slots]
+
+    # Extra safeguard: global cap to avoid Discord's 8000-char command payload
+    # limit for one command group definition.
+    total_now = sum(len(v) for v in trimmed_categories.values()) + len(uncategorized)
+    if total_now > _MAX_TOTAL_SKILL_SUBCOMMANDS:
+        allowed = _MAX_TOTAL_SKILL_SUBCOMMANDS
+
+        # Keep uncategorized first (historical root-level behavior), then categories.
+        keep_uncat = min(len(uncategorized), allowed)
+        hidden += max(0, len(uncategorized) - keep_uncat)
+        uncategorized = uncategorized[:keep_uncat]
+        allowed -= keep_uncat
+
+        final_categories: dict[str, list[tuple[str, str, str]]] = {}
+        for cat in sorted(trimmed_categories):
+            entries = trimmed_categories[cat]
+            if allowed <= 0:
+                hidden += len(entries)
+                continue
+            kept = entries[:allowed]
+            hidden += max(0, len(entries) - len(kept))
+            if kept:
+                final_categories[cat] = kept
+            allowed -= len(kept)
+
+        trimmed_categories = final_categories
 
     return trimmed_categories, uncategorized, hidden
 

@@ -4,6 +4,7 @@ Status command for hermes CLI.
 Shows the status of all Hermes Agent components.
 """
 
+import json
 import os
 import sys
 import subprocess
@@ -82,6 +83,141 @@ def _effective_provider_label() -> str:
 from hermes_constants import is_termux as _is_termux
 
 
+def _load_gateway_runtime_status() -> dict:
+    try:
+        from gateway.status import read_runtime_status
+    except Exception:
+        return {}
+    state = read_runtime_status()
+    if isinstance(state, dict):
+        return state
+    return {}
+
+
+def _gateway_process_running() -> bool:
+    try:
+        from gateway.status import get_running_pid
+        return get_running_pid() is not None
+    except Exception:
+        pass
+    try:
+        from hermes_cli.gateway import find_gateway_pids
+        return bool(find_gateway_pids())
+    except Exception:
+        return False
+
+
+def _gateway_service_loaded() -> bool | None:
+    if _is_termux():
+        return None
+    if sys.platform.startswith('linux'):
+        from hermes_constants import is_container
+        if is_container():
+            return None
+        try:
+            from hermes_cli.gateway import get_service_name
+            service_name = get_service_name()
+        except Exception:
+            service_name = "hermes-gateway"
+        try:
+            result = subprocess.run(
+                ["systemctl", "--user", "is-active", service_name],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            return result.stdout.strip() == "active"
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            return False
+    if sys.platform == 'darwin':
+        try:
+            from hermes_cli.gateway import get_launchd_label
+            result = subprocess.run(
+                ["launchctl", "list", get_launchd_label()],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            return result.returncode == 0
+        except subprocess.TimeoutExpired:
+            return False
+        except Exception:
+            return False
+    return None
+
+
+def _platform_health_from_runtime(state: dict, key: str) -> str:
+    platform = ((state.get("platforms") or {}) if isinstance(state, dict) else {}).get(key) or {}
+    pstate = str(platform.get("state") or "").strip().lower()
+    if pstate in {"connected", "running"}:
+        return "connected"
+    if pstate in {"connecting"}:
+        return "connecting"
+    if pstate in {"retrying"}:
+        return "retrying"
+    if pstate in {"fatal"}:
+        message = str(platform.get("error_message") or "unknown error").strip()
+        return f"fatal ({message})"
+    return "not connected"
+
+
+def _cron_jobs_summary() -> tuple[int, int, bool]:
+    jobs_file = get_hermes_home() / "cron" / "jobs.json"
+    if not jobs_file.exists():
+        return 0, 0, False
+    try:
+        data = json.loads(jobs_file.read_text(encoding="utf-8"))
+    except Exception:
+        return 0, 0, True
+    jobs = data.get("jobs", []) if isinstance(data, dict) else []
+    if not isinstance(jobs, list):
+        jobs = []
+    active = len([job for job in jobs if isinstance(job, dict) and job.get("enabled", True)])
+    total = len(jobs)
+    return active, total, False
+
+
+def _cron_next_run() -> str:
+    try:
+        from cron.jobs import list_jobs
+        jobs = list_jobs(include_disabled=False)
+    except Exception:
+        return "(unknown)"
+    next_runs = [job.get("next_run_at") for job in jobs if isinstance(job, dict) and job.get("next_run_at")]
+    return min(next_runs) if next_runs else "(none)"
+
+
+def _print_consolidated_health_summary() -> None:
+    runtime_state = _load_gateway_runtime_status()
+    gateway_running = _gateway_process_running()
+    service_loaded = _gateway_service_loaded()
+
+    if gateway_running:
+        gateway_health = "running"
+    elif service_loaded is True:
+        gateway_health = "service loaded, process not running"
+    else:
+        gateway_health = "stopped"
+
+    signal_health = _platform_health_from_runtime(runtime_state, "signal")
+    discord_health = _platform_health_from_runtime(runtime_state, "discord")
+
+    cron_active, cron_total, cron_error = _cron_jobs_summary()
+    if cron_error:
+        cron_health = "jobs file unreadable"
+    else:
+        cron_health = f"{cron_active} active / {cron_total} total"
+    cron_next = _cron_next_run()
+
+    print()
+    print(color("◆ Consolidated Health", Colors.CYAN, Colors.BOLD))
+    print(f"  Gateway:      {gateway_health}")
+    print(f"  Signal:       {signal_health}")
+    print(f"  Discord:      {discord_health}")
+    print(f"  Cron:         {cron_health}")
+    print(f"  Cron next:    {cron_next}")
+
+
 def show_status(args):
     """Show status of all Hermes Agent components."""
     show_all = getattr(args, 'all', False)
@@ -110,6 +246,8 @@ def show_status(args):
 
     print(f"  Model:        {_configured_model_label(config)}")
     print(f"  Provider:     {_effective_provider_label()}")
+
+    _print_consolidated_health_summary()
     
     # =========================================================================
     # API Keys

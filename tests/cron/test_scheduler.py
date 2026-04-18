@@ -863,6 +863,37 @@ class TestRunJobConfigLogging:
         assert any("failed to parse prefill messages" in r.message for r in caplog.records), \
             f"Expected 'failed to parse prefill messages' warning in logs, got: {[r.message for r in caplog.records]}"
 
+    def test_bad_prefill_messages_warning_is_deduplicated_per_job_path(self, caplog, tmp_path):
+        """Repeated runs for the same broken prefill path should emit warning once."""
+        config_yaml = tmp_path / "config.yaml"
+        config_yaml.write_text("prefill_messages_file: prefill.json\n")
+
+        bad_prefill = tmp_path / "prefill.json"
+        bad_prefill.write_text("{not valid json!!!")
+
+        job = {
+            "id": "test-job",
+            "name": "test",
+            "prompt": "hello",
+        }
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+
+            with caplog.at_level(logging.WARNING, logger="cron.scheduler"):
+                run_job(job)
+                run_job(job)
+
+        warnings = [
+            r.message for r in caplog.records if "failed to parse prefill messages" in r.message
+        ]
+        assert len(warnings) == 1, f"Expected one warning, got: {warnings}"
+
 
 class TestRunJobSkillBacked:
     def test_run_job_preserves_skill_env_passthrough_into_worker_thread(self, tmp_path):

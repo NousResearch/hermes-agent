@@ -123,6 +123,23 @@ def _import_cli():
     return importlib.import_module("cli")
 
 
+def test_cli_prefill_loader_warns_once_per_missing_path(monkeypatch, tmp_path):
+    cli = _import_cli()
+    missing = tmp_path / "missing-prefill.json"
+    seen: list[str] = []
+
+    def _warn(message, *args):
+        seen.append(message % args if args else message)
+
+    monkeypatch.setattr(cli.logger, "warning", _warn)
+
+    cli._load_prefill_messages(str(missing))
+    cli._load_prefill_messages(str(missing))
+
+    warnings = [msg for msg in seen if "Prefill messages file not found" in msg]
+    assert len(warnings) == 1
+
+
 def test_hermes_cli_init_does_not_eagerly_resolve_runtime_provider(monkeypatch):
     cli = _import_cli()
     calls = {"count": 0}

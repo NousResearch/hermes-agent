@@ -32,6 +32,18 @@ from typing import List, Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
 
+# De-duplicate noisy prefill warnings while preserving first visibility.
+# Keyed by (warning_type, normalized_path).
+_prefill_warning_keys: set[tuple[str, str]] = set()
+
+
+def _warn_prefill_once(warning_type: str, path: Path, message: str, *args) -> None:
+    key = (warning_type, str(path))
+    if key in _prefill_warning_keys:
+        return
+    _prefill_warning_keys.add(key)
+    logger.warning(message, *args)
+
 # Suppress startup messages for clean CLI experience
 os.environ["HERMES_QUIET"] = "1"  # Our own modules
 
@@ -135,17 +147,17 @@ def _load_prefill_messages(file_path: str) -> List[Dict[str, Any]]:
     if not path.is_absolute():
         path = _hermes_home / path
     if not path.exists():
-        logger.warning("Prefill messages file not found: %s", path)
+        _warn_prefill_once("missing", path, "Prefill messages file not found: %s", path)
         return []
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
         if not isinstance(data, list):
-            logger.warning("Prefill messages file must contain a JSON array: %s", path)
+            _warn_prefill_once("not_array", path, "Prefill messages file must contain a JSON array: %s", path)
             return []
         return data
     except Exception as e:
-        logger.warning("Failed to load prefill messages from %s: %s", path, e)
+        _warn_prefill_once("load_failed", path, "Failed to load prefill messages from %s: %s", path, e)
         return []
 
 

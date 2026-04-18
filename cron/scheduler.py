@@ -40,6 +40,18 @@ from hermes_time import now as _hermes_now
 
 logger = logging.getLogger(__name__)
 
+# Deduplicate noisy prefill parse warnings while preserving first visibility.
+# Keyed by (warning_type, job_id, resolved_prefill_path).
+_prefill_warning_keys: set[tuple[str, str, str]] = set()
+
+
+def _warn_prefill_once(job_id: str, warning_type: str, path: Path, message: str, *args) -> None:
+    key = (warning_type, str(job_id), str(path))
+    if key in _prefill_warning_keys:
+        return
+    _prefill_warning_keys.add(key)
+    logger.warning(message, *args)
+
 # Valid delivery platforms — used to validate user-supplied platform names
 # in cron delivery targets, preventing env var enumeration via crafted names.
 _KNOWN_DELIVERY_PLATFORMS = frozenset({
@@ -752,7 +764,15 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                     if not isinstance(prefill_messages, list):
                         prefill_messages = None
                 except Exception as e:
-                    logger.warning("Job '%s': failed to parse prefill messages file '%s': %s", job_id, pfpath, e)
+                    _warn_prefill_once(
+                        str(job_id),
+                        "parse_failed",
+                        pfpath,
+                        "Job '%s': failed to parse prefill messages file '%s': %s",
+                        job_id,
+                        pfpath,
+                        e,
+                    )
                     prefill_messages = None
 
         # Max iterations

@@ -28,7 +28,7 @@ from collections import OrderedDict
 from contextvars import copy_context
 from pathlib import Path
 from datetime import datetime
-from typing import Dict, Optional, Any, List
+from typing import Dict, Optional, Any, List, Set, Tuple
 
 # --- Agent cache tuning ---------------------------------------------------
 # Bounds the per-session AIAgent cache to prevent unbounded growth in
@@ -333,6 +333,19 @@ def _expand_whatsapp_auth_aliases(identifier: str) -> set:
     return resolved
 
 logger = logging.getLogger(__name__)
+
+# Deduplicate noisy prefill warnings while preserving first visibility.
+# Keyed by (warning_type, resolved_path).
+_prefill_warning_keys: Set[Tuple[str, str]] = set()
+
+
+def _warn_prefill_once(warning_type: str, path: Path, message: str, *args) -> None:
+    key = (warning_type, str(path))
+    if key in _prefill_warning_keys:
+        return
+    _prefill_warning_keys.add(key)
+    logger.warning(message, *args)
+
 
 # Sentinel placed into _running_agents immediately when a session starts
 # processing, *before* any await.  Prevents a second message for the same
@@ -1150,17 +1163,17 @@ class GatewayRunner:
         if not path.is_absolute():
             path = _hermes_home / path
         if not path.exists():
-            logger.warning("Prefill messages file not found: %s", path)
+            _warn_prefill_once("missing", path, "Prefill messages file not found: %s", path)
             return []
         try:
             with open(path, "r", encoding="utf-8") as f:
                 data = _json.load(f)
             if not isinstance(data, list):
-                logger.warning("Prefill messages file must contain a JSON array: %s", path)
+                _warn_prefill_once("not_array", path, "Prefill messages file must contain a JSON array: %s", path)
                 return []
             return data
         except Exception as e:
-            logger.warning("Failed to load prefill messages from %s: %s", path, e)
+            _warn_prefill_once("load_failed", path, "Failed to load prefill messages from %s: %s", path, e)
             return []
 
     @staticmethod

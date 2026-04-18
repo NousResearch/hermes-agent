@@ -736,10 +736,30 @@ def test_register_skill_command_empty_skills_no_command(adapter):
     assert "skill" not in tree.commands
 
 
-def test_register_skill_command_callback_dispatches_by_name(adapter):
-    """The /skill callback should look up the skill by ``name`` and
-    dispatch via ``_run_simple_slash`` with the real command key.
-    """
+def test_register_skill_group_hidden_warning_is_deduplicated_per_adapter(adapter, monkeypatch):
+    """Hidden-skill warning should emit once even if slash registration runs repeatedly."""
+    import gateway.platforms.discord as discord_platform
+
+    warnings: list[str] = []
+
+    def _warn(message, *args):
+        warnings.append(message % args if args else message)
+
+    monkeypatch.setattr(discord_platform.logger, "warning", _warn)
+
+    with patch(
+        "hermes_cli.commands.discord_skill_commands_by_category",
+        return_value=({}, [], 7),
+    ):
+        adapter._register_slash_commands()
+        adapter._register_slash_commands()
+
+    hidden = [msg for msg in warnings if "not registered (Discord subcommand limits)" in msg]
+    assert len(hidden) == 1, f"Expected one hidden-skills warning, got: {hidden}"
+
+
+def test_register_skill_group_handler_dispatches_command(adapter):
+    """Skill subcommand handlers should dispatch the correct /cmd-key text."""
     mock_categories = {
         "media": [
             ("gif-search", "Search for GIFs", "/gif-search"),

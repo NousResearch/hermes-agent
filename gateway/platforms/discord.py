@@ -523,6 +523,9 @@ class DiscordAdapter(BasePlatformAdapter):
         # Dedup cache: prevents duplicate bot responses when Discord
         # RESUME replays events after reconnects.
         self._dedup = MessageDeduplicator()
+        # Warning dedupe cache for adapter-lifecycle "warn once" semantics.
+        # Keys are warning-type specific tuples, e.g. ("skill_hidden", hidden_count).
+        self._warning_dedupe_keys: set[tuple[str, int]] = set()
         # Reply threading mode: "off" (no replies), "first" (reply on first
         # chunk only, default), "all" (reply-reference on every chunk).
         self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
@@ -2210,6 +2213,14 @@ class DiscordAdapter(BasePlatformAdapter):
                 entries.extend(cat_skills)
 
             if not entries:
+                if hidden:
+                    warn_key = ("skill_hidden", int(hidden))
+                    if warn_key not in self._warning_dedupe_keys:
+                        self._warning_dedupe_keys.add(warn_key)
+                        logger.warning(
+                            "[%s] %d skill(s) not registered (Discord subcommand limits)",
+                            self.name, hidden,
+                        )
                 return
 
             # Stable alphabetical order so the autocomplete suggestion
@@ -2283,10 +2294,13 @@ class DiscordAdapter(BasePlatformAdapter):
                 self.name, len(entries),
             )
             if hidden:
-                logger.info(
-                    "[%s] %d skill(s) filtered out of /skill (name clamp / reserved)",
-                    self.name, hidden,
-                )
+                warn_key = ("skill_hidden", int(hidden))
+                if warn_key not in self._warning_dedupe_keys:
+                    self._warning_dedupe_keys.add(warn_key)
+                    logger.warning(
+                        "[%s] %d skill(s) not registered (Discord subcommand limits)",
+                        self.name, hidden,
+                    )
         except Exception as exc:
             logger.warning("[%s] Failed to register /skill command: %s", self.name, exc)
 

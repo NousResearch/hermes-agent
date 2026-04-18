@@ -319,3 +319,23 @@ async def test_start_gateway_replace_clears_marker_on_permission_denied(
     assert ok is False
     # Marker must NOT be left behind
     assert not (tmp_path / ".gateway-takeover.json").exists()
+
+
+def test_gateway_prefill_loader_warns_once_per_missing_path(monkeypatch, tmp_path):
+    import gateway.run as gateway_run
+
+    missing = tmp_path / "missing-prefill.json"
+    monkeypatch.setenv("HERMES_PREFILL_MESSAGES_FILE", str(missing))
+
+    seen: list[str] = []
+
+    def _warn(message, *args):
+        seen.append(message % args if args else message)
+
+    monkeypatch.setattr(gateway_run.logger, "warning", _warn)
+
+    GatewayRunner._load_prefill_messages()
+    GatewayRunner._load_prefill_messages()
+
+    warnings = [msg for msg in seen if "Prefill messages file not found" in msg]
+    assert len(warnings) == 1

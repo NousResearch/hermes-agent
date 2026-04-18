@@ -168,7 +168,7 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         id="kimi-coding",
         name="Kimi / Moonshot",
         auth_type="api_key",
-        inference_base_url="https://api.moonshot.ai/v1",
+        inference_base_url="https://api.kimi.com/coding",
         api_key_env_vars=("KIMI_API_KEY", "KIMI_CODING_API_KEY"),
         base_url_env_var="KIMI_BASE_URL",
     ),

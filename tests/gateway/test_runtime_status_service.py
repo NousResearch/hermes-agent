@@ -225,3 +225,4 @@ def test_render_status_command_renders_status_lines_with_foreground_and_backgrou
     assert "Direct Shortcuts" in result
     assert "Background Jobs" in result
     assert "`bg_123`" in result
+    assert "微信群项目组" in result

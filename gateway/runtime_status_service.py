@@ -414,13 +414,25 @@ def render_status_command(
             bits = [bit for bit in (handler_label, text_preview) if bit]
             if bits:
                 lines.append(f"- {' · '.join(bits)}")
-    for group in list(monitoring_summary.get("groups") or [])[:3]:
-        group_label = str(group.get("group_name") or group.get("group_id") or "unknown").strip()
-        if group.get("group_id") and group.get("group_name") and group["group_id"] != group["group_name"]:
-            group_label = f"{group['group_name']} ({group['group_id']})"
+    shared_group_preview = list(group_monitoring_summary.get("groups") or [])[:3]
+    if not shared_group_preview:
+        shared_group_preview = [
+            {"platform_label": "QQ 群", **group}
+            for group in list(monitoring_summary.get("groups") or [])[:3]
+            if isinstance(group, dict)
+        ]
+    for group in shared_group_preview:
+        if not isinstance(group, dict):
+            continue
+        group_target = str(group.get("group_id") or group.get("chat_id") or "").strip()
+        group_label = str(group.get("group_name") or group_target or "unknown").strip()
+        if group_target and group.get("group_name") and group_target != group["group_name"]:
+            group_label = f"{group['group_name']} ({group_target})"
+        platform_label = str(group.get("platform_label") or "").strip()
         worker_names = ", ".join(group.get("worker_names") or []) or "无人值守"
         report_label = "日报开" if bool(group.get("daily_report_enabled")) else "日报关"
-        lines.append(f"- {group_label} · collect_only · {worker_names} · {report_label}")
+        preview_bits = [bit for bit in (platform_label, group_label, "collect_only", worker_names, report_label) if bit]
+        lines.append(f"- {' · '.join(preview_bits)}")
 
     jobs = runner._background_jobs_for_source(source)
     if jobs:

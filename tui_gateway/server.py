@@ -589,6 +589,11 @@ def _session_info(agent) -> dict:
     except Exception:
         pass
     try:
+        from tools.mcp_tool import get_mcp_status
+        info["mcp_servers"] = get_mcp_status()
+    except Exception:
+        info["mcp_servers"] = []
+    try:
         from hermes_cli.banner import get_update_result
         from hermes_cli.config import recommended_update_command
         info["update_behind"] = get_update_result(timeout=0.5)

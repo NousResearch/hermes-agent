@@ -125,6 +125,29 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           echo "ok" > $out/result
         '';
 
+        # Verify HERMES_NODE is set in wrapper and points to Node 20+
+        # (string-width uses the /v regex flag which requires Node 20+)
+        hermes-node = pkgs.runCommand "hermes-node-version" { } ''
+          set -e
+          echo "=== Checking HERMES_NODE in wrapper ==="
+          grep -q "HERMES_NODE" ${hermes-agent}/bin/hermes || \
+            (echo "FAIL: HERMES_NODE not set in wrapper"; exit 1)
+          echo "PASS: HERMES_NODE present in wrapper"
+
+          HERMES_NODE=$(sed -n "s/^export HERMES_NODE='\(.*\)'/\1/p" ${hermes-agent}/bin/hermes)
+          test -x "$HERMES_NODE" || (echo "FAIL: HERMES_NODE=$HERMES_NODE not executable"; exit 1)
+          echo "PASS: HERMES_NODE executable at $HERMES_NODE"
+
+          NODE_MAJOR=$("$HERMES_NODE" --version | sed 's/^v//' | cut -d. -f1)
+          test "$NODE_MAJOR" -ge 20 || \
+            (echo "FAIL: Node v$NODE_MAJOR < 20, TUI needs /v regex flag support"; exit 1)
+          echo "PASS: Node v$NODE_MAJOR >= 20"
+
+          echo "=== All HERMES_NODE checks passed ==="
+          mkdir -p $out
+          echo "ok" > $out/result
+        '';
+
         # Verify HERMES_MANAGED guard works on all mutation commands
         managed-guard = pkgs.runCommand "hermes-managed-guard" { } ''
           set -e

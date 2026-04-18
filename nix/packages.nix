@@ -63,7 +63,8 @@
                   --suffix PATH : "${runtimePath}" \
                   --set HERMES_BUNDLED_SKILLS $out/share/hermes-agent/skills \
                   --set HERMES_TUI_DIR $out/ui-tui \
-                  --set HERMES_PYTHON ${hermesVenv}/bin/python3
+                  --set HERMES_PYTHON ${hermesVenv}/bin/python3 \
+                  --set HERMES_NODE ${pkgs.nodejs_22}/bin/node
               '')
               [
                 "hermes"

@@ -205,6 +205,7 @@ def _discover_tools():
         "tools.delegate_tool",
         "tools.process_registry",
         "tools.send_message_tool",
+        "tools.employee_route_tool",
         "tools.qq_control_tool",
         "tools.qq_social_tool",
         "tools.qq_intel_tool",

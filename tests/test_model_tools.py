@@ -128,6 +128,7 @@ class TestBackwardCompat:
         assert "web_search" in names
         assert "terminal" in names
         assert "qq_control" in names
+        assert "employee_route_control" in names
 
     def test_get_toolset_for_tool(self):
         result = get_toolset_for_tool("web_search")

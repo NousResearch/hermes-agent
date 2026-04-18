@@ -60,6 +60,8 @@ _HERMES_CORE_TOOLS = [
     "cronjob",
     # Cross-platform messaging (gated on gateway running via check_fn)
     "send_message",
+    # Dynamic employee background routing
+    "employee_route_control",
     # Unified QQ/NapCat control plane
     "qq_control",
     # Unified Weixin control plane
@@ -142,7 +144,7 @@ TOOLSETS = {
     
     "messaging": {
         "description": "Cross-platform messaging: send messages to Telegram, Discord, Slack, SMS, etc.",
-        "tools": ["send_message", "qq_control", "qq_social_control", "qq_group_policy", "qq_group_archive", "weixin_control", "weixin_group_policy", "weixin_group_archive"],
+        "tools": ["send_message", "employee_route_control", "qq_control", "qq_social_control", "qq_group_policy", "qq_group_archive", "weixin_control", "weixin_group_policy", "weixin_group_archive"],
         "includes": []
     },
 

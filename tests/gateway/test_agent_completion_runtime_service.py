@@ -226,3 +226,33 @@ async def test_prepare_gateway_agent_completion_handles_reasoning_hook_and_watch
     )
     assert process_registry.pending_watchers == []
     assert len(scheduled) == 1
+
+
+@pytest.mark.asyncio
+async def test_prepare_gateway_agent_completion_marks_synthetic_fallback_on_agent_result():
+    hooks = SimpleNamespace(emit=AsyncMock())
+    logger = MagicMock()
+    session_entry = SimpleNamespace(session_id="sess-1")
+    agent_result = {
+        "final_response": "(empty)",
+        "messages": [],
+        "api_calls": 1,
+    }
+
+    result = await prepare_gateway_agent_completion(
+        agent_result=agent_result,
+        history_len=2,
+        empty_response_fallback=lambda kind: "刚才接口空转了",
+        session_entry=session_entry,
+        show_reasoning=False,
+        hook_ctx={"session_id": "sess-1"},
+        hooks=hooks,
+        logger=logger,
+        platform_name="qq",
+        chat_id="group-1",
+        msg_start_time=0.0,
+    )
+
+    assert result.response == "刚才接口空转了"
+    assert agent_result["response_state"] == "qq_explicit_fallback"
+    assert agent_result["synthetic_fallback"] is True

@@ -156,6 +156,8 @@ async def prepare_gateway_agent_completion(
     suppress_reply = normalized_response.suppress_reply
     response_state = normalized_response.response_state
     agent_messages = agent_result.get("messages", [])
+    agent_result["response_state"] = response_state
+    agent_result["synthetic_fallback"] = bool(normalized_response.synthetic_fallback)
 
     log_gateway_response_ready(
         logger=logger,

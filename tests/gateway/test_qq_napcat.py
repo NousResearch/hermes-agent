@@ -582,6 +582,56 @@ async def test_group_follow_up_window_allows_same_user_without_repeat_mention():
 
 
 @pytest.mark.asyncio
+async def test_synthetic_fallback_response_does_not_open_group_follow_up_window():
+    from gateway.platforms.qq_napcat import QqNapCatAdapter
+    from gateway.platforms.base import MessageEvent
+    from gateway.session import SessionSource
+
+    adapter = QqNapCatAdapter(
+        PlatformConfig(
+            enabled=True,
+            extra={
+                "ws_url": "ws://127.0.0.1:3001",
+                "allow_all_groups": True,
+                "require_mention": True,
+            },
+        )
+    )
+    adapter.handle_message = AsyncMock()
+
+    adapter._record_successful_response_context(
+        MessageEvent(
+            text="刚才这轮接口空转了",
+            source=SessionSource(
+                platform=Platform.QQ_NAPCAT,
+                chat_id="987654321",
+                chat_type="group",
+                user_id="456789",
+                user_name="Alice",
+            ),
+            metadata={"skip_successful_response_context": True},
+        ),
+        ["bot-msg-fallback"],
+    )
+
+    await adapter._handle_payload(
+        {
+            "post_type": "message",
+            "message_type": "group",
+            "self_id": 999001,
+            "message_id": 1281,
+            "user_id": 456789,
+            "group_id": 987654321,
+            "raw_message": "继续说",
+            "message": [{"type": "text", "data": {"text": "继续说"}}],
+            "sender": {"nickname": "Alice", "card": "AliceCard"},
+        }
+    )
+
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_group_follow_up_window_does_not_open_for_other_users():
     from gateway.platforms.qq_napcat import QqNapCatAdapter
     from gateway.platforms.base import MessageEvent

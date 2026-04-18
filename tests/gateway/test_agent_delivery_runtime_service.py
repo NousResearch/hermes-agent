@@ -1,4 +1,5 @@
 from unittest.mock import ANY, AsyncMock, MagicMock
+from types import SimpleNamespace
 
 import pytest
 
@@ -121,3 +122,28 @@ async def test_finalize_gateway_agent_delivery_skips_media_when_response_empty()
     )
     send_voice_reply.assert_not_awaited()
     deliver_media_from_response.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_finalize_gateway_agent_delivery_marks_synthetic_fallback_on_event_metadata():
+    should_send_voice_reply = MagicMock(return_value=False)
+    send_voice_reply = AsyncMock()
+    deliver_media_from_response = AsyncMock()
+    event = SimpleNamespace(metadata={"existing": True})
+
+    result = await finalize_gateway_agent_delivery(
+        agent_result={"synthetic_fallback": True},
+        suppress_reply=False,
+        response="刚才这轮接口空转了",
+        agent_messages=[],
+        event=event,
+        platform="qq",
+        adapters={},
+        should_send_voice_reply=should_send_voice_reply,
+        send_voice_reply=send_voice_reply,
+        deliver_media_from_response=deliver_media_from_response,
+    )
+
+    assert result == "刚才这轮接口空转了"
+    assert event.metadata["existing"] is True
+    assert event.metadata["skip_successful_response_context"] is True

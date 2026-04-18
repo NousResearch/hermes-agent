@@ -1120,6 +1120,9 @@ class QqNapCatAdapter(BasePlatformAdapter):
         event: MessageEvent,
         sent_message_ids: list[str],
     ) -> None:
+        metadata = getattr(event, "metadata", None) or {}
+        if bool(metadata.get("skip_successful_response_context")):
+            return
         source = getattr(event, "source", None)
         if not source or str(getattr(source, "chat_type", "")).lower() != "group":
             return

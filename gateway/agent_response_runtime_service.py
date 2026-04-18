@@ -14,6 +14,7 @@ class GatewayNormalizedResponse:
     response: str
     suppress_reply: bool
     response_state: str
+    synthetic_fallback: bool = False
 
 
 def build_failed_agent_response(
@@ -119,6 +120,7 @@ def normalize_gateway_agent_response(
     response = str(agent_result.get("final_response") or "")
     suppress_reply = bool(agent_result.get("suppress_reply"))
     response_state = "sent"
+    synthetic_fallback = False
 
     if response.strip() in {"(empty)", "[[NO_REPLY]]"}:
         empty_kind = "no_reply" if response.strip() == "[[NO_REPLY]]" else "empty"
@@ -127,6 +129,7 @@ def normalize_gateway_agent_response(
             response = fallback
             suppress_reply = False
             response_state = "qq_explicit_fallback"
+            synthetic_fallback = True
         else:
             suppress_reply = True
             response = ""
@@ -151,4 +154,5 @@ def normalize_gateway_agent_response(
         response=response,
         suppress_reply=suppress_reply,
         response_state=response_state,
+        synthetic_fallback=synthetic_fallback,
     )

@@ -16,6 +16,18 @@ from gateway.qq_intents import (
     _QQ_INTEL_WORKER_STATUS_QUERY_TERMS,
 )
 
+_QQ_INTEL_WORKER_BOUNDARY = (
+    r"(?=(?:现在|马上|立刻|先|暂停|恢复|停止|继续|汇报|回报|状态|情况|任务|监听|采集|潜伏|刺探|，|,|。|；|;|\s|$))"
+)
+_QQ_INTEL_WORKER_TRAILING_TOKENS_RE = re.compile(r"(?:现在|马上|立刻|先)+$")
+
+
+def _normalize_qq_worker_name_candidate(candidate: str) -> str:
+    normalized = _QQ_INTEL_WORKER_TRAILING_TOKENS_RE.sub("", str(candidate or "").strip()).strip()
+    if normalized in _QQ_INTEL_WORKER_NAME_STOPWORDS:
+        return ""
+    return normalized
+
 
 def extract_qq_worker_name(message_text: str) -> str:
     body = str(message_text or "").strip()
@@ -25,16 +37,20 @@ def extract_qq_worker_name(message_text: str) -> str:
         re.compile(
             r"(?:情报员|员工)\s*[：:，,\s]*"
             r"([A-Za-z0-9_\-\u4e00-\u9fff]{1,20}?)"
-            r"(?=(?:现在|马上|立刻|先|暂停|恢复|停止|继续|汇报|回报|状态|情况|任务|监听|采集|潜伏|刺探|，|,|。|；|;|\s|$))"
+            + _QQ_INTEL_WORKER_BOUNDARY
         ),
-        re.compile(r"让\s*([A-Za-z0-9_\-\u4e00-\u9fff]{1,20})\s*(?:现在|马上|立刻|先)?(?:汇报|回报|暂停|恢复|停止|继续)"),
+        re.compile(
+            r"让\s*([A-Za-z0-9_\-\u4e00-\u9fff]{1,20}?)"
+            + _QQ_INTEL_WORKER_BOUNDARY
+            + r"\s*(?:现在|马上|立刻|先)?(?:汇报|回报|暂停|恢复|停止|继续)"
+        ),
     )
     for pattern in patterns:
         match = pattern.search(body)
         if not match:
             continue
-        candidate = str(match.group(1) or "").strip()
-        if candidate in _QQ_INTEL_WORKER_NAME_STOPWORDS:
+        candidate = _normalize_qq_worker_name_candidate(match.group(1) or "")
+        if not candidate:
             continue
         return candidate
     return ""

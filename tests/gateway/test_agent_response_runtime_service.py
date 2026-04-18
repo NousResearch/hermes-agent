@@ -35,6 +35,7 @@ def test_normalize_gateway_agent_response_uses_visible_fallback():
     assert result.response == "收到，你继续说。"
     assert result.suppress_reply is False
     assert result.response_state == "qq_explicit_fallback"
+    assert result.synthetic_fallback is True
 
 
 def test_build_failed_agent_response_detects_context_overflow():

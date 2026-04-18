@@ -22,6 +22,10 @@ async def finalize_gateway_agent_delivery(
 
     resolved_messages = agent_messages or []
     already_sent = bool(agent_result.get("already_sent"))
+    if agent_result.get("synthetic_fallback"):
+        metadata = dict(getattr(event, "metadata", None) or {})
+        metadata["skip_successful_response_context"] = True
+        event.metadata = metadata
 
     if (
         not suppress_reply

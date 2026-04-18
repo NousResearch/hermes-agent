@@ -56,6 +56,7 @@ hermes skills uninstall <skill-name>
 | **blender-mcp** | Control Blender directly from Hermes via socket connection to the blender-mcp addon. Create 3D objects, materials, animations, and run arbitrary Blender Python (bpy) code. |
 | **concept-diagrams** | Generate flat, minimal light/dark-aware SVG diagrams as standalone HTML files, using a unified educational visual language (9 semantic color ramps, automatic dark mode). Best for physics setups, chemistry mechanisms, math curves, physical objects (aircraft, turbines, smartphones), floor plans, cross-sections, lifecycle/process narratives, and hub-spoke system diagrams. Ships with 15 example diagrams. |
 | **meme-generation** | Generate real meme images by picking a template and overlaying text with Pillow. Produces actual `.png` meme files. |
+| **touchdesigner-mcp** | Control a running TouchDesigner instance via the twozero MCP plugin — create operators, set parameters, wire connections, execute Python, build real-time audio-reactive visuals and GLSL networks. 36 native tools. |
 
 ## DevOps
 

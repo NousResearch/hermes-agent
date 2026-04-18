@@ -425,6 +425,36 @@ class TestIncomingDocumentHandling:
         assert "# Title" in msg_event.text
 
     @pytest.mark.asyncio
+    async def test_json_snippet_injects_content(self, adapter):
+        """A .json snippet should be treated as a text document and injected."""
+        content = b'{"hello": "world", "count": 2}'
+
+        with patch.object(adapter, "_download_slack_file_bytes", new_callable=AsyncMock) as dl:
+            dl.return_value = content
+            event = self._make_event(
+                text="can you parse this",
+                files=[{
+                    "mimetype": "text/plain",
+                    "name": "zapfile.json",
+                    "filetype": "json",
+                    "pretty_type": "JSON",
+                    "mode": "snippet",
+                    "editable": True,
+                    "url_private_download": "https://files.slack.com/zapfile.json",
+                    "size": len(content),
+                }],
+            )
+            await adapter._handle_slack_message(event)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.message_type == MessageType.DOCUMENT
+        assert len(msg_event.media_urls) == 1
+        assert msg_event.media_types == ["application/json"]
+        assert '[Content of zapfile.json]' in msg_event.text
+        assert '"hello": "world"' in msg_event.text
+        assert 'can you parse this' in msg_event.text
+
+    @pytest.mark.asyncio
     async def test_large_txt_not_injected(self, adapter):
         """A .txt file over 100KB should be cached but NOT injected."""
         content = b"x" * (200 * 1024)

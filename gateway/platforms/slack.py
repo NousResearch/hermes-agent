@@ -191,6 +191,21 @@ class SlackAdapter(BasePlatformAdapter):
             async def handle_app_mention(event, say):
                 pass
 
+            # File lifecycle events can arrive around snippet uploads even when
+            # the actual user message is what we care about. Ack them so Slack
+            # doesn't log noisy 404 "unhandled request" warnings.
+            @self._app.event("file_shared")
+            async def handle_file_shared(event, say):
+                pass
+
+            @self._app.event("file_created")
+            async def handle_file_created(event, say):
+                pass
+
+            @self._app.event("file_change")
+            async def handle_file_change(event, say):
+                pass
+
             @self._app.event("assistant_thread_started")
             async def handle_assistant_thread_started(event, say):
                 await self._handle_assistant_thread_lifecycle_event(event)
@@ -1223,9 +1238,14 @@ class SlackAdapter(BasePlatformAdapter):
                     media_types.append(doc_mime)
                     logger.debug("[Slack] Cached user document: %s", cached_path)
 
-                    # Inject text content for .txt/.md files (capped at 100 KB)
+                    # Inject small text-ish files directly into the prompt so
+                    # snippets like JSON/YAML/configs are actually visible to the agent.
                     MAX_TEXT_INJECT_BYTES = 100 * 1024
-                    if ext in (".md", ".txt") and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
+                    TEXT_INJECT_EXTENSIONS = {
+                        ".md", ".txt", ".csv", ".log", ".json", ".xml",
+                        ".yaml", ".yml", ".toml", ".ini", ".cfg",
+                    }
+                    if ext in TEXT_INJECT_EXTENSIONS and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
                         try:
                             text_content = raw_bytes.decode("utf-8")
                             display_name = original_filename or f"document{ext}"

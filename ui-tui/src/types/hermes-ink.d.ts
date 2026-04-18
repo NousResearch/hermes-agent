@@ -63,6 +63,7 @@ declare module '@hermes/ink' {
   export const Box: React.ComponentType<any>
   export const AlternateScreen: React.ComponentType<any>
   export const Ansi: React.ComponentType<any>
+  export const Link: React.ComponentType<{ readonly url: string; readonly children?: React.ReactNode; readonly fallback?: React.ReactNode }>
   export const NoSelect: React.ComponentType<any>
   export const ScrollBox: React.ComponentType<any>
   export const Text: React.ComponentType<any>

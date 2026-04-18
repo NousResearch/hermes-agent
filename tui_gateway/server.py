@@ -2333,6 +2333,19 @@ def _(rid, params: dict) -> dict:
     if not cmd:
         return _err(rid, 4004, "empty command")
 
+    # Skill slash commands (e.g. /hermes-agent-dev) must NOT go through the
+    # slash worker — process_command() queues the skill payload onto
+    # _pending_input which nobody reads in the worker subprocess.  Reject
+    # here so the TUI falls through to command.dispatch which handles skills
+    # correctly (builds the invocation message and returns it to the client).
+    try:
+        from agent.skill_commands import scan_skill_commands
+        _cmd_key = f"/{cmd.split()[0]}" if not cmd.startswith("/") else f"/{cmd.lstrip('/').split()[0]}"
+        if _cmd_key in scan_skill_commands():
+            return _err(rid, 4018, f"skill command: use command.dispatch for {_cmd_key}")
+    except Exception:
+        pass
+
     worker = session.get("slash_worker")
     if not worker:
         try:

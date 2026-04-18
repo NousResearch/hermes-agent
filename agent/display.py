@@ -713,7 +713,11 @@ class KawaiiSpinner:
         # Driving a \r-based animation here too causes visual overdraw: the
         # StdoutProxy injects newlines around each flush, so every frame lands
         # on a new line and overwrites the status bar.
-        if self._is_patch_stdout_proxy():
+        #
+        # Same problem when _print_fn is set: it routes through
+        # print_formatted_text() which always appends \n, so \r-based
+        # overwrites become visible line spam (e.g. /deliver spinner).
+        if self._is_patch_stdout_proxy() or self._print_fn is not None:
             while self.running:
                 time.sleep(0.1)
             return

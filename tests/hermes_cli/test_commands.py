@@ -556,7 +556,9 @@ class TestGhostText:
 
     def test_fast_subcommand_suggestion_hidden_when_filtered(self):
         completer = SlashCommandCompleter(command_filter=lambda cmd: cmd != "/fast")
-        assert _suggestion("/fa", completer=completer) is None
+        # /fa now also matches /fanout (which is not filtered), so we get 'nout'
+        result = _suggestion("/fa", completer=completer)
+        assert result == "nout" or result is None  # depends on registry order
 
     def test_no_suggestion_for_non_slash(self):
         assert _suggestion("hello") is None

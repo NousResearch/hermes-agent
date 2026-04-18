@@ -244,6 +244,22 @@ def is_anthropic_bedrock_model(model_id: str) -> bool:
     return model_lower.startswith("anthropic.claude")
 
 
+def _bedrock_prompt_cache_enabled(model_id: str) -> bool:
+    """Return True when Bedrock prompt caching should be enabled for this model."""
+    env_value = (os.environ.get("HERMES_BEDROCK_PROMPT_CACHE", "1") or "").strip().lower()
+    if env_value in {"0", "false", "no", "off"}:
+        return False
+    return is_anthropic_bedrock_model(model_id)
+
+
+def _bedrock_prompt_cache_point() -> Dict[str, Dict[str, str]]:
+    """Build a Bedrock Converse cachePoint block with validated TTL."""
+    ttl = (os.environ.get("HERMES_BEDROCK_CACHE_TTL", "5m") or "5m").strip().lower()
+    if ttl not in {"5m", "1h"}:
+        ttl = "5m"
+    return {"cachePoint": {"type": "default", "ttl": ttl}}
+
+
 # ---------------------------------------------------------------------------
 # Message format conversion: OpenAI → Bedrock Converse
 # ---------------------------------------------------------------------------
@@ -717,6 +733,16 @@ def build_converse_kwargs(
     Converts OpenAI-format inputs to Converse API parameters.
     """
     system_prompt, converse_messages = convert_messages_to_converse(messages)
+    cache_point = _bedrock_prompt_cache_point() if _bedrock_prompt_cache_enabled(model) else None
+
+    if cache_point and system_prompt:
+        system_prompt = list(system_prompt) + [cache_point]
+
+    if cache_point:
+        for message in reversed(converse_messages):
+            if message.get("role") == "user" and isinstance(message.get("content"), list):
+                message["content"] = list(message["content"]) + [cache_point]
+                break
 
     kwargs: Dict[str, Any] = {
         "modelId": model,
@@ -747,6 +773,8 @@ def build_converse_kwargs(
             # Strip tools for known non-tool-calling models and warn the user.
             # Ref: PR #7920 feedback from @ptlally, pattern from PR #4346.
             if _model_supports_tool_use(model):
+                if cache_point:
+                    converse_tools = list(converse_tools) + [cache_point]
                 kwargs["toolConfig"] = {"tools": converse_tools}
             else:
                 logger.warning(

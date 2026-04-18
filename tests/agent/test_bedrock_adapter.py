@@ -605,6 +605,74 @@ class TestBuildConverseKwargs:
         )
         assert "toolConfig" not in kwargs
 
+    def test_claude_models_add_cache_points_to_converse_fields(self):
+        from agent.bedrock_adapter import build_converse_kwargs
+        messages = [
+            {"role": "system", "content": "Be helpful."},
+            {"role": "user", "content": "First question"},
+            {"role": "assistant", "content": "First answer"},
+            {"role": "user", "content": "Second question"},
+        ]
+        tools = [{"type": "function", "function": {
+            "name": "lookup_weather", "description": "Look up weather", "parameters": {},
+        }}]
+
+        kwargs = build_converse_kwargs(
+            model="global.anthropic.claude-opus-4-7",
+            messages=messages,
+            tools=tools,
+        )
+
+        assert kwargs["system"][-1]["cachePoint"] == {"type": "default", "ttl": "5m"}
+        assert kwargs["toolConfig"]["tools"][-1]["cachePoint"] == {"type": "default", "ttl": "5m"}
+        assert kwargs["messages"][-1]["role"] == "user"
+        assert kwargs["messages"][-1]["content"][-1]["cachePoint"] == {"type": "default", "ttl": "5m"}
+
+    def test_bedrock_cache_ttl_env_accepts_one_hour(self):
+        from agent.bedrock_adapter import build_converse_kwargs
+        with patch.dict(os.environ, {"HERMES_BEDROCK_CACHE_TTL": "1h"}, clear=False):
+            kwargs = build_converse_kwargs(
+                model="anthropic.claude-sonnet-4-20250514-v1:0",
+                messages=[
+                    {"role": "system", "content": "Be helpful."},
+                    {"role": "user", "content": "Hi"},
+                ],
+            )
+
+        assert kwargs["system"][-1]["cachePoint"] == {"type": "default", "ttl": "1h"}
+        assert kwargs["messages"][-1]["content"][-1]["cachePoint"] == {"type": "default", "ttl": "1h"}
+
+    def test_invalid_bedrock_cache_ttl_falls_back_to_five_minutes(self):
+        from agent.bedrock_adapter import build_converse_kwargs
+        with patch.dict(os.environ, {"HERMES_BEDROCK_CACHE_TTL": "2h"}, clear=False):
+            kwargs = build_converse_kwargs(
+                model="anthropic.claude-sonnet-4-20250514-v1:0",
+                messages=[
+                    {"role": "system", "content": "Be helpful."},
+                    {"role": "user", "content": "Hi"},
+                ],
+            )
+
+        assert kwargs["system"][-1]["cachePoint"] == {"type": "default", "ttl": "5m"}
+        assert kwargs["messages"][-1]["content"][-1]["cachePoint"] == {"type": "default", "ttl": "5m"}
+
+    def test_non_claude_models_do_not_add_cache_points(self):
+        from agent.bedrock_adapter import build_converse_kwargs
+        kwargs = build_converse_kwargs(
+            model="amazon.nova-pro-v1:0",
+            messages=[
+                {"role": "system", "content": "Be helpful."},
+                {"role": "user", "content": "Hi"},
+            ],
+            tools=[{"type": "function", "function": {
+                "name": "lookup_weather", "description": "Look up weather", "parameters": {},
+            }}],
+        )
+
+        assert "cachePoint" not in kwargs["system"][-1]
+        assert "cachePoint" not in kwargs["messages"][-1]["content"][-1]
+        assert "cachePoint" not in kwargs["toolConfig"]["tools"][-1]
+
 
 # ---------------------------------------------------------------------------
 # Model discovery

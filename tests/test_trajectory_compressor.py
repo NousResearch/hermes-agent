@@ -31,6 +31,29 @@ def test_import_loads_env_from_hermes_home(tmp_path, monkeypatch):
     assert os.getenv("OPENROUTER_API_KEY") == "from-hermes-home"
 
 
+def test_generate_summary_custom_client_forces_kimi_temperature():
+    config = CompressionConfig(
+        summarization_model="kimi-for-coding",
+        temperature=0.3,
+        summary_target_tokens=100,
+        max_retries=1,
+    )
+    compressor = TrajectoryCompressor.__new__(TrajectoryCompressor)
+    compressor.config = config
+    compressor.logger = MagicMock()
+    compressor._use_call_llm = False
+    compressor.client = MagicMock()
+    compressor.client.chat.completions.create.return_value = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content="[CONTEXT SUMMARY]: summary"))]
+    )
+
+    metrics = TrajectoryMetrics()
+    result = compressor._generate_summary("tool output", metrics)
+
+    assert result.startswith("[CONTEXT SUMMARY]:")
+    assert compressor.client.chat.completions.create.call_args.kwargs["temperature"] == 0.6
+
+
 # ---------------------------------------------------------------------------
 # CompressionConfig
 # ---------------------------------------------------------------------------

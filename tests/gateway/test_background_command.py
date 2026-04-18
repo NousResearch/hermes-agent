@@ -237,6 +237,45 @@ class TestRunBackgroundTask:
         mock_agent_instance.close.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_voice_media_is_sent_as_voice_in_background_task(self):
+        """Voice-tagged media responses should use send_voice, not send_document."""
+        runner = _make_runner()
+        mock_adapter = AsyncMock()
+        mock_adapter.send = AsyncMock()
+        mock_adapter.send_voice = AsyncMock()
+        mock_adapter.send_document = AsyncMock()
+        mock_adapter.send_video = AsyncMock()
+        mock_adapter.send_image_file = AsyncMock()
+        mock_adapter.extract_media = MagicMock(return_value=([("/tmp/reply.ogg", True)], ""))
+        mock_adapter.extract_images = MagicMock(return_value=([], ""))
+        runner.adapters[Platform.TELEGRAM] = mock_adapter
+
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            user_id="12345",
+            chat_id="67890",
+            user_name="testuser",
+        )
+
+        mock_result = {"final_response": "[[audio_as_voice]]\nMEDIA:/tmp/reply.ogg", "messages": []}
+
+        with patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}), \
+             patch("run_agent.AIAgent") as MockAgent:
+            mock_agent_instance = MagicMock()
+            mock_agent_instance.shutdown_memory_provider = MagicMock()
+            mock_agent_instance.close = MagicMock()
+            mock_agent_instance.run_conversation.return_value = mock_result
+            MockAgent.return_value = mock_agent_instance
+
+            await runner._run_background_task("say it aloud", source, "bg_test")
+
+        mock_adapter.send_voice.assert_awaited_once_with(
+            chat_id="67890",
+            audio_path="/tmp/reply.ogg",
+        )
+        mock_adapter.send_document.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_agent_cleanup_runs_when_background_agent_raises(self):
         """Temporary background agents must be cleaned up on error paths too."""
         runner = _make_runner()

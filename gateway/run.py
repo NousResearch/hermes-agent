@@ -6107,13 +6107,34 @@ class GatewayRunner:
                     except Exception:
                         pass
 
+                _AUDIO_EXTS = {".ogg", ".opus", ".mp3", ".wav", ".m4a"}
+                _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp"}
+                _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+
                 # Send media files
-                for media_path, _is_voice in (media_files or []):
+                for media_path, is_voice in (media_files or []):
                     try:
-                        await adapter.send_document(
-                            chat_id=source.chat_id,
-                            file_path=media_path,
-                        )
+                        ext = Path(media_path).suffix.lower()
+                        if is_voice or ext in _AUDIO_EXTS:
+                            await adapter.send_voice(
+                                chat_id=source.chat_id,
+                                audio_path=media_path,
+                            )
+                        elif ext in _VIDEO_EXTS:
+                            await adapter.send_video(
+                                chat_id=source.chat_id,
+                                video_path=media_path,
+                            )
+                        elif ext in _IMAGE_EXTS:
+                            await adapter.send_image_file(
+                                chat_id=source.chat_id,
+                                image_path=media_path,
+                            )
+                        else:
+                            await adapter.send_document(
+                                chat_id=source.chat_id,
+                                file_path=media_path,
+                            )
                     except Exception:
                         pass
             else:

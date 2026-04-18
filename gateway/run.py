@@ -8601,6 +8601,18 @@ class GatewayRunner:
 
             turn_route = self._resolve_turn_agent_config(message, model, runtime_kwargs)
 
+            _persisted_memory_turns = 0
+            _persisted_skill_iters = 0
+            if session_key and getattr(self, "session_store", None):
+                try:
+                    _persisted_memory_turns = self.session_store.get_memory_nudge_turns(session_key)
+                except Exception:
+                    _persisted_memory_turns = 0
+                try:
+                    _persisted_skill_iters = self.session_store.get_skill_nudge_iters(session_key)
+                except Exception:
+                    _persisted_skill_iters = 0
+
             # Check agent cache — reuse the AIAgent from the previous message
             # in this session to preserve the frozen system prompt and tool
             # schemas for prompt cache hits.
@@ -8653,6 +8665,14 @@ class GatewayRunner:
                     session_db=self._session_db,
                     fallback_model=self._fallback_model,
                 )
+                try:
+                    agent._turns_since_memory = _persisted_memory_turns
+                except Exception:
+                    pass
+                try:
+                    agent._iters_since_skill = _persisted_skill_iters
+                except Exception:
+                    pass
                 if _cache_lock and _cache is not None:
                     with _cache_lock:
                         _cache[session_key] = (agent, _sig)
@@ -8894,6 +8914,16 @@ class GatewayRunner:
                 unregister_gateway_notify(_approval_session_key)
                 reset_current_session_key(_approval_session_token)
             result_holder[0] = result
+
+            if session_key and getattr(self, "session_store", None):
+                try:
+                    self.session_store.update_session(
+                        session_key,
+                        memory_turns_since_review=getattr(agent, "_turns_since_memory", 0),
+                        skill_iters_since_review=getattr(agent, "_iters_since_skill", 0),
+                    )
+                except Exception:
+                    pass
 
             # Signal the stream consumer that the agent is done
             if _stream_consumer is not None:

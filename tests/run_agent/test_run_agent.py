@@ -8,6 +8,7 @@ are made.
 import json
 import logging
 import re
+import threading
 import uuid
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -2157,6 +2158,7 @@ class TestRetryExhaustion:
         assert result.get("failed") is True
         assert "error" in result
         assert "Invalid API response" in result["error"]
+        assert agent.client.chat.completions.create.call_count == 3
 
     def test_string_response_returns_error_not_typeerror(self, agent):
         """Malformed string payloads must degrade gracefully instead of crashing in vars()."""
@@ -3431,23 +3433,67 @@ class TestStreamingApiCall:
 
 
 class TestInterruptVprintForceTrue:
-    """All interrupt _vprint calls must use force=True so they are always visible."""
+    """Interrupt paths must force visibility for user-facing status output."""
 
-    def test_all_interrupt_vprint_have_force_true(self):
-        """Scan source for _vprint calls containing 'Interrupt' — each must have force=True."""
-        import inspect
-        source = inspect.getsource(AIAgent)
-        lines = source.split("\n")
-        violations = []
-        for i, line in enumerate(lines, 1):
-            stripped = line.strip()
-            if "_vprint(" in stripped and "Interrupt" in stripped:
-                if "force=True" not in stripped:
-                    violations.append(f"line {i}: {stripped}")
-        assert not violations, (
-            f"Interrupt _vprint calls missing force=True:\n"
-            + "\n".join(violations)
+    def _setup_agent(self, agent):
+        agent._cached_system_prompt = "You are helpful."
+        agent._use_prompt_caching = False
+        agent.tool_delay = 0
+        agent.compression_enabled = False
+        agent.save_trajectories = False
+
+    def test_run_conversation_forces_api_interrupt_message(self, agent):
+        self._setup_agent(agent)
+
+        def interrupt_side_effect(_api_kwargs):
+            agent._interrupt_requested = True
+            raise InterruptedError("Agent interrupted during API call")
+
+        with (
+            patch.object(agent, "_vprint") as mock_vprint,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch("run_agent._set_interrupt"),
+            patch.object(agent, "_interruptible_api_call", side_effect=interrupt_side_effect),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["interrupted"] is True
+        assert any(
+            call.args
+            and "Interrupted during API call" in call.args[0]
+            and call.kwargs.get("force") is True
+            for call in mock_vprint.call_args_list
         )
+
+    def test_tool_skip_interrupt_message_is_forced(self, agent):
+        assistant_message = SimpleNamespace(
+            tool_calls=[
+                _mock_tool_call(name="web_search", arguments="{}", call_id="tool-1"),
+                _mock_tool_call(name="web_search", arguments="{}", call_id="tool-2"),
+            ]
+        )
+        agent._interrupt_requested = True
+        messages = []
+
+        with patch.object(agent, "_vprint") as mock_vprint:
+            agent._execute_tool_calls_sequential(
+                assistant_message,
+                messages,
+                effective_task_id="task-1",
+                api_call_count=1,
+            )
+
+        assert any(
+            call.args
+            and "Interrupt: skipping 2 tool call(s)" in call.args[0]
+            and call.kwargs.get("force") is True
+            for call in mock_vprint.call_args_list
+        )
+        assert len(messages) == 2
+        assert all(msg["role"] == "tool" for msg in messages)
+        assert all("skipped due to user interrupt" in msg["content"] for msg in messages)
 
 
 # ===================================================================
@@ -3456,28 +3502,94 @@ class TestInterruptVprintForceTrue:
 
 
 class TestAnthropicInterruptHandler:
-    """_interruptible_api_call must handle Anthropic mode when interrupted."""
+    """Anthropic interrupt paths must close and rebuild the native client."""
 
-    def test_interruptible_has_anthropic_branch(self):
-        """The interrupt handler must check api_mode == 'anthropic_messages'."""
-        import inspect
-        source = inspect.getsource(AIAgent._interruptible_api_call)
-        assert "anthropic_messages" in source, \
-            "_interruptible_api_call must handle Anthropic interrupt (api_mode check)"
+    def test_interruptible_api_call_rebuilds_anthropic_client_after_interrupt(self, agent):
+        agent.api_mode = "anthropic_messages"
+        agent._anthropic_api_key = "sk-ant-api03-test"
+        agent._anthropic_base_url = "https://api.anthropic.com"
 
-    def test_interruptible_rebuilds_anthropic_client(self):
-        """After interrupting, the Anthropic client should be rebuilt."""
-        import inspect
-        source = inspect.getsource(AIAgent._interruptible_api_call)
-        assert "build_anthropic_client" in source, \
-            "_interruptible_api_call must rebuild Anthropic client after interrupt"
+        old_client = MagicMock()
+        new_client = MagicMock()
+        started = threading.Event()
+        released = threading.Event()
 
-    def test_streaming_has_anthropic_branch(self):
-        """_streaming_api_call must also handle Anthropic interrupt."""
-        import inspect
-        source = inspect.getsource(AIAgent._interruptible_streaming_api_call)
-        assert "anthropic_messages" in source, \
-            "_streaming_api_call must handle Anthropic interrupt"
+        def _blocking_create(**_kwargs):
+            started.set()
+            assert released.wait(timeout=2), "interrupt did not close anthropic client"
+            return SimpleNamespace(content=[])
+
+        old_client.messages.create.side_effect = _blocking_create
+        old_client.close.side_effect = released.set
+        agent._anthropic_client = old_client
+
+        def _trigger_interrupt():
+            assert started.wait(timeout=1), "Anthropic request thread never started"
+            agent._interrupt_requested = True
+
+        interrupter = threading.Thread(target=_trigger_interrupt, daemon=True)
+        interrupter.start()
+
+        with patch("agent.anthropic_adapter.build_anthropic_client", return_value=new_client) as rebuild:
+            with pytest.raises(InterruptedError, match="Agent interrupted during API call"):
+                agent._interruptible_api_call({"model": "claude-sonnet-4"})
+
+        interrupter.join(timeout=1)
+        old_client.close.assert_called_once()
+        rebuild.assert_called_once_with("sk-ant-api03-test", "https://api.anthropic.com")
+        assert agent._anthropic_client is new_client
+
+    def test_streaming_api_call_rebuilds_anthropic_client_after_interrupt(self, agent):
+        class _BlockingAnthropicStream:
+            def __init__(self, started_event, released_event):
+                self._started = started_event
+                self._released = released_event
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                self._started.set()
+                assert self._released.wait(timeout=2), "interrupt did not close anthropic stream client"
+                raise StopIteration
+
+            def get_final_message(self):
+                return SimpleNamespace(content=[])
+
+        agent.api_mode = "anthropic_messages"
+        agent._anthropic_api_key = "sk-ant-api03-test"
+        agent._anthropic_base_url = "https://api.anthropic.com"
+        agent._try_refresh_anthropic_client_credentials = MagicMock(return_value=False)
+
+        old_client = MagicMock()
+        new_client = MagicMock()
+        started = threading.Event()
+        released = threading.Event()
+        old_client.messages.stream.return_value = _BlockingAnthropicStream(started, released)
+        old_client.close.side_effect = released.set
+        agent._anthropic_client = old_client
+
+        def _trigger_interrupt():
+            assert started.wait(timeout=1), "Anthropic stream thread never started"
+            agent._interrupt_requested = True
+
+        interrupter = threading.Thread(target=_trigger_interrupt, daemon=True)
+        interrupter.start()
+
+        with patch("agent.anthropic_adapter.build_anthropic_client", return_value=new_client) as rebuild:
+            with pytest.raises(InterruptedError, match="Agent interrupted during streaming API call"):
+                agent._interruptible_streaming_api_call({"model": "claude-sonnet-4"})
+
+        interrupter.join(timeout=1)
+        old_client.close.assert_called_once()
+        rebuild.assert_called_once_with("sk-ant-api03-test", "https://api.anthropic.com")
+        assert agent._anthropic_client is new_client
 
 
 # ---------------------------------------------------------------------------
@@ -3799,27 +3911,69 @@ class TestMemoryNudgeCounterPersistence:
         assert a._turns_since_memory == 0
         assert a._iters_since_skill == 0
 
-    def test_counters_not_reset_in_preamble(self):
-        """The run_conversation preamble must not zero the nudge counters."""
-        import inspect
-        src = inspect.getsource(AIAgent.run_conversation)
-        # The preamble resets many fields (retry counts, budget, etc.)
-        # before the main loop. Find that reset block and verify our
-        # counters aren't in it. The reset block ends at iteration_budget.
-        preamble_end = src.index("self.iteration_budget = IterationBudget")
-        preamble = src[:preamble_end]
-        assert "self._turns_since_memory = 0" not in preamble
-        assert "self._iters_since_skill = 0" not in preamble
+    def test_counters_persist_across_run_conversation_calls(self, agent_with_memory_tool):
+        agent = agent_with_memory_tool
+        agent._cached_system_prompt = "You are helpful."
+        agent._use_prompt_caching = False
+        agent.tool_delay = 0
+        agent.compression_enabled = False
+        agent.save_trajectories = False
+        agent.valid_tool_names = {"web_search", "memory", "skill_manage"}
+        agent._memory_store = object()
+        agent._memory_nudge_interval = 100
+        agent._skill_nudge_interval = 100
+        agent._turns_since_memory = 2
+        agent._iters_since_skill = 3
+
+        def _response(*_args, **_kwargs):
+            return _mock_response(content="ok", finish_reason="stop")
+
+        with (
+            patch.object(agent, "_interruptible_api_call", side_effect=_response),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            first = agent.run_conversation("hello")
+            second = agent.run_conversation("hello again")
+
+        assert first["completed"] is True
+        assert second["completed"] is True
+        assert agent._turns_since_memory == 4
+        assert agent._iters_since_skill == 5
 
 
 class TestDeadRetryCode:
-    """Unreachable retry_count >= max_retries after raise must not exist."""
+    """Retry exhaustion must return cleanly instead of falling through."""
 
-    def test_no_unreachable_max_retries_after_backoff(self):
-        import inspect
-        source = inspect.getsource(AIAgent.run_conversation)
-        occurrences = source.count("if retry_count >= max_retries:")
-        assert occurrences == 2, (
-            f"Expected 2 occurrences of 'if retry_count >= max_retries:' "
-            f"but found {occurrences}"
-        )
+    def test_retry_exhaustion_returns_failure_after_max_attempts(self, agent):
+        agent._cached_system_prompt = "You are helpful."
+        agent._use_prompt_caching = False
+        agent.tool_delay = 0
+        agent.compression_enabled = False
+        agent.save_trajectories = False
+        agent.client.chat.completions.create.side_effect = RuntimeError("rate limited")
+
+        mock_time = MagicMock()
+        _t = [1000.0]
+
+        def _advancing_time():
+            _t[0] += 500.0
+            return _t[0]
+
+        mock_time.time.side_effect = _advancing_time
+        mock_time.sleep = MagicMock()
+        mock_time.monotonic.return_value = 12345.0
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch("run_agent.time", mock_time),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["completed"] is False
+        assert result["failed"] is True
+        assert "rate limited" in result["error"]
+        assert agent.client.chat.completions.create.call_count == 3

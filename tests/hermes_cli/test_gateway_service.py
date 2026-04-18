@@ -282,6 +282,18 @@ class TestRuntimeHealthLines:
                             "qq_napcat": 1,
                             "weixin": 1,
                         },
+                        "groups": [
+                            {
+                                "platform_label": "QQ 群",
+                                "group_name": "项目群",
+                                "group_id": "726109087",
+                            },
+                            {
+                                "platform_label": "微信群",
+                                "group_name": "微信群项目组",
+                                "chat_id": "wx-group-1",
+                            },
+                        ],
                     },
                     "direct_shortcuts": {
                         "recent_count": 2,
@@ -324,7 +336,7 @@ class TestRuntimeHealthLines:
         assert any("Auto vision: cooldown 18s" in line for line in lines)
         assert any("Group archive: 50 raw msgs" in line for line in lines)
         assert any("QQ archive: 42 raw msgs" in line for line in lines)
-        assert any("Group monitoring: 2 collect-only group" in line for line in lines)
+        assert any("Group monitoring: 2 collect-only group" in line and "项目群" in line for line in lines)
         assert any("Direct shortcuts: 2 recent hit" in line for line in lines)
         assert any("QQ monitoring: 1 collect-only group" in line for line in lines)
         assert any("项目群" in line or "726109087" in line for line in lines)

@@ -1941,7 +1941,19 @@ def _runtime_health_lines() -> list[str]:
                 count = int(platform_counts.get(platform_name) or 0)
                 if count:
                     platform_bits.append(f"{platform_name}={count}")
-            preview = f" ({', '.join(platform_bits)})" if platform_bits else ""
+            group_preview = ""
+            groups = group_monitoring.get("groups") or []
+            if groups and isinstance(groups[0], dict):
+                group = groups[0]
+                target = str(group.get("group_id") or group.get("chat_id") or "").strip()
+                label = str(group.get("group_name") or target).strip() or target
+                platform_label = str(group.get("platform_label") or "").strip()
+                group_bits = [bit for bit in (platform_label, label) if bit]
+                if group_bits:
+                    group_preview = " · ".join(group_bits)
+            preview_bits = [", ".join(platform_bits) if platform_bits else "", group_preview]
+            preview_text = "; ".join(bit for bit in preview_bits if bit)
+            preview = f" ({preview_text})" if preview_text else ""
             lines.append(
                 f"ℹ Group monitoring: {active_collect_only_groups} collect-only group(s){preview}"
             )

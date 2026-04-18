@@ -1,6 +1,8 @@
 """Tests for check_all_command_guards() — combined tirith + dangerous command guard."""
 
 import os
+import threading
+import time
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -10,8 +12,10 @@ from tools.approval import (
     approve_session,
     check_all_command_guards,
     is_approved,
-    set_current_session_key,
     reset_current_session_key,
+    reset_runtime_interruption_hooks,
+    set_current_session_key,
+    set_runtime_interruption_hooks,
 )
 
 # Ensure the module is importable so we can patch it
@@ -38,11 +42,13 @@ def _clean_state():
     approval_module._session_approved.clear()
     approval_module._pending.clear()
     approval_module._permanent_approved.clear()
+    hook_tokens = set_runtime_interruption_hooks(None, None)
     saved = {}
     for k in ("HERMES_INTERACTIVE", "HERMES_GATEWAY_SESSION", "HERMES_EXEC_ASK", "HERMES_YOLO_MODE"):
         if k in os.environ:
             saved[k] = os.environ.pop(k)
     yield
+    reset_runtime_interruption_hooks(hook_tokens)
     approval_module._session_approved.clear()
     approval_module._pending.clear()
     approval_module._permanent_approved.clear()
@@ -225,6 +231,65 @@ class TestCombinedWarnings:
         # Combined description includes both
         assert "Security scan" in result["description"]
         assert "pipe" in result["description"].lower() or "shell" in result["description"].lower()
+
+    @patch(_TIRITH_PATCH,
+           return_value=_tirith_result("allow"))
+    def test_gateway_blocking_approval_emits_runtime_waiting_external_hooks(self, mock_tirith):
+        from tools.approval import (
+            register_gateway_notify,
+            unregister_gateway_notify,
+            resolve_gateway_approval,
+        )
+
+        session_key = "runtime-waiting-external"
+        notified = []
+        opened = []
+        resumed = []
+        register_gateway_notify(session_key, lambda d: notified.append(d))
+        result_holder = [None]
+
+        def _open_hook(**kwargs):
+            opened.append(kwargs)
+            return "intr-1"
+
+        def _resume_hook(interruption_id, **kwargs):
+            resumed.append((interruption_id, kwargs))
+
+        def agent_thread():
+            token = set_current_session_key(session_key)
+            hook_tokens = set_runtime_interruption_hooks(_open_hook, _resume_hook)
+            os.environ["HERMES_GATEWAY_SESSION"] = "1"
+            os.environ["HERMES_EXEC_ASK"] = "1"
+            os.environ["HERMES_SESSION_KEY"] = session_key
+            try:
+                result_holder[0] = check_all_command_guards("rm -rf /important", "local")
+            finally:
+                os.environ.pop("HERMES_GATEWAY_SESSION", None)
+                os.environ.pop("HERMES_EXEC_ASK", None)
+                os.environ.pop("HERMES_SESSION_KEY", None)
+                reset_runtime_interruption_hooks(hook_tokens)
+                reset_current_session_key(token)
+
+        t = threading.Thread(target=agent_thread)
+        t.start()
+        for _ in range(50):
+            if notified and opened:
+                break
+            time.sleep(0.05)
+
+        assert len(notified) == 1
+        assert len(opened) == 1
+        assert opened[0]["state"] == "waiting_external"
+        assert opened[0]["waiting_on"] == "exec_approval"
+        assert opened[0]["next_step"] == "request_approval"
+
+        resolve_gateway_approval(session_key, "once")
+        t.join(timeout=5)
+
+        assert result_holder[0] is not None
+        assert result_holder[0]["approved"] is True
+        assert resumed == [("intr-1", {"state": "executing", "next_step": "run_again"})]
+        unregister_gateway_notify(session_key)
 
     @patch(_TIRITH_PATCH,
            return_value=_tirith_result("warn",

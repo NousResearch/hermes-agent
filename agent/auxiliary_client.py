@@ -695,18 +695,12 @@ def _nous_base_url() -> str:
 def _read_codex_access_token() -> Optional[str]:
     """Read a valid, non-expired Codex OAuth access token from Hermes auth store.
 
-    If a credential pool exists but currently has no selectable runtime entry
-    (for example all pool slots are marked exhausted), fall back to the
-    profile's auth.json token instead of hard-failing. This keeps explicit
-    fallback-to-Codex working when the pool state is stale but the stored OAuth
-    token is still valid.
+    This helper intentionally reads only Hermes-managed auth.json state.
+    Using load_pool()/pool selection here can auto-import tokens from the
+    external Codex CLI store (~/.codex/auth.json), which makes auxiliary
+    auto-detection unexpectedly pick Codex even when the current Hermes profile
+    has no Codex credentials configured.
     """
-    pool_present, entry = _select_pool_entry("openai-codex")
-    if pool_present:
-        token = _pool_runtime_api_key(entry)
-        if token:
-            return token
-
     try:
         from hermes_cli.auth import _read_codex_tokens
         data = _read_codex_tokens()
@@ -2097,21 +2091,34 @@ def _get_cached_client(
     Async clients (AsyncOpenAI) use httpx.AsyncClient internally, which
     binds to the event loop that was current when the client was created.
     Using such a client on a *different* loop causes deadlocks or
-    RuntimeError.  To prevent cross-loop issues, the cache validates on
-    every async hit that the cached loop is the *current, open* loop.
-    If the loop changed (e.g. a new gateway worker-thread loop), the stale
-    entry is replaced in-place rather than creating an additional entry.
+    RuntimeError. To prevent cross-loop issues, the cache validates on every
+    async hit that the cached loop is the current, open loop and replaces stale
+    entries in-place rather than adding one entry per loop.
 
-    This keeps cache size bounded to one entry per unique provider config,
-    preventing the fd-exhaustion that previously occurred in long-running
-    gateways where recycled worker threads created unbounded entries (#10200).
+    ``provider='auto'`` is intentionally NOT cached: auto resolution depends on
+    ambient config/auth/environment state (e.g. OPENROUTER_API_KEY,
+    HERMES_HOME-backed auth/config, Codex/Nous availability, custom endpoints).
+    Reusing a previously resolved auto client after that state changes can route
+    auxiliary calls to the wrong backend. Explicit providers remain cached.
     """
+    runtime = _normalize_main_runtime(main_runtime)
+
+    # Auto mode is context-sensitive; resolve fresh every time instead of trying
+    # to encode all auth/config/env inputs into a cache key.
+    if provider == "auto":
+        return resolve_provider_client(
+            provider,
+            model,
+            async_mode,
+            explicit_base_url=base_url,
+            explicit_api_key=api_key,
+            api_mode=api_mode,
+            main_runtime=runtime,
+        )
+
     # Resolve the current event loop for async clients so we can validate
-    # cached entries.  Loop identity is NOT in the cache key — instead we
+    # cached entries. Loop identity is NOT in the cache key — instead we
     # check at hit time whether the cached loop is still current and open.
-    # This prevents unbounded cache growth from recycled worker-thread loops
-    # while still guaranteeing we never reuse a client on the wrong loop
-    # (which causes deadlocks, see #2681).
     current_loop = None
     if async_mode:
         try:
@@ -2119,9 +2126,7 @@ def _get_cached_client(
             current_loop = _aio.get_event_loop()
         except RuntimeError:
             pass
-    runtime = _normalize_main_runtime(main_runtime)
-    runtime_key = tuple(runtime.get(field, "") for field in _MAIN_RUNTIME_FIELDS) if provider == "auto" else ()
-    cache_key = (provider, async_mode, base_url or "", api_key or "", api_mode or "", runtime_key)
+    cache_key = (provider, async_mode, base_url or "", api_key or "", api_mode or "", ())
     with _client_cache_lock:
         if cache_key in _client_cache:
             cached_client, cached_default, cached_loop = _client_cache[cache_key]

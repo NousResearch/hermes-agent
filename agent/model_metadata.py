@@ -323,7 +323,8 @@ def detect_local_server_type(base_url: str) -> Optional[str]:
         server_url = server_url[:-3]
 
     try:
-        with httpx.Client(timeout=2.0) as client:
+        probe_timeout = 0.75 if is_local_endpoint(normalized) else 2.0
+        with httpx.Client(timeout=probe_timeout) as client:
             # LM Studio exposes /api/v1/models — check first (most specific)
             try:
                 r = client.get(f"{server_url}/api/v1/models")
@@ -509,11 +510,14 @@ def fetch_endpoint_model_metadata(
 
     headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
     last_error: Optional[Exception] = None
+    is_local = is_local_endpoint(normalized)
+    models_timeout = 1.0 if is_local else 10
+    props_timeout = 1.0 if is_local else 5
 
     for candidate in candidates:
         url = candidate.rstrip("/") + "/models"
         try:
-            response = requests.get(url, headers=headers, timeout=10)
+            response = requests.get(url, headers=headers, timeout=models_timeout)
             response.raise_for_status()
             payload = response.json()
             cache: Dict[str, Dict[str, Any]] = {}
@@ -544,9 +548,9 @@ def fetch_endpoint_model_metadata(
                 try:
                     # Try /v1/props first (current llama.cpp); fall back to /props for older builds
                     base = candidate.rstrip("/").replace("/v1", "")
-                    props_resp = requests.get(base + "/v1/props", headers=headers, timeout=5)
+                    props_resp = requests.get(base + "/v1/props", headers=headers, timeout=props_timeout)
                     if not props_resp.ok:
-                        props_resp = requests.get(base + "/props", headers=headers, timeout=5)
+                        props_resp = requests.get(base + "/props", headers=headers, timeout=props_timeout)
                     if props_resp.ok:
                         props = props_resp.json()
                         gen_settings = props.get("default_generation_settings", {})
@@ -788,7 +792,8 @@ def _query_local_context_length(model: str, base_url: str) -> Optional[int]:
         server_type = None
 
     try:
-        with httpx.Client(timeout=3.0) as client:
+        local_probe_timeout = 1.0 if is_local_endpoint(base_url) else 3.0
+        with httpx.Client(timeout=local_probe_timeout) as client:
             # Ollama: /api/show returns model details with context info
             if server_type == "ollama":
                 resp = client.post(f"{server_url}/api/show", json={"name": model})

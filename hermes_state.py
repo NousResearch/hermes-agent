@@ -31,7 +31,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -88,6 +88,91 @@ CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
 CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp);
+
+CREATE TABLE IF NOT EXISTS runs (
+    id TEXT PRIMARY KEY,
+    session_id TEXT REFERENCES sessions(id),
+    parent_run_id TEXT REFERENCES runs(id),
+    source TEXT,
+    user_intent TEXT,
+    state TEXT NOT NULL,
+    next_step TEXT,
+    started_at REAL NOT NULL,
+    ended_at REAL,
+    final_status TEXT,
+    metadata_json TEXT
+);
+
+CREATE TABLE IF NOT EXISTS run_steps (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL REFERENCES runs(id),
+    step_index INTEGER NOT NULL,
+    step_type TEXT NOT NULL,
+    status TEXT NOT NULL,
+    started_at REAL NOT NULL,
+    ended_at REAL,
+    input_summary TEXT,
+    output_summary TEXT,
+    tool_name TEXT,
+    error TEXT
+);
+
+CREATE TABLE IF NOT EXISTS run_events (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL REFERENCES runs(id),
+    step_id TEXT REFERENCES run_steps(id),
+    event_type TEXT NOT NULL,
+    payload_json TEXT,
+    timestamp REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS interruptions (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL REFERENCES runs(id),
+    step_id TEXT REFERENCES run_steps(id),
+    reason_type TEXT NOT NULL,
+    waiting_on TEXT,
+    snapshot_json TEXT,
+    resumable INTEGER NOT NULL DEFAULT 1,
+    created_at REAL NOT NULL,
+    resumed_at REAL,
+    status TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS delegations (
+    id TEXT PRIMARY KEY,
+    parent_run_id TEXT NOT NULL REFERENCES runs(id),
+    child_session_id TEXT,
+    goal TEXT NOT NULL,
+    context_summary TEXT,
+    allowed_toolsets_json TEXT,
+    side_effect_policy TEXT,
+    expected_output_type TEXT,
+    verification_status TEXT NOT NULL,
+    status TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    ended_at REAL
+);
+
+CREATE TABLE IF NOT EXISTS artifacts (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL REFERENCES runs(id),
+    step_id TEXT REFERENCES run_steps(id),
+    artifact_type TEXT NOT NULL,
+    path_or_ref TEXT NOT NULL,
+    produced_by TEXT,
+    purpose TEXT,
+    is_final INTEGER NOT NULL DEFAULT 0,
+    delivered INTEGER NOT NULL DEFAULT 0,
+    created_at REAL NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_runs_session_started ON runs(session_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_run_steps_run_index ON run_steps(run_id, step_index);
+CREATE INDEX IF NOT EXISTS idx_run_events_run_ts ON run_events(run_id, timestamp);
+CREATE INDEX IF NOT EXISTS idx_interruptions_run_status ON interruptions(run_id, status);
+CREATE INDEX IF NOT EXISTS idx_delegations_parent_run ON delegations(parent_run_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_artifacts_run_created ON artifacts(run_id, created_at);
 """
 
 FTS_SQL = """
@@ -329,6 +414,94 @@ class SessionDB:
                     except sqlite3.OperationalError:
                         pass  # Column already exists
                 cursor.execute("UPDATE schema_version SET version = 6")
+            if current_version < 7:
+                cursor.executescript("""
+                CREATE TABLE IF NOT EXISTS runs (
+                    id TEXT PRIMARY KEY,
+                    session_id TEXT REFERENCES sessions(id),
+                    parent_run_id TEXT REFERENCES runs(id),
+                    source TEXT,
+                    user_intent TEXT,
+                    state TEXT NOT NULL,
+                    next_step TEXT,
+                    started_at REAL NOT NULL,
+                    ended_at REAL,
+                    final_status TEXT,
+                    metadata_json TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS run_steps (
+                    id TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL REFERENCES runs(id),
+                    step_index INTEGER NOT NULL,
+                    step_type TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    started_at REAL NOT NULL,
+                    ended_at REAL,
+                    input_summary TEXT,
+                    output_summary TEXT,
+                    tool_name TEXT,
+                    error TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS run_events (
+                    id TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL REFERENCES runs(id),
+                    step_id TEXT REFERENCES run_steps(id),
+                    event_type TEXT NOT NULL,
+                    payload_json TEXT,
+                    timestamp REAL NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS interruptions (
+                    id TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL REFERENCES runs(id),
+                    step_id TEXT REFERENCES run_steps(id),
+                    reason_type TEXT NOT NULL,
+                    waiting_on TEXT,
+                    snapshot_json TEXT,
+                    resumable INTEGER NOT NULL DEFAULT 1,
+                    created_at REAL NOT NULL,
+                    resumed_at REAL,
+                    status TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS delegations (
+                    id TEXT PRIMARY KEY,
+                    parent_run_id TEXT NOT NULL REFERENCES runs(id),
+                    child_session_id TEXT,
+                    goal TEXT NOT NULL,
+                    context_summary TEXT,
+                    allowed_toolsets_json TEXT,
+                    side_effect_policy TEXT,
+                    expected_output_type TEXT,
+                    verification_status TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    created_at REAL NOT NULL,
+                    ended_at REAL
+                );
+
+                CREATE TABLE IF NOT EXISTS artifacts (
+                    id TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL REFERENCES runs(id),
+                    step_id TEXT REFERENCES run_steps(id),
+                    artifact_type TEXT NOT NULL,
+                    path_or_ref TEXT NOT NULL,
+                    produced_by TEXT,
+                    purpose TEXT,
+                    is_final INTEGER NOT NULL DEFAULT 0,
+                    delivered INTEGER NOT NULL DEFAULT 0,
+                    created_at REAL NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_runs_session_started ON runs(session_id, started_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_run_steps_run_index ON run_steps(run_id, step_index);
+                CREATE INDEX IF NOT EXISTS idx_run_events_run_ts ON run_events(run_id, timestamp);
+                CREATE INDEX IF NOT EXISTS idx_interruptions_run_status ON interruptions(run_id, status);
+                CREATE INDEX IF NOT EXISTS idx_delegations_parent_run ON delegations(parent_run_id, created_at);
+                CREATE INDEX IF NOT EXISTS idx_artifacts_run_created ON artifacts(run_id, created_at);
+                """)
+                cursor.execute("UPDATE schema_version SET version = 7")
 
         # Unique title index — always ensure it exists (safe to run after migrations
         # since the title column is guaranteed to exist at this point)
@@ -1195,13 +1368,210 @@ class SessionDB:
     # Export and cleanup
     # =========================================================================
 
+    @staticmethod
+    def _json_load_maybe(value: Any, default: Any = None) -> Any:
+        if value is None:
+            return default
+        if not isinstance(value, str):
+            return value
+        if value == "":
+            return default
+        try:
+            return json.loads(value)
+        except (TypeError, json.JSONDecodeError):
+            return default
+
+    def list_runs_for_session(self, session_id: str, limit: int = 20, offset: int = 0) -> List[Dict[str, Any]]:
+        rows = self._conn.execute(
+            """
+            SELECT
+                r.*,
+                (SELECT COUNT(*) FROM run_steps rs WHERE rs.run_id = r.id) AS step_count,
+                (SELECT COUNT(*) FROM run_events re WHERE re.run_id = r.id) AS event_count,
+                (SELECT COUNT(*) FROM interruptions i WHERE i.run_id = r.id AND i.status = 'open') AS open_interruption_count,
+                (SELECT COUNT(*) FROM artifacts a WHERE a.run_id = r.id) AS artifact_count
+            FROM runs r
+            WHERE r.session_id = ?
+            ORDER BY r.started_at DESC
+            LIMIT ? OFFSET ?
+            """,
+            (session_id, limit, offset),
+        ).fetchall()
+        results: List[Dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            item["metadata"] = self._json_load_maybe(item.pop("metadata_json", None), default={})
+            results.append(item)
+        return results
+
+    def _decode_runtime_row(self, table: str, row: sqlite3.Row | None) -> Optional[Dict[str, Any]]:
+        if row is None:
+            return None
+        item = dict(row)
+        if table == "runs":
+            item["metadata"] = self._json_load_maybe(item.pop("metadata_json", None), default={})
+        elif table == "run_events":
+            item["payload"] = self._json_load_maybe(item.pop("payload_json", None), default={})
+        elif table == "interruptions":
+            item["snapshot"] = self._json_load_maybe(item.pop("snapshot_json", None), default={})
+        elif table == "delegations":
+            item["allowed_toolsets"] = self._json_load_maybe(item.pop("allowed_toolsets_json", None), default=[])
+        return item
+
+    def _decode_runtime_rows(self, table: str, rows: List[sqlite3.Row]) -> List[Dict[str, Any]]:
+        return [item for row in rows if (item := self._decode_runtime_row(table, row)) is not None]
+
+    def get_run(self, run_id: str) -> Optional[Dict[str, Any]]:
+        run_row = self._conn.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
+        if not run_row:
+            return None
+
+        step_rows = self._conn.execute(
+            "SELECT * FROM run_steps WHERE run_id = ? ORDER BY step_index ASC",
+            (run_id,),
+        ).fetchall()
+        event_rows = self._conn.execute(
+            "SELECT * FROM run_events WHERE run_id = ? ORDER BY timestamp ASC",
+            (run_id,),
+        ).fetchall()
+        interruption_rows = self._conn.execute(
+            "SELECT * FROM interruptions WHERE run_id = ? ORDER BY created_at ASC",
+            (run_id,),
+        ).fetchall()
+        delegation_rows = self._conn.execute(
+            "SELECT * FROM delegations WHERE parent_run_id = ? ORDER BY created_at ASC",
+            (run_id,),
+        ).fetchall()
+        artifact_rows = self._conn.execute(
+            "SELECT * FROM artifacts WHERE run_id = ? ORDER BY created_at ASC",
+            (run_id,),
+        ).fetchall()
+
+        return {
+            "run": self._decode_runtime_row("runs", run_row),
+            "steps": [dict(row) for row in step_rows],
+            "events": self._decode_runtime_rows("run_events", event_rows),
+            "interruptions": self._decode_runtime_rows("interruptions", interruption_rows),
+            "delegations": self._decode_runtime_rows("delegations", delegation_rows),
+            "artifacts": self._decode_runtime_rows("artifacts", artifact_rows),
+        }
+
+    def get_run_timeline(self, run_id: str) -> Optional[Dict[str, Any]]:
+        run_row = self._conn.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
+        if not run_row:
+            return None
+
+        step_rows = self._conn.execute(
+            "SELECT * FROM run_steps WHERE run_id = ? ORDER BY step_index ASC",
+            (run_id,),
+        ).fetchall()
+        step_map = {row["id"]: dict(row) for row in step_rows}
+
+        event_rows = self._conn.execute(
+            "SELECT * FROM run_events WHERE run_id = ? ORDER BY timestamp ASC",
+            (run_id,),
+        ).fetchall()
+
+        timeline: List[Dict[str, Any]] = []
+        for row in event_rows:
+            item = dict(row)
+            payload = self._json_load_maybe(item.pop("payload_json", None), default={})
+            step = step_map.get(item.get("step_id"))
+            timeline.append(
+                {
+                    "ts": item["timestamp"],
+                    "kind": "event",
+                    "event_type": item["event_type"],
+                    "step_id": item.get("step_id"),
+                    "step_index": step.get("step_index") if step else None,
+                    "step_type": step.get("step_type") if step else None,
+                    "tool_name": step.get("tool_name") if step else payload.get("tool_name"),
+                    "payload": payload,
+                }
+            )
+
+        run = dict(run_row)
+        run["metadata"] = self._json_load_maybe(run.pop("metadata_json", None), default={})
+        return {
+            "run": run,
+            "timeline": timeline,
+        }
+
+    def _export_runtime_for_session(self, session_id: str) -> Dict[str, Any]:
+        run_rows = self._conn.execute(
+            "SELECT * FROM runs WHERE session_id = ? ORDER BY started_at ASC",
+            (session_id,),
+        ).fetchall()
+        runs = [dict(row) for row in run_rows]
+        run_ids = [row["id"] for row in run_rows]
+        if not run_ids:
+            return {
+                "runs": [],
+                "run_steps": [],
+                "run_events": [],
+                "interruptions": [],
+                "delegations": [],
+                "artifacts": [],
+            }
+
+        placeholders = ",".join("?" * len(run_ids))
+
+        def _fetch_all(query: str, ids: List[str]) -> List[Dict[str, Any]]:
+            return [dict(row) for row in self._conn.execute(query, ids).fetchall()]
+
+        run_steps = _fetch_all(
+            f"SELECT * FROM run_steps WHERE run_id IN ({placeholders}) ORDER BY run_id, step_index ASC",
+            run_ids,
+        )
+        run_events = _fetch_all(
+            f"SELECT * FROM run_events WHERE run_id IN ({placeholders}) ORDER BY run_id, timestamp ASC",
+            run_ids,
+        )
+        interruptions = _fetch_all(
+            f"SELECT * FROM interruptions WHERE run_id IN ({placeholders}) ORDER BY run_id, created_at ASC",
+            run_ids,
+        )
+        artifacts = _fetch_all(
+            f"SELECT * FROM artifacts WHERE run_id IN ({placeholders}) ORDER BY run_id, created_at ASC",
+            run_ids,
+        )
+        delegations = _fetch_all(
+            f"SELECT * FROM delegations WHERE parent_run_id IN ({placeholders}) ORDER BY parent_run_id, created_at ASC",
+            run_ids,
+        )
+
+        return {
+            "runs": runs,
+            "run_steps": run_steps,
+            "run_events": run_events,
+            "interruptions": interruptions,
+            "delegations": delegations,
+            "artifacts": artifacts,
+        }
+
     def export_session(self, session_id: str) -> Optional[Dict[str, Any]]:
         """Export a single session with all its messages as a dict."""
         session = self.get_session(session_id)
         if not session:
             return None
         messages = self.get_messages(session_id)
-        return {**session, "messages": messages}
+        runtime = self._export_runtime_for_session(session_id)
+        return {**session, "messages": messages, "runtime": runtime}
+
+    def export_run(self, run_id: str) -> Optional[Dict[str, Any]]:
+        runtime = self.get_run(run_id)
+        if not runtime:
+            return None
+        session_id = runtime["run"]["session_id"]
+        session = self.get_session(session_id)
+        if not session:
+            return None
+        messages = self.get_messages(session_id)
+        return {
+            "session": session,
+            "messages": messages,
+            "runtime": runtime,
+        }
 
     def export_all(self, source: str = None) -> List[Dict[str, Any]]:
         """
@@ -1211,9 +1581,8 @@ class SessionDB:
         sessions = self.search_sessions(source=source, limit=100000)
         results = []
         for session in sessions:
-            messages = self.get_messages(session["id"])
-            results.append({**session, "messages": messages})
-        return results
+            results.append(self.export_session(session["id"]))
+        return [session for session in results if session is not None]
 
     def clear_messages(self, session_id: str) -> None:
         """Delete all messages for a session and reset its counters."""

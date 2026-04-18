@@ -205,6 +205,71 @@ class TestDelegateTask(unittest.TestCase):
         self.assertEqual(result["results"][0]["status"], "error")
         self.assertIn("Something broke", result["results"][0]["error"])
 
+    @patch("tools.delegate_tool._build_child_agent")
+    @patch("tools.delegate_tool._run_single_child")
+    def test_persists_delegation_contract_and_completion(self, mock_run, mock_build):
+        mock_child = MagicMock()
+        mock_child.session_id = "child-session-1"
+        mock_build.return_value = mock_child
+        mock_run.return_value = {
+            "task_index": 0,
+            "status": "completed",
+            "summary": "Done!",
+            "api_calls": 2,
+            "duration_seconds": 1.5,
+        }
+        parent = _make_mock_parent()
+        parent._runtime_store = MagicMock()
+        parent._active_run_id = "run-123"
+
+        result = json.loads(
+            delegate_task(
+                goal="Review the code",
+                context="Check recent changes",
+                toolsets=["file", "terminal"],
+                parent_agent=parent,
+            )
+        )
+
+        self.assertEqual(result["results"][0]["status"], "completed")
+        self.assertEqual(parent._runtime_store.create_delegation.call_count, 1)
+        created = parent._runtime_store.create_delegation.call_args.args[0]
+        self.assertEqual(created.parent_run_id, "run-123")
+        self.assertEqual(created.goal, "Review the code")
+        self.assertEqual(created.context_summary, "Check recent changes")
+        self.assertEqual(created.allowed_toolsets, ["file", "terminal"])
+        self.assertEqual(created.child_session_id, "child-session-1")
+        parent._runtime_store.finish_delegation.assert_called_once()
+        _, kwargs = parent._runtime_store.finish_delegation.call_args
+        self.assertEqual(kwargs["status"], "completed")
+        self.assertEqual(kwargs["verification_status"], "verified")
+
+    @patch("tools.delegate_tool._build_child_agent")
+    @patch("tools.delegate_tool._run_single_child")
+    def test_failed_delegation_marks_verification_failed(self, mock_run, mock_build):
+        mock_child = MagicMock()
+        mock_child.session_id = "child-session-2"
+        mock_build.return_value = mock_child
+        mock_run.return_value = {
+            "task_index": 0,
+            "status": "error",
+            "summary": None,
+            "error": "boom",
+            "api_calls": 0,
+            "duration_seconds": 0.3,
+        }
+        parent = _make_mock_parent()
+        parent._runtime_store = MagicMock()
+        parent._active_run_id = "run-456"
+
+        result = json.loads(delegate_task(goal="Break it", parent_agent=parent))
+
+        self.assertEqual(result["results"][0]["status"], "error")
+        parent._runtime_store.finish_delegation.assert_called_once()
+        _, kwargs = parent._runtime_store.finish_delegation.call_args
+        self.assertEqual(kwargs["status"], "failed")
+        self.assertEqual(kwargs["verification_status"], "failed")
+
     def test_depth_increments(self):
         """Verify child gets parent's depth + 1."""
         parent = _make_mock_parent(depth=0)
@@ -1007,6 +1072,59 @@ class TestChildCredentialPoolResolution(unittest.TestCase):
             )
 
             self.assertEqual(mock_child._credential_pool, mock_pool)
+
+
+class TestChildHeartbeatPropagation(unittest.TestCase):
+    def test_run_single_child_touches_parent_on_start_and_finish(self):
+        from tools.delegate_tool import _run_single_child
+
+        parent = _make_mock_parent()
+        parent._touch_activity = MagicMock()
+
+        child = MagicMock()
+        child._credential_pool = None
+        child.run_conversation.return_value = {
+            "final_response": "done",
+            "completed": True,
+            "interrupted": False,
+            "api_calls": 1,
+            "messages": [],
+        }
+
+        result = _run_single_child(
+            task_index=0,
+            goal="Investigate rate limits",
+            child=child,
+            parent_agent=parent,
+        )
+
+        self.assertEqual(result["status"], "completed")
+        self.assertGreaterEqual(parent._touch_activity.call_count, 2)
+        calls = [c.args[0] for c in parent._touch_activity.call_args_list]
+        self.assertTrue(any("delegate child started" in msg for msg in calls))
+        self.assertTrue(any("delegate child finished" in msg for msg in calls))
+
+    def test_run_single_child_touches_parent_on_failure(self):
+        from tools.delegate_tool import _run_single_child
+
+        parent = _make_mock_parent()
+        parent._touch_activity = MagicMock()
+
+        child = MagicMock()
+        child._credential_pool = None
+        child.run_conversation.side_effect = RuntimeError("boom")
+
+        result = _run_single_child(
+            task_index=1,
+            goal="Trigger failure",
+            child=child,
+            parent_agent=parent,
+        )
+
+        self.assertEqual(result["status"], "error")
+        calls = [c.args[0] for c in parent._touch_activity.call_args_list]
+        self.assertTrue(any("delegate child started" in msg for msg in calls))
+        self.assertTrue(any("delegate child failed" in msg for msg in calls))
 
 
 class TestChildCredentialLeasing(unittest.TestCase):

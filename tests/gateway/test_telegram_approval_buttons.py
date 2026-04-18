@@ -50,6 +50,12 @@ from gateway.platforms.telegram import TelegramAdapter
 from gateway.config import Platform, PlatformConfig
 
 
+@pytest.fixture(autouse=True)
+def _clear_telegram_allowed_users(monkeypatch):
+    """Keep approval-button tests isolated from host auth env vars."""
+    monkeypatch.delenv("TELEGRAM_ALLOWED_USERS", raising=False)
+
+
 def _make_adapter(extra=None):
     """Create a TelegramAdapter with mocked internals."""
     config = PlatformConfig(enabled=True, token="test-token", extra=extra or {})

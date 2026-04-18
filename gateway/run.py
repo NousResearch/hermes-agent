@@ -4096,6 +4096,25 @@ class GatewayRunner:
         if message_text is None:
             return
 
+        previous_reply_env = {
+            "HERMES_REPLY_TO_TEXT": os.environ.get("HERMES_REPLY_TO_TEXT"),
+            "HERMES_REPLY_TO_MESSAGE_ID": os.environ.get("HERMES_REPLY_TO_MESSAGE_ID"),
+            "HERMES_REPLY_TO_RAW_MESSAGE": os.environ.get("HERMES_REPLY_TO_RAW_MESSAGE"),
+        }
+        if getattr(event, 'reply_to_text', None):
+            os.environ["HERMES_REPLY_TO_TEXT"] = event.reply_to_text
+        else:
+            os.environ.pop("HERMES_REPLY_TO_TEXT", None)
+        if getattr(event, 'reply_to_message_id', None):
+            os.environ["HERMES_REPLY_TO_MESSAGE_ID"] = str(event.reply_to_message_id)
+        else:
+            os.environ.pop("HERMES_REPLY_TO_MESSAGE_ID", None)
+        raw_reply_payload = {
+            "reply_to_text": getattr(event, 'reply_to_text', None),
+            "reply_to_message_id": getattr(event, 'reply_to_message_id', None),
+        }
+        os.environ["HERMES_REPLY_TO_RAW_MESSAGE"] = json.dumps(raw_reply_payload, ensure_ascii=False)
+
         try:
             # Emit agent:start hook
             hook_ctx = {

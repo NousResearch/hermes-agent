@@ -1231,21 +1231,26 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
 
         state = _load_provider_state(auth_store, "openai-codex")
         tokens = state.get("tokens") if isinstance(state, dict) else None
-        # Fallback: import from Codex CLI (~/.codex/auth.json) if Hermes auth
-        # store has no tokens.  This mirrors resolve_codex_runtime_credentials()
-        # so that load_pool() and list_authenticated_providers() detect tokens
-        # that only exist in the Codex CLI shared file.
+        # Fallback: import from Codex CLI (~/.codex/auth.json) only when the
+        # user has explicitly configured Codex in Hermes. Otherwise merely
+        # loading the pool for auto-detection/tests can silently pull in a
+        # machine-global Codex session from outside the current Hermes profile.
         if not (isinstance(tokens, dict) and tokens.get("access_token")):
             try:
-                from hermes_cli.auth import _import_codex_cli_tokens, _save_codex_tokens
-                cli_tokens = _import_codex_cli_tokens()
-                if cli_tokens:
-                    logger.info("Importing Codex CLI tokens into Hermes auth store.")
-                    _save_codex_tokens(cli_tokens)
-                    # Re-read state after import
-                    auth_store = _load_auth_store()
-                    state = _load_provider_state(auth_store, "openai-codex")
-                    tokens = state.get("tokens") if isinstance(state, dict) else None
+                from hermes_cli.auth import (
+                    _import_codex_cli_tokens,
+                    _save_codex_tokens,
+                    is_provider_explicitly_configured,
+                )
+                if is_provider_explicitly_configured("openai-codex"):
+                    cli_tokens = _import_codex_cli_tokens()
+                    if cli_tokens:
+                        logger.info("Importing Codex CLI tokens into Hermes auth store.")
+                        _save_codex_tokens(cli_tokens)
+                        # Re-read state after import
+                        auth_store = _load_auth_store()
+                        state = _load_provider_state(auth_store, "openai-codex")
+                        tokens = state.get("tokens") if isinstance(state, dict) else None
             except Exception as exc:
                 logger.debug("Codex CLI token import failed: %s", exc)
         if isinstance(tokens, dict) and tokens.get("access_token"):

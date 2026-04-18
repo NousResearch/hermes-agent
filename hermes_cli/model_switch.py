@@ -955,6 +955,15 @@ def list_authenticated_providers(
                     has_creds = True
             except Exception as exc:
                 logger.debug("Anthropic external creds check failed: %s", exc)
+        if not has_creds and hermes_slug == "openai-codex":
+            try:
+                from hermes_cli.auth import _import_codex_cli_tokens, _save_codex_tokens
+                cli_tokens = _import_codex_cli_tokens()
+                if cli_tokens:
+                    _save_codex_tokens(cli_tokens)
+                    has_creds = True
+            except Exception as exc:
+                logger.debug("Codex external creds check failed: %s", exc)
         if not has_creds:
             continue
 

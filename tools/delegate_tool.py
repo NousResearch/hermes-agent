@@ -25,6 +25,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional
 
+from agent.runtime_types import DelegationRecord
 from toolsets import TOOLSETS
 
 
@@ -80,6 +81,49 @@ def _get_max_concurrent_children() -> int:
 DEFAULT_MAX_ITERATIONS = 50
 _HEARTBEAT_INTERVAL = 30  # seconds between parent activity heartbeats during delegation
 DEFAULT_TOOLSETS = ["terminal", "file", "web"]
+
+
+def _persist_delegation_start(parent_agent, task: Dict[str, Any], child) -> Optional[str]:
+    runtime_store = getattr(parent_agent, "_runtime_store", None)
+    parent_run_id = getattr(parent_agent, "_active_run_id", None)
+    if runtime_store is None or not parent_run_id:
+        return None
+
+    try:
+        record = DelegationRecord.create(
+            parent_run_id=parent_run_id,
+            child_session_id=getattr(child, "session_id", None),
+            goal=task.get("goal", ""),
+            context_summary=task.get("context"),
+            allowed_toolsets=list(task.get("toolsets") or DEFAULT_TOOLSETS),
+            side_effect_policy="default",
+            expected_output_type="summary",
+            verification_status="pending",
+            status="started",
+        )
+        runtime_store.create_delegation(record)
+        return record.id
+    except Exception as exc:
+        logger.debug("Failed to persist delegation start: %s", exc)
+        return None
+
+
+def _persist_delegation_finish(parent_agent, delegation_id: Optional[str], entry: Dict[str, Any]) -> None:
+    runtime_store = getattr(parent_agent, "_runtime_store", None)
+    if runtime_store is None or not delegation_id:
+        return
+
+    status = entry.get("status") or "failed"
+    verification_status = "verified" if status == "completed" else "failed"
+    runtime_status = "completed" if status == "completed" else "failed"
+    try:
+        runtime_store.finish_delegation(
+            delegation_id,
+            status=runtime_status,
+            verification_status=verification_status,
+        )
+    except Exception as exc:
+        logger.debug("Failed to persist delegation completion: %s", exc)
 
 
 def check_delegate_requirements() -> bool:
@@ -162,14 +206,19 @@ def _build_child_progress_callback(task_index: int, goal: str, parent_agent, tas
       CLI:     prints tree-view lines above the parent's delegation spinner
       Gateway: batches tool names and relays to parent's progress callback
 
-    Returns None if no display mechanism is available, in which case the
-    child agent runs with no progress callback (identical to current behavior).
+    Also refreshes the parent agent's activity heartbeat when child progress is
+    observed, so long-running delegate_task calls don't look idle to gateway
+    inactivity watchdogs.
+
+    Returns None if no display mechanism is available and the parent has no
+    activity tracker to refresh.
     """
     spinner = getattr(parent_agent, '_delegate_spinner', None)
     parent_cb = getattr(parent_agent, 'tool_progress_callback', None)
+    touch_parent_activity = getattr(parent_agent, '_touch_activity', None)
 
-    if not spinner and not parent_cb:
-        return None  # No display → no callback → zero behavior change
+    if not spinner and not parent_cb and not callable(touch_parent_activity):
+        return None  # No display and no heartbeat path → no callback
 
     # Show 1-indexed prefix only in batch mode (multiple tasks)
     prefix = f"[{task_index + 1}] " if task_count > 1 else ""
@@ -178,6 +227,14 @@ def _build_child_progress_callback(task_index: int, goal: str, parent_agent, tas
     # Gateway: batch tool names, flush periodically
     _BATCH_SIZE = 5
     _batch: List[str] = []
+
+    def _touch(desc: str) -> None:
+        if not callable(touch_parent_activity):
+            return
+        try:
+            touch_parent_activity(desc)
+        except Exception as e:
+            logger.debug("Parent activity touch failed: %s", e)
 
     def _relay(event_type: str, tool_name: str = None, preview: str = None, args=None, **kwargs):
         if not parent_cb:
@@ -217,8 +274,12 @@ def _build_child_progress_callback(task_index: int, goal: str, parent_agent, tas
         # "_thinking" / reasoning events
         if event_type in ("_thinking", "reasoning.available"):
             text = preview or tool_name or ""
+            short = (text[:55] + "...") if len(text) > 55 else text
+            if short:
+                _touch(f"delegate child progress: thinking {prefix}{short}")
+            else:
+                _touch(f"delegate child progress: thinking {prefix}…")
             if spinner:
-                short = (text[:55] + "...") if len(text) > 55 else text
                 try:
                     spinner.print_above(f" {prefix}├─ 💭 \"{short}\"")
                 except Exception as e:
@@ -228,11 +289,14 @@ def _build_child_progress_callback(task_index: int, goal: str, parent_agent, tas
 
         # tool.completed — no display needed here (spinner shows on started)
         if event_type == "tool.completed":
+            _touch(f"delegate child progress: completed {prefix}{tool_name or 'tool'}")
             return
 
         # tool.started — display and batch for parent relay
+        short = (preview[:35] + "...") if preview and len(preview) > 35 else (preview or "")
+        _touch(f"delegate child progress: tool {prefix}{tool_name or 'unknown'}")
+
         if spinner:
-            short = (preview[:35] + "...") if preview and len(preview) > 35 else (preview or "")
             from agent.display import get_tool_emoji
             emoji = get_tool_emoji(tool_name or "")
             line = f" {prefix}├─ {emoji} {tool_name}"
@@ -255,6 +319,7 @@ def _build_child_progress_callback(task_index: int, goal: str, parent_agent, tas
         """Flush remaining batched tool names to gateway on completion."""
         if parent_cb and _batch:
             summary = ", ".join(_batch)
+            _touch(f"delegate child progress: flush {prefix}{summary[:80]}")
             _relay("subagent.progress", preview=f"🔀 {prefix}{summary}")
             _batch.clear()
 
@@ -269,8 +334,8 @@ def _build_child_agent(
     toolsets: Optional[List[str]],
     model: Optional[str],
     max_iterations: int,
-    task_count: int,
     parent_agent,
+    task_count: int = 1,
     # Credential overrides from delegation config (provider:model resolution)
     override_provider: Optional[str] = None,
     override_base_url: Optional[str] = None,
@@ -326,7 +391,7 @@ def _build_child_agent(
         parent_api_key = parent_agent._client_kwargs.get("api_key")
 
     # Build progress callback to relay tool calls to parent display
-    child_progress_cb = _build_child_progress_callback(task_index, goal, parent_agent, task_count)
+    child_progress_cb = _build_child_progress_callback(task_index, goal, parent_agent, task_count=task_count)
 
     # Each subagent gets its own iteration budget capped at max_iterations
     # (configurable via delegation.max_iterations, default 50).  This means
@@ -458,43 +523,56 @@ def _run_single_child(
             except Exception as exc:
                 logger.debug("Failed to bind child to leased credential: %s", exc)
 
+    touch_parent_activity = getattr(parent_agent, '_touch_activity', None)
     # Heartbeat: periodically propagate child activity to the parent so the
     # gateway inactivity timeout doesn't fire while the subagent is working.
     # Without this, the parent's _last_activity_ts freezes when delegate_task
     # starts and the gateway eventually kills the agent for "no activity".
     _heartbeat_stop = threading.Event()
 
+    def _describe_child_activity() -> str:
+        desc = f"delegate_task: subagent {task_index} working"
+        try:
+            child_summary = child.get_activity_summary()
+            child_tool = child_summary.get("current_tool")
+            child_iter = child_summary.get("api_call_count", 0)
+            child_max = child_summary.get("max_iterations", 0)
+            if child_tool:
+                return (
+                    f"delegate_task: subagent running {child_tool} "
+                    f"(iteration {child_iter}/{child_max})"
+                )
+            child_desc = child_summary.get("last_activity_desc", "")
+            if child_desc:
+                return (
+                    f"delegate_task: subagent {child_desc} "
+                    f"(iteration {child_iter}/{child_max})"
+                )
+        except Exception:
+            pass
+        return desc
+
+    def _touch_child_activity() -> None:
+        if not callable(touch_parent_activity):
+            return
+        try:
+            touch_parent_activity(_describe_child_activity())
+        except Exception:
+            pass
+
     def _heartbeat_loop():
         while not _heartbeat_stop.wait(_HEARTBEAT_INTERVAL):
-            if parent_agent is None:
-                continue
-            touch = getattr(parent_agent, '_touch_activity', None)
-            if not touch:
-                continue
-            # Pull detail from the child's own activity tracker
-            desc = f"delegate_task: subagent {task_index} working"
-            try:
-                child_summary = child.get_activity_summary()
-                child_tool = child_summary.get("current_tool")
-                child_iter = child_summary.get("api_call_count", 0)
-                child_max = child_summary.get("max_iterations", 0)
-                if child_tool:
-                    desc = (f"delegate_task: subagent running {child_tool} "
-                            f"(iteration {child_iter}/{child_max})")
-                else:
-                    child_desc = child_summary.get("last_activity_desc", "")
-                    if child_desc:
-                        desc = (f"delegate_task: subagent {child_desc} "
-                                f"(iteration {child_iter}/{child_max})")
-            except Exception:
-                pass
-            try:
-                touch(desc)
-            except Exception:
-                pass
+            _touch_child_activity()
 
     _heartbeat_thread = threading.Thread(target=_heartbeat_loop, daemon=True)
     _heartbeat_thread.start()
+
+    if callable(touch_parent_activity):
+        try:
+            touch_parent_activity(f"delegate child started: task {task_index + 1}")
+            _touch_child_activity()
+        except Exception as exc:
+            logger.debug("Parent activity touch failed at child start: %s", exc)
 
     try:
         if child_progress_cb:
@@ -597,6 +675,11 @@ def _run_single_child(
         if status == "failed":
             entry["error"] = result.get("error", "Subagent did not produce a response.")
 
+        if callable(touch_parent_activity):
+            try:
+                touch_parent_activity(f"delegate child finished: task {task_index + 1} ({status})")
+            except Exception as exc:
+                logger.debug("Parent activity touch failed at child finish: %s", exc)
         if child_progress_cb:
             try:
                 child_progress_cb(
@@ -613,6 +696,11 @@ def _run_single_child(
 
     except Exception as exc:
         duration = round(time.monotonic() - child_start, 2)
+        if callable(touch_parent_activity):
+            try:
+                touch_parent_activity(f"delegate child failed: task {task_index + 1} ({exc})")
+            except Exception as touch_exc:
+                logger.debug("Parent activity touch failed at child error: %s", touch_exc)
         logging.exception(f"[subagent-{task_index}] failed")
         if child_progress_cb:
             try:
@@ -769,26 +857,42 @@ def delegate_task(
     try:
         for i, t in enumerate(task_list):
             child = _build_child_agent(
-                task_index=i, goal=t["goal"], context=t.get("context"),
-                toolsets=t.get("toolsets") or toolsets, model=creds["model"],
-                max_iterations=effective_max_iter, task_count=n_tasks, parent_agent=parent_agent,
-                override_provider=creds["provider"], override_base_url=creds["base_url"],
+                task_index=i,
+                goal=t["goal"],
+                context=t.get("context"),
+                toolsets=t.get("toolsets") or toolsets,
+                model=creds["model"],
+                max_iterations=effective_max_iter,
+                task_count=n_tasks,
+                parent_agent=parent_agent,
+                override_provider=creds["provider"],
+                override_base_url=creds["base_url"],
                 override_api_key=creds["api_key"],
                 override_api_mode=creds["api_mode"],
                 override_acp_command=t.get("acp_command") or acp_command,
                 override_acp_args=t.get("acp_args") or acp_args,
             )
+            delegation_id = _persist_delegation_start(
+                parent_agent,
+                {
+                    "goal": t["goal"],
+                    "context": t.get("context"),
+                    "toolsets": t.get("toolsets") or toolsets,
+                },
+                child,
+            )
             # Override with correct parent tool names (before child construction mutated global)
             child._delegate_saved_tool_names = _parent_tool_names
-            children.append((i, t, child))
+            children.append((i, t, child, delegation_id))
     finally:
         # Authoritative restore: reset global to parent's tool names after all children built
         _model_tools._last_resolved_tool_names = _parent_tool_names
 
     if n_tasks == 1:
         # Single task -- run directly (no thread pool overhead)
-        _i, _t, child = children[0]
+        _i, _t, child, delegation_id = children[0]
         result = _run_single_child(0, _t["goal"], child, parent_agent)
+        _persist_delegation_finish(parent_agent, delegation_id, result)
         results.append(result)
     else:
         # Batch -- run in parallel with per-task progress lines
@@ -797,7 +901,8 @@ def delegate_task(
 
         with ThreadPoolExecutor(max_workers=max_children) as executor:
             futures = {}
-            for i, t, child in children:
+            future_meta = {}
+            for i, t, child, delegation_id in children:
                 future = executor.submit(
                     _run_single_child,
                     task_index=i,
@@ -806,6 +911,7 @@ def delegate_task(
                     parent_agent=parent_agent,
                 )
                 futures[future] = i
+                future_meta[future] = delegation_id
 
             # Poll futures with interrupt checking.  as_completed() blocks
             # until ALL futures finish — if a child agent gets stuck,
@@ -841,6 +947,7 @@ def delegate_task(
                                 "api_calls": 0,
                                 "duration_seconds": 0,
                             }
+                        _persist_delegation_finish(parent_agent, future_meta.get(f), entry)
                         results.append(entry)
                         completed_count += 1
                     break
@@ -860,6 +967,7 @@ def delegate_task(
                             "api_calls": 0,
                             "duration_seconds": 0,
                         }
+                    _persist_delegation_finish(parent_agent, future_meta.get(future), entry)
                     results.append(entry)
                     completed_count += 1
 

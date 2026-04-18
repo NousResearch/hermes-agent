@@ -182,6 +182,80 @@ def test_to_dict_returns_detached_payloads():
     assert record.tools_used == ["pytest"]
 
 
+@pytest.mark.parametrize(
+    "record_factory",
+    [
+        lambda metadata: MemoryRecord(
+            record_id="rec-1",
+            memory_type=MemoryType.PROFILE,
+            scope=MemoryScope.OPERATOR,
+            topic_key="preference:response-detail",
+            content="User prefers concise responses.",
+            source="memory_tool:add",
+            source_kind="explicit_user_statement",
+            trust_tier=TrustTier.USER_ASSERTED,
+            salience_tier=SalienceTier.HIGH,
+            status=RecordStatus.ACTIVE,
+            metadata=metadata,
+        ),
+        lambda metadata: EpisodeRecord(
+            record_id="ep-1",
+            memory_type=MemoryType.EPISODIC,
+            scope=MemoryScope.WORKSPACE,
+            topic_key="workspace:memory-records",
+            content="Captured nested metadata for an episodic record.",
+            source="memory_tool:add",
+            source_kind="tool_observation",
+            trust_tier=TrustTier.OBSERVED,
+            salience_tier=SalienceTier.MEDIUM,
+            status=RecordStatus.ACTIVE,
+            metadata=metadata,
+        ),
+    ],
+)
+def test_record_construction_deep_copies_nested_metadata(record_factory):
+    metadata = {"evidence": {"steps": ["before"]}}
+
+    record = record_factory(metadata)
+    metadata["evidence"]["steps"].append("after")
+
+    assert record.metadata == {"evidence": {"steps": ["before"]}}
+
+
+def test_episode_record_rejects_non_episodic_memory_type_on_construction():
+    with pytest.raises(ValueError, match="episodic"):
+        EpisodeRecord(
+            record_id="ep-1",
+            memory_type=MemoryType.SEMANTIC,
+            scope=MemoryScope.WORKSPACE,
+            topic_key="workspace:memory-records",
+            content="Attempted to create an episode with the wrong type.",
+            source="memory_tool:add",
+            source_kind="tool_observation",
+            trust_tier=TrustTier.OBSERVED,
+            salience_tier=SalienceTier.MEDIUM,
+            status=RecordStatus.ACTIVE,
+        )
+
+
+def test_episode_record_from_dict_rejects_non_episodic_memory_type():
+    payload = {
+        "record_id": "ep-1",
+        "memory_type": MemoryType.SEMANTIC.value,
+        "scope": MemoryScope.WORKSPACE.value,
+        "topic_key": "workspace:memory-records",
+        "content": "Attempted to deserialize an episode with the wrong type.",
+        "source": "memory_tool:add",
+        "source_kind": "tool_observation",
+        "trust_tier": TrustTier.OBSERVED.value,
+        "salience_tier": SalienceTier.MEDIUM.value,
+        "status": RecordStatus.ACTIVE.value,
+    }
+
+    with pytest.raises(ValueError, match="episodic"):
+        EpisodeRecord.from_dict(payload)
+
+
 @pytest.mark.parametrize("field_name", ["record_id", "content", "source", "source_kind"])
 def test_memory_record_from_dict_rejects_none_for_required_string_fields(field_name):
     payload = {

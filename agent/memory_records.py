@@ -77,9 +77,9 @@ class MemoryRecord:
         self.topic_key = _strip_or_none(self.topic_key)
         self.source = _require_non_empty_string(self.source, field_name="source")
         self.source_kind = _require_non_empty_string(self.source_kind, field_name="source_kind")
-        self.conflicts_with = list(self.conflicts_with)
-        self.tags = list(self.tags)
-        self.metadata = dict(self.metadata)
+        self.conflicts_with = deepcopy(self.conflicts_with)
+        self.tags = deepcopy(self.tags)
+        self.metadata = deepcopy(self.metadata)
         self.revision = int(self.revision)
 
     def to_dict(self) -> dict[str, Any]:
@@ -150,11 +150,12 @@ class EpisodeRecord(MemoryRecord):
 
     def __post_init__(self) -> None:
         super().__post_init__()
+        self.memory_type = _require_episode_memory_type(self.memory_type)
         self.task_signature = _normalize_optional_string(self.task_signature, default="")
         self.problem_summary = _strip_or_none(self.problem_summary)
         self.approach_summary = _strip_or_none(self.approach_summary)
-        self.key_actions = list(self.key_actions)
-        self.tools_used = list(self.tools_used)
+        self.key_actions = deepcopy(self.key_actions)
+        self.tools_used = deepcopy(self.tools_used)
         self.outcome = _strip_or_none(self.outcome)
         self.outcome_evidence = _strip_or_none(self.outcome_evidence)
         self.failure_notes = _strip_or_none(self.failure_notes)
@@ -185,7 +186,7 @@ class EpisodeRecord(MemoryRecord):
     def from_dict(cls, payload: Mapping[str, Any]) -> "EpisodeRecord":
         return cls(
             record_id=_required_payload_string(payload, "record_id"),
-            memory_type=MemoryType(payload.get("memory_type", MemoryType.EPISODIC.value)),
+            memory_type=_require_episode_memory_type(payload.get("memory_type", MemoryType.EPISODIC.value)),
             scope=MemoryScope(payload["scope"]),
             topic_key=payload.get("topic_key"),
             content=_required_payload_string(payload, "content"),
@@ -303,6 +304,16 @@ def _optional_payload_string(payload: Mapping[str, Any], field_name: str, defaul
     if value is None:
         return default
     return _normalize_optional_string(value, default=default)
+
+
+def _require_episode_memory_type(value: Any) -> MemoryType:
+    try:
+        memory_type = MemoryType(value)
+    except ValueError as exc:
+        raise ValueError("EpisodeRecord memory_type must be episodic") from exc
+    if memory_type is not MemoryType.EPISODIC:
+        raise ValueError("EpisodeRecord memory_type must be episodic")
+    return MemoryType.EPISODIC
 
 
 def _require_non_empty_string(value: Any, *, field_name: str) -> str:

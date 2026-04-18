@@ -20,6 +20,7 @@ from tools.send_message_tool import (
 )
 
 
+
 def _run_async_immediately(coro):
     return asyncio.run(coro)
 
@@ -877,6 +878,34 @@ class TestParseTargetRefDiscord:
         assert chat_id == "123456"
         assert thread_id == "789"
         assert is_explicit is True
+
+
+class TestParseTargetRefWhatsapp:
+    """WhatsApp explicit targets should accept JIDs and phone numbers."""
+
+    def test_whatsapp_jid_is_explicit(self):
+        chat_id, thread_id, is_explicit = _parse_target_ref("whatsapp", "34600111222@s.whatsapp.net")
+        assert chat_id == "34600111222@s.whatsapp.net"
+        assert thread_id is None
+        assert is_explicit is True
+
+    def test_whatsapp_phone_number_is_normalized(self):
+        chat_id, thread_id, is_explicit = _parse_target_ref("whatsapp", "+34 600-111-222")
+        assert chat_id == "34600111222@s.whatsapp.net"
+        assert thread_id is None
+        assert is_explicit is True
+
+    def test_whatsapp_lid_is_explicit(self):
+        chat_id, thread_id, is_explicit = _parse_target_ref("whatsapp", "12345678901234@lid")
+        assert chat_id == "12345678901234@lid"
+        assert thread_id is None
+        assert is_explicit is True
+
+    def test_whatsapp_human_name_is_not_explicit(self):
+        chat_id, thread_id, is_explicit = _parse_target_ref("whatsapp", "Movistar Support (dm)")
+        assert chat_id is None
+        assert thread_id is None
+        assert is_explicit is False
 
 
 class TestParseTargetRefMatrix:

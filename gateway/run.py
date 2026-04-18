@@ -277,6 +277,7 @@ from gateway.session import (
     build_session_key,
 )
 from gateway.delivery import DeliveryRouter
+from gateway.whatsapp_service_policy import WhatsAppServiceConversationPolicy
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
@@ -606,6 +607,7 @@ class GatewayRunner:
             has_active_processes_fn=lambda key: process_registry.has_active_for_session(key),
         )
         self.delivery_router = DeliveryRouter(self.config)
+        self._whatsapp_service_policy = WhatsAppServiceConversationPolicy.from_gateway_config(self.config)
         self._running = False
         self._shutdown_event = asyncio.Event()
         self._exit_cleanly = False
@@ -2649,6 +2651,21 @@ class GatewayRunner:
 
         return None
 
+    def _is_whatsapp_service_chat_authorized(self, source: SessionSource) -> bool:
+        if source.platform != Platform.WHATSAPP:
+            return False
+        policy = getattr(self, "_whatsapp_service_policy", None)
+        if policy is None:
+            policy = WhatsAppServiceConversationPolicy.from_gateway_config(getattr(self, "config", None))
+            self._whatsapp_service_policy = policy
+        return bool(policy.can_accept_inbound(source.chat_id) or policy.can_accept_inbound(source.user_id))
+
+    def _is_from_whatsapp_service_chat(self, event: MessageEvent) -> bool:
+        source = getattr(event, "source", None)
+        if not source:
+            return False
+        return self._is_whatsapp_service_chat_authorized(source)
+
     def _is_user_authorized(self, source: SessionSource) -> bool:
         """
         Check if a user is authorized to use the bot.
@@ -2671,6 +2688,9 @@ class GatewayRunner:
         user_id = source.user_id
         if not user_id:
             return False
+
+        if self._is_whatsapp_service_chat_authorized(source):
+            return True
 
         platform_env_map = {
             Platform.TELEGRAM: "TELEGRAM_ALLOWED_USERS",
@@ -2831,6 +2851,18 @@ class GatewayRunner:
             logger.warning("Unauthorized user: %s (%s) on %s", source.user_id, source.user_name, source.platform.value)
             # In DMs: offer pairing code. In groups: silently ignore.
             if source.chat_type == "dm" and self._get_unauthorized_dm_behavior(source.platform) == "pair":
+                adapter = self.adapters.get(source.platform)
+                if (
+                    source.platform == Platform.WHATSAPP
+                    and getattr(self, "_whatsapp_service_policy", None)
+                    and self._whatsapp_service_policy.is_enabled()
+                ):
+                    if adapter:
+                        await adapter.send(
+                            source.chat_id,
+                            "This WhatsApp thread is not approved yet. Ask Tyler to approve this phone number for service conversations."
+                        )
+                    return None
                 platform_name = source.platform.value if source.platform else "unknown"
                 # Rate-limit ALL pairing responses (code or rejection) to
                 # prevent spamming the user with repeated messages when
@@ -3173,6 +3205,8 @@ class GatewayRunner:
 
         # Check for commands
         command = event.get_command()
+        if command and self._is_from_whatsapp_service_chat(event):
+            return "This WhatsApp thread is approved for service conversations only. Commands are disabled here."
         
         # Emit command:* hook for any recognized slash command.
         # GATEWAY_KNOWN_COMMANDS is derived from the central COMMAND_REGISTRY

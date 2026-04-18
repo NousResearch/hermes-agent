@@ -317,6 +317,12 @@ def _parse_target_ref(platform_name: str, target_ref: str):
         match = _WEIXIN_TARGET_RE.fullmatch(target_ref)
         if match:
             return match.group(1), None, True
+    if platform_name == "whatsapp":
+        from gateway.whatsapp_service_policy import normalize_whatsapp_chat_id
+
+        normalized = normalize_whatsapp_chat_id(target_ref)
+        if normalized:
+            return normalized, None, True
     if target_ref.lstrip("-").isdigit():
         return target_ref, None, True
     # Matrix room IDs (start with !) and user IDs (start with @) are explicit

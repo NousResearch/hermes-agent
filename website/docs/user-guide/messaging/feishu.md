@@ -335,13 +335,22 @@ If the Feishu API rejects the post payload (e.g., due to unsupported markdown co
 
 Plain text messages (no markdown detected) are sent as the simple `text` message type.
 
-## ACK Emoji Reactions
+## Processing Status Reactions
 
-When the adapter receives an inbound message, it immediately adds an ✅ (OK) emoji reaction to signal that the message was received and is being processed. This provides visual feedback before the agent completes its response.
+The adapter cycles a reaction on the user's message to signal what the agent is doing:
 
-The reaction is persistent — it remains on the message after the response is sent, serving as a receipt marker.
+| Phase | Reaction |
+|-------|----------|
+| Agent begins processing | `Typing` added |
+| Processing succeeds | `Typing` removed (the reply message itself is the success signal) |
+| Processing fails | `Typing` removed, `CrossMark` added |
+| Processing is cancelled or interrupted | `Typing` removed (task aborted; no replacement badge) |
 
-User reactions on bot messages are also tracked. If a user adds or removes an emoji reaction on a message sent by the bot, it is routed as a synthetic text event (`reaction:added:EMOJI_TYPE` or `reaction:removed:EMOJI_TYPE`) so the agent can respond to feedback.
+Unlike Discord/Matrix, no positive badge is added on success — Feishu reactions render as prominent timeline badges and a per-message success marker would create visual noise. The absence of a badge, together with the reply message, is the success signal.
+
+Set `FEISHU_REACTIONS=false` to disable this entirely (e.g., for tenants where the bot lacks reaction permission, or where the noise is unwanted).
+
+User reactions on bot messages are routed back to the agent as synthetic text events (`reaction:added:EMOJI_TYPE` or `reaction:removed:EMOJI_TYPE`). Only real user reactions are routed — bot/app-origin reactions (including the adapter's own `Typing`/`CrossMark`) are dropped to avoid feedback loops.
 
 ## Burst Protection and Batching
 

@@ -5,7 +5,6 @@ Uses the same lazy-import + BaseRequest pattern as feishu_comment.py.
 The lark client is injected per-thread by the comment event handler.
 """
 
-import asyncio
 import json
 import logging
 import threading
@@ -59,12 +58,9 @@ def _do_request(client, method, uri, paths=None, queries=None, body=None):
 
     request = builder.build()
 
-    try:
-        response = asyncio.get_event_loop().run_until_complete(
-            asyncio.to_thread(client.request, request)
-        )
-    except RuntimeError:
-        response = client.request(request)
+    # Tool handlers run synchronously in a worker thread (no running event
+    # loop), so call the blocking lark client directly.
+    response = client.request(request)
 
     code = getattr(response, "code", None)
     msg = getattr(response, "msg", "")

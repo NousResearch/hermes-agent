@@ -359,6 +359,30 @@ class TestWeixinChunkDelivery:
         assert first_try["client_id"] == retry["client_id"]
 
 
+class TestWeixinPollLoop:
+    @patch("gateway.platforms.weixin.asyncio.sleep", new_callable=AsyncMock)
+    @patch("gateway.platforms.weixin._get_updates", new_callable=AsyncMock)
+    def test_session_expiry_reports_fatal_error_without_long_pause(self, get_updates_mock, sleep_mock):
+        adapter = _make_adapter()
+        adapter._poll_session = object()
+        adapter._running = True
+        notify_mock = AsyncMock()
+        adapter.set_fatal_error_handler(notify_mock)
+        get_updates_mock.side_effect = [
+            {"ret": weixin.SESSION_EXPIRED_ERRCODE, "errmsg": "session expired"},
+            asyncio.CancelledError(),
+        ]
+
+        asyncio.run(adapter._poll_loop())
+
+        assert adapter.has_fatal_error is True
+        assert adapter.fatal_error_code == "weixin_session_expired"
+        assert adapter.fatal_error_retryable is False
+        assert "QR login" in (adapter.fatal_error_message or "")
+        sleep_mock.assert_not_awaited()
+        notify_mock.assert_awaited_once_with(adapter)
+
+
 class TestWeixinOutboundMedia:
     def test_send_image_file_accepts_keyword_image_path(self):
         adapter = _make_adapter()

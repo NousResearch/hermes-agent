@@ -1254,10 +1254,13 @@ class WeixinAdapter(BasePlatformAdapter):
                 errcode = response.get("errcode", 0)
                 if ret not in (0, None) or errcode not in (0, None):
                     if ret == SESSION_EXPIRED_ERRCODE or errcode == SESSION_EXPIRED_ERRCODE:
-                        logger.error("[%s] Session expired; pausing for 10 minutes", self.name)
-                        await asyncio.sleep(600)
-                        consecutive_failures = 0
-                        continue
+                        message = (
+                            "Weixin iLink session expired; run QR login again to refresh credentials"
+                        )
+                        logger.error("[%s] %s", self.name, message)
+                        self._set_fatal_error("weixin_session_expired", message, retryable=False)
+                        await self._notify_fatal_error()
+                        break
                     consecutive_failures += 1
                     logger.warning(
                         "[%s] getUpdates failed ret=%s errcode=%s errmsg=%s (%d/%d)",

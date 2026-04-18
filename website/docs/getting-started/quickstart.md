@@ -62,6 +62,9 @@ hermes setup       # Or configure everything at once
 | **OpenCode Go** | $10/month subscription for open models | Set `OPENCODE_GO_API_KEY` |
 | **DeepSeek** | Direct DeepSeek API access | Set `DEEPSEEK_API_KEY` |
 | **NVIDIA NIM** | Nemotron models via build.nvidia.com or local NIM | Set `NVIDIA_API_KEY` (optional: `NVIDIA_BASE_URL`) |
+| **Ollama Cloud** | Managed Ollama catalog without local GPU | Set `OLLAMA_API_KEY` (or pick **Ollama Cloud** in `hermes model`) |
+| **Google Gemini (OAuth)** | Gemini via Cloud Code Assist — free and paid tiers | OAuth via `hermes model` (optional: `HERMES_GEMINI_PROJECT_ID` for paid tiers) |
+| **xAI (Grok)** | Grok 4 models via Responses API + prompt caching | Set `XAI_API_KEY` (alias: `grok`) |
 | **GitHub Copilot** | GitHub Copilot subscription (GPT-5.x, Claude, Gemini, etc.) | OAuth via `hermes model`, or `COPILOT_GITHUB_TOKEN` / `GH_TOKEN` |
 | **GitHub Copilot ACP** | Copilot ACP agent backend (spawns local `copilot` CLI) | `hermes model` (requires `copilot` CLI + `copilot login`) |
 | **Vercel AI Gateway** | Vercel AI Gateway routing | Set `AI_GATEWAY_API_KEY` |

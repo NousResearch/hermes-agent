@@ -271,7 +271,8 @@ Discord behavior is controlled through two files: **`~/.hermes/.env`** for crede
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `DISCORD_BOT_TOKEN` | **Yes** | — | Bot token from the [Discord Developer Portal](https://discord.com/developers/applications). |
-| `DISCORD_ALLOWED_USERS` | **Yes** | — | Comma-separated Discord user IDs allowed to interact with the bot. Without this, the gateway denies all users. |
+| `DISCORD_ALLOWED_USERS` | **Yes** | — | Comma-separated Discord user IDs allowed to interact with the bot. Without this **or** `DISCORD_ALLOWED_ROLES`, the gateway denies all users. |
+| `DISCORD_ALLOWED_ROLES` | No | — | Comma-separated Discord role IDs. Any member with one of these roles is authorized — OR semantics with `DISCORD_ALLOWED_USERS`. Auto-enables the **Server Members Intent** on connect. Useful when moderation teams churn: new mods get access as soon as the role is granted, no config push needed. |
 | `DISCORD_HOME_CHANNEL` | No | — | Channel ID where the bot sends proactive messages (cron output, reminders, notifications). |
 | `DISCORD_HOME_CHANNEL_NAME` | No | `"Home"` | Display name for the home channel in logs and status output. |
 | `DISCORD_REQUIRE_MENTION` | No | `true` | When `true`, the bot only responds in server channels when `@mentioned`. Set to `false` to respond to all messages in every channel. |
@@ -569,8 +570,26 @@ If you intentionally want a shared room conversation, leave it off — just expe
 ## Security
 
 :::warning
-Always set `DISCORD_ALLOWED_USERS` to restrict who can interact with the bot. Without it, the gateway denies all users by default as a safety measure. Only add User IDs of people you trust — authorized users have full access to the agent's capabilities, including tool use and system access.
+Always set `DISCORD_ALLOWED_USERS` (or `DISCORD_ALLOWED_ROLES`) to restrict who can interact with the bot. Without either, the gateway denies all users by default as a safety measure. Only authorize people you trust — authorized users have full access to the agent's capabilities, including tool use and system access.
 :::
+
+### Role-Based Access Control
+
+For servers where access is managed by roles instead of individual user lists (moderator teams, support staff, internal tooling), use `DISCORD_ALLOWED_ROLES` — a comma-separated list of role IDs. Any member with one of those roles is authorized.
+
+```bash
+# ~/.hermes/.env — works alongside or instead of DISCORD_ALLOWED_USERS
+DISCORD_ALLOWED_ROLES=987654321098765432,876543210987654321
+```
+
+Semantics:
+
+- **OR with user allowlist.** A user is authorized if their ID is in `DISCORD_ALLOWED_USERS` **or** they have any role in `DISCORD_ALLOWED_ROLES`.
+- **Server Members Intent auto-enabled.** When `DISCORD_ALLOWED_ROLES` is set, the bot enables the Members intent on connect — required for Discord to send role information with member records.
+- **Role IDs, not names.** Grab them from Discord: **User Settings → Advanced → Developer Mode ON**, then right-click any role → **Copy Role ID**.
+- **DM fallback.** In DMs the role check scans mutual guilds; a user with an allowed role in any shared server is authorized in DMs too.
+
+This is the preferred pattern when the moderation team churns — new moderators get access the moment the role is granted, with no `.env` edit or gateway restart.
 
 ### Mention Control
 

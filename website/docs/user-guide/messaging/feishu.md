@@ -337,20 +337,9 @@ Plain text messages (no markdown detected) are sent as the simple `text` message
 
 ## Processing Status Reactions
 
-The adapter cycles a reaction on the user's message to signal what the agent is doing:
+While the agent is working, the bot shows a `Typing` reaction on your message. It's cleared when the reply arrives, or replaced with `CrossMark` if processing failed.
 
-| Phase | Reaction |
-|-------|----------|
-| Agent begins processing | `Typing` added |
-| Processing succeeds | `Typing` removed (the reply message itself is the success signal) |
-| Processing fails | `Typing` removed, `CrossMark` added |
-| Processing is cancelled or interrupted | `Typing` removed (task aborted; no replacement badge) |
-
-Unlike Discord/Matrix, no positive badge is added on success — Feishu reactions render as prominent timeline badges and a per-message success marker would create visual noise. The absence of a badge, together with the reply message, is the success signal.
-
-Set `FEISHU_REACTIONS=false` to disable this entirely (e.g., for tenants where the bot lacks reaction permission, or where the noise is unwanted).
-
-User reactions on bot messages are routed back to the agent as synthetic text events (`reaction:added:EMOJI_TYPE` or `reaction:removed:EMOJI_TYPE`). Only real user reactions are routed — bot/app-origin reactions (including the adapter's own `Typing`/`CrossMark`) are dropped to avoid feedback loops.
+Set `FEISHU_REACTIONS=false` to turn it off.
 
 ## Burst Protection and Batching
 

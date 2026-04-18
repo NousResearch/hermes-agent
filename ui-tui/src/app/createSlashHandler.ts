@@ -3,7 +3,6 @@ import type { SlashExecResponse } from '../gatewayTypes.js'
 import { asCommandDispatch, rpcErrorMessage } from '../lib/rpc.js'
 
 import type { SlashHandlerContext } from './interfaces.js'
-import { destructiveGate, isDestructiveCommand } from './slash/commands/core.js'
 import { findSlashCommand } from './slash/registry.js'
 import type { SlashRunCtx } from './slash/types.js'
 import { getUiState } from './uiStore.js'
@@ -41,16 +40,10 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
     const found = findSlashCommand(parsed.name)
 
     if (found) {
-      if (!isDestructiveCommand(found.name)) {
-        destructiveGate.reset()
-      }
-
       found.run(parsed.arg, runCtx, cmd)
 
       return true
     }
-
-    destructiveGate.reset()
 
     if (catalog?.canon) {
       const needle = `/${parsed.name}`.toLowerCase()

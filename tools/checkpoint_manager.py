@@ -24,6 +24,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 from pathlib import Path
 from hermes_constants import get_hermes_home
 from typing import Dict, List, Optional, Set
@@ -264,6 +265,9 @@ class CheckpointManager:
         self.max_snapshots = max_snapshots
         self._checkpointed_dirs: Set[str] = set()
         self._git_available: Optional[bool] = None  # lazy probe
+        # Per-directory failure tracking to prevent busy-loop on permanently-broken dirs
+        self._failed_dirs: Dict[str, float] = {}  # dir -> last_failure_timestamp
+        self._failure_cooldown: float = 300.0  # 5 min cooldown after a failure
 
     # ------------------------------------------------------------------
     # Turn lifecycle
@@ -301,6 +305,11 @@ class CheckpointManager:
             logger.debug("Checkpoint skipped: directory too broad (%s)", abs_dir)
             return False
 
+        # Cooldown check: skip dirs that recently failed to avoid busy-loop
+        last_failure = self._failed_dirs.get(abs_dir, 0)
+        if last_failure > 0 and (time.monotonic() - last_failure) < self._failure_cooldown:
+            return False
+
         # Already checkpointed this turn?
         if abs_dir in self._checkpointed_dirs:
             return False
@@ -308,9 +317,13 @@ class CheckpointManager:
         self._checkpointed_dirs.add(abs_dir)
 
         try:
-            return self._take(abs_dir, reason)
+            ok = self._take(abs_dir, reason)
+            if not ok:
+                self._failed_dirs[abs_dir] = time.monotonic()
+            return ok
         except Exception as e:
             logger.debug("Checkpoint failed (non-fatal): %s", e)
+            self._failed_dirs[abs_dir] = time.monotonic()
             return False
 
     def list_checkpoints(self, working_dir: str) -> List[Dict]:

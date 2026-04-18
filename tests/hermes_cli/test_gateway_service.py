@@ -262,12 +262,6 @@ class TestRuntimeHealthLines:
                         "reason": "timeout",
                         "inflight_count": 1,
                     },
-                    "qq_archive": {
-                        "raw_message_count": 42,
-                        "raw_group_count": 2,
-                        "due_rollup_count": 1,
-                        "report_count": 5,
-                    },
                     "group_archive": {
                         "raw_message_count": 50,
                         "raw_scope_count": 3,
@@ -304,17 +298,6 @@ class TestRuntimeHealthLines:
                             }
                         ],
                     },
-                    "qq_monitoring": {
-                        "active_collect_only_groups": 1,
-                        "groups": [
-                            {
-                                "group_id": "726109087",
-                                "group_name": "项目群",
-                                "mode": "collect_only",
-                                "worker_names": ["钢镚"],
-                            }
-                        ],
-                    },
                 },
             },
         )
@@ -335,10 +318,8 @@ class TestRuntimeHealthLines:
         assert any("Background jobs: 2 active / 3 tracked" in line for line in lines)
         assert any("Auto vision: cooldown 18s" in line for line in lines)
         assert any("Group archive: 50 raw msgs" in line for line in lines)
-        assert any("QQ archive: 42 raw msgs" in line for line in lines)
         assert any("Group monitoring: 2 collect-only group" in line and "项目群" in line for line in lines)
         assert any("Direct shortcuts: 2 recent hit" in line for line in lines)
-        assert any("QQ monitoring: 1 collect-only group" in line for line in lines)
         assert any("项目群" in line or "726109087" in line for line in lines)
 
     def test_runtime_health_lines_surface_unhealthy_state(self, monkeypatch):

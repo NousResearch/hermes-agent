@@ -2078,12 +2078,12 @@ def test_runtime_status_summary_includes_foreground_background_vision_and_archiv
     assert summary["approvals"]["pending_count"] == 1
     assert summary["auto_vision"]["state"] == "cooldown"
     assert summary["auto_vision"]["inflight_count"] == 1
-    assert summary["qq_archive"]["raw_message_count"] == 42
+    assert summary["group_archive"]["platforms"]["qq_napcat"]["raw_message_count"] == 42
     assert summary["model"]["configured_model"] == "gpt-5.4"
     assert summary["model"]["active_model"] == "gpt-5.4-fallback"
     assert summary["model"]["fallback_active"] is True
-    assert summary["qq_monitoring"]["active_collect_only_groups"] == 1
-    assert summary["qq_monitoring"]["active_worker_count"] == 1
+    assert summary["group_monitoring"]["active_collect_only_groups"] == 1
+    assert summary["group_monitoring"]["active_worker_count"] == 1
 
 
 def test_runtime_status_summary_includes_model_fallback_approvals_and_collect_only_monitoring(tmp_path):
@@ -2148,9 +2148,9 @@ def test_runtime_status_summary_includes_model_fallback_approvals_and_collect_on
     assert summary["model"]["active_provider"] == "openrouter"
     assert summary["model"]["fallback_active"] is True
     assert summary["approvals"]["pending_count"] == 1
-    assert summary["qq_monitoring"]["active_collect_only_groups"] == 1
-    assert summary["qq_monitoring"]["groups"][0]["group_id"] == "726109087"
-    assert summary["qq_monitoring"]["groups"][0]["worker_names"] == ["钢镚"]
+    assert summary["group_monitoring"]["active_collect_only_groups"] == 1
+    assert summary["group_monitoring"]["groups"][0]["group_id"] == "726109087"
+    assert summary["group_monitoring"]["groups"][0]["worker_names"] == ["钢镚"]
 
 
 @pytest.mark.asyncio

@@ -1,7 +1,4 @@
-from gateway.group_monitoring_runtime_service import (
-    build_group_monitoring_summary,
-    build_legacy_qq_monitoring_summary,
-)
+from gateway.group_monitoring_runtime_service import build_group_monitoring_summary
 
 
 def test_build_group_monitoring_summary_merges_qq_and_weixin_collect_only_groups():
@@ -55,41 +52,3 @@ def test_build_group_monitoring_summary_merges_qq_and_weixin_collect_only_groups
     assert summary["groups"][1]["chat_id"] == "wx-group-1"
     assert summary["groups"][1]["platform_label"] == "微信群"
     assert summary["groups"][1]["can_reply_in_group"] is False
-
-
-def test_build_legacy_qq_monitoring_summary_filters_non_qq_groups():
-    summary = build_legacy_qq_monitoring_summary(
-        {
-            "platform_active_worker_counts": {"qq_napcat": 2, "weixin": 0},
-            "groups": [
-                {
-                    "platform": "qq_napcat",
-                    "group_id": "726109087",
-                    "group_name": "项目群",
-                    "effective_mode": "collect_only",
-                    "worker_names": ["钢镚", "铁柱"],
-                    "daily_report_enabled": True,
-                },
-                {
-                    "platform": "weixin",
-                    "chat_id": "wx-group-1",
-                    "group_name": "微信群项目组",
-                    "effective_mode": "collect_only",
-                    "worker_names": [],
-                    "daily_report_enabled": True,
-                },
-            ],
-        }
-    )
-
-    assert summary["active_collect_only_groups"] == 1
-    assert summary["active_worker_count"] == 2
-    assert summary["groups"] == [
-        {
-            "group_id": "726109087",
-            "group_name": "项目群",
-            "mode": "collect_only",
-            "worker_names": ["钢镚", "铁柱"],
-            "daily_report_enabled": True,
-        }
-    ]

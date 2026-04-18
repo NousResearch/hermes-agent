@@ -199,17 +199,6 @@ class TestGatewayRuntimeStatus:
                 "fallback_pinned": False,
             },
             "approvals": {"pending_count": 2},
-            "qq_monitoring": {
-                "active_collect_only_groups": 1,
-                "groups": [
-                    {
-                        "group_id": "726109087",
-                        "group_name": "项目群",
-                        "mode": "collect_only",
-                        "worker_names": ["钢镚"],
-                    }
-                ],
-            },
             "group_archive": {
                 "raw_message_count": 50,
                 "raw_scope_count": 3,
@@ -217,6 +206,10 @@ class TestGatewayRuntimeStatus:
                     "qq_napcat": {"raw_message_count": 42},
                     "weixin": {"raw_message_count": 8},
                 },
+            },
+            "group_monitoring": {
+                "active_collect_only_groups": 2,
+                "platform_counts": {"qq_napcat": 1, "weixin": 1},
             },
             "direct_shortcuts": {
                 "recent_count": 1,

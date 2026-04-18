@@ -78,18 +78,3 @@ def build_group_archive_runtime_summary(
             WEIXIN_PLATFORM: weixin_stats,
         },
     }
-
-
-def build_legacy_qq_archive_summary(group_archive: dict[str, Any] | None) -> dict[str, Any]:
-    summary = group_archive if isinstance(group_archive, dict) else {}
-    platform_stats = summary.get("platforms") if isinstance(summary.get("platforms"), dict) else {}
-    qq_stats = platform_stats.get(QQ_PLATFORM) if isinstance(platform_stats, dict) else {}
-    qq_stats = qq_stats if isinstance(qq_stats, dict) else {}
-    return {
-        "raw_message_count": int(qq_stats.get("raw_message_count") or 0),
-        "raw_group_count": int(qq_stats.get("raw_scope_count") or 0),
-        "due_rollup_count": int(qq_stats.get("due_rollup_count") or 0),
-        "report_count": int(qq_stats.get("report_count") or 0),
-        "oldest_raw_date": qq_stats.get("oldest_raw_date"),
-        "newest_raw_date": qq_stats.get("newest_raw_date"),
-    }

@@ -69,14 +69,22 @@ def test_build_runtime_status_summary_collects_live_runtime_snapshot(tmp_path):
                 "weixin": {"raw_message_count": 8, "raw_scope_count": 1},
             },
         },
-        _load_runtime_qq_archive_stats=lambda: {"raw_message_count": 42},
         _build_runtime_model_summary=lambda: {"configured_model": "gpt-5.4"},
         _build_runtime_approval_summary=lambda: {"pending_count": 1},
         _build_runtime_group_monitoring_summary=lambda: {
             "active_collect_only_groups": 2,
             "active_worker_count": 1,
             "platform_counts": {"qq_napcat": 1, "weixin": 1},
-            "groups": [],
+            "groups": [
+                {
+                    "platform": "qq_napcat",
+                    "platform_label": "QQ 群",
+                    "group_id": "726109087",
+                    "group_name": "项目群",
+                    "worker_names": ["钢镚"],
+                    "daily_report_enabled": True,
+                }
+            ],
         },
         _build_runtime_direct_shortcut_summary=lambda: {
             "recent_count": 1,
@@ -87,7 +95,6 @@ def test_build_runtime_status_summary_collects_live_runtime_snapshot(tmp_path):
                 }
             ],
         },
-        _build_runtime_qq_monitoring_summary=lambda: {"active_collect_only_groups": 1, "groups": []},
     )
 
     summary = build_runtime_status_summary(runner, now_ts=130.0, pending_sentinel=sentinel)
@@ -97,12 +104,11 @@ def test_build_runtime_status_summary_collects_live_runtime_snapshot(tmp_path):
     assert summary["background_jobs"]["active_count"] == 1
     assert summary["background_jobs"]["active"][0]["preview"] == "继续处理线上问题"
     assert summary["auto_vision"]["state"] == "cooldown"
-    assert summary["qq_archive"]["raw_message_count"] == 42
     assert summary["group_archive"]["raw_message_count"] == 50
     assert summary["model"]["configured_model"] == "gpt-5.4"
     assert summary["approvals"]["pending_count"] == 1
     assert summary["group_monitoring"]["platform_counts"] == {"qq_napcat": 1, "weixin": 1}
-    assert summary["qq_monitoring"]["active_collect_only_groups"] == 1
+    assert summary["group_monitoring"]["active_collect_only_groups"] == 2
     assert summary["direct_shortcuts"]["recent_count"] == 1
 
 
@@ -196,17 +202,6 @@ def test_render_status_command_renders_status_lines_with_foreground_and_backgrou
                 }
             ],
         },
-        _build_runtime_qq_monitoring_summary=lambda: {
-            "active_collect_only_groups": 1,
-            "groups": [
-                {
-                    "group_id": "726109087",
-                    "group_name": "项目群",
-                    "worker_names": ["钢镚"],
-                    "daily_report_enabled": True,
-                }
-            ],
-        },
         _format_background_job_age=lambda job: "25s",
     )
 
@@ -221,7 +216,6 @@ def test_render_status_command_renders_status_lines_with_foreground_and_backgrou
     assert "Model" in result
     assert "Group Archive" in result
     assert "Group Monitoring" in result
-    assert "QQ Monitoring" in result
     assert "Direct Shortcuts" in result
     assert "Background Jobs" in result
     assert "`bg_123`" in result

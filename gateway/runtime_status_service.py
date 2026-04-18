@@ -6,10 +6,6 @@ import logging
 import time
 from typing import Any
 
-from gateway.group_archive_runtime_service import build_legacy_qq_archive_summary
-from gateway.group_monitoring_runtime_service import build_legacy_qq_monitoring_summary
-
-
 logger = logging.getLogger(__name__)
 
 
@@ -163,19 +159,6 @@ def build_runtime_status_summary(
             logger.debug("Failed to collect shared group archive runtime stats: %s", exc)
             group_archive = {}
 
-    legacy_archive = build_legacy_qq_archive_summary(group_archive) if group_archive else {}
-    if any(
-        bool(legacy_archive.get(key))
-        for key in ("raw_message_count", "raw_group_count", "report_count", "due_rollup_count")
-    ):
-        qq_archive = legacy_archive
-    else:
-        try:
-            qq_archive = runner._load_runtime_qq_archive_stats()
-        except Exception as exc:
-            logger.debug("Failed to collect QQ archive runtime stats: %s", exc)
-            qq_archive = {}
-
     group_monitoring: dict[str, Any] = {}
     if hasattr(runner, "_build_runtime_group_monitoring_summary"):
         try:
@@ -191,13 +174,6 @@ def build_runtime_status_summary(
             logger.debug("Failed to collect direct shortcut runtime stats: %s", exc)
             direct_shortcuts = {}
 
-    qq_monitoring: dict[str, Any]
-    legacy_from_shared = build_legacy_qq_monitoring_summary(group_monitoring) if group_monitoring else {}
-    if legacy_from_shared.get("groups"):
-        qq_monitoring = legacy_from_shared
-    else:
-        qq_monitoring = runner._build_runtime_qq_monitoring_summary()
-
     return {
         "model": runner._build_runtime_model_summary(),
         "approvals": runner._build_runtime_approval_summary(),
@@ -211,9 +187,7 @@ def build_runtime_status_summary(
         },
         "auto_vision": _collect_auto_vision_summary(runner),
         "group_archive": group_archive,
-        "qq_archive": qq_archive,
         "group_monitoring": group_monitoring,
-        "qq_monitoring": qq_monitoring,
         "direct_shortcuts": direct_shortcuts,
     }
 
@@ -375,14 +349,6 @@ def render_status_command(
             group_monitoring_summary = runner._build_runtime_group_monitoring_summary()
         except Exception:
             group_monitoring_summary = {}
-    monitoring_summary = (
-        build_legacy_qq_monitoring_summary(group_monitoring_summary)
-        if group_monitoring_summary
-        else {}
-    )
-    if not monitoring_summary.get("groups"):
-        monitoring_summary = runner._build_runtime_qq_monitoring_summary()
-    monitoring_count = int(monitoring_summary.get("active_collect_only_groups") or 0)
     shared_monitoring_count = int(group_monitoring_summary.get("active_collect_only_groups") or 0)
 
     lines.extend(
@@ -394,7 +360,6 @@ def render_status_command(
             "",
             f"**Group Archive:** {int(group_archive_summary.get('raw_message_count') or 0)} raw msg(s)",
             f"**Group Monitoring:** {shared_monitoring_count} collect_only group(s)",
-            f"**QQ Monitoring:** {monitoring_count} collect_only group(s)",
         ]
     )
     direct_shortcut_summary = {}
@@ -415,12 +380,6 @@ def render_status_command(
             if bits:
                 lines.append(f"- {' · '.join(bits)}")
     shared_group_preview = list(group_monitoring_summary.get("groups") or [])[:3]
-    if not shared_group_preview:
-        shared_group_preview = [
-            {"platform_label": "QQ 群", **group}
-            for group in list(monitoring_summary.get("groups") or [])[:3]
-            if isinstance(group, dict)
-        ]
     for group in shared_group_preview:
         if not isinstance(group, dict):
             continue

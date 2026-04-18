@@ -1,7 +1,4 @@
-from gateway.group_archive_runtime_service import (
-    build_group_archive_runtime_summary,
-    build_legacy_qq_archive_summary,
-)
+from gateway.group_archive_runtime_service import build_group_archive_runtime_summary
 
 
 def test_build_group_archive_runtime_summary_merges_qq_and_weixin_stats():
@@ -34,35 +31,3 @@ def test_build_group_archive_runtime_summary_merges_qq_and_weixin_stats():
     assert summary["newest_raw_date"] == "2026-04-19"
     assert summary["platforms"]["qq_napcat"]["raw_message_count"] == 42
     assert summary["platforms"]["weixin"]["raw_message_count"] == 8
-
-
-def test_build_legacy_qq_archive_summary_preserves_existing_shape():
-    summary = build_legacy_qq_archive_summary(
-        {
-            "platforms": {
-                "qq_napcat": {
-                    "raw_message_count": 42,
-                    "raw_scope_count": 2,
-                    "due_rollup_count": 1,
-                    "report_count": 5,
-                    "oldest_raw_date": "2026-04-17",
-                    "newest_raw_date": "2026-04-18",
-                },
-                "weixin": {
-                    "raw_message_count": 8,
-                    "raw_scope_count": 1,
-                    "due_rollup_count": 2,
-                    "report_count": 3,
-                },
-            }
-        }
-    )
-
-    assert summary == {
-        "raw_message_count": 42,
-        "raw_group_count": 2,
-        "due_rollup_count": 1,
-        "report_count": 5,
-        "oldest_raw_date": "2026-04-17",
-        "newest_raw_date": "2026-04-18",
-    }

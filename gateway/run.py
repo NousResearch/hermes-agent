@@ -280,14 +280,12 @@ from gateway.runtime_shortcuts_service import (
 )
 from gateway.group_archive_runtime_service import (
     build_group_archive_runtime_summary as shared_build_group_archive_runtime_summary,
-    build_legacy_qq_archive_summary as shared_build_legacy_qq_archive_summary,
 )
 from gateway.direct_shortcut_trace_runtime_service import (
     build_direct_shortcut_runtime_summary as shared_build_direct_shortcut_runtime_summary,
 )
 from gateway.group_monitoring_runtime_service import (
     build_group_monitoring_summary as shared_build_group_monitoring_summary,
-    build_legacy_qq_monitoring_summary as shared_build_legacy_qq_monitoring_summary,
 )
 from gateway.group_control_intents import (
     looks_like_group_listen_disable_request,
@@ -2715,16 +2713,6 @@ class GatewayRunner:
 
     def _build_runtime_direct_shortcut_summary(self) -> dict[str, Any]:
         return shared_build_direct_shortcut_runtime_summary(self)
-
-    def _build_runtime_qq_monitoring_summary(self) -> dict[str, Any]:
-        return shared_build_legacy_qq_monitoring_summary(
-            self._build_runtime_group_monitoring_summary()
-        )
-
-    def _load_runtime_qq_archive_stats(self) -> dict[str, Any]:
-        return shared_build_legacy_qq_archive_summary(
-            self._build_runtime_group_archive_summary()
-        )
 
     def _write_runtime_status_snapshot(self) -> None:
         try:

@@ -1919,18 +1919,6 @@ def _runtime_health_lines() -> list[str]:
             preview = f" ({', '.join(platform_bits)})" if platform_bits else ""
             lines.append(f"ℹ Group archive: {raw_count} raw msgs{preview}")
 
-        qq_archive = runtime_summary.get("qq_archive")
-        if isinstance(qq_archive, dict) and qq_archive:
-            raw_count = int(qq_archive.get("raw_message_count") or 0)
-            raw_groups = int(qq_archive.get("raw_group_count") or 0)
-            due_rollups = int(qq_archive.get("due_rollup_count") or 0)
-            report_count = int(qq_archive.get("report_count") or 0)
-            lines.append(
-                f"ℹ QQ archive: {raw_count} raw msgs / {raw_groups} groups / "
-                f"{due_rollups} due / {report_count} reports"
-            )
-
-        qq_monitoring = runtime_summary.get("qq_monitoring")
         group_monitoring = runtime_summary.get("group_monitoring")
         direct_shortcuts = runtime_summary.get("direct_shortcuts")
         if isinstance(group_monitoring, dict) and group_monitoring:
@@ -1968,23 +1956,6 @@ def _runtime_health_lines() -> list[str]:
                 if preview_bits:
                     preview = f" ({' · '.join(preview_bits)})"
             lines.append(f"ℹ Direct shortcuts: {recent_count} recent hit(s){preview}")
-        if isinstance(qq_monitoring, dict) and qq_monitoring:
-            active_collect_only_groups = int(qq_monitoring.get("active_collect_only_groups") or 0)
-            groups = qq_monitoring.get("groups") or []
-            preview = ""
-            if groups and isinstance(groups[0], dict):
-                group = groups[0]
-                group_label = str(group.get("group_name") or group.get("group_id") or "").strip()
-                if not group_label:
-                    group_label = str(group.get("group_id") or "").strip()
-                worker_names = ", ".join(group.get("worker_names") or [])
-                preview_bits = [bit for bit in (group_label, worker_names) if bit]
-                if preview_bits:
-                    preview = f" ({' · '.join(preview_bits)})"
-            lines.append(
-                f"ℹ QQ monitoring: {active_collect_only_groups} collect-only group(s){preview}"
-            )
-
     return lines
 
 

@@ -209,31 +209,3 @@ def build_group_monitoring_summary(
         "platform_active_worker_counts": platform_active_worker_counts,
         "groups": groups[:8],
     }
-
-
-def build_legacy_qq_monitoring_summary(group_monitoring: dict[str, Any] | None) -> dict[str, Any]:
-    summary = group_monitoring if isinstance(group_monitoring, dict) else {}
-    groups: list[dict[str, Any]] = []
-    for entry in summary.get("groups") or []:
-        if not isinstance(entry, dict):
-            continue
-        if str(entry.get("platform") or "").strip() != QQ_PLATFORM:
-            continue
-        group_id = str(entry.get("group_id") or entry.get("chat_id") or "").strip()
-        if not group_id:
-            continue
-        groups.append(
-            {
-                "group_id": group_id,
-                "group_name": str(entry.get("group_name") or group_id).strip() or group_id,
-                "mode": str(entry.get("effective_mode") or "collect_only").strip() or "collect_only",
-                "worker_names": _normalize_target_list(entry.get("worker_names")),
-                "daily_report_enabled": bool(entry.get("daily_report_enabled")),
-            }
-        )
-    platform_workers = summary.get("platform_active_worker_counts") or {}
-    return {
-        "active_collect_only_groups": len(groups),
-        "active_worker_count": int(platform_workers.get(QQ_PLATFORM) or 0),
-        "groups": groups[:8],
-    }

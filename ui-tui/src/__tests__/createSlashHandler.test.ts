@@ -26,15 +26,53 @@ describe('createSlashHandler', () => {
     expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
   })
 
-  it('falls through /skills with args to slash.exec without opening overlay', () => {
+  it('routes /skills install <name> to skills.manage without opening overlay', () => {
     const ctx = buildCtx()
 
     expect(createSlashHandler(ctx)('/skills install foo')).toBe(true)
     expect(getOverlayState().skillsHub).toBe(false)
-    expect(ctx.gateway.rpc).toHaveBeenCalledWith('slash.exec', {
-      command: 'skills install foo',
-      session_id: null
+    expect(ctx.gateway.rpc).toHaveBeenCalledWith('skills.manage', {
+      action: 'install',
+      query: 'foo'
     })
+  })
+
+  it('routes /skills inspect <name> to skills.manage', () => {
+    const ctx = buildCtx()
+
+    createSlashHandler(ctx)('/skills inspect my-skill')
+    expect(ctx.gateway.rpc).toHaveBeenCalledWith('skills.manage', {
+      action: 'inspect',
+      query: 'my-skill'
+    })
+  })
+
+  it('routes /skills search <query> to skills.manage', () => {
+    const ctx = buildCtx()
+
+    createSlashHandler(ctx)('/skills search vibe')
+    expect(ctx.gateway.rpc).toHaveBeenCalledWith('skills.manage', {
+      action: 'search',
+      query: 'vibe'
+    })
+  })
+
+  it('routes /skills browse [page] to skills.manage with a numeric page', () => {
+    const ctx = buildCtx()
+
+    createSlashHandler(ctx)('/skills browse 3')
+    expect(ctx.gateway.rpc).toHaveBeenCalledWith('skills.manage', {
+      action: 'browse',
+      page: 3
+    })
+  })
+
+  it('shows usage for an unknown /skills subcommand', () => {
+    const ctx = buildCtx()
+
+    createSlashHandler(ctx)('/skills zzz')
+    expect(ctx.gateway.rpc).not.toHaveBeenCalled()
+    expect(ctx.transcript.sys).toHaveBeenCalledWith(expect.stringContaining('usage: /skills'))
   })
 
   it('cycles details mode and persists it', async () => {

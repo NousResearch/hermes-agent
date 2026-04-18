@@ -89,10 +89,16 @@ export function SkillsHub({ gw, onClose, t }: SkillsHubProps) {
     }
 
     if (stage === 'actions') {
-      if (key.return || ch.toLowerCase() === 'x') {
-        if (skillName) {
-          install(skillName)
-        }
+      if (key.return) {
+        setStage('skill')
+        setInfo(null)
+        setErr('')
+
+        return
+      }
+
+      if (ch.toLowerCase() === 'x' && skillName) {
+        install(skillName)
 
         return
       }
@@ -271,7 +277,7 @@ export function SkillsHub({ gw, onClose, t }: SkillsHubProps) {
       {err ? <Text color={t.color.label}>error: {err}</Text> : null}
       {installing ? <Text color={t.color.amber}>installing…</Text> : null}
 
-      <Text color={t.color.dim}>Enter install · i inspect · x install · Esc back</Text>
+      <Text color={t.color.dim}>i reinspect · x reinstall · Enter/Esc back</Text>
     </Box>
   )
 }

@@ -638,6 +638,9 @@ def cmd_status(args) -> None:
     raw = getattr(hcfg, "raw", None) or {}
     dialectic_cadence = raw.get("dialecticCadence") or 1
     print(f"  Dialectic cad:  every {dialectic_cadence} turn{'s' if dialectic_cadence != 1 else ''}")
+    reasoning_cap = raw.get("reasoningLevelCap") or hcfg.reasoning_level_cap
+    heuristic_on = "on" if hcfg.reasoning_heuristic else "off"
+    print(f"  Reasoning:      base={hcfg.dialectic_reasoning_level}, cap={reasoning_cap}, heuristic={heuristic_on}")
     print(f"  Observation:    user(me={hcfg.user_observe_me},others={hcfg.user_observe_others}) ai(me={hcfg.ai_observe_me},others={hcfg.ai_observe_others})")
     print(f"  Write freq:     {hcfg.write_frequency}")
 

@@ -77,6 +77,27 @@ def _build_agent_runtime(job: dict):
     }
 
 
+def _resolve_background_job_response(result: object) -> str:
+    if not isinstance(result, dict):
+        raise RuntimeError("background conversation returned invalid result")
+
+    response = str(result.get("final_response") or "")
+    if response:
+        return response
+
+    error_text = str(
+        result.get("error")
+        or result.get("detail")
+        or result.get("message")
+        or ""
+    ).strip()
+    if result.get("failed") or result.get("success") is False:
+        raise RuntimeError(error_text or "background conversation failed without a final response")
+    if error_text and result.get("error"):
+        raise RuntimeError(error_text)
+    return ""
+
+
 def run_background_job(task_id: str) -> int:
     store = BackgroundJobStore()
     job = store.get_job(task_id)
@@ -145,11 +166,7 @@ def run_background_job(task_id: str) -> int:
                 admin_only_message_builder=lambda action: None,
                 external_backend=approval_bridge,
             )
-        response = ""
-        if result:
-            response = str(result.get("final_response") or "")
-            if not response and result.get("error"):
-                raise RuntimeError(str(result.get("error")))
+        response = _resolve_background_job_response(result) if result is not None else ""
         store.mark_job_completed(task_id, raw_response=response)
         return 0
     except SystemExit:

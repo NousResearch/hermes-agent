@@ -86,6 +86,32 @@ def _make_runner(tmp_path: Path):
     return runner
 
 
+def _install_background_worker_runtime(monkeypatch, store, source):
+    monkeypatch.setattr(
+        "gateway.background_worker.BackgroundJobStore",
+        lambda: store,
+    )
+    heartbeat_stop = MagicMock()
+    heartbeat_thread = MagicMock()
+    monkeypatch.setattr(
+        "gateway.background_worker._start_job_heartbeat",
+        lambda _store, _task_id: (heartbeat_stop, heartbeat_thread),
+    )
+    monkeypatch.setattr(
+        "gateway.background_worker._build_agent_runtime",
+        lambda job: {
+            "source": source,
+            "runtime_spec": SimpleNamespace(
+                loaded_skills=[],
+                missing_skills=[],
+            ),
+            "loaded_skills": [],
+            "missing_skills": [],
+        },
+    )
+    return heartbeat_stop, heartbeat_thread
+
+
 @pytest.mark.asyncio
 async def test_delivery_tick_sends_completed_job_once(tmp_path):
     runner = _make_runner(tmp_path)
@@ -154,29 +180,12 @@ async def test_btw_job_runs_through_worker_and_delivery(tmp_path, monkeypatch):
         conversation_history=[{"role": "user", "content": "hello"}],
     )
 
-    heartbeat_stop = MagicMock()
-    heartbeat_thread = MagicMock()
     worker_calls = {}
 
-    monkeypatch.setattr(
-        "gateway.background_worker.BackgroundJobStore",
-        lambda: store,
-    )
-    monkeypatch.setattr(
-        "gateway.background_worker._start_job_heartbeat",
-        lambda _store, _task_id: (heartbeat_stop, heartbeat_thread),
-    )
-    monkeypatch.setattr(
-        "gateway.background_worker._build_agent_runtime",
-        lambda job: {
-            "source": source,
-            "runtime_spec": SimpleNamespace(
-                loaded_skills=[],
-                missing_skills=[],
-            ),
-            "loaded_skills": [],
-            "missing_skills": [],
-        },
+    heartbeat_stop, heartbeat_thread = _install_background_worker_runtime(
+        monkeypatch,
+        store,
+        source,
     )
     monkeypatch.setattr(
         "gateway.background_worker.run_gateway_btw_conversation",
@@ -199,6 +208,41 @@ async def test_btw_job_runs_through_worker_and_delivery(tmp_path, monkeypatch):
     content = runner.adapters[Platform.QQ_NAPCAT].send.await_args.kwargs["content"]
     assert '💬 /btw: "what changed in this chat?"' in content
     assert "side answer" in content
+    heartbeat_stop.set.assert_called_once()
+    heartbeat_thread.join.assert_called_once_with(timeout=1.0)
+
+
+def test_background_worker_marks_job_failed_for_explicit_failure_without_response(tmp_path, monkeypatch):
+    from gateway.background_jobs import BackgroundJobStore
+
+    store = BackgroundJobStore(db_path=tmp_path / "background_jobs.db")
+    source = _make_source()
+    task_id = "bg_200021_abcd12"
+
+    store.create_job(
+        task_id=task_id,
+        prompt="继续查问题",
+        source=source,
+        session_key="qq_napcat:dm:179033731",
+        job_kind="auto",
+    )
+
+    heartbeat_stop, heartbeat_thread = _install_background_worker_runtime(
+        monkeypatch,
+        store,
+        source,
+    )
+    monkeypatch.setattr(
+        "gateway.background_worker.run_gateway_background_conversation",
+        lambda **kwargs: {"success": False, "detail": "worker returned malformed payload"},
+    )
+
+    exit_code = run_background_job(task_id)
+
+    assert exit_code == 1
+    job = store.get_job(task_id)
+    assert job["status"] == "failed"
+    assert job["error"] == "worker returned malformed payload"
     heartbeat_stop.set.assert_called_once()
     heartbeat_thread.join.assert_called_once_with(timeout=1.0)
 

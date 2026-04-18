@@ -156,7 +156,24 @@ class SlackAdapter(BasePlatformAdapter):
 
             # First token is the primary — used for AsyncApp / Socket Mode
             primary_token = bot_tokens[0]
-            self._app = AsyncApp(token=primary_token)
+            # Use an explicit authorize callable instead of passing `token=`.
+            # Passing `token=` can still trigger AsyncMultiTeamsAuthorization when
+            # any installation-store-related state is present (env vars, saved data, etc.).
+            # An explicit callable forces AsyncSingleTeamAuthorization path every time.
+            from slack_bolt.authorization import AuthorizeResult as _AuthorizeResult
+
+            async def _single_team_authorize(**kwargs):
+                try:
+                    resp = await AsyncWebClient(token=primary_token).auth_test()
+                    return _AuthorizeResult.from_auth_test_response(
+                        auth_test_response=resp,
+                        bot_token=primary_token,
+                    )
+                except Exception as exc:
+                    logger.error("[Slack] _single_team_authorize failed: %s", exc, exc_info=True)
+                    raise
+
+            self._app = AsyncApp(authorize=_single_team_authorize)
 
             # Register each bot token and map team_id → client
             for token in bot_tokens:

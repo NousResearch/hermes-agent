@@ -1320,7 +1320,7 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         live = fetch_ollama_cloud_models(force_refresh=force_refresh)
         if live:
             return live
-    if normalized == "custom":
+    if normalized == "custom" or normalized.startswith("custom:"):
         base_url = _get_custom_base_url()
         if base_url:
             # Try common API key env vars for custom endpoints
@@ -2010,7 +2010,7 @@ def validate_requested_model(
             "message": "Model names cannot contain spaces.",
         }
 
-    if normalized == "custom":
+    if normalized == "custom" or normalized.startswith("custom:"):
         probe = probe_api_models(api_key, base_url)
         api_models = probe.get("models")
         if api_models is not None:
@@ -2054,6 +2054,32 @@ def validate_requested_model(
                 "persist": False,
                 "recognized": False,
                 "message": message,
+            }
+
+        # /v1/models endpoint unavailable - fallback to config models list
+        from hermes_cli.config import get_compatible_custom_providers
+        config_models = None
+        try:
+            custom_providers = get_compatible_custom_providers()
+            # provider format: "custom:provider_name" -> extract "provider_name"
+            provider_name = (provider or "").replace("custom:", "").strip().lower()
+            for cp in custom_providers:
+                cp_name = str(cp.get("name", "") or "").strip().lower()
+                cp_url = str(cp.get("base_url", "") or "").strip().rstrip("/")
+                if cp_name == provider_name or cp_url == (base_url or "").rstrip("/"):
+                    cp_models = cp.get("models")
+                    if cp_models and isinstance(cp_models, dict):
+                        config_models = list(cp_models.keys())
+                    break
+        except Exception:
+            pass
+        
+        if config_models and requested_for_lookup in set(config_models):
+            return {
+                "accepted": True,
+                "persist": True,
+                "recognized": True,
+                "message": f"Model `{requested}` validated from config (API /models endpoint unavailable).",
             }
 
         message = (

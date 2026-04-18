@@ -6,6 +6,8 @@ import logging
 import time
 from typing import Any
 
+from gateway.group_monitoring_runtime_service import build_legacy_qq_monitoring_summary
+
 
 logger = logging.getLogger(__name__)
 
@@ -158,6 +160,21 @@ def build_runtime_status_summary(
         logger.debug("Failed to collect QQ archive runtime stats: %s", exc)
         qq_archive = {}
 
+    group_monitoring: dict[str, Any] = {}
+    if hasattr(runner, "_build_runtime_group_monitoring_summary"):
+        try:
+            group_monitoring = runner._build_runtime_group_monitoring_summary()
+        except Exception as exc:
+            logger.debug("Failed to collect shared group monitoring runtime stats: %s", exc)
+            group_monitoring = {}
+
+    qq_monitoring: dict[str, Any]
+    legacy_from_shared = build_legacy_qq_monitoring_summary(group_monitoring) if group_monitoring else {}
+    if legacy_from_shared.get("groups"):
+        qq_monitoring = legacy_from_shared
+    else:
+        qq_monitoring = runner._build_runtime_qq_monitoring_summary()
+
     return {
         "model": runner._build_runtime_model_summary(),
         "approvals": runner._build_runtime_approval_summary(),
@@ -171,7 +188,8 @@ def build_runtime_status_summary(
         },
         "auto_vision": _collect_auto_vision_summary(runner),
         "qq_archive": qq_archive,
-        "qq_monitoring": runner._build_runtime_qq_monitoring_summary(),
+        "group_monitoring": group_monitoring,
+        "qq_monitoring": qq_monitoring,
     }
 
 
@@ -320,8 +338,21 @@ def render_status_command(
     )
 
     pending_approval_count = _pending_approval_count(runner, session_key=session_key)
-    monitoring_summary = runner._build_runtime_qq_monitoring_summary()
+    group_monitoring_summary: dict[str, Any] = {}
+    if hasattr(runner, "_build_runtime_group_monitoring_summary"):
+        try:
+            group_monitoring_summary = runner._build_runtime_group_monitoring_summary()
+        except Exception:
+            group_monitoring_summary = {}
+    monitoring_summary = (
+        build_legacy_qq_monitoring_summary(group_monitoring_summary)
+        if group_monitoring_summary
+        else {}
+    )
+    if not monitoring_summary.get("groups"):
+        monitoring_summary = runner._build_runtime_qq_monitoring_summary()
     monitoring_count = int(monitoring_summary.get("active_collect_only_groups") or 0)
+    shared_monitoring_count = int(group_monitoring_summary.get("active_collect_only_groups") or 0)
 
     lines.extend(
         [
@@ -330,6 +361,7 @@ def render_status_command(
             f"**Pending Approvals:** {pending_approval_count}",
             f"**Auto Vision:** {_auto_vision_label(runner)}",
             "",
+            f"**Group Monitoring:** {shared_monitoring_count} collect_only group(s)",
             f"**QQ Monitoring:** {monitoring_count} collect_only group(s)",
         ]
     )

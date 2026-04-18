@@ -1916,6 +1916,19 @@ def _runtime_health_lines() -> list[str]:
             )
 
         qq_monitoring = runtime_summary.get("qq_monitoring")
+        group_monitoring = runtime_summary.get("group_monitoring")
+        if isinstance(group_monitoring, dict) and group_monitoring:
+            active_collect_only_groups = int(group_monitoring.get("active_collect_only_groups") or 0)
+            platform_counts = group_monitoring.get("platform_counts") or {}
+            platform_bits = []
+            for platform_name in ("qq_napcat", "weixin"):
+                count = int(platform_counts.get(platform_name) or 0)
+                if count:
+                    platform_bits.append(f"{platform_name}={count}")
+            preview = f" ({', '.join(platform_bits)})" if platform_bits else ""
+            lines.append(
+                f"ℹ Group monitoring: {active_collect_only_groups} collect-only group(s){preview}"
+            )
         if isinstance(qq_monitoring, dict) and qq_monitoring:
             active_collect_only_groups = int(qq_monitoring.get("active_collect_only_groups") or 0)
             groups = qq_monitoring.get("groups") or []

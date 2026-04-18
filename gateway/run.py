@@ -278,6 +278,10 @@ from gateway.runtime_status_service import (
 from gateway.runtime_shortcuts_service import (
     build_long_running_status_detail as shared_build_long_running_status_detail,
 )
+from gateway.group_monitoring_runtime_service import (
+    build_group_monitoring_summary as shared_build_group_monitoring_summary,
+    build_legacy_qq_monitoring_summary as shared_build_legacy_qq_monitoring_summary,
+)
 from gateway.group_control_intents import (
     looks_like_group_listen_disable_request,
     looks_like_group_listen_enable_request,
@@ -311,6 +315,8 @@ from gateway.group_target_intents import (
 from gateway.qq_group_archive import QqGroupArchiveStore
 from gateway.qq_group_policies import list_group_policies
 from gateway.qq_intel_assignments import list_intel_workers
+from gateway.weixin_group_archive import WeixinGroupArchiveStore
+from gateway.weixin_group_policies import list_group_policies as list_weixin_group_policies
 from gateway.qq_intents import (
     _QQ_BACKGROUND_STATUS_QUERY_TERMS,
     _QQ_GROUP_REQUEST_HINT_TERMS,
@@ -2685,84 +2691,18 @@ class GatewayRunner:
             "pending_count": int(max(pending_count, 0)),
         }
 
-    def _build_runtime_qq_monitoring_summary(self) -> dict[str, Any]:
-        groups_by_id: dict[str, dict[str, Any]] = {}
-        try:
-            policy_groups = list_group_policies()
-        except Exception as exc:
-            logger.debug("Failed to load QQ group policy snapshot: %s", exc)
-            policy_groups = []
-
-        for policy in policy_groups:
-            if not isinstance(policy, dict):
-                continue
-            if str(policy.get("mode") or "").strip().lower() != "collect_only":
-                continue
-            group_id = str(policy.get("group_id") or "").strip()
-            if not group_id:
-                continue
-            groups_by_id.setdefault(
-                group_id,
-                {
-                    "group_id": group_id,
-                    "group_name": str(policy.get("group_name") or group_id).strip(),
-                    "mode": "collect_only",
-                    "worker_names": [],
-                    "daily_report_enabled": bool(policy.get("daily_report_enabled")),
-                },
-            )
-
-        try:
-            workers = list_intel_workers(status="active_collecting")
-        except Exception as exc:
-            logger.debug("Failed to collect QQ monitoring runtime stats: %s", exc)
-            workers = []
-
-        for worker in workers:
-            if not isinstance(worker, dict):
-                continue
-            group_id = str(worker.get("target_group_id") or "").strip()
-            group_name = str(worker.get("target_group_name") or group_id).strip()
-            group_ref = str(worker.get("target_group_ref") or "").strip()
-            if not group_id and group_ref.startswith("group:"):
-                group_id = group_ref.split(":", 1)[1]
-            if not group_id and not group_name:
-                continue
-            key = group_id or group_name
-            entry = groups_by_id.setdefault(
-                key,
-                {
-                    "group_id": group_id,
-                    "group_name": group_name,
-                    "mode": "collect_only",
-                    "worker_names": [],
-                    "daily_report_enabled": False,
-                },
-            )
-            worker_name = str(worker.get("worker_name") or "").strip()
-            if worker_name and worker_name not in entry["worker_names"]:
-                entry["worker_names"].append(worker_name)
-            if bool(worker.get("daily_report_enabled")):
-                entry["daily_report_enabled"] = True
-
-        groups = sorted(
-            groups_by_id.values(),
-            key=lambda item: (
-                str(item.get("group_name") or "").strip(),
-                str(item.get("group_id") or "").strip(),
-            ),
+    def _build_runtime_group_monitoring_summary(self) -> dict[str, Any]:
+        return shared_build_group_monitoring_summary(
+            list_qq_group_policies_fn=list_group_policies,
+            list_qq_intel_workers_fn=list_intel_workers,
+            list_weixin_group_policies_fn=list_weixin_group_policies,
+            describe_weixin_group_reporting_fn=WeixinGroupArchiveStore().describe_group_reporting,
         )
-        active_worker_count = 0
-        for worker in workers:
-            if not isinstance(worker, dict):
-                continue
-            if str(worker.get("status") or "").strip().lower() == "active_collecting":
-                active_worker_count += 1
-        return {
-            "active_collect_only_groups": len(groups),
-            "active_worker_count": active_worker_count,
-            "groups": groups[:8],
-        }
+
+    def _build_runtime_qq_monitoring_summary(self) -> dict[str, Any]:
+        return shared_build_legacy_qq_monitoring_summary(
+            self._build_runtime_group_monitoring_summary()
+        )
 
     @staticmethod
     def _load_runtime_qq_archive_stats() -> dict[str, Any]:

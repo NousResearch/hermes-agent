@@ -64,6 +64,12 @@ def test_build_runtime_status_summary_collects_live_runtime_snapshot(tmp_path):
         _load_runtime_qq_archive_stats=lambda: {"raw_message_count": 42},
         _build_runtime_model_summary=lambda: {"configured_model": "gpt-5.4"},
         _build_runtime_approval_summary=lambda: {"pending_count": 1},
+        _build_runtime_group_monitoring_summary=lambda: {
+            "active_collect_only_groups": 2,
+            "active_worker_count": 1,
+            "platform_counts": {"qq_napcat": 1, "weixin": 1},
+            "groups": [],
+        },
         _build_runtime_qq_monitoring_summary=lambda: {"active_collect_only_groups": 1, "groups": []},
     )
 
@@ -77,6 +83,8 @@ def test_build_runtime_status_summary_collects_live_runtime_snapshot(tmp_path):
     assert summary["qq_archive"]["raw_message_count"] == 42
     assert summary["model"]["configured_model"] == "gpt-5.4"
     assert summary["approvals"]["pending_count"] == 1
+    assert summary["group_monitoring"]["platform_counts"] == {"qq_napcat": 1, "weixin": 1}
+    assert summary["qq_monitoring"]["active_collect_only_groups"] == 1
 
 
 def test_render_status_command_renders_status_lines_with_foreground_and_background():
@@ -130,6 +138,28 @@ def test_render_status_command_renders_status_lines_with_foreground_and_backgrou
             "fallback_active": False,
             "fallback_pinned": False,
         },
+        _build_runtime_group_monitoring_summary=lambda: {
+            "active_collect_only_groups": 2,
+            "platform_counts": {"qq_napcat": 1, "weixin": 1},
+            "groups": [
+                {
+                    "platform": "qq_napcat",
+                    "platform_label": "QQ 群",
+                    "group_id": "726109087",
+                    "group_name": "项目群",
+                    "worker_names": ["钢镚"],
+                    "daily_report_enabled": True,
+                },
+                {
+                    "platform": "weixin",
+                    "platform_label": "微信群",
+                    "chat_id": "wx-group-1",
+                    "group_name": "微信群项目组",
+                    "worker_names": [],
+                    "daily_report_enabled": True,
+                },
+            ],
+        },
         _build_runtime_qq_monitoring_summary=lambda: {
             "active_collect_only_groups": 1,
             "groups": [
@@ -153,6 +183,7 @@ def test_render_status_command_renders_status_lines_with_foreground_and_backgrou
     assert "Foreground" in result
     assert "delegate_task" in result
     assert "Model" in result
+    assert "Group Monitoring" in result
     assert "QQ Monitoring" in result
     assert "Background Jobs" in result
     assert "`bg_123`" in result

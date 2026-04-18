@@ -268,6 +268,13 @@ class TestRuntimeHealthLines:
                         "due_rollup_count": 1,
                         "report_count": 5,
                     },
+                    "group_monitoring": {
+                        "active_collect_only_groups": 2,
+                        "platform_counts": {
+                            "qq_napcat": 1,
+                            "weixin": 1,
+                        },
+                    },
                     "qq_monitoring": {
                         "active_collect_only_groups": 1,
                         "groups": [
@@ -299,6 +306,7 @@ class TestRuntimeHealthLines:
         assert any("Background jobs: 2 active / 3 tracked" in line for line in lines)
         assert any("Auto vision: cooldown 18s" in line for line in lines)
         assert any("QQ archive: 42 raw msgs" in line for line in lines)
+        assert any("Group monitoring: 2 collect-only group" in line for line in lines)
         assert any("QQ monitoring: 1 collect-only group" in line for line in lines)
         assert any("项目群" in line or "726109087" in line for line in lines)
 

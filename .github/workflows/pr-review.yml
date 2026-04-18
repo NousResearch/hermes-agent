@@ -1,0 +1,209 @@
+name: Code Review Bot
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR number para revisar'
+        required: true
+        type: number
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Code Review Bot
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.event.inputs.pr_number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          REPO_NAME: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${OPENROUTER_API_KEY:-}" ]; then
+            echo "OPENROUTER_API_KEY ausente, pulando review"
+            exit 0
+          fi
+
+          if [ -z "${PR_NUMBER:-}" ]; then
+            echo "PR number ausente, pulando review"
+            exit 0
+          fi
+
+          # Obter título se veio de workflow_dispatch
+          if [ -z "${PR_TITLE:-}" ]; then
+            PR_TITLE=$(gh pr view "$PR_NUMBER" --repo "$REPO_NAME" --json title -q '.title')
+          fi
+
+          set +o pipefail
+          DIFF=$(gh pr diff "$PR_NUMBER" --repo "$REPO_NAME" --patch 2>/dev/null | head -c 30000)
+          set -o pipefail
+
+          if [ -z "$DIFF" ]; then
+            echo "Diff vazio, pulando review"
+            exit 0
+          fi
+
+          # Anti-loop: comparar hash do diff atual com o do último review
+          DIFF_HASH=$(echo "$DIFF" | sha256sum | cut -d' ' -f1)
+          LAST_COMMENT=$(gh pr view "$PR_NUMBER" --repo "$REPO_NAME" --comments \
+            --json comments -q '[.comments[] | select(.author.login == "github-actions[bot]" and (.body | contains("Code Review Bot")))] | last | .body' \
+            2>/dev/null || true)
+          if [ -n "$LAST_COMMENT" ]; then
+            PREV_HASH=$(echo "$LAST_COMMENT" | grep -oP '(?<=diff-sha: )[a-f0-9]+' || true)
+            if [ "$PREV_HASH" = "$DIFF_HASH" ]; then
+              echo "Diff identico ao ultimo review (sha: ${DIFF_HASH:0:12}), pulando"
+              exit 0
+            fi
+          fi
+
+          # Baixar conteúdo completo dos arquivos modificados para contexto real
+          FILE_CONTEXT=""
+          CHANGED_FILES=$(gh pr diff "$PR_NUMBER" --repo "$REPO_NAME" --name-only 2>/dev/null | head -10)
+          for file in $CHANGED_FILES; do
+            if [[ "$file" == *.ps1 || "$file" == *.sh || "$file" == *.js || "$file" == *.ts || "$file" == *.yml || "$file" == *.json ]]; then
+              FILE_CONTENT=$(gh api "repos/$REPO_NAME/contents/$file" --jq '.content' 2>/dev/null | base64 -d 2>/dev/null | head -c 5000 || true)
+              if [ -n "$FILE_CONTENT" ]; then
+                FILE_CONTEXT+="
+          === ARQUIVO: $file ===
+          $FILE_CONTENT
+          "
+              fi
+            fi
+          done
+
+          PROMPT="Voce e um engenheiro senior revisando esta PR. Analise SOMENTE o diff abaixo.
+
+          REGRAS OBRIGATORIAS:
+          - Analise APENAS linhas marcadas com + (adicionadas) e - (removidas) no diff
+          - NUNCA mencione codigo, arquivos ou linhas que NAO aparecem no diff
+          - Se uma linha foi removida (-) e substituida por outra (+), o bug antigo ja foi corrigido — NAO reporte
+          - Cite arquivo e numero de linha EXATOS do diff. Se nao conseguir citar, nao reporte
+          - Se nao houver problemas reais: responda apenas 'Sem problemas detectados.'
+          - Resposta em portugues, concisa, sem introducao
+
+          ANTI-ALUCINACAO (CRITICO):
+          - Para CADA problema reportado, voce DEVE citar o texto EXATO da linha do diff que contem o bug
+          - Formato obrigatorio: [SEVERIDADE] arquivo:linha — COPIE A LINHA EXATA AQUI — descricao + fix
+          - Se voce nao consegue copiar a linha exata do diff, o problema NAO EXISTE — nao reporte
+          - NUNCA invente valores numericos, nomes de variaveis ou operadores que nao aparecem no diff
+          - Se o diff mostra 'x / 1024', NAO reporte 'x / 10.24' — cite o que esta escrito, nao o que voce acha que deveria ser
+          - Duvida = nao reporte. Apenas problemas com evidencia direta no diff
+
+          PR: ${PR_TITLE}
+          Repo: ${REPO_NAME}
+
+          Diff:
+          ${DIFF}
+
+          Contexto dos arquivos modificados (conteudo completo):
+          ${FILE_CONTEXT}
+
+          Categorias para analise:
+          1. Bugs reais - erros logicos, referencias quebradas, falhas silenciosas nas linhas NOVAS (+)
+          2. Seguranca - secrets hardcoded, permissoes excessivas nas linhas NOVAS (+)
+          3. Qualidade - apenas problemas graves nas linhas NOVAS (+)
+
+          Formato por problema: [CRITICAL|HIGH|MEDIUM] arquivo:linha — \"texto exato da linha\" — descricao curta + fix sugerido"
+
+          PAYLOAD=$(jq -n \
+            --arg content "$PROMPT" \
+            '{
+              model: "minimax/minimax-m2.5",
+              max_tokens: 1500,
+              temperature: 0,
+              messages: [{role: "user", content: $content}]
+            }')
+
+          RESPONSE=$(echo "$PAYLOAD" | curl -s -X POST \
+            "https://openrouter.ai/api/v1/chat/completions" \
+            -H "Authorization: Bearer $OPENROUTER_API_KEY" \
+            -H "Content-Type: application/json" \
+            -H "HTTP-Referer: https://github.com/$REPO_NAME" \
+            -H "X-Title: Workspace PR Review" \
+            -d @-)
+
+          REVIEW=$(echo "$RESPONSE" | jq -r '.choices[0].message.content // empty')
+          REVIEW_MODEL="minimax/minimax-m2.5"
+
+          if [ -z "$REVIEW" ]; then
+            echo "minimax-m2.5 falhou, tentando fallback xiaomi/mimo-v2-flash..."
+            PAYLOAD_FB=$(jq -n \
+              --arg content "$PROMPT" \
+              '{
+                model: "xiaomi/mimo-v2-flash",
+                max_tokens: 1500,
+                temperature: 0,
+                messages: [{role: "user", content: $content}]
+              }')
+            RESPONSE=$(echo "$PAYLOAD_FB" | curl -s -X POST \
+              "https://openrouter.ai/api/v1/chat/completions" \
+              -H "Authorization: Bearer $OPENROUTER_API_KEY" \
+              -H "Content-Type: application/json" \
+              -H "HTTP-Referer: https://github.com/$REPO_NAME" \
+              -H "X-Title: Workspace PR Review" \
+              -d @-)
+            REVIEW=$(echo "$RESPONSE" | jq -r '.choices[0].message.content // empty')
+            REVIEW_MODEL="xiaomi/mimo-v2-flash (fallback)"
+          fi
+
+          if [ -z "$REVIEW" ]; then
+            ERROR=$(echo "$RESPONSE" | jq -r '.error.message // "resposta vazia"')
+            REVIEW="Review indisponivel: $ERROR"
+          fi
+
+          # Segunda passagem: verificar se cada achado realmente existe no diff
+          if [ "$REVIEW" != "Sem problemas detectados." ] && [ -n "$REVIEW" ]; then
+            VERIFY_PROMPT="Voce e um verificador de review de codigo. Abaixo esta um diff e uma lista de problemas reportados.
+          Sua tarefa: para CADA problema, verificar se a linha citada realmente existe no diff EXATAMENTE como descrito.
+          - Se o problema cita um valor ou operador que NAO aparece no diff, marque como FALSO POSITIVO
+          - Se a linha citada existe no diff e o problema e legitimo, marque como CONFIRMADO
+          - Se nao tem certeza, marque como FALSO POSITIVO
+
+          Responda APENAS com a lista filtrada, mantendo o mesmo formato. Remova todos os falsos positivos.
+          Se sobrar zero problemas, responda apenas 'Sem problemas detectados.'
+
+          Diff:
+          ${DIFF}
+
+          Problemas reportados:
+          ${REVIEW}"
+
+            VERIFY_PAYLOAD=$(jq -n \
+              --arg content "$VERIFY_PROMPT" \
+              '{
+                model: "minimax/minimax-m2.5",
+                max_tokens: 1500,
+                temperature: 0,
+                messages: [{role: "user", content: $content}]
+              }')
+
+            VERIFY_RESPONSE=$(echo "$VERIFY_PAYLOAD" | curl -s -X POST \
+              "https://openrouter.ai/api/v1/chat/completions" \
+              -H "Authorization: Bearer $OPENROUTER_API_KEY" \
+              -H "Content-Type: application/json" \
+              -H "HTTP-Referer: https://github.com/$REPO_NAME" \
+              -H "X-Title: Workspace PR Review Verification" \
+              -d @-)
+
+            VERIFIED_REVIEW=$(echo "$VERIFY_RESPONSE" | jq -r '.choices[0].message.content // empty')
+            if [ -n "$VERIFIED_REVIEW" ]; then
+              REVIEW="$VERIFIED_REVIEW"
+              REVIEW_MODEL="$REVIEW_MODEL + verification pass"
+            fi
+          fi
+
+          gh pr comment "$PR_NUMBER" --repo "$REPO_NAME" --body "### Code Review Bot
+
+          ${REVIEW}
+
+          ---
+          _Modelo: ${REVIEW_MODEL} via OpenRouter | diff-sha: ${DIFF_HASH}_"

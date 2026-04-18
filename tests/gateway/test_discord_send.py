@@ -157,3 +157,122 @@ async def test_send_does_not_retry_on_unrelated_errors():
     # Only the first attempt happens — no reference-retry replay.
     assert channel.send.await_count == 1
     assert send_calls[0]["reference"] is reference_obj
+
+
+# ---------------------------------------------------------------------------
+# Forum channel tests
+# ---------------------------------------------------------------------------
+
+import discord as _discord_mod  # noqa: E402 — imported after _ensure_discord_mock
+
+
+class TestIsForumParent:
+    def test_none_returns_false(self):
+        adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+        assert adapter._is_forum_parent(None) is False
+
+    def test_forum_channel_class_instance(self):
+        adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+        forum_cls = getattr(_discord_mod, "ForumChannel", None)
+        if forum_cls is None:
+            # Re-create a type for the mock
+            forum_cls = type("ForumChannel", (), {})
+            _discord_mod.ForumChannel = forum_cls
+        ch = forum_cls()
+        assert adapter._is_forum_parent(ch) is True
+
+    def test_type_value_15(self):
+        adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+        ch = SimpleNamespace(type=15)
+        assert adapter._is_forum_parent(ch) is True
+
+    def test_regular_channel_returns_false(self):
+        adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+        ch = SimpleNamespace(type=0)
+        assert adapter._is_forum_parent(ch) is False
+
+    def test_thread_returns_false(self):
+        adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+        ch = SimpleNamespace(type=11)  # public thread
+        assert adapter._is_forum_parent(ch) is False
+
+
+@pytest.mark.asyncio
+async def test_send_to_forum_creates_thread_post():
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+
+    # thread object has no 'send' so _send_to_forum uses thread.thread
+    thread_ch = SimpleNamespace(id=555, send=AsyncMock(return_value=SimpleNamespace(id=600)))
+    thread = SimpleNamespace(
+        id=555,
+        message=SimpleNamespace(id=500),
+        thread=thread_ch,
+    )
+    forum_channel = _discord_mod.ForumChannel()
+    forum_channel.id = 999
+    forum_channel.name = "ideas"
+    forum_channel.create_thread = AsyncMock(return_value=thread)
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _chat_id: forum_channel,
+        fetch_channel=AsyncMock(),
+    )
+
+    result = await adapter.send("999", "Hello forum!")
+
+    assert result.success is True
+    assert result.message_id == "500"
+    forum_channel.create_thread.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_send_to_forum_sends_remaining_chunks():
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    # Force a small max message length so the message splits
+    adapter.MAX_MESSAGE_LENGTH = 20
+
+    chunk_msg_1 = SimpleNamespace(id=500)
+    chunk_msg_2 = SimpleNamespace(id=501)
+    thread_ch = SimpleNamespace(
+        id=555,
+        send=AsyncMock(return_value=chunk_msg_2),
+    )
+    # thread object has no 'send' so _send_to_forum uses thread.thread
+    thread = SimpleNamespace(
+        id=555,
+        message=chunk_msg_1,
+        thread=thread_ch,
+    )
+    forum_channel = _discord_mod.ForumChannel()
+    forum_channel.id = 999
+    forum_channel.name = "ideas"
+    forum_channel.create_thread = AsyncMock(return_value=thread)
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _chat_id: forum_channel,
+        fetch_channel=AsyncMock(),
+    )
+
+    result = await adapter.send("999", "A" * 50)
+
+    assert result.success is True
+    assert result.message_id == "500"
+    # Should have sent at least one follow-up chunk
+    assert thread_ch.send.await_count >= 1
+
+
+@pytest.mark.asyncio
+async def test_send_to_forum_create_thread_failure():
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+
+    forum_channel = _discord_mod.ForumChannel()
+    forum_channel.id = 999
+    forum_channel.name = "ideas"
+    forum_channel.create_thread = AsyncMock(side_effect=Exception("rate limited"))
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _chat_id: forum_channel,
+        fetch_channel=AsyncMock(),
+    )
+
+    result = await adapter.send("999", "Hello forum!")
+
+    assert result.success is False
+    assert "rate limited" in result.error

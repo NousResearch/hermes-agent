@@ -857,6 +857,9 @@ class DiscordAdapter(BasePlatformAdapter):
 
         When metadata contains a thread_id, the message is sent to that
         thread instead of the parent channel identified by chat_id.
+
+        Forum channels (type 15) reject direct messages — a thread post is
+        created automatically.
         """
         if not self._client:
             return SendResult(success=False, error="Not connected")
@@ -881,6 +884,10 @@ class DiscordAdapter(BasePlatformAdapter):
                     channel = await self._client.fetch_channel(int(chat_id))
                 if not channel:
                     return SendResult(success=False, error=f"Channel {chat_id} not found")
+
+            # Forum channels reject channel.send() — create a thread post instead.
+            if self._is_forum_parent(channel):
+                return await self._send_to_forum(channel, content)
 
             # Format and split message if needed
             formatted = self.format_message(content)
@@ -944,6 +951,51 @@ class DiscordAdapter(BasePlatformAdapter):
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[%s] Failed to send Discord message: %s", self.name, e, exc_info=True)
             return SendResult(success=False, error=str(e))
+
+    async def _send_to_forum(self, forum_channel: Any, content: str) -> SendResult:
+        """Create a thread post in a forum channel with the message as starter content.
+
+        Forum channels (type 15) don't support direct messages.  Instead we
+        POST to /channels/{forum_id}/threads with a thread name derived from
+        the first line of the message.
+        """
+        from tools.send_message_tool import _derive_forum_thread_name
+
+        formatted = self.format_message(content)
+        chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+
+        thread_name = _derive_forum_thread_name(content)
+
+        starter_content = chunks[0] if chunks else thread_name
+
+        try:
+            thread = await forum_channel.create_thread(
+                name=thread_name,
+                content=starter_content,
+            )
+        except Exception as e:
+            logger.error("[%s] Failed to create forum thread in %s: %s", self.name, forum_channel.id, e)
+            return SendResult(success=False, error=f"Forum thread creation failed: {e}")
+
+        thread_channel = thread if hasattr(thread, "send") else getattr(thread, "thread", None)
+        thread_id = str(getattr(thread_channel, "id", getattr(thread, "id", "")))
+        starter_msg = getattr(thread, "message", None)
+        message_id = str(getattr(starter_msg, "id", thread_id)) if starter_msg else thread_id
+
+        # Send remaining chunks into the newly created thread.
+        message_ids = [message_id]
+        for chunk in chunks[1:]:
+            try:
+                msg = await thread_channel.send(content=chunk)
+                message_ids.append(str(msg.id))
+            except Exception as e:
+                logger.warning("[%s] Failed to send follow-up chunk to forum thread %s: %s", self.name, thread_id, e)
+
+        return SendResult(
+            success=True,
+            message_id=message_ids[0],
+            raw_response={"message_ids": message_ids, "thread_id": thread_id},
+        )
 
     async def edit_message(
         self,

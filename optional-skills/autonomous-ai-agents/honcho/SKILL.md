@@ -145,7 +145,7 @@ Controls **how often** dialectic and context calls happen.
 | Key | Default | Description |
 |-----|---------|-------------|
 | `contextCadence` | `1` | Min turns between context API calls |
-| `dialecticCadence` | `1` (wizard: `2`) | Min turns between dialectic API calls. Unset → every turn; wizard pre-fills `2` |
+| `dialecticCadence` | `2` | Min turns between dialectic API calls. Recommended 1–5 |
 | `injectionFrequency` | `every-turn` | `every-turn` or `first-turn` for base context injection |
 
 Higher cadence values fire the dialectic LLM less often. `dialecticCadence: 2` means the engine fires every other turn. Setting it to `1` fires every turn.
@@ -370,7 +370,7 @@ Config file: `$HERMES_HOME/honcho.json` (profile-local) or `~/.honcho/config.jso
 | `contextTokens` | uncapped | Max tokens for the combined base context injection (summary + representation + card). Opt-in cap — omit to leave uncapped, set to an integer to bound injection size. |
 | `injectionFrequency` | `every-turn` | `every-turn` or `first-turn` |
 | `contextCadence` | `1` | Min turns between context API calls |
-| `dialecticCadence` | `1` (wizard: `2`) | Min turns between dialectic LLM calls |
+| `dialecticCadence` | `2` | Min turns between dialectic LLM calls (recommended 1–5) |
 
 The `contextTokens` budget is enforced at injection time. If the session summary + representation + card exceed the budget, Honcho trims the summary first, then the representation, preserving the card. This prevents context blowup in long sessions.
 

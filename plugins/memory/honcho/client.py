@@ -254,8 +254,7 @@ class HonchoClientConfig:
     # When true, the auto-injected dialectic scales reasoning level up on
     # longer queries. See HonchoMemoryProvider for thresholds.
     reasoning_heuristic: bool = True
-    # Ceiling for the heuristic-selected reasoning level. "max" is reserved
-    # for explicit tool-path selection.
+    # Ceiling for the heuristic-selected reasoning level.
     reasoning_level_cap: str = "high"
     # Honcho API limits — configurable for self-hosted instances
     # Max chars per message sent via add_messages() (Honcho cloud: 25000)

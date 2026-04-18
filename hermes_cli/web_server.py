@@ -178,7 +178,7 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     "display.resume_display": {
         "type": "select",
         "description": "How resumed sessions display history",
-        "options": ["minimal", "full", "off"],
+        "options": ["minimal", "summary", "full", "history"],
     },
     "display.busy_input_mode": {
         "type": "select",

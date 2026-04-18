@@ -309,7 +309,7 @@ def load_cli_config() -> Dict[str, Any]:
 
         "display": {
             "compact": False,
-            "resume_display": "full",
+            "resume_display": "history",
             "show_reasoning": False,
             "streaming": True,
             "busy_input_mode": "interrupt",
@@ -1676,8 +1676,8 @@ class HermesCLI:
         # YAML 1.1 parses bare `off` as boolean False — normalise to string.
         _raw_tp = CLI_CONFIG["display"].get("tool_progress", "all")
         self.tool_progress_mode = "off" if _raw_tp is False else str(_raw_tp)
-        # resume_display: "full" (show history) | "minimal" (one-liner only)
-        self.resume_display = CLI_CONFIG["display"].get("resume_display", "full")
+        # resume_display: "full"/"history" (full visible chat) | "summary" (compact recap) | "minimal" (one-liner only)
+        self.resume_display = CLI_CONFIG["display"].get("resume_display", "history")
         # bell_on_complete: play terminal bell (\a) when agent finishes a response
         self.bell_on_complete = CLI_CONFIG["display"].get("bell_on_complete", False)
         # show_reasoning: display model thinking/reasoning before the response
@@ -2404,6 +2404,85 @@ class HermesCLI:
         self._reasoning_preview_buf = buf.lstrip() if flush_text else buf
         if flush_text:
             self._emit_reasoning_preview(flush_text)
+
+    def _format_submitted_user_message_preview(self, user_input: str) -> str:
+        """Format the submitted user-message scrollback preview."""
+        lines = user_input.split("\n")
+        if len(lines) <= 1:
+            return f"[bold {_accent_hex()}]●[/] [bold]{_escape(user_input)}[/]"
+
+        first_lines = 5
+        last_lines = 1
+        head = lines[:first_lines]
+        remaining_after_head = max(0, len(lines) - len(head))
+        tail_count = min(last_lines, remaining_after_head)
+        tail = lines[-tail_count:] if tail_count else []
+
+        hidden_middle_count = len(lines) - len(head) - len(tail)
+        if hidden_middle_count < 0:
+            hidden_middle_count = 0
+            tail = []
+
+        preview_lines = [
+            f"[bold {_accent_hex()}]●[/] [bold]{_escape(head[0])}[/]"
+        ]
+        preview_lines.extend(f"[bold]{_escape(line)}[/]" for line in head[1:])
+
+        if hidden_middle_count > 0:
+            noun = "line" if hidden_middle_count == 1 else "lines"
+            preview_lines.append(f"[dim]... (+{hidden_middle_count} more {noun})[/]")
+
+        preview_lines.extend(f"[bold]{_escape(line)}[/]" for line in tail)
+        return "\n".join(preview_lines)
+
+    def _expand_paste_references(self, text: str | None) -> str:
+        """Expand [Pasted text #N -> file] placeholders into file contents."""
+        if not isinstance(text, str) or "[Pasted text #" not in text:
+            return text or ""
+        import re as _re
+
+        paste_ref_re = _re.compile(r'\[Pasted text #\d+: \d+ lines \u2192 (.+?)\]')
+
+        def _expand_ref(match):
+            path = Path(match.group(1))
+            return path.read_text(encoding="utf-8") if path.exists() else match.group(0)
+
+        return paste_ref_re.sub(_expand_ref, text)
+
+    def _print_user_message_preview(self, user_input: str) -> None:
+        """Render a user message using the normal chat scrollback style."""
+        ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
+        text = str(user_input or "")
+        if "\n" in text:
+            ChatConsole().print(self._format_submitted_user_message_preview(text))
+        else:
+            ChatConsole().print(f"[bold {_accent_hex()}]●[/] [bold]{_escape(text)}[/]")
+
+    def _print_assistant_response_panel(self, response: str, *, title_suffix: str = "") -> None:
+        """Render assistant text using the normal final-response panel style."""
+        try:
+            from hermes_cli.skin_engine import get_active_skin
+            skin = get_active_skin()
+            label = skin.get_branding("response_label", "⚕ Hermes")
+            resp_color = skin.get_color("response_border", "#CD7F32")
+            resp_text = skin.get_color("banner_text", "#FFF8DC")
+        except Exception:
+            label = "⚕ Hermes"
+            resp_color = "#CD7F32"
+            resp_text = "#FFF8DC"
+
+        if title_suffix:
+            label = f"{label} {title_suffix}"
+
+        ChatConsole().print(Panel(
+            _rich_text_from_ansi(response),
+            title=f"[{resp_color} bold]{label}[/]",
+            title_align="left",
+            border_style=resp_color,
+            style=resp_text,
+            box=rich_box.HORIZONTALS,
+            padding=(1, 4),
+        ))
 
     def _stream_reasoning_delta(self, text: str) -> None:
         """Stream reasoning/thinking tokens into a dim box above the response.
@@ -3160,8 +3239,50 @@ class HermesCLI:
         if not self.conversation_history:
             return
 
-        # Check config: resume_display setting
-        if self.resume_display == "minimal":
+        normalized_resume_display = str(self.resume_display).strip().lower()
+        if normalized_resume_display == "minimal":
+            return
+
+        show_full_history = normalized_resume_display in {"history", "full"}
+
+        def _iter_visible_resume_messages():
+            for msg in self.conversation_history:
+                role = msg.get("role", "")
+                content = msg.get("content")
+                tool_calls = msg.get("tool_calls") or []
+                if role == "system" or role == "tool":
+                    continue
+                if role == "user":
+                    text = "" if content is None else str(content)
+                    if isinstance(content, list):
+                        parts = []
+                        for part in content:
+                            if isinstance(part, dict) and part.get("type") == "text":
+                                parts.append(part.get("text", ""))
+                            elif isinstance(part, dict) and part.get("type") == "image_url":
+                                parts.append("[image]")
+                        text = " ".join(parts)
+                    if text:
+                        yield ("user", self._expand_paste_references(text))
+                    continue
+                if role == "assistant":
+                    text = "" if content is None else str(content)
+                    text = _strip_reasoning_tags(text)
+                    if tool_calls:
+                        continue
+                    if text and text.strip() and text.strip() != "(empty)":
+                        yield ("assistant", text)
+
+        if show_full_history:
+            first = True
+            for role, text in _iter_visible_resume_messages():
+                if not first:
+                    print()
+                first = False
+                if role == "user":
+                    self._print_user_message_preview(text)
+                else:
+                    self._print_assistant_response_panel(text, title_suffix="(resumed)")
             return
 
         MAX_DISPLAY_EXCHANGES = 10   # max user+assistant pairs to show
@@ -3180,7 +3301,7 @@ class HermesCLI:
 
             if role == "system":
                 continue
-            if role == "tool":
+            if role == "tool" and not show_full_history:
                 continue
 
             if role == "user":
@@ -3194,7 +3315,7 @@ class HermesCLI:
                         elif isinstance(part, dict) and part.get("type") == "image_url":
                             parts.append("[image]")
                     text = " ".join(parts)
-                if len(text) > MAX_USER_LEN:
+                if MAX_USER_LEN is not None and len(text) > MAX_USER_LEN:
                     text = text[:MAX_USER_LEN] + "..."
                 entries.append(("user", text))
 
@@ -3206,9 +3327,9 @@ class HermesCLI:
                 if text:
                     full_parts.append(text)
                     lines = text.splitlines()
-                    if len(lines) > MAX_ASST_LINES:
+                    if MAX_ASST_LINES is not None and len(lines) > MAX_ASST_LINES:
                         text = "\n".join(lines[:MAX_ASST_LINES]) + " ..."
-                    if len(text) > MAX_ASST_LEN:
+                    if MAX_ASST_LEN is not None and len(text) > MAX_ASST_LEN:
                         text = text[:MAX_ASST_LEN] + "..."
                     parts.append(text)
                 if tool_calls:
@@ -3239,7 +3360,7 @@ class HermesCLI:
 
         # Determine if we need to truncate
         skipped = 0
-        if len(entries) > MAX_DISPLAY_EXCHANGES * 2:
+        if MAX_DISPLAY_EXCHANGES is not None and len(entries) > MAX_DISPLAY_EXCHANGES * 2:
             skipped = len(entries) - MAX_DISPLAY_EXCHANGES * 2
             entries = entries[skipped:]
 
@@ -3306,6 +3427,13 @@ class HermesCLI:
             style=_history_text_c,
         )
         self.console.print(panel)
+
+    def _print_clarify_transcript(self, question: str, answer: str) -> None:
+        """Render a clarify prompt and chosen answer into scrollback."""
+        print()
+        ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
+        ChatConsole().print(f"[bold {_accent_hex()}]?[/] [bold]{_escape(question)}[/]")
+        ChatConsole().print(f"[dim]↳ {_escape(answer)}[/]")
 
     def _try_attach_clipboard_image(self) -> bool:
         """Check clipboard for an image and attach it if found.
@@ -7432,6 +7560,7 @@ class HermesCLI:
         response_queue = queue.Queue()
         is_open_ended = not choices
 
+        self._capture_modal_input_snapshot()
         self._clarify_state = {
             "question": question,
             "choices": choices if not is_open_ended else [],
@@ -7458,7 +7587,12 @@ class HermesCLI:
         while True:
             try:
                 result = response_queue.get(timeout=1)
+                self._clarify_state = None
+                self._clarify_freetext = False
                 self._clarify_deadline = 0
+                self._restore_modal_input_snapshot()
+                self._invalidate()
+                self._print_clarify_transcript(question, result)
                 return result
             except queue.Empty:
                 remaining = self._clarify_deadline - _time.monotonic()
@@ -7477,6 +7611,7 @@ class HermesCLI:
         self._clarify_state = None
         self._clarify_freetext = False
         self._clarify_deadline = 0
+        self._restore_modal_input_snapshot()
         self._invalidate()
         _cprint(f"\n{_DIM}(clarify timed out after {timeout}s — agent will decide){_RST}")
         return (

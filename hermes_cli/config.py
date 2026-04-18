@@ -553,7 +553,7 @@ DEFAULT_CONFIG = {
     "display": {
         "compact": False,
         "personality": "kawaii",
-        "resume_display": "full",
+        "resume_display": "history",
         "busy_input_mode": "interrupt",
         "bell_on_complete": False,
         "show_reasoning": False,
@@ -3378,6 +3378,7 @@ def show_config():
     print(color("◆ Display", Colors.CYAN, Colors.BOLD))
     display = config.get('display', {})
     print(f"  Personality:  {display.get('personality', 'kawaii')}")
+    print(f"  Resume:       {display.get('resume_display', 'full')}")
     print(f"  Reasoning:    {'on' if display.get('show_reasoning', False) else 'off'}")
     print(f"  Bell:         {'on' if display.get('bell_on_complete', False) else 'off'}")
 

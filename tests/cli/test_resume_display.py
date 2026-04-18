@@ -26,7 +26,7 @@ def _make_cli(config_overrides=None, env_overrides=None, **kwargs):
             "base_url": "https://openrouter.ai/api/v1",
             "provider": "auto",
         },
-        "display": {"compact": False, "tool_progress": "all", "resume_display": "full"},
+        "display": {"compact": False, "tool_progress": "all", "resume_display": "summary"},
         "agent": {},
         "terminal": {"env_type": "local"},
     }
@@ -120,10 +120,16 @@ class TestDisplayResumedHistory:
     """_display_resumed_history() renders a Rich panel with conversation recap."""
 
     def _capture_display(self, cli_obj):
-        """Run _display_resumed_history and capture the Rich console output."""
+        """Run _display_resumed_history and capture the rendered output."""
         buf = StringIO()
         cli_obj.console.file = buf
-        cli_obj._display_resumed_history()
+
+        class _TestChatConsole:
+            def print(self, *args, **kwargs):
+                cli_obj.console.print(*args, **kwargs)
+
+        with patch("cli.ChatConsole", _TestChatConsole):
+            cli_obj._display_resumed_history()
         return buf.getvalue()
 
     def test_simple_history_shows_user_and_assistant(self):
@@ -280,11 +286,40 @@ class TestDisplayResumedHistory:
         assert output.strip() == ""
 
     def test_panel_has_title(self):
-        cli = _make_cli()
+        cli = _make_cli(config_overrides={"display": {"resume_display": "summary"}})
         cli.conversation_history = _simple_history()
         output = self._capture_display(cli)
 
         assert "Previous Conversation" in output
+
+    def test_full_mode_replays_normal_chat_style_instead_of_summary_panel(self):
+        cli = _make_cli(config_overrides={"display": {"resume_display": "full"}})
+        cli.conversation_history = _simple_history()
+        output = self._capture_display(cli)
+
+        assert "Previous Conversation" not in output
+        assert "⚕ Hermes" in output
+        assert "────────────────────────────────────────" in output
+
+    def test_history_mode_shows_full_history_without_exchange_truncation(self):
+        cli = _make_cli(config_overrides={"display": {"resume_display": "history"}})
+        cli.conversation_history = _large_history(n_exchanges=15)
+        output = self._capture_display(cli)
+
+        assert "Question #1" in output
+        assert "Question #15" in output
+        assert "earlier messages" not in output
+
+    def test_full_mode_skips_tool_results_and_tool_only_assistant_turns(self):
+        cli = _make_cli(config_overrides={"display": {"resume_display": "full"}})
+        cli.conversation_history = _tool_call_history()
+        output = self._capture_display(cli)
+
+        assert "web_search" not in output
+        assert "python tutorials" not in output
+        assert "Found 5 results" not in output
+        assert "Page content" not in output
+        assert "Here are some great Python tutorials I found." in output
 
     def test_assistant_with_no_content_no_tools_skipped(self):
         """Assistant messages with no visible output (e.g. pure reasoning)
@@ -509,7 +544,7 @@ class TestResumeDisplayConfig:
         from hermes_cli.config import DEFAULT_CONFIG
         display = DEFAULT_CONFIG.get("display", {})
         assert "resume_display" in display
-        assert display["resume_display"] == "full"
+        assert display["resume_display"] == "history"
 
     def test_cli_defaults_have_resume_display(self):
         """cli.py load_cli_config defaults include resume_display."""
@@ -523,4 +558,4 @@ class TestResumeDisplayConfig:
             config = load_cli_config()
 
         display = config.get("display", {})
-        assert display.get("resume_display") == "full"
+        assert display.get("resume_display") == "history"

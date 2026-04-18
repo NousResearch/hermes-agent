@@ -1206,26 +1206,20 @@ async def test_admin_group_can_orally_query_current_group_runtime_status():
     )
 
     with patch(
-        "gateway.direct_control_platform_specs.get_group_policy",
-        return_value={
-            "group_id": "726109087",
-            "mode": "collect_only",
-            "archive_enabled": True,
-            "daily_report_enabled": True,
-            "daily_report_target": "qq_napcat:dm:179033731",
-        },
-    ), patch(
-        "gateway.direct_control_platform_specs.get_group_monitoring_overlay",
-        return_value={
-            "active": True,
-            "mode": "collect_only",
-            "archive_enabled": True,
-            "daily_report_enabled": True,
-            "workers": [
-                {"worker_name": "钢镚"},
-                {"worker_name": "二狗"},
-            ],
-        },
+        "gateway.direct_control_platform_specs.QQ_GROUP_RUNTIME_STATUS_PLATFORM_SPEC",
+        new=SimpleNamespace(
+            load_status_details=lambda target: {
+                "platform_label": "QQ 群",
+                "target_label": "726109087",
+                "effective_mode": "collect_only",
+                "can_reply_in_group": False,
+                "archive_enabled": True,
+                "daily_report_enabled": True,
+                "daily_targets": ["qq_napcat:dm:179033731"],
+                "manual_targets": [],
+                "worker_names": ["钢镚", "二狗"],
+            }
+        ),
     ):
         result = await runner._handle_message(event)
 
@@ -1254,24 +1248,20 @@ async def test_background_status_shortcut_does_not_steal_explicit_group_runtime_
     event = _make_event("这个群现在什么状态", chat_type="group", chat_id="726109087")
 
     with patch(
-        "gateway.direct_control_platform_specs.get_group_policy",
-        return_value={
-            "group_id": "726109087",
-            "mode": "collect_only",
-            "archive_enabled": True,
-            "daily_report_enabled": False,
-            "daily_report_target": None,
-            "manual_report_target": None,
-        },
-    ), patch(
-        "gateway.direct_control_platform_specs.get_group_monitoring_overlay",
-        return_value={
-            "active": True,
-            "mode": "collect_only",
-            "archive_enabled": True,
-            "daily_report_enabled": False,
-            "workers": [{"worker_name": "钢镚"}],
-        },
+        "gateway.direct_control_platform_specs.QQ_GROUP_RUNTIME_STATUS_PLATFORM_SPEC",
+        new=SimpleNamespace(
+            load_status_details=lambda target: {
+                "platform_label": "QQ 群",
+                "target_label": "726109087",
+                "effective_mode": "collect_only",
+                "can_reply_in_group": False,
+                "archive_enabled": True,
+                "daily_report_enabled": False,
+                "daily_targets": [],
+                "manual_targets": [],
+                "worker_names": ["钢镚"],
+            }
+        ),
     ):
         result = await runner._handle_message(event)
 
@@ -1288,31 +1278,20 @@ async def test_admin_group_runtime_status_uses_effective_collect_only_overlay_an
     event = _make_event("726109087 这个群现在谁在监听，日报发哪，立即汇报发哪？")
 
     with patch(
-        "gateway.direct_control_platform_specs.get_group_policy",
-        return_value={
-            "group_id": "726109087",
-            "mode": "default",
-            "archive_enabled": False,
-            "daily_report_enabled": False,
-            "daily_report_target": None,
-            "manual_report_target": None,
-        },
-    ), patch(
-        "gateway.direct_control_platform_specs.get_group_monitoring_overlay",
-        return_value={
-            "active": True,
-            "mode": "collect_only",
-            "archive_enabled": True,
-            "daily_report_enabled": True,
-            "workers": [
-                {
-                    "worker_name": "钢镚",
-                    "daily_report_enabled": True,
-                    "daily_report_target": "qq_napcat:dm:179033731",
-                    "manual_report_target": "qq_napcat:group:726109087",
-                }
-            ],
-        },
+        "gateway.direct_control_platform_specs.QQ_GROUP_RUNTIME_STATUS_PLATFORM_SPEC",
+        new=SimpleNamespace(
+            load_status_details=lambda target: {
+                "platform_label": "QQ 群",
+                "target_label": "726109087",
+                "effective_mode": "collect_only",
+                "can_reply_in_group": False,
+                "archive_enabled": True,
+                "daily_report_enabled": True,
+                "daily_targets": ["qq_napcat:dm:179033731"],
+                "manual_targets": ["qq_napcat:group:726109087"],
+                "worker_names": ["钢镚"],
+            }
+        ),
     ):
         result = await runner._handle_message(event)
 
@@ -1336,24 +1315,20 @@ async def test_admin_dm_group_runtime_status_query_can_infer_recent_group_target
     event = _make_event("你现在在群里能说话吗 不是监听模式了吗")
 
     with patch(
-        "gateway.direct_control_platform_specs.get_group_policy",
-        return_value={
-            "group_id": "192903718",
-            "mode": "collect_only",
-            "archive_enabled": True,
-            "daily_report_enabled": False,
-            "daily_report_target": None,
-            "manual_report_target": None,
-        },
-    ), patch(
-        "gateway.direct_control_platform_specs.get_group_monitoring_overlay",
-        return_value={
-            "active": False,
-            "mode": "",
-            "archive_enabled": False,
-            "daily_report_enabled": False,
-            "workers": [],
-        },
+        "gateway.direct_control_platform_specs.QQ_GROUP_RUNTIME_STATUS_PLATFORM_SPEC",
+        new=SimpleNamespace(
+            load_status_details=lambda target: {
+                "platform_label": "QQ 群",
+                "target_label": "192903718",
+                "effective_mode": "collect_only",
+                "can_reply_in_group": False,
+                "archive_enabled": True,
+                "daily_report_enabled": False,
+                "daily_targets": [],
+                "manual_targets": [],
+                "worker_names": [],
+            }
+        ),
     ), patch("tools.messaging_control_tool.messaging_control_tool") as control_mock:
         result = await runner._handle_message(event)
 
@@ -1388,28 +1363,20 @@ async def test_admin_weixin_group_can_orally_query_current_group_runtime_status(
     )
 
     with patch(
-        "gateway.direct_control_platform_specs.get_weixin_group_policy",
-        return_value={
-            "chat_id": "project@chatroom",
-            "mode": "collect_only",
-            "archive_enabled": True,
-            "daily_report_enabled": True,
-            "daily_report_target": "weixin:wxid_admin",
-            "manual_report_target": "weixin:project@chatroom",
-        },
-    ), patch(
-        "gateway.direct_control_platform_specs.WeixinGroupArchiveStore.describe_group_reporting",
-        return_value={
-            "effective_targets": {
-                "daily_report_targets": ["weixin:wxid_admin"],
-                "manual_report_targets": ["weixin:project@chatroom"],
-            },
-            "report_control": {
+        "gateway.direct_control_platform_specs.WEIXIN_GROUP_RUNTIME_STATUS_PLATFORM_SPEC",
+        new=SimpleNamespace(
+            load_status_details=lambda target: {
+                "platform_label": "微信群",
+                "target_label": "project@chatroom",
+                "effective_mode": "collect_only",
+                "can_reply_in_group": False,
                 "archive_enabled": True,
                 "daily_report_enabled": True,
-                "reply_behavior": "no_reply",
-            },
-        },
+                "daily_targets": ["weixin:wxid_admin"],
+                "manual_targets": ["weixin:project@chatroom"],
+                "worker_names": [],
+            }
+        ),
     ):
         result = await runner._handle_message(event)
 

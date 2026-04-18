@@ -1,7 +1,12 @@
 import { dailyFortune, randomFortune } from '../../../content/fortunes.js'
 import { HOTKEYS } from '../../../content/hotkeys.js'
 import { nextDetailsMode, parseDetailsMode } from '../../../domain/details.js'
-import type { ConfigGetValueResponse, ConfigSetResponse, SessionSteerResponse, SessionUndoResponse } from '../../../gatewayTypes.js'
+import type {
+  ConfigGetValueResponse,
+  ConfigSetResponse,
+  SessionSteerResponse,
+  SessionUndoResponse
+} from '../../../gatewayTypes.js'
 import { writeOsc52Clipboard } from '../../../lib/osc52.js'
 import type { DetailsMode, Msg, PanelSection } from '../../../types.js'
 import { patchOverlayState } from '../../overlayStore.js'
@@ -259,19 +264,27 @@ export const coreCommands: SlashCommand[] = [
       // message isn't lost — identical semantics to the gateway handler.
       if (!ctx.ui.busy || !ctx.sid) {
         ctx.composer.enqueue(payload)
-        ctx.transcript.sys(`no active turn — queued for next: "${payload.slice(0, 50)}${payload.length > 50 ? '…' : ''}"`)
+        ctx.transcript.sys(
+          `no active turn — queued for next: "${payload.slice(0, 50)}${payload.length > 50 ? '…' : ''}"`
+        )
+
         return
       }
 
-      ctx.gateway.rpc<SessionSteerResponse>('session.steer', { session_id: ctx.sid, text: payload }).then(
-        ctx.guarded<SessionSteerResponse>(r => {
-          if (r?.status === 'queued') {
-            ctx.transcript.sys(`⏩ steer queued — arrives after next tool call: "${payload.slice(0, 50)}${payload.length > 50 ? '…' : ''}"`)
-          } else {
-            ctx.transcript.sys('steer rejected')
-          }
-        })
-      ).catch(ctx.guardedErr)
+      ctx.gateway
+        .rpc<SessionSteerResponse>('session.steer', { session_id: ctx.sid, text: payload })
+        .then(
+          ctx.guarded<SessionSteerResponse>(r => {
+            if (r?.status === 'queued') {
+              ctx.transcript.sys(
+                `⏩ steer queued — arrives after next tool call: "${payload.slice(0, 50)}${payload.length > 50 ? '…' : ''}"`
+              )
+            } else {
+              ctx.transcript.sys('steer rejected')
+            }
+          })
+        )
+        .catch(ctx.guardedErr)
     }
   },
 

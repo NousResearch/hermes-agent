@@ -1023,6 +1023,11 @@ class AIAgent:
                         "configuration."
                     )
             
+            # Local servers (LM Studio, Ollama, llama.cpp) need a generous timeout
+            # because model loading can take minutes when RAM is tight.
+            if base_url and is_local_endpoint(base_url):
+                client_kwargs.setdefault("timeout", 300.0)
+
             self._client_kwargs = client_kwargs  # stored for rebuilding after interrupt
 
             # Enable fine-grained tool streaming for Claude on OpenRouter.
@@ -6707,6 +6712,11 @@ class AIAgent:
 
         if self.max_tokens is not None:
             api_kwargs.update(self._max_tokens_param(self.max_tokens))
+        elif self.base_url and is_local_endpoint(self.base_url):
+            # Local servers (LM Studio, llama.cpp, Ollama) sometimes default
+            # to very low max_tokens (e.g. 4096) when the client omits it.
+            # Send a generous output budget so the model isn't truncated.
+            api_kwargs.update(self._max_tokens_param(32768))
         elif self._is_qwen_portal():
             # Qwen Portal defaults to a very low max_tokens when omitted.
             # Reasoning models (qwen3-coder-plus) exhaust that budget on

@@ -659,6 +659,12 @@ class APIServerAdapter(BasePlatformAdapter):
             fallback_model=fallback_model,
             skip_context_files=merchant_mode,
             skip_memory=merchant_mode,
+            # Lean mode auto-on with merchant_mode: strips ~1.3k tokens of
+            # behavioural guidance + skills index, since the frontend
+            # already pre-loads SKILL.md via X-Hermes-Active-Skill and
+            # constrains agent behaviour through its own UI flow.  Cuts
+            # TTFT roughly in half on local 7-14B models.
+            lean_mode=merchant_mode,
         )
         return agent
 

@@ -9,7 +9,7 @@ import { $uiState } from '../app/uiStore.js'
 import { FloatBox } from './appChrome.js'
 import { MaskedPrompt } from './maskedPrompt.js'
 import { ModelPicker } from './modelPicker.js'
-import { ApprovalPrompt, ClarifyPrompt } from './prompts.js'
+import { ApprovalPrompt, ClarifyPrompt, ConfirmPrompt } from './prompts.js'
 import { SessionPicker } from './sessionPicker.js'
 import { SkillsHub } from './skillsHub.js'
 
@@ -27,6 +27,23 @@ export function PromptZone({
     return (
       <Box flexDirection="column" flexShrink={0} paddingX={1} paddingY={1}>
         <ApprovalPrompt onChoice={onApprovalChoice} req={overlay.approval} t={ui.theme} />
+      </Box>
+    )
+  }
+
+  if (overlay.confirm) {
+    const req = overlay.confirm
+
+    const onConfirm = () => {
+      patchOverlayState({ confirm: null })
+      req.onConfirm()
+    }
+
+    const onCancel = () => patchOverlayState({ confirm: null })
+
+    return (
+      <Box flexDirection="column" flexShrink={0} paddingX={1} paddingY={1}>
+        <ConfirmPrompt onCancel={onCancel} onConfirm={onConfirm} req={req} t={ui.theme} />
       </Box>
     )
   }

@@ -1,7 +1,6 @@
 import { NO_CONFIRM_DESTRUCTIVE } from '../../../config/env.js'
 import { dailyFortune, randomFortune } from '../../../content/fortunes.js'
 import { HOTKEYS } from '../../../content/hotkeys.js'
-import { createDestructiveGate } from '../../../domain/destructive.js'
 import { nextDetailsMode, parseDetailsMode } from '../../../domain/details.js'
 import type {
   ConfigGetValueResponse,
@@ -14,12 +13,6 @@ import type { DetailsMode, Msg, PanelSection } from '../../../types.js'
 import { patchOverlayState } from '../../overlayStore.js'
 import { patchUiState } from '../../uiStore.js'
 import type { SlashCommand } from '../types.js'
-
-export const destructiveGate = createDestructiveGate()
-
-const DESTRUCTIVE_COMMANDS = new Set(['clear', 'new'])
-
-export const isDestructiveCommand = (name: string) => DESTRUCTIVE_COMMANDS.has(name)
 
 const flagFromArg = (arg: string, current: boolean): boolean | null => {
   if (!arg) {
@@ -90,14 +83,27 @@ export const coreCommands: SlashCommand[] = [
         return
       }
 
-      const label = cmd.startsWith('/new') ? '/new' : '/clear'
+      const isNew = cmd.startsWith('/new')
 
-      if (!NO_CONFIRM_DESTRUCTIVE && !destructiveGate.request('clear')) {
-        return ctx.transcript.sys(`press ${label} again to confirm — starts a new session`)
+      const commit = () => {
+        patchUiState({ status: 'forging session…' })
+        ctx.session.newSession(isNew ? 'new session started' : undefined)
       }
 
-      patchUiState({ status: 'forging session…' })
-      ctx.session.newSession(cmd.startsWith('/new') ? 'new session started' : undefined)
+      if (NO_CONFIRM_DESTRUCTIVE) {
+        return commit()
+      }
+
+      patchOverlayState({
+        confirm: {
+          cancelLabel: 'No, keep going',
+          confirmLabel: isNew ? 'Yes, start a new session' : 'Yes, clear the session',
+          danger: true,
+          detail: 'This ends the current conversation and clears the transcript.',
+          onConfirm: commit,
+          title: isNew ? 'Start a new session?' : 'Clear the current session?'
+        }
+      })
     }
   },
 

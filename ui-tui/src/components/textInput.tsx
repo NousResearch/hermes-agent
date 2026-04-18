@@ -2,7 +2,7 @@ import type { InputEvent, Key } from '@hermes/ink'
 import * as Ink from '@hermes/ink'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
-import { writeOsc52Clipboard } from '../lib/osc52.js'
+import { setInputSelection } from '../app/inputSelectionStore.js'
 
 type InkExt = typeof Ink & {
   stringWidth: (s: string) => number
@@ -353,6 +353,28 @@ export function TextInput({
     }
   }, [value])
 
+  useEffect(() => {
+    if (!focus) {
+      return
+    }
+
+    if (selected) {
+      setInputSelection({
+        clear: () => {
+          selRef.current = null
+          setSel(null)
+        },
+        end: selected.end,
+        start: selected.start,
+        value: vRef.current
+      })
+    } else {
+      setInputSelection(null)
+    }
+
+    return () => setInputSelection(null)
+  }, [focus, selected])
+
   useEffect(
     () => () => {
       if (pasteTimer.current) {
@@ -470,20 +492,16 @@ export function TextInput({
         return void emitPaste({ cursor: curRef.current, hotkey: true, text: '', value: vRef.current })
       }
 
-      if (k.ctrl && inp === 'c') {
-        const range = selRange()
-
-        if (range) {
-          writeOsc52Clipboard(vRef.current.slice(range.start, range.end))
-          clearSel()
-
-          return
-        }
-
-        return
-      }
-
-      if (k.upArrow || k.downArrow || k.tab || (k.shift && k.tab) || k.pageUp || k.pageDown || k.escape) {
+      if (
+        k.upArrow ||
+        k.downArrow ||
+        (k.ctrl && inp === 'c') ||
+        k.tab ||
+        (k.shift && k.tab) ||
+        k.pageUp ||
+        k.pageDown ||
+        k.escape
+      ) {
         return
       }
 

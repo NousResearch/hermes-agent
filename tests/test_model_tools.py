@@ -127,6 +127,7 @@ class TestBackwardCompat:
         # Should contain well-known tools
         assert "web_search" in names
         assert "terminal" in names
+        assert "messaging_control" in names
         assert "qq_control" in names
         assert "employee_route_control" in names
 
@@ -144,12 +145,23 @@ class TestBackwardCompat:
         assert len(TOOL_TO_TOOLSET_MAP) > 0
 
 
-class TestQqUnifiedControlVisibility:
-    def test_unified_qq_toolset_resolves_to_qq_control_only(self):
-        assert set(resolve_toolset("qq")) == {"qq_control"}
+class TestMessagingUnifiedControlVisibility:
+    def test_unified_qq_toolset_resolves_to_messaging_control_only(self):
+        assert set(resolve_toolset("qq")) == {"messaging_control"}
 
-    def test_get_tool_definitions_hides_specialized_qq_tools_when_unified_tool_is_available(self):
+    def test_unified_weixin_toolset_resolves_to_messaging_control_only(self):
+        assert set(resolve_toolset("weixin")) == {"messaging_control"}
+
+    def test_get_tool_definitions_hides_platform_specific_tools_when_messaging_control_is_available(self):
         defs = [
+            {
+                "type": "function",
+                "function": {"name": "messaging_control", "description": "", "parameters": {"type": "object"}},
+            },
+            {
+                "type": "function",
+                "function": {"name": "employee_route_control", "description": "", "parameters": {"type": "object"}},
+            },
             {
                 "type": "function",
                 "function": {"name": "qq_control", "description": "", "parameters": {"type": "object"}},
@@ -178,27 +190,44 @@ class TestQqUnifiedControlVisibility:
                 "type": "function",
                 "function": {"name": "qq_group_file", "description": "", "parameters": {"type": "object"}},
             },
+            {
+                "type": "function",
+                "function": {"name": "weixin_control", "description": "", "parameters": {"type": "object"}},
+            },
+            {
+                "type": "function",
+                "function": {"name": "weixin_group_policy", "description": "", "parameters": {"type": "object"}},
+            },
+            {
+                "type": "function",
+                "function": {"name": "weixin_group_archive", "description": "", "parameters": {"type": "object"}},
+            },
         ]
 
         with patch("model_tools.registry.get_definitions", return_value=defs):
             result = get_tool_definitions(quiet_mode=True)
 
         names = [item["function"]["name"] for item in result]
-        assert "qq_control" in names
+        assert "messaging_control" in names
+        assert "employee_route_control" not in names
+        assert "qq_control" not in names
         assert "qq_social_control" not in names
         assert "qq_intel_control" not in names
         assert "qq_group_policy" not in names
         assert "qq_group_archive" not in names
         assert "qq_group_moderation" not in names
         assert "qq_group_file" not in names
+        assert "weixin_control" not in names
+        assert "weixin_group_policy" not in names
+        assert "weixin_group_archive" not in names
 
-    def test_unified_qq_toolset_keeps_only_qq_control_and_strengthens_description(self):
+    def test_unified_toolset_keeps_only_messaging_control_and_strengthens_description(self):
         defs_by_name = {
-            "qq_control": {
+            "messaging_control": {
                 "type": "function",
                 "function": {
-                    "name": "qq_control",
-                    "description": "Unified QQ control.",
+                    "name": "messaging_control",
+                    "description": "Unified messaging control.",
                     "parameters": {"type": "object"},
                 },
             }
@@ -212,11 +241,12 @@ class TestQqUnifiedControlVisibility:
         ):
             result = get_tool_definitions(enabled_toolsets=["qq"], quiet_mode=True)
 
-        assert [item["function"]["name"] for item in result] == ["qq_control"]
+        assert [item["function"]["name"] for item in result] == ["messaging_control"]
         description = result[0]["function"]["description"].lower()
         assert "terminal" in description
         assert "execute_code" in description
         assert "approval" in description
+        assert "platform" in description
 
 
 class TestToolDefinitionOrdering:

@@ -60,6 +60,8 @@ _HERMES_CORE_TOOLS = [
     "cronjob",
     # Cross-platform messaging (gated on gateway running via check_fn)
     "send_message",
+    # Unified model-facing QQ/Weixin control plane
+    "messaging_control",
     # Dynamic employee background routing
     "employee_route_control",
     # Unified QQ/NapCat control plane
@@ -144,19 +146,19 @@ TOOLSETS = {
     
     "messaging": {
         "description": "Cross-platform messaging: send messages to Telegram, Discord, Slack, SMS, etc.",
-        "tools": ["send_message", "employee_route_control", "qq_control", "qq_social_control", "qq_group_policy", "qq_group_archive", "weixin_control", "weixin_group_policy", "weixin_group_archive"],
+        "tools": ["send_message", "messaging_control", "employee_route_control", "qq_control", "qq_social_control", "qq_group_policy", "qq_group_archive", "weixin_control", "weixin_group_policy", "weixin_group_archive"],
         "includes": []
     },
 
     "qq": {
-        "description": "Unified QQ/NapCat control plane only. Exposes qq_control as the single model-facing QQ admin/moderation entry point.",
-        "tools": ["qq_control"],
+        "description": "Unified messaging control plane for QQ/NapCat sessions. Exposes messaging_control as the single model-facing QQ admin/moderation entry point.",
+        "tools": ["messaging_control"],
         "includes": []
     },
 
     "weixin": {
-        "description": "Unified Weixin control plane only. Exposes weixin_control as the single model-facing Weixin admin entry point.",
-        "tools": ["weixin_control"],
+        "description": "Unified messaging control plane for Weixin sessions. Exposes messaging_control as the single model-facing Weixin admin entry point.",
+        "tools": ["messaging_control"],
         "includes": []
     },
     

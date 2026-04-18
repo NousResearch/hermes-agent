@@ -708,11 +708,11 @@ class TestBuildSystemPrompt:
         assert "qq_group_moderation" in prompt
         assert "不要自己写脚本" in prompt
 
-    def test_qq_platform_prompt_prefers_unified_qq_control_tool(self):
+    def test_qq_platform_prompt_prefers_messaging_control_tool(self):
         with (
             patch(
                 "run_agent.get_tool_definitions",
-                return_value=_make_tool_defs("web_search", "qq_control"),
+                return_value=_make_tool_defs("web_search", "messaging_control"),
             ),
             patch("run_agent.check_toolset_requirements", return_value={}),
             patch("run_agent.OpenAI"),
@@ -727,14 +727,40 @@ class TestBuildSystemPrompt:
             agent.client = MagicMock()
 
         prompt = agent._build_system_prompt()
-        assert "qq_control" in prompt
-        assert "prefer qq_control" in prompt.lower()
+        assert "messaging_control" in prompt
+        assert "prefer messaging_control" in prompt.lower()
         assert "mute_user" in prompt
         assert "set_policy" in prompt
         assert "hire_worker" in prompt
         assert "list_files" in prompt
+        assert "platform=qq_napcat" in prompt
         assert "approval" in prompt.lower()
         assert "protected user" in prompt.lower()
+
+    def test_weixin_platform_prompt_prefers_messaging_control_tool(self):
+        with (
+            patch(
+                "run_agent.get_tool_definitions",
+                return_value=_make_tool_defs("web_search", "messaging_control"),
+            ),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            agent = AIAgent(
+                api_key="test-key-1234567890",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+                platform="weixin",
+            )
+            agent.client = MagicMock()
+
+        prompt = agent._build_system_prompt()
+        assert "messaging_control" in prompt
+        assert "prefer messaging_control" in prompt.lower()
+        assert "platform=weixin" in prompt
+        assert "list_policies" in prompt
+        assert "report_now" in prompt
 
     def test_skills_prompt_derives_available_toolsets_from_loaded_tools(self):
         tools = _make_tool_defs("web_search", "skills_list", "skill_view", "skill_manage")

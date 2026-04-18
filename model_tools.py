@@ -49,6 +49,30 @@ _WEIXIN_UNIFIED_CONTROL_HIDES = frozenset(
     }
 )
 
+_MESSAGING_UNIFIED_CONTROL_HIDES = frozenset(
+    {"employee_route_control", "qq_control", "weixin_control"}
+    | _QQ_UNIFIED_CONTROL_HIDES
+    | _WEIXIN_UNIFIED_CONTROL_HIDES
+)
+
+
+def _strengthen_messaging_control_schema(tool_def: Dict[str, Any]) -> Dict[str, Any]:
+    """Add stronger messaging_control routing guidance to the model-facing schema."""
+    function = dict(tool_def.get("function") or {})
+    description = str(function.get("description") or "").strip()
+    extra = (
+        " Use this instead of terminal or execute_code for QQ/Weixin messaging admin work, "
+        "including QQ moderation, group policy, archive/report inspection, employee routing, "
+        "QQ intel and social actions, and supported outbound messaging. "
+        "QQ moderation routed through messaging_control still goes through approval checks "
+        "and protected-user safety rules. Set platform when the action is ambiguous or when "
+        "there is no target to infer from."
+    )
+    if extra.strip().lower() not in description.lower():
+        description = f"{description}{extra}" if description else extra.strip()
+    function["description"] = description
+    return {"type": "function", "function": function}
+
 
 def _strengthen_qq_control_schema(tool_def: Dict[str, Any]) -> Dict[str, Any]:
     """Add stronger qq_control routing guidance to the model-facing schema."""
@@ -205,6 +229,7 @@ def _discover_tools():
         "tools.delegate_tool",
         "tools.process_registry",
         "tools.send_message_tool",
+        "tools.messaging_control_tool",
         "tools.employee_route_tool",
         "tools.qq_control_tool",
         "tools.qq_social_tool",
@@ -408,10 +433,22 @@ def get_tool_definitions(
                     }
                     break
 
-    # When the unified QQ control plane is available, hide the lower-level QQ
-    # tools from the model-facing tool list. They remain registered internally
-    # so qq_control can dispatch to them, and explicit tests/config still work.
-    if "qq_control" in available_tool_names:
+    # When the unified messaging control plane is available, hide the lower-level
+    # QQ/Weixin control tools from the model-facing list. They remain registered
+    # internally so messaging_control and compatibility wrappers can dispatch to
+    # them, and direct imports/tests still work.
+    if "messaging_control" in available_tool_names:
+        for i, td in enumerate(filtered_tools):
+            if td.get("function", {}).get("name") == "messaging_control":
+                filtered_tools[i] = _strengthen_messaging_control_schema(td)
+                break
+        filtered_tools = [
+            td
+            for td in filtered_tools
+            if td.get("function", {}).get("name") not in _MESSAGING_UNIFIED_CONTROL_HIDES
+        ]
+        available_tool_names = {t["function"]["name"] for t in filtered_tools}
+    elif "qq_control" in available_tool_names:
         for i, td in enumerate(filtered_tools):
             if td.get("function", {}).get("name") == "qq_control":
                 filtered_tools[i] = _strengthen_qq_control_schema(td)
@@ -423,7 +460,7 @@ def get_tool_definitions(
         ]
         available_tool_names = {t["function"]["name"] for t in filtered_tools}
 
-    if "weixin_control" in available_tool_names:
+    if "messaging_control" not in available_tool_names and "weixin_control" in available_tool_names:
         for i, td in enumerate(filtered_tools):
             if td.get("function", {}).get("name") == "weixin_control":
                 filtered_tools[i] = _strengthen_weixin_control_schema(td)

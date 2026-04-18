@@ -379,6 +379,22 @@ def build_platform_tool_guidance(
         )
 
     if platform == "qq_napcat":
+        if "messaging_control" in tool_names:
+            hints.append(
+                "For QQ operations, prefer messaging_control as the default entry point. "
+                "Use messaging_control for sending QQ messages, group moderation (mute_user, kick_user), "
+                "group listening/report configuration (list_joined_groups, set_policy), "
+                "intel workers (hire_worker, pause_worker, resume_worker, run_report_now), "
+                "group files (list_files, upload_file, delete_file, find_file, get_file_url), "
+                "social request handling (list_requests, approve_request, reject_request, get_user_profile), "
+                "and employee route management. "
+                "If the action does not include a QQ target, set platform=qq_napcat. "
+                "Keep QQ moderation and admin actions inside messaging_control so approval-aware flows "
+                "and protected user safeguards stay active. "
+                "Do not write scripts yourself (不要自己写脚本), do not use shell commands, "
+                "do not use terminal or execute_code for QQ admin work when messaging_control supports it, "
+                "and do not fall back to raw NapCat API code when messaging_control can perform the action."
+            )
         if "qq_control" in tool_names:
             hints.append(
                 "For QQ operations, prefer qq_control as the default entry point. "
@@ -407,6 +423,16 @@ def build_platform_tool_guidance(
                 "For QQ group file listing, upload, move, rename, or delete tasks, "
                 "call qq_group_file directly instead of writing scripts or raw NapCat API code."
             )
+    elif platform == "weixin" and "messaging_control" in tool_names:
+        hints.append(
+            "For Weixin operations, prefer messaging_control as the default entry point. "
+            "Use messaging_control for sending Weixin messages, group listening/report configuration "
+            "(list_policies, get_policy, set_policy, clear_policy, report_now), archive/report inspection, "
+            "and employee route management. "
+            "If the action does not include a Weixin target, set platform=weixin. "
+            "Do not write scripts yourself, do not use shell commands, and do not use terminal or execute_code "
+            "for supported Weixin admin work when messaging_control can perform the action."
+        )
 
     return "\n".join(hints)
 

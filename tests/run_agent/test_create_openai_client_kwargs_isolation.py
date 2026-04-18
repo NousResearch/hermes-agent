@@ -35,3 +35,27 @@ def test_create_openai_client_does_not_mutate_input_kwargs(mock_openai):
     assert kwargs == snapshot, (
         f"_create_openai_client mutated input kwargs; expected {snapshot}, got {kwargs}"
     )
+
+
+@patch("run_agent.OpenAI")
+def test_create_openai_client_preserves_proxy_env_transport(mock_openai, monkeypatch):
+    mock_openai.return_value = MagicMock()
+    monkeypatch.setenv("https_proxy", "http://127.0.0.1:7897")
+    agent = AIAgent(
+        api_key="test-key",
+        base_url="https://chatgpt.com/backend-api/codex",
+        provider="openai-codex",
+        model="gpt-5.4",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+
+    kwargs = {
+        "api_key": "test-key",
+        "base_url": "https://chatgpt.com/backend-api/codex",
+    }
+
+    agent._create_openai_client(kwargs, reason="test", shared=False)
+
+    assert "http_client" not in mock_openai.call_args.kwargs

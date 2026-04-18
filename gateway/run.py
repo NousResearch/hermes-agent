@@ -480,6 +480,35 @@ def _resolve_gateway_model(config: dict | None = None) -> str:
     return ""
 
 
+def _resolve_gateway_provider(config: dict | None = None) -> str:
+    """Read provider from config.yaml, defaulting to openrouter."""
+    cfg = config if config is not None else _load_gateway_config()
+    model_cfg = cfg.get("model", {})
+    if isinstance(model_cfg, dict):
+        return model_cfg.get("provider") or "openrouter"
+    return "openrouter"
+
+
+def _resolve_status_model_info(
+    *,
+    runner: "GatewayRunner",
+    session_key: str,
+    running_agent: Any = None,
+) -> tuple[str, str]:
+    """Resolve the best available model/provider pair for gateway /status."""
+    override = getattr(runner, "_session_model_overrides", {}).get(session_key, {}) or {}
+
+    model = getattr(running_agent, "model", "") if running_agent is not None else ""
+    provider = getattr(running_agent, "provider", "") if running_agent is not None else ""
+
+    if not model:
+        model = override.get("model") or _resolve_gateway_model()
+    if not provider:
+        provider = override.get("provider") or _resolve_gateway_provider()
+
+    return model or "", provider or ""
+
+
 def _resolve_hermes_bin() -> Optional[list[str]]:
     """Resolve the Hermes update command as argv parts.
 
@@ -4645,14 +4674,16 @@ class GatewayRunner:
 
     async def _handle_status_command(self, event: MessageEvent) -> str:
         """Handle /status command."""
+        from hermes_constants import display_hermes_home
+
         source = event.source
         session_entry = self.session_store.get_or_create_session(source)
 
         connected_platforms = [p.value for p in self.adapters.keys()]
 
-        # Check if there's an active agent
         session_key = session_entry.session_key
-        is_running = session_key in self._running_agents
+        running_agent = self._running_agents.get(session_key)
+        is_running = running_agent is not None
 
         title = None
         if self._session_db:
@@ -4661,13 +4692,25 @@ class GatewayRunner:
             except Exception:
                 title = None
 
+        model, provider = _resolve_status_model_info(
+            runner=self,
+            session_key=session_key,
+            running_agent=running_agent,
+        )
+
         lines = [
             "📊 **Hermes Gateway Status**",
             "",
             f"**Session ID:** `{session_entry.session_id}`",
+            f"**Path:** `{display_hermes_home()}`",
         ]
         if title:
             lines.append(f"**Title:** {title}")
+        if model:
+            model_line = f"**Model:** `{model}`"
+            if provider:
+                model_line += f" ({provider})"
+            lines.append(model_line)
         lines.extend([
             f"**Created:** {session_entry.created_at.strftime('%Y-%m-%d %H:%M')}",
             f"**Last Activity:** {session_entry.updated_at.strftime('%Y-%m-%d %H:%M')}",

@@ -50,6 +50,7 @@ def _make_runner(session_entry: SessionEntry):
     runner.session_store.rewrite_transcript = MagicMock()
     runner.session_store.update_session = MagicMock()
     runner._running_agents = {}
+    runner._session_model_overrides = {}
     runner._pending_messages = {}
     runner._pending_approvals = {}
     runner._session_db = MagicMock()
@@ -93,7 +94,7 @@ async def test_status_command_reports_running_agent_without_interrupt(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_status_command_includes_session_title_when_present():
+async def test_status_command_includes_path_title_and_config_model(monkeypatch):
     session_entry = SessionEntry(
         session_key=build_session_key(_make_source()),
         session_id="sess-1",
@@ -106,10 +107,49 @@ async def test_status_command_includes_session_title_when_present():
     runner = _make_runner(session_entry)
     runner._session_db.get_session_title.return_value = "My titled session"
 
+    import hermes_constants
+    import gateway.run as gateway_run
+
+    monkeypatch.setattr(hermes_constants, "display_hermes_home", lambda: "~/.hermes/profiles/tester")
+    monkeypatch.setattr(gateway_run, "_resolve_gateway_model", lambda config=None: "openai/gpt-5.4")
+    monkeypatch.setattr(gateway_run, "_resolve_gateway_provider", lambda config=None: "openai")
+
     result = await runner._handle_message(_make_event("/status"))
 
     assert "**Session ID:** `sess-1`" in result
+    assert "**Path:** `~/.hermes/profiles/tester`" in result
     assert "**Title:** My titled session" in result
+    assert "**Model:** `openai/gpt-5.4` (openai)" in result
+
+
+@pytest.mark.asyncio
+async def test_status_command_prefers_running_agent_model_over_config(monkeypatch):
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        total_tokens=321,
+    )
+    runner = _make_runner(session_entry)
+    runner._running_agents[build_session_key(_make_source())] = SimpleNamespace(
+        model="anthropic/claude-sonnet-4",
+        provider="anthropic",
+    )
+
+    import hermes_constants
+    import gateway.run as gateway_run
+
+    monkeypatch.setattr(hermes_constants, "display_hermes_home", lambda: "~/.hermes")
+    monkeypatch.setattr(gateway_run, "_resolve_gateway_model", lambda config=None: "openai/gpt-5.4")
+    monkeypatch.setattr(gateway_run, "_resolve_gateway_provider", lambda config=None: "openai")
+
+    result = await runner._handle_message(_make_event("/status"))
+
+    assert "**Model:** `anthropic/claude-sonnet-4` (anthropic)" in result
+    assert "**Agent Running:** Yes ⚡" in result
 
 
 @pytest.mark.asyncio

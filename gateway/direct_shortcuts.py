@@ -7,6 +7,7 @@ import importlib
 from typing import Any, Iterable
 
 from gateway.direct_control_router import DIRECT_CONTROL_ROUTER_METHODS, DirectControlRouter
+from gateway.direct_shortcut_trace_runtime_service import record_direct_shortcut_trace
 from gateway.runtime_shortcuts_service import (
     try_handle_background_job_status_shortcut,
     try_handle_runtime_status_shortcut,
@@ -83,7 +84,9 @@ def run_direct_shortcut_handlers(
     logger=None,
 ) -> str | None:
     """Try direct shortcut handlers in the canonical gateway order."""
+    attempted_handlers: list[str] = []
     for spec in DIRECT_SHORTCUT_HANDLER_SPECS:
+        attempted_handlers.append(spec.method_name)
         try:
             handler = _resolve_direct_shortcut_handler(runner, spec.method_name)
             if handler is None:
@@ -101,5 +104,20 @@ def run_direct_shortcut_handlers(
                 )
             continue
         if response is not None:
+            try:
+                record_direct_shortcut_trace(
+                    runner,
+                    event,
+                    matched_handler=spec.method_name,
+                    attempted_handlers=attempted_handlers,
+                    response=response,
+                )
+            except Exception:
+                if logger is not None:
+                    logger.debug(
+                        "Failed to record direct shortcut trace for %s",
+                        spec.method_name,
+                        exc_info=True,
+                    )
             return response
     return None

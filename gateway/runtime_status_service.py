@@ -167,6 +167,13 @@ def build_runtime_status_summary(
         except Exception as exc:
             logger.debug("Failed to collect shared group monitoring runtime stats: %s", exc)
             group_monitoring = {}
+    direct_shortcuts: dict[str, Any] = {}
+    if hasattr(runner, "_build_runtime_direct_shortcut_summary"):
+        try:
+            direct_shortcuts = runner._build_runtime_direct_shortcut_summary()
+        except Exception as exc:
+            logger.debug("Failed to collect direct shortcut runtime stats: %s", exc)
+            direct_shortcuts = {}
 
     qq_monitoring: dict[str, Any]
     legacy_from_shared = build_legacy_qq_monitoring_summary(group_monitoring) if group_monitoring else {}
@@ -190,6 +197,7 @@ def build_runtime_status_summary(
         "qq_archive": qq_archive,
         "group_monitoring": group_monitoring,
         "qq_monitoring": qq_monitoring,
+        "direct_shortcuts": direct_shortcuts,
     }
 
 
@@ -365,6 +373,23 @@ def render_status_command(
             f"**QQ Monitoring:** {monitoring_count} collect_only group(s)",
         ]
     )
+    direct_shortcut_summary = {}
+    if hasattr(runner, "_build_runtime_direct_shortcut_summary"):
+        try:
+            direct_shortcut_summary = runner._build_runtime_direct_shortcut_summary()
+        except Exception:
+            direct_shortcut_summary = {}
+    direct_shortcut_count = int(direct_shortcut_summary.get("recent_count") or 0)
+    if direct_shortcut_count:
+        lines.append(f"**Direct Shortcuts:** {direct_shortcut_count} recent hit(s)")
+        latest = list(direct_shortcut_summary.get("recent") or [])[:1]
+        if latest and isinstance(latest[0], dict):
+            trace = latest[0]
+            handler_label = str(trace.get("matched_handler") or "unknown").strip()
+            text_preview = str(trace.get("text_preview") or "").strip()
+            bits = [bit for bit in (handler_label, text_preview) if bit]
+            if bits:
+                lines.append(f"- {' · '.join(bits)}")
     for group in list(monitoring_summary.get("groups") or [])[:3]:
         group_label = str(group.get("group_name") or group.get("group_id") or "unknown").strip()
         if group.get("group_id") and group.get("group_name") and group["group_id"] != group["group_name"]:

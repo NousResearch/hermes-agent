@@ -275,6 +275,15 @@ class TestRuntimeHealthLines:
                             "weixin": 1,
                         },
                     },
+                    "direct_shortcuts": {
+                        "recent_count": 2,
+                        "recent": [
+                            {
+                                "matched_handler": "_try_handle_admin_qq_group_control",
+                                "text_preview": "停止QQ 群 192903718 的监听采集",
+                            }
+                        ],
+                    },
                     "qq_monitoring": {
                         "active_collect_only_groups": 1,
                         "groups": [
@@ -307,6 +316,7 @@ class TestRuntimeHealthLines:
         assert any("Auto vision: cooldown 18s" in line for line in lines)
         assert any("QQ archive: 42 raw msgs" in line for line in lines)
         assert any("Group monitoring: 2 collect-only group" in line for line in lines)
+        assert any("Direct shortcuts: 2 recent hit" in line for line in lines)
         assert any("QQ monitoring: 1 collect-only group" in line for line in lines)
         assert any("项目群" in line or "726109087" in line for line in lines)
 

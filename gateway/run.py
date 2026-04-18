@@ -278,6 +278,9 @@ from gateway.runtime_status_service import (
 from gateway.runtime_shortcuts_service import (
     build_long_running_status_detail as shared_build_long_running_status_detail,
 )
+from gateway.direct_shortcut_trace_runtime_service import (
+    build_direct_shortcut_runtime_summary as shared_build_direct_shortcut_runtime_summary,
+)
 from gateway.group_monitoring_runtime_service import (
     build_group_monitoring_summary as shared_build_group_monitoring_summary,
     build_legacy_qq_monitoring_summary as shared_build_legacy_qq_monitoring_summary,
@@ -1045,6 +1048,7 @@ class GatewayRunner:
         # Track pending /update prompt responses per session.
         # Key: session_key, Value: True when a prompt is waiting for user input.
         self._update_prompt_pending: Dict[str, bool] = {}
+        self._recent_direct_shortcuts: list[dict[str, Any]] = []
 
         # Persistent Honcho managers keyed by gateway session key.
         # This preserves write_frequency="session" semantics across short-lived
@@ -2698,6 +2702,9 @@ class GatewayRunner:
             list_weixin_group_policies_fn=list_weixin_group_policies,
             describe_weixin_group_reporting_fn=WeixinGroupArchiveStore().describe_group_reporting,
         )
+
+    def _build_runtime_direct_shortcut_summary(self) -> dict[str, Any]:
+        return shared_build_direct_shortcut_runtime_summary(self)
 
     def _build_runtime_qq_monitoring_summary(self) -> dict[str, Any]:
         return shared_build_legacy_qq_monitoring_summary(

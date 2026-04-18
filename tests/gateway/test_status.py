@@ -210,6 +210,15 @@ class TestGatewayRuntimeStatus:
                     }
                 ],
             },
+            "direct_shortcuts": {
+                "recent_count": 1,
+                "recent": [
+                    {
+                        "matched_handler": "_try_handle_admin_qq_group_control",
+                        "text_preview": "停止QQ 群 192903718 的监听采集",
+                    }
+                ],
+            },
         }
 
         status.write_runtime_status(

@@ -70,6 +70,15 @@ def test_build_runtime_status_summary_collects_live_runtime_snapshot(tmp_path):
             "platform_counts": {"qq_napcat": 1, "weixin": 1},
             "groups": [],
         },
+        _build_runtime_direct_shortcut_summary=lambda: {
+            "recent_count": 1,
+            "recent": [
+                {
+                    "matched_handler": "_try_handle_admin_qq_group_control",
+                    "text_preview": "停止QQ 群 192903718 的监听采集",
+                }
+            ],
+        },
         _build_runtime_qq_monitoring_summary=lambda: {"active_collect_only_groups": 1, "groups": []},
     )
 
@@ -85,6 +94,7 @@ def test_build_runtime_status_summary_collects_live_runtime_snapshot(tmp_path):
     assert summary["approvals"]["pending_count"] == 1
     assert summary["group_monitoring"]["platform_counts"] == {"qq_napcat": 1, "weixin": 1}
     assert summary["qq_monitoring"]["active_collect_only_groups"] == 1
+    assert summary["direct_shortcuts"]["recent_count"] == 1
 
 
 def test_render_status_command_renders_status_lines_with_foreground_and_background():
@@ -160,6 +170,15 @@ def test_render_status_command_renders_status_lines_with_foreground_and_backgrou
                 },
             ],
         },
+        _build_runtime_direct_shortcut_summary=lambda: {
+            "recent_count": 1,
+            "recent": [
+                {
+                    "matched_handler": "_try_handle_admin_qq_group_control",
+                    "text_preview": "停止QQ 群 192903718 的监听采集",
+                }
+            ],
+        },
         _build_runtime_qq_monitoring_summary=lambda: {
             "active_collect_only_groups": 1,
             "groups": [
@@ -185,5 +204,6 @@ def test_render_status_command_renders_status_lines_with_foreground_and_backgrou
     assert "Model" in result
     assert "Group Monitoring" in result
     assert "QQ Monitoring" in result
+    assert "Direct Shortcuts" in result
     assert "Background Jobs" in result
     assert "`bg_123`" in result

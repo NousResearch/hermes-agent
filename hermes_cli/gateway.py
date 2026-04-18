@@ -1917,6 +1917,7 @@ def _runtime_health_lines() -> list[str]:
 
         qq_monitoring = runtime_summary.get("qq_monitoring")
         group_monitoring = runtime_summary.get("group_monitoring")
+        direct_shortcuts = runtime_summary.get("direct_shortcuts")
         if isinstance(group_monitoring, dict) and group_monitoring:
             active_collect_only_groups = int(group_monitoring.get("active_collect_only_groups") or 0)
             platform_counts = group_monitoring.get("platform_counts") or {}
@@ -1929,6 +1930,17 @@ def _runtime_health_lines() -> list[str]:
             lines.append(
                 f"ℹ Group monitoring: {active_collect_only_groups} collect-only group(s){preview}"
             )
+        if isinstance(direct_shortcuts, dict) and direct_shortcuts:
+            recent_count = int(direct_shortcuts.get("recent_count") or 0)
+            recent = direct_shortcuts.get("recent") or []
+            preview = ""
+            if recent and isinstance(recent[0], dict):
+                handler_label = str(recent[0].get("matched_handler") or "").strip()
+                text_preview = str(recent[0].get("text_preview") or "").strip()
+                preview_bits = [bit for bit in (handler_label, text_preview) if bit]
+                if preview_bits:
+                    preview = f" ({' · '.join(preview_bits)})"
+            lines.append(f"ℹ Direct shortcuts: {recent_count} recent hit(s){preview}")
         if isinstance(qq_monitoring, dict) and qq_monitoring:
             active_collect_only_groups = int(qq_monitoring.get("active_collect_only_groups") or 0)
             groups = qq_monitoring.get("groups") or []

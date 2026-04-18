@@ -275,17 +275,12 @@ from gateway.runtime_status_service import (
     render_status_command as shared_render_status_command,
 )
 from gateway.runtime_shortcuts_service import (
-    format_background_job_short_status as shared_format_background_job_short_status,
-    format_running_session_short_status as shared_format_running_session_short_status,
+    build_long_running_status_detail as shared_build_long_running_status_detail,
 )
 from gateway.group_control_intents import (
     looks_like_group_listen_disable_request,
     looks_like_group_listen_enable_request,
     looks_like_group_runtime_status_query as looks_like_shared_group_runtime_status_query,
-)
-from gateway.group_runtime_status_service import (
-    unique_report_targets as shared_unique_report_targets,
-    worker_report_targets as shared_worker_report_targets,
 )
 from gateway.session_hygiene_runtime_service import (
     maybe_auto_compress_session_history as shared_maybe_auto_compress_session_history,
@@ -907,43 +902,6 @@ def _truncate_status_preview(value: Any, *, limit: int = 120) -> str:
     if len(text) <= limit:
         return text
     return text[: max(limit - 3, 0)].rstrip() + "..."
-
-
-def _build_long_running_status_detail(agent_ref: Any, session_key: str = "") -> str:
-    """Build the detail suffix for periodic long-running gateway updates."""
-    parts: list[str] = []
-    if agent_ref and hasattr(agent_ref, "get_activity_summary"):
-        try:
-            activity = agent_ref.get_activity_summary() or {}
-        except Exception:
-            activity = {}
-        if isinstance(activity, dict) and activity:
-            parts.append(
-                f"iteration {activity.get('api_call_count', 0)}/{activity.get('max_iterations', 0)}"
-            )
-            current_tool = str(activity.get("current_tool") or "").strip()
-            if current_tool:
-                parts.append(f"running: {current_tool}")
-            else:
-                last_desc = str(activity.get("last_activity_desc") or "").strip()
-                if last_desc:
-                    parts.append(last_desc)
-
-    if session_key:
-        try:
-            from tools.approval import has_blocking_approval, peek_blocking_approval
-
-            if has_blocking_approval(session_key):
-                approval = peek_blocking_approval(session_key) or {}
-                command_preview = _truncate_status_preview(approval.get("command", ""))
-                if command_preview:
-                    parts.append(f"waiting for approval: {command_preview}")
-                else:
-                    parts.append("waiting for approval")
-        except Exception:
-            pass
-
-    return f" — {', '.join(parts)}" if parts else ""
 
 
 def _empty_response_fallback(
@@ -2752,35 +2710,6 @@ class GatewayRunner:
             "failed": "任务失联",
             "rejected": "已拒绝",
         }.get(str(status or "").strip().lower(), str(status or "").strip() or "unknown")
-
-    def _format_background_job_short_status(self, job: dict[str, Any]) -> str:
-        return shared_format_background_job_short_status(self, job)
-
-    def _format_running_session_short_status(self, session_key: str, agent_ref: Any) -> str:
-        return shared_format_running_session_short_status(
-            session_key,
-            agent_ref,
-            detail_builder=_build_long_running_status_detail,
-        )
-
-    @staticmethod
-    def _unique_report_targets(values: list[Any]) -> list[str]:
-        return shared_unique_report_targets(values)
-
-    @classmethod
-    def _worker_report_targets(
-        cls,
-        workers: list[dict[str, Any]],
-        key: str,
-        *,
-        require_daily_enabled: bool = False,
-    ) -> list[str]:
-        del cls
-        return shared_worker_report_targets(
-            workers,
-            key,
-            require_daily_enabled=require_daily_enabled,
-        )
 
     @staticmethod
     def _runtime_session_metadata(session_key: str) -> dict[str, str]:
@@ -7813,7 +7742,7 @@ class GatewayRunner:
             adapter=self.adapters.get(source.platform),
             chat_id=source.chat_id,
             notify_metadata=_status_thread_metadata,
-            long_running_detail_builder=_build_long_running_status_detail,
+            long_running_detail_builder=shared_build_long_running_status_detail,
             logger=logger,
         )
 

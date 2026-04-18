@@ -42,6 +42,7 @@ from gateway.group_reply_formatters import (
 from gateway.group_runtime_status_runtime_service import (
     try_handle_admin_platform_group_runtime_status as shared_try_handle_admin_platform_group_runtime_status,
 )
+from gateway.group_runtime_status_service import unique_report_targets as shared_unique_report_targets
 from gateway.group_target_intents import extract_recent_target_from_history
 from gateway.platforms.base import MessageEvent, MessageType
 from gateway.qq_intel_runtime_service import (
@@ -279,7 +280,7 @@ class DirectControlRouter:
             tool_args,
             result,
             status_label_formatter=self.owner._format_intel_worker_status_label,
-            unique_report_targets_fn=self.owner._unique_report_targets,
+            unique_report_targets_fn=shared_unique_report_targets,
         )
 
     def _try_handle_admin_qq_intel_control(self, event: MessageEvent) -> str | None:

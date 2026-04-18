@@ -8,7 +8,8 @@ from gateway.config import GatewayConfig, Platform, PlatformConfig, load_gateway
 from gateway.background_jobs import BackgroundJobStore
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
 from gateway.platforms.qq_napcat import QqNapCatAdapter
-from gateway.run import GatewayRunner, _build_long_running_status_detail
+from gateway.run import GatewayRunner
+from gateway.runtime_shortcuts_service import build_long_running_status_detail
 from gateway.session import SessionSource, build_session_key
 
 
@@ -513,7 +514,7 @@ def test_long_running_status_detail_mentions_blocking_approval(monkeypatch):
         lambda _key: {"command": "rm -rf /root/projects/hermes-agent/repos"},
     )
 
-    detail = _build_long_running_status_detail(agent, "qq:group:685403987")
+    detail = build_long_running_status_detail(agent, "qq:group:685403987")
 
     assert "iteration 2/60" in detail
     assert "running: delegate_task" in detail

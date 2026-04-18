@@ -1109,6 +1109,9 @@ class TestTranscribeXAI:
 
     def test_sends_language_and_format(self, monkeypatch, sample_ogg, mock_xai_http_module):
         monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
+        # Explicitly set language via env to exercise the override chain
+        # (config > env > DEFAULT_LOCAL_STT_LANGUAGE)
+        monkeypatch.setenv("HERMES_LOCAL_STT_LANGUAGE", "fr")
 
         mock_response = MagicMock()
         mock_response.status_code = 200

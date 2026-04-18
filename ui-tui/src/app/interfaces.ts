@@ -57,6 +57,7 @@ export interface OverlayState {
   pager: null | PagerState
   picker: boolean
   secret: null | SecretReq
+  skillsHub: boolean
   sudo: null | SudoReq
 }
 

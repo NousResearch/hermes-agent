@@ -63,6 +63,10 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       return patchOverlayState({ modelPicker: false })
     }
 
+    if (overlay.skillsHub) {
+      return patchOverlayState({ skillsHub: false })
+    }
+
     if (overlay.picker) {
       return patchOverlayState({ picker: false })
     }

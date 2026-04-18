@@ -891,6 +891,8 @@ class BasePlatformAdapter(ABC):
         # Chats where typing indicator is paused (e.g. during approval waits).
         # _keep_typing skips send_typing when the chat_id is in this set.
         self._typing_paused: set = set()
+        _busy_mode = str(self.config.extra.get("busy_input_mode", "interrupt")).strip().lower()
+        self._busy_input_mode = "queue" if _busy_mode == "queue" else "interrupt"
 
     @property
     def has_fatal_error(self) -> bool:
@@ -1645,6 +1647,11 @@ class BasePlatformAdapter(ABC):
             # then process them immediately after the current task finishes.
             if event.message_type == MessageType.PHOTO:
                 logger.debug("[%s] Queuing photo follow-up for session %s without interrupt", self.name, session_key)
+                merge_pending_message_event(self._pending_messages, session_key, event)
+                return  # Don't interrupt now - will run after current task completes
+
+            if self._busy_input_mode == "queue":
+                logger.debug("[%s] New message while session %s is active — queueing without interrupt", self.name, session_key)
                 merge_pending_message_event(self._pending_messages, session_key, event)
                 return  # Don't interrupt now - will run after current task completes
 

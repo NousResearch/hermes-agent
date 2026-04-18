@@ -522,6 +522,32 @@ def load_gateway_config() -> GatewayConfig:
             if isinstance(streaming_cfg, dict):
                 gw_data["streaming"] = streaming_cfg
 
+            display_cfg = yaml_cfg.get("display")
+            if isinstance(display_cfg, dict) and "busy_input_mode" in display_cfg:
+                busy_mode = str(display_cfg.get("busy_input_mode", "")).strip().lower()
+                if busy_mode in {"interrupt", "queue"}:
+                    platforms_data = gw_data.setdefault("platforms", {})
+                    if not isinstance(platforms_data, dict):
+                        platforms_data = {}
+                        gw_data["platforms"] = platforms_data
+                    for plat in Platform:
+                        if plat == Platform.LOCAL:
+                            continue
+                        plat_data = platforms_data.setdefault(plat.value, {})
+                        if not isinstance(plat_data, dict):
+                            plat_data = {}
+                            platforms_data[plat.value] = plat_data
+                        extra = plat_data.setdefault("extra", {})
+                        if not isinstance(extra, dict):
+                            extra = {}
+                            plat_data["extra"] = extra
+                        extra.setdefault("busy_input_mode", busy_mode)
+                else:
+                    logger.warning(
+                        "Ignoring invalid display.busy_input_mode in config.yaml (expected 'interrupt' or 'queue', got %r)",
+                        display_cfg.get("busy_input_mode"),
+                    )
+
             if "reset_triggers" in yaml_cfg:
                 gw_data["reset_triggers"] = yaml_cfg["reset_triggers"]
 
@@ -570,6 +596,16 @@ def load_gateway_config() -> GatewayConfig:
                     )
                 if "reply_prefix" in platform_cfg:
                     bridged["reply_prefix"] = platform_cfg["reply_prefix"]
+                if "busy_input_mode" in platform_cfg:
+                    busy_mode = str(platform_cfg["busy_input_mode"]).strip().lower()
+                    if busy_mode in {"interrupt", "queue"}:
+                        bridged["busy_input_mode"] = busy_mode
+                    else:
+                        logger.warning(
+                            "Ignoring invalid %s.busy_input_mode in config.yaml (expected 'interrupt' or 'queue', got %r)",
+                            plat.value,
+                            platform_cfg.get("busy_input_mode"),
+                        )
                 if "require_mention" in platform_cfg:
                     bridged["require_mention"] = platform_cfg["require_mention"]
                 if "free_response_channels" in platform_cfg:

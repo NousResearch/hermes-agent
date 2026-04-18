@@ -1423,18 +1423,19 @@ class GatewayRunner:
             return False  # let default path handle it
 
         # Store the message so it's processed as the next turn after the
-        # interrupt causes the current run to exit.
+        # current run exits.
         from gateway.platforms.base import merge_pending_message_event
         merge_pending_message_event(adapter._pending_messages, session_key, event)
 
-        # Interrupt the running agent — this aborts in-flight tool calls and
-        # causes the agent loop to exit at the next check point.
         running_agent = self._running_agents.get(session_key)
-        if running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
-            try:
-                running_agent.interrupt(event.text)
-            except Exception:
-                pass  # don't let interrupt failure block the ack
+        if self._busy_input_mode != "queue":
+            # Interrupt the running agent — this aborts in-flight tool calls and
+            # causes the agent loop to exit at the next check point.
+            if running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
+                try:
+                    running_agent.interrupt(event.text)
+                except Exception:
+                    pass  # don't let interrupt failure block the ack
 
         # Debounce: only send an acknowledgment once every 30 seconds per session
         # to avoid spamming the user when they send multiple messages quickly
@@ -1467,10 +1468,16 @@ class GatewayRunner:
                 pass
 
         status_detail = f" ({', '.join(status_parts)})" if status_parts else ""
-        message = (
-            f"⚡ Interrupting current task{status_detail}. "
-            f"I'll respond to your message shortly."
-        )
+        if self._busy_input_mode == "queue":
+            message = (
+                f"⏳ Current task still running{status_detail}. "
+                f"Your message is queued for the next turn."
+            )
+        else:
+            message = (
+                f"⚡ Interrupting current task{status_detail}. "
+                f"I'll respond to your message shortly."
+            )
 
         thread_meta = {"thread_id": event.source.thread_id} if event.source.thread_id else None
         try:
@@ -3115,6 +3122,10 @@ class GatewayRunner:
                     if self._queue_during_drain_enabled()
                     else f"⏳ Gateway is {self._status_action_gerund()} and is not accepting another turn right now."
                 )
+            if self._busy_input_mode == "queue":
+                logger.debug("PRIORITY queue follow-up for session %s", _quick_key[:20])
+                self._queue_or_replace_pending_event(_quick_key, event)
+                return None
             logger.debug("PRIORITY interrupt for session %s", _quick_key[:20])
             running_agent.interrupt(event.text)
             if _quick_key in self._pending_messages:

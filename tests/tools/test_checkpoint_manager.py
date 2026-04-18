@@ -13,6 +13,8 @@ from tools.checkpoint_manager import (
     _run_git,
     _git_env,
     _dir_file_count,
+    _clear_stale_lock,
+    _STALE_LOCK_SECONDS,
     format_checkpoint_list,
     DEFAULT_EXCLUDES,
     CHECKPOINT_BASE,
@@ -597,6 +599,7 @@ class TestSecurity:
 # every time the agent took a background snapshot.
 
 import os as _os
+import time as _time
 
 
 class TestGpgAndGlobalConfigIsolation:
@@ -696,3 +699,55 @@ class TestGpgAndGlobalConfigIsolation:
         mgr = CheckpointManager(enabled=True)
         assert mgr.ensure_checkpoint(str(work_dir), reason="prefix-shadow") is True
         assert len(mgr.list_checkpoints(str(work_dir))) == 1
+
+
+class TestStaleLockCleanup:
+    """Stale index.lock cleanup prevents wedged checkpoints after a crashed
+    git process leaves a zombie lock file (observed in production: 56+ errors
+    over 6 days on one shadow repo)."""
+
+    def _backdate(self, path, seconds_ago):
+        ts = _time.time() - seconds_ago
+        _os.utime(path, (ts, ts))
+
+    def test_removes_old_stale_lock(self, tmp_path):
+        shadow = tmp_path / "shadow"
+        shadow.mkdir()
+        lock = shadow / "index.lock"
+        lock.touch()
+        self._backdate(lock, _STALE_LOCK_SECONDS + 30)
+        _clear_stale_lock(shadow)
+        assert not lock.exists()
+
+    def test_preserves_fresh_lock(self, tmp_path):
+        """A lock younger than the threshold may belong to a live git op —
+        leave it alone."""
+        shadow = tmp_path / "shadow"
+        shadow.mkdir()
+        lock = shadow / "index.lock"
+        lock.touch()
+        _clear_stale_lock(shadow)
+        assert lock.exists()
+
+    def test_noop_when_no_lock(self, tmp_path):
+        shadow = tmp_path / "shadow"
+        shadow.mkdir()
+        _clear_stale_lock(shadow)  # must not raise
+
+    def test_run_git_unwedges_after_stale_lock(
+        self, work_dir, checkpoint_base, monkeypatch
+    ):
+        """End-to-end: a stale lock predating a real git call is cleaned up
+        automatically, and the call succeeds."""
+        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+        shadow = _shadow_repo_path(str(work_dir))
+        _init_shadow_repo(shadow, str(work_dir))
+
+        stale = shadow / "index.lock"
+        stale.touch()
+        self._backdate(stale, _STALE_LOCK_SECONDS + 30)
+
+        ok, _, _ = _run_git(["add", "-A"], shadow, str(work_dir))
+        assert ok, "git add -A should succeed after stale-lock cleanup"
+        assert not stale.exists()
+

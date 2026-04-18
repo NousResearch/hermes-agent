@@ -24,6 +24,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 from pathlib import Path
 from hermes_constants import get_hermes_home
 from typing import Dict, List, Optional, Set
@@ -159,6 +160,38 @@ def _git_env(shadow_repo: Path, working_dir: str) -> dict:
     return env
 
 
+_STALE_LOCK_SECONDS = 60.0
+
+
+def _clear_stale_lock(shadow_repo: Path) -> None:
+    """Remove a stale ``index.lock`` left behind by a crashed/killed git process.
+
+    Checkpoint ops against a shadow repo are strictly serial (one gateway
+    agent per session), so any ``index.lock`` older than ``_STALE_LOCK_SECONDS``
+    at entry to a new git call is unambiguously orphaned.  Without this,
+    a single crashed ``git add`` wedges checkpointing for that repo until
+    manual cleanup (seen in logs: 56+ errors over 6 days on one shadow).
+    """
+    lock_path = shadow_repo / "index.lock"
+    try:
+        age = time.time() - lock_path.stat().st_mtime
+    except FileNotFoundError:
+        return
+    except OSError:
+        return
+    if age < _STALE_LOCK_SECONDS:
+        return
+    try:
+        lock_path.unlink()
+        logger.warning(
+            "Removed stale index.lock (age=%.0fs) at %s", age, lock_path,
+        )
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        logger.warning("Failed to remove stale index.lock at %s: %s", lock_path, exc)
+
+
 def _run_git(
     args: List[str],
     shadow_repo: Path,
@@ -181,6 +214,8 @@ def _run_git(
         msg = f"working directory is not a directory: {normalized_working_dir}"
         logger.error("Git command skipped: %s (%s)", " ".join(["git"] + list(args)), msg)
         return False, "", msg
+
+    _clear_stale_lock(shadow_repo)
 
     env = _git_env(shadow_repo, str(normalized_working_dir))
     cmd = ["git"] + list(args)

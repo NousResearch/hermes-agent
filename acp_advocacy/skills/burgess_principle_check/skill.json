@@ -1,0 +1,46 @@
+{
+  "name": "burgess_principle_check",
+  "description": "Apply the Burgess Principle binary test to a decision or action that affects an individual. The test asks: 'Was the individual considered as an individual human being, or were they processed as a unit within a system?' Returns PASS or FAIL with reasoning.",
+  "version": "1.0.0",
+  "author": "Lewis James Burgess",
+  "license": "See docs/burgess-principle/LICENSING.md",
+  "origin": "Darlington, UK, 2025",
+  "canonical_source": "https://github.com/ljbudgie/burgess-principle",
+  "certification_mark": "UK00004343685",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "decision_description": {
+        "type": "string",
+        "description": "A plain-language description of the decision or action to be evaluated. Should include: what the action is, who it affects, and the context in which it is being taken."
+      }
+    },
+    "required": ["decision_description"]
+  },
+  "returns": {
+    "type": "object",
+    "properties": {
+      "individual_affected": {
+        "type": "boolean",
+        "description": "Whether the decision affects an identifiable individual person."
+      },
+      "result": {
+        "type": "string",
+        "enum": ["PASS", "FAIL", "NOT_APPLICABLE"],
+        "description": "PASS if the individual was considered as an individual human being. FAIL if they were processed as a unit within a system. NOT_APPLICABLE if no individual is affected."
+      },
+      "reasoning": {
+        "type": "string",
+        "description": "Explanation of why the decision passes or fails the binary test."
+      },
+      "recommendation": {
+        "type": "string",
+        "description": "If FAIL, guidance on how to modify the approach to pass the test. Empty if PASS or NOT_APPLICABLE."
+      }
+    }
+  },
+  "metadata": {
+    "tags": ["ethics", "governance", "accountability", "human-rights", "binary-test"],
+    "category": "advocacy"
+  }
+}

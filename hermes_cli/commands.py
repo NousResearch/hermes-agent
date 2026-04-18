@@ -472,10 +472,8 @@ def _collect_gateway_skill_entries(
     # --- Tier 1: Plugin slash commands (never trimmed) ---------------------
     plugin_pairs: list[tuple[str, str]] = []
     try:
-        from hermes_cli.plugins import get_plugin_manager
-        pm = get_plugin_manager()
-        plugin_cmds = getattr(pm, "_plugin_commands", {})
-        for cmd_name in sorted(plugin_cmds):
+        from hermes_cli.plugins import get_plugin_command_names
+        for cmd_name in sorted(get_plugin_command_names()):
             name = sanitize_name(cmd_name) if sanitize_name else cmd_name
             if not name:
                 continue

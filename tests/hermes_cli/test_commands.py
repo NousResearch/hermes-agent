@@ -216,6 +216,14 @@ class TestTelegramBotCommands:
                 tg_name = cmd.name.replace("-", "_")
                 assert tg_name not in names
 
+    def test_includes_plugin_cli_commands_from_registered_plugin_helpers(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.plugins.get_plugin_command_names",
+            lambda: {"plugin-cmd"},
+        )
+        names = {name for name, _ in telegram_menu_commands(max_commands=100)[0]}
+        assert "plugin_cmd" in names
+
 
 class TestSlackSubcommandMap:
     def test_returns_dict(self):

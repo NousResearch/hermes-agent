@@ -1174,8 +1174,8 @@ _skill_commands = scan_skill_commands()
 def _get_plugin_cmd_handler_names() -> set:
     """Return plugin command names (without slash prefix) for dispatch matching."""
     try:
-        from hermes_cli.plugins import get_plugin_manager
-        return set(get_plugin_manager()._plugin_commands.keys())
+        from hermes_cli.plugins import get_plugin_command_names
+        return set(get_plugin_command_names())
     except Exception:
         return set()
 
@@ -4629,7 +4629,7 @@ class HermesCLI:
                             )
                             output = result.stdout.strip() or result.stderr.strip()
                             if output:
-                                self.console.print(_rich_text_from_ansi(output))
+                                ChatConsole().print(_rich_text_from_ansi(output))
                             else:
                                 ChatConsole().print("[dim]Command returned no output[/]")
                         except subprocess.TimeoutExpired:

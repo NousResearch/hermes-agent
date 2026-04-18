@@ -20,6 +20,8 @@ from hermes_cli.plugins import (
     PluginContext,
     PluginManager,
     PluginManifest,
+    get_plugin_command_handler,
+    get_plugin_command_names,
     get_plugin_cli_commands,
 )
 
@@ -74,6 +76,31 @@ class TestGetPluginCliCommands:
         # Top-level is a copy — adding to result doesn't affect manager
         cmds["new"] = {"name": "new"}
         assert "new" not in mgr._cli_commands
+
+
+class TestPluginCommandHelpers:
+    def test_get_plugin_command_names_reads_cli_commands(self):
+        mgr = PluginManager()
+        mgr._cli_commands["foo"] = {"name": "foo", "help": "bar"}
+        mgr._cli_commands["bar"] = {"name": "bar", "help": "baz"}
+        with patch("hermes_cli.plugins.get_plugin_manager", return_value=mgr):
+            names = get_plugin_command_names()
+        assert names == {"foo", "bar"}
+
+    def test_get_plugin_command_handler_returns_registered_handler(self):
+        mgr = PluginManager()
+        handler = MagicMock()
+        mgr._cli_commands["foo"] = {"name": "foo", "handler_fn": handler}
+        with patch("hermes_cli.plugins.get_plugin_manager", return_value=mgr):
+            resolved = get_plugin_command_handler("foo")
+        assert resolved is handler
+
+    def test_get_plugin_command_handler_returns_none_for_missing_or_noncallable(self):
+        mgr = PluginManager()
+        mgr._cli_commands["foo"] = {"name": "foo", "handler_fn": "nope"}
+        with patch("hermes_cli.plugins.get_plugin_manager", return_value=mgr):
+            assert get_plugin_command_handler("foo") is None
+            assert get_plugin_command_handler("missing") is None
 
 
 # ── Memory plugin CLI discovery ───────────────────────────────────────────

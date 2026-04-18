@@ -562,6 +562,5 @@ class TestPreLlmCallTargetRouting:
 
 
 # NOTE: TestPluginCommands removed – register_command() was never implemented
-# in PluginContext (hermes_cli/plugins.py).  The tests referenced _plugin_commands,
-# commands_registered, get_plugin_command_handler, and GATEWAY_KNOWN_COMMANDS
-# integration — all of which are unimplemented features.
+# in PluginContext (hermes_cli/plugins.py).  General plugin CLI commands are
+# tracked via register_cli_command() / _cli_commands instead.

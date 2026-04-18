@@ -3982,9 +3982,9 @@ class GatewayRunner:
         # Reset the session
         new_entry = self.session_store.reset_session(session_key)
 
-        # Clear any session-scoped model override so the next agent picks up
-        # the configured default instead of the previously switched model.
-        self._session_model_overrides.pop(session_key, None)
+        # Keep any session-scoped model override across /new. Resetting the
+        # conversation should clear history, not silently revert the chat back
+        # to the profile default model/provider.
 
         # Fire plugin on_session_finalize hook (session boundary)
         try:

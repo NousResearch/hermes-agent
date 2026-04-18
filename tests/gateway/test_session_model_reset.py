@@ -1,4 +1,4 @@
-"""Tests that /new (and its /reset alias) clears the session-scoped model override."""
+"""Tests that /new (and its /reset alias) preserves the session-scoped model override."""
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -66,23 +66,24 @@ def _make_runner():
 
 
 @pytest.mark.asyncio
-async def test_new_command_clears_session_model_override():
-    """/new must remove the session-scoped model override for that session."""
+async def test_new_command_preserves_session_model_override():
+    """/new must keep the session-scoped model override for that session."""
     runner = _make_runner()
     session_key = build_session_key(_make_source())
 
     # Simulate a prior /model switch stored as a session override
-    runner._session_model_overrides[session_key] = {
+    override = {
         "model": "gpt-4o",
         "provider": "openai",
-        "api_key": "sk-test",
+        "api_key": "***",
         "base_url": "",
         "api_mode": "openai",
     }
+    runner._session_model_overrides[session_key] = dict(override)
 
     await runner._handle_reset_command(_make_event("/new"))
 
-    assert session_key not in runner._session_model_overrides
+    assert runner._session_model_overrides[session_key] == override
 
 
 @pytest.mark.asyncio
@@ -99,28 +100,30 @@ async def test_new_command_no_override_is_noop():
 
 
 @pytest.mark.asyncio
-async def test_new_command_only_clears_own_session():
-    """/new must only clear the override for the session that triggered it."""
+async def test_new_command_preserves_own_override_without_touching_others():
+    """/new must keep the triggering session's override and leave other sessions alone."""
     runner = _make_runner()
     session_key = build_session_key(_make_source())
     other_key = "other_session_key"
 
-    runner._session_model_overrides[session_key] = {
+    own_override = {
         "model": "gpt-4o",
         "provider": "openai",
-        "api_key": "sk-test",
+        "api_key": "***",
         "base_url": "",
         "api_mode": "openai",
     }
-    runner._session_model_overrides[other_key] = {
+    other_override = {
         "model": "claude-sonnet-4-6",
         "provider": "anthropic",
-        "api_key": "sk-ant-test",
+        "api_key": "***",
         "base_url": "",
         "api_mode": "anthropic",
     }
+    runner._session_model_overrides[session_key] = dict(own_override)
+    runner._session_model_overrides[other_key] = dict(other_override)
 
     await runner._handle_reset_command(_make_event("/new"))
 
-    assert session_key not in runner._session_model_overrides
-    assert other_key in runner._session_model_overrides
+    assert runner._session_model_overrides[session_key] == own_override
+    assert runner._session_model_overrides[other_key] == other_override

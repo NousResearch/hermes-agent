@@ -68,6 +68,7 @@ export interface Usage {
   context_max?: number
   context_percent?: number
   context_used?: number
+  cost_usd?: number
   input: number
   output: number
   total: number

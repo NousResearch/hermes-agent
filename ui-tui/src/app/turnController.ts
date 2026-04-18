@@ -11,7 +11,7 @@ import type { ActiveTool, ActivityItem, Msg, SubagentProgress } from '../types.j
 
 import { resetOverlayState } from './overlayStore.js'
 import { patchTurnState, resetTurnState } from './turnStore.js'
-import { patchUiState } from './uiStore.js'
+import { getUiState, patchUiState } from './uiStore.js'
 
 const INTERRUPT_COOLDOWN_MS = 1500
 const ACTIVITY_LIMIT = 8
@@ -226,10 +226,17 @@ class TurnController {
     }
 
     this.bufRef = rendered ?? this.bufRef + text
-    this.scheduleStreaming()
+
+    if (getUiState().streaming) {
+      this.scheduleStreaming()
+    }
   }
 
   recordReasoningAvailable(text: string) {
+    if (!getUiState().showReasoning) {
+      return
+    }
+
     const incoming = text.trim()
 
     if (!incoming || this.reasoningText.trim()) {
@@ -242,6 +249,10 @@ class TurnController {
   }
 
   recordReasoningDelta(text: string) {
+    if (!getUiState().showReasoning) {
+      return
+    }
+
     this.reasoningText += text
     this.scheduleReasoning()
     this.pulseReasoningStreaming()

@@ -33,6 +33,7 @@ class TestProviderRegistry:
         ("copilot-acp", "GitHub Copilot ACP", "external_process"),
         ("copilot", "GitHub Copilot", "api_key"),
         ("huggingface", "Hugging Face", "api_key"),
+        ("ppq", "PPQ (PayPerQ)", "api_key"),
         ("zai", "Z.AI / GLM", "api_key"),
         ("xai", "xAI", "api_key"),
         ("nvidia", "NVIDIA NIM", "api_key"),
@@ -67,6 +68,12 @@ class TestProviderRegistry:
         assert pconfig.api_key_env_vars == ("NVIDIA_API_KEY",)
         assert pconfig.base_url_env_var == "NVIDIA_BASE_URL"
         assert pconfig.inference_base_url == "https://integrate.api.nvidia.com/v1"
+
+    def test_ppq_env_vars(self):
+        pconfig = PROVIDER_REGISTRY["ppq"]
+        assert pconfig.api_key_env_vars == ("PPQ_API_KEY",)
+        assert pconfig.base_url_env_var == "PPQ_BASE_URL"
+        assert pconfig.inference_base_url == "https://api.ppq.ai"
 
     def test_copilot_env_vars(self):
         pconfig = PROVIDER_REGISTRY["copilot"]
@@ -146,6 +153,7 @@ PROVIDER_ENV_VARS = (
     "OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN",
     "CLAUDE_CODE_OAUTH_TOKEN",
     "LM_API_KEY", "LM_BASE_URL",
+    "PPQ_API_KEY",
     "GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY",
     "KIMI_API_KEY", "KIMI_BASE_URL", "STEPFUN_API_KEY", "STEPFUN_BASE_URL",
     "MINIMAX_API_KEY", "MINIMAX_CN_API_KEY",

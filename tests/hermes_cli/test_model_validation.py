@@ -159,6 +159,8 @@ class TestNormalizeProvider:
 
     def test_known_aliases(self):
         assert normalize_provider("glm") == "zai"
+        assert normalize_provider("payperq") == "ppq"
+        assert normalize_provider("ppq.ai") == "ppq"
         assert normalize_provider("kimi") == "kimi-coding"
         assert normalize_provider("moonshot") == "kimi-coding"
         assert normalize_provider("step") == "stepfun"
@@ -175,6 +177,7 @@ class TestProviderLabel:
         assert provider_label("stepfun") == "StepFun Step Plan"
         assert provider_label("copilot") == "GitHub Copilot"
         assert provider_label("copilot-acp") == "GitHub Copilot ACP"
+        assert provider_label("ppq") == "PPQ (PayPerQ)"
         assert provider_label("auto") == "Auto"
 
     def test_unknown_provider_preserves_original_name(self):
@@ -211,6 +214,23 @@ class TestProviderModelIds:
             return_value=["step-3.5-flash", "step-3-agent-lite"],
         ):
             assert provider_model_ids("stepfun") == ["step-3.5-flash", "step-3-agent-lite"]
+
+    def test_ppq_prefers_live_catalog(self):
+        with patch("hermes_cli.auth.resolve_api_key_provider_credentials", return_value={
+            "api_key": "***", "base_url": "https://api.ppq.ai",
+        }), patch("hermes_cli.models.fetch_api_models", return_value=[
+            "claude-sonnet-4.6", "openai/gpt-5.4",
+        ]):
+            assert provider_model_ids("ppq") == ["claude-sonnet-4.6", "openai/gpt-5.4"]
+
+    def test_ppq_falls_back_to_curated(self):
+        """When live fetch fails, PPQ falls back to the curated _PROVIDER_MODELS list."""
+        with patch("hermes_cli.auth.resolve_api_key_provider_credentials", return_value={
+            "api_key": "", "base_url": "https://api.ppq.ai",
+        }):
+            ids = provider_model_ids("ppq")
+            assert len(ids) > 0
+            assert "claude-opus-4.7" in ids
 
     def test_copilot_prefers_live_catalog(self):
         with patch("hermes_cli.auth.resolve_api_key_provider_credentials", return_value={"api_key": "gh-token"}), \

@@ -97,6 +97,13 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         extra_env_vars=("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"),
         base_url_env_var="GLM_BASE_URL",
     ),
+    "ppq": HermesOverlay(
+        transport="openai_chat",
+        is_aggregator=True,
+        extra_env_vars=("PPQ_API_KEY",),
+        base_url_override="https://api.ppq.ai",
+        base_url_env_var="PPQ_BASE_URL",
+    ),
     "kimi-for-coding": HermesOverlay(
         transport="openai_chat",
         base_url_env_var="KIMI_BASE_URL",
@@ -230,6 +237,10 @@ ALIASES: Dict[str, str] = {
     "z.ai": "zai",
     "zhipu": "zai",
 
+    # ppq
+    "payperq": "ppq",
+    "ppq.ai": "ppq",
+
     # xai
     "x-ai": "xai",
     "x.ai": "xai",
@@ -353,6 +364,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "gmi": "GMI Cloud",
     "tencent-tokenhub": "Tencent TokenHub",
     "lmstudio": "LM Studio",
+    "ppq": "PPQ (PayPerQ)",
     "local": "Local endpoint",
     "bedrock": "AWS Bedrock",
     "ollama-cloud": "Ollama Cloud",

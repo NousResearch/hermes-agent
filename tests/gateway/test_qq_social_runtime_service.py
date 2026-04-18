@@ -103,3 +103,17 @@ def test_run_admin_qq_social_control_shortcut_surfaces_tool_exception():
 
     assert result == "QQ 社交控制执行失败：boom"
     logger.warning.assert_called_once()
+
+
+def test_run_admin_qq_social_control_shortcut_rejects_non_success_result():
+    from gateway.qq_social_runtime_service import run_admin_qq_social_control_shortcut
+
+    result = run_admin_qq_social_control_shortcut(
+        tool_args={"action": "list_requests"},
+        shortcut_error=None,
+        tool_runner=lambda tool_args: {},
+        reply_formatter=lambda tool_args, result: "unused",
+        logger=MagicMock(),
+    )
+
+    assert result == "QQ 社交控制执行失败：工具未返回成功结果"

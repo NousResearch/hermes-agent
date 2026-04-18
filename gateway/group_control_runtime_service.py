@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from gateway.direct_tool_result_runtime_service import shortcut_tool_failure_text
 from gateway.group_control_requests import match_group_control_request
 
 
@@ -61,6 +62,7 @@ def run_admin_group_control_shortcut(
         logger.warning("%s: %s", error_prefix, exc)
         return f"{error_prefix}：{exc}"
 
-    if result.get("error"):
-        return str(result["error"])
+    failure = shortcut_tool_failure_text(result, failure_prefix=error_prefix)
+    if failure:
+        return failure
     return reply_formatter(tool_args, result)

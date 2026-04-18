@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Callable, Iterable
 
+from gateway.direct_tool_result_runtime_service import shortcut_tool_failure_text
 from gateway.group_target_intents import extract_qq_group_target
 from gateway.qq_intel_control_requests import (
     extract_qq_oral_intel_hire_objective,
@@ -131,6 +132,7 @@ def run_admin_qq_intel_control_shortcut(
         logger.warning("Admin QQ oral intel control shortcut failed: %s", exc)
         return f"QQ 情报员控制执行失败：{exc}"
 
-    if result.get("error"):
-        return str(result["error"])
+    failure = shortcut_tool_failure_text(result, failure_prefix="QQ 情报员控制执行失败")
+    if failure:
+        return failure
     return reply_formatter(tool_args, result)

@@ -91,3 +91,16 @@ def test_run_admin_qq_group_moderation_shortcut_surfaces_tool_exception():
 
     assert result == "QQ 群管理执行失败：boom"
     logger.warning.assert_called_once()
+
+
+def test_run_admin_qq_group_moderation_shortcut_rejects_non_success_result():
+    from gateway.group_moderation_runtime_service import run_admin_qq_group_moderation_shortcut
+
+    result = run_admin_qq_group_moderation_shortcut(
+        tool_args={"action": "kick_user"},
+        shortcut_error=None,
+        tool_runner=lambda tool_args: {},
+        logger=MagicMock(),
+    )
+
+    assert result == "QQ 群管理执行失败：工具未返回成功结果"

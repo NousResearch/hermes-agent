@@ -129,3 +129,18 @@ def test_run_admin_group_control_shortcut_surfaces_runner_exception():
 
     assert result == "QQ 群监听控制执行失败：boom"
     logger.warning.assert_called_once()
+
+
+def test_run_admin_group_control_shortcut_rejects_non_success_result():
+    from gateway.group_control_runtime_service import run_admin_group_control_shortcut
+
+    result = run_admin_group_control_shortcut(
+        tool_args={"action": "resume_chat"},
+        shortcut_error=None,
+        tool_runner=lambda tool_args: {},
+        error_prefix="QQ 群监听控制执行失败",
+        reply_formatter=lambda tool_args, result: "unused",
+        logger=MagicMock(),
+    )
+
+    assert result == "QQ 群监听控制执行失败：工具未返回成功结果"

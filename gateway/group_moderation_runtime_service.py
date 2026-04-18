@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from gateway.direct_tool_result_runtime_service import shortcut_tool_failure_text
 from gateway.group_target_intents import extract_qq_group_target
 from gateway.qq_group_moderation_requests import (
     extract_qq_oral_moderation_duration_seconds,
@@ -77,6 +78,7 @@ def run_admin_qq_group_moderation_shortcut(
         logger.warning("Admin QQ oral moderation shortcut failed: %s", exc)
         return f"QQ 群管理执行失败：{exc}"
 
-    if result.get("error"):
-        return str(result["error"])
+    failure = shortcut_tool_failure_text(result, failure_prefix="QQ 群管理执行失败")
+    if failure:
+        return failure
     return format_admin_qq_group_moderation_reply(tool_args, result)

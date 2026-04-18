@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from gateway.direct_tool_result_runtime_service import shortcut_tool_failure_text
 from gateway.qq_intents import (
     _looks_like_qq_social_policy_candidate,
     _looks_like_qq_social_request_list_query,
@@ -114,6 +115,7 @@ def run_admin_qq_social_control_shortcut(
         logger.warning("Admin QQ social shortcut failed: %s", exc)
         return f"QQ 社交控制执行失败：{exc}"
 
-    if result.get("error"):
-        return str(result["error"])
+    failure = shortcut_tool_failure_text(result, failure_prefix="QQ 社交控制执行失败")
+    if failure:
+        return failure
     return reply_formatter(tool_args, result)

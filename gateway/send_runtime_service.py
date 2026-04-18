@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any, Callable
 
+from gateway.direct_tool_result_runtime_service import shortcut_tool_failure_text
 from gateway.group_target_intents import extract_recent_target_from_history
 from gateway.send_intents import (
     extract_send_confirmation_message,
@@ -101,6 +102,7 @@ def run_admin_send_shortcut(
         logger.warning("%s: %s", error_prefix, exc)
         return f"{error_prefix}：{exc}"
 
-    if result.get("error"):
-        return str(result["error"])
+    failure = shortcut_tool_failure_text(result, failure_prefix=error_prefix)
+    if failure:
+        return failure
     return reply_formatter(tool_args)

@@ -231,12 +231,9 @@ from gateway.agent_runtime import (
     resolve_turn_agent_config as shared_resolve_turn_agent_config,
 )
 from gateway.background_delivery_service import (
-    background_completion_should_stay_silent as shared_background_completion_should_stay_silent,
     background_job_delivery_poller as shared_background_job_delivery_poller,
-    build_background_delivery_header as shared_build_background_delivery_header,
     deliver_background_job_updates_once as shared_deliver_background_job_updates_once,
     recover_stale_background_jobs_once as shared_recover_stale_background_jobs_once,
-    sanitize_background_visible_text as shared_sanitize_background_visible_text,
 )
 from gateway.background_job_start_service import (
     start_background_job as shared_start_background_job,
@@ -3078,92 +3075,6 @@ class GatewayRunner:
             logger=logger,
         )
 
-    @staticmethod
-    def _sanitize_background_visible_text(text: str) -> str:
-        return shared_sanitize_background_visible_text(text)
-
-    @staticmethod
-    def _background_completion_should_stay_silent(*, job_kind: str, worker_name: str = "") -> bool:
-        return shared_background_completion_should_stay_silent(
-            job_kind=job_kind,
-            worker_name=worker_name,
-        )
-
-    @staticmethod
-    def _build_background_delivery_header(
-        *,
-        task_id: str,
-        preview: str = "",
-        worker_name: str = "",
-        state: str = "completed",
-    ) -> str:
-        return shared_build_background_delivery_header(
-            task_id=task_id,
-            preview=preview,
-            worker_name=worker_name,
-            state=state,
-        )
-
-    def _start_background_job(
-        self,
-        prompt: str,
-        source: SessionSource,
-        *,
-        conversation_history: Optional[List[Dict[str, Any]]] = None,
-        context_prompt: str = "",
-        session_key: str = "",
-        job_kind: str = "manual",
-        worker_name: str = "",
-        preloaded_skills: Optional[List[str]] = None,
-        admin_user_ids: Optional[List[str]] = None,
-        is_admin_user: Optional[bool] = None,
-    ) -> str:
-        return shared_start_background_job(
-            store=self._get_background_job_store(),
-            launch_worker=self._launch_background_worker,
-            prompt=prompt,
-            source=source,
-            conversation_history=conversation_history,
-            context_prompt=context_prompt,
-            session_key=session_key,
-            job_kind=job_kind,
-            worker_name=worker_name,
-            preloaded_skills=list(preloaded_skills or []),
-            admin_user_ids=list(admin_user_ids or []),
-            is_admin_user=is_admin_user,
-            logger=logger,
-        )
-
-    async def _maybe_auto_compress_session_history(
-        self,
-        *,
-        history: Optional[List[Dict[str, Any]]],
-        session_entry: SessionEntry,
-    ) -> List[Dict[str, Any]]:
-        return await shared_maybe_auto_compress_session_history(
-            history=history,
-            session_entry=session_entry,
-            session_store=self.session_store,
-            hermes_home=_hermes_home,
-            runtime_agent_kwargs_loader=_resolve_runtime_agent_kwargs,
-            logger=logger,
-        )
-
-    def _prepare_history_for_agent(
-        self,
-        *,
-        history: List[Dict[str, Any]],
-        context: SessionContext,
-        session_entry: SessionEntry,
-    ) -> List[Dict[str, Any]]:
-        return shared_prepare_history_for_agent(
-            history,
-            shared_session_kind=getattr(context, "shared_session_kind", None),
-            session_id=session_entry.session_id,
-            logger=logger,
-            visible_limit=_SHARED_GROUP_VISIBLE_HISTORY_LIMIT,
-        )
-
     def _resolve_background_job_for_stop(
         self,
         source: SessionSource,
@@ -4074,10 +3985,12 @@ class GatewayRunner:
                 logger.warning("[Gateway] Failed to auto-load topic skill '%s': %s", event.auto_skill, e)
 
         # Load conversation history from transcript
-        history_for_agent = self._prepare_history_for_agent(
-            history=history,
-            context=context,
-            session_entry=session_entry,
+        history_for_agent = shared_prepare_history_for_agent(
+            history,
+            shared_session_kind=getattr(context, "shared_session_kind", None),
+            session_id=session_entry.session_id,
+            logger=logger,
+            visible_limit=_SHARED_GROUP_VISIBLE_HISTORY_LIMIT,
         )
 
         background_message_text = event.text or ""
@@ -4106,9 +4019,11 @@ class GatewayRunner:
             conversation_history=list(history_for_agent or []),
         )
         if background_dispatch:
-            task_id = self._start_background_job(
-                background_message_text,
-                source,
+            task_id = shared_start_background_job(
+                store=self._get_background_job_store(),
+                launch_worker=self._launch_background_worker,
+                prompt=background_message_text,
+                source=source,
                 conversation_history=list(history_for_agent or []),
                 context_prompt=context_prompt,
                 session_key=session_key,
@@ -4117,6 +4032,7 @@ class GatewayRunner:
                 preloaded_skills=list(background_dispatch.get("preloaded_skills") or []),
                 admin_user_ids=context.admin_user_ids,
                 is_admin_user=context.is_admin_user,
+                logger=logger,
             )
             return shared_format_auto_background_ack(
                 background_message_text,
@@ -4124,9 +4040,13 @@ class GatewayRunner:
                 worker_name=str(background_dispatch.get("worker_name") or ""),
             )
 
-        history = await self._maybe_auto_compress_session_history(
+        history = await shared_maybe_auto_compress_session_history(
             history=history,
             session_entry=session_entry,
+            session_store=self.session_store,
+            hermes_home=_hermes_home,
+            runtime_agent_kwargs_loader=_resolve_runtime_agent_kwargs,
+            logger=logger,
         )
 
         # First-message onboarding -- only on the very first interaction ever
@@ -5844,15 +5764,18 @@ class GatewayRunner:
                 platform=getattr(source, "platform", Platform.QQ_NAPCAT),
             ),
         )
-        task_id = self._start_background_job(
-            prompt,
-            source,
+        task_id = shared_start_background_job(
+            store=self._get_background_job_store(),
+            launch_worker=self._launch_background_worker,
+            prompt=prompt,
+            source=source,
             session_key=self._session_key_for_source(source),
             job_kind="manual",
             worker_name=str((dispatch or {}).get("worker_name") or ""),
             preloaded_skills=list((dispatch or {}).get("preloaded_skills") or []),
             admin_user_ids=admin_user_ids,
             is_admin_user=is_admin_user,
+            logger=logger,
         )
 
         preview = prompt[:60] + ("..." if len(prompt) > 60 else "")
@@ -5915,12 +5838,15 @@ class GatewayRunner:
             session_entry = self.session_store.get_or_create_session(source)
             history_snapshot = self.session_store.load_transcript(session_entry.session_id)
 
-        task_id = self._start_background_job(
-            question,
-            source,
+        task_id = shared_start_background_job(
+            store=self._get_background_job_store(),
+            launch_worker=self._launch_background_worker,
+            prompt=question,
+            source=source,
             conversation_history=list(history_snapshot or []),
             session_key=session_key,
             job_kind="btw",
+            logger=logger,
         )
 
         preview = question[:60] + ("..." if len(question) > 60 else "")

@@ -88,7 +88,7 @@ async def deliver_background_job_updates_once(runner: Any) -> None:
             or (store.get_job(task_id) or {}).get("prompt")
             or ""
         ).strip()
-        header = runner._build_background_delivery_header(
+        header = build_background_delivery_header(
             task_id=task_id,
             preview=_truncate_status_preview(preview, limit=200),
             state="approval",
@@ -146,7 +146,7 @@ async def deliver_background_job_updates_once(runner: Any) -> None:
                 if job_kind == "btw":
                     message = f"❌ /btw failed: {error}"
                 else:
-                    header = runner._build_background_delivery_header(
+                    header = build_background_delivery_header(
                         task_id=task_id,
                         preview=_truncate_status_preview(preview, limit=200),
                         worker_name=worker_name,
@@ -163,12 +163,12 @@ async def deliver_background_job_updates_once(runner: Any) -> None:
 
             media_files, response = adapter.extract_media(raw_response)
             images, text_content = adapter.extract_images(response)
-            text_content = runner._sanitize_background_visible_text(text_content)
+            text_content = sanitize_background_visible_text(text_content)
 
             if job_kind == "btw":
                 header = f'💬 /btw: "{preview}"\n\n'
             else:
-                header = runner._build_background_delivery_header(
+                header = build_background_delivery_header(
                     task_id=task_id,
                     preview=_truncate_status_preview(preview, limit=200),
                     worker_name=worker_name,
@@ -181,7 +181,7 @@ async def deliver_background_job_updates_once(runner: Any) -> None:
                     content=f"{header}\n\n{text_content}",
                     metadata=metadata,
                 )
-            elif not images and not media_files and not runner._background_completion_should_stay_silent(
+            elif not images and not media_files and not background_completion_should_stay_silent(
                 job_kind=job_kind,
                 worker_name=worker_name,
             ):

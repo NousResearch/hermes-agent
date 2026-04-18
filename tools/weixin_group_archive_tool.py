@@ -5,12 +5,12 @@ from __future__ import annotations
 import json
 
 from hermes_time import now as hermes_now
-from tool_result_validation import normalize_tool_failure_result
 from gateway.weixin_group_archive import (
     WeixinGroupArchiveStore,
     format_group_report_for_delivery,
 )
 from gateway.weixin_group_policies import get_group_policy
+from tools.group_manual_report_delivery import deliver_manual_group_report
 from tools.registry import registry, tool_error
 from tools.send_message_tool import _check_send_message, _error, send_message_tool
 from tools.weixin_group_tool_common import (
@@ -176,58 +176,24 @@ def weixin_group_archive_tool(args, **kw):
 
         policy = get_group_policy(chat_id)
         reporting = store.describe_group_reporting(chat_id=chat_id)
-        delivery_target = _resolve_delivery_target_for_report(args.get("delivery_target"), policy)
-        message = format_group_report_for_delivery(
-            report,
-            group_name=policy.get("group_name"),
-        )
-        send_result = json.loads(
-            send_message_tool(
-                {
-                    "action": "send",
-                    "target": delivery_target,
-                    "message": message,
-                }
-            )
-        )
-        failed_delivery = normalize_tool_failure_result(
-            send_result,
+        delivery_payload = deliver_manual_group_report(
+            report=report,
+            policy=policy,
+            reporting=reporting,
+            explicit_delivery_target=args.get("delivery_target"),
+            resolve_delivery_target=resolve_delivery_target,
+            current_chat_delivery_target=current_chat_delivery_target,
+            format_report=format_group_report_for_delivery,
+            send_message=send_message_tool,
             failure_prefix="微信群日报发送失败",
-        )
-        delivery_state = store.record_report_delivery(
-            chat_id=chat_id,
-            report_date=report["report_date"],
-            delivery_key=_manual_delivery_key(delivery_target),
-            target=delivery_target,
-            error=str((failed_delivery or {}).get("error") or "").strip() or None,
-        )
-        if failed_delivery:
-            return json.dumps(
-                {
-                    **failed_delivery,
-                    "report": report,
-                    "reporting": reporting,
-                    "report_control": dict(reporting.get("report_control") or {}),
-                    "delivery": {
-                        "target": delivery_target,
-                        "result": send_result,
-                        "state": delivery_state,
-                    },
-                },
-                ensure_ascii=False,
-            )
-        return json.dumps(
-            {
-                "success": True,
-                "report": report,
-                "reporting": reporting,
-                "report_control": dict(reporting.get("report_control") or {}),
-                "delivery": {
-                    "target": delivery_target,
-                    "result": send_result,
-                    "state": delivery_state,
-                },
+            record_delivery=store.record_report_delivery,
+            record_delivery_kwargs={
+                "chat_id": chat_id,
+                "report_date": report["report_date"],
             },
+        )
+        return json.dumps(
+            delivery_payload,
             ensure_ascii=False,
         )
     except ValueError as exc:
@@ -255,20 +221,6 @@ def _load_report_for_delivery_or_fetch(*, store: WeixinGroupArchiveStore, chat_i
     if not report_date:
         raise ValueError("'report_date' is required for this action.")
     return store.build_snapshot_report(chat_id=chat_id, report_date=report_date)
-
-
-def _resolve_delivery_target_for_report(value, policy: dict) -> str:
-    resolved = resolve_delivery_target(value)
-    if resolved is None:
-        stored_target = str(policy.get("manual_report_target") or "").strip()
-        if stored_target:
-            return stored_target
-        return current_chat_delivery_target()
-    return resolved
-
-
-def _manual_delivery_key(target: str) -> str:
-    return f"manual:{str(target or '').strip()}"
 
 
 registry.register(

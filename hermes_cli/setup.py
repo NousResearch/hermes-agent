@@ -23,7 +23,6 @@ from pathlib import Path
 from typing import Optional, Dict, Any
 
 from hermes_cli.nous_subscription import (
-    apply_nous_provider_defaults,
     get_nous_subscription_features,
 )
 from iteration_limits import format_iteration_limit, is_unlimited_iteration_limit, parse_iteration_limit

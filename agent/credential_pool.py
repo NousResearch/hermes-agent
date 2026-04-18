@@ -395,10 +395,11 @@ class CredentialPool:
                 return
 
     def _persist(self) -> None:
-        write_credential_pool(
-            self.provider,
-            [entry.to_dict() for entry in self._entries],
-        )
+        with _auth_store_lock():
+            write_credential_pool(
+                self.provider,
+                [entry.to_dict() for entry in self._entries],
+            )
 
     def _mark_exhausted(
         self,
@@ -420,13 +421,16 @@ class CredentialPool:
         self._persist()
         return updated
 
-    def _sync_anthropic_entry_from_credentials_file(self, entry: PooledCredential) -> PooledCredential:
+    def _sync_anthropic_entry_from_credentials_file(self, entry: PooledCredential, *, persist: bool = True) -> PooledCredential:
         """Sync a claude_code pool entry from ~/.claude/.credentials.json if tokens differ.
 
         OAuth refresh tokens are single-use. When something external (e.g.
         Claude Code CLI, or another profile's pool) refreshes the token, it
         writes the new pair to ~/.claude/.credentials.json. The pool entry's
         refresh token becomes stale. This method detects that and syncs.
+
+        When *persist* is False the caller is responsible for persisting
+        after all mutations are complete (batch-persist pattern).
         """
         if self.provider != "anthropic" or entry.source != "claude_code":
             return entry
@@ -451,19 +455,23 @@ class CredentialPool:
                     last_error_code=None,
                 )
                 self._replace_entry(entry, updated)
-                self._persist()
+                if persist:
+                    self._persist()
                 return updated
         except Exception as exc:
             logger.debug("Failed to sync from credentials file: %s", exc)
         return entry
 
-    def _sync_codex_entry_from_cli(self, entry: PooledCredential) -> PooledCredential:
+    def _sync_codex_entry_from_cli(self, entry: PooledCredential, *, persist: bool = True) -> PooledCredential:
         """Sync an openai-codex pool entry from ~/.codex/auth.json if tokens differ.
 
         OpenAI OAuth refresh tokens are single-use and rotate on every refresh.
         When the Codex CLI (or another Hermes profile) refreshes its token,
         the pool entry's refresh_token becomes stale.  This method detects that
         by comparing against ~/.codex/auth.json and syncing the fresh pair.
+
+        When *persist* is False the caller is responsible for persisting
+        after all mutations are complete (batch-persist pattern).
         """
         if self.provider != "openai-codex":
             return entry
@@ -484,7 +492,8 @@ class CredentialPool:
                     last_error_code=None,
                 )
                 self._replace_entry(entry, updated)
-                self._persist()
+                if persist:
+                    self._persist()
                 return updated
         except Exception as exc:
             logger.debug("Failed to sync from ~/.codex/auth.json: %s", exc)
@@ -786,7 +795,7 @@ class CredentialPool:
             # by other processes (Claude Code CLI, other Hermes profiles).
             if (self.provider == "anthropic" and entry.source == "claude_code"
                     and entry.last_status == STATUS_EXHAUSTED):
-                synced = self._sync_anthropic_entry_from_credentials_file(entry)
+                synced = self._sync_anthropic_entry_from_credentials_file(entry, persist=False)
                 if synced is not entry:
                     entry = synced
                     cleared_any = True
@@ -796,7 +805,7 @@ class CredentialPool:
             if (self.provider == "openai-codex"
                     and entry.last_status == STATUS_EXHAUSTED
                     and entry.refresh_token):
-                synced = self._sync_codex_entry_from_cli(entry)
+                synced = self._sync_codex_entry_from_cli(entry, persist=False)
                 if synced is not entry:
                     entry = synced
                     cleared_any = True
@@ -1416,7 +1425,8 @@ def _seed_custom_pool(pool_key: str, entries: List[PooledCredential]) -> Tuple[b
 
 def load_pool(provider: str) -> CredentialPool:
     provider = (provider or "").strip().lower()
-    raw_entries = read_credential_pool(provider)
+    with _auth_store_lock():
+        raw_entries = read_credential_pool(provider)
     entries = [PooledCredential.from_dict(provider, payload) for payload in raw_entries]
 
     if provider.startswith(CUSTOM_POOL_PREFIX):

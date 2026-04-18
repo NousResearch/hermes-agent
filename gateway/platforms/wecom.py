@@ -492,10 +492,8 @@ class WeComAdapter(BasePlatformAdapter):
         if not chat_id:
             logger.debug("[%s] Missing chat id, skipping message", self.name)
             return
-            
-        self._last_chat_req_ids[chat_id] = self._payload_req_id(payload)
 
-        is_group = bool(body.get("chatid"))
+        is_group = str(body.get("chattype") or "").lower() == "group"
         if is_group:
             if not self._is_group_allowed(chat_id, sender_id):
                 logger.debug("[%s] Group %s / sender %s blocked by policy", self.name, chat_id, sender_id)
@@ -503,6 +501,11 @@ class WeComAdapter(BasePlatformAdapter):
         elif not self._is_dm_allowed(sender_id):
             logger.debug("[%s] DM sender %s blocked by policy", self.name, sender_id)
             return
+
+        # Cache the inbound req_id after policy checks so proactive sends to
+        # this chat can fall back to APP_CMD_RESPONSE (required for groups —
+        # WeCom AI Bots cannot initiate APP_CMD_SEND in group chats).
+        self._remember_chat_req_id(chat_id, self._payload_req_id(payload))
 
         text, reply_text = self._extract_text(body)
         media_urls, media_types = await self._extract_media(body)
@@ -854,6 +857,23 @@ class WeComAdapter(BasePlatformAdapter):
         self._reply_req_ids[normalized_message_id] = normalized_req_id
         while len(self._reply_req_ids) > DEDUP_MAX_SIZE:
             self._reply_req_ids.pop(next(iter(self._reply_req_ids)))
+
+    def _remember_chat_req_id(self, chat_id: str, req_id: str) -> None:
+        """Cache the most recent inbound req_id per chat.
+
+        Used as a fallback reply target when we need to send into a group
+        without an explicit ``reply_to`` — WeCom AI Bots are blocked from
+        APP_CMD_SEND in groups and must use APP_CMD_RESPONSE bound to some
+        prior req_id. Bounded like _reply_req_ids so long-running gateways
+        don't leak memory across many chats.
+        """
+        normalized_chat_id = str(chat_id or "").strip()
+        normalized_req_id = str(req_id or "").strip()
+        if not normalized_chat_id or not normalized_req_id:
+            return
+        self._last_chat_req_ids[normalized_chat_id] = normalized_req_id
+        while len(self._last_chat_req_ids) > DEDUP_MAX_SIZE:
+            self._last_chat_req_ids.pop(next(iter(self._last_chat_req_ids)))
 
     def _reply_req_id_for_message(self, reply_to: Optional[str]) -> Optional[str]:
         normalized = str(reply_to or "").strip()
@@ -1239,7 +1259,7 @@ class WeComAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=prepared["reject_reason"])
 
         reply_req_id = self._reply_req_id_for_message(reply_to)
-        if not reply_req_id and chat_id in getattr(self, '_last_chat_req_ids', {}):
+        if not reply_req_id and chat_id in self._last_chat_req_ids:
             reply_req_id = self._last_chat_req_ids[chat_id]
 
         try:
@@ -1310,7 +1330,7 @@ class WeComAdapter(BasePlatformAdapter):
         try:
             reply_req_id = self._reply_req_id_for_message(reply_to)
 
-            if not reply_req_id and chat_id in getattr(self, '_last_chat_req_ids', {}):
+            if not reply_req_id and chat_id in self._last_chat_req_ids:
                 reply_req_id = self._last_chat_req_ids[chat_id]
 
             if reply_req_id:

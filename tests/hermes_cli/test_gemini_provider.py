@@ -207,14 +207,8 @@ class TestGeminiAgentInit:
             assert agent.api_mode == "chat_completions"
             assert agent.provider == "gemini"
 
-    def test_gemini_uses_x_goog_api_key_not_bearer(self, monkeypatch):
-        """Regression test for issue #7893.
-
-        When provider=gemini, the OpenAI client must be constructed with
-        api_key='not-used' and default_headers={'x-goog-api-key': real_key}.
-        This prevents the SDK from injecting Authorization: Bearer, which
-        Google's endpoint rejects with HTTP 400.
-        """
+    def test_gemini_uses_bearer_auth(self, monkeypatch):
+        """Gemini OpenAI-compatible endpoint should receive the real API key."""
         monkeypatch.setenv("GOOGLE_API_KEY", "AIzaSy_REAL_KEY")
         real_key = "AIzaSy_REAL_KEY"
         with patch("run_agent.OpenAI") as mock_openai:
@@ -227,37 +221,22 @@ class TestGeminiAgentInit:
                 base_url="https://generativelanguage.googleapis.com/v1beta/openai",
             )
         call_kwargs = mock_openai.call_args[1]
-        # The SDK must NOT receive the real key as api_key (which would emit Bearer)
-        assert call_kwargs.get("api_key") == "not-used", (
-            "api_key must be 'not-used' to suppress Authorization: Bearer for Gemini"
-        )
-        # The real key must be in x-goog-api-key header
+        assert call_kwargs.get("api_key") == real_key
         headers = call_kwargs.get("default_headers", {})
-        assert headers.get("x-goog-api-key") == real_key, (
-            "x-goog-api-key header must carry the real Gemini API key"
-        )
+        assert "x-goog-api-key" not in headers
 
     def test_gemini_resolve_provider_client_auth(self, monkeypatch):
-        """Regression test for issue #7893 — resolve_provider_client path.
-
-        When resolve_provider_client('gemini') is called, the returned OpenAI
-        client must use x-goog-api-key header, not Authorization: Bearer.
-        """
+        """resolve_provider_client('gemini') should pass the real API key through."""
         monkeypatch.setenv("GEMINI_API_KEY", "AIzaSy_TEST_KEY")
         real_key = "AIzaSy_TEST_KEY"
         with patch("agent.auxiliary_client.OpenAI") as mock_openai:
             mock_openai.return_value = MagicMock()
-            mock_openai.return_value.api_key = "not-used"
             from agent.auxiliary_client import resolve_provider_client
             resolve_provider_client("gemini")
         call_kwargs = mock_openai.call_args[1]
-        assert call_kwargs.get("api_key") == "not-used", (
-            "api_key must be 'not-used' to prevent Bearer injection for Gemini"
-        )
+        assert call_kwargs.get("api_key") == real_key
         headers = call_kwargs.get("default_headers", {})
-        assert headers.get("x-goog-api-key") == real_key, (
-            "x-goog-api-key header must carry the real Gemini API key"
-        )
+        assert "x-goog-api-key" not in headers
 
 
 # ── models.dev Integration ──

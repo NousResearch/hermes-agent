@@ -4568,7 +4568,12 @@ class AIAgent:
         # constructs a fresh one — no stale closed transport can be reused.
         # Tests in ``tests/run_agent/test_create_openai_client_reuse.py`` and
         # ``tests/run_agent/test_sequential_chats_live.py`` pin this invariant.
-        if "http_client" not in client_kwargs:
+        _base_url_lower = str(client_kwargs.get("base_url", "")).lower()
+        _is_codex_backend = (
+            self.provider == "openai-codex"
+            or "chatgpt.com/backend-api/codex" in _base_url_lower
+        )
+        if "http_client" not in client_kwargs and not _is_codex_backend:
             try:
                 import httpx as _httpx
                 import socket as _socket
@@ -4799,6 +4804,14 @@ class AIAgent:
         import httpx as _httpx
 
         active_client = client or self._ensure_primary_openai_client(reason="codex_stream_direct")
+        # ChatGPT Codex's backend-api endpoint has proven flaky with the
+        # SDK's high-level responses.stream() wrapper in this environment:
+        # the same payload succeeds via responses.create(stream=True) but
+        # repeatedly raises APITimeoutError through responses.stream().
+        # Bypass the wrapper for this backend and use the lower-level
+        # streaming create path directly.
+        if "chatgpt.com/backend-api/codex" in (self.base_url or "").lower():
+            return self._run_codex_create_stream_fallback(api_kwargs, client=active_client)
         max_stream_retries = 1
         has_tool_calls = False
         first_delta_fired = False

@@ -400,6 +400,7 @@ def test_build_api_kwargs_copilot_responses_omits_reasoning_for_non_reasoning_mo
 
 def test_run_codex_stream_retries_when_completed_event_missing(monkeypatch):
     agent = _build_agent(monkeypatch)
+    agent.base_url = "https://api.githubcopilot.com"
     calls = {"stream": 0}
 
     def _fake_stream(**kwargs):
@@ -424,6 +425,7 @@ def test_run_codex_stream_retries_when_completed_event_missing(monkeypatch):
 
 def test_run_codex_stream_falls_back_to_create_after_stream_completion_error(monkeypatch):
     agent = _build_agent(monkeypatch)
+    agent.base_url = "https://api.githubcopilot.com"
     calls = {"stream": 0, "create": 0}
 
     def _fake_stream(**kwargs):
@@ -451,6 +453,7 @@ def test_run_codex_stream_falls_back_to_create_after_stream_completion_error(mon
 
 def test_run_codex_stream_fallback_parses_create_stream_events(monkeypatch):
     agent = _build_agent(monkeypatch)
+    agent.base_url = "https://api.githubcopilot.com"
     calls = {"stream": 0, "create": 0}
     create_stream = _FakeCreateStream(
         [
@@ -483,6 +486,28 @@ def test_run_codex_stream_fallback_parses_create_stream_events(monkeypatch):
     assert calls["create"] == 1
     assert create_stream.closed is True
     assert response.output[0].content[0].text == "streamed create ok"
+
+
+def test_run_codex_stream_uses_create_stream_path_for_chatgpt_codex_backend(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    stream_client = SimpleNamespace(
+        responses=SimpleNamespace(
+            stream=lambda **kwargs: (_ for _ in ()).throw(AssertionError("responses.stream should be bypassed")),
+            create=lambda **kwargs: _codex_message_response("unused"),
+        )
+    )
+
+    fallback_response = _codex_message_response("create stream shortcut ok")
+    monkeypatch.setattr(agent, "_ensure_primary_openai_client", lambda reason=None: stream_client)
+    monkeypatch.setattr(
+        agent,
+        "_run_codex_create_stream_fallback",
+        lambda api_kwargs, client=None: fallback_response,
+    )
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+
+    assert response.output[0].content[0].text == "create stream shortcut ok"
 
 
 def test_run_conversation_codex_plain_text(monkeypatch):

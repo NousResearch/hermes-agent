@@ -18,7 +18,10 @@ manual_steps=()
 echo -e "\n${CYAN}═══ twozero MCP for TouchDesigner — Setup ═══${NC}\n"
 
 # ── 1. Check if TouchDesigner is running ──
-if pgrep -if "TouchDesigner" >/dev/null 2>&1; then
+# Match on process *name* (not full cmdline) to avoid self-matching shells
+# that happen to have "TouchDesigner" in their args. macOS and Linux pgrep
+# both support -x for exact name match.
+if pgrep -x TouchDesigner >/dev/null 2>&1 || pgrep -x TouchDesignerFTE >/dev/null 2>&1; then
     echo -e " ${OK} TouchDesigner is running"
     td_running=true
 else
@@ -66,9 +69,6 @@ if 'twozero_td' not in cfg['mcp_servers']:
     }
     with open(cfg_path, 'w') as f:
         yaml.dump(cfg, f, default_flow_style=False, sort_keys=False)
-    print('added')
-else:
-    print('exists')
 " 2>/dev/null && echo -e " ${OK} twozero_td MCP entry added to config" \
               || { echo -e " ${FAIL} Could not update config (is PyYAML installed?)"; \
                    manual_steps+=("Add twozero_td MCP entry to ${HERMES_CFG} manually"); }

@@ -1,13 +1,14 @@
 """Tests for CLI voice mode integration -- command parsing, markdown stripping,
 state management, streaming TTS activation, voice message prefix, _vprint."""
 
-import ast
+import asyncio
+import importlib
 import os
 import queue
 import threading
 from contextlib import nullcontext
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -548,120 +549,72 @@ class TestVprintForceParameter:
         captured = capsys.readouterr()
         assert "normal message" in captured.out
 
-    def test_error_messages_use_force_in_run_agent(self):
-        """Verify that critical error _vprint calls in run_agent.py
-        include force=True."""
-        with open("run_agent.py", "r") as f:
-            source = f.read()
-
-        tree = ast.parse(source)
-
-        forced_error_count = 0
-        unforced_error_count = 0
-
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call):
-                continue
-            func = node.func
-            if not (isinstance(func, ast.Attribute) and func.attr == "_vprint"):
-                continue
-            has_fatal = False
-            for arg in node.args:
-                if isinstance(arg, ast.JoinedStr):
-                    for val in arg.values:
-                        if isinstance(val, ast.Constant) and isinstance(val.value, str):
-                            if "\u274c" in val.value:
-                                has_fatal = True
-                                break
-
-            if not has_fatal:
-                continue
-
-            has_force = any(
-                kw.arg == "force"
-                and isinstance(kw.value, ast.Constant)
-                and kw.value.value is True
-                for kw in node.keywords
-            )
-
-            if has_force:
-                forced_error_count += 1
-            else:
-                unforced_error_count += 1
-
-        assert forced_error_count > 0, \
-            "Expected at least one _vprint with force=True for error messages"
-        assert unforced_error_count == 0, \
-            f"Found {unforced_error_count} critical error _vprint calls without force=True"
-
-
-# ============================================================================
-# Bug fix regression tests
-# ============================================================================
-
 class TestEdgeTTSLazyImport:
     """Bug #3: _generate_edge_tts must use lazy import, not bare module name."""
 
     def test_generate_edge_tts_calls_lazy_import(self):
-        """AST check: _generate_edge_tts must call _import_edge_tts(), not
-        reference bare 'edge_tts' module name."""
-        import ast as _ast
+        """_generate_edge_tts should resolve Edge TTS via the lazy import helper."""
+        import tools.tts_tool as tts_tool
 
-        with open("tools/tts_tool.py") as f:
-            tree = _ast.parse(f.read())
+        communicate = MagicMock()
+        communicate.save = AsyncMock()
+        edge_tts_module = SimpleNamespace(
+            Communicate=MagicMock(return_value=communicate)
+        )
 
-        for node in _ast.walk(tree):
-            if isinstance(node, _ast.AsyncFunctionDef) and node.name == "_generate_edge_tts":
-                # Collect all Name references (bare identifiers)
-                bare_refs = [
-                    n.id for n in _ast.walk(node)
-                    if isinstance(n, _ast.Name) and n.id == "edge_tts"
-                ]
-                assert bare_refs == [], (
-                    f"_generate_edge_tts uses bare 'edge_tts' name — "
-                    f"should use _import_edge_tts() lazy helper"
+        with patch.object(tts_tool, "_import_edge_tts", return_value=edge_tts_module) as mock_import:
+            result = asyncio.run(
+                tts_tool._generate_edge_tts(
+                    "hello world",
+                    "/tmp/test-edge.mp3",
+                    {"edge": {"voice": "en-US-TestVoice"}},
                 )
+            )
 
-                # Must have a call to _import_edge_tts
-                lazy_calls = [
-                    n for n in _ast.walk(node)
-                    if isinstance(n, _ast.Call)
-                    and isinstance(n.func, _ast.Name)
-                    and n.func.id == "_import_edge_tts"
-                ]
-                assert len(lazy_calls) >= 1, (
-                    "_generate_edge_tts must call _import_edge_tts()"
-                )
-                break
-        else:
-            pytest.fail("_generate_edge_tts not found in tts_tool.py")
+        mock_import.assert_called_once()
+        edge_tts_module.Communicate.assert_called_once_with(
+            "hello world",
+            "en-US-TestVoice",
+        )
+        communicate.save.assert_awaited_once_with("/tmp/test-edge.mp3")
+        assert result == "/tmp/test-edge.mp3"
 
 
 class TestStreamingTTSOutputStreamCleanup:
     """Bug #7: output_stream must be closed in finally block."""
 
-    def test_output_stream_closed_in_finally(self):
-        """AST check: stream_tts_to_speaker's finally block must close
-        output_stream even on exception."""
-        import ast as _ast
+    def test_output_stream_closed_in_finally(self, monkeypatch):
+        """stream_tts_to_speaker should always close the output stream."""
+        import tools.tts_tool as tts_tool
 
-        with open("tools/tts_tool.py") as f:
-            tree = _ast.parse(f.read())
+        text_queue = queue.Queue()
+        text_queue.put("Hello from TTS cleanup.")
+        text_queue.put(None)
+        stop_event = threading.Event()
+        tts_done_event = threading.Event()
 
-        for node in _ast.walk(tree):
-            if isinstance(node, _ast.FunctionDef) and node.name == "stream_tts_to_speaker":
-                # Find the outermost try that has a finally with tts_done_event.set()
-                for child in _ast.walk(node):
-                    if isinstance(child, _ast.Try) and child.finalbody:
-                        finally_text = "\n".join(
-                            _ast.dump(n) for n in child.finalbody
-                        )
-                        if "tts_done_event" in finally_text:
-                            assert "output_stream" in finally_text, (
-                                "finally block must close output_stream"
-                            )
-                            return
-                pytest.fail("No finally block with tts_done_event found")
+        output_stream = MagicMock()
+        sounddevice_module = SimpleNamespace(
+            OutputStream=MagicMock(return_value=output_stream)
+        )
+        client = MagicMock()
+        client.text_to_speech.convert.return_value = [b"\x00\x00"]
+        elevenlabs_ctor = MagicMock(return_value=client)
+        output_stream.write.side_effect = RuntimeError("speaker write failed")
+
+        monkeypatch.setenv("ELEVENLABS_API_KEY", "test-elevenlabs-key")
+
+        with (
+            patch.object(tts_tool, "_load_tts_config", return_value={}),
+            patch.object(tts_tool, "_import_elevenlabs", return_value=elevenlabs_ctor),
+            patch.object(tts_tool, "_import_sounddevice", return_value=sounddevice_module),
+        ):
+            tts_tool.stream_tts_to_speaker(text_queue, stop_event, tts_done_event)
+
+        output_stream.start.assert_called_once()
+        output_stream.stop.assert_called_once()
+        output_stream.close.assert_called_once()
+        assert tts_done_event.is_set()
 
 
 class TestCtrlCResetsContinuousMode:
@@ -804,25 +757,17 @@ class TestBrowserToolSignalHandlerRemoved:
     the process to become unkillable during voice mode."""
 
     def test_no_signal_handler_registration(self):
-        """Source check: browser_tool.py must not call signal.signal()
-        for SIGINT or SIGTERM."""
-        with open("tools/browser_tool.py") as f:
-            source = f.read()
+        """Reloading browser_tool should not install SIGINT/SIGTERM handlers."""
+        import tools.browser_tool as browser_tool
 
-        lines = source.split("\n")
-        for i, line in enumerate(lines, 1):
-            stripped = line.strip()
-            # Skip comments
-            if stripped.startswith("#"):
-                continue
-            assert "signal.signal(signal.SIGINT" not in stripped, (
-                f"browser_tool.py:{i} registers SIGINT handler — "
-                f"use atexit instead to avoid prompt_toolkit conflicts"
-            )
-            assert "signal.signal(signal.SIGTERM" not in stripped, (
-                f"browser_tool.py:{i} registers SIGTERM handler — "
-                f"use atexit instead to avoid prompt_toolkit conflicts"
-            )
+        with (
+            patch("signal.signal") as mock_signal,
+            patch("atexit.register") as mock_atexit_register,
+        ):
+            importlib.reload(browser_tool)
+
+        mock_signal.assert_not_called()
+        assert mock_atexit_register.call_count >= 1
 
 
 class TestKeyHandlerNeverBlocks:

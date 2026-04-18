@@ -176,3 +176,104 @@ def test_get_employee_routes_supports_explicit_and_heuristic_modes():
             "pain_terms": ("粗糙",),
         }
     ]
+
+
+def test_get_employee_routes_merges_dynamic_store_routes(monkeypatch, tmp_path):
+    monkeypatch.setattr("gateway.employee_route_store.get_hermes_home", lambda: tmp_path)
+
+    from gateway.employee_route_store import set_employee_route
+
+    config = GatewayConfig.from_dict(
+        {
+            "platforms": {
+                "qq_napcat": {
+                    "enabled": True,
+                    "extra": {
+                        "employee_routes": [
+                            {
+                                "worker_name": "阿旺",
+                                "preloaded_skills": ["ops-skill"],
+                            }
+                        ]
+                    },
+                }
+            }
+        }
+    )
+
+    set_employee_route(
+        Platform.QQ_NAPCAT,
+        worker_name="铁柱",
+        aliases=["老铁"],
+        preloaded_skills=["frontend-design-pro"],
+        match_modes=["explicit"],
+        updated_by="test",
+    )
+
+    assert get_employee_routes(config, platform=Platform.QQ_NAPCAT) == [
+        {
+            "worker_name": "阿旺",
+            "aliases": [],
+            "preloaded_skills": ["ops-skill"],
+            "match_modes": ("explicit",),
+            "action_terms": (),
+            "subject_terms": (),
+            "pain_terms": (),
+        },
+        {
+            "worker_name": "铁柱",
+            "aliases": ["老铁"],
+            "preloaded_skills": ["frontend-design-pro"],
+            "match_modes": ("explicit",),
+            "action_terms": (),
+            "subject_terms": (),
+            "pain_terms": (),
+        },
+    ]
+
+
+def test_get_employee_routes_dynamic_store_overrides_static_route_by_worker_name(monkeypatch, tmp_path):
+    monkeypatch.setattr("gateway.employee_route_store.get_hermes_home", lambda: tmp_path)
+
+    from gateway.employee_route_store import set_employee_route
+
+    config = GatewayConfig.from_dict(
+        {
+            "platforms": {
+                "qq_napcat": {
+                    "enabled": True,
+                    "extra": {
+                        "employee_routes": [
+                            {
+                                "worker_name": "铁柱",
+                                "aliases": ["旧铁柱"],
+                                "preloaded_skills": ["old-skill"],
+                            }
+                        ]
+                    },
+                }
+            }
+        }
+    )
+
+    set_employee_route(
+        Platform.QQ_NAPCAT,
+        worker_name="铁柱",
+        aliases=["老铁"],
+        preloaded_skills=["frontend-design-pro"],
+        match_modes=["explicit", "heuristic"],
+        action_terms=["打磨"],
+        updated_by="test",
+    )
+
+    assert get_employee_routes(config, platform=Platform.QQ_NAPCAT) == [
+        {
+            "worker_name": "铁柱",
+            "aliases": ["老铁"],
+            "preloaded_skills": ["frontend-design-pro"],
+            "match_modes": ("explicit", "heuristic"),
+            "action_terms": ("打磨",),
+            "subject_terms": (),
+            "pain_terms": (),
+        }
+    ]

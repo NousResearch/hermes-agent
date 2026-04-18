@@ -122,6 +122,88 @@ def check_api_server_requirements() -> bool:
     return AIOHTTP_AVAILABLE
 
 
+# ----------------------------------------------------------------------------
+# Multi-tenant merchant context loader
+# ----------------------------------------------------------------------------
+#
+# Per-merchant identity & active-skill content for enterprise deployments.
+# Frontends signal merchant scope via two HTTP headers on chat completions:
+#
+#   X-Hermes-Merchant-Id   : tenant identifier (sanitized [A-Za-z0-9_-]{1,64})
+#   X-Hermes-Active-Skill  : skill folder name (sanitized [A-Za-z0-9_-]{1,128})
+#
+# The loader reads (silently skipping missing files):
+#   ~/.hermes/merchants/<id>/identity.md         (merchant role + persona)
+#   ~/.hermes/merchants/<id>/system_extras.md    (extra session-level context)
+#   ~/.hermes/skills/openclaw-imports/<skill>/SKILL.md       (active-skill body)
+#   ~/.hermes/skills/<skill>/SKILL.md                        (fallback location)
+#
+# When a merchant_id is supplied, the gateway also enables `merchant_mode`
+# on the AIAgent constructor — which sets skip_context_files=True and
+# skip_memory=True so the GLOBAL ~/.hermes/SOUL.md and shared memory snapshot
+# do NOT leak between tenants.  Skills (the SKILL.md library) are intentionally
+# NOT scoped per-merchant because they're shared infrastructure.
+
+_MERCHANT_ID_RE = re.compile(r'^[A-Za-z0-9_-]{1,64}$')
+_ACTIVE_SKILL_RE = re.compile(r'^[A-Za-z0-9_./-]{1,128}$')
+
+
+def _load_merchant_prompt(merchant_id: str = "", active_skill: str = "") -> str:
+    """Read per-merchant identity + optional active-skill SKILL.md.
+
+    Returns concatenated string or "" if nothing found.  Safe for missing
+    files / IO errors (logged at WARNING, not raised).
+    """
+    if not merchant_id and not active_skill:
+        return ""
+
+    try:
+        from hermes_constants import get_hermes_home
+    except Exception:
+        return ""
+
+    from pathlib import Path
+    home = Path(get_hermes_home())
+    parts: list[str] = []
+
+    if merchant_id:
+        merchant_dir = home / "merchants" / merchant_id
+        for fname, header in (
+            ("identity.md", f"# Merchant Identity ({merchant_id})"),
+            ("system_extras.md", f"# Merchant Session Context ({merchant_id})"),
+        ):
+            p = merchant_dir / fname
+            if p.exists() and p.is_file():
+                try:
+                    body = p.read_text(encoding="utf-8", errors="replace").strip()
+                    if body:
+                        parts.append(f"{header}\n\n{body}")
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("[merchant] failed to read %s: %s", p, e)
+
+    if active_skill:
+        # Resolve skill folder by name across known skill roots.
+        candidates = [
+            home / "skills" / "openclaw-imports" / active_skill / "SKILL.md",
+            home / "skills" / active_skill / "SKILL.md",
+        ]
+        for skill_md in candidates:
+            if skill_md.exists() and skill_md.is_file():
+                try:
+                    body = skill_md.read_text(encoding="utf-8", errors="replace").strip()
+                    if body:
+                        # Truncate enormous SKILL.md to keep prompt budget sane
+                        # for local 7-14B models.  4000 chars ≈ 1000 tokens.
+                        if len(body) > 4000:
+                            body = body[:4000] + "\n\n[…truncated for context budget…]"
+                        parts.append(f"# Active Skill: {active_skill}\n\n{body}")
+                        break
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("[merchant] failed to read %s: %s", skill_md, e)
+
+    return "\n\n---\n\n".join(parts)
+
+
 class ResponseStore:
     """
     SQLite-backed LRU store for Responses API state.
@@ -517,6 +599,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_progress_callback=None,
         tool_start_callback=None,
         tool_complete_callback=None,
+        merchant_mode: bool = False,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -525,6 +608,13 @@ class APIServerAdapter(BasePlatformAdapter):
         base_url, etc. from config.yaml / env vars.  Toolsets are resolved
         from config.yaml platform_toolsets.api_server (same as all other
         gateway platforms), falling back to the hermes-api-server default.
+
+        merchant_mode: when True, suppress global SOUL/AGENTS auto-load and
+        global memory injection.  Per-merchant identity must be supplied via
+        ephemeral_system_prompt (typically built by _load_merchant_prompt).
+        Critical for multi-tenant deployments to prevent cross-merchant
+        identity leakage AND to keep base system prompt small enough for
+        local 7-14B models.
         """
         from run_agent import AIAgent
         from gateway.run import _resolve_runtime_agent_kwargs, _resolve_gateway_model, _load_gateway_config
@@ -559,6 +649,8 @@ class APIServerAdapter(BasePlatformAdapter):
             tool_complete_callback=tool_complete_callback,
             session_db=self._ensure_session_db(),
             fallback_model=fallback_model,
+            skip_context_files=merchant_mode,
+            skip_memory=merchant_mode,
         )
         return agent
 
@@ -662,6 +754,31 @@ class APIServerAdapter(BasePlatformAdapter):
                 status=400,
             )
 
+        # ── Multi-tenant headers (enterprise mode) ───────────────────────
+        # X-Hermes-Merchant-Id   : tenant scope; toggles merchant_mode on
+        # X-Hermes-Active-Skill  : preload SKILL.md as ephemeral system prompt
+        merchant_id = request.headers.get("X-Hermes-Merchant-Id", "").strip()
+        active_skill = request.headers.get("X-Hermes-Active-Skill", "").strip()
+        if merchant_id and not _MERCHANT_ID_RE.match(merchant_id):
+            return web.json_response(
+                _openai_error("Invalid X-Hermes-Merchant-Id (allowed: [A-Za-z0-9_-]{1,64})"),
+                status=400,
+            )
+        if active_skill and not _ACTIVE_SKILL_RE.match(active_skill):
+            return web.json_response(
+                _openai_error("Invalid X-Hermes-Active-Skill"),
+                status=400,
+            )
+        merchant_mode = bool(merchant_id)
+        merchant_prompt = _load_merchant_prompt(merchant_id, active_skill)
+        # If merchant_prompt was loaded, prepend it to the user-supplied system
+        # message; AIAgent will see it via ephemeral_system_prompt.
+        if merchant_prompt:
+            system_prompt = (
+                merchant_prompt + "\n\n---\n\n" + system_prompt
+                if system_prompt else merchant_prompt
+            )
+
         # Allow caller to continue an existing session by passing X-Hermes-Session-Id.
         # When provided, history is loaded from state.db instead of from the request body.
         #
@@ -709,6 +826,11 @@ class APIServerAdapter(BasePlatformAdapter):
                     first_user = cm.get("content", "")
                     break
             session_id = _derive_chat_session_id(system_prompt, first_user)
+            # In merchant mode, prefix the session_id with the merchant id so
+            # multiple merchants on the same mini cannot accidentally share
+            # session storage even with similar conversation fingerprints.
+            if merchant_id:
+                session_id = f"merchant-{merchant_id}-{session_id[:24]}"
             # history already set from request body above
 
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:29]}"
@@ -772,6 +894,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 stream_delta_callback=_on_delta,
                 tool_progress_callback=_on_tool_progress,
                 agent_ref=agent_ref,
+                merchant_mode=merchant_mode,
             ))
 
             return await self._write_sse_chat_completion(
@@ -786,6 +909,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 conversation_history=history,
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
+                merchant_mode=merchant_mode,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -1992,6 +2116,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_start_callback=None,
         tool_complete_callback=None,
         agent_ref: Optional[list] = None,
+        merchant_mode: bool = False,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -2014,6 +2139,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_progress_callback=tool_progress_callback,
                 tool_start_callback=tool_start_callback,
                 tool_complete_callback=tool_complete_callback,
+                merchant_mode=merchant_mode,
             )
             if agent_ref is not None:
                 agent_ref[0] = agent

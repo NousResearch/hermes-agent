@@ -160,6 +160,14 @@ class SignalAdapter(BasePlatformAdapter):
         self._sse_task: Optional[asyncio.Task] = None
         self._health_monitor_task: Optional[asyncio.Task] = None
         self._typing_tasks: Dict[str, asyncio.Task] = {}
+        # Per-chat typing-indicator backoff. When signal-cli reports
+        # NETWORK_FAILURE (recipient offline / unroutable), base.py's
+        # _keep_typing refresh loop would otherwise hammer sendTyping every
+        # ~2s indefinitely, producing WARNING-level log spam and pointless
+        # RPC traffic. We track consecutive failures per chat and skip the
+        # RPC during a cooldown window instead.
+        self._typing_failures: Dict[str, int] = {}
+        self._typing_skip_until: Dict[str, float] = {}
         self._running = False
         self._last_sse_activity = 0.0
         self._sse_response: Optional[httpx.Response] = None
@@ -548,8 +556,22 @@ class SignalAdapter(BasePlatformAdapter):
     # JSON-RPC Communication
     # ------------------------------------------------------------------
 
-    async def _rpc(self, method: str, params: dict, rpc_id: str = None) -> Any:
-        """Send a JSON-RPC 2.0 request to signal-cli daemon."""
+    async def _rpc(
+        self,
+        method: str,
+        params: dict,
+        rpc_id: str = None,
+        *,
+        log_failures: bool = True,
+    ) -> Any:
+        """Send a JSON-RPC 2.0 request to signal-cli daemon.
+
+        When ``log_failures=False``, error and exception paths log at DEBUG
+        instead of WARNING — used by the typing-indicator path to silence
+        repeated NETWORK_FAILURE spam for unreachable recipients while
+        still preserving visibility for the first occurrence and for
+        unrelated RPCs.
+        """
         if not self.client:
             logger.warning("Signal: RPC called but client not connected")
             return None
@@ -574,13 +596,19 @@ class SignalAdapter(BasePlatformAdapter):
             data = resp.json()
 
             if "error" in data:
-                logger.warning("Signal RPC error (%s): %s", method, data["error"])
+                if log_failures:
+                    logger.warning("Signal RPC error (%s): %s", method, data["error"])
+                else:
+                    logger.debug("Signal RPC error (%s): %s", method, data["error"])
                 return None
 
             return data.get("result")
 
         except Exception as e:
-            logger.warning("Signal RPC %s failed: %s", method, e)
+            if log_failures:
+                logger.warning("Signal RPC %s failed: %s", method, e)
+            else:
+                logger.debug("Signal RPC %s failed: %s", method, e)
             return None
 
     # ------------------------------------------------------------------
@@ -627,7 +655,28 @@ class SignalAdapter(BasePlatformAdapter):
                 self._recent_sent_timestamps.pop()
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
-        """Send a typing indicator."""
+        """Send a typing indicator.
+
+        base.py's ``_keep_typing`` refresh loop calls this every ~2s while
+        the agent is processing. If signal-cli returns NETWORK_FAILURE for
+        this recipient (offline, unroutable, group membership lost, etc.)
+        the unmitigated behaviour is: a WARNING log every 2 seconds for as
+        long as the agent keeps running. Instead we:
+
+        - silence the WARNING after the first consecutive failure (subsequent
+          attempts log at DEBUG) so transport issues are still visible once
+          but don't flood the log,
+        - skip the RPC entirely during an exponential cooldown window once
+          three consecutive failures have happened, so we stop hammering
+          signal-cli with requests it can't deliver.
+
+        A successful sendTyping clears the counters.
+        """
+        now = time.monotonic()
+        skip_until = self._typing_skip_until.get(chat_id, 0.0)
+        if now < skip_until:
+            return
+
         params: Dict[str, Any] = {
             "account": self.account,
         }
@@ -637,7 +686,26 @@ class SignalAdapter(BasePlatformAdapter):
         else:
             params["recipient"] = [chat_id]
 
-        await self._rpc("sendTyping", params, rpc_id="typing")
+        fails = self._typing_failures.get(chat_id, 0)
+        result = await self._rpc(
+            "sendTyping",
+            params,
+            rpc_id="typing",
+            log_failures=(fails == 0),
+        )
+
+        if result is None:
+            fails += 1
+            self._typing_failures[chat_id] = fails
+            # After 3 consecutive failures, back off exponentially (16s,
+            # 32s, 60s cap) to stop spamming signal-cli for a recipient
+            # that clearly isn't reachable right now.
+            if fails >= 3:
+                backoff = min(60.0, 16.0 * (2 ** (fails - 3)))
+                self._typing_skip_until[chat_id] = now + backoff
+        else:
+            self._typing_failures.pop(chat_id, None)
+            self._typing_skip_until.pop(chat_id, None)
 
     async def send_image(
         self,
@@ -789,6 +857,10 @@ class SignalAdapter(BasePlatformAdapter):
                 await task
             except asyncio.CancelledError:
                 pass
+        # Reset per-chat typing backoff state so the next agent turn starts
+        # fresh rather than inheriting a cooldown from a prior conversation.
+        self._typing_failures.pop(chat_id, None)
+        self._typing_skip_until.pop(chat_id, None)
 
     async def stop_typing(self, chat_id: str) -> None:
         """Public interface for stopping typing — called by base adapter's

@@ -2117,6 +2117,56 @@ def _(rid, params: dict) -> dict:
     except Exception:
         pass
 
+    # ── Commands that queue messages onto _pending_input in the CLI ───
+    # In the TUI the slash worker subprocess has no reader for that queue,
+    # so we handle them here and return a structured payload.
+
+    if name in ("queue", "q"):
+        if not arg:
+            return _err(rid, 4004, "usage: /queue <prompt>")
+        return _ok(rid, {"type": "send", "message": arg})
+
+    if name == "retry":
+        agent = session.get("agent") if session else None
+        if agent and hasattr(agent, "conversation_history"):
+            hist = agent.conversation_history or []
+            for m in reversed(hist):
+                if m.get("role") == "user":
+                    content = m.get("content", "")
+                    if isinstance(content, list):
+                        content = " ".join(
+                            p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text"
+                        )
+                    if content:
+                        return _ok(rid, {"type": "send", "message": content})
+            return _err(rid, 4018, "no previous user message to retry")
+        return _err(rid, 4018, "no active session to retry")
+
+    if name == "steer":
+        if not arg:
+            return _err(rid, 4004, "usage: /steer <prompt>")
+        agent = session.get("agent") if session else None
+        if agent and hasattr(agent, "steer"):
+            try:
+                accepted = agent.steer(arg)
+                if accepted:
+                    return _ok(rid, {"type": "exec", "output": f"⏩ Steer queued — arrives after the next tool call: {arg[:80]}{'...' if len(arg) > 80 else ''}"})
+            except Exception:
+                pass
+        # Fallback: no active run, treat as next-turn message
+        return _ok(rid, {"type": "send", "message": arg})
+
+    if name == "plan":
+        try:
+            from agent.skill_commands import build_skill_invocation_message as _bsim, build_plan_path
+            plan_path = build_plan_path(session.get("session_key", "") if session else "")
+            msg = _bsim("/plan", f"{arg} {plan_path}".strip() if arg else plan_path,
+                        task_id=session.get("session_key", "") if session else "")
+            if msg:
+                return _ok(rid, {"type": "send", "message": msg})
+        except Exception as e:
+            return _err(rid, 5030, f"plan skill failed: {e}")
+
     return _err(rid, 4018, f"not a quick/plugin/skill command: {name}")
 
 
@@ -2338,9 +2388,23 @@ def _(rid, params: dict) -> dict:
     # _pending_input which nobody reads in the worker subprocess.  Reject
     # here so the TUI falls through to command.dispatch which handles skills
     # correctly (builds the invocation message and returns it to the client).
+    #
+    # The same applies to /retry, /queue, /steer, and /plan — they all
+    # put messages on _pending_input that the slash worker never reads.
+    # (/browser connect/disconnect also uses _pending_input for context
+    # notes, but the actual browser operations need the slash worker's
+    # env-var side effects, so they stay in slash.exec — only the context
+    # note to the model is lost, which is low-severity.)
+    _PENDING_INPUT_COMMANDS = frozenset({"retry", "queue", "q", "steer", "plan"})
+    _cmd_parts = cmd.split() if not cmd.startswith("/") else cmd.lstrip("/").split()
+    _cmd_base = _cmd_parts[0] if _cmd_parts else ""
+
+    if _cmd_base in _PENDING_INPUT_COMMANDS:
+        return _err(rid, 4018, f"pending-input command: use command.dispatch for /{_cmd_base}")
+
     try:
         from agent.skill_commands import scan_skill_commands
-        _cmd_key = f"/{cmd.split()[0]}" if not cmd.startswith("/") else f"/{cmd.lstrip('/').split()[0]}"
+        _cmd_key = f"/{_cmd_base}"
         if _cmd_key in scan_skill_commands():
             return _err(rid, 4018, f"skill command: use command.dispatch for {_cmd_key}")
     except Exception:

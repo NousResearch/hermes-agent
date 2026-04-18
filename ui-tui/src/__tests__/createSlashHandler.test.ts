@@ -152,6 +152,36 @@ describe('createSlashHandler', () => {
     })
     expect(ctx.transcript.send).toHaveBeenCalledWith(skillMessage)
   })
+
+  it('handles send-type dispatch for /plan command', async () => {
+    const planMessage = 'Plan skill content loaded'
+
+    const ctx = buildCtx({
+      gateway: {
+        gw: {
+          getLogTail: vi.fn(() => ''),
+          request: vi.fn((method: string) => {
+            if (method === 'slash.exec') {
+              return Promise.reject(new Error('pending-input command'))
+            }
+
+            if (method === 'command.dispatch') {
+              return Promise.resolve({ type: 'send', message: planMessage })
+            }
+
+            return Promise.resolve({})
+          })
+        },
+        rpc: vi.fn(() => Promise.resolve({}))
+      }
+    })
+
+    const h = createSlashHandler(ctx)
+    expect(h('/plan create a REST API')).toBe(true)
+    await vi.waitFor(() => {
+      expect(ctx.transcript.send).toHaveBeenCalledWith(planMessage)
+    })
+  })
 })
 
 const buildCtx = (overrides: Partial<Ctx> = {}): Ctx => ({

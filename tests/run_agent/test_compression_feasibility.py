@@ -38,7 +38,7 @@ def _make_agent(
     agent.status_callback = None
     agent.tool_progress_callback = None
     agent._compression_warning = None
-    agent.config = None
+    agent._config = None
 
     compressor = MagicMock(spec=ContextCompressor)
     compressor.context_length = main_context
@@ -138,7 +138,7 @@ def test_feasibility_check_passes_config_context_length(mock_get_client, mock_ct
     get_model_context_length so custom endpoints that lack /models still
     report the correct context window (fixes #8499)."""
     agent = _make_agent(main_context=200_000, threshold_percent=0.85)
-    agent.config = {
+    agent._config = {
         "auxiliary": {
             "compression": {
                 "context_length": 1_000_000,
@@ -166,7 +166,7 @@ def test_feasibility_check_passes_config_context_length(mock_get_client, mock_ct
 def test_feasibility_check_ignores_invalid_context_length(mock_get_client, mock_ctx_len):
     """Non-integer context_length in config is silently ignored."""
     agent = _make_agent(main_context=200_000, threshold_percent=0.50)
-    agent.config = {
+    agent._config = {
         "auxiliary": {
             "compression": {
                 "context_length": "not-a-number",

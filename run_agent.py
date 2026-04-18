@@ -1271,6 +1271,7 @@ class AIAgent:
             _agent_cfg = _load_agent_config()
         except Exception:
             _agent_cfg = {}
+        self._config = _agent_cfg  # stored for later use (e.g. compression feasibility check)
 
         # Persistent memory (MEMORY.md + USER.md) -- loaded from disk
         self._memory_store = None
@@ -2003,7 +2004,7 @@ class AIAgent:
             # get_model_context_length() falls through to the 128K default,
             # ignoring the explicit config value.  Pass it as the highest-
             # priority hint so the configured value is always respected.
-            _aux_cfg = (self.config or {}).get("auxiliary", {}).get("compression", {})
+            _aux_cfg = (self._config or {}).get("auxiliary", {}).get("compression", {})
             _aux_context_config = _aux_cfg.get("context_length") if isinstance(_aux_cfg, dict) else None
             if _aux_context_config is not None:
                 try:

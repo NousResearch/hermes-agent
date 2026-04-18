@@ -1,4 +1,4 @@
-import { Box, Text } from '@hermes/ink'
+import { Box, Link, Text } from '@hermes/ink'
 import { memo, type ReactNode, useMemo } from 'react'
 
 import type { Theme } from '../theme.js'
@@ -22,10 +22,12 @@ type Fence = {
   len: number
 }
 
-const renderLink = (key: number, t: Theme, label: string) => (
-  <Text color={t.color.amber} key={key} underline>
-    {label}
-  </Text>
+const renderLink = (key: number, t: Theme, label: string, url: string) => (
+  <Link key={key} url={url}>
+    <Text color={t.color.amber} underline>
+      {label}
+    </Text>
+  </Link>
 )
 
 const trimBareUrl = (value: string) => {
@@ -38,9 +40,11 @@ const trimBareUrl = (value: string) => {
 }
 
 const renderAutolink = (key: number, t: Theme, raw: string) => (
-  <Text color={t.color.amber} key={key} underline>
-    {raw.replace(/^mailto:/, '')}
-  </Text>
+  <Link key={key} url={raw}>
+    <Text color={t.color.amber} underline>
+      {raw.replace(/^mailto:/, '')}
+    </Text>
+  </Link>
 )
 
 const indentDepth = (indent: string) => Math.floor(indent.replace(/\t/g, '  ').length / 2)
@@ -141,7 +145,7 @@ function MdInline({ t, text }: { t: Theme; text: string }) {
         </Text>
       )
     } else if (m[4] && m[5]) {
-      parts.push(renderLink(parts.length, t, m[4]))
+      parts.push(renderLink(parts.length, t, m[4], m[5]))
     } else if (m[6]) {
       parts.push(renderAutolink(parts.length, t, m[6]))
     } else if (m[7]) {

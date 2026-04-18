@@ -21,6 +21,7 @@ import re
 import sqlite3
 import threading
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
 from hermes_constants import get_hermes_home
 from typing import Any, Callable, Dict, List, Optional, Set, TypeVar
@@ -110,6 +111,238 @@ CREATE TRIGGER IF NOT EXISTS messages_fts_update AFTER UPDATE ON messages BEGIN
     INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content);
 END;
 """
+
+
+@dataclass
+class SessionNode:
+    """A node in the session tree."""
+    id: str
+    source: str
+    title: Optional[str]
+    parent_id: Optional[str]
+    end_reason: Optional[str]
+    message_count: int
+    started_at: float
+    last_active: float = 0.0  # timestamp of last message (from messages table)
+    children: List["SessionNode"] = field(default_factory=list)
+
+    @property
+    def is_compressed(self) -> bool:
+        return self.end_reason == "compression"
+
+    @property
+    def is_active(self) -> bool:
+        return self.end_reason is None
+
+    @property
+    def is_independent_branch(self) -> bool:
+        """session_reset / session_switch / branched — 独立分支，不是压缩链延续"""
+        return self.end_reason in ("session_reset", "session_switch", "branched")
+
+
+class SessionTree:
+    """In-memory session tree for efficient traversal queries."""
+
+    def __init__(self, nodes: Dict[str, SessionNode], roots: List[SessionNode]):
+        self._nodes = nodes
+        self._roots = roots
+
+    def get_ancestor_ids(self, session_id: str) -> Set[str]:
+        """Get all ancestor session IDs for a given session.
+
+        Returns a set of session IDs in the parent chain (excluding the
+        session_id itself). Used to exclude ancestor sessions from /resume
+        candidates since their content is already reachable via the current
+        session.
+        """
+        ancestor_ids = set()
+        current = self._nodes.get(session_id)
+        while current and current.parent_id:
+            pid = current.parent_id
+            ancestor_ids.add(pid)
+            current = self._nodes.get(pid)
+        return ancestor_ids
+
+    def get_tree_node_ids(self, session_id: str) -> Set[str]:
+        """Get all session IDs in the current session's tree.
+
+        Returns a set of all session IDs that belong to the same tree as
+        session_id, including:
+        - All ancestors of session_id (the parent chain)
+        - All descendants of those ancestors (sibling branches, cousin branches, etc.)
+
+        This is used to exclude the entire current tree from /resume candidates,
+        since we don't want to show other branches of the same conversation as
+        independent resume options.
+        """
+        # First, find all ancestors
+        ancestor_ids = self.get_ancestor_ids(session_id)
+
+        # The root is the ancestor with no parent (or the topmost ancestor)
+        # If there are no ancestors, the current session is its own root
+        root_id = session_id
+        for aid in ancestor_ids:
+            node = self._nodes.get(aid)
+            if node and node.parent_id is None:
+                root_id = aid
+                break
+            # Also check if this ancestor's parent is not in ancestor_ids
+            if node and node.parent_id not in ancestor_ids:
+                root_id = aid
+                break
+
+        # Collect all nodes in the tree by DFS from the root
+        tree_ids = set()
+        stack = [root_id]
+
+        while stack:
+            current_id = stack.pop()
+            if current_id in tree_ids:
+                continue
+            tree_ids.add(current_id)
+            current = self._nodes.get(current_id)
+            if current:
+                for child in current.children:
+                    stack.append(child.id)
+
+        return tree_ids
+
+    def find_compression_leaf(self, session_id: str) -> Optional[SessionNode]:
+        """Find the latest leaf session in a compression split chain.
+
+        Given a session_id, if its end_reason is 'compression', follows the
+        child chain to find the latest non-compression leaf node.
+        This is needed for /resume to show the actual latest content instead of
+        a frozen compression parent.
+
+        Returns the leaf SessionNode or None if session_id not found.
+
+        IMPORTANT: Only follows children whose end_reason is 'compression' or
+        NULL (active session). Stops at session_reset/session_switch boundaries
+        because those represent independent conversations, not continuations.
+        """
+        current = self._nodes.get(session_id)
+        visited = set()
+        while current and current.id not in visited:
+            visited.add(current.id)
+            # Look for compression/active children
+            compression_child = None
+            for child in current.children:
+                if child.is_compressed or child.is_active:
+                    compression_child = child
+                    break  # Children are ordered by started_at DESC
+
+            if not compression_child:
+                # No more compression-chain children — this is the leaf
+                return current
+
+            current = compression_child
+
+        return current  # May be None if session_id not found
+
+    def get_compression_chain_ids(self, session_id: str) -> Set[str]:
+        """Get all session IDs in the compression chain starting from session_id.
+
+        Returns the set of all chain members (compression children only),
+        used for deduplication so dead branches don't appear as separate entries.
+        """
+        chain_ids = set()
+        stack = [session_id]
+        while stack:
+            current_id = stack.pop()
+            if current_id in chain_ids:
+                continue
+            chain_ids.add(current_id)
+            current = self._nodes.get(current_id)
+            if current:
+                for child in current.children:
+                    if child.is_compressed or child.is_active:
+                        stack.append(child.id)
+        return chain_ids
+
+    def get_resume_candidates(
+        self,
+        current_sid: str,
+        source: Optional[str] = None,
+        min_messages: int = 2,
+        limit: int = 10,
+    ) -> List[Dict[str, Any]]:
+        """Get candidate sessions for /resume, excluding ancestors and filtering by message count.
+
+        This is the unified candidate building logic that replaces the duplicated
+        code in /resume last and /resume list paths.
+
+        Returns a list of dicts with keys: id, title, message_count, end_reason, source.
+        The preview and last_active fields are set to empty/None and should be enriched
+        by the caller using _enrich_candidates_with_display_info or similar.
+        """
+        # Get all tree node IDs to exclude (entire current session tree)
+        tree_ids = self.get_tree_node_ids(current_sid)
+
+        # Sort all nodes by last_active descending (most recently active first)
+        all_nodes = sorted(self._nodes.values(), key=lambda n: n.last_active, reverse=True)
+
+        candidates = []
+        seen_ids = set()
+
+        for node in all_nodes:
+            if len(candidates) >= limit:
+                break
+
+            sid = node.id
+            if sid == current_sid:
+                continue
+            if sid in tree_ids:
+                continue
+            if sid in seen_ids:
+                continue
+            if source and node.source != source:
+                continue
+            # Only filter by message_count for sessions without titles
+            # Titled sessions should always be visible regardless of message count
+            if not node.title and node.message_count < min_messages:
+                continue
+
+            display_node = node
+            original_node = None
+
+            # Handle compression chains
+            if node.is_compressed:
+                chain_ids = self.get_compression_chain_ids(sid)
+                leaf = self.find_compression_leaf(sid)
+
+                if leaf and leaf.id != sid:
+                    # Exclude the display leaf from dedup so it can be shown;
+                    # only mark intermediate chain members as seen.
+                    display_chain = chain_ids - {leaf.id}
+                    seen_ids.update(display_chain)
+
+                    if leaf.id == current_sid or leaf.id in seen_ids:
+                        continue
+                    display_node = leaf
+                    original_node = node
+                    seen_ids.add(leaf.id)
+                else:
+                    # No distinct leaf — mark entire chain as seen
+                    seen_ids.update(chain_ids)
+
+            seen_ids.add(sid)
+
+            # Build candidate dict
+            candidate = {
+                "id": display_node.id,
+                "title": display_node.title,
+                "message_count": display_node.message_count,
+                "end_reason": display_node.end_reason,
+                "source": display_node.source,
+                "started_at": display_node.started_at,
+                "last_active": display_node.last_active,
+                "preview": "",
+                "_original_node": original_node,
+            }
+            candidates.append(candidate)
+
+        return candidates
 
 
 class SessionDB:
@@ -672,12 +905,13 @@ class SessionDB:
             )
             numbered = cursor.fetchall()
 
-        if exact:
-            # Prefer exact match over numbered variants
-            return exact["id"]
-        elif numbered:
-            # Fallback to numbered variants if no exact match
+        # Prefer numbered variants (latest in lineage) when they exist,
+        # even if there's also an exact match (continuations take precedence)
+        if numbered:
             return numbered[0]["id"]
+        elif exact:
+            # Fallback to exact match if no numbered variants exist
+            return exact["id"]
         return None
 
     def get_next_title_in_lineage(self, base_title: str) -> str:
@@ -885,6 +1119,77 @@ class SessionDB:
             sessions.append(s)
 
         return sessions
+
+    def build_session_tree(self, source: str = None) -> SessionTree:
+        """Build an in-memory SessionTree from the database.
+
+        One SQL query fetches all sessions, then the tree is constructed
+        in memory for efficient traversal operations.
+
+        Args:
+            source: Optional source filter (e.g., 'telegram', 'discord')
+
+        Returns:
+            A SessionTree containing all sessions (optionally filtered by source)
+        """
+        where_clause = ""
+        params = []
+        if source:
+            where_clause = "WHERE source = ?"
+            params.append(source)
+
+        query = f"""
+            SELECT s.id, s.source, s.title, s.parent_session_id, s.end_reason,
+                   s.message_count, s.started_at,
+                   COALESCE(
+                       (SELECT MAX(m.timestamp) FROM messages m WHERE m.session_id = s.id),
+                       s.started_at
+                   ) AS last_active
+            FROM sessions s
+            {where_clause}
+            ORDER BY s.started_at ASC
+        """
+
+        with self._lock:
+            cursor = self._conn.execute(query, params)
+            rows = cursor.fetchall()
+
+        # Build node lookup and track roots
+        nodes: Dict[str, SessionNode] = {}
+        child_refs: List[tuple] = []  # (child_id, parent_id) for linking
+
+        for row in rows:
+            node = SessionNode(
+                id=row["id"],
+                source=row["source"],
+                title=row["title"],
+                parent_id=row["parent_session_id"],
+                end_reason=row["end_reason"],
+                message_count=row["message_count"] or 0,
+                started_at=row["started_at"],
+                last_active=row["last_active"] or row["started_at"],
+                children=[],
+            )
+            nodes[node.id] = node
+            if node.parent_id:
+                child_refs.append((node.id, node.parent_id))
+
+        # Link children to parents
+        for child_id, parent_id in child_refs:
+            parent = nodes.get(parent_id)
+            child = nodes.get(child_id)
+            if parent and child:
+                parent.children.append(child)
+
+        # Sort each node's children by last_active DESC (most recently active first)
+        for node in nodes.values():
+            node.children.sort(key=lambda n: n.last_active, reverse=True)
+
+        # Find roots (nodes with no parent or parent not in tree)
+        roots = [n for n in nodes.values() if n.parent_id is None or n.parent_id not in nodes]
+        roots.sort(key=lambda n: n.last_active, reverse=True)
+
+        return SessionTree(nodes, roots)
 
     # =========================================================================
     # Message storage

@@ -798,6 +798,7 @@ class SessionStore:
                 "session_id": session_id,
                 "source": source.platform.value,
                 "user_id": source.user_id,
+                "parent_session_id": db_end_session_id,  # Track parent for auto-reset sessions
             }
 
         # SQLite operations outside the lock
@@ -1036,6 +1037,10 @@ class SessionStore:
         generating a fresh session ID, re-uses ``target_session_id`` so the
         old transcript is loaded on the next message. If the target session was
         previously ended, re-open it so gateway resume semantics match the CLI.
+
+        Handles placeholder entries (created after gateway restart when the
+        session_key doesn't exist in _entries) by not ending the placeholder
+        session in SQLite.
         """
         db_end_session_id = None
         new_entry = None
@@ -1052,7 +1057,11 @@ class SessionStore:
             if old_entry.session_id == target_session_id:
                 return old_entry
 
-            db_end_session_id = old_entry.session_id
+            # Only end the old session if it's a real session (not a placeholder)
+            # Placeholder entries have empty session_id and are created during
+            # /resume after gateway restart to avoid spurious session creation
+            if old_entry.session_id:
+                db_end_session_id = old_entry.session_id
 
             now = _now()
             new_entry = SessionEntry(

@@ -31,7 +31,7 @@ def _session_key_for_event(event):
 
 
 def _make_runner(session_db=None, current_session_id="current_session_001",
-                 event=None):
+                 event=None, preload_entries=True):
     """Create a bare GatewayRunner with a mock session_store and optional session_db."""
     from gateway.run import GatewayRunner
     runner = object.__new__(GatewayRunner)
@@ -43,12 +43,34 @@ def _make_runner(session_db=None, current_session_id="current_session_001",
     # Compute the real session key if an event is provided
     session_key = build_session_key(event.source) if event else "agent:main:telegram:dm"
 
-    # Mock session_store that returns a session entry with a known session_id
+    # Mock session_store that simulates real SessionStore behavior
+    # - Checks _entries first, returns existing entry if found
+    # - Otherwise returns a mock session entry with the specified session_id
     mock_session_entry = MagicMock()
     mock_session_entry.session_id = current_session_id
     mock_session_entry.session_key = session_key
     mock_store = MagicMock()
-    mock_store.get_or_create_session.return_value = mock_session_entry
+
+    # Initialize _entries dict to simulate SessionStore
+    # Pre-populate with the current session entry to simulate an active session
+    mock_store._entries = {}
+    if preload_entries:
+        mock_store._entries[session_key] = mock_session_entry
+    mock_store._lock = MagicMock()
+    mock_store._loaded = False
+
+    def mock_ensure_loaded():
+        mock_store._loaded = True
+
+    mock_store._ensure_loaded_locked = mock_ensure_loaded
+
+    def mock_get_or_create(source):
+        # Simulate real SessionStore behavior: check _entries first
+        if session_key in mock_store._entries:
+            return mock_store._entries[session_key]
+        return mock_session_entry
+
+    mock_store.get_or_create_session = mock_get_or_create
     mock_store.load_transcript.return_value = []
     mock_store.switch_session.return_value = mock_session_entry
     runner.session_store = mock_store
@@ -90,7 +112,7 @@ class TestHandleResumeCommand:
         result = await runner._handle_resume_command(event)
         assert "Research" in result
         assert "Coding" in result
-        assert "Named Sessions" in result
+        assert "Recent Sessions" in result
         db.close()
 
     @pytest.mark.asyncio
@@ -103,7 +125,7 @@ class TestHandleResumeCommand:
         event = _make_event(text="/resume")
         runner = _make_runner(session_db=db, event=event)
         result = await runner._handle_resume_command(event)
-        assert "No named sessions" in result
+        assert "No resumable sessions found" in result
         assert "/title" in result
         db.close()
 
@@ -223,4 +245,45 @@ class TestHandleResumeCommand:
             "current_session_001",
             "agent:main:telegram:dm:67890",
         )
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_resume_after_gateway_restart(self, tmp_path):
+        """Resume should work correctly after gateway restart (empty _entries).
+
+        This tests the fix for the bug where the first /resume after gateway
+        restart would create a spurious new session instead of directly
+        switching to the target session.
+        """
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("old_session", "telegram")
+        db.set_session_title("old_session", "Previous Work")
+        db.create_session("current_session_001", "telegram")
+
+        event = _make_event(text="/resume Previous Work")
+        # Create runner with preload_entries=False to simulate gateway restart
+        # (where _entries is empty and sessions.json is stale/missing)
+        runner = _make_runner(
+            session_db=db,
+            current_session_id="current_session_001",
+            event=event,
+            preload_entries=False,  # Simulate restart: _entries is empty
+        )
+
+        result = await runner._handle_resume_command(event)
+
+        # Should succeed without creating a spurious session
+        assert "Resumed" in result
+        assert "Previous Work" in result
+
+        # Memory flush should NOT be called for placeholder entries
+        runner._async_flush_memories.assert_not_called()
+
+        # Verify switch_session was called with the correct target
+        runner.session_store.switch_session.assert_called_once()
+        call_args = runner.session_store.switch_session.call_args
+        assert call_args[0][1] == "old_session"
+
         db.close()

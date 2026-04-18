@@ -540,3 +540,167 @@ class TestValidateCodexAutoCorrection:
         assert result["recognized"] is False
         assert result.get("corrected_model") is None
         assert "not found" in result["message"]
+
+
+# ---------------------------------------------------------------------------
+# Regression coverage for #12272:  Alibaba (DashScope) coding endpoint
+# (``https://coding.dashscope.aliyuncs.com/v1``) does not expose /models
+# — it returns HTTP 404 and ``fetch_api_models`` yields ``None``.  Before
+# this branch was added, ``validate_requested_model`` hard-rejected every
+# ``/model`` switch for DashScope coding users.  These tests pin the new
+# curated-catalog fall-through.
+# ---------------------------------------------------------------------------
+
+
+class TestValidateAlibabaCodingEndpoint:
+    """The coding endpoint returns 404 on ``/models``; we must fall back
+    to the curated catalog so switches still work."""
+
+    _ALIBABA_CATALOG = [
+        "qwen3-coder-plus",
+        "qwen3-coder-next",
+        "qwen3.5-plus",
+        "kimi-k2.5",
+        "glm-5",
+        "MiniMax-M2.5",
+    ]
+
+    def _validate_no_api(self, model, catalog=None):
+        """Call validate_requested_model with /models returning None
+        (the 404 case) and provider_model_ids returning our catalog."""
+        probe_payload = {
+            "models": None,
+            "probed_url": "https://coding.dashscope.aliyuncs.com/v1/models",
+            "resolved_base_url": "https://coding.dashscope.aliyuncs.com/v1",
+            "suggested_base_url": None,
+            "used_fallback": False,
+        }
+        with patch("hermes_cli.models.fetch_api_models", return_value=None), \
+             patch("hermes_cli.models.probe_api_models", return_value=probe_payload), \
+             patch(
+                 "hermes_cli.models.provider_model_ids",
+                 return_value=self._ALIBABA_CATALOG if catalog is None else catalog,
+             ):
+            return validate_requested_model(
+                model,
+                "alibaba",
+                api_key="fake-dashscope-key",
+                base_url="https://coding.dashscope.aliyuncs.com/v1",
+            )
+
+    def test_known_qwen_model_accepted(self):
+        """Reporter's scenario: a model in our catalog is accepted even
+        when the API /models endpoint 404s."""
+        result = self._validate_no_api("qwen3-coder-plus")
+        assert result["accepted"] is True
+        assert result["persist"] is True
+        assert result["recognized"] is True
+        assert result["message"] is None
+
+    def test_known_third_party_model_accepted(self):
+        """Third-party models served on the coding endpoint (glm-5,
+        kimi-k2.5, MiniMax-M2.5) are also in the catalog."""
+        for model in ("glm-5", "kimi-k2.5", "MiniMax-M2.5"):
+            result = self._validate_no_api(model)
+            assert result["accepted"] is True, (
+                f"{model} should be accepted via catalog fall-through"
+            )
+            assert result["recognized"] is True
+
+    def test_unknown_model_accepted_with_warning(self):
+        """Models not in the catalog still proceed (the endpoint may
+        have models the static list doesn't know about), but the caller
+        is warned."""
+        result = self._validate_no_api("qwen-hypothetical-future-model")
+        assert result["accepted"] is True
+        assert result["persist"] is True
+        assert result["recognized"] is False
+        assert "Alibaba" in result["message"]
+        assert "coding endpoint" in result["message"]
+
+    def test_unknown_model_includes_suggestions(self):
+        """Typo → suggestions close to known catalog names."""
+        result = self._validate_no_api("qwen3-coder-plu")  # typo
+        assert result["accepted"] is True
+        assert "Similar models" in result["message"]
+        assert "qwen3-coder-plus" in result["message"]
+
+    def test_empty_catalog_falls_through_to_generic_reject(self):
+        """Defensive: if ``provider_model_ids`` somehow returns an empty
+        list (e.g. catalog module import failure), we don't silently
+        accept unknown models — fall through to the generic reject
+        behaviour so the user sees the original error."""
+        result = self._validate_no_api("qwen3-coder-plus", catalog=[])
+        assert result["accepted"] is False
+        assert "Alibaba Cloud" in result["message"]
+
+    def test_catalog_lookup_exception_falls_through(self):
+        """If ``provider_model_ids`` raises, behave as if no catalog was
+        available — fall through to the generic reject."""
+        probe_payload = {
+            "models": None,
+            "probed_url": "https://coding.dashscope.aliyuncs.com/v1/models",
+            "resolved_base_url": "https://coding.dashscope.aliyuncs.com/v1",
+            "suggested_base_url": None,
+            "used_fallback": False,
+        }
+        with patch("hermes_cli.models.fetch_api_models", return_value=None), \
+             patch("hermes_cli.models.probe_api_models", return_value=probe_payload), \
+             patch(
+                 "hermes_cli.models.provider_model_ids",
+                 side_effect=RuntimeError("catalog unavailable"),
+             ):
+            result = validate_requested_model(
+                "qwen3-coder-plus",
+                "alibaba",
+                api_key="fake-dashscope-key",
+                base_url="https://coding.dashscope.aliyuncs.com/v1",
+            )
+        assert result["accepted"] is False
+
+    # --- preserved behaviour canaries ----------------------------------
+
+    def test_live_api_path_unchanged_when_endpoint_supports_models(self):
+        """The classic DashScope endpoint (compatible-mode) DOES expose
+        /models.  When ``fetch_api_models`` returns a list, the existing
+        live-API path must still be used — we must not short-circuit
+        every Alibaba request to the catalog."""
+        api_list = ["qwen3-coder-plus", "qwen-turbo"]
+        probe_payload = {
+            "models": api_list,
+            "probed_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models",
+            "resolved_base_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+            "suggested_base_url": None,
+            "used_fallback": False,
+        }
+        with patch("hermes_cli.models.fetch_api_models", return_value=api_list), \
+             patch("hermes_cli.models.probe_api_models", return_value=probe_payload):
+            result = validate_requested_model(
+                "qwen3-coder-plus",
+                "alibaba",
+                api_key="fake-classic-key",
+                base_url="https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+            )
+        assert result["accepted"] is True
+        assert result["recognized"] is True
+
+    def test_other_providers_still_hard_reject_when_api_unreachable(self):
+        """Narrow-scope canary: the catalog fall-through must fire only
+        for ``alibaba``.  Other providers (e.g. zai) still hit the
+        generic reject when their /models endpoint is unreachable."""
+        probe_payload = {
+            "models": None,
+            "probed_url": "https://example.com/v1/models",
+            "resolved_base_url": "https://example.com/v1",
+            "suggested_base_url": None,
+            "used_fallback": False,
+        }
+        with patch("hermes_cli.models.fetch_api_models", return_value=None), \
+             patch("hermes_cli.models.probe_api_models", return_value=probe_payload):
+            result = validate_requested_model(
+                "glm-5",
+                "zai",
+                api_key="fake",
+                base_url="https://example.com/v1",
+            )
+        assert result["accepted"] is False

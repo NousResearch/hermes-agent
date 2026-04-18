@@ -2190,6 +2190,47 @@ def validate_requested_model(
         except Exception:
             pass  # Fall through to generic warning
 
+    # Alibaba (DashScope) coding endpoint
+    # (``https://coding.dashscope.aliyuncs.com/v1``) does not expose
+    # ``/models`` — the request returns HTTP 404 and ``fetch_api_models``
+    # yields ``None``, same as any unreachable endpoint.  Before this
+    # fall-through was added the generic "couldn't reach" branch below
+    # hard-rejected every ``/model`` switch for DashScope coding users,
+    # even for model IDs we statically know about (qwen3-coder-plus,
+    # kimi-k2.5, glm-5, …).  Fall back to the curated catalog so the
+    # switch still works; warn when the ID isn't in our catalog.  See
+    # #12272.
+    if normalized == "alibaba":
+        try:
+            catalog = provider_model_ids("alibaba")
+        except Exception:
+            catalog = []
+        if catalog:
+            catalog_set = set(catalog)
+            if requested in catalog_set or requested_for_lookup in catalog_set:
+                return {
+                    "accepted": True,
+                    "persist": True,
+                    "recognized": True,
+                    "message": None,
+                }
+            suggestions = get_close_matches(requested, catalog, n=3, cutoff=0.4)
+            suggestion_text = ""
+            if suggestions:
+                suggestion_text = "\n  Similar models: " + ", ".join(f"`{s}`" for s in suggestions)
+            return {
+                "accepted": True,
+                "persist": True,
+                "recognized": False,
+                "message": (
+                    f"Note: `{requested}` was not found in the Alibaba (DashScope) "
+                    f"catalog; the coding endpoint doesn't expose `/models`, so the "
+                    f"switch will proceed and the model name will be validated on "
+                    f"first request."
+                    f"{suggestion_text}"
+                ),
+            }
+
     provider_label = _PROVIDER_LABELS.get(normalized, normalized)
     return {
         "accepted": False,

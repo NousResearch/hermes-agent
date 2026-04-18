@@ -6029,7 +6029,7 @@ def cmd_dashboard(args):
         import uvicorn  # noqa: F401
     except ImportError:
         print("Web UI dependencies not installed.")
-        print("Install them with:  pip install hermes-agent[web]")
+        print(f"Install them with:  {sys.executable} -m pip install 'fastapi' 'uvicorn[standard]'")
         sys.exit(1)
 
     if not _build_web_ui(PROJECT_ROOT / "web", fatal=True):

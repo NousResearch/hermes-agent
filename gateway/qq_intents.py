@@ -16,6 +16,11 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+from gateway.group_control_intents import (
+    has_followup_group_reference,
+    looks_like_group_runtime_status_query as looks_like_shared_group_runtime_status_query,
+)
+
 logger = logging.getLogger(__name__)
 
 _DATA_PATH = Path(__file__).resolve().parent / "data" / "qq_intents.json"
@@ -148,11 +153,18 @@ def _looks_like_explicit_qq_intel_status_query(message_text: str) -> bool:
     )
 
 
+def _looks_like_explicit_qq_group_runtime_status_query(message_text: str) -> bool:
+    body = str(message_text or "").strip()
+    return bool(body) and has_followup_group_reference(body) and looks_like_shared_group_runtime_status_query(body)
+
+
 def _looks_like_qq_background_status_query(message_text: str) -> bool:
     body = str(message_text or "").strip()
     if not body:
         return False
     if _looks_like_explicit_qq_intel_status_query(body):
+        return False
+    if _looks_like_explicit_qq_group_runtime_status_query(body):
         return False
     if any(term in body for term in _QQ_BACKGROUND_STATUS_QUERY_TERMS):
         return True
@@ -164,6 +176,8 @@ def _looks_like_qq_background_status_query(message_text: str) -> bool:
 def _looks_like_qq_runtime_status_query(message_text: str) -> bool:
     body = str(message_text or "").strip()
     if _looks_like_explicit_qq_intel_status_query(body):
+        return False
+    if _looks_like_explicit_qq_group_runtime_status_query(body):
         return False
     return bool(body) and any(term in body for term in _QQ_RUNTIME_STATUS_QUERY_TERMS)
 

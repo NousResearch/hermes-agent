@@ -40,3 +40,7 @@ def test_background_status_query_does_not_treat_explicit_intel_status_query_as_j
 
 def test_runtime_status_query_does_not_treat_explicit_intel_status_query_as_session_status():
     assert not _looks_like_qq_runtime_status_query("看看情报员钢镚现在什么状态。")
+
+
+def test_runtime_status_query_does_not_treat_explicit_group_runtime_query_as_session_status():
+    assert not _looks_like_qq_runtime_status_query("这个群现在什么状态")

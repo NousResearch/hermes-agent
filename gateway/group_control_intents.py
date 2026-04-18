@@ -38,6 +38,13 @@ _GROUP_CHAT_ENABLE_IMPERATIVE_TERMS = (
     "恢复回复",
     "允许回复",
 )
+_GENERIC_GROUP_RUNTIME_STATUS_TERMS = (
+    "什么状态",
+    "啥状态",
+    "什么情况",
+    "啥情况",
+    "当前状态",
+)
 
 
 def has_current_group_reference(message_text: str) -> bool:
@@ -94,7 +101,10 @@ def looks_like_group_listen_enable_request(message_text: str) -> bool:
 
 def looks_like_group_runtime_status_query(message_text: str) -> bool:
     body = str(message_text or "").strip()
-    return bool(body) and any(term in body for term in GROUP_STATUS_QUERY_TERMS)
+    return bool(body) and (
+        any(term in body for term in GROUP_STATUS_QUERY_TERMS)
+        or (has_followup_group_reference(body) and any(term in body for term in _GENERIC_GROUP_RUNTIME_STATUS_TERMS))
+    )
 
 
 def looks_like_group_report_enable_request(message_text: str) -> bool:

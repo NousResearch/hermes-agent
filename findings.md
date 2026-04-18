@@ -66,6 +66,9 @@
 - 2026-04-18 第三轮 shortcut 顺序审查：
   - `看看情报员钢镚现在什么状态。` 在会话里存在后台任务时，会先被 runtime/background status shortcut 吸走，返回后台任务状态而不是情报员状态
   - 根因不是 `qq_intel`，而是 `_looks_like_qq_runtime_status_query()` / `_looks_like_qq_background_status_query()` 没有先排除“显式情报员状态查询”这类更具体的语义
+- 2026-04-19 第四轮 group runtime shortcut 顺序审查：
+  - `这个群现在什么状态` 在群会话有后台任务时，会先被 runtime status shortcut 抢走，返回后台任务状态而不是当前群运行态
+  - 根因有两层：共享 `looks_like_group_runtime_status_query()` 对“有群指代 + 泛化状态问句”识别不足，而 QQ 的 runtime/background shortcut 也没有先排除这类显式群运行态查询
 - 相关回归：
   - QQ 相关/新增链路：`170 passed`
   - 全量仓库：`37 failed, 9361 passed, 87 skipped, 6 errors`

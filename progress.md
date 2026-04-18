@@ -112,3 +112,16 @@
 - 已验证：
   - `tests/gateway/test_qq_intents.py tests/gateway/test_auto_background_jobs.py -q -k 'explicit_intel_status_query or background_status_shortcut_does_not_steal_explicit_intel_status_query'`：`3 passed`
   - `tests/gateway/test_qq_intents.py tests/gateway/test_runtime_shortcuts_service.py tests/gateway/test_qq_intel_control_requests.py tests/gateway/test_qq_intel_runtime_service.py tests/gateway/test_auto_background_jobs.py tests/gateway/test_group_control_requests.py tests/gateway/test_group_control_runtime_service.py tests/gateway/test_group_control_intents.py tests/gateway/test_group_runtime_status_requests.py tests/gateway/test_group_runtime_status_runtime_service.py -q -k 'not weixin and (explicit_intel_status_query or intel or runtime_status or background_status or joined_group_list or verbose or bot_alias or bare_intel_status_phrase_falls_back_to_agent or admin_dm_can_orally_query_intel_worker_status or admin_dm_can_orally_list_joined_groups)'`：`54 passed`
+
+## 2026-04-19 第四轮 group runtime shortcut 让路收口
+
+- 已修复：
+  - `这个群现在什么状态` 这类“有群指代 + 泛化状态问句”现在会识别为群运行态查询
+  - 会话里即使有后台任务，明确群运行态查询也不会再被 runtime/background shortcut 抢走
+- 已新增测试：
+  - [tests/gateway/test_group_control_intents.py](/home/dtamade/projects/hermes-agent/tests/gateway/test_group_control_intents.py)
+  - [tests/gateway/test_qq_intents.py](/home/dtamade/projects/hermes-agent/tests/gateway/test_qq_intents.py)
+  - [tests/gateway/test_auto_background_jobs.py](/home/dtamade/projects/hermes-agent/tests/gateway/test_auto_background_jobs.py)
+- 已验证：
+  - `tests/gateway/test_group_control_intents.py tests/gateway/test_qq_intents.py tests/gateway/test_auto_background_jobs.py -q -k '这个群现在什么状态 or explicit_group_runtime_query_as_session_status or background_status_shortcut_does_not_steal_explicit_group_runtime_status_query or shared_status_asks'`：`3 passed`
+  - `tests/gateway/test_group_control_intents.py tests/gateway/test_group_runtime_status_requests.py tests/gateway/test_group_runtime_status_runtime_service.py tests/gateway/test_qq_intents.py tests/gateway/test_runtime_shortcuts_service.py tests/gateway/test_qq_intel_control_requests.py tests/gateway/test_qq_intel_runtime_service.py tests/gateway/test_auto_background_jobs.py -q -k 'not weixin and (group_runtime or runtime_status or background_status or explicit_group_runtime_query or explicit_intel_status_query or intel or joined_group_list or verbose or bot_alias)'`：`55 passed`

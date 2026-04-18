@@ -1219,6 +1219,50 @@ async def test_admin_group_can_orally_query_current_group_runtime_status():
 
 
 @pytest.mark.asyncio
+async def test_background_status_shortcut_does_not_steal_explicit_group_runtime_status_query(tmp_path):
+    runner = _make_runner(auto_background_work=True)
+    runner.config.platforms[Platform.QQ_NAPCAT].extra["admin_users"] = ["179033731"]
+    source = _make_source(chat_type="group", chat_id="726109087")
+    _create_durable_background_job(
+        runner,
+        tmp_path,
+        task_id="bg_group_conflict",
+        source=source,
+        prompt="继续处理线上问题",
+        status="running",
+        worker_name="铁柱",
+    )
+    event = _make_event("这个群现在什么状态", chat_type="group", chat_id="726109087")
+
+    with patch(
+        "gateway.direct_control_platform_specs.get_group_policy",
+        return_value={
+            "group_id": "726109087",
+            "mode": "collect_only",
+            "archive_enabled": True,
+            "daily_report_enabled": False,
+            "daily_report_target": None,
+            "manual_report_target": None,
+        },
+    ), patch(
+        "gateway.direct_control_platform_specs.get_group_monitoring_overlay",
+        return_value={
+            "active": True,
+            "mode": "collect_only",
+            "archive_enabled": True,
+            "daily_report_enabled": False,
+            "workers": [{"worker_name": "钢镚"}],
+        },
+    ):
+        result = await runner._handle_message(event)
+
+    runner._run_agent.assert_not_awaited()
+    assert "726109087" in result
+    assert "collect_only" in result
+    assert "bg_group_conflict" not in result
+
+
+@pytest.mark.asyncio
 async def test_admin_group_runtime_status_uses_effective_collect_only_overlay_and_report_targets():
     runner = _make_runner(auto_background_work=True)
     runner.config.platforms[Platform.QQ_NAPCAT].extra["admin_users"] = ["179033731"]

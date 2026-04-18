@@ -43,6 +43,7 @@ def test_listen_enable_request_supports_collect_only_wording():
 def test_group_runtime_status_query_detects_shared_status_asks():
     assert looks_like_group_runtime_status_query("这个群现在谁在监听，日报开了吗？")
     assert looks_like_group_runtime_status_query("726109087 这个群是不是监听模式，日报开了吗？")
+    assert looks_like_group_runtime_status_query("这个群现在什么状态")
     assert not looks_like_group_runtime_status_query("这个群只监听，不要走大模型")
 
 

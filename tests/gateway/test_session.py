@@ -632,7 +632,7 @@ class TestSessionStoreResumePending:
         assert resumed.session_id == entry.session_id
         assert resumed.resume_pending is True
         assert resumed.resume_reason == "restart_timeout"
-        assert resumed.resume_attempts == 1
+        assert not hasattr(resumed, "resume_attempts")
 
     def test_resume_pending_reuses_same_session_id(self, store):
         source = SessionSource(

@@ -28,7 +28,6 @@ def _now() -> datetime:
 
 
 _RESUME_RECOVERY_WINDOW = timedelta(minutes=5)
-_RESUME_ATTEMPT_SUSPEND_THRESHOLD = 3
 
 
 # ---------------------------------------------------------------------------
@@ -387,7 +386,6 @@ class SessionEntry:
     # reload and continuation can resume in place.
     resume_pending: bool = False
     resume_reason: Optional[str] = None
-    resume_attempts: int = 0
     last_resume_marked_at: Optional[datetime] = None
     
     def to_dict(self) -> Dict[str, Any]:
@@ -411,7 +409,6 @@ class SessionEntry:
             "suspended": self.suspended,
             "resume_pending": self.resume_pending,
             "resume_reason": self.resume_reason,
-            "resume_attempts": self.resume_attempts,
             "last_resume_marked_at": (
                 self.last_resume_marked_at.isoformat()
                 if self.last_resume_marked_at
@@ -456,7 +453,6 @@ class SessionEntry:
             suspended=data.get("suspended", False),
             resume_pending=data.get("resume_pending", False),
             resume_reason=data.get("resume_reason"),
-            resume_attempts=data.get("resume_attempts", 0),
             last_resume_marked_at=(
                 datetime.fromisoformat(data["last_resume_marked_at"])
                 if data.get("last_resume_marked_at")
@@ -854,7 +850,6 @@ class SessionStore:
         session_key: str,
         *,
         reason: str = "restart_timeout",
-        increment_attempts: bool = True,
     ) -> bool:
         """Mark a session as resumable after restart interruption."""
         with self._lock:
@@ -862,26 +857,15 @@ class SessionStore:
             entry = self._entries.get(session_key)
             if not entry:
                 return False
-            marked_at = _now()
-            if increment_attempts:
-                entry.resume_attempts += 1
-            if entry.resume_attempts >= _RESUME_ATTEMPT_SUSPEND_THRESHOLD:
-                entry.suspended = True
-                entry.resume_pending = False
-                entry.resume_reason = None
-                entry.last_resume_marked_at = None
-            else:
-                entry.resume_pending = True
-                entry.resume_reason = reason
-                entry.last_resume_marked_at = marked_at
+            entry.resume_pending = True
+            entry.resume_reason = reason
+            entry.last_resume_marked_at = _now()
             self._save()
             return True
 
     def clear_resume_pending(
         self,
         session_key: str,
-        *,
-        reset_attempts: bool = True,
     ) -> bool:
         """Clear resumable restart state after recovery succeeds."""
         with self._lock:
@@ -892,8 +876,6 @@ class SessionStore:
             entry.resume_pending = False
             entry.resume_reason = None
             entry.last_resume_marked_at = None
-            if reset_attempts:
-                entry.resume_attempts = 0
             self._save()
             return True
 

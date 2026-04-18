@@ -98,7 +98,7 @@ class TestResumePendingRecoveryWindow:
 
 
 class TestResumePendingEscalation:
-    def test_repeated_resume_marking_escalates_to_suspended_session(self, tmp_path):
+    def test_repeated_resume_marking_does_not_suspend_without_stuck_loop_counter(self, tmp_path):
         store = _make_store(tmp_path)
         source = _make_source(chat_id="escalate")
         entry = store.get_or_create_session(source)
@@ -108,6 +108,7 @@ class TestResumePendingEscalation:
         assert store.mark_resume_pending(entry.session_key, reason="restart_timeout") is True
 
         refreshed = store.get_or_create_session(source)
-        assert refreshed.session_id != entry.session_id
-        assert refreshed.was_auto_reset is True
-        assert refreshed.auto_reset_reason == "suspended"
+        assert refreshed.session_id == entry.session_id
+        assert refreshed.resume_pending is True
+        assert refreshed.suspended is False
+        assert not hasattr(refreshed, "resume_attempts")

@@ -4152,7 +4152,6 @@ class GatewayRunner:
                             self.session_store.clear_resume_pending(session_key)
                             session_entry.resume_pending = False
                             session_entry.resume_reason = None
-                            session_entry.resume_attempts = 0
                             session_entry.last_resume_marked_at = None
                     except Exception as e:
                         logger.debug("Failed to clear resume-pending state for %s: %s", session_key[:30], e)

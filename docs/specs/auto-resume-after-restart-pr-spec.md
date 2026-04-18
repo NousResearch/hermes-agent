@@ -15,7 +15,7 @@ Today, when gateway shutdown cannot drain active work within `agent.restart_drai
 
 That is the exact wrong behavior for the common case of **same thread, same user, same restart, still wants same task**.
 
-**Recommendation:** introduce a distinct persisted state like `resume_pending` / `interrupted_by_restart` and keep the existing `session_id` on the next message in the same thread. Reuse the existing transcript reload and auto-continue logic in `gateway/run.py` instead of creating a new session. Only escalate to `suspended` / clean-slate behavior after repeated failed restart-resume attempts or explicit stuck-loop detection.
+**Recommendation:** introduce a distinct persisted state like `resume_pending` / `interrupted_by_restart` and keep the existing `session_id` on the next message with the same `session_key`. Reuse the existing transcript reload and auto-continue logic in `gateway/run.py` instead of creating a new session. Escalation should reuse the existing `.restart_failure_counts` / stuck-loop detection path rather than adding a parallel counter on `SessionEntry`.
 
 ---
 
@@ -28,7 +28,7 @@ Current behavior is incoherent:
 1. Hermes sends an optimistic restart notice.
 2. Gateway restart times out draining active agents.
 3. Startup suspends recently-active sessions.
-4. The user's next message in the same thread lands in a fresh session.
+4. The user's next message on the same `session_key` lands in a fresh session.
 5. Hermes tells the user to browse `/resume` manually.
 
 This is a terrible experience because:
@@ -64,7 +64,7 @@ Relevant current behavior:
 
 ## Product goal
 
-When a user restarts Hermes and then sends the next message in the **same chat/thread/topic**, Hermes should, by default:
+When a user restarts Hermes and then sends the next message that resolves to the **same `session_key`** (same chat/thread/topic lane), Hermes should, by default:
 
 1. preserve the same conversation lane,
 2. preserve the same `session_id`,
@@ -79,8 +79,8 @@ For the normal case:
 
 - user starts a long task in thread X
 - gateway restarts
-- user returns to thread X and says anything
-- Hermes continues from the interrupted session in thread X
+- user returns to the same lane and says anything
+- Hermes continues from the interrupted session on that same `session_key`
 
 For the pathological case:
 
@@ -127,7 +127,6 @@ Recommended `SessionEntry` fields in `gateway/session.py`:
 ```python
 resume_pending: bool = False
 resume_reason: Optional[str] = None  # e.g. "restart_timeout", "crash_recovery"
-resume_attempts: int = 0
 last_resume_marked_at: Optional[datetime] = None
 ```
 
@@ -165,7 +164,7 @@ restart timed out
 restart timed out
   -> mark active session(s) as resume_pending=True
   -> next startup preserves mapping
-  -> next message in same thread returns existing session entry
+  -> next message on the same `session_key` returns existing session entry
   -> transcript reloads from same session_id
   -> model gets interruption note
   -> Hermes continues automatically
@@ -175,8 +174,8 @@ restart timed out
 
 ```text
 restart timed out repeatedly for same session
-  -> increment resume_attempts / stuck-loop counter
-  -> once threshold exceeded, convert to suspended=True
+  -> increment existing .restart_failure_counts counter
+  -> _suspend_stuck_loop_sessions() suspends once threshold is exceeded
   -> only then force fresh-session fallback
 ```
 
@@ -213,7 +212,6 @@ def mark_resume_pending(
     session_key: str,
     *,
     reason: str = "restart_timeout",
-    increment_attempts: bool = True,
 ) -> bool:
     ...
 ```
@@ -222,7 +220,7 @@ Responsibilities:
 
 - set `resume_pending=True`
 - set `resume_reason`
-- bump `resume_attempts` if requested
+- set `last_resume_marked_at`
 - persist metadata in `sessions.json`
 
 ---
@@ -238,7 +236,7 @@ Responsibilities:
 Extend `get_or_create_session()` logic:
 
 - if `entry.suspended` → current reset behavior stays
-- if `entry.resume_pending` → **return the existing entry** and clear or downgrade the resume marker once the resume turn begins successfully
+- if `entry.resume_pending` → **return the existing entry** while the recovery window is still fresh, and only clear the marker after a successful turn completes
 
 Pseudo-shape:
 
@@ -287,30 +285,28 @@ Preserving the same session ID plus transcript reload plus better interruption n
 
 ---
 
-## 4) Keep stuck-loop protection, but move it to an escalation policy
+## 4) Keep stuck-loop protection, but reuse the existing restart-failure mechanism
 
 We should not regress the original safety intent behind the stuck-loop work.
 
 ### Proposed rule
 
 - first interrupted restart for a session → auto-resume
-- second interrupted restart for same session within recovery window → still auto-resume, but warn internally / increment counter
-- third interrupted restart (or configurable threshold) → convert session to `suspended=True`
+- second interrupted restart for the same `session_key` → still auto-resume
+- third interrupted restart for the same `session_key` → let the existing stuck-loop path suspend it
 
 This keeps safety without making the default path destructive.
 
-### Practical implementation options
+### Recommended implementation
 
-Option A: reuse existing stuck-loop tracking files/logic in `GatewayRunner`
-- keep the existing consecutive restart accounting
-- when threshold is exceeded, switch `resume_pending` -> `suspended`
+Reuse the existing gateway-level `.restart_failure_counts` file and `_suspend_stuck_loop_sessions()` flow:
 
-Option B: track directly in `SessionEntry`
-- increment `resume_attempts`
-- clear it after a successful resumed turn
-- if `resume_attempts >= threshold`, set `suspended=True`
+- shutdown-time drain timeout still calls `mark_resume_pending(...)` for the interrupted `session_key`s
+- successful turn completion clears the restart-failure count for that `session_key`
+- repeated interrupted restarts are counted in `.restart_failure_counts`
+- `_suspend_stuck_loop_sessions()` flips the session to `suspended=True` once the existing threshold is exceeded
 
-**Recommendation:** use `SessionEntry` fields for session-local semantics and let existing gateway-level stuck-loop tracking continue to exist if needed. That makes the persisted reason visible and easier to test.
+Do **not** add or maintain a parallel `resume_attempts` counter on `SessionEntry`.
 
 ---
 
@@ -328,8 +324,9 @@ Reserve it for narrower cases, such as:
 
 - startup crash recovery when explicit `resume_pending` metadata is absent,
 - legacy upgrade path / backward compatibility,
-- emergency fallback for clearly unsafe sessions,
-- repeated failed recovery loops.
+- emergency fallback for clearly unsafe sessions.
+
+Normal interrupted-restart recovery with explicit `resume_pending` metadata should not be suspended by this helper.
 
 ### Important outcome
 
@@ -411,13 +408,11 @@ Add persisted session fields and APIs:
 - new `SessionEntry` fields:
   - `resume_pending`
   - `resume_reason`
-  - `resume_attempts`
   - `last_resume_marked_at`
 - serialization/deserialization support in `to_dict()` / `from_dict()`
 - helper methods:
   - `mark_resume_pending(...)`
   - `clear_resume_pending(...)`
-  - maybe `escalate_to_suspended(...)`
 - update `get_or_create_session()` so `resume_pending` returns existing session instead of resetting
 
 ### `gateway/run.py`
@@ -426,7 +421,7 @@ Update gateway behavior:
 
 - after drain timeout, mark active sessions `resume_pending=True`
 - on resumed turn, inject restart-interruption system note when `session_entry.resume_pending`
-- clear `resume_pending` after a successful resumed turn begins or completes
+- clear `resume_pending` only after a successful resumed turn completes
 - update shutdown banner wording to promise attempted recovery, not guaranteed recovery
 - stop routing normal interrupted restart recovery through immediate clean-slate semantics
 
@@ -437,7 +432,7 @@ Add or update tests for:
 - same-session resume after interrupted restart
 - transcript preserved across restart timeout
 - tool-result auto-continue still works on resumed session
-- repeated recovery failure escalates to suspended/new session
+- repeated recovery failure escalates through `.restart_failure_counts` / `_suspend_stuck_loop_sessions()`
 - shutdown banner wording is no longer misleading
 - `/resume` guidance only appears when clean-slate fallback actually occurs
 
@@ -475,9 +470,9 @@ Suggested cases:
 
 Suggested cases:
 
-1. **interrupted restart in same thread resumes existing session**
+1. **interrupted restart on same session key resumes existing session**
    - transcript exists under original session id
-   - next message in same thread loads same transcript
+   - next message on the same `session_key` loads the same transcript
    - no auto-reset notice
 
 2. **tool-tail transcript triggers auto-continue note on resumed session**
@@ -518,7 +513,7 @@ Do **not** silently reinterpret existing `suspended=True` as resumable. That wou
 ### 1. Resume loop risk
 If resume is attempted too aggressively, a truly poisoned session could keep re-entering the same bad state.
 
-**Mitigation:** keep thresholded escalation to `suspended`.
+**Mitigation:** keep thresholded escalation in the existing `.restart_failure_counts` / `_suspend_stuck_loop_sessions()` flow.
 
 ### 2. Partial transcript ambiguity
 If a turn was interrupted mid-assistant generation, the last messages may not be perfectly shaped.
@@ -534,17 +529,10 @@ If message copy changes before semantics change, UX could still be misleading.
 
 ## Open questions
 
-1. Should `resume_pending` clear at turn start or only after a successful completed turn?
-   - **Recommendation:** clear after successful completion, but protect against duplicate recovery attempts with an in-memory guard during the running turn.
-
-2. Should recovery be attempted only in the same thread/topic, or also same parent chat?
-   - **Recommendation:** same session key only. Do not cross lanes.
-
-3. Should startup still run `suspend_recently_active()` at all when explicit `resume_pending` markers were written during shutdown?
-   - **Recommendation:** no, not for those specific session keys.
-
-4. Should the user get an explicit "resuming interrupted work" notice?
-   - **Recommendation:** probably no extra chat spam in v1. Keep it as an internal system note unless debugging is enabled.
+1. `resume_pending` should clear only after a successful completed turn, not at turn start.
+2. Recovery should only be attempted on the same `session_key`. Do not cross lanes.
+3. `suspend_recently_active()` should remain only as a narrower crash-recovery fallback and should not suspend explicit `resume_pending` sessions.
+4. User-facing recovery should stay as an internal system note in v1 unless debugging is enabled.
 
 ---
 
@@ -555,8 +543,8 @@ If message copy changes before semantics change, UX could still be misleading.
 3. Change `get_or_create_session()` to preserve same session for `resume_pending`
 4. Mark active sessions resume-pending on drain-timeout shutdown
 5. Inject restart-resume system note in `gateway/run.py`
-6. Clear pending state after successful resume
-7. Add escalation threshold behavior
+6. Clear pending state after successful completion
+7. Reuse existing `.restart_failure_counts` / `_suspend_stuck_loop_sessions()` escalation
 8. Update shutdown/fallback copy
 9. Add regression tests
 
@@ -566,7 +554,7 @@ If message copy changes before semantics change, UX could still be misleading.
 
 This PR is successful if all of the following are true:
 
-1. A long-running task interrupted by gateway restart in a Discord/Telegram thread resumes automatically on the next message in the same thread.
+1. A long-running task interrupted by gateway restart in a Discord/Telegram lane resumes automatically on the next message with the same `session_key`.
 2. The resumed thread keeps the same `session_id` and transcript history.
 3. Hermes no longer tells the user to `/resume` for the normal restart-recovery case.
 4. Existing clean restart behavior is preserved.
@@ -583,7 +571,7 @@ Right now the system is optimized for protecting itself from stuck loops at the 
 
 The correct product stance is:
 
-- **same thread + same user + immediate post-restart message = continue automatically**
+- **same session_key + immediate post-restart message = continue automatically**
 - **repeated failed recovery = fresh session as safety fallback**
 
 That gets the common case right without giving up the escape hatch.

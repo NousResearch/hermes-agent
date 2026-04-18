@@ -58,7 +58,13 @@ def _queue_text_followup(
         text=event.get_command_args().strip(),
         message_type=MessageType.TEXT,
         source=event.source,
+        raw_message=getattr(event, "raw_message", None),
         message_id=event.message_id,
+        metadata=dict(getattr(event, "metadata", None) or {}) or None,
+        reply_to_message_id=getattr(event, "reply_to_message_id", None),
+        reply_to_text=getattr(event, "reply_to_text", None),
+        auto_skill=getattr(event, "auto_skill", None),
+        timestamp=getattr(event, "timestamp", None),
     )
     _queue_followup_event(
         adapter=adapter,

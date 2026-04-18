@@ -166,3 +166,56 @@ async def test_busy_followup_pending_sentinel_uses_fallback_ack_without_adapter_
     assert result.response == "fallback:继续"
     assert queued["session_key"] == "qq_napcat:dm:179033731"
     assert queued["event"] is event
+
+
+@pytest.mark.asyncio
+async def test_queue_command_preserves_followup_metadata_when_rebuilding_text_event(
+    monkeypatch,
+):
+    event = _make_event("/queue @马嘎 后面继续", chat_type="group")
+    event.raw_message = {"source": "qq"}
+    event.metadata = {
+        "group_trigger_reason": "require_mention_disabled",
+        "explicit_group_trigger": True,
+        "explicit_group_trigger_reason": "bot_mention",
+        "explicit_addressed": True,
+        "address_reason": "bot_mention",
+        "requires_reply": True,
+    }
+    event.reply_to_message_id = "bot-msg-9"
+    event.reply_to_text = "上一条"
+    queued = {}
+
+    class _Adapter:
+        def queue_message(self, session_key, queued_event):
+            queued["session_key"] = session_key
+            queued["event"] = queued_event
+
+    adapter = _Adapter()
+    runner = _make_runner(running_agent=MagicMock(), busy_input_mode="queue", adapter=adapter)
+    runner._running_agents = {"qq_napcat:group:726109087:179033731": MagicMock()}
+
+    monkeypatch.setattr(
+        "gateway.busy_followup_runtime_service.try_handle_direct_gateway_shortcuts",
+        lambda *args, **kwargs: None,
+    )
+
+    result = await handle_gateway_busy_followup(
+        runner=runner,
+        event=event,
+        source=event.source,
+        session_key="qq_napcat:group:726109087:179033731",
+        logger=MagicMock(),
+        pending_agent_sentinel=object(),
+        truncate_status_preview=lambda value: str(value),
+        fallback_busy_ack=lambda source, text: f"fallback:{text}",
+    )
+
+    assert result.handled is True
+    assert result.response == "Queued for the next turn."
+    assert queued["session_key"] == "qq_napcat:group:726109087:179033731"
+    assert queued["event"].text == "@马嘎 后面继续"
+    assert queued["event"].raw_message == {"source": "qq"}
+    assert queued["event"].metadata["explicit_addressed"] is True
+    assert queued["event"].reply_to_message_id == "bot-msg-9"
+    assert queued["event"].reply_to_text == "上一条"

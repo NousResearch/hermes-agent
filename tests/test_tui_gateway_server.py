@@ -438,3 +438,74 @@ def test_rollback_restore_resolves_number_and_file_path():
     assert resp["result"]["success"] is True
     assert calls["args"][1] == "bbb222"
     assert calls["args"][2] == "src/app.tsx"
+
+
+# ── session.steer ────────────────────────────────────────────────────
+
+
+def test_session_steer_calls_agent_steer_when_agent_supports_it():
+    """The TUI RPC method must call agent.steer(text) and return a
+    queued status without touching interrupt state.
+    """
+    calls = {}
+
+    class _Agent:
+        def steer(self, text):
+            calls["steer_text"] = text
+            return True
+
+        def interrupt(self, *args, **kwargs):
+            calls["interrupt_called"] = True
+
+    server._sessions["sid"] = _session(agent=_Agent())
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.steer",
+                "params": {"session_id": "sid", "text": "also check auth.log"},
+            }
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert "result" in resp, resp
+    assert resp["result"]["status"] == "queued"
+    assert resp["result"]["text"] == "also check auth.log"
+    assert calls["steer_text"] == "also check auth.log"
+    assert "interrupt_called" not in calls  # must NOT interrupt
+
+
+def test_session_steer_rejects_empty_text():
+    server._sessions["sid"] = _session(agent=types.SimpleNamespace(steer=lambda t: True))
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.steer",
+                "params": {"session_id": "sid", "text": "   "},
+            }
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert "error" in resp, resp
+    assert resp["error"]["code"] == 4002
+
+
+def test_session_steer_errors_when_agent_has_no_steer_method():
+    server._sessions["sid"] = _session(agent=types.SimpleNamespace())  # no steer()
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.steer",
+                "params": {"session_id": "sid", "text": "hi"},
+            }
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert "error" in resp, resp
+    assert resp["error"]["code"] == 4010
+

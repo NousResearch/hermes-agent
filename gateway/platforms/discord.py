@@ -1994,6 +1994,11 @@ class DiscordAdapter(BasePlatformAdapter):
         async def slash_stop(interaction: discord.Interaction):
             await self._run_simple_slash(interaction, "/stop", "Stop requested~")
 
+        @tree.command(name="steer", description="Inject a message after the next tool call (no interrupt)")
+        @discord.app_commands.describe(prompt="Text to inject into the agent's next tool result")
+        async def slash_steer(interaction: discord.Interaction, prompt: str):
+            await self._run_simple_slash(interaction, f"/steer {prompt}".strip())
+
         @tree.command(name="compress", description="Compress conversation context")
         async def slash_compress(interaction: discord.Interaction):
             await self._run_simple_slash(interaction, "/compress")

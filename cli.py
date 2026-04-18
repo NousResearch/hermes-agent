@@ -10098,14 +10098,22 @@ class HermesCLI:
         # Validate stdin before launching prompt_toolkit — on macOS with
         # uv-managed Python, fd 0 can be invalid or unregisterable with the
         # asyncio selector, causing "KeyError: '0 is not registered'" (#6393).
+        # Also reject non-tty stdin (e.g. when launched via `curl ... | bash`)
+        # because kqueue.control() rejects such fds with EINVAL.
         try:
             import os as _os
             _os.fstat(0)
+            _stdin_is_tty = _os.isatty(0)
         except OSError:
+            _stdin_is_tty = False
+        if not _stdin_is_tty:
             print(
-                "Error: stdin (fd 0) is not available.\n"
-                "This can happen with certain Python installations (e.g. uv-managed cPython on macOS).\n"
-                "Try reinstalling Python via pyenv or Homebrew, then re-run: hermes setup"
+                "Error: stdin is not an interactive terminal.\n"
+                "Hermes chat requires a TTY. This usually happens when launched via a\n"
+                "pipe (e.g. `curl ... | bash`) or with stdin redirected/closed.\n"
+                "Open a new terminal and run `hermes` directly, or on macOS with\n"
+                "uv-managed cPython, try reinstalling Python via pyenv or Homebrew,\n"
+                "then re-run: hermes setup"
             )
             _run_cleanup()
             self._print_exit_summary()
@@ -10127,11 +10135,25 @@ class HermesCLI:
         except (KeyError, OSError) as _stdin_err:
             # Catch selector registration failures from broken stdin (#6393).
             # This is the fallback for cases that slip past the fstat() guard.
-            if "is not registered" in str(_stdin_err) or "Bad file descriptor" in str(_stdin_err):
+            # We match on known symptoms:
+            #   - "is not registered" (KeyError from the selector)
+            #   - "Bad file descriptor" (EBADF / errno 9)
+            #   - "Invalid argument" (EINVAL / errno 22, raised by kqueue on
+            #     macOS when fd 0 is not a tty/pipe the kernel will watch)
+            _err_str = str(_stdin_err)
+            _errno = getattr(_stdin_err, "errno", None)
+            if (
+                "is not registered" in _err_str
+                or "Bad file descriptor" in _err_str
+                or "Invalid argument" in _err_str
+                or _errno in (9, 22)
+            ):
                 print(
                     f"\nError: stdin is not usable ({_stdin_err}).\n"
-                    "This can happen with certain Python installations (e.g. uv-managed cPython on macOS).\n"
-                    "Try reinstalling Python via pyenv or Homebrew, then re-run: hermes setup"
+                    "This can happen when launched via a pipe (e.g. `curl ... | bash`)\n"
+                    "or with certain Python installations (e.g. uv-managed cPython on macOS).\n"
+                    "Open a new terminal and run `hermes` directly, or reinstall Python\n"
+                    "via pyenv or Homebrew, then re-run: hermes setup"
                 )
             else:
                 raise

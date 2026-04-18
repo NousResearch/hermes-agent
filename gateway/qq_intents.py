@@ -141,9 +141,18 @@ _QQ_LOW_VALUE_IMAGE_HINTS = _load_term_sequence("napcat_terms", "_QQ_LOW_VALUE_I
 _QQ_BUSY_SHORTCUT_MARKERS = _load_term_sequence("napcat_terms", "_QQ_BUSY_SHORTCUT_MARKERS")
 
 
+def _looks_like_explicit_qq_intel_status_query(message_text: str) -> bool:
+    body = str(message_text or "").strip()
+    return bool(body) and any(marker in body for marker in ("情报员", "员工")) and any(
+        term in body for term in _QQ_INTEL_WORKER_STATUS_QUERY_TERMS
+    )
+
+
 def _looks_like_qq_background_status_query(message_text: str) -> bool:
     body = str(message_text or "").strip()
     if not body:
+        return False
+    if _looks_like_explicit_qq_intel_status_query(body):
         return False
     if any(term in body for term in _QQ_BACKGROUND_STATUS_QUERY_TERMS):
         return True
@@ -154,6 +163,8 @@ def _looks_like_qq_background_status_query(message_text: str) -> bool:
 
 def _looks_like_qq_runtime_status_query(message_text: str) -> bool:
     body = str(message_text or "").strip()
+    if _looks_like_explicit_qq_intel_status_query(body):
+        return False
     return bool(body) and any(term in body for term in _QQ_RUNTIME_STATUS_QUERY_TERMS)
 
 

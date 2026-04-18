@@ -100,3 +100,15 @@
 - 已验证：
   - `tests/gateway/test_qq_intents.py tests/gateway/test_qq_intel_control_requests.py tests/gateway/test_auto_background_jobs.py -q -k 'joined_group_list_query_requires_actual_group_list_intent or verbose or steal_explicit_employee_route_when_message_is_verbose_task or admin_dm_can_orally_route_named_worker_to_background_job or admin_dm_bot_alias_intel_phrase_falls_back_to_agent or bare_intel_status_phrase_falls_back_to_agent'`：`7 passed`
   - `tests/gateway/test_qq_intents.py tests/gateway/test_qq_intel_control_requests.py tests/gateway/test_qq_intel_runtime_service.py tests/gateway/test_group_control_requests.py tests/gateway/test_group_control_runtime_service.py tests/gateway/test_group_control_intents.py tests/gateway/test_group_runtime_status_requests.py tests/gateway/test_group_runtime_status_runtime_service.py tests/gateway/test_auto_background_jobs.py -q -k 'not weixin and (qq_intents or intel or group_control or runtime_status or joined_group_list or verbose or bot_alias or bare_intel_status_phrase_falls_back_to_agent or admin_dm_can_orally_query_intel_worker_status or admin_dm_can_orally_list_joined_groups)'`：`69 passed`
+
+## 2026-04-18 第三轮 runtime/background shortcut 让路收口
+
+- 已修复：
+  - 显式情报员状态查询不再被 `runtime_status` / `background_status` shortcut 抢走
+  - 会话里即使存在后台任务，`看看情报员钢镚现在什么状态。` 仍会正确走 `qq_control -> get_worker`
+- 已新增测试：
+  - [tests/gateway/test_qq_intents.py](/home/dtamade/projects/hermes-agent/tests/gateway/test_qq_intents.py)
+  - [tests/gateway/test_auto_background_jobs.py](/home/dtamade/projects/hermes-agent/tests/gateway/test_auto_background_jobs.py)
+- 已验证：
+  - `tests/gateway/test_qq_intents.py tests/gateway/test_auto_background_jobs.py -q -k 'explicit_intel_status_query or background_status_shortcut_does_not_steal_explicit_intel_status_query'`：`3 passed`
+  - `tests/gateway/test_qq_intents.py tests/gateway/test_runtime_shortcuts_service.py tests/gateway/test_qq_intel_control_requests.py tests/gateway/test_qq_intel_runtime_service.py tests/gateway/test_auto_background_jobs.py tests/gateway/test_group_control_requests.py tests/gateway/test_group_control_runtime_service.py tests/gateway/test_group_control_intents.py tests/gateway/test_group_runtime_status_requests.py tests/gateway/test_group_runtime_status_runtime_service.py -q -k 'not weixin and (explicit_intel_status_query or intel or runtime_status or background_status or joined_group_list or verbose or bot_alias or bare_intel_status_phrase_falls_back_to_agent or admin_dm_can_orally_query_intel_worker_status or admin_dm_can_orally_list_joined_groups)'`：`54 passed`

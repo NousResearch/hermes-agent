@@ -4,7 +4,9 @@ from gateway.qq_intents import (
     _QQ_GROUP_ID_EXPLICIT_PATTERNS,
     _QQ_SEND_INLINE_PATTERNS,
     _QQ_VISIBLE_NAME_ALIASES,
+    _looks_like_qq_background_status_query,
     _looks_like_qq_joined_group_list_query,
+    _looks_like_qq_runtime_status_query,
 )
 
 
@@ -30,3 +32,11 @@ def test_shared_send_inline_patterns_still_match_target_and_message():
 def test_joined_group_list_query_requires_actual_group_list_intent():
     assert _looks_like_qq_joined_group_list_query("列一下群")
     assert not _looks_like_qq_joined_group_list_query("列一下群里的部署问题")
+
+
+def test_background_status_query_does_not_treat_explicit_intel_status_query_as_job_status():
+    assert not _looks_like_qq_background_status_query("看看情报员钢镚现在什么状态。")
+
+
+def test_runtime_status_query_does_not_treat_explicit_intel_status_query_as_session_status():
+    assert not _looks_like_qq_runtime_status_query("看看情报员钢镚现在什么状态。")

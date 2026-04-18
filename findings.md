@@ -63,6 +63,9 @@
   - `_looks_like_qq_joined_group_list_query()` 对 `列一下群` 采用 substring 命中，导致 `列一下群里的部署问题` 被错误路由成 `list_joined_groups`
   - `qq_intel` 对“已知 worker 名 + 监听/汇报”采用宽匹配，`让钢镚现在汇报一下这个页面为什么回退了`、`让钢镚继续监听线上部署日志，查清楚后向我汇报` 都会被错误截成简短控制命令
   - `group_control` 在无群目标时只要命中 `监听/汇报` 就直接返回缺少目标错误，导致上一条问题即使从 `qq_intel` 放行，也会被群控再次抢走
+- 2026-04-18 第三轮 shortcut 顺序审查：
+  - `看看情报员钢镚现在什么状态。` 在会话里存在后台任务时，会先被 runtime/background status shortcut 吸走，返回后台任务状态而不是情报员状态
+  - 根因不是 `qq_intel`，而是 `_looks_like_qq_runtime_status_query()` / `_looks_like_qq_background_status_query()` 没有先排除“显式情报员状态查询”这类更具体的语义
 - 相关回归：
   - QQ 相关/新增链路：`170 passed`
   - 全量仓库：`37 failed, 9361 passed, 87 skipped, 6 errors`

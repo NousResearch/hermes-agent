@@ -464,6 +464,54 @@ async def test_known_worker_name_does_not_steal_explicit_employee_route_when_mes
 
 
 @pytest.mark.asyncio
+async def test_background_status_shortcut_does_not_steal_explicit_intel_status_query(tmp_path):
+    runner = _make_runner(auto_background_work=True)
+    runner.config.platforms[Platform.QQ_NAPCAT].extra["admin_users"] = ["179033731"]
+    source = _make_source()
+    _create_durable_background_job(
+        runner,
+        tmp_path,
+        task_id="bg_intel_conflict",
+        source=source,
+        prompt="让铁柱继续优化公司主页",
+        status="running",
+        worker_name="铁柱",
+    )
+    event = _make_event("看看情报员钢镚现在什么状态。")
+
+    with (
+        patch(
+            "gateway.direct_control_router.list_intel_workers",
+            return_value=[{"worker_name": "钢镚"}],
+        ),
+        patch(
+            "tools.qq_control_tool.qq_control_tool",
+            return_value=json.dumps(
+                {
+                    "success": True,
+                    "worker": {
+                        "worker_name": "钢镚",
+                        "status": "active_collecting",
+                        "target_group_id": "726109087",
+                    },
+                },
+                ensure_ascii=False,
+            ),
+        ) as control_mock,
+    ):
+        result = await runner._handle_message(event)
+
+    runner._run_agent.assert_not_awaited()
+    assert "钢镚" in result
+    assert "726109087" in result
+    assert "bg_intel_conflict" not in result
+    assert control_mock.call_args.args[0] == {
+        "action": "get_worker",
+        "worker_name": "钢镚",
+    }
+
+
+@pytest.mark.asyncio
 async def test_handle_message_does_not_route_new_server_task_to_tiezhu_from_stale_design_history():
     runner = _make_runner(
         auto_background_work=True,

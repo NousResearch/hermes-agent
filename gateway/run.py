@@ -258,10 +258,6 @@ from gateway.direct_control_router import (
     DIRECT_CONTROL_ROUTER_METHODS as SHARED_DIRECT_CONTROL_ROUTER_METHODS,
     DirectControlRouter,
 )
-from gateway.direct_shortcuts import run_direct_shortcut_handlers
-from gateway.direct_shortcut_runtime_service import (
-    try_handle_direct_gateway_shortcuts as shared_try_handle_direct_gateway_shortcuts,
-)
 from gateway.busy_followup_runtime_service import (
     handle_gateway_busy_followup,
 )
@@ -284,12 +280,12 @@ from gateway.agent_completion_runtime_service import (
 from gateway.agent_response_runtime_service import (
     build_gateway_exception_response as shared_build_gateway_exception_response,
 )
-from gateway.message_turn_context_runtime_service import (
-    prepare_gateway_message_turn_context,
-)
 from gateway.foreground_turn_runtime_service import (
     finalize_gateway_foreground_success,
     prepare_gateway_foreground_message,
+)
+from gateway.agent_turn_start_runtime_service import (
+    prepare_gateway_agent_turn_start,
 )
 from gateway.context_reference_runtime_service import (
     GatewayContextReferenceOutcome,
@@ -3263,85 +3259,29 @@ class GatewayRunner:
             source.chat_id or "unknown", _msg_preview,
         )
 
-        # Get or create session
-        session_entry = self.session_store.get_or_create_session(source)
-        session_key = session_entry.session_key
-        
-        # Emit session:start for new or auto-reset sessions
-        _is_new_session = (
-            session_entry.created_at == session_entry.updated_at
-            or getattr(session_entry, "was_auto_reset", False)
-        )
-        if _is_new_session:
-            await self.hooks.emit("session:start", {
-                "platform": source.platform.value if source.platform else "",
-                "user_id": source.user_id,
-                "session_id": session_entry.session_id,
-                "session_key": session_key,
-            })
-        
-        # Build session context
-        admin_user_ids = self._configured_admin_user_ids(source.platform)
-        is_admin_user = self._is_admin_user(source) if admin_user_ids else None
-        context = build_session_context(
-            source,
-            self.config,
-            session_entry,
-            admin_user_ids=admin_user_ids,
-            is_admin_user=is_admin_user,
-        )
-        
-        # Set environment variables for tools
-        self._set_session_env(context)
-
-        history = self.session_store.load_transcript(session_entry.session_id)
-
-        direct_shortcut_response = shared_try_handle_direct_gateway_shortcuts(
-            self,
-            event,
-            conversation_history=list(history or []),
-            logger=logger,
-        )
-        if direct_shortcut_response is not None:
-            return direct_shortcut_response
-        
-        prepared_turn_context = await prepare_gateway_message_turn_context(
-            runner=self,
-            event=event,
-            source=source,
-            context=context,
-            session_entry=session_entry,
-            session_key=session_key,
-            history=history,
-            is_new_session=_is_new_session,
-            config_path=_config_path,
-            hermes_home=_hermes_home,
-            logger=logger,
-            explicit_group_reply_note=_explicit_group_reply_context_note(event),
-            visible_limit=_SHARED_GROUP_VISIBLE_HISTORY_LIMIT,
-            runtime_agent_kwargs_loader=_resolve_runtime_agent_kwargs,
-            build_session_context_prompt_fn=build_session_context_prompt,
-        )
-        context_prompt = prepared_turn_context.context_prompt
-        history = prepared_turn_context.history
-        history_for_agent = prepared_turn_context.history_for_agent
-        if prepared_turn_context.auto_background_response:
-            return prepared_turn_context.auto_background_response
-
-        # -----------------------------------------------------------------
-        # Auto-analyze images sent by the user
-        #
-        # If the user attached image(s), we run the vision tool eagerly so
-        # the conversation model always receives a text description.  The
-        # local file path is also included so the model can re-examine the
-        # image later with a more targeted question via vision_analyze.
-        #
-        # We filter to image paths only (by media_type) so that non-image
-        # attachments (documents, audio, etc.) are not sent to the vision
-        # tool even when they appear in the same message.
-        # -----------------------------------------------------------------
-        # -----------------------------------------------------------------
         try:
+            prepared_turn_start = await prepare_gateway_agent_turn_start(
+                runner=self,
+                event=event,
+                source=source,
+                config_path=_config_path,
+                hermes_home=_hermes_home,
+                logger=logger,
+                explicit_group_reply_note=_explicit_group_reply_context_note(event),
+                visible_limit=_SHARED_GROUP_VISIBLE_HISTORY_LIMIT,
+                runtime_agent_kwargs_loader=_resolve_runtime_agent_kwargs,
+                build_session_context_fn=build_session_context,
+                build_session_context_prompt_fn=build_session_context_prompt,
+            )
+            session_entry = prepared_turn_start.session_entry
+            session_key = prepared_turn_start.session_key
+            context = prepared_turn_start.context
+            history = prepared_turn_start.history
+            history_for_agent = prepared_turn_start.history_for_agent
+            context_prompt = prepared_turn_start.context_prompt
+            if prepared_turn_start.immediate_response is not None:
+                return prepared_turn_start.immediate_response
+
             prepared_foreground_message = await prepare_gateway_foreground_message(
                 event=event,
                 source=source,

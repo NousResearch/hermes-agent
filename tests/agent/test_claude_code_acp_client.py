@@ -25,55 +25,10 @@ from agent.claude_code_acp_client import (
 
 
 # ---------------------------------------------------------------------------
-# Minimal fake subprocess (mirrors tests/agent/test_acp_client_base.py)
+# Fake subprocess lives in tests/agent/conftest.py — shared with
+# test_acp_client_base.py so the two suites can't drift apart.
 # ---------------------------------------------------------------------------
-
-
-class _FakeStdin:
-    def __init__(self) -> None:
-        self.lines: list[str] = []
-        self._lock = threading.Lock()
-
-    def write(self, data: str) -> int:
-        with self._lock:
-            self.lines.append(data)
-        return len(data)
-
-    def flush(self) -> None:
-        pass
-
-
-class _FakeProc:
-    def __init__(self) -> None:
-        self.stdin = _FakeStdin()
-        self._inbox: "queue.Queue[str | None]" = queue.Queue()
-        self.stdout = self
-        self.stderr = None
-        self._return_code: int | None = None
-
-    def poll(self):
-        return self._return_code
-
-    def terminate(self):
-        self._return_code = 0
-
-    def kill(self):
-        self._return_code = -9
-
-    def wait(self, timeout=None):
-        return self._return_code if self._return_code is not None else 0
-
-    def __iter__(self):
-        return self
-
-    def __next__(self):
-        item = self._inbox.get()
-        if item is None:
-            raise StopIteration
-        return item
-
-    def push(self, obj: dict) -> None:
-        self._inbox.put(json.dumps(obj) + "\n")
+from tests.agent.conftest import _FakeProc, _FakeStdin  # noqa: E402, F401
 
 
 def _make_client_with_fake_session(tmp_path, **kwargs):
@@ -277,6 +232,12 @@ def test_tool_call_update_marks_error(tmp_path):
 
 
 def test_tool_call_update_without_start_creates_placeholder(tmp_path):
+    """ACP adapters occasionally emit an update before the matching start
+    event under load (race in the adapter-side dispatcher, not in Hermes).
+    We tolerate this by synthesizing a placeholder ``ToolCallRecord`` — this
+    test guards that behavior so future refactors don't re-introduce the
+    "dropped trace entry" regression we fixed.
+    """
     client, _ = _make_client_with_fake_session(tmp_path)
     client._handle_session_update(
         {
@@ -326,6 +287,15 @@ def test_unknown_update_kind_silently_ignored(tmp_path):
 
 
 def test_create_chat_completion_attaches_tool_trace(tmp_path):
+    """Contract test for ``hermes_tool_trace`` on the response object.
+
+    The AIAgent loop reads ``response.hermes_tool_trace`` (not
+    ``response.choices[0].message.tool_calls``, which is intentionally empty
+    because Claude ran the tools natively) to learn what tools fired. The
+    shape of each trace entry is owned by
+    :meth:`ClaudeCodeACPClient._create_chat_completion` — refactors there
+    must keep this test passing.
+    """
     chunks: list[str] = []
     progress: list[tuple] = []
 
@@ -484,7 +454,7 @@ def test_load_mcp_servers_handles_missing_file(tmp_path):
 def test_ensure_sandbox_invokes_builder(monkeypatch, tmp_path):
     built: list[tuple] = []
 
-    def fake_builder(session_id, agent, *, hermes_home, platform, available_tools, available_toolsets):
+    def fake_builder(session_id, agent, *, hermes_home, platform, available_tools, available_toolsets, model=None):
         built.append(
             (session_id, hermes_home, platform, available_tools, available_toolsets)
         )
@@ -591,3 +561,107 @@ def test_short_preview_truncates():
     out = cc._short_preview(long, limit=40)
     assert len(out) <= 40
     assert out.endswith("…")
+
+
+# ---------------------------------------------------------------------------
+# Concurrency regression — trace mutations happen on the ACP reader thread
+# while the main thread reads/serializes the trace.
+# ---------------------------------------------------------------------------
+
+
+def test_cancel_check_aborts_request_mid_poll(tmp_path):
+    """cancel_check=True mid-turn should raise AcpCancelled instead of hanging."""
+    from agent._acp_client_base import AcpCancelled
+
+    client, proc = _make_client_with_fake_session(tmp_path)
+
+    # Prime the fake agent with an interrupt flag that flips True after a
+    # small delay, simulating a user Ctrl-C between ACP events.
+    class _Fake:
+        _interrupt_requested = False
+
+    client._agent = _Fake()
+
+    def _flip_after_delay():
+        time.sleep(0.15)
+        _Fake._interrupt_requested = True
+
+    threading.Thread(target=_flip_after_delay, daemon=True).start()
+
+    start = time.time()
+    with pytest.raises(AcpCancelled):
+        # No prompt response will arrive — the fake subprocess pushes nothing.
+        # The cancel flag should fire inside the 0.1s poll loop.
+        client._request(
+            proc,
+            client._session_inbox,
+            client._session_stderr,
+            "session/prompt",
+            {"sessionId": "x", "prompt": []},
+            timeout_seconds=30.0,
+            cancel_check=lambda: _Fake._interrupt_requested,
+        )
+    elapsed = time.time() - start
+    # Should abort within the poll tick (0.1s) plus the trigger delay (0.15s).
+    assert elapsed < 1.0, f"cancel took too long ({elapsed:.2f}s)"
+
+
+def test_tool_trace_is_thread_safe_under_concurrent_updates(tmp_path):
+    """Stress test: a background thread hammers start/update events while the
+    main thread repeatedly reads `client.tool_trace`. No exceptions should
+    surface (unprotected list append/iteration under the GIL can still let
+    a stale record leak to `to_dict`)."""
+    client, _ = _make_client_with_fake_session(tmp_path)
+
+    stop = threading.Event()
+    errors: list[BaseException] = []
+
+    def writer():
+        try:
+            for i in range(500):
+                tid = f"tc-{i}"
+                client._handle_session_update(
+                    {
+                        "sessionUpdate": "tool_call_start",
+                        "toolCallId": tid,
+                        "title": "stress_tool",
+                        "rawInput": {"i": i},
+                    },
+                    dispatch_ctx={"text_parts": [], "reasoning_parts": []},
+                )
+                client._handle_session_update(
+                    {
+                        "sessionUpdate": "tool_call_update",
+                        "toolCallId": tid,
+                        "rawOutput": f"r-{i}",
+                        "status": "completed",
+                    },
+                    dispatch_ctx={"text_parts": [], "reasoning_parts": []},
+                )
+        except BaseException as exc:  # pragma: no cover - only on regression
+            errors.append(exc)
+        finally:
+            stop.set()
+
+    def reader():
+        try:
+            while not stop.is_set():
+                snap = client.tool_trace
+                # Serialize each record — mirrors what _create_chat_completion
+                # does when building hermes_tool_trace.
+                _ = [r.to_dict() for r in snap]
+        except BaseException as exc:  # pragma: no cover - only on regression
+            errors.append(exc)
+
+    t_w = threading.Thread(target=writer)
+    t_r = threading.Thread(target=reader)
+    t_w.start()
+    t_r.start()
+    t_w.join(timeout=10.0)
+    t_r.join(timeout=10.0)
+
+    assert not errors, f"race-condition errors surfaced: {errors}"
+    assert len(client.tool_trace) == 500
+    # All records should be in terminal state.
+    assert all(r.status == "completed" for r in client.tool_trace)
+    assert all(r.completed_at is not None for r in client.tool_trace)

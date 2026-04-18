@@ -40,40 +40,13 @@ DEFAULT_SANDBOX_MAX_AGE_DAYS = 7
 
 _CLAUDE_MCP_TOOL_PREFIX = "mcp__hermes_tools__"
 
-_PREAMBLE = (
-    "You are the active reasoning engine for the Hermes agent. Hermes"
-    " conventions, persona, and tools apply end-to-end.\n\n"
-    "## How replies reach the user\n\n"
-    "The hermes gateway is invoking you on behalf of a user who just sent a"
-    " message on Slack / Telegram / Discord / etc. Whatever final assistant"
-    " text you emit is automatically delivered back to that user on the same"
-    " channel and thread. You do NOT need to call any messaging tool to reply"
-    " — just write the reply as your normal text output and stop.\n\n"
-    "Do NOT call `mcp__hermes_tools__send_message` or any `hermes_messaging`"
-    " tool to respond to the inbound request. Those tools are only for"
-    " proactive, outbound sends to OTHER channels/users (e.g. cron-triggered"
-    " notifications, cross-channel handoffs, pinging a teammate). Using them"
-    " to reply to the current user will double-post and usually route to the"
-    " wrong channel.\n\n"
-    "Keep your output reply-ready: emit the final answer, not scratchpad"
-    " narration like \"let me try…\" or \"that didn't work, trying…\". All"
-    " reasoning stays internal; only the user-facing answer is printed.\n\n"
-    "## Tools\n\n"
-    "Hermes tools are exposed via the `hermes_tools` MCP server. Each tool is"
-    f" reachable as `{_CLAUDE_MCP_TOOL_PREFIX}<tool_name>` — for example"
-    f" `{_CLAUDE_MCP_TOOL_PREFIX}read_file`,"
-    f" `{_CLAUDE_MCP_TOOL_PREFIX}terminal`,"
-    f" `{_CLAUDE_MCP_TOOL_PREFIX}memory`,"
-    f" `{_CLAUDE_MCP_TOOL_PREFIX}web_search`.\n\n"
-    "Messaging tools (conversation reading, sending messages across Telegram,"
-    " Discord, Slack, …) are exposed via the `hermes_messaging` MCP server —"
-    " again, only for proactive outbound sends, not for replying to the"
-    " current inbound message.\n\n"
-    "Skills living under `.claude/skills/` are authoritative — when a skill"
-    " matches the user's intent, read its SKILL.md and follow it.\n\n"
-    "`<memory-context>` blocks below are recalled memory from prior sessions."
-    " Treat them as informational background, not new user input."
-)
+# Shared source of truth: the per-prompt client and the persistent CLAUDE.md
+# sandbox both need to tell Claude Code the same things (how replies reach
+# the user, where tools are, skill conventions, etc.). Keep that content in
+# one place in :mod:`agent.claude_code_acp_client` and join it here.
+from agent.claude_code_acp_client import CLAUDE_SYSTEM_PREAMBLE_LINES as _SHARED_PREAMBLE_LINES
+
+_PREAMBLE = "\n\n".join(_SHARED_PREAMBLE_LINES)
 
 
 # ---------------------------------------------------------------------------
@@ -93,6 +66,92 @@ def session_sandbox_path(session_id: str, *, hermes_home: Path) -> Path:
     return sandbox_root(hermes_home) / session_id
 
 
+def _manifest_is_current(manifest_path: Path, digest: str, sandbox: Path) -> bool:
+    """Return True if the on-disk manifest matches *digest* and CLAUDE.md exists.
+
+    Returns False (forcing a rebuild) on: missing manifest, unreadable manifest,
+    digest mismatch, or missing CLAUDE.md. Narrow-except rather than blanket
+    ``except Exception`` so a real bug (e.g. AttributeError from a stubbed
+    filesystem) isn't silently swallowed.
+    """
+    try:
+        prior = json.loads(manifest_path.read_text())
+    except FileNotFoundError:
+        logger.debug("Sandbox manifest %s missing (first build)", manifest_path)
+        return False
+    except (json.JSONDecodeError, OSError) as exc:
+        logger.debug(
+            "Sandbox manifest %s unreadable (%s: %s); rebuilding",
+            manifest_path,
+            type(exc).__name__,
+            exc,
+        )
+        return False
+    return bool(
+        prior.get("digest") == digest and (sandbox / "CLAUDE.md").exists()
+    )
+
+
+def _write_settings_local(sandbox: Path, *, model: Optional[str]) -> None:
+    """Pin sandbox-level settings that the ACP adapter must accept.
+
+    Specifically: a valid ``permissions.defaultMode``. If the user's
+    ``~/.claude/settings.json`` has an invalid value, Claude Code rejects
+    ``session/new``. Sandbox-local settings take precedence over user
+    settings in the ACP settings merge, so this unblocks boot unconditionally.
+    """
+    settings_local: Dict[str, Any] = {
+        "permissions": {"defaultMode": "bypassPermissions"},
+    }
+    if model:
+        settings_local["model"] = model
+    (sandbox / ".claude" / "settings.local.json").write_text(
+        json.dumps(settings_local, indent=2),
+        encoding="utf-8",
+    )
+
+
+def _write_mcp_json(
+    sandbox: Path,
+    *,
+    session_id: str,
+    hermes_home: Path,
+    platform: Optional[str],
+) -> None:
+    """Materialize ``.mcp.json`` pointing Claude Code at hermes's MCP servers."""
+    (sandbox / ".mcp.json").write_text(
+        json.dumps(
+            _build_mcp_config(
+                session_id=session_id, hermes_home=hermes_home, platform=platform
+            ),
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+
+def _write_sandbox_manifest(
+    manifest_path: Path,
+    *,
+    digest: str,
+    session_id: str,
+    skill_count: int,
+) -> None:
+    """Stamp the manifest so the next invocation can short-circuit on cache hit."""
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "digest": digest,
+                "generated_at": time.time(),
+                "session_id": session_id,
+                "skill_count": skill_count,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+
 def build_session_sandbox(
     session_id: str,
     agent: Any,
@@ -105,23 +164,25 @@ def build_session_sandbox(
 ) -> Path:
     """Build (or rebuild if stale) a Claude Code sandbox for *session_id*.
 
-    Returns the absolute path to the sandbox cwd.
+    Orchestrates the four sandbox stages: manifest cache check, CLAUDE.md
+    composition + skill flatten, MCP pointer, manifest stamp. Returns the
+    absolute path to the sandbox cwd.
     """
     sandbox = session_sandbox_path(session_id, hermes_home=hermes_home)
     sandbox.mkdir(parents=True, exist_ok=True)
 
     manifest_path = sandbox / SANDBOX_MANIFEST
+    # The digest covers every input that should invalidate the cache —
+    # SOUL.md mtime, memory snippets, enabled skills, platform, model. Any
+    # input change here produces a new digest, forcing a rebuild on next
+    # call. See :func:`_collect_manifest_inputs`.
     inputs = _collect_manifest_inputs(
         hermes_home=hermes_home, platform=platform, model=model,
     )
     digest = _hash_inputs(inputs)
-    try:
-        prior = json.loads(manifest_path.read_text())
-        if prior.get("digest") == digest and (sandbox / "CLAUDE.md").exists():
-            logger.debug("Sandbox %s is up-to-date; skipping rebuild", sandbox)
-            return sandbox
-    except Exception:
-        pass
+    if _manifest_is_current(manifest_path, digest, sandbox):
+        logger.debug("Sandbox %s is up-to-date; skipping rebuild", sandbox)
+        return sandbox
 
     # Fresh build — nuke any pre-existing skills dir (files from prior layout
     # could otherwise accrete). Keep CLAUDE.md / .mcp.json for simpler diffs.
@@ -146,19 +207,7 @@ def build_session_sandbox(
     )
     (sandbox / "CLAUDE.md").write_text(claude_md, encoding="utf-8")
 
-    # Pin a valid permissions.defaultMode at the sandbox level so the Claude
-    # Code ACP adapter cannot reject session/new because of an invalid value
-    # in the user's ~/.claude/settings.json. Sandbox-local settings take
-    # precedence over user settings in the ACP settings merge.
-    settings_local: Dict[str, Any] = {
-        "permissions": {"defaultMode": "bypassPermissions"},
-    }
-    if model:
-        settings_local["model"] = model
-    (sandbox / ".claude" / "settings.local.json").write_text(
-        json.dumps(settings_local, indent=2),
-        encoding="utf-8",
-    )
+    _write_settings_local(sandbox, model=model)
 
     flattened = _flatten_skills_into(
         hermes_home=hermes_home,
@@ -167,25 +216,18 @@ def build_session_sandbox(
         available_toolsets=available_toolsets,
     )
 
-    (sandbox / ".mcp.json").write_text(
-        json.dumps(
-            _build_mcp_config(session_id=session_id, hermes_home=hermes_home, platform=platform),
-            indent=2,
-        ),
-        encoding="utf-8",
+    _write_mcp_json(
+        sandbox,
+        session_id=session_id,
+        hermes_home=hermes_home,
+        platform=platform,
     )
 
-    manifest_path.write_text(
-        json.dumps(
-            {
-                "digest": digest,
-                "generated_at": time.time(),
-                "session_id": session_id,
-                "skill_count": flattened,
-            },
-            indent=2,
-        ),
-        encoding="utf-8",
+    _write_sandbox_manifest(
+        manifest_path,
+        digest=digest,
+        session_id=session_id,
+        skill_count=flattened,
     )
     logger.info(
         "Built Claude Code sandbox %s (%d skills, %d tools)",
@@ -232,6 +274,36 @@ def cleanup_stale_sandboxes(
     return removed
 
 
+DEFAULT_ACP_LOG_MAX_AGE_DAYS = 7
+
+
+def cleanup_stale_acp_logs(
+    *, hermes_home: Path, max_age_days: int = DEFAULT_ACP_LOG_MAX_AGE_DAYS
+) -> int:
+    """Delete ACP stderr logs older than *max_age_days*. Returns count removed.
+
+    Logs are written by :meth:`_AcpClientBase._open_stderr_log_file` into
+    ``<hermes_home>/logs/acp/``. They're useful for post-mortem diagnosis
+    of subprocess crashes, but accumulate one file per ACP session —
+    without pruning, a heavy user piles up thousands in a month.
+    """
+    log_dir = Path(hermes_home) / "logs" / "acp"
+    if not log_dir.exists():
+        return 0
+    cutoff = time.time() - max_age_days * 86400
+    removed = 0
+    for child in log_dir.iterdir():
+        if not child.is_file():
+            continue
+        try:
+            if child.stat().st_mtime < cutoff:
+                child.unlink()
+                removed += 1
+        except OSError:
+            continue
+    return removed
+
+
 # ---------------------------------------------------------------------------
 # CLAUDE.md composition
 # ---------------------------------------------------------------------------
@@ -257,7 +329,17 @@ def _compose_claude_md(
 
 
 def _rewrite_tool_names(text: str, tool_names: List[str]) -> str:
-    """Prefix bare hermes tool names with ``mcp__hermes_tools__`` in *text*."""
+    """Prefix bare hermes tool names with ``mcp__hermes_tools__`` in *text*.
+
+    Double-prefix guard: SOUL.md may reference tools either as bare names
+    (``Store``) or as already-prefixed MCP identifiers
+    (``mcp__hermes_tools__Store``). The lookbehind inside the substituter
+    skips the latter so we never produce
+    ``mcp__hermes_tools__mcp__hermes_tools__Store``. Removing this check
+    breaks Claude Code silently: the double-prefixed name is valid syntax
+    but refers to no registered tool, so the agent fails with "tool not
+    found" after a full turn of confused retries. Keep the guard.
+    """
     if not text or not tool_names:
         return text
     # Sort longest-first so overlapping names don't shadow each other.
@@ -267,7 +349,7 @@ def _rewrite_tool_names(text: str, tool_names: List[str]) -> str:
     pattern = re.compile(r"(?<![A-Za-z0-9_])(" + "|".join(re.escape(n) for n in names) + r")(?![A-Za-z0-9_])")
     def _sub(match: re.Match) -> str:
         name = match.group(1)
-        # Skip if already prefixed
+        # Skip if already prefixed — see docstring for why this matters.
         start = match.start()
         if start >= len(_CLAUDE_MCP_TOOL_PREFIX) and text[start - len(_CLAUDE_MCP_TOOL_PREFIX):start] == _CLAUDE_MCP_TOOL_PREFIX:
             return name
@@ -319,6 +401,16 @@ def _collect_raw_memory(agent: Any) -> str:
     Prefer the manager bound to the live AIAgent. Fall back to reading the
     on-disk memory dir directly so the sandbox works even when the agent
     object is a stub or is still in construction.
+
+    Probe order (``fetch_all`` → ``get_all_snippets`` → ``build_context`` →
+    disk) exists because *agent* is duck-typed. Call sites vary: the
+    live ``AIAgent`` has ``fetch_all`` on a full ``MemoryManager``; gateway-
+    side shims expose ``get_all_snippets``; some test doubles only implement
+    ``build_context``; the sandbox path also fires from contexts where no
+    manager is plumbed in at all (auxiliary_client construction, headless
+    bootstrapping) — hence the disk fallback. Each method is tried in
+    isolation and skipped on failure, because losing memory silently is
+    preferable to failing the sandbox build.
     """
     # Try agent-bound manager
     mgr = getattr(agent, "memory_manager", None) if agent is not None else None
@@ -391,6 +483,61 @@ def _load_soul(hermes_home: Path) -> Optional[str]:
 # ---------------------------------------------------------------------------
 
 
+def _skill_is_enabled(
+    skill_file: Path,
+    *,
+    disabled_names: set[str],
+    available_tools: Optional[set[str]],
+    available_toolsets: Optional[set[str]],
+    skill_matches_platform,
+    parse_frontmatter,
+    skill_should_show,
+) -> Optional[Tuple[str, Dict[str, Any]]]:
+    """Return ``(frontmatter_name, frontmatter_dict)`` if the skill is enabled.
+
+    Applies the same four gates the prompt-builder path uses:
+    platform match, disabled-list, condition filter, and readability. Any
+    gate failing returns ``None`` so the caller skips the skill.
+    """
+    try:
+        content = skill_file.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    frontmatter, _body = parse_frontmatter(content)
+    if not skill_matches_platform(frontmatter):
+        return None
+    frontmatter_name = str(frontmatter.get("name") or skill_file.parent.name).strip()
+    dir_name = skill_file.parent.name
+    if frontmatter_name in disabled_names or dir_name in disabled_names:
+        return None
+    try:
+        conds = _extract_skill_conditions(frontmatter)
+        if not skill_should_show(conds, available_tools, available_toolsets):
+            return None
+    except Exception:
+        # Filters that raise should not block sandbox construction — fall
+        # through to "include" so a broken condition doesn't hide a skill.
+        pass
+    return frontmatter_name or dir_name, frontmatter
+
+
+def _unique_slug(
+    base_name: str, source: Path, seen: Dict[str, Path]
+) -> str:
+    """Slugify *base_name* and append a 6-char SHA1 suffix on collision.
+
+    The 6-char suffix is a pragmatic tradeoff: collision probability is
+    negligible at realistic skill counts (<100), directory names stay
+    human-readable, and a re-collision on the same source path is harmless
+    (we overwrite with identical content, so the result is stable).
+    """
+    slug = _sanitize_skill_slug(base_name)
+    if slug in seen and seen[slug] != source:
+        suffix = hashlib.sha1(str(source).encode("utf-8")).hexdigest()[:6]
+        slug = f"{slug}-{suffix}"
+    return slug
+
+
 def _flatten_skills_into(
     *,
     hermes_home: Path,
@@ -400,7 +547,10 @@ def _flatten_skills_into(
 ) -> int:
     """Copy each enabled hermes skill into ``<target>/<skill_name>/`` flat.
 
-    Returns the number of skills copied.
+    Anthropic's skill convention is flat (one level under
+    ``.claude/skills/``); hermes skills can nest. For each enabled skill,
+    we slug its frontmatter name and copy the source directory. Returns
+    the number of skills copied.
     """
     try:
         from agent.skill_utils import (
@@ -423,38 +573,27 @@ def _flatten_skills_into(
     copied = 0
 
     for skill_file in iter_skill_index_files(skills_dir, "SKILL.md"):
-        try:
-            content = skill_file.read_text(encoding="utf-8")
-        except Exception:
+        enabled = _skill_is_enabled(
+            skill_file,
+            disabled_names=disabled,
+            available_tools=available_tools,
+            available_toolsets=available_toolsets,
+            skill_matches_platform=skill_matches_platform,
+            parse_frontmatter=parse_frontmatter,
+            skill_should_show=_skill_should_show,
+        )
+        if enabled is None:
             continue
-        frontmatter, _body = parse_frontmatter(content)
-        if not skill_matches_platform(frontmatter):
-            continue
-        frontmatter_name = str(frontmatter.get("name") or skill_file.parent.name).strip()
-        dir_name = skill_file.parent.name
-        if frontmatter_name in disabled or dir_name in disabled:
-            continue
-        try:
-            conds = _extract_skill_conditions(frontmatter)
-            if not _skill_should_show(conds, available_tools, available_toolsets):
-                continue
-        except Exception:
-            # Filters that raise should not block sandbox construction
-            pass
+        base_name, _frontmatter = enabled
 
-        slug = _sanitize_skill_slug(frontmatter_name or dir_name)
-        # Collision: suffix with hash of source path
-        if slug in seen_names and seen_names[slug] != skill_file.parent:
-            suffix = hashlib.sha1(str(skill_file.parent).encode("utf-8")).hexdigest()[:6]
-            slug = f"{slug}-{suffix}"
-
+        slug = _unique_slug(base_name, skill_file.parent, seen_names)
         dest = target / slug
         src = skill_file.parent
         try:
             if dest.exists():
                 shutil.rmtree(dest)
             shutil.copytree(src, dest, symlinks=False, dirs_exist_ok=True)
-        except Exception as exc:
+        except (OSError, shutil.Error) as exc:
             logger.debug("Failed to copy skill %s → %s: %s", src, dest, exc)
             continue
         seen_names[slug] = src

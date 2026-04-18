@@ -711,3 +711,35 @@ class TestContextLengthCache:
         with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):
             save_context_length(model, url, 200000)
             assert get_cached_context_length(model, url) == 200000
+
+
+class TestClaudeCodeACPContextLookup:
+    """Regression: claude-code-acp must inherit Anthropic's 1M context windows.
+
+    Without the ``anthropic/`` prefix stripping in
+    :func:`hermes_cli.model_normalize.normalize_model_for_provider` + the
+    ``claude-opus-4-7`` / ``claude-sonnet-4-6`` keys in
+    ``DEFAULT_CONTEXT_LENGTHS``, the lookup would miss and fall back to
+    128K — quietly halving the usable context for subscription users.
+    """
+
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "claude-opus-4-7",
+            "claude-sonnet-4-6",
+            "anthropic/claude-opus-4-7",
+            "anthropic/claude-sonnet-4-6",
+        ],
+    )
+    def test_claude_models_resolve_to_1m_under_claude_code_acp(self, model):
+        # Empty base_url / api_key skips live endpoint probes; this
+        # purely exercises the local DEFAULT_CONTEXT_LENGTHS path.
+        ctx = get_model_context_length(
+            model, base_url="", provider="claude-code-acp"
+        )
+        assert ctx == 1_000_000, (
+            f"{model} under claude-code-acp resolved to {ctx}, expected 1M. "
+            "Check DEFAULT_CONTEXT_LENGTHS keys or the claude-code-acp "
+            "vendor prefix stripping in hermes_cli/model_normalize.py."
+        )

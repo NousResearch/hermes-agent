@@ -21,77 +21,17 @@ from agent._acp_client_base import (
     _AcpClientBase,
     _ensure_path_within_cwd,
     _format_messages_as_prompt,
+    _render_message_content,
     resolve_effective_timeout,
 )
+import agent._acp_client_base as _acp_base
 
 
 # ---------------------------------------------------------------------------
-# Fake subprocess: in-process queue pair that mimics Popen.stdin/stdout/stderr
+# Fake subprocess — lives in tests/agent/conftest.py so the base + client
+# test suites share one source of truth as the real transport evolves.
 # ---------------------------------------------------------------------------
-
-
-class _FakeStdin:
-    """Captures lines the client writes to the subprocess."""
-
-    def __init__(self) -> None:
-        self.lines: list[str] = []
-        self._lock = threading.Lock()
-
-    def write(self, data: str) -> int:
-        with self._lock:
-            self.lines.append(data)
-        return len(data)
-
-    def flush(self) -> None:
-        pass
-
-    def close(self) -> None:
-        pass
-
-
-class _FakeProc:
-    """Pretends to be a subprocess.Popen with manually-pushed stdout frames."""
-
-    def __init__(self) -> None:
-        self.stdin = _FakeStdin()
-        self._inbox: "queue.Queue[str]" = queue.Queue()
-        self.stdout = self  # iterator
-        self.stderr = None
-        self._return_code: int | None = None
-        self._killed = False
-        self._terminated = False
-
-    # Popen-compatible stub surface
-    def poll(self):
-        return self._return_code
-
-    def terminate(self):
-        self._terminated = True
-        self._return_code = 0
-
-    def kill(self):
-        self._killed = True
-        self._return_code = -9
-
-    def wait(self, timeout=None):
-        return self._return_code if self._return_code is not None else 0
-
-    # Stdout as an iterator over JSON-RPC lines
-    def __iter__(self):
-        return self
-
-    def __next__(self):
-        item = self._inbox.get()
-        if item is None:
-            raise StopIteration
-        return item
-
-    # Test helpers
-    def push(self, obj: dict) -> None:
-        self._inbox.put(json.dumps(obj) + "\n")
-
-    def close_stdout(self) -> None:
-        self._inbox.put(None)
+from tests.agent.conftest import _FakeProc, _FakeStdin  # noqa: E402
 
 
 class _HarnessClient(_AcpClientBase):
@@ -452,3 +392,104 @@ def test_ensure_path_within_cwd_accepts_nested(tmp_path):
     nested = tmp_path / "a" / "b.txt"
     resolved = _ensure_path_within_cwd(str(nested), str(tmp_path))
     assert resolved == nested.resolve()
+
+
+def test_multimodal_blocks_log_warning_not_silent_drop(caplog):
+    """Image/audio blocks the flat-string path can't carry should warn once."""
+    # Reset the once-flag to guarantee the warning fires for this test.
+    _acp_base._MULTIMODAL_WARNED = False
+    content = [
+        {"type": "text", "text": "describe this"},
+        {"type": "image_url", "image_url": {"url": "https://example/x.png"}},
+    ]
+    with caplog.at_level("WARNING", logger="agent._acp_client_base"):
+        rendered = _render_message_content(content)
+    assert "describe this" in rendered
+    assert any("dropped content block" in rec.message for rec in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# Stderr log capture on abnormal subprocess exit
+# ---------------------------------------------------------------------------
+
+
+def test_open_stderr_log_file_writes_to_hermes_home(tmp_path, monkeypatch):
+    """The stderr log file lands under ``<hermes_home>/logs/acp/`` and is
+    writable. Writing to the returned handle roundtrips to the file on disk.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    c = _HarnessClient(acp_cwd=str(tmp_path))
+    fh = c._open_stderr_log_file(pid=4242)
+    assert fh is not None
+    fh.write("line-1\nline-2\n")
+    fh.close()
+    assert c._stderr_log_path is not None
+    assert c._stderr_log_path.parent == tmp_path / "logs" / "acp"
+    assert c._stderr_log_path.read_text() == "line-1\nline-2\n"
+
+
+def test_exited_early_error_includes_log_path(tmp_path, monkeypatch):
+    """When the subprocess dies, the RuntimeError points at the full log."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    c, proc, inbox, stderr_tail, _ = _make_client_and_fake_proc(tmp_path)
+    # Simulate the reader having seen 200 lines on stderr; only the last 40
+    # survive in the tail, but the full log on disk should record all of
+    # them — we test the error-surface glue, not the tee.
+    log_path = tmp_path / "logs" / "acp" / "harness-acp-123.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path.write_text("\n".join(f"full-line-{i}" for i in range(200)))
+    c._stderr_log_path = log_path
+    stderr_tail.append("tail-line-only")
+    proc._return_code = 1
+    with pytest.raises(RuntimeError) as excinfo:
+        c._request(proc, inbox, stderr_tail, "m", {}, timeout_seconds=0.3)
+    msg = str(excinfo.value)
+    assert "tail-line-only" in msg
+    assert f"Full stderr: {log_path}" in msg
+    # The full log on disk is untruncated.
+    assert "full-line-0" in log_path.read_text()
+    assert "full-line-199" in log_path.read_text()
+
+
+def test_open_stderr_log_file_disabled_when_home_unwritable(tmp_path, monkeypatch):
+    """If the hermes_home dir can't be created, logging silently disables.
+
+    Subprocess lifecycle must not depend on logging working — the fallback
+    is to return None and set ``_stderr_log_path = None``. The exit error
+    should then NOT include a ``Full stderr:`` suffix.
+    """
+    # Point HERMES_HOME at a path whose parent is a file (mkdir will fail).
+    blocker = tmp_path / "blocker"
+    blocker.write_text("")
+    monkeypatch.setenv("HERMES_HOME", str(blocker / "child"))
+    c = _HarnessClient(acp_cwd=str(tmp_path))
+    fh = c._open_stderr_log_file(pid=1)
+    assert fh is None
+    assert c._stderr_log_path is None
+
+
+def test_cleanup_stale_acp_logs_deletes_old_files(tmp_path):
+    """The 7-day sweep removes old logs, keeps fresh ones."""
+    import os
+    from agent.claude_code_sandbox import cleanup_stale_acp_logs
+
+    log_dir = tmp_path / "logs" / "acp"
+    log_dir.mkdir(parents=True)
+    old = log_dir / "old.log"
+    old.write_text("stale")
+    recent = log_dir / "recent.log"
+    recent.write_text("fresh")
+    # Backdate `old` by 30 days.
+    thirty_days_ago = time.time() - 30 * 86400
+    os.utime(old, (thirty_days_ago, thirty_days_ago))
+
+    removed = cleanup_stale_acp_logs(hermes_home=tmp_path)
+    assert removed == 1
+    assert not old.exists()
+    assert recent.exists()
+
+
+def test_cleanup_stale_acp_logs_handles_missing_dir(tmp_path):
+    """No log dir → no-op, no crash."""
+    from agent.claude_code_sandbox import cleanup_stale_acp_logs
+    assert cleanup_stale_acp_logs(hermes_home=tmp_path) == 0

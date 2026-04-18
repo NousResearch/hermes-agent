@@ -221,6 +221,34 @@ class TestResolveProvider:
         assert resolve_provider("claude-code-cli") == "claude-code-acp"
         assert resolve_provider("anthropic-claude-code") == "claude-code-acp"
 
+    @pytest.mark.parametrize(
+        "alias",
+        ["claude-acp", "claude-code-cli", "anthropic-claude-code"],
+    )
+    def test_claude_code_acp_aliases_flow_through_helpers(self, alias):
+        """Aliases must resolve identically across every downstream helper.
+
+        This guards against a class of silent breakage where one helper
+        resolves the alias but another uses the literal string, leaving
+        only the canonical name working.
+        """
+        from hermes_cli.providers import (
+            is_acp_provider,
+            normalize_provider,
+            get_provider,
+        )
+
+        # Canonicalization + ACP-capability detection must both pick up
+        # the alias — `is_acp_provider` is the registry-driven helper
+        # `run_agent.py` uses to branch on ACP vs. HTTP.
+        assert normalize_provider(alias) == "claude-code-acp"
+        assert is_acp_provider(alias) is True
+        # get_provider must return the same ProviderDef for every alias.
+        canonical_def = get_provider("claude-code-acp")
+        alias_def = get_provider(alias)
+        assert alias_def is not None
+        assert alias_def.id == canonical_def.id
+
     def test_explicit_huggingface(self):
         assert resolve_provider("huggingface") == "huggingface"
 

@@ -585,6 +585,77 @@ def _qwen_portal_headers() -> dict:
     }
 
 
+def _is_nonretryable_acp_error(
+    provider: Optional[str], error: BaseException
+) -> bool:
+    """Return True if *error* on *provider* must NOT trigger a retry.
+
+    ACP providers carry stateful session transcripts on disk
+    (``~/.claude/projects/<cwd-slug>/<session>.jsonl``). Retrying a
+    ``TimeoutError`` or :class:`agent._acp_client_base.AcpCancelled`
+    respawns the subprocess against a transcript with unclosed tool_use
+    blocks, which the Zed adapter replays with ``registerHooks=false`` —
+    producing the "No onPostToolUseHook found" cascade and burning a
+    second 900s ceiling on nothing useful. The retry is actively
+    destructive here; surface the error instead.
+    """
+    try:
+        from agent._acp_client_base import AcpCancelled as _AcpCancelled
+    except Exception:  # pragma: no cover - import guard
+        _AcpCancelled = ()  # type: ignore[assignment]
+    from hermes_cli.providers import is_acp_provider as _is_acp_provider
+    if not _is_acp_provider(provider):
+        return False
+    return isinstance(error, (TimeoutError, _AcpCancelled))
+
+
+def _compute_stale_call_timeout(
+    *,
+    provider: Optional[str],
+    base_url: Optional[str],
+    api_kwargs: dict,
+) -> float:
+    """Non-streaming-call stale-detector threshold.
+
+    Non-streaming calls return nothing until the full response is ready;
+    without a detector, a hung provider blocks for the full httpx timeout
+    (1800s default) with zero feedback. The detector kills the connection
+    early so the outer retry loop can apply richer recovery.
+
+    Three regimes:
+
+    * **ACP providers** (``claude-code-acp`` etc., or any ``acp://`` base
+      URL): bypass entirely. ACP streams liveness via callbacks and
+      enforces its own 900s per-request ceiling in
+      :class:`agent._acp_client_base._AcpClientBase`. Stacking a 300s
+      wall-clock cap on top is destructive — SIGTERM mid-tool-call leaves
+      Claude Code's on-disk transcript with unclosed tool_use blocks and
+      the retry replays them, producing the "No onPostToolUseHook found"
+      cascade (incident 2026-04-18).
+    * **Local endpoints** (localhost, RFC-1918, container DNS): bypass.
+      User controls both sides of the wire.
+    * **Remote HTTP providers**: scale the cap with estimated input token
+      count, because longer prompts take longer to prefill.
+
+    The env override ``HERMES_API_CALL_STALE_TIMEOUT`` is always honored.
+    Bypass only applies when the base (300s) is still at its default.
+    """
+    _stale_base = float(os.getenv("HERMES_API_CALL_STALE_TIMEOUT", 300.0))
+    _url = str(base_url or "")
+    from hermes_cli.providers import is_acp_provider as _is_acp_provider
+    _is_acp = _is_acp_provider(provider) or _url.lower().startswith("acp://")
+    if _stale_base == 300.0 and (
+        _is_acp or (_url and is_local_endpoint(_url))
+    ):
+        return float("inf")
+    _est_tokens = sum(len(str(v)) for v in (api_kwargs or {}).get("messages", [])) // 4
+    if _est_tokens > 100_000:
+        return max(_stale_base, 600.0)
+    if _est_tokens > 50_000:
+        return max(_stale_base, 450.0)
+    return _stale_base
+
+
 class AIAgent:
     """
     AI Agent with tool calling capabilities.
@@ -782,13 +853,18 @@ class AIAgent:
         # surface.
         # When api_mode was explicitly provided, respect it — the user
         # knows what their endpoint supports (#10473).
+        # ACP providers route via a local subprocess, not HTTP — skip the
+        # Responses-API opt-in for them (is_acp_provider is registry-driven
+        # so new ACP providers pick this up automatically). The base_url
+        # `acp://` / `acp+tcp://` checks remain as a belt-and-braces fallback
+        # for cases where the provider id isn't set (e.g. ad-hoc invocations
+        # that only pass base_url).
+        from hermes_cli.providers import is_acp_provider as _is_acp_provider
         if (
             api_mode is None
             and self.api_mode == "chat_completions"
-            and self.provider != "copilot-acp"
-            and self.provider != "claude-code-acp"
-            and not str(self.base_url or "").lower().startswith("acp://copilot")
-            and not str(self.base_url or "").lower().startswith("acp://claude-code")
+            and not _is_acp_provider(self.provider)
+            and not str(self.base_url or "").lower().startswith("acp://")
             and not str(self.base_url or "").lower().startswith("acp+tcp://")
             and (
                 self._is_direct_openai_url()
@@ -1036,7 +1112,9 @@ class AIAgent:
                 # Explicit credentials from CLI/gateway — construct directly.
                 # The runtime provider resolver already handled auth for us.
                 client_kwargs = {"api_key": api_key, "base_url": base_url}
-                if self.provider in ("copilot-acp", "claude-code-acp"):
+                # ACP providers need the subprocess command/args threaded
+                # through; non-ACP providers carry these fields as no-ops.
+                if _is_acp_provider(self.provider):
                     client_kwargs["command"] = self.acp_command
                     client_kwargs["args"] = self.acp_args
                 effective_base = base_url
@@ -5473,23 +5551,12 @@ class AIAgent:
                     self._close_request_openai_client(request_client, reason="request_complete")
 
         # ── Stale-call timeout (mirrors streaming stale detector) ────────
-        # Non-streaming calls return nothing until the full response is
-        # ready.  Without this, a hung provider can block for the full
-        # httpx timeout (default 1800s) with zero feedback.  The stale
-        # detector kills the connection early so the main retry loop can
-        # apply richer recovery (credential rotation, provider fallback).
-        _stale_base = float(os.getenv("HERMES_API_CALL_STALE_TIMEOUT", 300.0))
         _base_url = getattr(self, "_base_url", None) or ""
-        if _stale_base == 300.0 and _base_url and is_local_endpoint(_base_url):
-            _stale_timeout = float("inf")
-        else:
-            _est_tokens = sum(len(str(v)) for v in api_kwargs.get("messages", [])) // 4
-            if _est_tokens > 100_000:
-                _stale_timeout = max(_stale_base, 600.0)
-            elif _est_tokens > 50_000:
-                _stale_timeout = max(_stale_base, 450.0)
-            else:
-                _stale_timeout = _stale_base
+        _stale_timeout = _compute_stale_call_timeout(
+            provider=getattr(self, "provider", None),
+            base_url=_base_url,
+            api_kwargs=api_kwargs,
+        )
 
         _call_start = time.time()
         self._touch_activity("waiting for non-streaming API response")
@@ -9392,12 +9459,13 @@ class AIAgent:
                             self.thinking_callback("")
 
                     _use_streaming = True
+                    from hermes_cli.providers import is_acp_provider as _is_acp_provider
                     # Provider signaled "stream not supported" on a previous
                     # attempt — switch to non-streaming for the rest of this
                     # session instead of re-failing every retry.
                     if getattr(self, "_disable_streaming", False):
                         _use_streaming = False
-                    elif self.provider in ("copilot-acp", "claude-code-acp"):
+                    elif _is_acp_provider(self.provider):
                         # ACP clients stream internally via callbacks and
                         # return a SimpleNamespace, not an iterable chunk
                         # stream — OpenAI-style `for chunk in stream` would
@@ -9987,6 +10055,21 @@ class AIAgent:
                         thinking_spinner = None
                     if self.thinking_callback:
                         self.thinking_callback("")
+
+                    # See :func:`_is_nonretryable_acp_error` for the full
+                    # rationale: ACP timeouts/cancellations on retry
+                    # corrupt the on-disk session transcript and trigger
+                    # the adapter's "No onPostToolUseHook found" cascade.
+                    if _is_nonretryable_acp_error(
+                        getattr(self, "provider", None), api_error
+                    ):
+                        logger.warning(
+                            "ACP provider %s hit %s; not retrying "
+                            "(would corrupt session state).",
+                            getattr(self, "provider", None),
+                            type(api_error).__name__,
+                        )
+                        raise
 
                     # -----------------------------------------------------------
                     # UnicodeEncodeError recovery.  Two common causes:

@@ -333,6 +333,27 @@ def normalize_provider(name: str) -> str:
     return ALIASES.get(key, key)
 
 
+def is_acp_provider(provider: Optional[str]) -> bool:
+    """Return True if ``provider`` is backed by a local ACP subprocess.
+
+    Driven by :data:`HERMES_OVERLAYS` — any overlay whose ``base_url_override``
+    starts with ``acp://`` is ACP-backed. Using the registry instead of a
+    hardcoded string list means adding a new ACP provider (e.g.
+    ``cursor-acp``) only requires a single overlay entry; the call sites in
+    ``run_agent.py`` that ask "is this ACP?" pick it up automatically.
+
+    Accepts ``None`` / empty strings for convenience (returns ``False``).
+    Alias input is resolved via :func:`normalize_provider` first.
+    """
+    if not provider:
+        return False
+    canonical = normalize_provider(provider)
+    overlay = HERMES_OVERLAYS.get(canonical)
+    if overlay is None:
+        return False
+    return overlay.base_url_override.startswith("acp://")
+
+
 def get_provider(name: str) -> Optional[ProviderDef]:
     """Look up a provider by id or alias, merging all data sources.
 

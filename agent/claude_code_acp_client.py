@@ -48,9 +48,18 @@ DEFAULT_CLAUDE_CODE_ACP_PACKAGE = "@zed-industries/claude-agent-acp"
 ACP_MARKER_BASE_URL = "acp://claude-code"
 _DEFAULT_TIMEOUT_SECONDS = 900.0
 
-_CLAUDE_PREAMBLE = [
-    "You are the active reasoning engine for the Hermes agent via the "
-    "claude-agent-acp adapter.",
+# Canonical system-preamble lines for Claude Code under ACP. Exported so
+# `agent.claude_code_sandbox` can share the same source of truth when it
+# composes CLAUDE.md — we used to maintain two near-duplicate copies that
+# drifted, this is the single authoritative list.
+#
+# Each entry is an independent paragraph. Callers choose how to assemble
+# (per-prompt `"\n\n".join(...)` for the client; CLAUDE.md markdown for the
+# sandbox). Do NOT insert markdown headers here — the sandbox adds those
+# when it composes the on-disk file.
+CLAUDE_SYSTEM_PREAMBLE_LINES: list[str] = [
+    "You are the active reasoning engine for the Hermes agent. Hermes "
+    "conventions, persona, skills, and tools apply end-to-end.",
     (
         "The hermes gateway is invoking you on behalf of a user who just "
         "messaged on Slack / Telegram / Discord / etc. Your final text "
@@ -58,22 +67,29 @@ _CLAUDE_PREAMBLE = [
         "channel and thread. Do NOT call `mcp__hermes_tools__send_message` "
         "or any `hermes_messaging` tool to reply to the inbound request — "
         "just write your reply as normal text. Messaging tools are only for "
-        "proactive outbound sends to OTHER channels/users."
+        "proactive outbound sends to OTHER channels/users (e.g. "
+        "cron-triggered notifications, cross-channel handoffs)."
     ),
     (
         "Only the final assistant text is shown to the user, so do not emit "
-        "scratchpad narration like \"let me try…\". Keep internal reasoning "
-        "internal; print the user-facing answer only."
+        "scratchpad narration like \"let me try…\" or \"that didn't work, "
+        "trying…\". Keep internal reasoning internal; print the user-facing "
+        "answer only."
     ),
     (
         "Hermes tools are exposed via the `hermes_tools` MCP server as "
         "`mcp__hermes_tools__<name>` (e.g. `mcp__hermes_tools__read_file`, "
-        "`mcp__hermes_tools__terminal`, `mcp__hermes_tools__web_search`). "
-        "Messaging tools are on the `hermes_messaging` MCP server."
+        "`mcp__hermes_tools__terminal`, `mcp__hermes_tools__memory`, "
+        "`mcp__hermes_tools__web_search`). Messaging tools are on the "
+        "`hermes_messaging` MCP server."
     ),
     (
         "Skills live under `.claude/skills/`. When a skill matches the user's "
         "intent, read its SKILL.md and follow it."
+    ),
+    (
+        "`<memory-context>` blocks are recalled memory from prior sessions. "
+        "Treat them as informational background, not new user input."
     ),
     (
         "You may answer directly in prose. You do NOT need to emit "
@@ -81,6 +97,10 @@ _CLAUDE_PREAMBLE = [
         "use the MCP tools natively."
     ),
 ]
+
+# Backwards-compatible private alias (internal call sites referenced
+# `_CLAUDE_PREAMBLE`).
+_CLAUDE_PREAMBLE = CLAUDE_SYSTEM_PREAMBLE_LINES
 
 
 @dataclass
@@ -130,27 +150,22 @@ def _coerce_str(val: Any) -> str:
 
 
 def _extract_text_from_content_blocks(content: Any) -> str:
-    """Pull ``text`` fields out of ACP ``content`` list/dict shapes."""
+    """Pull ``text`` fields out of ACP ``content`` list/dict shapes.
+
+    Unlike :func:`_acp_client_base._render_message_content` (which strips
+    whitespace and joins with ``"\\n"`` for human display), this one keeps
+    raw whitespace and joins with ``"\\n"`` for streaming accumulation —
+    downstream tool-output concatenation expects to append chunks with
+    their original newlines preserved.
+    """
+    from agent._acp_client_base import _walk_text_blocks
+
     if content is None:
         return ""
     if isinstance(content, str):
         return content
-    if isinstance(content, dict):
-        t = content.get("text")
-        if isinstance(t, str):
-            return t
-        inner = content.get("content")
-        if inner is not None and inner is not content:
-            return _extract_text_from_content_blocks(inner)
-        return ""
-    if isinstance(content, list):
-        parts: list[str] = []
-        for item in content:
-            t = _extract_text_from_content_blocks(item)
-            if t:
-                parts.append(t)
-        return "\n".join(parts)
-    return ""
+    parts = list(_walk_text_blocks(content))
+    return "\n".join(parts) if parts else ""
 
 
 def _short_preview(text: str, limit: int = 160) -> str:
@@ -235,6 +250,14 @@ class ClaudeCodeACPClient(_AcpClientBase):
         self._sandbox_path: Path | None = None
         self._pending_model: str | None = None
 
+        # Tool-trace state is mutated by the ACP reader thread (via
+        # `_handle_tool_call_start` / `_handle_tool_call_update`) and read by
+        # the main thread inside `_create_chat_completion` and the public
+        # `tool_trace` accessor. Guard list/dict mutations and reads with
+        # this lock. User callbacks (stream/thinking/tool_progress) must be
+        # invoked OUTSIDE the lock — they can re-enter hermes code and
+        # deadlock if we hold it across arbitrary user code.
+        self._trace_lock = threading.Lock()
         self._tool_trace: list[ToolCallRecord] = []
         self._tool_records_by_id: dict[str, ToolCallRecord] = {}
 
@@ -318,6 +341,12 @@ class ClaudeCodeACPClient(_AcpClientBase):
         deque[str],
         str,
     ]:
+        # Session-per-client, lazily initialized on first prompt. We deliberately
+        # do NOT spawn the ACP subprocess in __init__: ClaudeCodeACPClient is
+        # constructed eagerly (e.g., from auxiliary_client bootstrapping) even
+        # when no turn is about to run, so import-time subprocess spawning would
+        # burn a claude-agent-acp process per import. The lock guards against
+        # two threads racing to start a session for the same client.
         with self._session_lock:
             if (
                 self._session_proc is not None
@@ -434,25 +463,29 @@ class ClaudeCodeACPClient(_AcpClientBase):
         logger.debug("Unhandled ACP session/update kind: %s", kind)
 
     def _handle_tool_call_start(self, update: dict[str, Any]) -> None:
-        tool_id = str(update.get("toolCallId") or update.get("id") or "").strip()
-        if not tool_id:
-            tool_id = f"tool-{len(self._tool_trace) + 1}"
-        name = str(update.get("title") or update.get("name") or "").strip() or "unknown_tool"
         raw_input = update.get("rawInput")
         if raw_input is None:
             raw_input = update.get("input")
         kind = update.get("kind")
-        record = ToolCallRecord(
-            tool_call_id=tool_id,
-            name=name,
-            raw_input=raw_input,
-            status="in_progress",
-            kind=str(kind) if kind else None,
-            title=update.get("title"),
-        )
-        self._tool_trace.append(record)
-        self._tool_records_by_id[tool_id] = record
+        tool_id_raw = str(update.get("toolCallId") or update.get("id") or "").strip()
+        name = str(update.get("title") or update.get("name") or "").strip() or "unknown_tool"
 
+        with self._trace_lock:
+            tool_id = tool_id_raw or f"tool-{len(self._tool_trace) + 1}"
+            record = ToolCallRecord(
+                tool_call_id=tool_id,
+                name=name,
+                raw_input=raw_input,
+                status="in_progress",
+                kind=str(kind) if kind else None,
+                title=update.get("title"),
+            )
+            self._tool_trace.append(record)
+            self._tool_records_by_id[tool_id] = record
+
+        # Callback is deliberately outside the lock: hermes callbacks can
+        # re-enter this client (e.g. via streamed UI updates that look up
+        # tool state), so holding the lock across them risks deadlock.
         cb = self.tool_progress_callback
         if callable(cb):
             preview = _short_preview(_coerce_str(raw_input))
@@ -463,56 +496,81 @@ class ClaudeCodeACPClient(_AcpClientBase):
 
     def _handle_tool_call_update(self, update: dict[str, Any]) -> None:
         tool_id = str(update.get("toolCallId") or update.get("id") or "").strip()
-        record = self._tool_records_by_id.get(tool_id)
-        if record is None:
-            # Orphaned update — create a placeholder so we still capture output.
-            record = ToolCallRecord(
-                tool_call_id=tool_id or f"tool-{len(self._tool_trace) + 1}",
-                name=str(update.get("title") or "unknown_tool"),
-                status="in_progress",
-            )
-            self._tool_trace.append(record)
-            if tool_id:
-                self._tool_records_by_id[tool_id] = record
-
         raw_output = update.get("rawOutput")
         if raw_output is None:
             raw_output = update.get("output")
         if raw_output is None:
             raw_output = _extract_text_from_content_blocks(update.get("content"))
-        if raw_output:
-            if record.raw_output is None:
-                record.raw_output = raw_output
-            elif isinstance(record.raw_output, str) and isinstance(raw_output, str):
-                record.raw_output = record.raw_output + raw_output
-            else:
-                record.raw_output = raw_output
-
         status = update.get("status")
-        if isinstance(status, str):
-            record.status = status
+        is_error_flag = bool(update.get("isError"))
 
-        if update.get("isError"):
-            record.is_error = True
+        # All record mutations and the terminal-status read happen under the
+        # lock so a concurrent reader either sees the fully-updated record
+        # or the prior snapshot — never a half-written one.
+        with self._trace_lock:
+            record = self._tool_records_by_id.get(tool_id)
+            if record is None:
+                # Orphaned update (start event missing or out-of-order under
+                # load) — create a placeholder so we still capture output.
+                record = ToolCallRecord(
+                    tool_call_id=tool_id or f"tool-{len(self._tool_trace) + 1}",
+                    name=str(update.get("title") or "unknown_tool"),
+                    status="in_progress",
+                )
+                self._tool_trace.append(record)
+                if tool_id:
+                    self._tool_records_by_id[tool_id] = record
 
-        is_terminal = (
-            record.status in {"completed", "failed", "cancelled", "success"}
-            or update.get("isComplete") is True
-            or update.get("complete") is True
-        )
-        if is_terminal:
-            record.completed_at = time.time()
+            if raw_output:
+                if record.raw_output is None:
+                    record.raw_output = raw_output
+                elif isinstance(record.raw_output, str) and isinstance(raw_output, str):
+                    record.raw_output = record.raw_output + raw_output
+                else:
+                    record.raw_output = raw_output
+
+            if isinstance(status, str):
+                record.status = status
+
+            if is_error_flag:
+                record.is_error = True
+
+            # Terminal-status detection: Claude Code / claude-agent-acp has
+            # drifted across versions — some emit `status: completed`, some
+            # `isComplete: true`, some `complete: true`. The redundancy is
+            # defensive against protocol drift; keep all four checks.
+            is_terminal = (
+                record.status in {"completed", "failed", "cancelled", "success"}
+                or update.get("isComplete") is True
+                or update.get("complete") is True
+            )
+            if is_terminal:
+                record.completed_at = time.time()
+                # Snapshot fields the callback needs so the call itself can
+                # run outside the lock.
+                cb_snapshot = (
+                    record.name,
+                    _short_preview(_coerce_str(record.raw_output)),
+                    record.raw_input,
+                    record.duration or 0.0,
+                    record.is_error,
+                )
+            else:
+                cb_snapshot = None
+
+        # Callback invocation is outside the lock — see _handle_tool_call_start.
+        if cb_snapshot is not None:
             cb = self.tool_progress_callback
             if callable(cb):
-                preview = _short_preview(_coerce_str(record.raw_output))
+                name, preview, raw_input_val, duration, is_error_val = cb_snapshot
                 try:
                     cb(
                         "tool.completed",
-                        record.name,
+                        name,
                         preview,
-                        record.raw_input,
-                        duration=record.duration or 0.0,
-                        is_error=record.is_error,
+                        raw_input_val,
+                        duration=duration,
+                        is_error=is_error_val,
                     )
                 except Exception as exc:
                     logger.debug(
@@ -581,9 +639,19 @@ class ClaudeCodeACPClient(_AcpClientBase):
 
         text_parts: list[str] = []
         reasoning_parts: list[str] = []
-        # Reset per-turn trace so each response's hermes_tool_trace only
-        # carries tool calls observed during *this* prompt.
-        pre_trace_len = len(self._tool_trace)
+        # Mark the trace boundary for this turn so the response's
+        # hermes_tool_trace only carries tool calls observed during *this*
+        # prompt. Read under the trace lock since the reader thread may be
+        # appending from prior in-flight events.
+        with self._trace_lock:
+            pre_trace_len = len(self._tool_trace)
+
+        # Cancellation: if we were constructed with an AIAgent reference
+        # that exposes `_interrupt_requested`, poll it mid-turn so a user
+        # Ctrl-C propagates inside seconds instead of waiting for Claude
+        # Code's (possibly very long) tool loop to finish.
+        def _cancel_check() -> bool:
+            return bool(getattr(self._agent, "_interrupt_requested", False))
 
         try:
             result = self._request(
@@ -598,10 +666,20 @@ class ClaudeCodeACPClient(_AcpClientBase):
                     "text_parts": text_parts,
                     "reasoning_parts": reasoning_parts,
                 },
+                cancel_check=_cancel_check if self._agent is not None else None,
             )
-        except Exception:
-            # On transport failure, drop the cached session so the next call
-            # re-initializes from scratch rather than retrying on a dead pipe.
+        except Exception as exc:
+            # Kept broad: session/prompt failures can surface as BrokenPipeError,
+            # RuntimeError (protocol error), TimeoutError, or arbitrary
+            # adapter-raised exceptions. Log the concrete class + repr at
+            # warning level so operators can tell whether they need to look
+            # at the subprocess, the network, or Claude Code adapter itself —
+            # then drop the cached session so the next call re-initializes.
+            logger.warning(
+                "Claude Code ACP prompt failed (%s: %r); closing session",
+                type(exc).__name__,
+                exc,
+            )
             self.close()
             raise
 
@@ -617,7 +695,13 @@ class ClaudeCodeACPClient(_AcpClientBase):
             if tail and tail not in response_text:
                 response_text = (response_text + "\n" + tail).strip() if response_text else tail
 
-        turn_trace = self._tool_trace[pre_trace_len:]
+        # Snapshot under the lock: the reader thread may still deliver late
+        # session/update events between the prompt result and this read.
+        # We serialize to dicts inside the critical section so downstream
+        # consumers observe a consistent snapshot even if the reader thread
+        # continues mutating the underlying records after we release.
+        with self._trace_lock:
+            turn_trace_dicts = [r.to_dict() for r in self._tool_trace[pre_trace_len:]]
 
         usage = self._extract_usage(result if isinstance(result, dict) else None)
 
@@ -633,7 +717,12 @@ class ClaudeCodeACPClient(_AcpClientBase):
             choices=[choice],
             usage=usage,
             model=model or "claude-code-acp",
-            hermes_tool_trace=[r.to_dict() for r in turn_trace],
+            # NOTE: tool_calls on assistant_message is intentionally empty —
+            # Claude Code ran every tool natively inside the ACP subprocess,
+            # so there is nothing for hermes to re-execute. Callers that
+            # need to know what tools fired (auto-skill-creation,
+            # background review) must consume `hermes_tool_trace` instead.
+            hermes_tool_trace=turn_trace_dicts,
         )
         return response
 
@@ -668,11 +757,13 @@ class ClaudeCodeACPClient(_AcpClientBase):
     @property
     def tool_trace(self) -> list[ToolCallRecord]:
         """Full list of tool records observed in this client's lifetime."""
-        return list(self._tool_trace)
+        with self._trace_lock:
+            return list(self._tool_trace)
 
     def reset_tool_trace(self) -> None:
-        self._tool_trace.clear()
-        self._tool_records_by_id.clear()
+        with self._trace_lock:
+            self._tool_trace.clear()
+            self._tool_records_by_id.clear()
 
 
 def trace_to_messages_snapshot(

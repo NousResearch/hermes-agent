@@ -15,6 +15,16 @@ Subclasses override :meth:`_create_chat_completion` to pick their turn
 lifecycle, :meth:`_handle_session_update` to consume streaming updates,
 and optionally :meth:`_build_session_new_params` to inject
 ``mcpServers`` / ``systemPrompt`` / similar.
+
+**Why subclass rather than wrap.** The JSON-RPC transport is tangled with
+subprocess lifecycle and with server-initiated callbacks (permission
+requests, fs reads/writes) that the subclass must answer in-line during a
+single ``_request`` poll. A composition-based wrapper would have to expose
+every dispatch hook as a callback (or worse, thread a context object
+through every call); subclassing lets the child class override
+:meth:`_handle_session_update` while inheriting the full poll-and-dispatch
+loop. If a future ACP client wants a different transport but the same
+event vocabulary, pull out a ``AcpEventSink`` protocol then — not before.
 """
 
 from __future__ import annotations
@@ -30,7 +40,7 @@ import time
 from collections import deque
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Iterator, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +51,17 @@ def _jsonrpc_error(message_id: Any, code: int, message: str) -> dict[str, Any]:
         "id": message_id,
         "error": {"code": code, "message": message},
     }
+
+
+class AcpCancelled(RuntimeError):
+    """Raised when an in-flight ACP request is cancelled by the caller.
+
+    Subclass of :class:`RuntimeError` on purpose: the run_agent retry loop
+    catches broad ``Exception`` for transient transport errors, and
+    cancellation should unwind the same way without being mistaken for a
+    retryable failure. Callers that need to distinguish (e.g. to suppress
+    the usual error surfacing) should catch ``AcpCancelled`` explicitly.
+    """
 
 
 def _ensure_path_within_cwd(path_text: str, cwd: str) -> Path:
@@ -58,7 +79,69 @@ def _ensure_path_within_cwd(path_text: str, cwd: str) -> Path:
     return resolved
 
 
+def _walk_text_blocks(obj: Any) -> Iterator[str]:
+    """Yield text fragments from any nested OpenAI/ACP content shape.
+
+    Handles the union of shapes we see in the wild:
+      - ``str`` → yield as-is
+      - ``{"text": "..."}`` → yield the text value
+      - ``{"content": ...}`` → recurse into the inner content
+      - ``list`` → recurse into each item
+    Anything else (e.g. image/tool blocks) is skipped silently. Callers
+    decide how to frame the output (strip/join separator, etc.).
+    """
+    if obj is None:
+        return
+    if isinstance(obj, str):
+        if obj:
+            yield obj
+        return
+    if isinstance(obj, dict):
+        text = obj.get("text")
+        if isinstance(text, str) and text:
+            yield text
+            return
+        inner = obj.get("content")
+        if inner is not None and inner is not obj:
+            yield from _walk_text_blocks(inner)
+        return
+    if isinstance(obj, list):
+        for item in obj:
+            yield from _walk_text_blocks(item)
+
+
+_NON_TEXT_BLOCK_TYPES = {"image", "image_url", "input_audio", "audio", "file"}
+_MULTIMODAL_WARNED = False
+
+
+def _warn_once_multimodal_stripped(block_types: set[str]) -> None:
+    """Log once per process when non-text content (image/audio/…) is dropped.
+
+    The flat-string ACP prompt path can only carry text. Silently dropping
+    these was the old behavior and hid real capability gaps in logs — a
+    single warning per process strikes a balance between visibility and
+    log-spam.
+    """
+    global _MULTIMODAL_WARNED
+    if _MULTIMODAL_WARNED or not block_types:
+        return
+    _MULTIMODAL_WARNED = True
+    logger.warning(
+        "ACP prompt path is text-only; dropped content block(s): %s. "
+        "Attach the image via an on-disk path the model can read, or use "
+        "a provider that supports multimodal prompts.",
+        ", ".join(sorted(block_types)),
+    )
+
+
 def _render_message_content(content: Any) -> str:
+    """Flatten a message ``content`` field to a single stripped string.
+
+    Used to render a conversation turn for the flat-string ACP prompt path.
+    Opaque dicts that carry no text (e.g. image blocks, tool blocks) fall
+    back to a JSON dump so their presence at least survives into the
+    prompt — dropping them silently would break multi-modal-adjacent flows.
+    """
     if content is None:
         return ""
     if isinstance(content, str):
@@ -70,14 +153,15 @@ def _render_message_content(content: Any) -> str:
             return str(content.get("content") or "").strip()
         return json.dumps(content, ensure_ascii=True)
     if isinstance(content, list):
-        parts: list[str] = []
+        stripped_types: set[str] = set()
         for item in content:
-            if isinstance(item, str):
-                parts.append(item)
-            elif isinstance(item, dict):
-                text = item.get("text")
-                if isinstance(text, str) and text.strip():
-                    parts.append(text.strip())
+            if isinstance(item, dict):
+                block_type = str(item.get("type") or "")
+                if block_type in _NON_TEXT_BLOCK_TYPES:
+                    stripped_types.add(block_type)
+        if stripped_types:
+            _warn_once_multimodal_stripped(stripped_types)
+        parts = [t.strip() for t in _walk_text_blocks(content) if t.strip()]
         return "\n".join(parts).strip()
     return str(content).strip()
 
@@ -212,6 +296,13 @@ class _AcpClientBase:
         self._active_process: subprocess.Popen[str] | None = None
         self._active_process_lock = threading.Lock()
         self._next_request_id = 0
+        # Path to the disk-resident full stderr log (populated by
+        # :meth:`_start_subprocess`). The deque tail feeds the error
+        # message; this file captures everything, so operators can triage
+        # an abnormal exit even when the noisy tail (e.g., repeated hook
+        # errors) buries the real cause. Exposed via the "Full stderr: …"
+        # suffix on ``process exited early`` errors.
+        self._stderr_log_path: Optional[Path] = None
 
     # ------------------------------------------------------------------
     # Env-driven resolution of the launcher path + args
@@ -242,13 +333,17 @@ class _AcpClientBase:
         self.is_closed = True
         if proc is None:
             return
+        # Narrow the exception bands: terminate() / wait() can raise
+        # OSError on already-dead processes, TimeoutExpired if the child
+        # ignores SIGTERM, and ProcessLookupError on races. Anything else
+        # (e.g. AttributeError) is a bug — let it surface.
         try:
             proc.terminate()
             proc.wait(timeout=2)
-        except Exception:
+        except (subprocess.TimeoutExpired, OSError, ProcessLookupError):
             try:
                 proc.kill()
-            except Exception:
+            except (OSError, ProcessLookupError):
                 pass
 
     def _start_subprocess(self) -> tuple[subprocess.Popen[str], "queue.Queue[dict[str, Any]]", deque[str]]:
@@ -284,7 +379,15 @@ class _AcpClientBase:
             self._active_process = proc
 
         inbox: "queue.Queue[dict[str, Any]]" = queue.Queue()
+        # Bounded stderr ring: enough lines to diagnose a crash or startup
+        # failure without letting a chatty subprocess (warnings in a loop,
+        # etc.) balloon memory. 40 lines is empirically enough to cover the
+        # typical npm/uv install + node startup error surface. Parallel
+        # disk log (_open_stderr_log_file) captures the full stream so
+        # the last-40 cap doesn't bury the exit cause under trailing noise.
         stderr_tail: deque[str] = deque(maxlen=40)
+
+        log_file = self._open_stderr_log_file(proc.pid)
 
         def _stdout_reader() -> None:
             for line in proc.stdout:
@@ -296,12 +399,57 @@ class _AcpClientBase:
         def _stderr_reader() -> None:
             if proc.stderr is None:
                 return
-            for line in proc.stderr:
-                stderr_tail.append(line.rstrip("\n"))
+            try:
+                for line in proc.stderr:
+                    stripped = line.rstrip("\n")
+                    stderr_tail.append(stripped)
+                    if log_file is not None:
+                        try:
+                            log_file.write(line if line.endswith("\n") else line + "\n")
+                            log_file.flush()
+                        except OSError:
+                            # Disk full / EIO — stderr tail still works.
+                            pass
+            finally:
+                if log_file is not None:
+                    try:
+                        log_file.close()
+                    except OSError:
+                        pass
 
         threading.Thread(target=_stdout_reader, daemon=True).start()
         threading.Thread(target=_stderr_reader, daemon=True).start()
         return proc, inbox, stderr_tail
+
+    # ------------------------------------------------------------------
+    # Stderr logging to disk
+    # ------------------------------------------------------------------
+
+    def _open_stderr_log_file(self, pid: int):
+        """Open a per-subprocess stderr log under ``<hermes_home>/logs/acp/``.
+
+        Returns the open file handle and sets ``self._stderr_log_path``.
+        On any failure (unwritable home, permission denied, exotic FS), the
+        log is silently disabled — subprocess lifecycle must not depend on
+        logging working.
+        """
+        try:
+            try:
+                from hermes_constants import get_hermes_home
+                home = Path(get_hermes_home())
+            except Exception:
+                home = Path.home() / ".hermes"
+            log_dir = home / "logs" / "acp"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            ts = time.strftime("%Y%m%d-%H%M%S")
+            provider = self._provider_label.replace("/", "_")
+            path = log_dir / f"{provider}-{pid}-{ts}.log"
+            self._stderr_log_path = path
+            return path.open("w", encoding="utf-8", errors="replace")
+        except OSError as exc:
+            logger.debug("Unable to open ACP stderr log: %s", exc)
+            self._stderr_log_path = None
+            return None
 
     # ------------------------------------------------------------------
     # JSON-RPC request/response
@@ -321,12 +469,24 @@ class _AcpClientBase:
         *,
         timeout_seconds: float | None = None,
         dispatch_ctx: Optional[dict[str, Any]] = None,
+        cancel_check: Optional[Callable[[], bool]] = None,
     ) -> Any:
         """Send a JSON-RPC request and block for the matching response.
 
-        Server-initiated messages are dispatched to
-        :meth:`_handle_server_message` until the response arrives or the
-        deadline expires.
+        Deadline vs. poll budget: the outer ``deadline`` bounds the total
+        wait. The ``inbox.get(timeout=0.1)`` inside the loop is a
+        *responsiveness* bound — it only determines how often we wake up
+        to dispatch server-initiated messages (``session/update``, ``fs/*``,
+        permission requests) and to re-check ``cancel_check`` / process
+        liveness. Server messages DO NOT count against the deadline as
+        long as the final response still arrives in time.
+
+        ``cancel_check``, when supplied, is polled each wake-up. Returning
+        True raises :class:`AcpCancelled`, which aborts the turn — the
+        caller is responsible for tearing the subprocess down so the next
+        turn starts clean. Cancellation matters because ACP turns can run
+        for many minutes (Claude Code's long tool loops), and a user
+        Ctrl-C otherwise has to wait the full turn out.
         """
         timeout_seconds = (
             timeout_seconds if timeout_seconds is not None else self._default_timeout_seconds
@@ -345,6 +505,10 @@ class _AcpClientBase:
         while time.time() < deadline:
             if proc.poll() is not None:
                 break
+            if cancel_check is not None and cancel_check():
+                raise AcpCancelled(
+                    f"{self._provider_label} {method} cancelled by caller"
+                )
             try:
                 msg = inbox.get(timeout=0.1)
             except queue.Empty:
@@ -364,7 +528,14 @@ class _AcpClientBase:
 
         stderr_text = "\n".join(stderr_tail).strip()
         if proc.poll() is not None and stderr_text:
-            raise RuntimeError(f"{self._provider_label} process exited early: {stderr_text}")
+            log_hint = (
+                f"\nFull stderr: {self._stderr_log_path}"
+                if self._stderr_log_path is not None
+                else ""
+            )
+            raise RuntimeError(
+                f"{self._provider_label} process exited early: {stderr_text}{log_hint}"
+            )
         raise TimeoutError(
             f"Timed out waiting for {self._provider_label} response to {method}."
         )
@@ -413,6 +584,13 @@ class _AcpClientBase:
         message_id = msg.get("id")
         params = msg.get("params") or {}
 
+        # Security model for the fs/* methods:
+        # ACP lets the adapter read/write arbitrary paths, which would let a
+        # prompt-injected Claude Code session escape the per-session sandbox
+        # (e.g. read ~/.ssh/id_rsa). :func:`_ensure_path_within_cwd` clamps
+        # every path to the session cwd; the sandbox IS the blast-radius
+        # limit, not the ACP protocol. Do NOT relax this — any provider
+        # request to reach outside the cwd is either a bug or a compromise.
         if method == "session/request_permission":
             response = self._handle_permission_request(message_id, params)
         elif method == "fs/read_text_file":
@@ -438,6 +616,13 @@ class _AcpClientBase:
     # ------------------------------------------------------------------
 
     def _handle_permission_request(self, message_id: Any, params: dict[str, Any]) -> dict[str, Any]:
+        # Trust model: we auto-approve every permission prompt because the
+        # session sandbox (cwd containment in :func:`_ensure_path_within_cwd`)
+        # IS the blast radius. The adapter cannot write outside the cwd
+        # without first tricking our fs shim, and it cannot exfiltrate
+        # anything the sandbox can't already see. Interactive per-action
+        # approval would be user-hostile for a non-interactive backend and
+        # buys no security over the containment boundary we already enforce.
         return {
             "jsonrpc": "2.0",
             "id": message_id,

@@ -242,11 +242,6 @@ from gateway.background_job_start_service import (
 from gateway.auto_background_runtime_service import (
     resolve_employee_background_dispatch as shared_resolve_employee_background_dispatch,
 )
-from gateway.attachment_message_runtime_service import (
-    collect_audio_paths as shared_collect_audio_paths,
-    has_visible_image_attachments as shared_has_visible_image_attachments,
-    prepend_document_context_notes as shared_prepend_document_context_notes,
-)
 from gateway.auto_vision_runtime_service import (
     auto_vision_cache_key as shared_auto_vision_cache_key,
     auto_vision_cooldown_remaining as shared_auto_vision_cooldown_remaining,
@@ -280,32 +275,18 @@ from gateway.group_control_intents import (
     looks_like_group_listen_enable_request,
     looks_like_group_runtime_status_query as looks_like_shared_group_runtime_status_query,
 )
-from gateway.message_preprocessing_runtime_service import (
-    is_shared_thread_session as shared_is_shared_thread_session,
-    prepend_reply_context_if_missing as shared_prepend_reply_context_if_missing,
-    prepend_shared_thread_sender as shared_prepend_shared_thread_sender,
-)
-from gateway.agent_prelude_runtime_service import (
-    append_discord_voice_channel_context as shared_append_discord_voice_channel_context,
-    build_agent_start_hook_context as shared_build_agent_start_hook_context,
-    run_gateway_agent_prelude as shared_run_gateway_agent_prelude,
-)
 from gateway.agent_completion_runtime_service import (
-    prepare_gateway_agent_completion as shared_prepare_gateway_agent_completion,
-    drain_pending_process_watchers as shared_drain_pending_process_watchers,
     stop_gateway_typing_indicator as shared_stop_gateway_typing_indicator,
 )
 from gateway.agent_response_runtime_service import (
     build_gateway_exception_response as shared_build_gateway_exception_response,
 )
-from gateway.agent_delivery_runtime_service import (
-    finalize_gateway_agent_delivery as shared_finalize_gateway_agent_delivery,
-)
 from gateway.message_turn_context_runtime_service import (
     prepare_gateway_message_turn_context,
 )
-from gateway.transcript_persistence_runtime_service import (
-    persist_gateway_agent_transcript as shared_persist_gateway_agent_transcript,
+from gateway.foreground_turn_runtime_service import (
+    finalize_gateway_foreground_success,
+    prepare_gateway_foreground_message,
 )
 from gateway.context_reference_runtime_service import (
     GatewayContextReferenceOutcome,
@@ -3653,139 +3634,40 @@ class GatewayRunner:
         # attachments (documents, audio, etc.) are not sent to the vision
         # tool even when they appear in the same message.
         # -----------------------------------------------------------------
-        raw_message_text = event.text or ""
-        message_text = raw_message_text
-
         # -----------------------------------------------------------------
-        # Sender attribution for shared thread sessions.
-        #
-        # When multiple users share a single thread session (the default for
-        # threads), prefix each message with [sender name] so the agent can
-        # tell participants apart.  Skip for DMs (single-user by nature) and
-        # when per-user thread isolation is explicitly enabled.
-        # -----------------------------------------------------------------
-        _is_shared_thread = shared_is_shared_thread_session(
-            source=source,
-            thread_sessions_per_user=bool(
-                getattr(self.config, "thread_sessions_per_user", False)
-            ),
-        )
-        attachments = event.ensure_attachments()
-
-        if shared_has_visible_image_attachments(attachments):
-            image_paths = _image_vision_inputs_from_event(event)
-            if image_paths:
-                message_text = await self._enrich_message_with_vision(
-                    raw_message_text,
+        try:
+            prepared_foreground_message = await prepare_gateway_foreground_message(
+                event=event,
+                source=source,
+                session_id=session_entry.session_id,
+                history=history,
+                thread_sessions_per_user=bool(
+                    getattr(self.config, "thread_sessions_per_user", False)
+                ),
+                hooks=self.hooks,
+                adapters=self.adapters,
+                image_vision_inputs_from_event=_image_vision_inputs_from_event,
+                enrich_message_with_vision=lambda text, image_paths: self._enrich_message_with_vision(
+                    text,
                     image_paths,
                     source=source,
-                )
-            elif not raw_message_text.strip():
-                message_text = self._auto_vision_degraded_note("", pending=False)
-        
-        # -----------------------------------------------------------------
-        # Auto-transcribe voice/audio messages sent by the user
-        # -----------------------------------------------------------------
-        if attachments:
-            audio_paths = shared_collect_audio_paths(
-                attachments,
-                message_type=event.message_type,
-                voice_type=MessageType.VOICE,
-                audio_type=MessageType.AUDIO,
-            )
-            if audio_paths:
-                message_text = await self._enrich_message_with_transcription(
-                    message_text, audio_paths
-                )
-                # If STT failed, send a direct message to the user so they
-                # know voice isn't configured — don't rely on the agent to
-                # relay the error clearly.
-                _stt_fail_markers = (
-                    "No STT provider",
-                    "STT is disabled",
-                    "can't listen",
-                    "VOICE_TOOLS_OPENAI_KEY",
-                )
-                if any(m in message_text for m in _stt_fail_markers):
-                    _stt_adapter = self.adapters.get(source.platform)
-                    _stt_meta = {"thread_id": source.thread_id} if source.thread_id else None
-                    if _stt_adapter:
-                        try:
-                            _stt_msg = (
-                                "🎤 I received your voice message but can't transcribe it — "
-                                "no speech-to-text provider is configured.\n\n"
-                                "To enable voice: install faster-whisper "
-                                "(`pip install faster-whisper` in the Hermes venv) "
-                                "and set `stt.enabled: true` in config.yaml, "
-                                "then /restart the gateway."
-                            )
-                            # Point to setup skill if it's installed
-                            if self._has_setup_skill():
-                                _stt_msg += "\n\nFor full setup instructions, type: `/skill hermes-agent-setup`"
-                            await _stt_adapter.send(
-                                source.chat_id, _stt_msg,
-                                metadata=_stt_meta,
-                            )
-                        except Exception:
-                            pass
-
-        # -----------------------------------------------------------------
-        # Enrich document messages with context notes for the agent
-        # -----------------------------------------------------------------
-        message_text = shared_prepend_document_context_notes(
-            message_text,
-            attachments=attachments,
-            message_type=event.message_type,
-            document_type=MessageType.DOCUMENT,
-        )
-
-        # -----------------------------------------------------------------
-        # Inject reply context when user replies to a message not in history.
-        # Telegram (and other platforms) let users reply to specific messages,
-        # but if the quoted message is from a previous session, cron delivery,
-        # or background task, the agent has no context about what's being
-        # referenced. Prepend the quoted text so the agent understands. (#1594)
-        # -----------------------------------------------------------------
-        message_text = shared_prepend_reply_context_if_missing(
-            message_text=message_text,
-            reply_to_text=getattr(event, "reply_to_text", None),
-            reply_to_message_id=getattr(event, "reply_to_message_id", None),
-            history=history,
-        )
-
-        message_text = shared_prepend_shared_thread_sender(
-            message_text=message_text,
-            user_name=source.user_name,
-            shared_thread=_is_shared_thread,
-        )
-
-        try:
-            hook_ctx = shared_build_agent_start_hook_context(
-                platform=source.platform,
-                user_id=source.user_id,
-                session_id=session_entry.session_id,
-                message_text=message_text,
-            )
-            _adapter = self.adapters.get(source.platform)
-            prelude = await shared_run_gateway_agent_prelude(
-                hooks=self.hooks,
-                hook_ctx=hook_ctx,
-                message_text=message_text,
-                should_expand_context_references="@" in message_text,
-                expand_context_references=lambda: _expand_gateway_context_references(
-                    message_text,
+                ),
+                auto_vision_degraded_note=lambda text, pending: self._auto_vision_degraded_note(
+                    text,
+                    pending=pending,
+                ),
+                enrich_message_with_transcription=self._enrich_message_with_transcription,
+                has_setup_skill=self._has_setup_skill,
+                expand_context_references=lambda text: _expand_gateway_context_references(
+                    text,
                     runner=self,
                     logger=logger,
                 ),
-                send_blocked_warning=(
-                    (lambda warning: _adapter.send(source.chat_id, warning))
-                    if _adapter
-                    else None
-                ),
             )
-            if prelude.blocked:
+            if prepared_foreground_message.blocked:
                 return
-            message_text = prelude.message_text
+            message_text = prepared_foreground_message.message_text
+            hook_ctx = prepared_foreground_message.hook_ctx
 
             # Run the agent
             agent_result = await self._run_agent(
@@ -3802,21 +3684,22 @@ class GatewayRunner:
                 raw_message=event.raw_message,
             )
 
-            await shared_stop_gateway_typing_indicator(
-                adapters=self.adapters,
-                platform=source.platform,
-                chat_id=source.chat_id,
-            )
-
-            _process_registry = None
-            try:
-                from tools.process_registry import process_registry as _process_registry
-            except Exception as e:
-                logger.error("Process watcher setup error: %s", e)
-
-            prepared_completion = await shared_prepare_gateway_agent_completion(
+            return await finalize_gateway_foreground_success(
                 agent_result=agent_result,
-                history_len=len(history),
+                history=history,
+                message_text=message_text,
+                hook_ctx=hook_ctx,
+                session_entry=session_entry,
+                session_store=self.session_store,
+                session_db_present=self._session_db is not None,
+                source=source,
+                event=event,
+                adapters=self.adapters,
+                hooks=self.hooks,
+                logger=logger,
+                msg_start_time=_msg_start_time,
+                platform_name=_platform_name,
+                show_reasoning=bool(getattr(self, "_show_reasoning", False)),
                 empty_response_fallback=lambda empty_kind: _empty_response_fallback(
                     source,
                     message_text,
@@ -3825,62 +3708,9 @@ class GatewayRunner:
                     raw_message=event.raw_message,
                     event=event,
                 ),
-                session_entry=session_entry,
-                show_reasoning=bool(getattr(self, "_show_reasoning", False)),
-                hook_ctx=hook_ctx,
-                hooks=self.hooks,
-                logger=logger,
-                platform_name=_platform_name,
-                chat_id=source.chat_id,
-                msg_start_time=_msg_start_time,
-                process_registry=_process_registry,
-                run_process_watcher=self._run_process_watcher,
-                create_task=asyncio.create_task,
-            )
-            response = prepared_completion.response
-            suppress_reply = prepared_completion.suppress_reply
-            agent_messages = prepared_completion.agent_messages
-
-            # NOTE: Dangerous command approvals are now handled inline by the
-            # blocking gateway approval mechanism in tools/approval.py.  The agent
-            # thread blocks until the user responds with /approve or /deny, so by
-            # the time we reach here the approval has already been resolved.  The
-            # old post-loop pop_pending + approval_hint code was removed in favour
-            # of the blocking approach that mirrors CLI's synchronous input().
-            
-            # Save the full conversation to the transcript, including tool calls.
-            # This preserves the complete agent loop (tool_calls, tool results,
-            # intermediate reasoning) so sessions can be resumed with full context
-            # and transcripts are useful for debugging and training data.
-            #
-            # IMPORTANT: When the agent failed before producing any response
-            # (e.g. context-overflow 400), do NOT persist the user's message.
-            # Persisting it would make the session even larger, causing the
-            # same failure on the next attempt — an infinite loop. (#1630)
-            shared_persist_gateway_agent_transcript(
-                session_store=self.session_store,
-                session_id=session_entry.session_id,
-                session_key=session_entry.session_key,
-                platform=source.platform.value if source.platform else "",
-                history=history,
-                agent_result=agent_result,
-                agent_messages=agent_messages,
-                message_text=message_text,
-                visible_final_response=response,
                 resolve_gateway_model=_resolve_gateway_model,
                 sync_visible_final_response=_sync_visible_final_response_into_messages,
-                session_db_present=self._session_db is not None,
-                logger=logger,
-            )
-
-            return await shared_finalize_gateway_agent_delivery(
-                agent_result=agent_result,
-                suppress_reply=suppress_reply,
-                response=response,
-                agent_messages=agent_messages,
-                event=event,
-                platform=source.platform,
-                adapters=self.adapters,
+                run_process_watcher=self._run_process_watcher,
                 should_send_voice_reply=self._should_send_voice_reply,
                 send_voice_reply=self._send_voice_reply,
                 deliver_media_from_response=self._deliver_media_from_response,

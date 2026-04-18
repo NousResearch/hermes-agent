@@ -209,6 +209,35 @@ class ContextCompressor(ContextEngine):
         self._last_compression_savings_pct = 100.0
         self._ineffective_compression_count = 0
 
+    def _resolve_threshold_tokens(self, context_length: int) -> int:
+        percentage_threshold = max(
+            int(context_length * self.threshold_percent),
+            MINIMUM_CONTEXT_LENGTH,
+        )
+        explicit = getattr(self, "explicit_threshold_tokens", None)
+        if explicit is None:
+            return percentage_threshold
+        if explicit >= context_length:
+            if not self.quiet_mode:
+                logger.warning(
+                    "Explicit compression threshold_tokens=%d is >= context_length=%d for model=%s; "
+                    "falling back to percentage threshold=%d",
+                    explicit,
+                    context_length,
+                    self.model,
+                    percentage_threshold,
+                )
+            return percentage_threshold
+        return explicit
+
+    def _refresh_token_budgets(self) -> None:
+        self.threshold_tokens = self._resolve_threshold_tokens(self.context_length)
+        target_tokens = int(self.threshold_tokens * self.summary_target_ratio)
+        self.tail_token_budget = target_tokens
+        self.max_summary_tokens = min(
+            int(self.context_length * 0.05), _SUMMARY_TOKENS_CEILING,
+        )
+
     def update_model(
         self,
         model: str,
@@ -217,6 +246,7 @@ class ContextCompressor(ContextEngine):
         api_key: str = "",
         provider: str = "",
         api_mode: str = "",
+        explicit_threshold_tokens: int | None = None,
     ) -> None:
         """Update model info after a model switch or fallback activation."""
         self.model = model
@@ -225,10 +255,9 @@ class ContextCompressor(ContextEngine):
         self.provider = provider
         self.api_mode = api_mode
         self.context_length = context_length
-        self.threshold_tokens = max(
-            int(context_length * self.threshold_percent),
-            MINIMUM_CONTEXT_LENGTH,
-        )
+        if explicit_threshold_tokens is not None:
+            self.explicit_threshold_tokens = explicit_threshold_tokens
+        self._refresh_token_budgets()
 
     def __init__(
         self,
@@ -244,6 +273,7 @@ class ContextCompressor(ContextEngine):
         config_context_length: int | None = None,
         provider: str = "",
         api_mode: str = "",
+        explicit_threshold_tokens: int | None = None,
     ):
         self.model = model
         self.base_url = base_url
@@ -255,6 +285,11 @@ class ContextCompressor(ContextEngine):
         self.protect_last_n = protect_last_n
         self.summary_target_ratio = max(0.10, min(summary_target_ratio, 0.80))
         self.quiet_mode = quiet_mode
+        self.explicit_threshold_tokens = (
+            int(explicit_threshold_tokens)
+            if explicit_threshold_tokens is not None and int(explicit_threshold_tokens) > 0
+            else None
+        )
 
         self.context_length = get_model_context_length(
             model, base_url=base_url, api_key=api_key,
@@ -262,29 +297,30 @@ class ContextCompressor(ContextEngine):
             provider=provider,
         )
         # Floor: never compress below MINIMUM_CONTEXT_LENGTH tokens even if
-        # the percentage would suggest a lower value.  This prevents premature
-        # compression on large-context models at 50% while keeping the % sane
-        # for models right at the minimum.
-        self.threshold_tokens = max(
-            int(self.context_length * threshold_percent),
-            MINIMUM_CONTEXT_LENGTH,
-        )
+        # the percentage would suggest a lower value.  When an explicit
+        # threshold_tokens override is configured, it takes precedence so long
+        # as it still fits inside the active model context window.
+        self._refresh_token_budgets()
         self.compression_count = 0
 
-        # Derive token budgets: ratio is relative to the threshold, not total context
-        target_tokens = int(self.threshold_tokens * self.summary_target_ratio)
-        self.tail_token_budget = target_tokens
-        self.max_summary_tokens = min(
-            int(self.context_length * 0.05), _SUMMARY_TOKENS_CEILING,
-        )
-
         if not quiet_mode:
+            effective_threshold_pct = (
+                (self.threshold_tokens / self.context_length) * 100
+                if self.context_length else 0
+            )
+            threshold_source = (
+                "explicit_threshold_tokens"
+                if self.explicit_threshold_tokens is not None
+                and self.threshold_tokens == self.explicit_threshold_tokens
+                else "threshold_percent"
+            )
             logger.info(
                 "Context compressor initialized: model=%s context_length=%d "
-                "threshold=%d (%.0f%%) target_ratio=%.0f%% tail_budget=%d "
+                "threshold=%d (%.0f%%, %s) target_ratio=%.0f%% tail_budget=%d "
                 "provider=%s base_url=%s",
                 model, self.context_length, self.threshold_tokens,
-                threshold_percent * 100, self.summary_target_ratio * 100,
+                effective_threshold_pct, threshold_source,
+                self.summary_target_ratio * 100,
                 self.tail_token_budget,
                 provider or "none", base_url or "none",
             )

@@ -1414,6 +1414,19 @@ class AIAgent:
         compression_enabled = str(_compression_cfg.get("enabled", True)).lower() in ("true", "1", "yes")
         compression_target_ratio = float(_compression_cfg.get("target_ratio", 0.20))
         compression_protect_last = int(_compression_cfg.get("protect_last_n", 20))
+        compression_threshold_tokens = _compression_cfg.get("threshold_tokens")
+        if compression_threshold_tokens is not None:
+            try:
+                compression_threshold_tokens = int(compression_threshold_tokens)
+                if compression_threshold_tokens <= 0:
+                    raise ValueError("threshold_tokens must be positive")
+            except (TypeError, ValueError):
+                logger.warning(
+                    "Invalid compression.threshold_tokens in config.yaml: %r — must be a positive integer. "
+                    "Falling back to percentage threshold.",
+                    compression_threshold_tokens,
+                )
+                compression_threshold_tokens = None
 
         # Read explicit context_length override from model config
         _model_cfg = _agent_cfg.get("model", {})
@@ -1554,6 +1567,7 @@ class AIAgent:
                 config_context_length=_config_context_length,
                 provider=self.provider,
                 api_mode=self.api_mode,
+                explicit_threshold_tokens=compression_threshold_tokens,
             )
         self.compression_enabled = compression_enabled
 
@@ -1642,7 +1656,20 @@ class AIAgent:
 
         if not self.quiet_mode:
             if compression_enabled:
-                print(f"📊 Context limit: {self.context_compressor.context_length:,} tokens (compress at {int(compression_threshold*100)}% = {self.context_compressor.threshold_tokens:,})")
+                _threshold_pct = int(
+                    (self.context_compressor.threshold_tokens / max(self.context_compressor.context_length, 1)) * 100
+                )
+                _explicit_threshold = getattr(self.context_compressor, "explicit_threshold_tokens", None)
+                if _explicit_threshold is not None and self.context_compressor.threshold_tokens == _explicit_threshold:
+                    print(
+                        f"📊 Context limit: {self.context_compressor.context_length:,} tokens "
+                        f"(compress at explicit threshold_tokens = {self.context_compressor.threshold_tokens:,} ≈ {_threshold_pct}%)"
+                    )
+                else:
+                    print(
+                        f"📊 Context limit: {self.context_compressor.context_length:,} tokens "
+                        f"(compress at {_threshold_pct}% = {self.context_compressor.threshold_tokens:,})"
+                    )
             else:
                 print(f"📊 Context limit: {self.context_compressor.context_length:,} tokens (auto-compression disabled)")
 

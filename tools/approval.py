@@ -125,6 +125,12 @@ DANGEROUS_PATTERNS = [
     # Script execution via heredoc — bypasses the -e/-c flag patterns above.
     # `python3 << 'EOF'` feeds arbitrary code via stdin without -c/-e flags.
     (r'\b(python[23]?|perl|ruby|node)\s+<<', "script execution via heredoc"),
+    # Script execution from writable locations - bypasses the -e/-c flag patterns.
+    # Catches python3 /tmp/evil.py, bash ~/run.sh, node ./exploit.js etc.
+    # The script content is invisible to DANGEROUS_PATTERNS and can contain arbitrary code.
+    (r'\b(python[23]?|perl|ruby|node|bash|sh|zsh|ksh)\s+(?:(?:-[a-zA-Z0-9]+\s+)*)?(?:(?:/tmp/|/var/tmp/|~/|\./)[^\s]+\.(?:py|sh|bash|zsh|ksh|rb|pl|js|lua)\b)', "execute script in writable location (/tmp, ~, ./)"),
+    # Direct execution of shell scripts in writable locations: ./foo.sh, ~/bar.sh
+    (r'(?:\./|~/)(?:[^\s/]+/)*[^\s]*\.(?:sh|bash|zsh|ksh)\b', "direct execution of shell script in writable location"),
     # Git destructive operations that can lose uncommitted work or rewrite
     # shared history. Not captured by rm/chmod/etc patterns.
     (r'\bgit\s+reset\s+--hard\b', "git reset --hard (destroys uncommitted changes)"),

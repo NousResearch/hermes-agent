@@ -1091,6 +1091,16 @@ class GatewayRunner:
         except Exception:
             pass
 
+    def _sync_running_agent_runtime_status(
+        self,
+        gateway_state: Optional[str] = None,
+        exit_reason: Optional[str] = None,
+    ) -> None:
+        self._update_runtime_status(
+            gateway_state=gateway_state,
+            exit_reason=exit_reason,
+        )
+
     def _update_platform_runtime_status(
         self,
         platform: str,
@@ -2351,6 +2361,9 @@ class GatewayRunner:
 
             self.adapters.clear()
             self._running_agents.clear()
+            self._sync_running_agent_runtime_status(
+                "draining" if self._draining else None
+            )
             self._pending_messages.clear()
             self._pending_approvals.clear()
             if hasattr(self, '_busy_ack_ts'):
@@ -2840,6 +2853,7 @@ class GatewayRunner:
                 del self._running_agents[_quick_key]
                 self._running_agents_ts.pop(_quick_key, None)
                 self._busy_ack_ts.pop(_quick_key, None)
+                self._sync_running_agent_runtime_status()
 
         if _quick_key in self._running_agents:
             if event.get_command() == "status":
@@ -2869,6 +2883,7 @@ class GatewayRunner:
                 self._pending_messages.pop(_quick_key, None)
                 if _quick_key in self._running_agents:
                     del self._running_agents[_quick_key]
+                    self._sync_running_agent_runtime_status()
                 logger.info("STOP for session %s — agent interrupted, session lock released", _quick_key[:20])
                 return "⚡ Stopped. You can continue this session."
 
@@ -2892,6 +2907,7 @@ class GatewayRunner:
                 # doesn't think an agent is still active.
                 if _quick_key in self._running_agents:
                     del self._running_agents[_quick_key]
+                    self._sync_running_agent_runtime_status()
                 return await self._handle_reset_command(event)
 
             # /queue <prompt> — queue without interrupting
@@ -2970,6 +2986,7 @@ class GatewayRunner:
                     # Force-clean the sentinel so the session is unlocked.
                     if _quick_key in self._running_agents:
                         del self._running_agents[_quick_key]
+                        self._sync_running_agent_runtime_status()
                     logger.info("HARD STOP (pending) for session %s — sentinel cleared", _quick_key[:20])
                     return "⚡ Force-stopped. The agent was still starting — session unlocked."
                 # Queue the message so it will be picked up after the
@@ -3276,6 +3293,7 @@ class GatewayRunner:
         # same session — corrupting the transcript.
         self._running_agents[_quick_key] = _AGENT_PENDING_SENTINEL
         self._running_agents_ts[_quick_key] = time.time()
+        self._sync_running_agent_runtime_status()
 
         try:
             return await self._handle_message_with_agent(event, source, _quick_key)
@@ -3286,6 +3304,7 @@ class GatewayRunner:
             # not linger or the session would be permanently locked out.
             if self._running_agents.get(_quick_key) is _AGENT_PENDING_SENTINEL:
                 del self._running_agents[_quick_key]
+                self._sync_running_agent_runtime_status()
             self._running_agents_ts.pop(_quick_key, None)
 
     async def _prepare_inbound_message_text(
@@ -4504,6 +4523,7 @@ class GatewayRunner:
             # Force-clean the sentinel so the session is unlocked.
             if session_key in self._running_agents:
                 del self._running_agents[session_key]
+                self._sync_running_agent_runtime_status()
             logger.info("STOP (pending) for session %s — sentinel cleared", session_key[:20])
             return "⚡ Stopped. The agent hadn't started yet — you can continue this session."
         if agent:
@@ -4512,6 +4532,7 @@ class GatewayRunner:
             # keep it locked forever.
             if session_key in self._running_agents:
                 del self._running_agents[session_key]
+                self._sync_running_agent_runtime_status()
             return "⚡ Stopped. You can continue this session."
         else:
             return "No active task to stop."
@@ -6429,6 +6450,7 @@ class GatewayRunner:
         # Clear any running agent for this session key
         if session_key in self._running_agents:
             del self._running_agents[session_key]
+            self._sync_running_agent_runtime_status()
 
         # Switch the session entry to point at the old session
         new_entry = self.session_store.switch_session(session_key, target_id)
@@ -9041,8 +9063,9 @@ class GatewayRunner:
                 await asyncio.sleep(0.05)
             if session_key:
                 self._running_agents[session_key] = agent_holder[0]
-                if self._draining:
-                    self._update_runtime_status("draining")
+                self._sync_running_agent_runtime_status(
+                    "draining" if self._draining else None
+                )
         
         tracking_task = asyncio.create_task(track_agent())
         
@@ -9520,10 +9543,13 @@ class GatewayRunner:
             tracking_task.cancel()
             if session_key and session_key in self._running_agents:
                 del self._running_agents[session_key]
+                self._sync_running_agent_runtime_status(
+                    "draining" if self._draining else None
+                )
             if session_key:
                 self._running_agents_ts.pop(session_key, None)
-            if self._draining:
-                self._update_runtime_status("draining")
+            elif self._draining:
+                self._sync_running_agent_runtime_status("draining")
             
             # Wait for cancelled tasks
             for task in [progress_task, interrupt_monitor, tracking_task, _notify_task]:

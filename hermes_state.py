@@ -1101,7 +1101,10 @@ class SessionDB:
                 like_where.append(f"m.role IN ({','.join('?' for _ in role_filter)})")
                 like_params.extend(role_filter)
             like_sql = f"""
-                SELECT m.id, m.session_id, m.role, m.content AS snippet,
+                SELECT m.id, m.session_id, m.role,
+                       substr(m.content,
+                              max(1, instr(m.content, ?) - 40),
+                              120) AS snippet,
                        m.content, m.timestamp, m.tool_name,
                        s.source, s.model, s.started_at AS session_started
                 FROM messages m
@@ -1111,6 +1114,8 @@ class SessionDB:
                 LIMIT ? OFFSET ?
             """
             like_params.extend([limit, offset])
+            # instr() parameter goes first in the bound list
+            like_params = [raw_query] + like_params
             with self._lock:
                 like_cursor = self._conn.execute(like_sql, like_params)
                 matches = [dict(row) for row in like_cursor.fetchall()]

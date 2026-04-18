@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 from unittest.mock import patch as mock_patch
 
+import pytest
 import tools.approval as approval_module
 from tools.approval import (
     _get_approval_mode,
@@ -20,6 +21,38 @@ from tools.approval import (
     request_dangerous_action_approval,
     submit_pending,
 )
+
+
+@pytest.fixture(autouse=True)
+def _reset_approval_runtime_state(monkeypatch):
+    """Isolate approval module state so full-suite order does not matter."""
+
+    with approval_module._lock:
+        approval_module._pending.clear()
+        approval_module._session_approved.clear()
+        approval_module._permanent_approved.clear()
+        approval_module._gateway_queues.clear()
+        approval_module._gateway_notify_cbs.clear()
+
+    for env_key in (
+        "HERMES_INTERACTIVE",
+        "HERMES_GATEWAY_SESSION",
+        "HERMES_EXEC_ASK",
+        "HERMES_YOLO_MODE",
+        "HERMES_SESSION_KEY",
+        "HERMES_SESSION_ADMIN_USER_IDS",
+        "HERMES_SESSION_IS_ADMIN",
+    ):
+        monkeypatch.delenv(env_key, raising=False)
+
+    yield
+
+    with approval_module._lock:
+        approval_module._pending.clear()
+        approval_module._session_approved.clear()
+        approval_module._permanent_approved.clear()
+        approval_module._gateway_queues.clear()
+        approval_module._gateway_notify_cbs.clear()
 
 
 class TestApprovalModeParsing:
@@ -202,19 +235,19 @@ class TestSessionKeyContext:
             approval_module.reset_current_session_key(token)
 
     def test_gateway_runner_binds_session_key_to_context_before_agent_run(self):
-        run_py = Path(__file__).resolve().parents[2] / "gateway" / "run.py"
-        module = ast.parse(run_py.read_text(encoding="utf-8"))
+        module_path = Path(__file__).resolve().parents[2] / "gateway" / "agent_execution_service.py"
+        module = ast.parse(module_path.read_text(encoding="utf-8"))
 
-        run_sync = None
+        approval_context = None
         for node in ast.walk(module):
-            if isinstance(node, ast.FunctionDef) and node.name == "run_sync":
-                run_sync = node
+            if isinstance(node, ast.FunctionDef) and node.name == "gateway_approval_context":
+                approval_context = node
                 break
 
-        assert run_sync is not None, "gateway.run.run_sync not found"
+        assert approval_context is not None, "gateway.agent_execution_service.gateway_approval_context not found"
 
         called_names = set()
-        for node in ast.walk(run_sync):
+        for node in ast.walk(approval_context):
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
                 called_names.add(node.func.id)
 

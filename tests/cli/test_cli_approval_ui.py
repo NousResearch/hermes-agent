@@ -73,9 +73,9 @@ class TestCliApprovalUi:
         lines = rendered.splitlines()
 
         assert lines[0].startswith("╭")
-        assert "Dangerous Command" not in lines[0]
-        assert any("Dangerous Command" in line for line in lines[1:3])
-        assert "Show full command" in rendered
+        assert "危险命令" not in lines[0]
+        assert any("危险命令" in line for line in lines[1:3])
+        assert "查看完整命令" in rendered
         assert "githubcli-archive-keyring.gpg" not in rendered
 
     def test_approval_display_shows_full_command_after_view(self):

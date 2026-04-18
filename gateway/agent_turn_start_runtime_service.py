@@ -74,7 +74,11 @@ async def prepare_gateway_agent_turn_start(
         is_admin_user=is_admin_user,
     )
 
-    runner._set_session_env(context)
+    runner._current_session_env_event = event
+    try:
+        runner._set_session_env(context)
+    finally:
+        runner._current_session_env_event = None
     history = runner.session_store.load_transcript(session_entry.session_id)
 
     direct_shortcut_response = direct_shortcut_handler_fn(

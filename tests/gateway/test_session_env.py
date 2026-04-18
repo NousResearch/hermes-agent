@@ -1,5 +1,6 @@
 import os
 
+from gateway.platforms.base import MessageEvent
 from gateway.config import Platform
 from gateway.run import GatewayRunner
 from gateway.session import SessionContext, SessionSource
@@ -39,6 +40,7 @@ def test_clear_session_env_removes_thread_id(monkeypatch):
     monkeypatch.setenv("HERMES_SESSION_CHAT_NAME", "Group")
     monkeypatch.setenv("HERMES_SESSION_CHAT_TYPE", "group")
     monkeypatch.setenv("HERMES_SESSION_THREAD_ID", "17585")
+    monkeypatch.setenv("HERMES_SESSION_MESSAGE_ID", "msg-42")
 
     runner._clear_session_env()
 
@@ -47,3 +49,22 @@ def test_clear_session_env_removes_thread_id(monkeypatch):
     assert os.getenv("HERMES_SESSION_CHAT_NAME") is None
     assert os.getenv("HERMES_SESSION_CHAT_TYPE") is None
     assert os.getenv("HERMES_SESSION_THREAD_ID") is None
+    assert os.getenv("HERMES_SESSION_MESSAGE_ID") is None
+
+
+def test_set_session_env_includes_message_id_when_event_provided(monkeypatch):
+    runner = object.__new__(GatewayRunner)
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="-1001",
+        chat_type="group",
+    )
+    context = SessionContext(source=source, connected_platforms=[], home_channels={})
+    event = MessageEvent(text="hello", source=source, message_id="msg-42")
+    runner._current_session_env_event = event
+
+    monkeypatch.delenv("HERMES_SESSION_MESSAGE_ID", raising=False)
+
+    runner._set_session_env(context)
+
+    assert os.getenv("HERMES_SESSION_MESSAGE_ID") == "msg-42"

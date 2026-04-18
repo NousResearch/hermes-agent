@@ -816,6 +816,8 @@ class TestVoiceChannelCommands:
         mock_adapter = AsyncMock()
         mock_adapter._voice_text_channels = {111: 123}
         mock_channel = AsyncMock()
+        transcript_message = SimpleNamespace(id=987, guild_id=111, guild=SimpleNamespace(id=111))
+        mock_channel.send = AsyncMock(return_value=transcript_message)
         mock_adapter._client = MagicMock()
         mock_adapter._client.get_channel = MagicMock(return_value=mock_channel)
         mock_adapter.handle_message = AsyncMock()
@@ -827,6 +829,8 @@ class TestVoiceChannelCommands:
         assert event.message_type == MessageType.VOICE
         assert event.source.chat_id == "123"
         assert event.source.chat_type == "channel"
+        assert event.message_id == "987"
+        assert event.raw_message is transcript_message
 
     @pytest.mark.asyncio
     async def test_input_posts_transcript_in_text_channel(self, runner):

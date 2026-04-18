@@ -1261,10 +1261,16 @@ def terminal_tool(
                         _gw_chat_id = os.getenv("HERMES_SESSION_CHAT_ID", "")
                         _gw_thread_id = os.getenv("HERMES_SESSION_THREAD_ID", "")
                         _gw_chat_type = os.getenv("HERMES_SESSION_CHAT_TYPE", "")
+                        _gw_user_id = os.getenv("HERMES_SESSION_USER_ID", "")
+                        _gw_user_name = os.getenv("HERMES_SESSION_USER_NAME", "")
+                        _gw_message_id = os.getenv("HERMES_SESSION_MESSAGE_ID", "")
                         proc_session.watcher_platform = _gw_platform
                         proc_session.watcher_chat_id = _gw_chat_id
                         proc_session.watcher_thread_id = _gw_thread_id
                         proc_session.watcher_chat_type = _gw_chat_type
+                        proc_session.watcher_user_id = _gw_user_id
+                        proc_session.watcher_user_name = _gw_user_name
+                        proc_session.watcher_message_id = _gw_message_id
                         proc_session.watcher_interval = 5
                         process_registry.pending_watchers.append({
                             "session_id": proc_session.id,
@@ -1274,6 +1280,9 @@ def terminal_tool(
                             "chat_id": _gw_chat_id,
                             "thread_id": _gw_thread_id,
                             "chat_type": _gw_chat_type,
+                            "user_id": _gw_user_id,
+                            "user_name": _gw_user_name,
+                            "message_id": _gw_message_id,
                             "notify_on_complete": True,
                         })
 
@@ -1288,12 +1297,18 @@ def terminal_tool(
                     watcher_chat_id = os.getenv("HERMES_SESSION_CHAT_ID", "")
                     watcher_thread_id = os.getenv("HERMES_SESSION_THREAD_ID", "")
                     watcher_chat_type = os.getenv("HERMES_SESSION_CHAT_TYPE", "")
+                    watcher_user_id = os.getenv("HERMES_SESSION_USER_ID", "")
+                    watcher_user_name = os.getenv("HERMES_SESSION_USER_NAME", "")
+                    watcher_message_id = os.getenv("HERMES_SESSION_MESSAGE_ID", "")
 
                     # Store on session for checkpoint persistence
                     proc_session.watcher_platform = watcher_platform
                     proc_session.watcher_chat_id = watcher_chat_id
                     proc_session.watcher_thread_id = watcher_thread_id
                     proc_session.watcher_chat_type = watcher_chat_type
+                    proc_session.watcher_user_id = watcher_user_id
+                    proc_session.watcher_user_name = watcher_user_name
+                    proc_session.watcher_message_id = watcher_message_id
                     proc_session.watcher_interval = effective_interval
 
                     process_registry.pending_watchers.append({
@@ -1304,6 +1319,9 @@ def terminal_tool(
                         "chat_id": watcher_chat_id,
                         "thread_id": watcher_thread_id,
                         "chat_type": watcher_chat_type,
+                        "user_id": watcher_user_id,
+                        "user_name": watcher_user_name,
+                        "message_id": watcher_message_id,
                     })
 
                 return json.dumps(result_data, ensure_ascii=False)

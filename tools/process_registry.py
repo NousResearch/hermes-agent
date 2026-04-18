@@ -82,6 +82,9 @@ class ProcessSession:
     watcher_chat_id: str = ""
     watcher_thread_id: str = ""
     watcher_chat_type: str = ""
+    watcher_user_id: str = ""
+    watcher_user_name: str = ""
+    watcher_message_id: str = ""
     watcher_interval: int = 0                   # 0 = no watcher configured
     notify_on_complete: bool = False             # Queue agent notification on exit
     _lock: threading.Lock = field(default_factory=threading.Lock)
@@ -837,6 +840,9 @@ class ProcessRegistry:
                             "watcher_chat_id": s.watcher_chat_id,
                             "watcher_thread_id": s.watcher_thread_id,
                             "watcher_chat_type": s.watcher_chat_type,
+                            "watcher_user_id": s.watcher_user_id,
+                            "watcher_user_name": s.watcher_user_name,
+                            "watcher_message_id": s.watcher_message_id,
                             "watcher_interval": s.watcher_interval,
                             "notify_on_complete": s.notify_on_complete,
                         })
@@ -906,6 +912,9 @@ class ProcessRegistry:
                     watcher_chat_id=entry.get("watcher_chat_id", ""),
                     watcher_thread_id=entry.get("watcher_thread_id", ""),
                     watcher_chat_type=watcher_chat_type,
+                    watcher_user_id=entry.get("watcher_user_id", ""),
+                    watcher_user_name=entry.get("watcher_user_name", ""),
+                    watcher_message_id=entry.get("watcher_message_id", ""),
                     watcher_interval=entry.get("watcher_interval", 0),
                     notify_on_complete=entry.get("notify_on_complete", False),
                 )
@@ -924,6 +933,9 @@ class ProcessRegistry:
                         "chat_id": session.watcher_chat_id,
                         "thread_id": session.watcher_thread_id,
                         "chat_type": session.watcher_chat_type,
+                        "user_id": session.watcher_user_id,
+                        "user_name": session.watcher_user_name,
+                        "message_id": session.watcher_message_id,
                         "notify_on_complete": session.notify_on_complete,
                     })
 

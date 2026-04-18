@@ -4253,23 +4253,27 @@ class GatewayRunner:
             return
 
         # Show transcript in text channel (after auth, with mention sanitization)
+        transcript_message = None
         try:
             channel = adapter._client.get_channel(text_ch_id)
             if channel:
                 safe_text = transcript[:2000].replace("@everyone", "@\u200beveryone").replace("@here", "@\u200bhere")
-                await channel.send(f"**[Voice]** <@{user_id}>: {safe_text}")
+                transcript_message = await channel.send(f"**[Voice]** <@{user_id}>: {safe_text}")
         except Exception:
             pass
 
         # Build a synthetic MessageEvent and feed through the normal pipeline
-        # Use SimpleNamespace as raw_message so _get_guild_id() can extract
-        # guild_id and _send_voice_reply() plays audio in the voice channel.
+        # Reuse the transcript post when available so replies can stay
+        # anchored to a real Discord message object. Fall back to a minimal
+        # guild carrier when the transcript echo failed.
         from types import SimpleNamespace
+        raw_message = transcript_message or SimpleNamespace(guild_id=guild_id, guild=None)
         event = MessageEvent(
             source=source,
             text=transcript,
             message_type=MessageType.VOICE,
-            raw_message=SimpleNamespace(guild_id=guild_id, guild=None),
+            raw_message=raw_message,
+            message_id=str(getattr(transcript_message, "id", "") or "") or None,
         )
 
         await adapter.handle_message(event)
@@ -5752,6 +5756,7 @@ class GatewayRunner:
 
     def _set_session_env(self, context: SessionContext) -> None:
         """Set environment variables for the current session."""
+        event = getattr(self, "_current_session_env_event", None)
         os.environ["HERMES_SESSION_PLATFORM"] = context.source.platform.value
         os.environ["HERMES_SESSION_CHAT_ID"] = context.source.chat_id
         if context.source.chat_name:
@@ -5768,6 +5773,8 @@ class GatewayRunner:
             os.environ["HERMES_SESSION_ADMIN_USER_IDS"] = ",".join(context.admin_user_ids)
         if context.is_admin_user is not None:
             os.environ["HERMES_SESSION_IS_ADMIN"] = str(context.is_admin_user).lower()
+        if event is not None and getattr(event, "message_id", None):
+            os.environ["HERMES_SESSION_MESSAGE_ID"] = str(event.message_id)
     
     def _clear_session_env(self) -> None:
         """Clear session environment variables."""
@@ -5781,6 +5788,7 @@ class GatewayRunner:
             "HERMES_SESSION_USER_NAME",
             "HERMES_SESSION_ADMIN_USER_IDS",
             "HERMES_SESSION_IS_ADMIN",
+            "HERMES_SESSION_MESSAGE_ID",
         ]:
             if var in os.environ:
                 del os.environ[var]
@@ -6242,6 +6250,9 @@ class GatewayRunner:
         chat_id = watcher.get("chat_id", "")
         thread_id = watcher.get("thread_id", "")
         chat_type = str(watcher.get("chat_type", "") or "").lower()
+        user_id = str(watcher.get("user_id", "") or "")
+        user_name = str(watcher.get("user_name", "") or "")
+        message_id = str(watcher.get("message_id", "") or "")
         agent_notify = watcher.get("notify_on_complete", False)
         notify_mode = self._load_background_notifications_mode()
 
@@ -6307,11 +6318,15 @@ class GatewayRunner:
                                 chat_id=chat_id,
                                 chat_type=chat_type or "dm",
                                 thread_id=thread_id or None,
+                                user_id=user_id or None,
+                                user_name=user_name or None,
                             )
                             synth_event = MessageEvent(
                                 text=synth_text,
                                 message_type=MessageType.TEXT,
                                 source=_source,
+                                message_id=message_id or None,
+                                metadata={"thread_id": thread_id} if thread_id else None,
                             )
                             logger.info(
                                 "Process %s finished — injecting agent notification for session %s",

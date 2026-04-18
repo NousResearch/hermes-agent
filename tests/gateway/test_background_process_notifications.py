@@ -50,7 +50,14 @@ def _build_runner(monkeypatch, tmp_path, mode: str) -> GatewayRunner:
     return runner
 
 
-def _watcher_dict(session_id="proc_test", thread_id=""):
+def _watcher_dict(
+    session_id="proc_test",
+    thread_id="",
+    *,
+    user_id="",
+    user_name="",
+    message_id="",
+):
     d = {
         "session_id": session_id,
         "check_interval": 0,
@@ -59,6 +66,12 @@ def _watcher_dict(session_id="proc_test", thread_id=""):
     }
     if thread_id:
         d["thread_id"] = thread_id
+    if user_id:
+        d["user_id"] = user_id
+    if user_name:
+        d["user_name"] = user_name
+    if message_id:
+        d["message_id"] = message_id
     return d
 
 
@@ -292,6 +305,59 @@ async def test_qq_group_chat_type_is_preserved_for_agent_notify(monkeypatch, tmp
     assert synth_event.source.platform == qq_platform
     assert synth_event.source.chat_id == "987654321"
     assert synth_event.source.chat_type == "group"
+
+
+@pytest.mark.asyncio
+async def test_agent_notify_preserves_user_and_message_context(monkeypatch, tmp_path):
+    import gateway.run as gateway_run
+    import tools.process_registry as pr_module
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(
+        pr_module,
+        "process_registry",
+        _FakeRegistry(
+            [
+                SimpleNamespace(
+                    output_buffer="done\n",
+                    exited=True,
+                    exit_code=0,
+                    command="sleep 1",
+                )
+            ]
+        ),
+    )
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = GatewayRunner(GatewayConfig())
+    adapter = SimpleNamespace(handle_message=AsyncMock())
+    runner.adapters[Platform.TELEGRAM] = adapter
+
+    await runner._run_process_watcher(
+        {
+            "session_id": "proc_test",
+            "check_interval": 0,
+            "platform": "telegram",
+            "chat_id": "123",
+            "thread_id": "42",
+            "chat_type": "group",
+            "user_id": "u-1",
+            "user_name": "alice",
+            "message_id": "m-123",
+            "notify_on_complete": True,
+        }
+    )
+
+    synth_event = adapter.handle_message.await_args.args[0]
+    assert synth_event.source.user_id == "u-1"
+    assert synth_event.source.user_name == "alice"
+    assert synth_event.source.thread_id == "42"
+    assert synth_event.message_id == "m-123"
+    assert synth_event.metadata == {"thread_id": "42"}
 
 
 @pytest.mark.asyncio

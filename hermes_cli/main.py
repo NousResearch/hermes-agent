@@ -6442,6 +6442,31 @@ For more help on a command:
     # gateway setup
     gateway_subparsers.add_parser("setup", help="Configure messaging platforms")
 
+    # gateway migrate-legacy
+    gateway_migrate_legacy = gateway_subparsers.add_parser(
+        "migrate-legacy",
+        help="Remove legacy hermes.service units from pre-rename installs",
+        description=(
+            "Stop, disable, and remove legacy Hermes gateway unit files "
+            "(e.g. hermes.service) left over from older installs. Profile "
+            "units (hermes-gateway-<profile>.service) and unrelated "
+            "third-party services are never touched."
+        ),
+    )
+    gateway_migrate_legacy.add_argument(
+        "--dry-run",
+        dest="dry_run",
+        action="store_true",
+        help="List what would be removed without doing it",
+    )
+    gateway_migrate_legacy.add_argument(
+        "-y",
+        "--yes",
+        dest="yes",
+        action="store_true",
+        help="Skip the confirmation prompt",
+    )
+
     gateway_parser.set_defaults(func=cmd_gateway)
 
     # =========================================================================

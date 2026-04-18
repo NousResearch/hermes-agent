@@ -425,6 +425,133 @@ def release_all_scoped_locks() -> int:
     return removed
 
 
+# ── --replace takeover marker ─────────────────────────────────────────
+#
+# When a new gateway starts with ``--replace``, it SIGTERMs the existing
+# gateway so it can take over the bot token. PR #5646 made SIGTERM exit
+# the gateway with code 1 so ``Restart=on-failure`` can revive it after
+# unexpected kills — but that also means a --replace takeover target
+# exits 1, which tricks systemd into reviving it 30 seconds later,
+# starting a flap loop against the replacer when both services are
+# enabled in the user's systemd (e.g. ``hermes.service`` + ``hermes-
+# gateway.service``).
+#
+# The takeover marker breaks the loop: the replacer writes a short-lived
+# file naming the target PID + start_time BEFORE sending SIGTERM.
+# The target's shutdown handler reads the marker and, if it names
+# this process, treats the SIGTERM as a planned takeover and exits 0.
+# The marker is unlinked after the target has consumed it, so a stale
+# marker left by a crashed replacer can grief at most one future
+# shutdown on the same PID — and only within _TAKEOVER_MARKER_TTL_S.
+
+_TAKEOVER_MARKER_FILENAME = ".gateway-takeover.json"
+_TAKEOVER_MARKER_TTL_S = 60  # Marker older than this is treated as stale
+
+
+def _get_takeover_marker_path() -> Path:
+    """Return the path to the --replace takeover marker file."""
+    home = get_hermes_home()
+    return home / _TAKEOVER_MARKER_FILENAME
+
+
+def write_takeover_marker(target_pid: int) -> bool:
+    """Record that ``target_pid`` is being replaced by the current process.
+
+    Captures the target's ``start_time`` so that PID reuse after the
+    target exits cannot later match the marker. Also records the
+    replacer's PID and a UTC timestamp for TTL-based staleness checks.
+
+    Returns True on successful write, False on any failure. The caller
+    should proceed with the SIGTERM even if the write fails (the marker
+    is a best-effort signal, not a correctness requirement).
+    """
+    try:
+        target_start_time = _get_process_start_time(target_pid)
+        record = {
+            "target_pid": target_pid,
+            "target_start_time": target_start_time,
+            "replacer_pid": os.getpid(),
+            "written_at": _utc_now_iso(),
+        }
+        _write_json_file(_get_takeover_marker_path(), record)
+        return True
+    except (OSError, PermissionError):
+        return False
+
+
+def consume_takeover_marker_for_self() -> bool:
+    """Check & unlink the takeover marker if it names the current process.
+
+    Returns True only when a valid (non-stale) marker names this PID +
+    start_time. A returning True indicates the current SIGTERM is a
+    planned --replace takeover; the caller should exit 0 instead of
+    signalling ``_signal_initiated_shutdown``.
+
+    Always unlinks the marker on match (and on detected staleness) so
+    subsequent unrelated signals don't re-trigger.
+    """
+    path = _get_takeover_marker_path()
+    record = _read_json_file(path)
+    if not record:
+        return False
+
+    # Any malformed or stale marker → drop it and return False
+    try:
+        target_pid = int(record["target_pid"])
+        target_start_time = record.get("target_start_time")
+        written_at = record.get("written_at") or ""
+    except (KeyError, TypeError, ValueError):
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return False
+
+    # TTL guard: a stale marker older than _TAKEOVER_MARKER_TTL_S is ignored.
+    stale = False
+    try:
+        written_dt = datetime.fromisoformat(written_at)
+        age = (datetime.now(timezone.utc) - written_dt).total_seconds()
+        if age > _TAKEOVER_MARKER_TTL_S:
+            stale = True
+    except (TypeError, ValueError):
+        stale = True  # Unparseable timestamp — treat as stale
+
+    if stale:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return False
+
+    # Does the marker name THIS process?
+    our_pid = os.getpid()
+    our_start_time = _get_process_start_time(our_pid)
+    matches = (
+        target_pid == our_pid
+        and target_start_time is not None
+        and our_start_time is not None
+        and target_start_time == our_start_time
+    )
+
+    # Consume the marker whether it matched or not — a marker that doesn't
+    # match our identity is stale-for-us anyway.
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+    return matches
+
+
+def clear_takeover_marker() -> None:
+    """Remove the takeover marker unconditionally. Safe to call repeatedly."""
+    try:
+        _get_takeover_marker_path().unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 def get_running_pid(
     pid_path: Optional[Path] = None,
     *,

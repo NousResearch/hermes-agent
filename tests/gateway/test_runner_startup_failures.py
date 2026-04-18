@@ -202,3 +202,120 @@ async def test_start_gateway_replace_force_uses_terminate_pid(monkeypatch, tmp_p
 
     assert ok is True
     assert calls == [(42, False), (42, True)]
+
+
+@pytest.mark.asyncio
+async def test_start_gateway_replace_writes_takeover_marker_before_sigterm(
+    monkeypatch, tmp_path
+):
+    """--replace must write a takeover marker BEFORE sending SIGTERM.
+
+    The marker lets the target's shutdown handler identify the signal as a
+    planned takeover (→ exit 0) rather than an unexpected kill (→ exit 1).
+    Without the marker, PR #5646's signal-recovery path would revive the
+    target via systemd Restart=on-failure, starting a flap loop.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    # Record the ORDER of marker-write + terminate_pid calls
+    events: list[str] = []
+    marker_paths_seen: list = []
+
+    def record_write_marker(target_pid: int) -> bool:
+        events.append(f"write_marker(target_pid={target_pid})")
+        # Also check that the marker file actually exists after this call
+        marker_paths_seen.append(
+            (tmp_path / ".gateway-takeover.json").exists() is False  # not yet
+        )
+        # Actually write the marker so we can verify cleanup later
+        from gateway.status import _get_takeover_marker_path, _write_json_file, _get_process_start_time
+        _write_json_file(_get_takeover_marker_path(), {
+            "target_pid": target_pid,
+            "target_start_time": 0,
+            "replacer_pid": 100,
+            "written_at": "2026-04-17T00:00:00+00:00",
+        })
+        return True
+
+    def record_terminate(pid, force=False):
+        events.append(f"terminate_pid(pid={pid}, force={force})")
+
+    class _CleanExitRunner:
+        def __init__(self, config):
+            self.config = config
+            self.should_exit_cleanly = True
+            self.exit_reason = None
+            self.adapters = {}
+
+        async def start(self):
+            return True
+
+        async def stop(self):
+            return None
+
+    monkeypatch.setattr("gateway.status.get_running_pid", lambda: 42)
+    monkeypatch.setattr("gateway.status.remove_pid_file", lambda: None)
+    monkeypatch.setattr("gateway.status.release_all_scoped_locks", lambda: 0)
+    monkeypatch.setattr("gateway.status.write_takeover_marker", record_write_marker)
+    monkeypatch.setattr("gateway.status.terminate_pid", record_terminate)
+    monkeypatch.setattr("gateway.run.os.getpid", lambda: 100)
+    # Simulate old process exiting on first check so we don't loop into force-kill
+    monkeypatch.setattr(
+        "gateway.run.os.kill",
+        lambda pid, sig: (_ for _ in ()).throw(ProcessLookupError()),
+    )
+    monkeypatch.setattr("time.sleep", lambda _: None)
+    monkeypatch.setattr("tools.skills_sync.sync_skills", lambda quiet=True: None)
+    monkeypatch.setattr("hermes_logging.setup_logging", lambda hermes_home, mode: tmp_path)
+    monkeypatch.setattr("hermes_logging._add_rotating_handler", lambda *args, **kwargs: None)
+    monkeypatch.setattr("gateway.run.GatewayRunner", _CleanExitRunner)
+
+    from gateway.run import start_gateway
+
+    ok = await start_gateway(config=GatewayConfig(), replace=True, verbosity=None)
+
+    assert ok is True
+    # Ordering: marker written BEFORE SIGTERM
+    assert events[0] == "write_marker(target_pid=42)"
+    assert any(e.startswith("terminate_pid(pid=42") for e in events[1:])
+    # Marker file cleanup: replacer cleans it after loop completes
+    assert not (tmp_path / ".gateway-takeover.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_start_gateway_replace_clears_marker_on_permission_denied(
+    monkeypatch, tmp_path
+):
+    """If we fail to kill the existing PID (permission denied), clean up the
+    marker so it doesn't grief an unrelated future shutdown."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    def write_marker(target_pid: int) -> bool:
+        from gateway.status import _get_takeover_marker_path, _write_json_file
+        _write_json_file(_get_takeover_marker_path(), {
+            "target_pid": target_pid,
+            "target_start_time": 0,
+            "replacer_pid": 100,
+            "written_at": "2026-04-17T00:00:00+00:00",
+        })
+        return True
+
+    def raise_permission(pid, force=False):
+        raise PermissionError("simulated EPERM")
+
+    monkeypatch.setattr("gateway.status.get_running_pid", lambda: 42)
+    monkeypatch.setattr("gateway.status.write_takeover_marker", write_marker)
+    monkeypatch.setattr("gateway.status.terminate_pid", raise_permission)
+    monkeypatch.setattr("gateway.run.os.getpid", lambda: 100)
+    monkeypatch.setattr("tools.skills_sync.sync_skills", lambda quiet=True: None)
+    monkeypatch.setattr("hermes_logging.setup_logging", lambda hermes_home, mode: tmp_path)
+    monkeypatch.setattr("hermes_logging._add_rotating_handler", lambda *args, **kwargs: None)
+
+    from gateway.run import start_gateway
+
+    # Should return False due to permission error
+    ok = await start_gateway(config=GatewayConfig(), replace=True, verbosity=None)
+
+    assert ok is False
+    # Marker must NOT be left behind
+    assert not (tmp_path / ".gateway-takeover.json").exists()

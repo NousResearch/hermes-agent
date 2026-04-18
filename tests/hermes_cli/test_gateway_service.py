@@ -1177,3 +1177,556 @@ class TestDockerAwareGateway:
         out = capsys.readouterr().out
         assert "docker" in out.lower()
         assert "hermes gateway run" in out
+
+
+class TestLegacyHermesUnitDetection:
+    """Tests for _find_legacy_hermes_units / has_legacy_hermes_units.
+
+    These guard against the scenario that tripped Luis in April 2026: an
+    older install left a ``hermes.service`` unit behind when the service was
+    renamed to ``hermes-gateway.service``. After PR #5646 (signal recovery
+    via systemd), the two services began SIGTERM-flapping over the same
+    Telegram bot token in a 30-second cycle.
+
+    The detector must flag ``hermes.service`` ONLY when it actually runs our
+    gateway, and must NEVER flag profile units
+    (``hermes-gateway-<profile>.service``) or unrelated third-party services.
+    """
+
+    # Minimal ExecStart that looks like our gateway
+    _OUR_UNIT_TEXT = (
+        "[Unit]\nDescription=Hermes Gateway\n[Service]\n"
+        "ExecStart=/usr/bin/python -m hermes_cli.main gateway run --replace\n"
+    )
+
+    @staticmethod
+    def _setup_search_paths(tmp_path, monkeypatch):
+        """Redirect the legacy search to user_dir + system_dir under tmp_path."""
+        user_dir = tmp_path / "user"
+        system_dir = tmp_path / "system"
+        user_dir.mkdir()
+        system_dir.mkdir()
+        monkeypatch.setattr(
+            gateway_cli,
+            "_legacy_unit_search_paths",
+            lambda: [(False, user_dir), (True, system_dir)],
+        )
+        return user_dir, system_dir
+
+    def test_detects_legacy_hermes_service_in_user_scope(self, tmp_path, monkeypatch):
+        user_dir, _ = self._setup_search_paths(tmp_path, monkeypatch)
+        legacy = user_dir / "hermes.service"
+        legacy.write_text(self._OUR_UNIT_TEXT, encoding="utf-8")
+
+        results = gateway_cli._find_legacy_hermes_units()
+
+        assert len(results) == 1
+        name, path, is_system = results[0]
+        assert name == "hermes.service"
+        assert path == legacy
+        assert is_system is False
+        assert gateway_cli.has_legacy_hermes_units() is True
+
+    def test_detects_legacy_hermes_service_in_system_scope(self, tmp_path, monkeypatch):
+        _, system_dir = self._setup_search_paths(tmp_path, monkeypatch)
+        legacy = system_dir / "hermes.service"
+        legacy.write_text(self._OUR_UNIT_TEXT, encoding="utf-8")
+
+        results = gateway_cli._find_legacy_hermes_units()
+
+        assert len(results) == 1
+        name, path, is_system = results[0]
+        assert name == "hermes.service"
+        assert path == legacy
+        assert is_system is True
+
+    def test_ignores_profile_unit_hermes_gateway_coder(self, tmp_path, monkeypatch):
+        """CRITICAL: profile units must NOT be flagged as legacy.
+
+        Teknium's concern — ``hermes-gateway-coder.service`` is our standard
+        naming for the ``coder`` profile. The legacy detector is an explicit
+        allowlist, not a glob, so profile units are safe.
+        """
+        user_dir, system_dir = self._setup_search_paths(tmp_path, monkeypatch)
+        # Drop profile units in BOTH scopes with our ExecStart
+        for base in (user_dir, system_dir):
+            (base / "hermes-gateway-coder.service").write_text(
+                self._OUR_UNIT_TEXT, encoding="utf-8"
+            )
+            (base / "hermes-gateway-orcha.service").write_text(
+                self._OUR_UNIT_TEXT, encoding="utf-8"
+            )
+            (base / "hermes-gateway.service").write_text(
+                self._OUR_UNIT_TEXT, encoding="utf-8"
+            )
+
+        results = gateway_cli._find_legacy_hermes_units()
+
+        assert results == []
+        assert gateway_cli.has_legacy_hermes_units() is False
+
+    def test_ignores_unrelated_hermes_service(self, tmp_path, monkeypatch):
+        """Third-party ``hermes.service`` that isn't ours stays untouched.
+
+        If a user has some other package named ``hermes`` installed as a
+        service, we must not flag it.
+        """
+        user_dir, _ = self._setup_search_paths(tmp_path, monkeypatch)
+        (user_dir / "hermes.service").write_text(
+            "[Unit]\nDescription=Some Other Hermes\n[Service]\n"
+            "ExecStart=/opt/other-hermes/bin/daemon --foreground\n",
+            encoding="utf-8",
+        )
+
+        results = gateway_cli._find_legacy_hermes_units()
+
+        assert results == []
+        assert gateway_cli.has_legacy_hermes_units() is False
+
+    def test_returns_empty_when_no_legacy_files_exist(self, tmp_path, monkeypatch):
+        self._setup_search_paths(tmp_path, monkeypatch)
+
+        assert gateway_cli._find_legacy_hermes_units() == []
+        assert gateway_cli.has_legacy_hermes_units() is False
+
+    def test_detects_both_scopes_simultaneously(self, tmp_path, monkeypatch):
+        """When a user has BOTH user-scope and system-scope legacy units,
+        both are reported so the migration step can remove them together."""
+        user_dir, system_dir = self._setup_search_paths(tmp_path, monkeypatch)
+        (user_dir / "hermes.service").write_text(self._OUR_UNIT_TEXT, encoding="utf-8")
+        (system_dir / "hermes.service").write_text(self._OUR_UNIT_TEXT, encoding="utf-8")
+
+        results = gateway_cli._find_legacy_hermes_units()
+
+        scopes = sorted(is_system for _, _, is_system in results)
+        assert scopes == [False, True]
+
+    def test_accepts_alternate_execstart_formats(self, tmp_path, monkeypatch):
+        """Older installs may have used different python invocations.
+
+        ExecStart variants we've seen in the wild:
+          - python -m hermes_cli.main gateway run
+          - python path/to/hermes_cli/main.py gateway run
+          - hermes gateway run   (direct binary)
+          - python path/to/gateway/run.py
+        """
+        user_dir, _ = self._setup_search_paths(tmp_path, monkeypatch)
+        variants = [
+            "ExecStart=/venv/bin/python -m hermes_cli.main gateway run --replace",
+            "ExecStart=/venv/bin/python /opt/hermes/hermes_cli/main.py gateway run",
+            "ExecStart=/usr/local/bin/hermes gateway run --replace",
+            "ExecStart=/venv/bin/python /opt/hermes/gateway/run.py",
+        ]
+        for i, execstart in enumerate(variants):
+            name = f"hermes.service" if i == 0 else f"hermes.service"  # same name
+            # Test each variant fresh
+            (user_dir / "hermes.service").write_text(
+                f"[Unit]\nDescription=Old Hermes\n[Service]\n{execstart}\n",
+                encoding="utf-8",
+            )
+            results = gateway_cli._find_legacy_hermes_units()
+            assert len(results) == 1, f"Variant {i} not detected: {execstart!r}"
+
+    def test_print_legacy_unit_warning_is_noop_when_empty(self, tmp_path, monkeypatch, capsys):
+        self._setup_search_paths(tmp_path, monkeypatch)
+
+        gateway_cli.print_legacy_unit_warning()
+        out = capsys.readouterr().out
+
+        assert out == ""
+
+    def test_print_legacy_unit_warning_shows_migration_hint(self, tmp_path, monkeypatch, capsys):
+        user_dir, _ = self._setup_search_paths(tmp_path, monkeypatch)
+        (user_dir / "hermes.service").write_text(self._OUR_UNIT_TEXT, encoding="utf-8")
+
+        gateway_cli.print_legacy_unit_warning()
+        out = capsys.readouterr().out
+
+        assert "Legacy" in out
+        assert "hermes.service" in out
+        assert "hermes gateway migrate-legacy" in out
+
+    def test_handles_unreadable_unit_file_gracefully(self, tmp_path, monkeypatch):
+        """A permission error reading a unit file must not crash detection."""
+        user_dir, _ = self._setup_search_paths(tmp_path, monkeypatch)
+        unreadable = user_dir / "hermes.service"
+        unreadable.write_text(self._OUR_UNIT_TEXT, encoding="utf-8")
+        # Simulate a read failure — monkeypatch Path.read_text to raise
+        original_read_text = gateway_cli.Path.read_text
+
+        def raising_read_text(self, *args, **kwargs):
+            if self == unreadable:
+                raise PermissionError("simulated")
+            return original_read_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(gateway_cli.Path, "read_text", raising_read_text)
+
+        # Should not raise
+        results = gateway_cli._find_legacy_hermes_units()
+        assert results == []
+
+
+class TestRemoveLegacyHermesUnits:
+    """Tests for remove_legacy_hermes_units (the migration action)."""
+
+    _OUR_UNIT_TEXT = (
+        "[Unit]\nDescription=Hermes Gateway\n[Service]\n"
+        "ExecStart=/usr/bin/python -m hermes_cli.main gateway run --replace\n"
+    )
+
+    @staticmethod
+    def _setup(tmp_path, monkeypatch, as_root=False):
+        user_dir = tmp_path / "user"
+        system_dir = tmp_path / "system"
+        user_dir.mkdir()
+        system_dir.mkdir()
+        monkeypatch.setattr(
+            gateway_cli,
+            "_legacy_unit_search_paths",
+            lambda: [(False, user_dir), (True, system_dir)],
+        )
+        # Mock systemctl — return success for everything
+        systemctl_calls: list[list[str]] = []
+
+        def fake_run(cmd, **kwargs):
+            systemctl_calls.append(cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+        monkeypatch.setattr(gateway_cli.os, "geteuid", lambda: 0 if as_root else 1000)
+        return user_dir, system_dir, systemctl_calls
+
+    def test_returns_zero_when_no_legacy_units(self, tmp_path, monkeypatch, capsys):
+        self._setup(tmp_path, monkeypatch)
+
+        removed, remaining = gateway_cli.remove_legacy_hermes_units(interactive=False)
+
+        assert removed == 0
+        assert remaining == []
+        assert "No legacy" in capsys.readouterr().out
+
+    def test_dry_run_lists_without_removing(self, tmp_path, monkeypatch, capsys):
+        user_dir, _, calls = self._setup(tmp_path, monkeypatch)
+        legacy = user_dir / "hermes.service"
+        legacy.write_text(self._OUR_UNIT_TEXT, encoding="utf-8")
+
+        removed, remaining = gateway_cli.remove_legacy_hermes_units(
+            interactive=False, dry_run=True
+        )
+
+        assert removed == 0
+        assert remaining == [legacy]
+        assert legacy.exists()  # Not removed
+        assert calls == []  # No systemctl invocations
+        out = capsys.readouterr().out
+        assert "dry-run" in out
+
+    def test_removes_user_scope_legacy_unit(self, tmp_path, monkeypatch, capsys):
+        user_dir, _, calls = self._setup(tmp_path, monkeypatch)
+        legacy = user_dir / "hermes.service"
+        legacy.write_text(self._OUR_UNIT_TEXT, encoding="utf-8")
+
+        removed, remaining = gateway_cli.remove_legacy_hermes_units(interactive=False)
+
+        assert removed == 1
+        assert remaining == []
+        assert not legacy.exists()
+        # Must have invoked stop → disable → daemon-reload on user scope
+        cmds_joined = [" ".join(c) for c in calls]
+        assert any("--user stop hermes.service" in c for c in cmds_joined)
+        assert any("--user disable hermes.service" in c for c in cmds_joined)
+        assert any("--user daemon-reload" in c for c in cmds_joined)
+
+    def test_system_scope_without_root_defers_removal(self, tmp_path, monkeypatch, capsys):
+        _, system_dir, calls = self._setup(tmp_path, monkeypatch, as_root=False)
+        legacy = system_dir / "hermes.service"
+        legacy.write_text(self._OUR_UNIT_TEXT, encoding="utf-8")
+
+        removed, remaining = gateway_cli.remove_legacy_hermes_units(interactive=False)
+
+        assert removed == 0
+        assert remaining == [legacy]
+        assert legacy.exists()  # Not removed — requires sudo
+        out = capsys.readouterr().out
+        assert "sudo hermes gateway migrate-legacy" in out
+
+    def test_system_scope_with_root_removes(self, tmp_path, monkeypatch, capsys):
+        _, system_dir, calls = self._setup(tmp_path, monkeypatch, as_root=True)
+        legacy = system_dir / "hermes.service"
+        legacy.write_text(self._OUR_UNIT_TEXT, encoding="utf-8")
+
+        removed, remaining = gateway_cli.remove_legacy_hermes_units(interactive=False)
+
+        assert removed == 1
+        assert remaining == []
+        assert not legacy.exists()
+        cmds_joined = [" ".join(c) for c in calls]
+        # System-scope uses plain "systemctl" (no --user)
+        assert any(
+            c.startswith("systemctl stop hermes.service") for c in cmds_joined
+        )
+        assert any(
+            c.startswith("systemctl disable hermes.service") for c in cmds_joined
+        )
+
+    def test_removes_both_scopes_with_root(self, tmp_path, monkeypatch, capsys):
+        user_dir, system_dir, _ = self._setup(tmp_path, monkeypatch, as_root=True)
+        user_legacy = user_dir / "hermes.service"
+        system_legacy = system_dir / "hermes.service"
+        user_legacy.write_text(self._OUR_UNIT_TEXT, encoding="utf-8")
+        system_legacy.write_text(self._OUR_UNIT_TEXT, encoding="utf-8")
+
+        removed, remaining = gateway_cli.remove_legacy_hermes_units(interactive=False)
+
+        assert removed == 2
+        assert remaining == []
+        assert not user_legacy.exists()
+        assert not system_legacy.exists()
+
+    def test_does_not_touch_profile_units_during_migration(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Teknium's constraint: profile units (hermes-gateway-coder.service)
+        must survive a migration call, even if we somehow include them in the
+        search dir."""
+        user_dir, _, _ = self._setup(tmp_path, monkeypatch, as_root=True)
+        profile_unit = user_dir / "hermes-gateway-coder.service"
+        profile_unit.write_text(self._OUR_UNIT_TEXT, encoding="utf-8")
+        default_unit = user_dir / "hermes-gateway.service"
+        default_unit.write_text(self._OUR_UNIT_TEXT, encoding="utf-8")
+
+        removed, remaining = gateway_cli.remove_legacy_hermes_units(interactive=False)
+
+        assert removed == 0
+        assert remaining == []
+        # Both the profile unit and the current default unit must survive
+        assert profile_unit.exists()
+        assert default_unit.exists()
+
+    def test_interactive_prompt_no_skips_removal(self, tmp_path, monkeypatch, capsys):
+        """When interactive=True and user answers no, no removal happens."""
+        user_dir, _, _ = self._setup(tmp_path, monkeypatch)
+        legacy = user_dir / "hermes.service"
+        legacy.write_text(self._OUR_UNIT_TEXT, encoding="utf-8")
+
+        monkeypatch.setattr(gateway_cli, "prompt_yes_no", lambda *a, **k: False)
+
+        removed, remaining = gateway_cli.remove_legacy_hermes_units(interactive=True)
+
+        assert removed == 0
+        assert remaining == [legacy]
+        assert legacy.exists()
+
+
+class TestMigrateLegacyCommand:
+    """Tests for the `hermes gateway migrate-legacy` subcommand dispatch."""
+
+    def test_migrate_legacy_subparser_accepts_dry_run_and_yes(self):
+        """Verify the argparse subparser is registered and parses flags."""
+        import hermes_cli.main as cli_main
+
+        parser = cli_main.build_parser() if hasattr(cli_main, "build_parser") else None
+        # Fall back to calling main's setup helper if direct access isn't exposed
+        # The key thing: the subparser must exist. We verify by constructing
+        # a namespace through argparse directly — but if build_parser isn't
+        # public, just confirm that `hermes gateway --help` shows it.
+        import subprocess
+        import sys
+
+        project_root = cli_main.PROJECT_ROOT if hasattr(cli_main, "PROJECT_ROOT") else None
+        if project_root is None:
+            import hermes_cli.gateway as gw
+            project_root = gw.PROJECT_ROOT
+
+        result = subprocess.run(
+            [sys.executable, "-m", "hermes_cli.main", "gateway", "--help"],
+            cwd=str(project_root),
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        assert result.returncode == 0
+        assert "migrate-legacy" in result.stdout
+
+    def test_gateway_command_migrate_legacy_dispatches(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """gateway_command(args) with subcmd='migrate-legacy' calls the helper."""
+        called = {}
+
+        def fake_remove(interactive=True, dry_run=False):
+            called["interactive"] = interactive
+            called["dry_run"] = dry_run
+            return 0, []
+
+        monkeypatch.setattr(gateway_cli, "remove_legacy_hermes_units", fake_remove)
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
+
+        args = SimpleNamespace(
+            gateway_command="migrate-legacy", dry_run=False, yes=True
+        )
+        gateway_cli.gateway_command(args)
+
+        assert called == {"interactive": False, "dry_run": False}
+
+    def test_gateway_command_migrate_legacy_dry_run_passes_through(
+        self, monkeypatch
+    ):
+        called = {}
+
+        def fake_remove(interactive=True, dry_run=False):
+            called["interactive"] = interactive
+            called["dry_run"] = dry_run
+            return 0, []
+
+        monkeypatch.setattr(gateway_cli, "remove_legacy_hermes_units", fake_remove)
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
+
+        args = SimpleNamespace(
+            gateway_command="migrate-legacy", dry_run=True, yes=False
+        )
+        gateway_cli.gateway_command(args)
+
+        assert called == {"interactive": True, "dry_run": True}
+
+    def test_migrate_legacy_on_unsupported_platform_prints_message(
+        self, monkeypatch, capsys
+    ):
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
+
+        args = SimpleNamespace(
+            gateway_command="migrate-legacy", dry_run=False, yes=True
+        )
+        gateway_cli.gateway_command(args)
+
+        out = capsys.readouterr().out
+        assert "only applies to systemd" in out
+
+
+class TestSystemdInstallOffersLegacyRemoval:
+    """Verify that systemd_install prompts to remove legacy units first."""
+
+    def test_install_offers_removal_when_legacy_detected(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """When legacy units exist, install flow should call the removal
+        helper before writing the new unit."""
+        remove_called = {}
+
+        def fake_remove(interactive=True, dry_run=False):
+            remove_called["invoked"] = True
+            remove_called["interactive"] = interactive
+            return 1, []
+
+        # has_legacy_hermes_units must return True
+        monkeypatch.setattr(gateway_cli, "has_legacy_hermes_units", lambda: True)
+        monkeypatch.setattr(gateway_cli, "remove_legacy_hermes_units", fake_remove)
+        monkeypatch.setattr(gateway_cli, "print_legacy_unit_warning", lambda: None)
+        # Answer "yes" to the legacy-removal prompt
+        monkeypatch.setattr(gateway_cli, "prompt_yes_no", lambda *a, **k: True)
+
+        # Mock the rest of the install flow
+        unit_path = tmp_path / "hermes-gateway.service"
+        monkeypatch.setattr(
+            gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "generate_systemd_unit",
+            lambda system=False, run_as_user=None: "unit text\n",
+        )
+        monkeypatch.setattr(
+            gateway_cli.subprocess,
+            "run",
+            lambda cmd, **kw: SimpleNamespace(returncode=0, stdout="", stderr=""),
+        )
+        monkeypatch.setattr(gateway_cli, "_ensure_linger_enabled", lambda: None)
+
+        gateway_cli.systemd_install()
+
+        assert remove_called.get("invoked") is True
+        assert remove_called.get("interactive") is False  # prompted elsewhere
+
+    def test_install_declines_legacy_removal_when_user_says_no(
+        self, tmp_path, monkeypatch
+    ):
+        """When legacy units exist and user declines, install still proceeds
+        but doesn't touch them."""
+        remove_called = {"invoked": False}
+
+        def fake_remove(interactive=True, dry_run=False):
+            remove_called["invoked"] = True
+            return 0, []
+
+        monkeypatch.setattr(gateway_cli, "has_legacy_hermes_units", lambda: True)
+        monkeypatch.setattr(gateway_cli, "remove_legacy_hermes_units", fake_remove)
+        monkeypatch.setattr(gateway_cli, "print_legacy_unit_warning", lambda: None)
+        monkeypatch.setattr(gateway_cli, "prompt_yes_no", lambda *a, **k: False)
+
+        unit_path = tmp_path / "hermes-gateway.service"
+        monkeypatch.setattr(
+            gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "generate_systemd_unit",
+            lambda system=False, run_as_user=None: "unit text\n",
+        )
+        monkeypatch.setattr(
+            gateway_cli.subprocess,
+            "run",
+            lambda cmd, **kw: SimpleNamespace(returncode=0, stdout="", stderr=""),
+        )
+        monkeypatch.setattr(gateway_cli, "_ensure_linger_enabled", lambda: None)
+
+        gateway_cli.systemd_install()
+
+        # Helper must NOT have been called
+        assert remove_called["invoked"] is False
+        # New unit should still have been written
+        assert unit_path.exists()
+        assert unit_path.read_text() == "unit text\n"
+
+    def test_install_skips_legacy_check_when_none_present(
+        self, tmp_path, monkeypatch
+    ):
+        """No legacy → no prompt, no helper call."""
+        prompt_called = {"count": 0}
+
+        def counting_prompt(*a, **k):
+            prompt_called["count"] += 1
+            return True
+
+        remove_called = {"invoked": False}
+
+        def fake_remove(interactive=True, dry_run=False):
+            remove_called["invoked"] = True
+            return 0, []
+
+        monkeypatch.setattr(gateway_cli, "has_legacy_hermes_units", lambda: False)
+        monkeypatch.setattr(gateway_cli, "remove_legacy_hermes_units", fake_remove)
+        monkeypatch.setattr(gateway_cli, "prompt_yes_no", counting_prompt)
+
+        unit_path = tmp_path / "hermes-gateway.service"
+        monkeypatch.setattr(
+            gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "generate_systemd_unit",
+            lambda system=False, run_as_user=None: "unit text\n",
+        )
+        monkeypatch.setattr(
+            gateway_cli.subprocess,
+            "run",
+            lambda cmd, **kw: SimpleNamespace(returncode=0, stdout="", stderr=""),
+        )
+        monkeypatch.setattr(gateway_cli, "_ensure_linger_enabled", lambda: None)
+
+        gateway_cli.systemd_install()
+
+        assert prompt_called["count"] == 0
+        assert remove_called["invoked"] is False

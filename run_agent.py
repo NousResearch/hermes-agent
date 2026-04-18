@@ -4366,7 +4366,42 @@ class AIAgent:
                 self._client_log_context(),
             )
             return client
-        client = OpenAI(**client_kwargs)
+
+        # For custom/direct endpoints, inject an explicit httpx client with
+        # conservative connection pool limits and keepalive settings.
+        # Without this, the shared OpenAI client reuses stale pooled connections
+        # that the server has already closed, causing ~80% APIConnectionError
+        # failures even when the endpoint is healthy (issue #11969).
+        # Direct Python SDK calls always succeed because they create a fresh
+        # client (and thus a fresh pool) on every invocation.
+        kwargs = dict(client_kwargs)
+        if "http_client" not in kwargs:
+            _base = str(kwargs.get("base_url", "")).lower()
+            _is_aggregator = any(x in _base for x in ("openrouter.ai", "openai.com", "anthropic.com"))
+            if not _is_aggregator:
+                try:
+                    import httpx as _httpx
+                    kwargs["http_client"] = _httpx.Client(
+                        timeout=_httpx.Timeout(
+                            connect=10.0,
+                            read=300.0,
+                            write=30.0,
+                            pool=10.0,
+                        ),
+                        limits=_httpx.Limits(
+                            max_connections=10,
+                            max_keepalive_connections=2,
+                            keepalive_expiry=30.0,
+                        ),
+                    )
+                    logger.debug(
+                        "OpenAI client: injected explicit httpx client for custom endpoint (%s)",
+                        reason,
+                    )
+                except ImportError:
+                    pass  # httpx not available — fall through to default
+
+        client = OpenAI(**kwargs)
         logger.info(
             "OpenAI client created (%s, shared=%s) %s",
             reason,

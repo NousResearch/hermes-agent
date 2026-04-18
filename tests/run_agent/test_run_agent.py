@@ -657,6 +657,7 @@ class TestInit:
             patch("run_agent.get_tool_definitions", return_value=[]),
             patch("run_agent.check_toolset_requirements", return_value={}),
             patch("run_agent.OpenAI"),
+            patch("hermes_cli.config.load_config", return_value={"model": {"context_length": 128000}}),
         ):
             a = AIAgent(
                 api_key="test-key-1234567890",
@@ -981,6 +982,13 @@ class TestToolUseEnforcementConfig:
         agent = self._make_agent(model="openai/codex-mini", tool_use_enforcement="auto")
         prompt = agent._build_system_prompt()
         assert TOOL_USE_ENFORCEMENT_GUIDANCE in prompt
+
+    def test_auto_injects_for_qwen(self):
+        from agent.prompt_builder import TOOL_USE_ENFORCEMENT_GUIDANCE, OPENAI_MODEL_EXECUTION_GUIDANCE
+        agent = self._make_agent(model="Qwen3.5-27B-Q4_K_M.gguf", tool_use_enforcement="auto")
+        prompt = agent._build_system_prompt()
+        assert TOOL_USE_ENFORCEMENT_GUIDANCE in prompt
+        assert OPENAI_MODEL_EXECUTION_GUIDANCE in prompt
 
     def test_auto_skips_for_claude(self):
         from agent.prompt_builder import TOOL_USE_ENFORCEMENT_GUIDANCE
@@ -2360,6 +2368,41 @@ class TestHandleMaxIterations:
         assert [m.get("tool_call_id") for m in sanitized if m.get("role") == "tool"] == [
             "call_123"
         ]
+
+    def test_summary_request_surfaces_recent_tool_failures(self, agent):
+        resp = _mock_response(content="Final summary")
+        agent.client.chat.completions.create.return_value = resp
+        agent._cached_system_prompt = "You are helpful."
+        messages = [
+            {"role": "user", "content": "find the function"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "search_files",
+                            "arguments": json.dumps({"pattern": "install_windows_stdio", "target": "content"}),
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_1",
+                "content": json.dumps({"total_count": 0}),
+            },
+        ]
+
+        agent._handle_max_iterations(messages, 2)
+
+        summary_request = agent.client.chat.completions.create.call_args.kwargs["messages"][-1]["content"]
+        assert "Recent tool outcomes:" in summary_request
+        assert "search_files" in summary_request
+        assert "total_count=0" in summary_request
+        assert "zero-result searches" in summary_request
 
 
 class TestRunConversation:

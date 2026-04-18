@@ -257,7 +257,7 @@ TOOL_USE_ENFORCEMENT_GUIDANCE = (
 
 # Model name substrings that trigger tool-use enforcement guidance.
 # Add new patterns here when a model family needs explicit steering.
-TOOL_USE_ENFORCEMENT_MODELS = ("gpt", "codex", "gemini", "gemma", "grok")
+TOOL_USE_ENFORCEMENT_MODELS = ("gpt", "codex", "gemini", "gemma", "grok", "qwen", "qwq")
 
 # OpenAI GPT/Codex-specific execution guidance.  Addresses known failure modes
 # where GPT models abandon work on partial results, skip prerequisite lookups,
@@ -270,6 +270,14 @@ OPENAI_MODEL_EXECUTION_GUIDANCE = (
     "- Do not stop early when another tool call would materially improve the result.\n"
     "- If a tool returns empty or partial results, retry with a different query or "
     "strategy before giving up.\n"
+    "- If the user gives you an exact file path, call read_file on that path directly "
+    "instead of searching for it first.\n"
+    "- For code lookup, use search_files target='content' for symbols/text and "
+    "target='files' for filenames. Add path or file_glob when you know the likely "
+    "directory or language.\n"
+    "- If search_files returns total_count=0 or another tool yields no useful data "
+    "twice, do NOT repeat near-duplicate calls. Change strategy, or surface the "
+    "blocker clearly.\n"
     "- Keep calling tools until: (1) the task is complete, AND (2) you have verified "
     "the result.\n"
     "</tool_persistence>\n"

@@ -96,6 +96,7 @@ from hermes_cli.timeouts import (
     get_provider_request_timeout,
     get_provider_stale_timeout,
 )
+from hermes_cli.stdio import install_windows_stdio
 
 _hermes_home = get_hermes_home()
 _project_env = Path(__file__).parent / '.env'
@@ -263,6 +264,7 @@ def _get_proxy_for_base_url(base_url: Optional[str]) -> Optional[str]:
 
 def _install_safe_stdio() -> None:
     """Wrap stdout/stderr so best-effort console output cannot crash the agent."""
+    install_windows_stdio()
     for stream_name in ("stdout", "stderr"):
         stream = getattr(sys, stream_name, None)
         if stream is not None and not isinstance(stream, _SafeWriter):
@@ -4992,9 +4994,9 @@ class AIAgent:
                 # paths, parallel tool calls, verify-before-edit, etc.)
                 if "gemini" in _model_lower or "gemma" in _model_lower:
                     prompt_parts.append(GOOGLE_MODEL_OPERATIONAL_GUIDANCE)
-                # OpenAI GPT/Codex execution discipline (tool persistence,
+                # OpenAI/Qwen execution discipline (tool persistence,
                 # prerequisite checks, verification, anti-hallucination).
-                if "gpt" in _model_lower or "codex" in _model_lower:
+                if "gpt" in _model_lower or "codex" in _model_lower or "qwen" in _model_lower or "qwq" in _model_lower:
                     prompt_parts.append(OPENAI_MODEL_EXECUTION_GUIDANCE)
 
         # so it can refer the user to them rather than reinventing answers.
@@ -10380,15 +10382,135 @@ class AIAgent:
 
 
 
+    @staticmethod
+    def _message_attr(message: Any, key: str, default=None):
+        """Return a field from either a dict message or a namespace-like object."""
+        if isinstance(message, dict):
+            return message.get(key, default)
+        return getattr(message, key, default)
+
+    @staticmethod
+    def _parse_tool_json_prefix(content: str) -> Any | None:
+        """Decode the leading JSON object/array from a tool result when present."""
+        if not isinstance(content, str):
+            return None
+        stripped = content.lstrip()
+        if not stripped or stripped[0] not in "{[":
+            return None
+        try:
+            payload, _ = json.JSONDecoder().raw_decode(stripped)
+            return payload
+        except Exception:
+            return None
+
+    def _summarize_tool_invocation_for_iteration_limit(self, tool_name: str, raw_args: Any) -> str:
+        """Render a short tool invocation summary for iteration-limit reporting."""
+        args = raw_args
+        if isinstance(raw_args, str):
+            try:
+                args = json.loads(raw_args)
+            except Exception:
+                args = raw_args
+        if not isinstance(args, dict):
+            return tool_name
+
+        pieces = []
+        for key in ("path", "pattern", "target", "file_glob", "mode", "command"):
+            value = args.get(key)
+            if value in (None, "", [], {}):
+                continue
+            text = str(value).replace("\n", " ")
+            if len(text) > 60:
+                text = text[:57] + "..."
+            pieces.append(f"{key}={text!r}")
+            if len(pieces) >= 3:
+                break
+        if not pieces:
+            for key, value in list(args.items())[:2]:
+                text = str(value).replace("\n", " ")
+                if len(text) > 60:
+                    text = text[:57] + "..."
+                pieces.append(f"{key}={text!r}")
+
+        return f"{tool_name}({', '.join(pieces)})" if pieces else tool_name
+
+    def _summarize_tool_result_for_iteration_limit(self, content: str) -> str:
+        """Summarize the useful part of a tool result for iteration-limit prompts."""
+        payload = self._parse_tool_json_prefix(content)
+        if isinstance(payload, dict):
+            if payload.get("error"):
+                return f"error={payload['error']}"
+            if payload.get("total_count") == 0:
+                return "total_count=0"
+            if payload.get("total_count") is not None:
+                extras = []
+                if isinstance(payload.get("matches"), list):
+                    extras.append(f"matches={len(payload['matches'])}")
+                if isinstance(payload.get("files"), list):
+                    extras.append(f"files={len(payload['files'])}")
+                if isinstance(payload.get("counts"), dict):
+                    extras.append(f"count_entries={len(payload['counts'])}")
+                joined = ", ".join(extras)
+                return f"total_count={payload['total_count']}" + (f", {joined}" if joined else "")
+            if payload.get("success") is True:
+                touched = sum(
+                    len(payload.get(key, []))
+                    for key in ("files_modified", "files_created", "files_deleted")
+                    if isinstance(payload.get(key), list)
+                )
+                return f"success, files_touched={touched}" if touched else "success"
+            if payload.get("dedup"):
+                return "dedup: unchanged prior result"
+
+        text = (content or "").strip()
+        if not text:
+            return "no output"
+        first_line = text.splitlines()[0]
+        if len(first_line) > 160:
+            first_line = first_line[:157] + "..."
+        return first_line
+
+    def _build_iteration_limit_tool_summary(self, messages: list, limit: int = 8) -> list[str]:
+        """Collect a short summary of recent tool calls and their outcomes."""
+        tool_meta: dict[str, tuple[str, Any]] = {}
+        recent: list[str] = []
+
+        for message in messages:
+            if self._message_attr(message, "role") == "assistant":
+                for tool_call in self._message_attr(message, "tool_calls", []) or []:
+                    tool_id = self._message_attr(tool_call, "id") or self._message_attr(tool_call, "call_id")
+                    function = self._message_attr(tool_call, "function", {}) or {}
+                    tool_name = self._message_attr(function, "name", "tool")
+                    raw_args = self._message_attr(function, "arguments")
+                    if tool_id:
+                        tool_meta[tool_id] = (tool_name, raw_args)
+            elif self._message_attr(message, "role") == "tool":
+                tool_id = self._message_attr(message, "tool_call_id")
+                tool_name, raw_args = tool_meta.get(tool_id, ("tool", None))
+                invocation = self._summarize_tool_invocation_for_iteration_limit(tool_name, raw_args)
+                outcome = self._summarize_tool_result_for_iteration_limit(self._message_attr(message, "content", ""))
+                recent.append(f"- {invocation} -> {outcome}")
+
+        return recent[-limit:]
+
     def _handle_max_iterations(self, messages: list, api_call_count: int) -> str:
         """Request a summary when max iterations are reached. Returns the final response text."""
         print(f"⚠️  Reached maximum iterations ({self.max_iterations}). Requesting summary...")
 
-        summary_request = (
-            "You've reached the maximum number of tool-calling iterations allowed. "
-            "Please provide a final response summarizing what you've found and accomplished so far, "
-            "without calling any more tools."
+        recent_tool_lines = self._build_iteration_limit_tool_summary(messages)
+        summary_parts = [
+            "You've reached the maximum number of tool-calling iterations allowed.",
+            f"You have used {api_call_count} model call(s) in this turn.",
+        ]
+        if recent_tool_lines:
+            summary_parts.append("Recent tool outcomes:")
+            summary_parts.extend(recent_tool_lines)
+        summary_parts.append(
+            "Provide a final response without calling any more tools. Explicitly include "
+            "what succeeded, any tool errors or zero-result searches, the blocker if the "
+            "task is still incomplete, and the best next step."
         )
+        summary_request = "\n".join(summary_parts)
         messages.append({"role": "user", "content": summary_request})
 
         try:
@@ -14225,6 +14347,7 @@ def main(
     Toolset Examples:
         - "research": Web search, extract, crawl + vision tools
     """
+    install_windows_stdio()
     print("🤖 AI Agent with Tool Calling")
     print("=" * 50)
     

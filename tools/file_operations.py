@@ -28,6 +28,7 @@ Usage:
 import os
 import re
 import difflib
+import posixpath
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any
@@ -599,6 +600,36 @@ class ShellFileOperations(FileOperations):
         """Escape a string for safe use in shell commands."""
         # Use single quotes and escape any single quotes in the string
         return "'" + arg.replace("'", "'\"'\"'") + "'"
+
+    @staticmethod
+    def _is_absolute_shell_path(path: str) -> bool:
+        """Return True for absolute POSIX or Windows-style paths."""
+        return path.startswith("/") or bool(re.match(r"^[A-Za-z]:[\\/]", path))
+
+    def _resolve_search_path_for_grep(self, path: str) -> tuple[str, str | None]:
+        """Resolve relative grep search roots to an absolute shell path.
+
+        GNU grep's ``--exclude-dir='.*'`` treats the basename of the starting
+        search root as a candidate for exclusion. When the caller passes ".",
+        the root itself matches ``.*`` and grep silently skips the whole tree.
+        Resolving relative roots against the live shell cwd avoids that while
+        keeping hidden subdirectory filtering intact.
+        """
+        expanded = self._expand_path(path)
+        cwd = getattr(self.env, "cwd", None) or self.cwd or ""
+        if not expanded or not cwd or self._is_absolute_shell_path(expanded):
+            return expanded, None
+        return posixpath.normpath(posixpath.join(cwd, expanded)), cwd
+
+    @staticmethod
+    def _relativize_search_result_path(path: str, cwd: str | None) -> str:
+        """Convert absolute grep results back to cwd-relative paths when safe."""
+        if not cwd or not path.startswith("/") or not cwd.startswith("/"):
+            return path
+        rel = posixpath.relpath(path, cwd)
+        if rel == "." or rel.startswith("../"):
+            return path
+        return rel
     
     def _unified_diff(self, old_content: str, new_content: str, filename: str) -> str:
         """Generate unified diff between old and new content."""
@@ -1467,8 +1498,9 @@ class ShellFileOperations(FileOperations):
     def _search_with_grep(self, pattern: str, path: str, file_glob: Optional[str],
                           limit: int, offset: int, output_mode: str, context: int) -> SearchResult:
         """Fallback search using grep."""
-        cmd_parts = ["grep", "-rnH"]  # -H forces filename even for single-file searches
-        
+        search_path, relative_cwd = self._resolve_search_path_for_grep(path)
+        cmd_parts = ["grep", "-rnHI"]  # -H forces filenames; -I ignores binary files.
+
         # Exclude hidden directories (matching ripgrep's default behavior).
         # This prevents searching inside .hub/index-cache/, .git/, etc.
         cmd_parts.append("--exclude-dir='.*'")
@@ -1489,7 +1521,7 @@ class ShellFileOperations(FileOperations):
         
         # Add pattern and path
         cmd_parts.append(self._escape_shell_arg(pattern))
-        cmd_parts.append(self._escape_shell_arg(path))
+        cmd_parts.append(self._escape_shell_arg(search_path))
         
         # Fetch generously so we can compute total before slicing
         fetch_limit = limit + offset + (200 if context > 0 else 0)
@@ -1504,7 +1536,11 @@ class ShellFileOperations(FileOperations):
             return SearchResult(error=f"Search failed: {error_msg}", total_count=0)
         
         if output_mode == "files_only":
-            all_files = [f for f in result.stdout.strip().split('\n') if f]
+            all_files = [
+                self._relativize_search_result_path(f, relative_cwd)
+                for f in result.stdout.strip().split('\n')
+                if f
+            ]
             total = len(all_files)
             page = all_files[offset:offset + limit]
             return SearchResult(files=page, total_count=total)
@@ -1516,7 +1552,7 @@ class ShellFileOperations(FileOperations):
                     parts = line.rsplit(':', 1)
                     if len(parts) == 2:
                         try:
-                            counts[parts[0]] = int(parts[1])
+                            counts[self._relativize_search_result_path(parts[0], relative_cwd)] = int(parts[1])
                         except ValueError:
                             pass
             return SearchResult(counts=counts, total_count=sum(counts.values()))
@@ -1536,7 +1572,7 @@ class ShellFileOperations(FileOperations):
                 m = _match_re.match(line)
                 if m:
                     matches.append(SearchMatch(
-                        path=(m.group(1) or '') + m.group(2),
+                        path=self._relativize_search_result_path((m.group(1) or '') + m.group(2), relative_cwd),
                         line_number=int(m.group(3)),
                         content=m.group(4)[:500]
                     ))
@@ -1546,7 +1582,7 @@ class ShellFileOperations(FileOperations):
                     parsed = _parse_search_context_line(line)
                     if parsed:
                         matches.append(SearchMatch(
-                            path=parsed[0],
+                            path=self._relativize_search_result_path(parsed[0], relative_cwd),
                             line_number=parsed[1],
                             content=parsed[2][:500]
                         ))

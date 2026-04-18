@@ -1981,7 +1981,15 @@ async def send_weixin_direct(
     context_token = token_store.get(account_id, chat_id)
 
     live_adapter = _LIVE_ADAPTERS.get(resolved_token)
-    send_session = getattr(live_adapter, '_send_session', None)
+    send_session = getattr(live_adapter, '_send_session', None) if live_adapter else None
+
+    # Skip the live_adapter path — its _send_session was created on the gateway's
+    # main event loop and breaks aiohttp's timeout context when called from the
+    # tool layer's event loop (via _run_async).  Always use a fresh session below.
+    if live_adapter is not None and send_session is not None:
+        live_adapter = None
+        send_session = None
+
     if live_adapter is not None and send_session is not None and not send_session.closed:
         last_result: Optional[SendResult] = None
         cleaned = live_adapter.format_message(message)

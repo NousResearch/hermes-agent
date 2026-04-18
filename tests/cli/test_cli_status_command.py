@@ -86,7 +86,7 @@ def test_show_session_status_prints_gateway_style_summary():
     assert kwargs.get("markup") is False
 
 
-def test_profile_command_reports_custom_root_profile(monkeypatch, tmp_path, capsys):
+def test_profile_command_reports_custom_root_profile(monkeypatch, tmp_path):
     """Profile detection works for custom-root deployments (not under ~/.hermes)."""
     cli_obj = _make_cli()
     profile_home = tmp_path / "profiles" / "coder"
@@ -96,6 +96,9 @@ def test_profile_command_reports_custom_root_profile(monkeypatch, tmp_path, caps
 
     cli_obj._handle_profile_command()
 
-    out = capsys.readouterr().out
-    assert "Profile: coder" in out
-    assert f"Home:    {profile_home}" in out
+    printed = "\n".join(str(call.args[0]) for call in cli_obj.console.print.call_args_list)
+    assert "Profile: coder" in printed
+    assert f"Home:    {profile_home}" in printed
+    _, kwargs = cli_obj.console.print.call_args
+    assert kwargs.get("highlight") is False
+    assert kwargs.get("markup") is False

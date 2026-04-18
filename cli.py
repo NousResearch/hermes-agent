@@ -4030,10 +4030,13 @@ class HermesCLI:
         display = display_hermes_home()
         profile_name = get_active_profile_name()
 
-        print()
-        print(f"  Profile: {profile_name}")
-        print(f"  Home:    {display}")
-        print()
+        lines = [
+            "",
+            f"  Profile: {profile_name}",
+            f"  Home:    {display}",
+            "",
+        ]
+        self.console.print("\n".join(lines), highlight=False, markup=False)
 
     def show_config(self):
         """Display current configuration with kawaii ASCII art."""

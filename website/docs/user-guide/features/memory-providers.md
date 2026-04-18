@@ -82,7 +82,7 @@ hermes memory setup        # select "honcho"
 | `workspace` | host key | Shared workspace ID |
 | `contextTokens` | `null` (uncapped) | Token budget for auto-injected context per turn. Truncates at word boundaries |
 | `contextCadence` | `1` | Minimum turns between `context()` API calls (base layer refresh) |
-| `dialecticCadence` | `1` (wizard sets `2`) | Minimum turns between `peer.chat()` LLM calls. Unset → every turn; wizard pre-fills `2`. Only applies to `hybrid`/`context` modes |
+| `dialecticCadence` | `2` | Minimum turns between `peer.chat()` LLM calls. Recommended 1–5. Only applies to `hybrid`/`context` modes |
 | `dialecticDepth` | `1` | Number of `.chat()` passes per dialectic invocation. Clamped 1–3. Pass 0: cold/warm prompt, pass 1: self-audit, pass 2: reconciliation |
 | `dialecticDepthLevels` | `null` | Optional array of reasoning levels per pass, e.g. `["minimal", "low", "medium"]`. Overrides proportional defaults |
 | `dialecticReasoningLevel` | `'low'` | Base reasoning level: `minimal`, `low`, `medium`, `high`, `max` |

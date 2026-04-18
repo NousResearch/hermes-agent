@@ -589,6 +589,11 @@ def _session_info(agent) -> dict:
     except Exception:
         pass
     try:
+        from tools.mcp_tool import get_mcp_status
+        info["mcp_servers"] = get_mcp_status()
+    except Exception:
+        info["mcp_servers"] = []
+    try:
         from hermes_cli.banner import get_update_result
         from hermes_cli.config import recommended_update_command
         info["update_behind"] = get_update_result(timeout=0.5)
@@ -1994,8 +1999,35 @@ def _(rid, params: dict) -> dict:
                 cat_order.append(cat)
             cat_map[cat].append([name, desc])
 
-        skill_count = 0
         warning = ""
+        try:
+            qcmds = _load_cfg().get("quick_commands", {}) or {}
+            if isinstance(qcmds, dict) and qcmds:
+                bucket = "User commands"
+                if bucket not in cat_map:
+                    cat_map[bucket] = []
+                    cat_order.append(bucket)
+                for qname, qc in sorted(qcmds.items()):
+                    if not isinstance(qc, dict):
+                        continue
+                    key = f"/{qname}"
+                    canon[key.lower()] = key
+                    qtype = qc.get("type", "")
+                    if qtype == "exec":
+                        default_desc = f"exec: {qc.get('command', '')}"
+                    elif qtype == "alias":
+                        default_desc = f"alias → {qc.get('target', '')}"
+                    else:
+                        default_desc = qtype or "quick command"
+                    qdesc = str(qc.get("description") or default_desc)
+                    qdesc = qdesc[:120] + ("…" if len(qdesc) > 120 else "")
+                    all_pairs.append([key, qdesc])
+                    cat_map[bucket].append([key, qdesc])
+        except Exception as e:
+            if not warning:
+                warning = f"quick_commands discovery unavailable: {e}"
+
+        skill_count = 0
         try:
             from agent.skill_commands import scan_skill_commands
             for k, info in sorted(scan_skill_commands().items()):

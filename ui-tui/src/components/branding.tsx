@@ -126,11 +126,36 @@ export function SessionPanel({ info, sid, t }: SessionPanelProps) {
 
         {section('Tools', info.tools, 8, 'more toolsets…')}
         {section('Skills', info.skills)}
+
+        {info.mcp_servers && info.mcp_servers.length > 0 && (
+          <Box flexDirection="column" marginTop={1}>
+            <Text bold color={t.color.amber}>
+              MCP Servers
+            </Text>
+
+            {info.mcp_servers.map(s => (
+              <Text key={s.name} wrap="truncate">
+                <Text color={t.color.dim}>{`  ${s.name} `}</Text>
+                <Text color={t.color.dim}>{`[${s.transport}]`}</Text>
+                <Text color={t.color.dim}>: </Text>
+                {s.connected ? (
+                  <Text color={t.color.cornsilk}>
+                    {s.tools} tool{s.tools === 1 ? '' : 's'}
+                  </Text>
+                ) : (
+                  <Text color={t.color.error}>failed</Text>
+                )}
+              </Text>
+            ))}
+          </Box>
+        )}
+
         <Text />
 
         <Text color={t.color.cornsilk}>
           {flat(info.tools).length} tools{' · '}
           {flat(info.skills).length} skills
+          {info.mcp_servers?.length ? ` · ${info.mcp_servers.length} MCP` : ''}
           {' · '}
           <Text color={t.color.dim}>/help for commands</Text>
         </Text>

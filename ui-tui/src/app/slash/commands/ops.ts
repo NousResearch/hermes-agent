@@ -27,6 +27,20 @@ interface SkillsInstallResponse {
   name?: string
 }
 
+interface SkillsBrowseItem {
+  description?: string
+  name: string
+  source?: string
+  trust?: string
+}
+
+interface SkillsBrowseResponse {
+  items?: SkillsBrowseItem[]
+  page?: number
+  total?: number
+  total_pages?: number
+}
+
 export const opsCommands: SlashCommand[] = [
   {
     help: 'browse, inspect, install skills',
@@ -139,13 +153,47 @@ export const opsCommands: SlashCommand[] = [
       }
 
       if (sub === 'browse') {
-        const pageNum = parseInt(query, 10) || 1
+        const pageNum = query ? parseInt(query, 10) : 1
 
-        rpc<Record<string, unknown>>('skills.manage', { action: 'browse', page: pageNum })
+        if (Number.isNaN(pageNum) || pageNum < 1) {
+          return sys('usage: /skills browse [page]  (page must be a positive number)')
+        }
+
+        sys('fetching community skills (scans 6 sources, may take ~15s)…')
+
+        rpc<SkillsBrowseResponse>('skills.manage', { action: 'browse', page: pageNum })
           .then(
-            ctx.guarded<Record<string, unknown>>(r =>
-              page(JSON.stringify(r, null, 2).slice(0, 4000), `Browse Skills — p${pageNum}`)
-            )
+            ctx.guarded<SkillsBrowseResponse>(r => {
+              const items = r.items ?? []
+
+              if (!items.length) {
+                return sys(`no skills on page ${pageNum}${r.total ? ` (total ${r.total})` : ''}`)
+              }
+
+              const rows: [string, string][] = items.map(s => [
+                s.trust ? `${s.name} · ${s.trust}` : s.name,
+                String(s.description ?? '').slice(0, 160)
+              ])
+
+              const footer: string[] = []
+
+              if (r.page && r.total_pages) {
+                footer.push(`page ${r.page} of ${r.total_pages}`)
+              }
+
+              if (r.total) {
+                footer.push(`${r.total} skills total`)
+              }
+
+              if (r.page && r.total_pages && r.page < r.total_pages) {
+                footer.push(`/skills browse ${r.page + 1} for more`)
+              }
+
+              panel(`Browse Skills${pageNum > 1 ? ` — p${pageNum}` : ''}`, [
+                { rows },
+                ...(footer.length ? [{ text: footer.join(' · ') }] : [])
+              ])
+            })
           )
           .catch(ctx.guardedErr)
 

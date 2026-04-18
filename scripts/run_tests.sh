@@ -24,19 +24,34 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # ── Activate venv ───────────────────────────────────────────────────────────
-# Prefer a .venv in the current tree, fall back to the main checkout's venv
-# (useful for worktrees where we don't always duplicate the venv).
+# Prefer the first working env in the current tree, then fall back to the main
+# checkout's venv (useful for worktrees where we don't always duplicate the
+# virtualenv). A stale `.venv` without pytest should not block a healthy `venv`.
 VENV=""
-for candidate in "$REPO_ROOT/.venv" "$REPO_ROOT/venv" "$HOME/.hermes/hermes-agent/venv"; do
-  if [ -f "$candidate/bin/activate" ]; then
+CANDIDATES=("$REPO_ROOT/.venv" "$REPO_ROOT/venv" "$HOME/.hermes/hermes-agent/venv")
+SKIPPED_VENVS=()
+for candidate in "${CANDIDATES[@]}"; do
+  PYTHON_CANDIDATE="$candidate/bin/python"
+  if [ ! -x "$PYTHON_CANDIDATE" ]; then
+    continue
+  fi
+  if "$PYTHON_CANDIDATE" -c "import pytest" >/dev/null 2>&1; then
     VENV="$candidate"
     break
   fi
+  SKIPPED_VENVS+=("$candidate")
 done
 
 if [ -z "$VENV" ]; then
-  echo "error: no virtualenv found in $REPO_ROOT/.venv or $REPO_ROOT/venv" >&2
+  if [ "${#SKIPPED_VENVS[@]}" -gt 0 ]; then
+    echo "warning: skipped unusable virtualenv(s) without pytest: ${SKIPPED_VENVS[*]}" >&2
+  fi
+  echo "error: no working virtualenv found in $REPO_ROOT/.venv or $REPO_ROOT/venv" >&2
   exit 1
+fi
+
+if [ "${#SKIPPED_VENVS[@]}" -gt 0 ]; then
+  echo "warning: skipped unusable virtualenv(s) without pytest: ${SKIPPED_VENVS[*]}" >&2
 fi
 
 PYTHON="$VENV/bin/python"

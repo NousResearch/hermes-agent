@@ -157,7 +157,7 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 uv venv venv --python 3.11
 source venv/bin/activate
 uv pip install -e ".[all,dev]"
-python -m pytest tests/ -q
+scripts/run_tests.sh
 ```
 
 > **RL Training (optional):** To work on the RL/Tinker-Atropos integration:

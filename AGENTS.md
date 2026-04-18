@@ -535,6 +535,10 @@ scripts/run_tests.sh                                  # full suite, CI-parity
 scripts/run_tests.sh tests/gateway/                   # one directory
 scripts/run_tests.sh tests/agent/test_foo.py::test_x  # one test
 scripts/run_tests.sh -v --tb=long                     # pass-through pytest flags
+
+# Named chunk presets for slow verification targets; still delegates to scripts/run_tests.sh.
+scripts/run_test_chunks.sh broad
+scripts/run_test_chunks.sh run-agent-file -- -q --durations=20
 ```
 
 ### Why the wrapper (and why the old "just call pytest" doesn't work)

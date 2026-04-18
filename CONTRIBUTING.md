@@ -106,7 +106,7 @@ hermes chat -q "Hello"
 ### Run tests
 
 ```bash
-pytest tests/ -v
+scripts/run_tests.sh
 ```
 
 ---

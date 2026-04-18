@@ -299,11 +299,12 @@ async def handle_gateway_busy_followup(
             session_key=session_key,
             event=event,
         )
-        busy_ack = ""
-        if adapter and hasattr(adapter, "_busy_followup_ack"):
-            busy_ack = adapter._busy_followup_ack(event, interrupting=False)
-        elif busy_input_mode == "queue":
-            busy_ack = fallback_busy_ack(source, event.text)
+        busy_ack = _busy_ack_or_fallback(
+            adapter=adapter,
+            event=event,
+            interrupting=False,
+            fallback_busy_ack=fallback_busy_ack,
+        )
         if busy_ack:
             logger.info(
                 "queued follow-up while session pending: platform=%s chat=%s session=%s",
@@ -329,11 +330,12 @@ async def handle_gateway_busy_followup(
             session_key=session_key,
             event=event,
         )
-        busy_ack = ""
-        if adapter and hasattr(adapter, "_busy_followup_ack"):
-            busy_ack = adapter._busy_followup_ack(event, interrupting=False)
-        elif busy_input_mode == "queue":
-            busy_ack = fallback_busy_ack(source, event.text)
+        busy_ack = _busy_ack_or_fallback(
+            adapter=adapter,
+            event=event,
+            interrupting=False,
+            fallback_busy_ack=fallback_busy_ack,
+        )
         if busy_ack:
             return GatewayBusyFollowupResult(handled=True, response=busy_ack)
         return GatewayBusyFollowupResult(handled=True, response=None)
@@ -391,9 +393,12 @@ async def handle_gateway_busy_followup(
                 session_key=session_key,
                 event=event,
             )
-            busy_ack = ""
-            if adapter and hasattr(adapter, "_busy_followup_ack"):
-                busy_ack = adapter._busy_followup_ack(event, interrupting=False)
+            busy_ack = _busy_ack_or_fallback(
+                adapter=adapter,
+                event=event,
+                interrupting=False,
+                fallback_busy_ack=fallback_busy_ack,
+            )
             if busy_ack:
                 logger.info(
                     "smart-queued follow-up for active session: platform=%s chat=%s session=%s",

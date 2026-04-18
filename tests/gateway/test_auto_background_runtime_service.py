@@ -40,6 +40,15 @@ def test_history_suggests_auto_background_work_from_recent_task_context():
     assert history_suggests_auto_background_work(history) is True
 
 
+def test_history_suggests_auto_background_work_ignores_assistant_only_task_text():
+    history = [
+        {"role": "assistant", "content": "我继续排查服务器日志里的 gateway 故障。"},
+        {"role": "assistant", "content": "查完我回来汇报。"},
+    ]
+
+    assert history_suggests_auto_background_work(history) is False
+
+
 def test_auto_background_intents_load_from_json_data(monkeypatch, tmp_path):
     import gateway.auto_background_runtime_service as service
 
@@ -134,6 +143,24 @@ def test_resolve_auto_background_dispatch_allows_group_followup_shortcut_with_ta
     )
 
     assert result == {"worker_name": "", "preloaded_skills": []}
+
+
+def test_resolve_auto_background_dispatch_ignores_group_shortcut_with_assistant_only_task_history():
+    event = _make_event("继续", chat_type="group")
+    history = [
+        {"role": "assistant", "content": "我继续排查服务器 gateway 并发问题。"},
+        {"role": "assistant", "content": "查完回来汇报。"},
+    ]
+
+    result = resolve_auto_background_dispatch(
+        event,
+        event.text,
+        auto_background_work_enabled=True,
+        employee_routes=[],
+        conversation_history=history,
+    )
+
+    assert result is None
 
 
 def test_format_auto_background_ack_includes_worker_name():

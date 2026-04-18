@@ -218,6 +218,9 @@ def history_suggests_auto_background_work(
     for item in list(conversation_history or [])[-4:]:
         if not isinstance(item, dict):
             continue
+        role = str(item.get("role") or "").strip().lower()
+        if role and role != "user":
+            continue
         content = item.get("content")
         if content:
             recent_parts.append(str(content))

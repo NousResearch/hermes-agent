@@ -51,6 +51,14 @@ class TestToolsEnableBuiltin:
         saved = mock_save.call_args[0][0]
         assert "web" in saved["platform_toolsets"]["cli"]
 
+    def test_enable_adds_code_intel_to_platform(self):
+        config = {"platform_toolsets": {"cli": ["memory"]}}
+        with patch("hermes_cli.tools_config.load_config", return_value=config), \
+             patch("hermes_cli.tools_config.save_config") as mock_save:
+            tools_disable_enable_command(Namespace(tools_action="enable", names=["code_intel"], platform="cli"))
+        saved = mock_save.call_args[0][0]
+        assert "code_intel" in saved["platform_toolsets"]["cli"]
+
     def test_enable_already_present_is_idempotent(self):
         config = {"platform_toolsets": {"cli": ["web"]}}
         with patch("hermes_cli.tools_config.load_config", return_value=config), \

@@ -188,6 +188,20 @@ _LEGACY_TOOLSET_MAP = {
     "tts_tools": ["text_to_speech"],
 }
 
+_LSP_TOOL_NAMES = {"lsp_document_symbols", "lsp_definition", "lsp_diagnostics"}
+
+
+def _append_description_suffix(description: str, suffix: str) -> str:
+    description = (description or "").rstrip()
+    suffix = (suffix or "").strip()
+    if not suffix or suffix in description:
+        return description
+    if not description:
+        return suffix
+    if description.endswith("."):
+        return f"{description} {suffix}"
+    return f"{description}. {suffix}"
+
 
 # =============================================================================
 # get_tool_definitions  (the main schema provider)
@@ -301,6 +315,22 @@ def get_tool_definitions(
                         "function": {**td["function"], "description": desc},
                     }
                     break
+
+    if _LSP_TOOL_NAMES & available_tool_names:
+        from tools.lsp_tools import get_lsp_host_capability_description
+
+        capability_suffix = get_lsp_host_capability_description()
+        for i, td in enumerate(filtered_tools):
+            if td.get("function", {}).get("name") not in _LSP_TOOL_NAMES:
+                continue
+            desc = td["function"].get("description", "")
+            filtered_tools[i] = {
+                "type": "function",
+                "function": {
+                    **td["function"],
+                    "description": _append_description_suffix(desc, capability_suffix),
+                },
+            }
 
     if not quiet_mode:
         if filtered_tools:

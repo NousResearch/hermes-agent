@@ -26,10 +26,33 @@ def test_get_platform_tools_uses_default_when_platform_not_configured():
 def test_configurable_toolsets_include_messaging():
     assert any(ts_key == "messaging" for ts_key, _, _ in CONFIGURABLE_TOOLSETS)
 
+
+def test_configurable_toolsets_include_code_intel():
+    assert any(ts_key == "code_intel" for ts_key, _, _ in CONFIGURABLE_TOOLSETS)
+
+
 def test_get_platform_tools_default_telegram_includes_messaging():
     enabled = _get_platform_tools({}, "telegram")
 
     assert "messaging" in enabled
+
+
+def test_get_platform_tools_default_cli_includes_code_intel():
+    enabled = _get_platform_tools({}, "cli")
+
+    assert "code_intel" in enabled
+
+
+def test_get_platform_tools_default_telegram_excludes_code_intel():
+    enabled = _get_platform_tools({}, "telegram")
+
+    assert "code_intel" not in enabled
+
+
+def test_get_platform_tools_default_api_server_includes_code_intel():
+    enabled = _get_platform_tools({}, "api_server")
+
+    assert "code_intel" in enabled
 
 
 def test_get_platform_tools_preserves_explicit_empty_selection():

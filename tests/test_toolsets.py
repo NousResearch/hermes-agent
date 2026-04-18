@@ -197,13 +197,18 @@ class TestToolsetConsistency:
             for inc in ts["includes"]:
                 assert inc in TOOLSETS, f"{name} includes unknown toolset '{inc}'"
 
-    def test_hermes_platforms_share_core_tools(self):
-        """All hermes-* platform toolsets should have the same tools."""
-        platforms = ["hermes-cli", "hermes-telegram", "hermes-discord", "hermes-whatsapp", "hermes-slack", "hermes-signal", "hermes-homeassistant"]
+    def test_hermes_messaging_platforms_share_core_tools(self):
+        """Messaging-oriented hermes-* platform toolsets should share the same tools."""
+        platforms = ["hermes-telegram", "hermes-discord", "hermes-whatsapp", "hermes-slack", "hermes-signal", "hermes-homeassistant"]
         tool_sets = [set(TOOLSETS[p]["tools"]) for p in platforms]
-        # All platform toolsets should be identical
         for ts in tool_sets[1:]:
             assert ts == tool_sets[0]
+
+    def test_local_coding_toolsets_include_code_intel(self):
+        code_intel_tools = set(resolve_toolset("code_intel"))
+
+        for toolset_name in ["hermes-cli", "hermes-acp", "hermes-api-server"]:
+            assert code_intel_tools <= set(resolve_toolset(toolset_name))
 
 
 class TestPluginToolsets:

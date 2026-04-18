@@ -26,8 +26,8 @@ Usage:
 from typing import List, Dict, Any, Set, Optional
 
 
-# Shared tool list for CLI and all messaging platform toolsets.
-# Edit this once to update all platforms simultaneously.
+# Shared tool list for messaging-style Hermes platform toolsets.
+# CLI/editor/API defaults can layer additional development-oriented tools on top.
 _HERMES_CORE_TOOLS = [
     # Web
     "web_search", "web_extract",
@@ -60,6 +60,14 @@ _HERMES_CORE_TOOLS = [
     "send_message",
     # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
     "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
+]
+
+
+_CODE_INTEL_TOOLS = [
+    # AST structure and lightweight local source analysis
+    "ast_list_defs", "ast_find_nodes",
+    # LSP-backed symbol lookup, definitions, and diagnostics
+    "lsp_document_symbols", "lsp_definition", "lsp_diagnostics",
 ]
 
 
@@ -179,6 +187,12 @@ TOOLSETS = {
         "tools": ["clarify"],
         "includes": []
     },
+
+    "code_intel": {
+        "description": "Code intelligence tools for AST structure, symbol lookup, definitions, and diagnostics",
+        "tools": _CODE_INTEL_TOOLS,
+        "includes": []
+    },
     
     "code_execution": {
         "description": "Run Python scripts that call tools programmatically (reduces LLM round trips)",
@@ -244,6 +258,7 @@ TOOLSETS = {
             "web_search", "web_extract",
             "terminal", "process",
             "read_file", "write_file", "patch", "search_files",
+            *_CODE_INTEL_TOOLS,
             "vision_analyze",
             "skills_list", "skill_view", "skill_manage",
             "browser_navigate", "browser_snapshot", "browser_click",
@@ -266,6 +281,8 @@ TOOLSETS = {
             "terminal", "process",
             # File manipulation
             "read_file", "write_file", "patch", "search_files",
+            # Code intelligence
+            *_CODE_INTEL_TOOLS,
             # Vision + image generation
             "vision_analyze", "image_generate",
             # Skills
@@ -292,7 +309,7 @@ TOOLSETS = {
     
     "hermes-cli": {
         "description": "Full interactive CLI toolset - all default tools plus cronjob management",
-        "tools": _HERMES_CORE_TOOLS,
+        "tools": [*_HERMES_CORE_TOOLS, *_CODE_INTEL_TOOLS],
         "includes": []
     },
     

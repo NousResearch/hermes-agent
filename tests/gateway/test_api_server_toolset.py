@@ -35,6 +35,15 @@ class TestHermesApiServerToolset:
         for tool in expected:
             assert tool in tools, f"Missing expected tool: {tool}"
 
+    def test_toolset_includes_code_intel_tools(self):
+        tools = resolve_toolset("hermes-api-server")
+        expected = [
+            "ast_list_defs", "ast_find_nodes",
+            "lsp_document_symbols", "lsp_definition", "lsp_diagnostics",
+        ]
+        for tool in expected:
+            assert tool in tools, f"Missing code_intel tool: {tool}"
+
     def test_toolset_includes_browser_tools(self):
         tools = resolve_toolset("hermes-api-server")
         for tool in ["browser_navigate", "browser_snapshot", "browser_click",

@@ -442,6 +442,171 @@ def _rewrite_real_sudo_invocations(command: str) -> tuple[str, bool]:
     return "".join(out), found
 
 
+def _rewrite_compound_background(command: str) -> str:
+    """Wrap `A && B &` (or `A || B &`) to `A && { B & }` at depth 0.
+
+    Bash parses ``A && B &`` with `&&` tighter than `&`, so it forks a
+    subshell for the whole `A && B` compound and backgrounds it. Inside
+    the subshell, `B` runs foreground, so the subshell waits for `B` to
+    finish. When `B` is a long-running process (`python3 -m http.server`,
+    `yes > /dev/null`, anything that doesn't naturally exit), the subshell
+    never exits. It leaks as a process stuck in ``wait4`` forever — and
+    on the way, its open stdout pipe can prevent the terminal tool from
+    returning promptly.
+
+    Rewriting the tail to `A && { B & }` preserves `&&`'s error semantics
+    (skip B if A fails) while replacing the subshell with a brace group.
+    The brace group runs in the current shell (no fork), backgrounds B as
+    a simple command (bash doesn't wait for it in non-interactive mode),
+    and exits immediately. B runs as a normal backgrounded child, orphaned
+    when the parent shell exits.
+
+    Handles redirects (``&>``, ``2>&1``) and skips content inside quoted
+    strings and parenthesised subshells. Leaves simple ``cmd &`` alone —
+    that construct doesn't have the subshell-wait bug.
+    """
+    n = len(command)
+    i = 0
+    paren_depth = 0
+    brace_depth = 0
+    # Position in *command* just after the most recent `&&` / `||` at depth 0
+    # in the current statement; -1 when no chain operator is active.
+    last_chain_op_end = -1
+    rewrites: list[tuple[int, int]] = []  # (chain_op_end, amp_pos)
+
+    while i < n:
+        ch = command[i]
+
+        # Newline terminates a statement at depth 0 — reset chain state.
+        # Checked before the whitespace skip so we don't miss it.
+        if ch == "\n" and paren_depth == 0 and brace_depth == 0:
+            last_chain_op_end = -1
+            i += 1
+            continue
+
+        if ch.isspace():
+            i += 1
+            continue
+
+        # Comments (only at statement start — conservative: any `#` not inside
+        # a token ends the line). `_read_shell_token` handles quoted strings
+        # below so `#` inside quotes is safe.
+        if ch == "#":
+            nl = command.find("\n", i)
+            if nl == -1:
+                break
+            i = nl
+            continue
+
+        if ch == "\\" and i + 1 < n:
+            i += 2
+            continue
+
+        # Quoted tokens — consume whole string via the shared tokenizer.
+        if ch in ("'", '"'):
+            _, next_i = _read_shell_token(command, i)
+            i = max(next_i, i + 1)
+            continue
+
+        if ch == "(":
+            paren_depth += 1
+            i += 1
+            continue
+
+        if ch == ")":
+            paren_depth = max(0, paren_depth - 1)
+            i += 1
+            continue
+
+        # Brace groups: `{ ... }` is a group (no subshell fork), and bash
+        # requires whitespace after `{`. We track depth so already-rewritten
+        # output (`A && { B & }`) is idempotent — the inner `&` is part of
+        # the group, not a new compound to rewrite. Also skip content inside
+        # the group since `A && B &` there is separately well-formed.
+        if ch == "{" and i + 1 < n and (command[i + 1].isspace() or command[i + 1] == "\n"):
+            brace_depth += 1
+            i += 1
+            continue
+        if ch == "}" and brace_depth > 0:
+            brace_depth -= 1
+            # Closing a group completes a compound statement; reset chain.
+            last_chain_op_end = -1
+            i += 1
+            continue
+
+        # Inside parens or brace groups, skip operators — they parse in their
+        # own scope. `(...)` subshells have the same bug class but are not the
+        # common agent pattern; leave for a follow-up.
+        if paren_depth > 0 or brace_depth > 0:
+            i += 1
+            continue
+
+        # Chain operators at depth 0
+        if command.startswith("&&", i) or command.startswith("||", i):
+            last_chain_op_end = i + 2
+            i += 2
+            continue
+
+        # Statement terminators reset the chain state
+        if ch == ";":
+            last_chain_op_end = -1
+            i += 1
+            continue
+
+        # Single `|` (pipe) starts a new pipeline stage; don't rewrite
+        # across it. `||` handled above.
+        if ch == "|":
+            last_chain_op_end = -1
+            i += 1
+            continue
+
+        # `&` handling: distinguish `&&`, `&>`, fd redirect (`>&`, `<&`),
+        # and a true backgrounding `&`.
+        if ch == "&":
+            # `&&` handled above; won't reach here
+            if i + 1 < n and command[i + 1] == ">":
+                # `&>` redirect — consume
+                i += 2
+                continue
+            # `>&` / `<&` fd target — look back past whitespace
+            j = i - 1
+            while j >= 0 and command[j].isspace():
+                j -= 1
+            if j >= 0 and command[j] in "<>":
+                i += 1
+                continue
+            # Real background operator
+            if last_chain_op_end >= 0:
+                rewrites.append((last_chain_op_end, i))
+            last_chain_op_end = -1
+            i += 1
+            continue
+
+        # Regular unquoted token — advance past it via the shared tokenizer
+        _, next_i = _read_shell_token(command, i)
+        i = max(next_i, i + 1)
+
+    if not rewrites:
+        return command
+
+    # Apply rewrites back-to-front so earlier indices remain valid.
+    result = command
+    for chain_end, amp_pos in reversed(rewrites):
+        # Skip whitespace right after the `&&`/`||` so the brace group
+        # opens flush against the inner command.
+        insert_pos = chain_end
+        while insert_pos < amp_pos and result[insert_pos].isspace():
+            insert_pos += 1
+        prefix = result[:insert_pos]
+        middle = result[insert_pos:amp_pos]  # inner command + trailing space
+        suffix = result[amp_pos + 1 :]
+        # `{` needs a trailing space in bash; the closing `}` needs to be
+        # preceded by `;` or `&` — we're providing `&` from the backgrounding.
+        result = prefix + "{ " + middle + "& }" + suffix
+
+    return result
+
+
 def _transform_sudo_command(command: str | None) -> tuple[str | None, str | None]:
     """
     Transform sudo commands to use -S flag if SUDO_PASSWORD is available.

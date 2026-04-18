@@ -117,13 +117,18 @@ def test_get_update_result_timeout():
     """get_update_result() returns None when check hasn't completed within timeout."""
     import hermes_cli.banner as banner
 
-    # Reset module state — don't set the event
-    banner._update_result = None
-    banner._update_check_done = threading.Event()
+    # Patch check_for_updates so any stray background prefetch thread writes a
+    # deterministic None rather than a real git-based commit count. Without
+    # this, a prefetch from an earlier test or fixture could race and set
+    # _update_result to a real commit count between our reset and the call.
+    with patch.object(banner, "check_for_updates", return_value=None):
+        # Reset module state — don't set the event
+        banner._update_result = None
+        banner._update_check_done = threading.Event()
 
-    start = time.monotonic()
-    result = banner.get_update_result(timeout=0.1)
-    elapsed = time.monotonic() - start
+        start = time.monotonic()
+        result = banner.get_update_result(timeout=0.1)
+        elapsed = time.monotonic() - start
 
     # Should have waited ~0.1s and returned None
     assert result is None

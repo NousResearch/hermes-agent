@@ -251,7 +251,7 @@ Skills for interacting with social platforms — posting, reading, monitoring, a
 
 | Skill | Description | Path |
 |-------|-------------|------|
-| `xitter` | Interact with X/Twitter via the x-cli terminal client using official X API credentials. Use for posting, reading timelines, searching tweets, liking, retweeting, bookmarks, mentions, and user lookups. | `social-media/xitter` |
+| `xurl` | Interact with X/Twitter via xurl, the official X API CLI. Use for posting, replying, quoting, searching, timelines, mentions, likes, reposts, bookmarks, follows, DMs, media upload, and raw v2 endpoint access. | `social-media/xurl` |
 
 ## software-development
 

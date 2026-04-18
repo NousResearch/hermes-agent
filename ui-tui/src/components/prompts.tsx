@@ -2,7 +2,7 @@ import { Box, Text, useInput } from '@hermes/ink'
 import { useState } from 'react'
 
 import type { Theme } from '../theme.js'
-import type { ApprovalReq, ClarifyReq } from '../types.js'
+import type { ApprovalReq, ClarifyReq, ConfirmReq } from '../types.js'
 
 import { TextInput } from './textInput.js'
 
@@ -151,6 +151,80 @@ export function ClarifyPrompt({ cols = 80, onAnswer, onCancel, req, t }: Clarify
   )
 }
 
+export function ConfirmPrompt({ onCancel, onConfirm, req, t }: ConfirmPromptProps) {
+  const [sel, setSel] = useState(0)
+
+  useInput((ch, key) => {
+    if (key.escape || (key.ctrl && ch.toLowerCase() === 'c')) {
+      onCancel()
+
+      return
+    }
+
+    const lower = ch.toLowerCase()
+
+    if (lower === 'y') {
+      onConfirm()
+
+      return
+    }
+
+    if (lower === 'n') {
+      onCancel()
+
+      return
+    }
+
+    if (key.upArrow && sel > 0) {
+      setSel(0)
+    }
+
+    if (key.downArrow && sel < 1) {
+      setSel(1)
+    }
+
+    if (key.return) {
+      sel === 0 ? onCancel() : onConfirm()
+    }
+  })
+
+  const accent = req.danger ? t.color.error : t.color.warn
+  const confirmLabel = req.confirmLabel ?? 'Yes'
+  const cancelLabel = req.cancelLabel ?? 'No'
+
+  const rows = [
+    { color: t.color.cornsilk, label: cancelLabel },
+    { color: req.danger ? t.color.error : t.color.cornsilk, label: confirmLabel }
+  ]
+
+  return (
+    <Box borderColor={accent} borderStyle="double" flexDirection="column" paddingX={1}>
+      <Text bold color={accent}>
+        {req.danger ? '⚠' : '?'} {req.title}
+      </Text>
+
+      {req.detail ? (
+        <Box paddingLeft={1}>
+          <Text color={t.color.cornsilk} wrap="truncate-end">
+            {req.detail}
+          </Text>
+        </Box>
+      ) : null}
+
+      <Text />
+
+      {rows.map((row, i) => (
+        <Text key={row.label}>
+          <Text color={sel === i ? accent : t.color.dim}>{sel === i ? '▸ ' : '  '}</Text>
+          <Text color={sel === i ? row.color : t.color.dim}>{row.label}</Text>
+        </Text>
+      ))}
+
+      <Text color={t.color.dim}>↑/↓ select · Enter confirm · Y/N quick · Esc cancel</Text>
+    </Box>
+  )
+}
+
 interface ApprovalPromptProps {
   onChoice: (s: string) => void
   req: ApprovalReq
@@ -162,5 +236,12 @@ interface ClarifyPromptProps {
   onAnswer: (s: string) => void
   onCancel: () => void
   req: ClarifyReq
+  t: Theme
+}
+
+interface ConfirmPromptProps {
+  onCancel: () => void
+  onConfirm: () => void
+  req: ConfirmReq
   t: Theme
 }

@@ -1,5 +1,6 @@
 """Tests for tools/session_search_tool.py — helper functions and search dispatcher."""
 
+import asyncio
 import json
 import time
 import pytest
@@ -7,6 +8,7 @@ import pytest
 from tools.session_search_tool import (
     _format_timestamp,
     _format_conversation,
+    _summarize_session,
     _truncate_around_matches,
     _HIDDEN_SESSION_SOURCES,
     MAX_SESSION_CHARS,
@@ -375,3 +377,59 @@ class TestSessionSearch:
         assert result["count"] == 0
         assert result["results"] == []
         assert result["sessions_searched"] == 0
+
+    def test_serializes_session_summaries_to_avoid_provider_fanout(self):
+        """Session summaries should run one-at-a-time to avoid rate-limit bursts."""
+        from unittest.mock import MagicMock
+        from tools.session_search_tool import session_search
+
+        mock_db = MagicMock()
+        mock_db.search_messages.return_value = [
+            {"session_id": "s1", "content": "match", "source": "cli", "session_started": 1709500000, "model": "test"},
+            {"session_id": "s2", "content": "match", "source": "cli", "session_started": 1709400000, "model": "test"},
+        ]
+        mock_db.get_session.side_effect = lambda session_id: {"parent_session_id": None}
+        mock_db.get_messages_as_conversation.side_effect = lambda session_id: [
+            {"role": "user", "content": f"hello from {session_id}"},
+        ]
+
+        state = {"current": 0, "max": 0}
+
+        async def _fake_summarize(text, query, meta):
+            state["current"] += 1
+            state["max"] = max(state["max"], state["current"])
+            await asyncio.sleep(0)
+            state["current"] -= 1
+            return f"summary for {query}"
+
+        from unittest.mock import patch as _patch
+        with _patch("tools.session_search_tool._summarize_session", new=_fake_summarize):
+            result = json.loads(session_search(query="test", db=mock_db, limit=2))
+
+        assert result["success"] is True
+        assert result["count"] == 2
+        assert state["max"] == 1
+
+
+class TestSummarizeSession:
+    @pytest.mark.asyncio
+    async def test_rate_limit_skips_retries(self):
+        class _RateLimitError(Exception):
+            status_code = 429
+
+        calls = {"count": 0}
+
+        async def _rate_limited(*args, **kwargs):
+            calls["count"] += 1
+            raise _RateLimitError("Too Many Requests")
+
+        from unittest.mock import patch as _patch
+        with _patch("tools.session_search_tool.async_call_llm", new=_rate_limited):
+            result = await _summarize_session(
+                "user asked about paperclip adapter loops",
+                "paperclip adapter",
+                {"source": "cli", "started_at": 1709500000},
+            )
+
+        assert result is None
+        assert calls["count"] == 1

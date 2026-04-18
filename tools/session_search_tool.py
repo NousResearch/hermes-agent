@@ -224,6 +224,14 @@ async def _summarize_session(
             logging.warning("No auxiliary model available for session summarization")
             return None
         except Exception as e:
+            status_code = getattr(e, "status_code", None)
+            error_text = str(e).lower()
+            if status_code == 429 or "too many requests" in error_text:
+                logging.warning(
+                    "Session summarization rate-limited; skipping retries for this session: %s",
+                    e,
+                )
+                return None
             if attempt < max_retries - 1:
                 await asyncio.sleep(1 * (attempt + 1))
             else:
@@ -421,14 +429,18 @@ def session_search(
                     exc_info=True,
                 )
 
-        # Summarize all sessions in parallel
+        # Summarize sessions serially. Parallel fan-out causes auxiliary model
+        # throttling for integrations that trigger recall repeatedly, which can
+        # turn one tool call into a long retry loop.
         async def _summarize_all() -> List[Union[str, Exception]]:
-            """Summarize all sessions in parallel."""
-            coros = [
-                _summarize_session(text, query, meta)
-                for _, _, text, meta in tasks
-            ]
-            return await asyncio.gather(*coros, return_exceptions=True)
+            """Summarize prepared sessions one at a time for reliability."""
+            results: List[Union[str, Exception]] = []
+            for _, _, text, meta in tasks:
+                try:
+                    results.append(await _summarize_session(text, query, meta))
+                except Exception as exc:
+                    results.append(exc)
+            return results
 
         try:
             # Use _run_async() which properly manages event loops across

@@ -1,4 +1,5 @@
 """Tests for Signal messenger platform adapter."""
+import asyncio
 import base64
 import json
 import pytest
@@ -740,3 +741,62 @@ class TestSignalStopTyping:
         await adapter.stop_typing("+155****4567")
 
         adapter._stop_typing_indicator.assert_awaited_once_with("+155****4567")
+
+
+class TestSignalTypingLoop:
+    @pytest.mark.asyncio
+    async def test_send_typing_reuses_existing_background_loop(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        calls = []
+
+        async def _fake_rpc(method, params, rpc_id=None, log_failures=True):
+            calls.append({
+                "method": method,
+                "rpc_id": rpc_id,
+                "log_failures": log_failures,
+            })
+            return {"ok": True}
+
+        adapter._rpc = _fake_rpc
+
+        await adapter.send_typing("+155****4567")
+        await adapter.send_typing("+155****4567")
+        await asyncio.sleep(0)
+
+        assert len(adapter._typing_tasks) == 1
+        assert len(calls) == 1
+        assert calls[0]["method"] == "sendTyping"
+        assert calls[0]["log_failures"] is False
+
+        await adapter.stop_typing("+155****4567")
+        assert "+155****4567" not in adapter._typing_tasks
+
+    @pytest.mark.asyncio
+    async def test_send_typing_failure_holds_slot_for_refresh_window(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        monkeypatch.setattr("gateway.platforms.signal.TYPING_INTERVAL", 0.05)
+        calls = []
+
+        async def _fake_rpc(method, params, rpc_id=None, log_failures=True):
+            calls.append({
+                "method": method,
+                "rpc_id": rpc_id,
+                "log_failures": log_failures,
+            })
+            return None
+
+        adapter._rpc = _fake_rpc
+
+        await adapter.send_typing("+155****4567")
+        await asyncio.sleep(0.01)
+        await adapter.send_typing("+155****4567")
+
+        assert len(calls) == 1
+
+        await asyncio.sleep(0.07)
+        await adapter.send_typing("+155****4567")
+        await asyncio.sleep(0.01)
+
+        assert len(calls) == 2
+
+        await adapter.stop_typing("+155****4567")

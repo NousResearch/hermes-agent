@@ -548,7 +548,14 @@ class SignalAdapter(BasePlatformAdapter):
     # JSON-RPC Communication
     # ------------------------------------------------------------------
 
-    async def _rpc(self, method: str, params: dict, rpc_id: str = None) -> Any:
+    async def _rpc(
+        self,
+        method: str,
+        params: dict,
+        rpc_id: str = None,
+        *,
+        log_failures: bool = True,
+    ) -> Any:
         """Send a JSON-RPC 2.0 request to signal-cli daemon."""
         if not self.client:
             logger.warning("Signal: RPC called but client not connected")
@@ -574,13 +581,19 @@ class SignalAdapter(BasePlatformAdapter):
             data = resp.json()
 
             if "error" in data:
-                logger.warning("Signal RPC error (%s): %s", method, data["error"])
+                if log_failures:
+                    logger.warning("Signal RPC error (%s): %s", method, data["error"])
+                else:
+                    logger.debug("Signal RPC error (%s): %s", method, data["error"])
                 return None
 
             return data.get("result")
 
         except Exception as e:
-            logger.warning("Signal RPC %s failed: %s", method, e)
+            if log_failures:
+                logger.warning("Signal RPC %s failed: %s", method, e)
+            else:
+                logger.debug("Signal RPC %s failed: %s", method, e)
             return None
 
     # ------------------------------------------------------------------
@@ -627,7 +640,11 @@ class SignalAdapter(BasePlatformAdapter):
                 self._recent_sent_timestamps.pop()
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
-        """Send a typing indicator."""
+        """Start a throttled typing indicator loop for a chat."""
+        existing = self._typing_tasks.get(chat_id)
+        if existing and not existing.done():
+            return
+
         params: Dict[str, Any] = {
             "account": self.account,
         }
@@ -637,7 +654,33 @@ class SignalAdapter(BasePlatformAdapter):
         else:
             params["recipient"] = [chat_id]
 
-        await self._rpc("sendTyping", params, rpc_id="typing")
+        async def _typing_loop() -> None:
+            try:
+                while True:
+                    result = await self._rpc(
+                        "sendTyping",
+                        params,
+                        rpc_id="typing",
+                        log_failures=False,
+                    )
+                    if result is None:
+                        # Hold the slot through one refresh window so the base
+                        # adapter doesn't recreate a failed typing request every
+                        # two seconds while Signal transport is unhealthy.
+                        await asyncio.sleep(TYPING_INTERVAL)
+                        return
+                    await asyncio.sleep(TYPING_INTERVAL)
+            except asyncio.CancelledError:
+                pass
+
+        task = asyncio.create_task(_typing_loop())
+        self._typing_tasks[chat_id] = task
+
+        def _cleanup(done_task: asyncio.Task) -> None:
+            if self._typing_tasks.get(chat_id) is done_task:
+                self._typing_tasks.pop(chat_id, None)
+
+        task.add_done_callback(_cleanup)
 
     async def send_image(
         self,

@@ -5,7 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { STARTUP_RESUME_ID } from '../config/env.js'
 import { MAX_HISTORY, WHEEL_SCROLL_STEP } from '../config/limits.js'
 import { imageTokenMeta } from '../domain/messages.js'
-import { shortCwd } from '../domain/paths.js'
+import { fmtCwdBranch } from '../domain/paths.js'
 import { type GatewayClient } from '../gatewayClient.js'
 import type {
   ClarifyRespondResponse,
@@ -13,6 +13,7 @@ import type {
   GatewayEvent,
   TerminalResizeResponse
 } from '../gatewayTypes.js'
+import { useGitBranch } from '../hooks/useGitBranch.js'
 import { useVirtualHistory } from '../hooks/useVirtualHistory.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
 import { buildToolTrailLine, sameToolTrailGroup, toolTrailLabel } from '../lib/text.js'
@@ -620,9 +621,12 @@ export function useMainApp(gw: GatewayClient) {
     [turn, showProgressArea]
   )
 
+  const cwd = ui.info?.cwd || process.env.HERMES_CWD || process.cwd()
+  const gitBranch = useGitBranch(cwd)
+
   const appStatus = useMemo(
     () => ({
-      cwdLabel: shortCwd(ui.info?.cwd || process.env.HERMES_CWD || process.cwd()),
+      cwdLabel: fmtCwdBranch(cwd, gitBranch),
       goodVibesTick,
       sessionStartedAt: ui.sid ? sessionStartedAt : null,
       showStickyPrompt: !!stickyPrompt,
@@ -630,7 +634,7 @@ export function useMainApp(gw: GatewayClient) {
       stickyPrompt,
       voiceLabel: voiceRecording ? 'REC' : voiceProcessing ? 'STT' : `voice ${voiceEnabled ? 'on' : 'off'}`
     }),
-    [goodVibesTick, sessionStartedAt, stickyPrompt, ui, voiceEnabled, voiceProcessing, voiceRecording]
+    [cwd, gitBranch, goodVibesTick, sessionStartedAt, stickyPrompt, ui, voiceEnabled, voiceProcessing, voiceRecording]
   )
 
   const appTranscript = useMemo(

@@ -460,17 +460,17 @@ def cmd_setup(args) -> None:
             pass  # keep current
 
     # --- 7b. Dialectic cadence ---
-    current_dialectic = str(hermes_host.get("dialecticCadence") or cfg.get("dialecticCadence") or "3")
+    current_dialectic = str(hermes_host.get("dialecticCadence") or cfg.get("dialecticCadence") or "1")
     print("\n  Dialectic cadence:")
     print("    How often Honcho rebuilds its user model (LLM call on Honcho backend).")
-    print("    1 = every turn (aggressive), 3 = every 3 turns (recommended), 5+ = sparse.")
+    print("    1 = every turn (default), 3+ = sparse (cost-saving).")
     new_dialectic = _prompt("Dialectic cadence", default=current_dialectic)
     try:
         val = int(new_dialectic)
         if val >= 1:
             hermes_host["dialecticCadence"] = val
     except (ValueError, TypeError):
-        hermes_host["dialecticCadence"] = 3
+        hermes_host["dialecticCadence"] = 1
 
     # --- 8. Session strategy ---
     current_strat = hermes_host.get("sessionStrategy") or cfg.get("sessionStrategy", "per-session")
@@ -636,7 +636,7 @@ def cmd_status(args) -> None:
     print(f"  Recall mode:    {hcfg.recall_mode}")
     print(f"  Context budget: {hcfg.context_tokens or '(uncapped)'} tokens")
     raw = getattr(hcfg, "raw", None) or {}
-    dialectic_cadence = raw.get("dialecticCadence") or 3
+    dialectic_cadence = raw.get("dialecticCadence") or 1
     print(f"  Dialectic cad:  every {dialectic_cadence} turn{'s' if dialectic_cadence != 1 else ''}")
     print(f"  Observation:    user(me={hcfg.user_observe_me},others={hcfg.user_observe_others}) ai(me={hcfg.ai_observe_me},others={hcfg.ai_observe_others})")
     print(f"  Write freq:     {hcfg.write_frequency}")

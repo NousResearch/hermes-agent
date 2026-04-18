@@ -16360,8 +16360,12 @@ class AIAgent:
         # Append any pending user steer text to the last tool result so the
         # agent sees it on its next iteration. Runs AFTER budget enforcement
         # so the steer marker is never truncated. See steer() for details.
-        if num_tools > 0:
-            self._apply_pending_steer_to_tool_results(messages, num_tools)
+        _apply_pending_steer = getattr(self, "_apply_pending_steer_to_tool_results", None)
+        if num_tools > 0 and _apply_pending_steer is not None:
+            _apply_pending_steer(messages, num_tools)
+        _inject_budget_warning = getattr(self, "_inject_budget_warning_into_last_tool_result", None)
+        if _inject_budget_warning is not None:
+            _inject_budget_warning(messages, api_call_count)
 
     def _execute_tool_calls_sequential(self, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
         """Execute tool calls sequentially (original behavior). Used for single calls or interactive tools."""
@@ -16773,8 +16777,12 @@ class AIAgent:
         # ── /steer injection ──────────────────────────────────────────────
         # See _execute_tool_calls_parallel for the rationale. Same hook,
         # applied to sequential execution as well.
-        if num_tools_seq > 0:
-            self._apply_pending_steer_to_tool_results(messages, num_tools_seq)
+        _apply_pending_steer = getattr(self, "_apply_pending_steer_to_tool_results", None)
+        if num_tools_seq > 0 and _apply_pending_steer is not None:
+            _apply_pending_steer(messages, num_tools_seq)
+        _inject_budget_warning = getattr(self, "_inject_budget_warning_into_last_tool_result", None)
+        if _inject_budget_warning is not None:
+            _inject_budget_warning(messages, api_call_count)
 
 
 

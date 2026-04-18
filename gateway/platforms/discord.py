@@ -2831,27 +2831,35 @@ class DiscordAdapter(BasePlatformAdapter):
                     auto_threaded_channel = thread
                     self._threads.mark(thread_id)
 
-        # Determine message type
+        # Determine message type. Unsupported attachments should not lock the
+        # event into TEXT ahead of later valid media, but once we see the
+        # first supported attachment we keep that type even if caching later
+        # fails or the file is oversized.
         msg_type = MessageType.TEXT
         if message.content.startswith("/"):
             msg_type = MessageType.COMMAND
         elif message.attachments:
-            # Check attachment types
             for att in message.attachments:
-                if att.content_type:
-                    if att.content_type.startswith("image/"):
-                        msg_type = MessageType.PHOTO
-                    elif att.content_type.startswith("video/"):
-                        msg_type = MessageType.VIDEO
-                    elif att.content_type.startswith("audio/"):
-                        msg_type = MessageType.AUDIO
-                    else:
-                        doc_ext = ""
-                        if att.filename:
-                            _, doc_ext = os.path.splitext(att.filename)
-                            doc_ext = doc_ext.lower()
-                        if doc_ext in SUPPORTED_DOCUMENT_TYPES:
-                            msg_type = MessageType.DOCUMENT
+                content_type = att.content_type or ""
+                if content_type.startswith("image/"):
+                    msg_type = MessageType.PHOTO
+                    break
+                if content_type.startswith("video/"):
+                    msg_type = MessageType.VIDEO
+                    break
+                if content_type.startswith("audio/"):
+                    msg_type = MessageType.AUDIO
+                    break
+
+                doc_ext = ""
+                if att.filename:
+                    _, doc_ext = os.path.splitext(att.filename)
+                    doc_ext = doc_ext.lower()
+                if not doc_ext and content_type:
+                    mime_to_ext = {v: k for k, v in SUPPORTED_DOCUMENT_TYPES.items()}
+                    doc_ext = mime_to_ext.get(content_type, "")
+                if doc_ext in SUPPORTED_DOCUMENT_TYPES:
+                    msg_type = MessageType.DOCUMENT
                     break
 
         # When auto-threading kicked in, route responses to the new thread

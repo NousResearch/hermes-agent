@@ -383,3 +383,28 @@ class TestIncomingDocumentHandling:
         assert event.message_type == MessageType.PHOTO
         assert event.media_urls == ["/tmp/cached_image.png"]
         assert event.media_types == ["image/png"]
+
+    @pytest.mark.asyncio
+    async def test_unsupported_attachment_before_image_still_classifies_as_photo(self, adapter):
+        """Later supported media should decide the final message type."""
+        with patch(
+            "gateway.platforms.discord.cache_image_from_url",
+            new_callable=AsyncMock,
+            return_value="/tmp/cached_image.png",
+        ):
+            msg = make_message([
+                make_attachment(
+                    filename="blob.bin",
+                    content_type="application/octet-stream",
+                ),
+                make_attachment(
+                    filename="photo.png",
+                    content_type="image/png",
+                ),
+            ])
+            await adapter._handle_message(msg)
+
+        event = adapter.handle_message.call_args[0][0]
+        assert event.message_type == MessageType.PHOTO
+        assert event.media_urls == ["/tmp/cached_image.png"]
+        assert event.media_types == ["image/png"]

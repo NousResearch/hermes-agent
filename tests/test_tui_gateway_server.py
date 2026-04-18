@@ -531,3 +531,18 @@ def test_session_steer_errors_when_agent_has_no_steer_method():
     assert "error" in resp, resp
     assert resp["error"]["code"] == 4010
 
+
+def test_session_info_includes_mcp_servers(monkeypatch):
+    fake_status = [
+        {"name": "github", "transport": "http", "tools": 12, "connected": True},
+        {"name": "filesystem", "transport": "stdio", "tools": 4, "connected": True},
+        {"name": "broken", "transport": "stdio", "tools": 0, "connected": False},
+    ]
+    fake_mod = types.ModuleType("tools.mcp_tool")
+    fake_mod.get_mcp_status = lambda: fake_status
+    monkeypatch.setitem(sys.modules, "tools.mcp_tool", fake_mod)
+
+    info = server._session_info(types.SimpleNamespace(tools=[], model=""))
+
+    assert info["mcp_servers"] == fake_status
+

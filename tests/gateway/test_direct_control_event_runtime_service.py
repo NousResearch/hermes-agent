@@ -53,6 +53,18 @@ def test_extract_platform_text_event_context_accepts_matching_text_turn():
     assert body == "在吗"
 
 
+def test_normalize_direct_control_body_strips_leading_wrapper_phrases():
+    from gateway.direct_control_event_runtime_service import normalize_direct_control_body
+
+    assert normalize_direct_control_body("我让你停止QQ 群 192903718 的监听采集") == (
+        "停止QQ 群 192903718 的监听采集"
+    )
+    assert normalize_direct_control_body("帮我把这个群切成只监听") == "这个群切成只监听"
+    assert normalize_direct_control_body("麻烦你把往 QQ 群 192903718 发：你好") == (
+        "往 QQ 群 192903718 发：你好"
+    )
+
+
 def test_extract_platform_text_event_context_rejects_command_media_and_other_platforms():
     from gateway.direct_control_event_runtime_service import extract_platform_text_event_context
 
@@ -86,6 +98,21 @@ def test_build_admin_platform_text_context_includes_admin_flags():
     assert context["body"] == "看看待处理的好友申请"
     assert context["admin_ids_configured"] is True
     assert context["is_admin_user"] is True
+
+
+def test_build_admin_platform_text_context_uses_normalized_body():
+    from gateway.direct_control_event_runtime_service import build_admin_platform_text_context
+
+    event = _make_event("我让你停止QQ 群 192903718 的监听采集")
+
+    context = build_admin_platform_text_context(
+        event,
+        platform=Platform.QQ_NAPCAT,
+        configured_admin_user_ids_fn=lambda current_platform: ["179033731"],
+        is_admin_user_fn=lambda source: True,
+    )
+
+    assert context["body"] == "停止QQ 群 192903718 的监听采集"
 
 
 def test_build_admin_platform_text_context_handles_non_matching_turn():

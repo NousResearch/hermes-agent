@@ -2,7 +2,34 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
+
+
+_DIRECT_CONTROL_WRAPPER_PATTERNS = (
+    re.compile(r"^(?:我让你|我叫你|我说了|我说的是|我是说)\s*"),
+    re.compile(r"^(?:帮我把|请你把|麻烦你把)\s*"),
+    re.compile(r"^(?:帮我|请你|麻烦你)\s*"),
+)
+
+
+def normalize_direct_control_body(body: str) -> str:
+    """Strip obvious imperative wrappers before direct-shortcut matching.
+
+    This keeps downstream send/group/intel matchers focused on the actionable
+    text instead of conversational prefixes such as ``我让你`` or ``帮我把``.
+    """
+
+    normalized = str(body or "").strip()
+    if not normalized:
+        return ""
+
+    previous = None
+    while normalized and normalized != previous:
+        previous = normalized
+        for pattern in _DIRECT_CONTROL_WRAPPER_PATTERNS:
+            normalized = pattern.sub("", normalized, count=1).strip()
+    return normalized
 
 
 def extract_platform_text_event_context(event: Any, *, platform) -> tuple[Any | None, str]:
@@ -19,7 +46,7 @@ def extract_platform_text_event_context(event: Any, *, platform) -> tuple[Any | 
     if getattr(event, "media_urls", None):
         return None, ""
 
-    body = str(getattr(event, "text", "") or "").strip()
+    body = normalize_direct_control_body(str(getattr(event, "text", "") or "").strip())
     if not body:
         return None, ""
     return source, body

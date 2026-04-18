@@ -78,6 +78,23 @@ def _get_session_db():
         return None
 
 
+def _resolve_state_db_path(db) -> Path:
+    """Best-effort path for the active session DB backing store."""
+    candidate = getattr(db, "db_path", None)
+    if candidate:
+        try:
+            return Path(candidate)
+        except TypeError:
+            pass
+
+    try:
+        from hermes_constants import get_hermes_home
+
+        return get_hermes_home() / "state.db"
+    except ImportError:
+        return Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes")) / "state.db"
+
+
 def _load_sessions_index() -> dict:
     """Load the gateway sessions.json index directly.
 
@@ -202,7 +219,9 @@ class EventBridge:
         self._pending_approvals: Dict[str, dict] = {}
         # mtime cache — skip expensive work when files haven't changed
         self._sessions_json_mtime: float = 0.0
+        self._sessions_json_raw: str = ""
         self._state_db_mtime: float = 0.0
+        self._state_db_signature: tuple[int, int] = (0, 0)
         self._cached_sessions_index: dict = {}
 
     def start(self):
@@ -330,33 +349,43 @@ class EventBridge:
         Uses mtime checks on sessions.json and state.db to skip work
         when nothing has changed — makes 200ms polling essentially free.
         """
-        # Check if sessions.json has changed (mtime check is ~1μs)
         sessions_file = _get_sessions_dir() / "sessions.json"
+        sessions_raw = ""
         try:
             sj_mtime = sessions_file.stat().st_mtime if sessions_file.exists() else 0.0
         except OSError:
             sj_mtime = 0.0
-
-        if sj_mtime != self._sessions_json_mtime:
-            self._sessions_json_mtime = sj_mtime
-            self._cached_sessions_index = _load_sessions_index()
+        if sessions_file.exists():
+            try:
+                sessions_raw = sessions_file.read_text(encoding="utf-8")
+            except OSError:
+                sessions_raw = ""
 
         # Check if state.db has changed
+        db_file = _resolve_state_db_path(db)
         try:
-            from hermes_constants import get_hermes_home
-            db_file = get_hermes_home() / "state.db"
-        except ImportError:
-            db_file = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes")) / "state.db"
-
-        try:
-            db_mtime = db_file.stat().st_mtime if db_file.exists() else 0.0
+            if db_file.exists():
+                db_stat = db_file.stat()
+                db_mtime = db_stat.st_mtime
+                db_signature = (int(getattr(db_stat, "st_mtime_ns", int(db_mtime * 1_000_000_000))), int(db_stat.st_size))
+            else:
+                db_mtime = 0.0
+                db_signature = (0, 0)
         except OSError:
             db_mtime = 0.0
+            db_signature = (0, 0)
 
-        if db_mtime == self._state_db_mtime and sj_mtime == self._sessions_json_mtime:
+        sessions_changed = sessions_raw != self._sessions_json_raw
+        db_changed = db_signature != self._state_db_signature
+        if not sessions_changed and not db_changed:
             return  # Nothing changed since last poll — skip entirely
 
+        if sessions_changed:
+            self._cached_sessions_index = _load_sessions_index()
+            self._sessions_json_raw = sessions_raw
+            self._sessions_json_mtime = sj_mtime
         self._state_db_mtime = db_mtime
+        self._state_db_signature = db_signature
         entries = self._cached_sessions_index
 
         for session_key, entry in entries.items():

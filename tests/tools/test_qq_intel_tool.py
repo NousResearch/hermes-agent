@@ -394,6 +394,88 @@ def test_report_now_alias_returns_stable_delivery_shape(monkeypatch):
     reset_cache()
 
 
+def test_run_report_now_rejects_non_success_send_results(monkeypatch):
+    monkeypatch.setenv("HERMES_TIMEZONE", "Asia/Shanghai")
+    from hermes_time import reset_cache
+
+    reset_cache()
+    shanghai = ZoneInfo("Asia/Shanghai")
+    config, _qq_cfg = _make_qq_napcat_config()
+    store = QqGroupArchiveStore()
+    store.archive_payload(
+        _group_payload(
+            message_id=903,
+            user_id=456789,
+            text="失败情报一条",
+            when=datetime(2026, 4, 13, 19, 0, tzinfo=shanghai),
+        )
+    )
+
+    with patch("gateway.config.load_gateway_config", return_value=config), \
+         patch("tools.interrupt.is_interrupted", return_value=False), \
+         patch("model_tools._run_async", side_effect=_run_async_immediately), \
+         patch(
+             "tools.qq_intel_tool._qq_napcat_call",
+             new=AsyncMock(
+                 return_value=(
+                     [{"group_id": 987654321, "group_name": "研发群"}],
+                     None,
+                 )
+             ),
+         ), \
+         patch(
+             "tools.qq_intel_tool.send_message_tool",
+             return_value=json.dumps({}),
+         ), \
+         patch.dict(
+             os.environ,
+             {
+                 "HERMES_SESSION_PLATFORM": "qq_napcat",
+                 "HERMES_SESSION_CHAT_TYPE": "dm",
+                 "HERMES_SESSION_CHAT_ID": "179033731",
+                 "HERMES_SESSION_USER_ID": "179033731",
+                 "HERMES_SESSION_IS_ADMIN": "true",
+             },
+             clear=False,
+         ):
+        json.loads(
+            qq_intel_tool(
+                {
+                    "action": "hire_worker",
+                    "worker_name": "钢镚",
+                    "target_group": "group:987654321",
+                    "objective": "去刺探情报",
+                }
+            )
+        )
+        failed = json.loads(
+            qq_intel_tool(
+                {
+                    "action": "run_report_now",
+                    "worker_name": "钢镚",
+                    "report_date": "2026-04-13",
+                }
+            )
+        )
+        fetched = json.loads(
+            qq_intel_tool(
+                {
+                    "action": "get_worker",
+                    "worker_name": "钢镚",
+                }
+            )
+        )
+
+    assert failed["success"] is False
+    assert failed["error"] == "情报汇报发送失败：工具未返回成功结果"
+    assert failed["delivery"]["state"]["attempt_count"] == 1
+    assert failed["delivery"]["state"]["delivered_at"] is None
+    assert failed["delivery"]["state"]["last_error"] == "情报汇报发送失败：工具未返回成功结果"
+    assert fetched["success"] is True
+    assert fetched["worker"]["last_report_at"] is None
+    reset_cache()
+
+
 def test_get_worker_includes_reporting_summary_for_assigned_group():
     config, _qq_cfg = _make_qq_napcat_config()
 

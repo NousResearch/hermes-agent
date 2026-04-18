@@ -16,6 +16,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from agent.redact import redact_sensitive_text
 from gateway.qq_napcat_runtime import diagnose_local_qq_napcat_endpoint
+from tool_result_validation import normalize_tool_result_payload
 from tools.group_session_helpers import current_session_target_parts
 
 logger = logging.getLogger(__name__)
@@ -278,14 +279,16 @@ def _handle_send(args):
 
     try:
         from model_tools import _run_async
-        result = _run_async(
-            _send_to_platform(
-                platform,
-                pconfig,
-                chat_id,
-                cleaned_message,
-                thread_id=thread_id,
-                media_files=media_files,
+        result = normalize_tool_result_payload(
+            _run_async(
+                _send_to_platform(
+                    platform,
+                    pconfig,
+                    chat_id,
+                    cleaned_message,
+                    thread_id=thread_id,
+                    media_files=media_files,
+                )
             )
         )
         if used_home_channel and isinstance(result, dict) and result.get("success"):

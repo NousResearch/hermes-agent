@@ -10,6 +10,7 @@ from gateway.qq_group_archive import (
 )
 from gateway.qq_group_policies import get_group_policy
 from hermes_time import now as hermes_now
+from tool_result_validation import normalize_tool_failure_result
 from tools.registry import registry, tool_error
 from tools.qq_group_tool_common import (
     current_chat_delivery_target,
@@ -189,17 +190,21 @@ def qq_group_archive_tool(args, **kw):
                 }
             )
         )
+        failed_delivery = normalize_tool_failure_result(
+            send_result,
+            failure_prefix="QQ 群日报发送失败",
+        )
         delivery_state = store.record_report_delivery(
             group_id=group_id,
             report_date=report["report_date"],
             delivery_key=_manual_delivery_key(delivery_target),
             target=delivery_target,
-            error=str(send_result.get("error") or "").strip() or None,
+            error=str((failed_delivery or {}).get("error") or "").strip() or None,
         )
-        if send_result.get("error"):
+        if failed_delivery:
             return json.dumps(
                 {
-                    **send_result,
+                    **failed_delivery,
                     "report": report,
                     "reporting": reporting,
                     "report_control": dict(reporting.get("report_control") or {}),

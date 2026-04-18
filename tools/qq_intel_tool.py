@@ -20,6 +20,7 @@ from gateway.qq_intel_assignments import (
     update_intel_worker,
 )
 from hermes_time import now as hermes_now
+from tool_result_validation import normalize_tool_failure_result
 from tools.qq_group_tool_common import (
     current_chat_delivery_target,
     current_user_dm_delivery_target,
@@ -266,18 +267,22 @@ def qq_intel_tool(args, **kw):
                 }
             )
         )
+        failed_delivery = normalize_tool_failure_result(
+            send_result,
+            failure_prefix="情报汇报发送失败",
+        )
         archive_store = QqGroupArchiveStore()
         delivery_state = archive_store.record_report_delivery(
             group_id=str(worker["target_group_id"]),
             report_date=report["report_date"],
             delivery_key=_worker_delivery_key(worker["worker_name"], delivery_target),
             target=delivery_target,
-            error=str(send_result.get("error") or "").strip() or None,
+            error=str((failed_delivery or {}).get("error") or "").strip() or None,
         )
-        if send_result.get("error"):
+        if failed_delivery:
             return json.dumps(
                 {
-                    **send_result,
+                    **failed_delivery,
                     "action": action,
                     "worker_name": worker["worker_name"],
                     "report": report,

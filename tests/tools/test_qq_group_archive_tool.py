@@ -230,3 +230,49 @@ def test_archive_tool_deliver_report_stays_available_after_rollup_purge(monkeypa
     assert delivered["delivery"]["state"]["delivered_at"] is not None
     send_mock.assert_called_once()
     reset_cache()
+
+
+def test_archive_tool_deliver_report_rejects_non_success_send_results(monkeypatch):
+    monkeypatch.setenv("HERMES_TIMEZONE", "Asia/Shanghai")
+    from hermes_time import reset_cache
+
+    reset_cache()
+    shanghai = ZoneInfo("Asia/Shanghai")
+    store = QqGroupArchiveStore()
+    set_group_policy(
+        "987654321",
+        mode="collect_only",
+        manual_report_target="qq_napcat:dm:179033731",
+        updated_by="test",
+    )
+    store.archive_payload(
+        _group_payload(
+            message_id=605,
+            user_id=456789,
+            text="这条发送会失败",
+            when=datetime(2026, 4, 13, 17, 0, tzinfo=shanghai),
+            nickname="Alice",
+            card="AliceCard",
+        )
+    )
+
+    with patch(
+        "tools.qq_group_archive_tool.send_message_tool",
+        return_value=json.dumps({}),
+    ):
+        delivered = json.loads(
+            qq_group_archive_tool(
+                {
+                    "action": "deliver_report",
+                    "target": "group:987654321",
+                    "report_date": "2026-04-13",
+                }
+            )
+        )
+
+    assert delivered["success"] is False
+    assert delivered["error"] == "QQ 群日报发送失败：工具未返回成功结果"
+    assert delivered["delivery"]["state"]["attempt_count"] == 1
+    assert delivered["delivery"]["state"]["delivered_at"] is None
+    assert delivered["delivery"]["state"]["last_error"] == "QQ 群日报发送失败：工具未返回成功结果"
+    reset_cache()

@@ -282,6 +282,19 @@ The registry handles schema collection, dispatch, availability checking, and err
 
 **Agent-level tools** (todo, memory): intercepted by `run_agent.py` before `handle_function_call()`. See `todo_tool.py` for the pattern.
 
+### Exposing a tool to gateway bots (Telegram, Slack, Discord, …)
+
+Adding a tool to `_HERMES_CORE_TOOLS` alone is **not enough** to make it visible to gateway bots when the user has no `platform_toolsets` override. `_get_platform_tools()` in `hermes_cli/tools_config.py` resolves the platform's `default_toolset` (e.g. `hermes-telegram`) to a flat tool-name set, then reverse-maps that set back to `CONFIGURABLE_TOOLSETS` keys before handing the list to `get_tool_definitions()`. Only tools that are members of some `CONFIGURABLE_TOOLSETS` key's `tools` list survive the round-trip — anything listed *only* in `_HERMES_CORE_TOOLS` gets silently dropped.
+
+For a new tool to reach messaging bots by default, add it to **both**:
+
+1. `_HERMES_CORE_TOOLS` in `toolsets.py` (composite `hermes-*` platform toolsets expand through this)
+2. One of the `CONFIGURABLE_TOOLSETS` toolset definitions in `toolsets.py` — e.g. `"messaging"`, `"file"`, `"web"`, `"homeassistant"`. Pick whichever group best matches the tool; create a new category only if none fits.
+
+**Runtime gating.** If the tool should only appear when the gateway is the one running (e.g. only makes sense in a Telegram session), gate it with `check_fn=_check_send_message` (from `tools/send_message_tool.py`) — it returns True when `HERMES_SESSION_PLATFORM` is non-empty and non-`local`, or when the gateway process is running. `send_message` and `telegram_topic` both use this gate. The registered tool stays discoverable but its schema is only handed to the model in the right context, so the model can't call it from the CLI where it wouldn't work.
+
+**Precedent.** Commit `e4855d13` fixed this exact bug for `telegram_topic`: the tool was added to `_HERMES_CORE_TOOLS` and registered with `toolset="messaging"`, but the `messaging` toolset's `tools` list in `toolsets.py` still only contained `send_message`. Gateway reverse-map dropped it, so Telegram bots knew nothing about it despite the handler being fully wired.
+
 ---
 
 ## Adding Configuration

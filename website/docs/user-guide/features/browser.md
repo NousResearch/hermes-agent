@@ -111,16 +111,49 @@ When `CAMOFOX_URL` is set, all browser tools automatically route through Camofox
 
 #### Persistent browser sessions
 
-By default, each Camofox session gets a random identity — cookies and logins don't survive across agent restarts. To enable persistent browser sessions:
+By default, each Camofox session gets a random identity — cookies and logins don't survive across agent restarts. To enable persistent browser sessions, add the following to `~/.hermes/config.yaml`:
 
 ```yaml
-# In ~/.hermes/config.yaml
 browser:
   camofox:
     managed_persistence: true
 ```
 
-When enabled, Hermes sends a stable profile-scoped `userId` to Camofox. The Camofox server automatically maps each `userId` to a dedicated persistent Firefox profile, so cookies, logins, and localStorage survive across restarts. Different Hermes profiles get different browser profiles (profile isolation).
+Then fully restart Hermes so the new config is picked up.
+
+:::warning Nested path matters
+Hermes reads `browser.camofox.managed_persistence`, **not** a top-level `managed_persistence`. A common mistake is writing:
+
+```yaml
+# ❌ Wrong — Hermes ignores this
+managed_persistence: true
+```
+
+If the flag is placed at the wrong path, Hermes silently falls back to a random ephemeral `userId` and your login state will be lost on every session.
+:::
+
+##### What Hermes does
+- Sends a deterministic profile-scoped `userId` to Camofox so the server can reuse the same Firefox profile across sessions.
+- Skips server-side context destruction on cleanup, so cookies and logins survive between agent tasks.
+- Scopes the `userId` to the active Hermes profile, so different Hermes profiles get different browser profiles (profile isolation).
+
+##### What Hermes does not do
+- It does not force persistence on the Camofox server. Hermes only sends a stable `userId`; the server must honor it by mapping that `userId` to a persistent Firefox profile directory.
+- If your Camofox server build treats every request as ephemeral (e.g. always calls `browser.newContext()` without loading a stored profile), Hermes cannot make those sessions persist. Make sure you are running a Camofox build that implements userId-based profile persistence.
+
+##### Verify it's working
+
+1. Start Hermes and your Camofox server.
+2. Open Google (or any login site) in a browser task and sign in manually.
+3. End the browser task normally.
+4. Start a new browser task.
+5. Open the same site again — you should still be signed in.
+
+If step 5 logs you out, the Camofox server isn't honoring the stable `userId`. Double-check your config path, confirm you fully restarted Hermes after editing `config.yaml`, and verify your Camofox server version supports persistent per-user profiles.
+
+##### Where state lives
+
+Hermes derives the stable `userId` from the profile-scoped directory `~/.hermes/browser_auth/camofox/` (or the equivalent under `$HERMES_HOME` for non-default profiles). The actual browser profile data lives on the Camofox server side, keyed by that `userId`. To fully reset a persistent profile, clear it on the Camofox server and remove the corresponding Hermes profile's state directory.
 
 #### VNC live view
 

@@ -1,4 +1,4 @@
-from agent.smart_model_routing import choose_cheap_model_route
+from agent.smart_model_routing import apply_source_override, choose_cheap_model_route
 
 
 _BASE_CONFIG = {
@@ -59,3 +59,84 @@ def test_resolve_turn_route_falls_back_to_primary_when_route_runtime_cannot_be_r
     assert result["model"] == "anthropic/claude-sonnet-4"
     assert result["runtime"]["provider"] == "openrouter"
     assert result["label"] is None
+
+
+# ----- apply_source_override (model.by_source.<kind>) -----
+
+def test_source_override_returns_unchanged_when_kind_missing():
+    m, r = apply_source_override("base-model", {"api_key": "k1"}, {"default": "base-model"}, None)
+    assert m == "base-model" and r == {"api_key": "k1"}
+
+
+def test_source_override_returns_unchanged_when_no_by_source():
+    m, r = apply_source_override("base-model", {"api_key": "k1"}, {"default": "base-model"}, "owner")
+    assert m == "base-model" and r == {"api_key": "k1"}
+
+
+def test_source_override_applies_full_bundle():
+    cfg = {
+        "default": "base-model",
+        "by_source": {
+            "owner": {
+                "model": "strong-model",
+                "api_key": "sk-owner",
+                "base_url": "https://owner.example/v1",
+                "provider": "custom",
+            },
+        },
+    }
+    m, r = apply_source_override("base-model", {"api_key": "k1"}, cfg, "owner")
+    assert m == "strong-model"
+    assert r["api_key"] == "sk-owner"
+    assert r["base_url"] == "https://owner.example/v1"
+    assert r["provider"] == "custom"
+
+
+def test_source_override_partial_preserves_base_fields():
+    cfg = {"by_source": {"cron": {"model": "cheap-model"}}}
+    m, r = apply_source_override(
+        "base-model",
+        {"api_key": "k1", "base_url": "https://base.example/v1", "provider": "custom"},
+        cfg,
+        "cron",
+    )
+    assert m == "cheap-model"
+    # Unset fields in entry → inherit base runtime values
+    assert r == {"api_key": "k1", "base_url": "https://base.example/v1", "provider": "custom"}
+
+
+def test_source_override_empty_entry_is_no_op():
+    cfg = {"by_source": {"stranger": {}}}
+    m, r = apply_source_override("base-model", {"api_key": "k1"}, cfg, "stranger")
+    assert m == "base-model" and r == {"api_key": "k1"}
+
+
+def test_source_override_unknown_kind_is_no_op():
+    cfg = {"by_source": {"owner": {"model": "strong-model"}}}
+    m, r = apply_source_override("base-model", {"api_key": "k1"}, cfg, "some_unrecognised_kind")
+    assert m == "base-model" and r == {"api_key": "k1"}
+
+
+def test_source_override_handles_null_model_config():
+    m, r = apply_source_override("base-model", {"api_key": "k1"}, None, "owner")
+    assert m == "base-model" and r == {"api_key": "k1"}
+
+
+def test_source_override_accepts_args_list():
+    cfg = {"by_source": {"cron": {"args": ["--flag", "value"]}}}
+    _, r = apply_source_override("base-model", {"args": ["old"]}, cfg, "cron")
+    assert r["args"] == ["--flag", "value"]
+
+
+def test_source_override_ignores_empty_field_values():
+    # Empty strings / None / empty list in an entry should NOT overwrite base
+    cfg = {"by_source": {"owner": {"api_key": "", "base_url": None, "args": []}}}
+    m, r = apply_source_override(
+        "base-model",
+        {"api_key": "k1", "base_url": "https://base.example/v1"},
+        cfg,
+        "owner",
+    )
+    assert m == "base-model"
+    assert r["api_key"] == "k1"
+    assert r["base_url"] == "https://base.example/v1"

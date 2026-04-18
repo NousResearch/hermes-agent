@@ -963,6 +963,46 @@ class GatewayRunner:
             thread_sessions_per_user=getattr(config, "thread_sessions_per_user", False),
         )
 
+    def _classify_source_kind(self, source) -> str:
+        """Classify an inbound source for ``model.by_source`` lookup.
+
+        Returns one of ``"owner"``, ``"hub_peer"``, ``"stranger"``, or ``""``
+        when the source is absent/unclassifiable. Classification is coarse on
+        purpose — detail lives in config, not in this helper.
+
+        * ``owner`` — DM to a configured home channel.
+        * ``hub_peer`` — any inbound from the ``hub`` platform (agent-to-agent).
+        * ``stranger`` — any other inbound.
+        """
+        if source is None:
+            return ""
+        platform = getattr(source, "platform", None)
+        if platform is None:
+            return ""
+
+        # Hub detection by platform value string avoids a hard dependency on
+        # a ``Platform.HUB`` enum member (which may be absent in base builds
+        # that don't ship the Hub adapter).
+        try:
+            if str(getattr(platform, "value", "")).lower() == "hub":
+                return "hub_peer"
+        except Exception:
+            pass
+
+        # Owner detection: DM whose chat_id matches a configured home channel.
+        try:
+            cfg = getattr(self, "config", None)
+            get_hc = getattr(cfg, "get_home_channel", None) if cfg is not None else None
+            if callable(get_hc):
+                hc = get_hc(platform)
+                if hc is not None and getattr(source, "chat_type", None) == "dm":
+                    if str(getattr(source, "chat_id", "")) == str(getattr(hc, "chat_id", "")):
+                        return "owner"
+        except Exception:
+            pass
+
+        return "stranger"
+
     def _resolve_session_agent_runtime(
         self,
         *,
@@ -1043,6 +1083,24 @@ class GatewayRunner:
                     )
             except Exception:
                 pass
+
+        # Apply ``model.by_source.<kind>`` override as the final layer. Stacks
+        # below session /model overrides (already applied above) and above the
+        # base config. Leaves ``(model, runtime_kwargs)`` unchanged when no
+        # source_kind classification or no ``by_source`` entry applies.
+        try:
+            from agent.smart_model_routing import apply_source_override
+            source_kind = self._classify_source_kind(source) if source is not None else ""
+            user_config_model = None
+            if isinstance(user_config, dict):
+                _m = user_config.get("model")
+                if isinstance(_m, dict):
+                    user_config_model = _m
+            model, runtime_kwargs = apply_source_override(
+                model, runtime_kwargs, user_config_model, source_kind,
+            )
+        except Exception as _exc:
+            logger.debug("apply_source_override failed (ignored): %s", _exc)
 
         return model, runtime_kwargs
 

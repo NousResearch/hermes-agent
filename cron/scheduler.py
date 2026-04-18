@@ -777,18 +777,30 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             message = format_runtime_provider_error(exc)
             raise RuntimeError(message) from exc
 
-        from agent.smart_model_routing import resolve_turn_route
+        # Apply ``model.by_source.cron`` override (if any) before routing.
+        # Source kind is always "cron" here; this is the single hook point for
+        # cron-specific model/provider selection.
+        from agent.smart_model_routing import resolve_turn_route, apply_source_override
+        _cron_primary_runtime = {
+            "api_key": runtime.get("api_key"),
+            "base_url": runtime.get("base_url"),
+            "provider": runtime.get("provider"),
+            "api_mode": runtime.get("api_mode"),
+            "command": runtime.get("command"),
+            "args": list(runtime.get("args") or []),
+        }
+        _cron_cfg_model = _cfg.get("model") if isinstance(_cfg, dict) else None
+        if not isinstance(_cron_cfg_model, dict):
+            _cron_cfg_model = None
+        model, _cron_primary_runtime = apply_source_override(
+            model, _cron_primary_runtime, _cron_cfg_model, "cron",
+        )
         turn_route = resolve_turn_route(
             prompt,
             smart_routing,
             {
                 "model": model,
-                "api_key": runtime.get("api_key"),
-                "base_url": runtime.get("base_url"),
-                "provider": runtime.get("provider"),
-                "api_mode": runtime.get("api_mode"),
-                "command": runtime.get("command"),
-                "args": list(runtime.get("args") or []),
+                **_cron_primary_runtime,
             },
         )
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import re
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 from utils import is_truthy_value
 
@@ -193,3 +193,87 @@ def resolve_turn_route(user_message: str, routing_config: Optional[Dict[str, Any
             tuple(runtime.get("args") or ()),
         ),
     }
+
+
+# Recognised source kinds for ``model.by_source``. Callers pass one of these
+# strings; unknown kinds are ignored (treated as no override).
+SOURCE_KIND_OWNER = "owner"
+SOURCE_KIND_HUB_PEER = "hub_peer"
+SOURCE_KIND_STRANGER = "stranger"
+SOURCE_KIND_CRON = "cron"
+KNOWN_SOURCE_KINDS = frozenset({
+    SOURCE_KIND_OWNER,
+    SOURCE_KIND_HUB_PEER,
+    SOURCE_KIND_STRANGER,
+    SOURCE_KIND_CRON,
+})
+
+_OVERRIDE_RUNTIME_KEYS = ("api_key", "base_url", "provider", "api_mode", "command", "args")
+
+
+def apply_source_override(
+    model: str,
+    runtime_kwargs: Dict[str, Any],
+    model_config: Optional[Dict[str, Any]],
+    source_kind: Optional[str],
+) -> Tuple[str, Dict[str, Any]]:
+    """Apply per-source model-bundle overrides from ``model.by_source.<kind>``.
+
+    ``config.yaml`` may optionally declare::
+
+        model:
+          default: my-fast-model
+          provider: custom
+          api_key: sk-default
+          base_url: https://example.com/v1
+          by_source:
+            owner:    { model: my-strong-model, api_key: sk-owner }
+            hub_peer: { model: my-fast-model }
+            stranger: { }             # empty → use base
+            cron:     { model: my-fast-model }
+
+    When a ``by_source`` entry exists for ``source_kind``, its fields override
+    the passed-in ``(model, runtime_kwargs)`` pair. Missing fields inherit the
+    base values (partial overrides are supported). If ``source_kind`` is empty
+    or no entry exists, the inputs are returned unchanged.
+
+    Callers are responsible for classifying the source (``"owner"``,
+    ``"hub_peer"``, ``"stranger"``, ``"cron"``) using whatever signals they
+    have: the gateway uses home-channel identity; cron hardcodes ``"cron"``;
+    the CLI hardcodes ``"owner"``.
+    """
+    if not source_kind:
+        return model, runtime_kwargs
+    if not isinstance(model_config, dict):
+        return model, runtime_kwargs
+    by_source = model_config.get("by_source")
+    if not isinstance(by_source, dict):
+        return model, runtime_kwargs
+    entry = by_source.get(source_kind)
+    if not isinstance(entry, dict) or not entry:
+        return model, runtime_kwargs
+
+    new_model = model
+    new_runtime = dict(runtime_kwargs or {})
+    applied = []
+
+    if entry.get("model"):
+        new_model = str(entry["model"])
+        applied.append("model")
+    for key in _OVERRIDE_RUNTIME_KEYS:
+        val = entry.get(key)
+        if val in (None, "", []):
+            continue
+        if key == "args":
+            new_runtime[key] = list(val)
+        else:
+            new_runtime[key] = val
+        applied.append(key)
+
+    if applied:
+        import logging
+        logging.getLogger(__name__).info(
+            "by_source override applied: source_kind=%s fields=%s model=%s provider=%s",
+            source_kind, applied, new_model, new_runtime.get("provider"),
+        )
+    return new_model, new_runtime

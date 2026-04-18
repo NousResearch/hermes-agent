@@ -2835,20 +2835,33 @@ class HermesCLI:
 
     def _resolve_turn_agent_config(self, user_message: str) -> dict:
         """Resolve model/runtime overrides for a single user turn."""
-        from agent.smart_model_routing import resolve_turn_route
+        from agent.smart_model_routing import resolve_turn_route, apply_source_override
         from hermes_cli.models import resolve_fast_mode_overrides
+
+        # CLI is always the owner (operator-driven). Apply
+        # ``model.by_source.owner`` override if present before routing.
+        _cli_model = self.model
+        _cli_runtime = {
+            "api_key": self.api_key,
+            "base_url": self.base_url,
+            "provider": self.provider,
+            "api_mode": self.api_mode,
+            "command": self.acp_command,
+            "args": list(self.acp_args or []),
+        }
+        _cli_cfg_model = CLI_CONFIG.get("model") if isinstance(CLI_CONFIG, dict) else None
+        if not isinstance(_cli_cfg_model, dict):
+            _cli_cfg_model = None
+        _cli_model, _cli_runtime = apply_source_override(
+            _cli_model, _cli_runtime, _cli_cfg_model, "owner",
+        )
 
         route = resolve_turn_route(
             user_message,
             self._smart_model_routing,
             {
-                "model": self.model,
-                "api_key": self.api_key,
-                "base_url": self.base_url,
-                "provider": self.provider,
-                "api_mode": self.api_mode,
-                "command": self.acp_command,
-                "args": list(self.acp_args or []),
+                "model": _cli_model,
+                **_cli_runtime,
                 "credential_pool": getattr(self, "_credential_pool", None),
             },
         )

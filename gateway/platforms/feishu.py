@@ -3450,6 +3450,18 @@ class FeishuAdapter(BasePlatformAdapter):
             logger.error("[Feishu] Failed to send file %s: %s", file_path, exc, exc_info=True)
             return SendResult(success=False, error=str(exc))
 
+    @staticmethod
+    def _get_receive_id_type(chat_id: str) -> str:
+        """Infer the correct receive_id_type from the chat_id prefix."""
+        if chat_id.startswith("ou_"):
+            return "open_id"
+        if chat_id.startswith("oc_"):
+            return "chat_id"
+        if chat_id.startswith("on_"):
+            return "union_id"
+        # Default fallback — chat_id is the most common for group chats
+        return "chat_id"
+
     async def _send_raw_message(
         self,
         *,
@@ -3476,7 +3488,8 @@ class FeishuAdapter(BasePlatformAdapter):
             content=payload,
             uuid_value=str(uuid.uuid4()),
         )
-        request = self._build_create_message_request("chat_id", body)
+        receive_id_type = self._get_receive_id_type(chat_id)
+        request = self._build_create_message_request(receive_id_type, body)
         return await asyncio.to_thread(self._client.im.v1.message.create, request)
 
     @staticmethod

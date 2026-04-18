@@ -210,7 +210,8 @@ def _resolve_runtime_from_pool_entry(
             api_mode = opencode_model_api_mode(provider, model_cfg.get("default", ""))
         else:
             # Auto-detect Anthropic-compatible endpoints (/anthropic suffix,
-            # api.openai.com → codex_responses, api.x.ai → codex_responses).
+            # Kimi /coding, api.openai.com → codex_responses, api.x.ai →
+            # codex_responses).
             detected = _detect_api_mode_for_url(base_url)
             if detected:
                 api_mode = detected

@@ -679,23 +679,29 @@ def _ensure_ssl_certs() -> None:
         return  # user already configured it
 
     import ssl
+    import sys
 
-    # On macOS/Homebrew, the Python runtime inside a venv can report a built-in
-    # cafile like /private/etc/ssl/cert.pem even when the system's usable trust
-    # store lives under Homebrew's OpenSSL bundle. Prefer the Homebrew bundle
-    # first so corporate/intercepting CAs imported there are visible to Hermes.
-    for candidate in (
-        "/opt/homebrew/etc/openssl@3/cert.pem",               # macOS Homebrew ARM
-        "/usr/local/etc/openssl@3/cert.pem",                 # macOS Homebrew Intel
-        "/opt/homebrew/etc/openssl@1.1/cert.pem",            # macOS Homebrew ARM (older)
-        "/usr/local/etc/openssl@1.1/cert.pem",               # macOS Homebrew Intel (older)
-    ):
-        if os.path.exists(candidate):
-            os.environ["SSL_CERT_FILE"] = candidate
-            return
+    paths = ssl.get_default_verify_paths()
+
+    # Narrow macOS/Homebrew override: some Homebrew-based Python builds inside a
+    # venv report /private/etc/ssl/cert.pem as the default cafile, but the
+    # usable trust store (including imported corporate/intercepting CAs) lives
+    # in Homebrew's OpenSSL bundle. Only prefer the Homebrew bundle in that
+    # specific Darwin case instead of broadening behavior for all Homebrew
+    # installs.
+    problematic_darwin_defaults = {"/private/etc/ssl/cert.pem", "/etc/ssl/cert.pem"}
+    if sys.platform == "darwin" and (paths.cafile in problematic_darwin_defaults or paths.openssl_cafile in problematic_darwin_defaults):
+        for candidate in (
+            "/opt/homebrew/etc/openssl@3/cert.pem",               # macOS Homebrew ARM
+            "/usr/local/etc/openssl@3/cert.pem",                 # macOS Homebrew Intel
+            "/opt/homebrew/etc/openssl@1.1/cert.pem",            # macOS Homebrew ARM (older)
+            "/usr/local/etc/openssl@1.1/cert.pem",               # macOS Homebrew Intel (older)
+        ):
+            if os.path.exists(candidate):
+                os.environ["SSL_CERT_FILE"] = candidate
+                return
 
     # 1. Python's compiled-in defaults
-    paths = ssl.get_default_verify_paths()
     for candidate in (paths.cafile, paths.openssl_cafile):
         if candidate and os.path.exists(candidate):
             os.environ["SSL_CERT_FILE"] = candidate

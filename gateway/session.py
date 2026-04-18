@@ -377,6 +377,15 @@ class SessionEntry:
     # this session (create a new session_id) so the user starts fresh.
     # Set by /stop to break stuck-resume loops (#7536).
     suspended: bool = False
+
+    # Turn-based memory review cadence for gateway-created agents. Persisted so
+    # fresh AIAgent instances (cache miss, restart, config change) don't lose
+    # the counter between user messages.
+    memory_turns_since_review: int = 0
+
+    # Tool-iteration-based skill review cadence for gateway-created agents.
+    # Persisted for the same reason as memory_turns_since_review.
+    skill_iters_since_review: int = 0
     
     def to_dict(self) -> Dict[str, Any]:
         result = {
@@ -397,6 +406,8 @@ class SessionEntry:
             "cost_status": self.cost_status,
             "memory_flushed": self.memory_flushed,
             "suspended": self.suspended,
+            "memory_turns_since_review": self.memory_turns_since_review,
+            "skill_iters_since_review": self.skill_iters_since_review,
         }
         if self.origin:
             result["origin"] = self.origin.to_dict()
@@ -434,6 +445,8 @@ class SessionEntry:
             cost_status=data.get("cost_status", "unknown"),
             memory_flushed=data.get("memory_flushed", False),
             suspended=data.get("suspended", False),
+            memory_turns_since_review=data.get("memory_turns_since_review", 0),
+            skill_iters_since_review=data.get("skill_iters_since_review", 0),
         )
 
 
@@ -775,6 +788,8 @@ class SessionStore:
         self,
         session_key: str,
         last_prompt_tokens: int = None,
+        memory_turns_since_review: int = None,
+        skill_iters_since_review: int = None,
     ) -> None:
         """Update lightweight session metadata after an interaction."""
         with self._lock:
@@ -785,7 +800,41 @@ class SessionStore:
                 entry.updated_at = _now()
                 if last_prompt_tokens is not None:
                     entry.last_prompt_tokens = last_prompt_tokens
+                if memory_turns_since_review is not None:
+                    try:
+                        entry.memory_turns_since_review = max(0, int(memory_turns_since_review))
+                    except (TypeError, ValueError):
+                        entry.memory_turns_since_review = 0
+                if skill_iters_since_review is not None:
+                    try:
+                        entry.skill_iters_since_review = max(0, int(skill_iters_since_review))
+                    except (TypeError, ValueError):
+                        entry.skill_iters_since_review = 0
                 self._save()
+
+    def get_memory_nudge_turns(self, session_key: str) -> int:
+        """Return persisted memory-review turns for the active session key."""
+        with self._lock:
+            self._ensure_loaded_locked()
+            entry = self._entries.get(session_key)
+            if not entry:
+                return 0
+            try:
+                return max(0, int(getattr(entry, "memory_turns_since_review", 0) or 0))
+            except (TypeError, ValueError):
+                return 0
+
+    def get_skill_nudge_iters(self, session_key: str) -> int:
+        """Return persisted skill-review iterations for the active session key."""
+        with self._lock:
+            self._ensure_loaded_locked()
+            entry = self._entries.get(session_key)
+            if not entry:
+                return 0
+            try:
+                return max(0, int(getattr(entry, "skill_iters_since_review", 0) or 0))
+            except (TypeError, ValueError):
+                return 0
 
     def suspend_session(self, session_key: str) -> bool:
         """Mark a session as suspended so it auto-resets on next access.

@@ -86,6 +86,27 @@ def agent_with_memory_tool():
         return a
 
 
+@pytest.fixture()
+def agent_with_memory_and_skill_tools():
+    """Agent whose valid_tool_names includes memory + skill_manage."""
+    with (
+        patch(
+            "run_agent.get_tool_definitions",
+            return_value=_make_tool_defs("web_search", "memory", "skill_manage"),
+        ),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+    ):
+        a = AIAgent(
+            api_key="test-k...7890",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        a.client = MagicMock()
+        return a
+
+
 def test_aiagent_reuses_existing_errors_log_handler():
     """Repeated AIAgent init should not accumulate duplicate errors.log handlers."""
     root_logger = logging.getLogger()
@@ -4147,6 +4168,28 @@ class TestMemoryNudgeCounterPersistence:
         preamble = src[:preamble_end]
         assert "self._turns_since_memory = 0" not in preamble
         assert "self._iters_since_skill = 0" not in preamble
+
+    def test_real_agent_triggers_background_review_when_thresholds_hit(self, agent_with_memory_and_skill_tools):
+        """Real AIAgent should call background review once persisted counters hit thresholds."""
+        agent = agent_with_memory_and_skill_tools
+        agent.client.chat.completions.create.return_value = _mock_response(content="done")
+        agent._memory_store = object()
+        agent._memory_nudge_interval = 10
+        agent._skill_nudge_interval = 15
+        agent._turns_since_memory = 9
+        agent._iters_since_skill = 14
+        agent._spawn_background_review = MagicMock()
+
+        result = agent.run_conversation("trigger review")
+
+        assert result["final_response"] == "done"
+        agent._spawn_background_review.assert_called_once()
+        kwargs = agent._spawn_background_review.call_args.kwargs
+        assert kwargs["review_memory"] is True
+        assert kwargs["review_skills"] is True
+        assert isinstance(kwargs["messages_snapshot"], list)
+        assert agent._turns_since_memory == 0
+        assert agent._iters_since_skill == 0
 
 
 class TestDeadRetryCode:

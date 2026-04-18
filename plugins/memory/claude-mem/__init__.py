@@ -189,12 +189,7 @@ class ClaudeMemMemoryProvider(MemoryProvider):
                         query=query, project=self._project,
                         limit=5, order_by="relevance",
                     )
-                    lines = []
-                    for obs in (res.get("observations") or [])[:5]:
-                        title = obs.get("title") or "Observation"
-                        narrative = obs.get("narrative") or ""
-                        lines.append(f"- **{title}** — {narrative}")
-                    ctx = "\n".join(lines)
+                    ctx = res.get("text", "")
 
                 if ctx:
                     with self._prefetch_lock:
@@ -269,7 +264,8 @@ class ClaudeMemMemoryProvider(MemoryProvider):
                     obs_type=args.get("obs_type"),
                     order_by="relevance",
                 )
-                return json.dumps({"results": res.get("observations", [])})
+                text = res.get("text", "")
+                return json.dumps({"results_markdown": text}) if text else json.dumps({"results_markdown": "No matching observations."})
 
             if tool_name == "claude_mem_save":
                 res = self._client.memory_save(
@@ -286,7 +282,7 @@ class ClaudeMemMemoryProvider(MemoryProvider):
                     depth_after=int(args.get("depth_after", 3)),
                     project=self._project,
                 )
-                return json.dumps(res)
+                return json.dumps({"timeline_markdown": res.get("text", "")})
 
             return json.dumps({"error": f"unknown tool: {tool_name}"})
 

@@ -1040,7 +1040,7 @@ def list_authenticated_providers(
             if not isinstance(ep_cfg, dict):
                 continue
             display_name = ep_cfg.get("name", "") or ep_name
-            api_url = ep_cfg.get("api", "") or ep_cfg.get("url", "") or ""
+            api_url = ep_cfg.get("base_url", "") or ep_cfg.get("api", "") or ep_cfg.get("url", "") or ""
             default_model = ep_cfg.get("default_model", "")
 
             # Build models list from both default_model and full models array

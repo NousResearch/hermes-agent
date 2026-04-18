@@ -6272,6 +6272,26 @@ def cmd_logs(args):
     )
 
 
+def _get_provider_choices():
+    """Get all available provider choices including custom ones from config."""
+    # Builtin providers
+    builtin = ["auto", "openrouter", "nous", "openai-codex", "copilot-acp", 
+               "copilot", "anthropic", "gemini", "xai", "ollama-cloud", 
+               "huggingface", "zai", "kimi-coding", "kimi-coding-cn", 
+               "minimax", "minimax-cn", "kilocode", "xiaomi", "arcee", "nvidia"]
+    
+    # Try to load custom providers from config
+    try:
+        from hermes_cli.config import load_config
+        config = load_config()
+        custom_providers = config.get("providers", {})
+        if custom_providers:
+            builtin.extend(custom_providers.keys())
+    except Exception:
+        pass  # If config loading fails, just use builtin providers
+    
+    return builtin
+
 def main():
     """Main entry point for hermes CLI."""
     parser = argparse.ArgumentParser(
@@ -6405,28 +6425,7 @@ For more help on a command:
     )
     chat_parser.add_argument(
         "--provider",
-        choices=[
-            "auto",
-            "openrouter",
-            "nous",
-            "openai-codex",
-            "copilot-acp",
-            "copilot",
-            "anthropic",
-            "gemini",
-            "xai",
-            "ollama-cloud",
-            "huggingface",
-            "zai",
-            "kimi-coding",
-            "kimi-coding-cn",
-            "minimax",
-            "minimax-cn",
-            "kilocode",
-            "xiaomi",
-            "arcee",
-            "nvidia",
-        ],
+        choices=_get_provider_choices(),
         default=None,
         help="Inference provider (default: auto)",
     )

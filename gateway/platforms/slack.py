@@ -1133,6 +1133,8 @@ class SlackAdapter(BasePlatformAdapter):
                 pass  # Free-response channel — always process
             elif not self._slack_require_mention():
                 pass  # Mention requirement disabled globally for Slack
+            elif self._slack_strict_mention() and not is_mentioned:
+                return  # Strict mode: ignore until @-mentioned again
             elif not is_mentioned:
                 reply_to_bot_thread = (
                     is_thread_reply and event_thread_ts in self._bot_message_ts
@@ -1782,6 +1784,18 @@ class SlackAdapter(BasePlatformAdapter):
                 return configured.lower() not in ("false", "0", "no", "off")
             return bool(configured)
         return os.getenv("SLACK_REQUIRE_MENTION", "true").lower() not in ("false", "0", "no", "off")
+
+    def _slack_strict_mention(self) -> bool:
+        """When true, channel threads require an explicit @-mention on every
+        message. Disables all auto-triggers (mentioned-thread memory,
+        bot-message follow-up, session-presence). Defaults to False.
+        """
+        configured = self.config.extra.get("strict_mention")
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() in ("true", "1", "yes", "on")
+            return bool(configured)
+        return os.getenv("SLACK_STRICT_MENTION", "false").lower() in ("true", "1", "yes", "on")
 
     def _slack_free_response_channels(self) -> set:
         """Return channel IDs where no @mention is required."""

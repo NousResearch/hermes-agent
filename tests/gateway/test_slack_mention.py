@@ -55,10 +55,12 @@ CHANNEL_ID = "C0AQWDLHY9M"
 OTHER_CHANNEL_ID = "C9999999999"
 
 
-def _make_adapter(require_mention=None, free_response_channels=None):
+def _make_adapter(require_mention=None, strict_mention=None, free_response_channels=None):
     extra = {}
     if require_mention is not None:
         extra["require_mention"] = require_mention
+    if strict_mention is not None:
+        extra["strict_mention"] = strict_mention
     if free_response_channels is not None:
         extra["free_response_channels"] = free_response_channels
 
@@ -132,6 +134,48 @@ def test_require_mention_env_var_default_true(monkeypatch):
     monkeypatch.delenv("SLACK_REQUIRE_MENTION", raising=False)
     adapter = _make_adapter()
     assert adapter._slack_require_mention() is True
+
+
+# ---------------------------------------------------------------------------
+# Tests: _slack_strict_mention
+# ---------------------------------------------------------------------------
+
+def test_strict_mention_defaults_to_false(monkeypatch):
+    monkeypatch.delenv("SLACK_STRICT_MENTION", raising=False)
+    adapter = _make_adapter()
+    assert adapter._slack_strict_mention() is False
+
+
+def test_strict_mention_true():
+    adapter = _make_adapter(strict_mention=True)
+    assert adapter._slack_strict_mention() is True
+
+
+def test_strict_mention_false():
+    adapter = _make_adapter(strict_mention=False)
+    assert adapter._slack_strict_mention() is False
+
+
+def test_strict_mention_string_true():
+    adapter = _make_adapter(strict_mention="true")
+    assert adapter._slack_strict_mention() is True
+
+
+def test_strict_mention_string_off():
+    adapter = _make_adapter(strict_mention="off")
+    assert adapter._slack_strict_mention() is False
+
+
+def test_strict_mention_malformed_stays_false():
+    """Unrecognised values keep strict mode OFF (fail-open to legacy behavior)."""
+    adapter = _make_adapter(strict_mention="maybe")
+    assert adapter._slack_strict_mention() is False
+
+
+def test_strict_mention_env_var_fallback(monkeypatch):
+    monkeypatch.setenv("SLACK_STRICT_MENTION", "true")
+    adapter = _make_adapter()  # no config value -> falls back to env
+    assert adapter._slack_strict_mention() is True
 
 
 # ---------------------------------------------------------------------------
@@ -350,3 +394,24 @@ def test_config_bridges_slack_reply_in_thread(monkeypatch, tmp_path):
         reply_to="171.500",
         metadata={"thread_id": "171.000"},
     ) == "171.000"
+
+
+def test_config_bridges_slack_strict_mention(monkeypatch, tmp_path):
+    from gateway.config import load_gateway_config
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "slack:\n"
+        "  strict_mention: true\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.delenv("SLACK_STRICT_MENTION", raising=False)
+
+    config = load_gateway_config()
+
+    assert config is not None
+    import os as _os
+    assert _os.environ["SLACK_STRICT_MENTION"] == "true"

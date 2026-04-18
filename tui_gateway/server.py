@@ -1340,6 +1340,31 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, {"status": "interrupted"})
 
 
+@method("session.steer")
+def _(rid, params: dict) -> dict:
+    """Inject a user message into the next tool result without interrupting.
+
+    Mirrors AIAgent.steer(). Safe to call while a turn is running — the text
+    lands on the last tool result of the next tool batch and the model sees
+    it on its next iteration. No interrupt, no new user turn, no role
+    alternation violation.
+    """
+    text = (params.get("text") or "").strip()
+    if not text:
+        return _err(rid, 4002, "text is required")
+    session, err = _sess_nowait(params, rid)
+    if err:
+        return err
+    agent = session.get("agent")
+    if agent is None or not hasattr(agent, "steer"):
+        return _err(rid, 4010, "agent does not support steer")
+    try:
+        accepted = agent.steer(text)
+    except Exception as exc:
+        return _err(rid, 5000, f"steer failed: {exc}")
+    return _ok(rid, {"status": "queued" if accepted else "rejected", "text": text})
+
+
 @method("terminal.resize")
 def _(rid, params: dict) -> dict:
     session, err = _sess_nowait(params, rid)

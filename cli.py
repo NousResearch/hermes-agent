@@ -5720,6 +5720,30 @@ class HermesCLI:
                     _cprint(f"  Queued for the next turn: {payload[:80]}{'...' if len(payload) > 80 else ''}")
                 else:
                     _cprint(f"  Queued: {payload[:80]}{'...' if len(payload) > 80 else ''}")
+        elif canonical == "steer":
+            # Inject a message after the next tool call without interrupting.
+            # If the agent is actively running, push the text into the agent's
+            # pending_steer slot — the drain hook in _execute_tool_calls_*
+            # will append it to the next tool result's content. If no agent
+            # is running, fall back to queue semantics (same as /queue).
+            parts = cmd_original.split(None, 1)
+            payload = parts[1].strip() if len(parts) > 1 else ""
+            if not payload:
+                _cprint("  Usage: /steer <prompt>")
+            elif self._agent_running and self.agent is not None and hasattr(self.agent, "steer"):
+                try:
+                    accepted = self.agent.steer(payload)
+                except Exception as exc:
+                    _cprint(f"  Steer failed: {exc}")
+                else:
+                    if accepted:
+                        _cprint(f"  ⏩ Steer queued — arrives after the next tool call: {payload[:80]}{'...' if len(payload) > 80 else ''}")
+                    else:
+                        _cprint("  Steer rejected (empty payload).")
+            else:
+                # No active run — treat as a normal next-turn message.
+                self._pending_input.put(payload)
+                _cprint(f"  No agent running; queued as next turn: {payload[:80]}{'...' if len(payload) > 80 else ''}")
         elif canonical == "skin":
             self._handle_skin_command(cmd_original)
         elif canonical == "voice":
@@ -8244,7 +8268,15 @@ class HermesCLI:
                 else:
                     print(f"\n⚡ Sending after interrupt: '{preview}'")
                 self._pending_input.put(combined)
-            
+
+            # If a /steer was left over (agent finished before another tool
+            # batch could absorb it), deliver it as the next user turn.
+            _leftover_steer = result.get("pending_steer") if result else None
+            if _leftover_steer and hasattr(self, '_pending_input'):
+                preview = _leftover_steer[:60] + ("..." if len(_leftover_steer) > 60 else "")
+                print(f"\n⏩ Delivering leftover /steer as next turn: '{preview}'")
+                self._pending_input.put(_leftover_steer)
+
             return response
             
         except Exception as e:

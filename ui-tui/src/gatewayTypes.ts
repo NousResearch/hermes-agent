@@ -152,6 +152,11 @@ export interface SessionInterruptResponse {
   ok?: boolean
 }
 
+export interface SessionSteerResponse {
+  status?: 'queued' | 'rejected'
+  text?: string
+}
+
 // ── Prompt / submission ──────────────────────────────────────────────
 
 export interface PromptSubmitResponse {

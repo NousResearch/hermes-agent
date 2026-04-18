@@ -201,6 +201,25 @@ class TestCommandBypassActiveSession:
         )
 
     @pytest.mark.asyncio
+    async def test_steer_bypasses_guard(self):
+        """/steer must bypass the Level-1 active-session guard so it reaches
+        the gateway runner's /steer handler and injects into the running
+        agent instead of being queued as user text for the next turn.
+        """
+        adapter = _make_adapter()
+        sk = _session_key()
+        adapter._active_sessions[sk] = asyncio.Event()
+
+        await adapter.handle_message(_make_event("/steer also check auth.log"))
+
+        assert sk not in adapter._pending_messages, (
+            "/steer was queued as a pending message instead of being dispatched"
+        )
+        assert any("handled:steer" in r for r in adapter.sent_responses), (
+            "/steer response was not sent back to the user"
+        )
+
+    @pytest.mark.asyncio
     async def test_help_bypasses_guard(self):
         """/help must bypass so it is not silently dropped as pending slash text."""
         adapter = _make_adapter()

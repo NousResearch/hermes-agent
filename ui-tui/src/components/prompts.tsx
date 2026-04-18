@@ -53,7 +53,9 @@ export function ApprovalPrompt({ onChoice, req, t }: ApprovalPromptProps) {
         ))}
 
         {overflow > 0 ? (
-          <Text color={t.color.dim}>… +{overflow} more line{overflow === 1 ? '' : 's'} (full text above)</Text>
+          <Text color={t.color.dim}>
+            … +{overflow} more line{overflow === 1 ? '' : 's'} (full text above)
+          </Text>
         ) : null}
       </Box>
 

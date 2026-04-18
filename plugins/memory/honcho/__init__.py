@@ -393,13 +393,10 @@ class HonchoMemoryProvider(MemoryProvider):
             logger.debug("Honcho memory file migration skipped: %s", e)
 
         # ----- B7: Pre-warming at init -----
-        # Context prewarm: warms peer.context() cache (base layer), consumed
-        # via pop_context_result() in prefetch().
-        # Dialectic prewarm: fires a depth-aware cycle against the plugin's
-        # own _prefetch_result so turn 1 can consume it directly. Without this
-        # the first-turn sync path pays for a duplicate .chat() — and at
-        # depth>1 a single-pass session-start dialectic often returns weak
-        # output that multi-pass audit/reconciliation is meant to catch.
+        # Context prewarm warms peer.context() (base layer), consumed via
+        # pop_context_result() in prefetch(). Dialectic prewarm runs the
+        # full configured depth and writes into _prefetch_result so turn 1
+        # consumes the result directly.
         if self._recall_mode in ("context", "hybrid"):
             try:
                 self._manager.prefetch_context(self._session_key)
@@ -555,8 +552,7 @@ class HonchoMemoryProvider(MemoryProvider):
         if self._injection_frequency == "first-turn" and self._turn_count > 1:
             return ""
 
-        # Skip trivial prompts — "ok", "yes", slash commands carry no semantic signal,
-        # so injecting user context there just burns tokens and can derail the reply.
+        # Trivial prompts ("ok", "yes", slash commands) carry no semantic signal.
         if self._is_trivial_prompt(query):
             return ""
 
@@ -619,8 +615,8 @@ class HonchoMemoryProvider(MemoryProvider):
                 if r and r.strip():
                     with self._prefetch_lock:
                         self._prefetch_result = r
-                    # Only advance cadence on a non-empty result so failures
-                    # don't burn a 3-turn cooldown on nothing.
+                    # Advance cadence only on a non-empty result so the next
+                    # turn retries when the call returned nothing.
                     self._last_dialectic_turn = _fired_at
 
             self._prefetch_thread = threading.Thread(
@@ -711,9 +707,8 @@ class HonchoMemoryProvider(MemoryProvider):
                          self._dialectic_cadence, self._turn_count - self._last_dialectic_turn)
             return
 
-        # Advance cadence only on a non-empty result — otherwise a silent failure
-        # (empty dialectic, transient API error) would burn the full cadence window
-        # before the next retry, making it look like dialectic "never fires again".
+        # Cadence advances only on a non-empty result so empty returns
+        # (transient API error, sparse representation) retry next turn.
         _fired_at = self._turn_count
 
         def _run():
@@ -751,9 +746,7 @@ class HonchoMemoryProvider(MemoryProvider):
 
     _LEVEL_ORDER = ("minimal", "low", "medium", "high", "max")
 
-    # Reasoning-level heuristic thresholds (restored from pre-9a0ab34c behavior).
-    # Promoted to class constants so tests can override without widening the
-    # config surface. Bump to config fields only if real use shows they're needed.
+    # Char-count thresholds for the query-length reasoning heuristic.
     _HEURISTIC_LENGTH_MEDIUM = 120
     _HEURISTIC_LENGTH_HIGH = 400
 

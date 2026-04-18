@@ -669,8 +669,9 @@ class TestAdapterBehavior(unittest.TestCase):
         )
 
     @patch.dict(os.environ, {}, clear=True)
+    @patch("gateway.platforms.feishu.random.choice", return_value="Typing")
     @unittest.skipUnless(_HAS_LARK_OAPI, "lark-oapi not installed")
-    def test_add_ack_reaction_uses_ok_emoji(self):
+    def test_add_ack_reaction_uses_contextual_emoji_from_default_pool(self, _mock_choice):
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter
 
@@ -696,7 +697,39 @@ class TestAdapterBehavior(unittest.TestCase):
             reaction_id = asyncio.run(adapter._add_ack_reaction("om_msg"))
 
         self.assertEqual(reaction_id, "r_typing")
-        self.assertEqual(captured["request"].request_body.reaction_type["emoji_type"], "OK")
+        # With no text, random.choice returns "Typing" from default pool
+        self.assertEqual(captured["request"].request_body.reaction_type["emoji_type"], "Typing")
+
+    @patch.dict(os.environ, {"FEISHU_ACK_EMOJI": "Typing"})
+    @unittest.skipUnless(_HAS_LARK_OAPI, "lark-oapi not installed")
+    def test_add_ack_reaction_uses_custom_emoji_from_env(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {}
+
+        class _ReactionAPI:
+            def create(self, request):
+                captured["request"] = request
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(reaction_id="r_typing"),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(v1=SimpleNamespace(message_reaction=_ReactionAPI()))
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+            reaction_id = asyncio.run(adapter._add_ack_reaction("om_msg"))
+
+        self.assertEqual(reaction_id, "r_typing")
+        # Explicit FEISHU_ACK_EMOJI overrides contextual matching
+        self.assertEqual(captured["request"].request_body.reaction_type["emoji_type"], "Typing")
 
     @patch.dict(os.environ, {}, clear=True)
     def test_add_ack_reaction_logs_warning_on_failure(self):

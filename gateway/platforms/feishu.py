@@ -25,6 +25,7 @@ import json
 import logging
 import mimetypes
 import os
+import random
 import re
 import threading
 import time
@@ -190,6 +191,45 @@ _FEISHU_BOT_MSG_TRACK_SIZE = 512                   # LRU size for tracking sent 
 _FEISHU_REPLY_FALLBACK_CODES = frozenset({230011, 231003})  # reply target withdrawn/missing → create fallback
 _FEISHU_ACK_EMOJI = "OK"
 
+# Context-aware ACK emoji matching rules.
+# Each entry: (compiled_regex, [candidate emoji_types]).
+# Rules are evaluated in order; first match wins.
+# 飞书表情文档: https://open.feishu.cn/document/server-docs/im-v1/message-reaction/emojis-introduce
+_FEISHU_ACK_EMOJI_RULES: list[tuple[re.Pattern[str], list[str]]] = [
+    (re.compile(r"(你好|早上好|晚上好|早安|晚安|\bhi\b|\bhello\b|\bhey\b)", re.I),
+     ["WAVE", "SMILE", "BLUSH"]),
+    (re.compile(r"(谢谢|感谢|thx|多谢|3q|谢啦)", re.I),
+     ["FINGERHEART", "HEART", "SMILE"]),
+    (re.compile(r"([\U0001F602\U0001F923\U0001F606]|笑|哈哈|nice|牛|厉害|棒|太强了)", re.I),
+     ["CHUCKLE", "JOYFUL", "LAUGH", "YEAH"]),
+    (re.compile(r"(烦死了|崩溃了?|难受|郁闷|糟了?|受不了|太惨了?|吐血)", re.I),
+     ["COMFORT", "HUG", "SWEAT"]),
+    (re.compile(r"(紧急|马上|赶紧|快点|很急|十万火急)", re.I),
+     ["MUSCLE", "STRIVE", "FISTBUMP"]),
+    (re.compile(r"(\?|怎么|为什么|如何|什么|多少|哪个|为啥|咋)", re.I),
+     ["THINKING", "SMART", "GLANCE"]),
+    (re.compile(r"(帮我|请|查一下|执行|做一下|能不能|可以.|麻烦)", re.I),
+     ["SALUTE", "THUMBSUP", "CLAP"]),
+]
+_FEISHU_ACK_EMOJI_DEFAULT: list[str] = ["OK", "Typing"]
+
+# Union of all possible ACK emojis — used to filter out bot's own reactions.
+_FEISHU_ACK_EMOJI_ALL: frozenset[str] = frozenset(
+    {emoji for _, candidates in _FEISHU_ACK_EMOJI_RULES for emoji in candidates}
+    | set(_FEISHU_ACK_EMOJI_DEFAULT)
+)
+
+def _pick_ack_emoji(text: str) -> str:
+    """Pick a context-appropriate ACK emoji for the given message text.
+
+    Evaluates the keyword rules in priority order; returns a random candidate
+    from the first matching rule, or a random default emoji if no rule matches.
+    """
+    for pattern, candidates in _FEISHU_ACK_EMOJI_RULES:
+        if pattern.search(text or ""):
+            return random.choice(candidates)
+    return random.choice(_FEISHU_ACK_EMOJI_DEFAULT)
+
 # QR onboarding constants
 _ONBOARD_ACCOUNTS_URLS = {
     "feishu": "https://accounts.feishu.cn",
@@ -311,6 +351,7 @@ class FeishuAdapterSettings:
     admins: frozenset[str] = frozenset()
     default_group_policy: str = ""
     group_rules: Dict[str, FeishuGroupRule] = field(default_factory=dict)
+    ack_emoji: str = "OK"
 
 
 @dataclass
@@ -1169,6 +1210,9 @@ class FeishuAdapter(BasePlatformAdapter):
             admins=admins,
             default_group_policy=default_group_policy,
             group_rules=group_rules,
+            ack_emoji=str(
+                extra.get("ack_emoji") or os.getenv("FEISHU_ACK_EMOJI", _FEISHU_ACK_EMOJI)
+            ).strip() or _FEISHU_ACK_EMOJI,
         )
 
     def _apply_settings(self, settings: FeishuAdapterSettings) -> None:
@@ -1183,6 +1227,8 @@ class FeishuAdapter(BasePlatformAdapter):
         self._admins = set(settings.admins)
         self._default_group_policy = settings.default_group_policy or settings.group_policy
         self._group_rules = settings.group_rules
+        self._ack_emoji = settings.ack_emoji
+        self._all_ack_emojis: frozenset[str] = _FEISHU_ACK_EMOJI_ALL
         self._bot_open_id = settings.bot_open_id
         self._bot_user_id = settings.bot_user_id
         self._bot_name = settings.bot_name
@@ -1840,7 +1886,7 @@ class FeishuAdapter(BasePlatformAdapter):
         loop = self._loop
         if (
             operator_type in {"bot", "app"}
-            or emoji_type == _FEISHU_ACK_EMOJI
+            or emoji_type in self._all_ack_emojis
             or not message_id
             or loop is None
             or bool(getattr(loop, "is_closed", lambda: False)())
@@ -2076,13 +2122,24 @@ class FeishuAdapter(BasePlatformAdapter):
         async with chat_lock:
             message_id = event.message_id
             if message_id:
-                await self._add_ack_reaction(message_id)
+                await self._add_ack_reaction(message_id, text=getattr(event, "text", None))
             await self.handle_message(event)
 
-    async def _add_ack_reaction(self, message_id: str) -> Optional[str]:
-        """Add a persistent ACK emoji reaction to signal the message was received."""
+    async def _add_ack_reaction(self, message_id: str, *, text: Optional[str] = None) -> Optional[str]:
+        """Add a persistent ACK emoji reaction to signal the message was received.
+
+        If the user has explicitly configured an ack_emoji (via FEISHU_ACK_EMOJI
+        env var or config), that fixed value is used.  Otherwise the emoji is
+        chosen contextually from the message text via _pick_ack_emoji().
+        """
         if not self._client or not message_id:
             return None
+        # If the user explicitly configured an ack emoji (different from the
+        # hardcoded default), honour it — preserves backward compatibility.
+        if self._ack_emoji != _FEISHU_ACK_EMOJI:
+            emoji = self._ack_emoji
+        else:
+            emoji = _pick_ack_emoji(text)
         try:
             from lark_oapi.api.im.v1 import (  # lazy import — keeps optional dep optional
                 CreateMessageReactionRequest,
@@ -2090,7 +2147,7 @@ class FeishuAdapter(BasePlatformAdapter):
             )
             body = (
                 CreateMessageReactionRequestBody.builder()
-                .reaction_type({"emoji_type": _FEISHU_ACK_EMOJI})
+                .reaction_type({"emoji_type": emoji})
                 .build()
             )
             request = (

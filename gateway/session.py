@@ -926,12 +926,18 @@ class SessionStore:
                     continue
                 # Never prune sessions with an active background process
                 # attached — the user may still be waiting on output.
+                # The callback is keyed by session_key (see process_registry.
+                # has_active_for_session); passing session_id here used to
+                # never match, so active sessions got pruned anyway.
                 if self._has_active_processes_fn is not None:
                     try:
-                        if self._has_active_processes_fn(entry.session_id):
+                        if self._has_active_processes_fn(entry.session_key):
                             continue
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logger.debug(
+                            "has_active_processes_fn raised during prune for %s: %s",
+                            entry.session_key, exc,
+                        )
                 if entry.updated_at < cutoff:
                     removed_keys.append(key)
             for key in removed_keys:

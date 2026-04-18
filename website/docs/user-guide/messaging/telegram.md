@@ -422,40 +422,6 @@ The current model and provider are displayed at the top. All navigation happens 
 If you know the exact model name, type `/model <name>` directly to skip the picker. You can also type `/model <name> --global` to persist the change across sessions.
 :::
 
-## Webhook Mode
-
-By default, the Telegram adapter connects via **long polling** — the gateway makes outbound connections to Telegram's servers. This works everywhere but keeps a persistent connection open.
-
-**Webhook mode** is an alternative where Telegram pushes updates to your server over HTTPS. This is ideal for **serverless and cloud deployments** (Fly.io, Railway, etc.) where inbound HTTP can wake a suspended machine.
-
-### Configuration
-
-Set the `TELEGRAM_WEBHOOK_URL` environment variable to enable webhook mode:
-
-```bash
-# Required — your public HTTPS endpoint
-TELEGRAM_WEBHOOK_URL=https://app.fly.dev/telegram
-
-# Optional — local listen port (default: 8443)
-TELEGRAM_WEBHOOK_PORT=8443
-
-# Optional — secret token for update verification (auto-generated if not set)
-TELEGRAM_WEBHOOK_SECRET=my-secret-token
-```
-
-Or in `~/.hermes/config.yaml`:
-
-```yaml
-telegram:
-  webhook_mode: true
-```
-
-When `TELEGRAM_WEBHOOK_URL` is set, the gateway starts an HTTP server listening on `0.0.0.0:<port>` and registers the webhook URL with Telegram. The URL path is extracted from the webhook URL (defaults to `/telegram`).
-
-:::warning
-Telegram requires a **valid TLS certificate** on the webhook endpoint. Self-signed certificates will be rejected. Use a reverse proxy (nginx, Caddy) or a platform that provides TLS termination (Fly.io, Railway, Cloudflare Tunnel).
-:::
-
 ## DNS-over-HTTPS Fallback IPs
 
 In some restricted networks, `api.telegram.org` may resolve to an IP that is unreachable. The Telegram adapter includes a **fallback IP** mechanism that transparently retries connections against alternative IPs while preserving the correct TLS hostname and SNI.

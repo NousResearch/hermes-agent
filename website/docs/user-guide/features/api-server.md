@@ -154,11 +154,63 @@ Delete a stored response.
 
 ### GET /v1/models
 
-Lists the agent as an available model. The advertised model name defaults to the [profile](/docs/user-guide/features/profiles) name (or `hermes-agent` for the default profile). Required by most frontends for model discovery.
+Lists the agent as an available model. The advertised model name defaults to the [profile](/docs/user-guide/profiles) name (or `hermes-agent` for the default profile). Required by most frontends for model discovery.
 
 ### GET /health
 
 Health check. Returns `{"status": "ok"}`. Also available at **GET /v1/health** for OpenAI-compatible clients that expect the `/v1/` prefix.
+
+### GET /health/detailed
+
+Extended health check that also reports active sessions, running agents, and resource usage. Useful for monitoring/observability tooling.
+
+## Runs API (streaming-friendly alternative)
+
+In addition to `/v1/chat/completions` and `/v1/responses`, the server exposes a **runs** API for long-form sessions where the client wants to subscribe to progress events instead of managing streaming themselves.
+
+### POST /v1/runs
+
+Create a new agent run. Returns a `run_id` that can be used to subscribe to progress events.
+
+### GET /v1/runs/\{run_id\}/events
+
+Server-Sent Events stream of the run's tool-call progress, token deltas, and lifecycle events. Designed for dashboards and thick clients that want to attach/detach without losing state.
+
+## Jobs API (background scheduled work)
+
+The server exposes a lightweight jobs CRUD surface for managing scheduled / background agent runs from a remote client. All endpoints are gated behind the same bearer auth.
+
+### GET /api/jobs
+
+List all scheduled jobs.
+
+### POST /api/jobs
+
+Create a new scheduled job. Body accepts the same shape as `hermes cron` — prompt, schedule, skills, provider override, delivery target.
+
+### GET /api/jobs/\{job_id\}
+
+Fetch a single job's definition and last-run state.
+
+### PATCH /api/jobs/\{job_id\}
+
+Update fields on an existing job (prompt, schedule, etc.). Partial updates are merged.
+
+### DELETE /api/jobs/\{job_id\}
+
+Remove a job. Also cancels any in-flight run.
+
+### POST /api/jobs/\{job_id\}/pause
+
+Pause a job without deleting it. Next-scheduled-run timestamps are suspended until resumed.
+
+### POST /api/jobs/\{job_id\}/resume
+
+Resume a previously paused job.
+
+### POST /api/jobs/\{job_id\}/run
+
+Trigger the job to run immediately, out of schedule.
 
 ## System Prompt Handling
 
@@ -247,7 +299,7 @@ Any frontend that supports the OpenAI API format works. Tested/documented integr
 
 ## Multi-User Setup with Profiles
 
-To give multiple users their own isolated Hermes instance (separate config, memory, skills), use [profiles](/docs/user-guide/features/profiles):
+To give multiple users their own isolated Hermes instance (separate config, memory, skills), use [profiles](/docs/user-guide/profiles):
 
 ```bash
 # Create a profile per user

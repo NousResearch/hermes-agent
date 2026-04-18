@@ -14,7 +14,7 @@ If you have a paid [Nous Portal](https://portal.nousresearch.com) subscription, 
 
 ## Text-to-Speech
 
-Convert text to speech with seven providers:
+Convert text to speech with eight providers:
 
 | Provider | Quality | Cost | API Key |
 |----------|---------|------|---------|

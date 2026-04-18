@@ -243,6 +243,8 @@ def register(ctx):
 | [`post_llm_call`](#post_llm_call) | Once per turn, after the tool-calling loop | ignored |
 | [`on_session_start`](#on_session_start) | New session created (first turn only) | ignored |
 | [`on_session_end`](#on_session_end) | Session ends | ignored |
+| [`on_session_finalize`](#on_session_finalize) | CLI/gateway tears down an active session (flush, save, stats) | ignored |
+| [`on_session_reset`](#on_session_reset) | Gateway swaps in a fresh session key (e.g. `/new`, `/reset`) | ignored |
 
 ---
 
@@ -597,6 +599,52 @@ def register(ctx):
     ctx.register_hook("on_session_start", on_start)
     ctx.register_hook("on_session_end", on_end)
 ```
+
+---
+
+### `on_session_finalize`
+
+Fires when the CLI or gateway **tears down** an active session — for example, when the user runs `/new`, the gateway GC'd an idle session, or the CLI quit with an active agent. This is the last chance to flush state tied to the outgoing session before its identity is gone.
+
+**Callback signature:**
+
+```python
+def my_callback(session_id: str | None, platform: str, **kwargs):
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `session_id` | `str` or `None` | The outgoing session ID. May be `None` if no active session existed. |
+| `platform` | `str` | `"cli"` or the messaging platform name (`"telegram"`, `"discord"`, etc.). |
+
+**Fires:** In `cli.py` (on `/new` / CLI exit) and `gateway/run.py` (when a session is reset or GC'd). Always paired with `on_session_reset` on the gateway side.
+
+**Return value:** Ignored.
+
+**Use cases:** Persist final session metrics before the session ID is discarded, close per-session resources, emit a final telemetry event, drain queued writes.
+
+---
+
+### `on_session_reset`
+
+Fires when the gateway **swaps in a new session key** for an active chat — the user invoked `/new`, `/reset`, `/clear`, or the adapter picked a fresh session after an idle window. This lets plugins react to the fact that conversation state has been wiped without waiting for the next `on_session_start`.
+
+**Callback signature:**
+
+```python
+def my_callback(session_id: str, platform: str, **kwargs):
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `session_id` | `str` | The new session's ID (already rotated to the fresh value). |
+| `platform` | `str` | The messaging platform name. |
+
+**Fires:** In `gateway/run.py`, immediately after the new session key is allocated but before the next inbound message is processed. On the gateway, the order is: `on_session_finalize(old_id)` → swap → `on_session_reset(new_id)` → `on_session_start(new_id)` on the first inbound turn.
+
+**Return value:** Ignored.
+
+**Use cases:** Reset per-session caches keyed by `session_id`, emit "session rotated" analytics, prime a fresh state bucket.
 
 ---
 

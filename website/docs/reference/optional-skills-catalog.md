@@ -74,6 +74,7 @@ hermes skills uninstall <skill-name>
 
 | Skill | Description |
 |-------|-------------|
+| **fitness-nutrition** | Gym workout planner and nutrition tracker. Search 690+ exercises by muscle, equipment, or category via wger. Look up macros and calories for 380,000+ foods via USDA FoodData Central. Computes BMI, TDEE, one-rep max, macro splits, and body fat — pure Python, no pip installs. |
 | **neuroskill-bci** | Brain-Computer Interface (BCI) integration for neuroscience research workflows. |
 
 ## MCP

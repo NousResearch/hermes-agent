@@ -1,7 +1,6 @@
 """Tests for gateway /reasoning command and hot reload behavior."""
 
 import asyncio
-import inspect
 import sys
 import types
 import tools.approval as approval_mod
@@ -74,8 +73,9 @@ class TestReasoningCommand:
         assert "/reasoning [level|show|hide]" in result
 
     def test_reasoning_is_known_command(self):
-        source = inspect.getsource(gateway_run.GatewayRunner._handle_message)
-        assert '"reasoning"' in source
+        from gateway.command_preprocessing_runtime_service import _BUILTIN_HANDLER_ATTRS
+
+        assert _BUILTIN_HANDLER_ATTRS["reasoning"] == "_handle_reasoning_command"
 
     @pytest.mark.asyncio
     async def test_reasoning_command_reloads_current_state_from_config(self, tmp_path, monkeypatch):

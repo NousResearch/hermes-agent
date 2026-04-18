@@ -261,6 +261,9 @@ from gateway.direct_control_router import (
 from gateway.busy_followup_runtime_service import (
     handle_gateway_busy_followup,
 )
+from gateway.command_preprocessing_runtime_service import (
+    preprocess_gateway_command,
+)
 from gateway.employee_routes import get_employee_routes
 from gateway.runtime_status_service import (
     build_runtime_status_summary as shared_build_runtime_status_summary,
@@ -2973,131 +2976,17 @@ class GatewayRunner:
 
         # Check for commands
         command = event.get_command()
-        
-        # Emit command:* hook for any recognized slash command.
-        # GATEWAY_KNOWN_COMMANDS is derived from the central COMMAND_REGISTRY
-        # in hermes_cli/commands.py — no hardcoded set to maintain here.
-        from hermes_cli.commands import GATEWAY_KNOWN_COMMANDS, resolve_command as _resolve_cmd
-        if command and command in GATEWAY_KNOWN_COMMANDS:
-            await self.hooks.emit(f"command:{command}", {
-                "platform": source.platform.value if source.platform else "",
-                "user_id": source.user_id,
-                "command": command,
-                "args": event.get_command_args().strip(),
-            })
 
-        # Resolve aliases to canonical name so dispatch only checks canonicals.
-        _cmd_def = _resolve_cmd(command) if command else None
-        canonical = _cmd_def.name if _cmd_def else command
-
-        if canonical == "new":
-            return await self._handle_reset_command(event)
-        
-        if canonical == "help":
-            return await self._handle_help_command(event)
-
-        if canonical == "commands":
-            return await self._handle_commands_command(event)
-        
-        if canonical == "profile":
-            return await self._handle_profile_command(event)
-
-        if canonical == "status":
-            return await self._handle_status_command(event)
-        
-        if canonical == "stop":
-            return await self._handle_stop_command(event)
-        
-        if canonical == "reasoning":
-            return await self._handle_reasoning_command(event)
-
-        if canonical == "verbose":
-            return await self._handle_verbose_command(event)
-
-        if canonical == "yolo":
-            return await self._handle_yolo_command(event)
-
-        if canonical == "model":
-            return await self._handle_model_command(event)
-
-        if canonical == "provider":
-            return await self._handle_provider_command(event)
-        
-        if canonical == "personality":
-            return await self._handle_personality_command(event)
-
-        if canonical == "plan":
-            try:
-                from agent.skill_commands import build_plan_path, build_skill_invocation_message
-
-                user_instruction = event.get_command_args().strip()
-                plan_path = build_plan_path(user_instruction)
-                event.text = build_skill_invocation_message(
-                    "/plan",
-                    user_instruction,
-                    task_id=_quick_key,
-                    runtime_note=(
-                        "Save the markdown plan with write_file to this exact relative path "
-                        f"inside the active workspace/backend cwd: {plan_path}"
-                    ),
-                )
-                if not event.text:
-                    return "Failed to load the bundled /plan skill."
-                canonical = None
-            except Exception as e:
-                logger.exception("Failed to prepare /plan command")
-                return f"Failed to enter plan mode: {e}"
-        
-        if canonical == "retry":
-            return await self._handle_retry_command(event)
-        
-        if canonical == "undo":
-            return await self._handle_undo_command(event)
-        
-        if canonical == "sethome":
-            return await self._handle_set_home_command(event)
-
-        if canonical == "compress":
-            return await self._handle_compress_command(event)
-
-        if canonical == "usage":
-            return await self._handle_usage_command(event)
-
-        if canonical == "insights":
-            return await self._handle_insights_command(event)
-
-        if canonical == "reload-mcp":
-            return await self._handle_reload_mcp_command(event)
-
-        if canonical == "approve":
-            return await self._handle_approve_command(event)
-
-        if canonical == "deny":
-            return await self._handle_deny_command(event)
-
-        if canonical == "update":
-            return await self._handle_update_command(event)
-
-        if canonical == "title":
-            return await self._handle_title_command(event)
-
-        if canonical == "resume":
-            return await self._handle_resume_command(event)
-
-        if canonical == "branch":
-            return await self._handle_branch_command(event)
-
-        if canonical == "rollback":
-            return await self._handle_rollback_command(event)
-
-        if canonical == "background":
-            return await self._handle_background_command(event)
-
-        if canonical == "btw":
-            return await self._handle_btw_command(event)
-
-        if canonical == "voice":
-            return await self._handle_voice_command(event)
+        preprocessed_command = await preprocess_gateway_command(
+            runner=self,
+            event=event,
+            source=source,
+            session_key=_quick_key,
+            logger=logger,
+        )
+        command = preprocessed_command.command
+        if preprocessed_command.handled:
+            return preprocessed_command.response
 
         # User-defined quick commands (bypass agent loop, no LLM call)
         if command:
@@ -3135,7 +3024,16 @@ class GatewayRunner:
                         user_args = event.get_command_args().strip()
                         event.text = f"{target} {user_args}".strip()
                         command = target_command
-                        # Fall through to normal command dispatch below
+                        preprocessed_command = await preprocess_gateway_command(
+                            runner=self,
+                            event=event,
+                            source=source,
+                            session_key=_quick_key,
+                            logger=logger,
+                        )
+                        command = preprocessed_command.command
+                        if preprocessed_command.handled:
+                            return preprocessed_command.response
                     else:
                         return f"Quick command '/{command}' has no target defined."
                 else:
@@ -3165,6 +3063,7 @@ class GatewayRunner:
         # to the claude-code skill.
         if command:
             try:
+                from hermes_cli.commands import GATEWAY_KNOWN_COMMANDS
                 from agent.skill_commands import (
                     get_skill_commands,
                     build_skill_invocation_message,

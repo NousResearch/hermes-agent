@@ -164,3 +164,22 @@ async def test_underscored_alias_for_hyphenated_builtin_not_flagged(monkeypatch)
     # Whatever /reload_mcp returns, it must not be the unknown-command guard.
     if result is not None:
         assert "Unknown command" not in result
+
+
+@pytest.mark.asyncio
+async def test_quick_command_alias_dispatches_builtin(monkeypatch):
+    """User-defined alias commands should re-enter built-in dispatch."""
+    import gateway.run as gateway_run
+
+    runner = _make_runner()
+    runner.config.quick_commands = {"st": {"type": "alias", "target": "status"}}
+    runner._handle_status_command = AsyncMock(return_value="status ok")
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    result = await runner._handle_message(_make_event("/st"))
+
+    assert result == "status ok"
+    runner._handle_status_command.assert_awaited_once()

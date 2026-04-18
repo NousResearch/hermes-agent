@@ -46,6 +46,7 @@ testlogs
 cli-config.yaml
 
 # Skills Hub state (lives in ~/.hermes/skills/.hub/ at runtime, but just in case)
+/.hermes/
 skills/.hub/
 ignored/
 .worktrees/

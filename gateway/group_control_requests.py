@@ -33,11 +33,9 @@ def match_group_control_request(
     enable_listen = not disable_listen and looks_like_group_listen_enable_request(normalized_body)
     disable_report = looks_like_group_report_disable_request(normalized_body)
     report_now = looks_like_group_report_now_request(normalized_body)
-    enable_report = looks_like_group_report_enable_request(normalized_body) or (
-        "日报" in normalized_body and not disable_report and not report_now
-    )
+    enable_report = looks_like_group_report_enable_request(normalized_body)
 
-    if not any((enable_listen, disable_listen, enable_report, disable_report, report_now)):
+    if not any((allow_chat, enable_listen, disable_listen, enable_report, disable_report, report_now)):
         return None, None
 
     if not is_admin_user:
@@ -62,6 +60,8 @@ def match_group_control_request(
     tool_args: dict[str, object] = {"target": target}
     if disable_listen:
         tool_args["action"] = "resume_chat" if allow_chat else "disable_group"
+    elif allow_chat:
+        tool_args["action"] = "resume_chat"
     elif enable_listen:
         tool_args["action"] = collect_only_action
 

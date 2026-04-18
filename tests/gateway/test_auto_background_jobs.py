@@ -561,6 +561,42 @@ async def test_admin_dm_can_orally_stop_explicit_group_monitoring_and_allow_chat
 
 
 @pytest.mark.asyncio
+async def test_admin_group_can_orally_resume_current_group_chat_without_stop_listen_phrase():
+    runner = _make_runner(auto_background_work=True)
+    runner.config.platforms[Platform.QQ_NAPCAT].extra["admin_users"] = ["179033731"]
+    event = _make_event(
+        "这个群恢复聊天",
+        chat_type="group",
+        chat_id="192903718",
+    )
+
+    with patch(
+        "tools.qq_control_tool.qq_control_tool",
+        return_value=json.dumps(
+            {
+                "success": True,
+                "policy": {
+                    "group_id": "192903718",
+                    "mode": "default",
+                    "archive_enabled": False,
+                    "daily_report_enabled": False,
+                },
+            },
+            ensure_ascii=False,
+        ),
+    ) as control_mock:
+        result = await runner._handle_message(event)
+
+    runner._run_agent.assert_not_awaited()
+    assert "已停止 QQ 群 192903718 的监听采集" in result
+    args = control_mock.call_args.args[0]
+    assert args == {
+        "action": "resume_chat",
+        "target": "group:192903718",
+    }
+
+
+@pytest.mark.asyncio
 async def test_admin_dm_stop_monitoring_request_does_not_misparse_bot_pronoun_as_worker():
     runner = _make_runner(auto_background_work=True)
     runner.config.platforms[Platform.QQ_NAPCAT].extra["admin_users"] = ["179033731"]

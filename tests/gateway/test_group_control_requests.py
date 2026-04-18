@@ -104,3 +104,63 @@ def test_match_group_control_request_returns_missing_target_error_after_admin_ch
 
     assert tool_args is None
     assert error == "missing target"
+
+
+def test_match_group_control_request_does_not_treat_daily_report_query_as_enable_mutation():
+    source = _make_source(chat_type="group", chat_id="726109087")
+
+    tool_args, error = match_group_control_request(
+        source=source,
+        body="这个群日报发哪？",
+        target="group:726109087",
+        admin_ids_configured=True,
+        is_admin_user=True,
+        missing_target_message="missing target",
+        admin_only_message="admin only",
+        collect_only_action="enable_collect_only",
+        report_target_resolver=lambda current_source, message, prefer_dm: "current_user_dm",
+    )
+
+    assert tool_args is None
+    assert error is None
+
+
+def test_match_group_control_request_does_not_enable_daily_report_from_query_tail():
+    source = _make_source(chat_type="group", chat_id="726109087")
+
+    tool_args, error = match_group_control_request(
+        source=source,
+        body="这个群恢复聊天，日报发哪？",
+        target="group:726109087",
+        admin_ids_configured=True,
+        is_admin_user=True,
+        missing_target_message="missing target",
+        admin_only_message="admin only",
+        collect_only_action="enable_collect_only",
+        report_target_resolver=lambda current_source, message, prefer_dm: "current_user_dm",
+    )
+
+    assert error is None
+    assert tool_args == {
+        "target": "group:726109087",
+        "action": "resume_chat",
+    }
+
+
+def test_match_group_control_request_does_not_mutate_on_chat_capability_question():
+    source = _make_source(chat_type="group", chat_id="726109087")
+
+    tool_args, error = match_group_control_request(
+        source=source,
+        body="这个群可以聊天吗？",
+        target="group:726109087",
+        admin_ids_configured=True,
+        is_admin_user=True,
+        missing_target_message="missing target",
+        admin_only_message="admin only",
+        collect_only_action="enable_collect_only",
+        report_target_resolver=lambda current_source, message, prefer_dm: "current_user_dm",
+    )
+
+    assert tool_args is None
+    assert error is None

@@ -29,6 +29,15 @@ _FOLLOWUP_GROUP_REFERENCE_TERMS = (
     "群里",
     "在群里",
 )
+_GROUP_CHAT_ENABLE_IMPERATIVE_TERMS = (
+    "允许开始聊天",
+    "允许聊天",
+    "开始聊天",
+    "恢复聊天",
+    "正常聊天",
+    "恢复回复",
+    "允许回复",
+)
 
 
 def has_current_group_reference(message_text: str) -> bool:
@@ -53,7 +62,14 @@ def strip_current_group_reference_terms(message_text: str) -> str:
 
 def looks_like_group_chat_enable_request(message_text: str) -> bool:
     body = str(message_text or "").strip()
-    return bool(body) and any(term in body for term in GROUP_CHAT_ENABLE_TERMS)
+    return (
+        bool(body)
+        and any(term in body for term in GROUP_CHAT_ENABLE_TERMS)
+        and (
+            ("?" not in body and "？" not in body)
+            or any(term in body for term in _GROUP_CHAT_ENABLE_IMPERATIVE_TERMS)
+        )
+    )
 
 
 def looks_like_group_listen_disable_request(message_text: str) -> bool:

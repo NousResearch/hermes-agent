@@ -693,6 +693,11 @@ DEFAULT_CONFIG = {
     # always goes to ~/.hermes/skills/.
     "skills": {
         "external_dirs": [],   # e.g. ["~/.agents/skills", "/shared/team-skills"]
+        # Curated list of skill names to show in the system prompt index.
+        # When set, only these skills appear in the auto-injected skills list,
+        # reducing context bloat. Other skills remain available via skills_list.
+        # Example: ["github-pr-workflow", "plan", "systematic-debugging"]
+        "system_prompt_skills": [],
     },
 
     # Honcho AI-native memory -- reads ~/.honcho/config.json as single source of truth.

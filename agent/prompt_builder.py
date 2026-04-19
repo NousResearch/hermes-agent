@@ -620,6 +620,17 @@ def build_skills_system_prompt(
         or ""
     )
     disabled = get_disabled_skill_names()
+
+    # Load curated skill filter early so it participates in caching
+    _sp_skills: "list[str]" = []
+    try:
+        from hermes_cli.config import load_config
+        _cfg = load_config()
+        _raw = _cfg.get("skills", {}).get("system_prompt_skills")
+        if isinstance(_raw, list):
+            _sp_skills = [str(s).strip() for s in _raw if str(s).strip()]
+    except Exception:
+        pass
     cache_key = (
         str(skills_dir.resolve()),
         tuple(str(d) for d in external_dirs),
@@ -627,6 +638,7 @@ def build_skills_system_prompt(
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
         _platform_hint,
         tuple(sorted(disabled)),
+        tuple(sorted(_sp_skills)),
     )
     with _SKILLS_PROMPT_CACHE_LOCK:
         cached = _SKILLS_PROMPT_CACHE.get(cache_key)
@@ -763,6 +775,16 @@ def build_skills_system_prompt(
     if not skills_by_category:
         result = ""
     else:
+        # Filter to curated system-prompt skills if configured
+        if _sp_skills:
+            _allowed = set(_sp_skills)
+            filtered: dict[str, list[tuple[str, str]]] = {}
+            for cat, items in skills_by_category.items():
+                kept = [(n, d) for n, d in items if n in _allowed]
+                if kept:
+                    filtered[cat] = kept
+            skills_by_category = filtered
+
         index_lines = []
         for category in sorted(skills_by_category.keys()):
             cat_desc = category_descriptions.get(category, "")
@@ -780,6 +802,12 @@ def build_skills_system_prompt(
                     index_lines.append(f"    - {name}: {desc}")
                 else:
                     index_lines.append(f"    - {name}")
+
+        _extra_skills_note = ""
+        if _sp_skills:
+            _extra_skills_note = (
+                "\nAdditional skills are available — call skills_list() to browse the full catalog."
+            )
 
         result = (
             "## Skills (mandatory)\n"
@@ -801,6 +829,7 @@ def build_skills_system_prompt(
             "<available_skills>\n"
             + "\n".join(index_lines) + "\n"
             "</available_skills>\n"
+            + _extra_skills_note + "\n"
             "\n"
             "Only proceed without loading a skill if genuinely none are relevant to the task."
         )

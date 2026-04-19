@@ -97,17 +97,20 @@ def _normalize_aux_provider(provider: Optional[str]) -> str:
 
 _FIXED_TEMPERATURE_MODELS: Dict[str, float] = {
     "kimi-for-coding": 0.6,
+    # Kimi Coding Plan now rejects kimi-k2.5 unless temperature is exactly 1.0.
+    # Keep this explicit so it overrides the broader non-thinking-family default.
+    "kimi-k2.5": 1.0,
+    "moonshotai/kimi-k2.5": 1.0,
 }
 
-# Moonshot's kimi-for-coding endpoint (api.kimi.com/coding) documents:
-# "k2.5 model will use a fixed value 1.0, non-thinking mode will use a fixed
-# value 0.6.  Any other value will result in an error."  The same lock applies
-# to the other k2.* models served on that endpoint.  Enumerated explicitly so
-# non-coding siblings like `kimi-k2-instruct` (variable temperature, served on
-# the standard chat API and third parties) are NOT clamped.
+# Moonshot's kimi-for-coding endpoint (api.kimi.com/coding) documents fixed
+# temperatures for the K2 family. In current live behavior, `kimi-k2.5`
+# requires exactly 1.0, while the turbo/preview non-thinking siblings still use
+# 0.6. Enumerated explicitly so non-coding siblings like `kimi-k2-instruct`
+# (variable temperature, served on the standard chat API and third parties) are
+# NOT clamped.
 # Source: https://platform.kimi.ai/docs/guide/kimi-k2-5-quickstart
 _KIMI_INSTANT_MODELS: frozenset = frozenset({
-    "kimi-k2.5",
     "kimi-k2-turbo-preview",
     "kimi-k2-0905-preview",
 })
@@ -120,10 +123,11 @@ _KIMI_THINKING_MODELS: frozenset = frozenset({
 def _fixed_temperature_for_model(model: Optional[str]) -> Optional[float]:
     """Return a required temperature override for models with strict contracts.
 
-    Moonshot's kimi-for-coding endpoint rejects any non-approved temperature on
-    the k2.5 family.  Non-thinking variants require exactly 0.6; thinking
-    variants require 1.0.  An optional ``vendor/`` prefix (e.g.
-    ``moonshotai/kimi-k2.5``) is tolerated for aggregator routings.
+    Moonshot's K2 coding-family endpoints reject non-approved temperatures.
+    `kimi-k2.5` currently requires exactly 1.0, turbo/preview non-thinking
+    variants require 0.6, and thinking variants require 1.0. An optional
+    ``vendor/`` prefix (e.g. ``moonshotai/kimi-k2.5``) is tolerated for
+    aggregator routings.
 
     Returns ``None`` for every other model, including ``kimi-k2-instruct*``
     which is the separate non-coding K2 family with variable temperature.

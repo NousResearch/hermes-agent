@@ -6043,8 +6043,17 @@ class GatewayRunner:
         # When streaming already delivered the text (already_sent=True),
         # the base adapter will receive None and can't run auto-TTS,
         # so the runner must take over.
+        # For platforms without voice-channel auto-TTS (e.g. WhatsApp),
+        # the runner must always handle voice replies.
         if is_voice_input and not already_sent:
-            return False
+            adapter = self.adapters.get(event.source.platform)
+            has_auto_tts = (
+                adapter
+                and hasattr(adapter, "play_in_voice_channel")
+                and hasattr(adapter, "is_in_voice_channel")
+            )
+            if has_auto_tts:
+                return False
 
         return True
 

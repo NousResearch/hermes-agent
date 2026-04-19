@@ -699,8 +699,8 @@ class TestIsConnectionError:
 class TestKimiForCodingTemperature:
     """Moonshot kimi-for-coding models require fixed temperatures.
 
-    k2.5 / k2-turbo-preview / k2-0905-preview → 0.6 (non-thinking lock).
-    k2-thinking / k2-thinking-turbo → 1.0 (thinking lock).
+    kimi-k2.5 / k2-thinking / k2-thinking-turbo → 1.0.
+    k2-turbo-preview / k2-0905-preview → 0.6.
     kimi-k2-instruct* and every other model preserve the caller's temperature.
     """
 
@@ -780,19 +780,20 @@ class TestKimiForCodingTemperature:
     @pytest.mark.parametrize(
         "model,expected",
         [
-            ("kimi-k2.5", 0.6),
+            ("kimi-k2.5", 1.0),
             ("kimi-k2-turbo-preview", 0.6),
             ("kimi-k2-0905-preview", 0.6),
             ("kimi-k2-thinking", 1.0),
             ("kimi-k2-thinking-turbo", 1.0),
-            ("moonshotai/kimi-k2.5", 0.6),
+            ("moonshotai/kimi-k2.5", 1.0),
             ("moonshotai/Kimi-K2-Thinking", 1.0),
         ],
     )
     def test_kimi_k2_family_temperature_override(self, model, expected):
         """Moonshot kimi-k2.* models only accept fixed temperatures.
 
-        Non-thinking models → 0.6, thinking-mode models → 1.0.
+        kimi-k2.5 and thinking-mode models → 1.0.
+        turbo/preview non-thinking variants → 0.6.
         """
         from agent.auxiliary_client import _build_call_kwargs
 

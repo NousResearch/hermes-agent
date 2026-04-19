@@ -115,6 +115,59 @@ def _messages_include_chatgpt_web_images(messages: list[dict[str, Any]]) -> bool
     return False
 
 
+def _split_chatgpt_web_message_content(content: Any) -> tuple[str, list[str]]:
+    """Return best-effort text plus any attached image sources."""
+    if isinstance(content, str):
+        return content, []
+    if not isinstance(content, list):
+        if content is None:
+            return "", []
+        return str(content), []
+
+    text_parts: list[str] = []
+    image_sources: list[str] = []
+    for part in content:
+        if isinstance(part, str):
+            if part:
+                text_parts.append(part)
+            continue
+        if not isinstance(part, dict):
+            rendered = str(part or "")
+            if rendered:
+                text_parts.append(rendered)
+            continue
+        ptype = str(part.get("type") or "").strip().lower()
+        if ptype in {"text", "input_text"}:
+            rendered = str(part.get("text") or "")
+            if rendered:
+                text_parts.append(rendered)
+            continue
+        if ptype in {"image_url", "input_image"}:
+            image_data = part.get("image_url", {})
+            if isinstance(image_data, dict):
+                image_source = str(image_data.get("url") or "")
+            else:
+                image_source = str(image_data or "")
+            if image_source:
+                image_sources.append(image_source)
+            continue
+        rendered = str(part.get("text") or "")
+        if rendered:
+            text_parts.append(rendered)
+
+    return "\n".join(part for part in text_parts if part).strip(), image_sources
+
+
+def _messages_include_chatgpt_web_images(messages: list[dict[str, Any]]) -> bool:
+    for item in messages or []:
+        if not isinstance(item, dict):
+            continue
+        _, image_sources = _split_chatgpt_web_message_content(item.get("content"))
+        if image_sources:
+            return True
+    return False
+
+
 def _parse_cookie_header(raw_cookie_header: str) -> "OrderedDict[str, str]":
     cookies: "OrderedDict[str, str]" = OrderedDict()
     for part in str(raw_cookie_header or "").split(";"):
@@ -385,6 +438,368 @@ def _materialize_chatgpt_web_browser_image(source: str) -> tuple[str, Optional[s
     expanded = os.path.expanduser(source)
     if Path(expanded).is_file():
         return str(Path(expanded).resolve()), None
+
+    if source.startswith("http://") or source.startswith("https://"):
+        response = httpx.get(source, timeout=60.0, follow_redirects=True)
+        response.raise_for_status()
+        suffix = _chatgpt_web_source_suffix(source, str(response.headers.get("content-type") or ""))
+        fd, temp_path = tempfile.mkstemp(prefix="chatgpt-web-image-", suffix=suffix)
+        os.close(fd)
+        with open(temp_path, "wb") as handle:
+            handle.write(response.content)
+        return temp_path, temp_path
+
+    raise ValueError(f"Unsupported ChatGPT Web image source: {source}")
+
+
+async def _chatgpt_web_browser_multimodal_completion(
+    *,
+    debug_base: str,
+    model: str,
+    prompt_text: str,
+    image_sources: list[str],
+    timeout: float,
+) -> dict[str, Any]:
+    if websockets is None:
+        raise RuntimeError("Python package 'websockets' is required for browser-backed ChatGPT Web multimodal turns")
+
+    image_paths: list[str] = []
+    cleanup_paths: list[str] = []
+    for source in image_sources:
+        materialized_path, cleanup_path = _materialize_chatgpt_web_browser_image(source)
+        image_paths.append(materialized_path)
+        if cleanup_path:
+            cleanup_paths.append(cleanup_path)
+
+    target_id = await _chatgpt_web_browser_create_target(debug_base, "https://chatgpt.com/")
+    try:
+        deadline = time.monotonic() + max(15.0, float(timeout or 1800.0))
+        page = None
+        while time.monotonic() < deadline:
+            try:
+                page = _chatgpt_web_browser_page_target(debug_base, target_id)
+            except Exception:
+                page = None
+            ws_url = str((page or {}).get("webSocketDebuggerUrl") or "").strip()
+            if ws_url:
+                break
+            await asyncio.sleep(0.5)
+        if page is None:
+            raise RuntimeError(f"Timed out waiting for ChatGPT page target {target_id} on {debug_base}")
+
+        ws_url = str(page.get("webSocketDebuggerUrl") or "").strip()
+        async with websockets.connect(ws_url, max_size=50_000_000) as ws:
+            next_id = [1]
+            await _chatgpt_web_cdp_send(ws, next_id, "Runtime.enable")
+            await _chatgpt_web_cdp_send(ws, next_id, "DOM.enable")
+            await _chatgpt_web_cdp_send(ws, next_id, "Input.enable")
+            await _chatgpt_web_cdp_send(ws, next_id, "Page.enable")
+            await _chatgpt_web_cdp_send(ws, next_id, "Page.bringToFront")
+
+            while time.monotonic() < deadline:
+                result = await _chatgpt_web_cdp_send(
+                    ws,
+                    next_id,
+                    "Runtime.evaluate",
+                    {
+                        "expression": "!!document.querySelector('div#prompt-textarea[contenteditable=\"true\"]')",
+                        "returnByValue": True,
+                    },
+                )
+                if result.get("result", {}).get("result", {}).get("value"):
+                    break
+                await asyncio.sleep(0.5)
+            else:
+                raise RuntimeError("Timed out waiting for the ChatGPT Web composer to become ready")
+
+            desired_label = _chatgpt_web_browser_model_label(model)
+            if desired_label != "Latest":
+                await _chatgpt_web_cdp_send(
+                    ws,
+                    next_id,
+                    "Runtime.evaluate",
+                    {
+                        "expression": (
+                            "(() => {"
+                            "const button = document.querySelector('button[data-testid=\"model-switcher-dropdown-button\"]');"
+                            "if (!button) return false;"
+                            "button.click();"
+                            "return true;"
+                            "})()"
+                        ),
+                        "returnByValue": True,
+                        "awaitPromise": True,
+                    },
+                )
+                await asyncio.sleep(0.3)
+                await _chatgpt_web_cdp_send(
+                    ws,
+                    next_id,
+                    "Runtime.evaluate",
+                    {
+                        "expression": (
+                            "(() => {"
+                            f"const label = {json.dumps(desired_label)};"
+                            "const candidates = Array.from(document.querySelectorAll('[role=\"menuitem\"], [role=\"menuitemradio\"], [role=\"option\"], button, div'));"
+                            "const item = candidates.find((el) => {"
+                            "  const text = (el.innerText || '').trim();"
+                            "  return text === label || text.startsWith(label + '\\n');"
+                            "});"
+                            "if (!item) return false;"
+                            "item.click();"
+                            "return true;"
+                            "})()"
+                        ),
+                        "returnByValue": True,
+                        "awaitPromise": True,
+                    },
+                )
+                await asyncio.sleep(0.5)
+
+            document = await _chatgpt_web_cdp_send(ws, next_id, "DOM.getDocument", {"depth": -1, "pierce": True})
+            root_id = int(document.get("result", {}).get("root", {}).get("nodeId") or 0)
+            file_input = await _chatgpt_web_cdp_send(
+                ws,
+                next_id,
+                "DOM.querySelector",
+                {"nodeId": root_id, "selector": 'input[type="file"][accept*="image"]'},
+            )
+            node_id = int(file_input.get("result", {}).get("nodeId") or 0)
+            if node_id <= 0:
+                raise RuntimeError("ChatGPT Web page does not expose an image upload input")
+            await _chatgpt_web_cdp_send(
+                ws,
+                next_id,
+                "DOM.setFileInputFiles",
+                {"nodeId": node_id, "files": image_paths},
+            )
+            await asyncio.sleep(1.0)
+
+            await _chatgpt_web_cdp_send(
+                ws,
+                next_id,
+                "Runtime.evaluate",
+                {
+                    "expression": (
+                        "(() => {"
+                        "const editor = document.querySelector('div#prompt-textarea[contenteditable=\"true\"]');"
+                        "if (!editor) return false;"
+                        f"const text = {json.dumps(prompt_text)};"
+                        "editor.focus();"
+                        "document.execCommand('selectAll', false, null);"
+                        "document.execCommand('insertText', false, text);"
+                        "editor.dispatchEvent(new InputEvent('input', {bubbles: true, inputType: 'insertText', data: text}));"
+                        "return true;"
+                        "})()"
+                    ),
+                    "returnByValue": True,
+                    "awaitPromise": True,
+                },
+            )
+            await _chatgpt_web_cdp_send(
+                ws,
+                next_id,
+                "Input.dispatchKeyEvent",
+                {
+                    "type": "keyDown",
+                    "windowsVirtualKeyCode": 13,
+                    "nativeVirtualKeyCode": 13,
+                    "code": "Enter",
+                    "key": "Enter",
+                    "unmodifiedText": "\r",
+                    "text": "\r",
+                },
+            )
+            await _chatgpt_web_cdp_send(
+                ws,
+                next_id,
+                "Input.dispatchKeyEvent",
+                {
+                    "type": "keyUp",
+                    "windowsVirtualKeyCode": 13,
+                    "nativeVirtualKeyCode": 13,
+                    "code": "Enter",
+                    "key": "Enter",
+                },
+            )
+
+            last_nonempty_text = ""
+            last_model_slug = model
+            conversation_id = ""
+            while time.monotonic() < deadline:
+                snapshot = await _chatgpt_web_cdp_send(
+                    ws,
+                    next_id,
+                    "Runtime.evaluate",
+                    {
+                        "expression": (
+                            "(() => {"
+                            "const href = location.href;"
+                            "const assistant = Array.from(document.querySelectorAll('[data-message-author-role=\"assistant\"]')).map((el) => ({"
+                            "  text: (el.innerText || '').trim(),"
+                            "  model: el.getAttribute('data-message-model-slug') || ''"
+                            "})).filter((item) => item.text);"
+                            "const buttons = Array.from(document.querySelectorAll('button')).map((el) => el.getAttribute('aria-label') || '').filter(Boolean);"
+                            "return {href, assistant, buttons};"
+                            "})()"
+                        ),
+                        "returnByValue": True,
+                        "awaitPromise": True,
+                    },
+                )
+                value = snapshot.get("result", {}).get("result", {}).get("value") or {}
+                href = str(value.get("href") or "")
+                match = re.search(r"/c/([^/?#]+)", href)
+                if match:
+                    conversation_id = match.group(1)
+                assistant_entries = value.get("assistant") if isinstance(value.get("assistant"), list) else []
+                buttons = [str(btn or "") for btn in (value.get("buttons") if isinstance(value.get("buttons"), list) else [])]
+                if assistant_entries:
+                    last_entry = assistant_entries[-1] if isinstance(assistant_entries[-1], dict) else {}
+                    current_text = str(last_entry.get("text") or "").strip()
+                    current_model = str(last_entry.get("model") or "").strip()
+                    if current_text:
+                        last_nonempty_text = current_text
+                    if current_model:
+                        last_model_slug = current_model
+                if (
+                    last_nonempty_text
+                    and "Stop streaming" not in buttons
+                    and last_nonempty_text.lower() not in {"analyzing image", "processing image"}
+                ):
+                    break
+                await asyncio.sleep(2.0)
+
+            if not last_nonempty_text:
+                raise RuntimeError("ChatGPT Web browser-backed multimodal turn returned no assistant text")
+
+            message_id = f"browser-{uuid.uuid4()}"
+            return {
+                "content": last_nonempty_text,
+                "conversation_id": conversation_id or None,
+                "parent_message_id": message_id,
+                "message_id": message_id,
+                "model": last_model_slug or model,
+                "finish_reason": "stop",
+                "images": [],
+            }
+    finally:
+        for cleanup_path in cleanup_paths:
+            try:
+                os.remove(cleanup_path)
+            except OSError:
+                pass
+        try:
+            await _chatgpt_web_browser_close_target(debug_base, target_id)
+        except Exception:
+            pass
+
+
+async def _chatgpt_web_cdp_send(
+    ws: Any,
+    next_id: list[int],
+    method: str,
+    params: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    payload = {"id": next_id[0], "method": method}
+    if params is not None:
+        payload["params"] = params
+    await ws.send(json.dumps(payload))
+    my_id = next_id[0]
+    next_id[0] += 1
+    while True:
+        message = json.loads(await ws.recv())
+        if message.get("id") == my_id:
+            return message
+
+
+def _chatgpt_web_browser_version(debug_base: str) -> dict[str, Any]:
+    with urllib.request.urlopen(f"{debug_base}/json/version", timeout=5) as response:
+        payload = json.load(response)
+    return payload if isinstance(payload, dict) else {}
+
+
+def _chatgpt_web_browser_page_target(debug_base: str, target_id: str) -> dict[str, Any]:
+    with urllib.request.urlopen(f"{debug_base}/json/list", timeout=5) as response:
+        pages = json.load(response)
+    for page in pages:
+        if str(page.get("id") or "").strip() == str(target_id or "").strip():
+            return page if isinstance(page, dict) else {}
+    raise RuntimeError(f"Browser target {target_id} not found on {debug_base}")
+
+
+async def _chatgpt_web_browser_create_target(debug_base: str, url: str) -> str:
+    version = _chatgpt_web_browser_version(debug_base)
+    ws_url = str(version.get("webSocketDebuggerUrl") or "").strip()
+    if not ws_url:
+        raise RuntimeError(f"Browser DevTools websocket unavailable on {debug_base}")
+    async with websockets.connect(ws_url, max_size=50_000_000) as ws:
+        next_id = [1]
+        response = await _chatgpt_web_cdp_send(ws, next_id, "Target.createTarget", {"url": url})
+    target_id = str(response.get("result", {}).get("targetId") or "").strip()
+    if not target_id:
+        raise RuntimeError(f"Failed to create ChatGPT browser target for {url}")
+    return target_id
+
+
+async def _chatgpt_web_browser_close_target(debug_base: str, target_id: str) -> None:
+    version = _chatgpt_web_browser_version(debug_base)
+    ws_url = str(version.get("webSocketDebuggerUrl") or "").strip()
+    if not ws_url:
+        return
+    async with websockets.connect(ws_url, max_size=50_000_000) as ws:
+        next_id = [1]
+        await _chatgpt_web_cdp_send(ws, next_id, "Target.closeTarget", {"targetId": target_id})
+
+
+def _chatgpt_web_browser_model_label(model: str) -> str:
+    lowered = str(model or "").strip().lower()
+    if "thinking" in lowered:
+        return "Thinking"
+    if "instant" in lowered:
+        return "Instant"
+    if "pro" in lowered:
+        return "Pro"
+    return "Latest"
+
+
+def _chatgpt_web_source_suffix(source: str, mime_type: str = "") -> str:
+    lowered_mime = str(mime_type or "").strip().lower()
+    lowered_source = str(source or "").strip().lower()
+    if "jpeg" in lowered_mime or lowered_source.endswith(".jpg") or lowered_source.endswith(".jpeg"):
+        return ".jpg"
+    if "webp" in lowered_mime or lowered_source.endswith(".webp"):
+        return ".webp"
+    if "gif" in lowered_mime or lowered_source.endswith(".gif"):
+        return ".gif"
+    return ".png"
+
+
+def _materialize_chatgpt_web_browser_image(source: str) -> tuple[str, Optional[str]]:
+    source = str(source or "").strip()
+    if not source:
+        raise ValueError("ChatGPT Web multimodal input is empty")
+
+    if source.startswith("file://"):
+        source = source[len("file://"):]
+    expanded = os.path.expanduser(source)
+    if Path(expanded).is_file():
+        return str(Path(expanded).resolve()), None
+
+    if source.startswith("data:"):
+        header, _, payload = source.partition(",")
+        if not payload:
+            raise ValueError("ChatGPT Web multimodal data URL is missing payload bytes")
+        mime_type = ""
+        header_match = header[5:] if header.startswith("data:") else ""
+        if ";" in header_match:
+            mime_type = header_match.split(";", 1)[0].strip().lower()
+        suffix = _chatgpt_web_source_suffix(source, mime_type)
+        fd, temp_path = tempfile.mkstemp(prefix="chatgpt-web-image-", suffix=suffix)
+        os.close(fd)
+        with open(temp_path, "wb") as handle:
+            handle.write(base64.b64decode(payload))
+        return temp_path, temp_path
 
     if source.startswith("http://") or source.startswith("https://"):
         response = httpx.get(source, timeout=60.0, follow_redirects=True)

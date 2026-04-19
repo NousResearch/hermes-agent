@@ -1375,7 +1375,6 @@ def test_build_api_kwargs_chatgpt_web_uses_direct_multimodal_when_browser_availa
     assert kwargs["history_and_training_disabled"] is False
     assert "<tool_call>" not in kwargs["instructions"]
 
-
 def test_build_api_kwargs_chatgpt_web_uses_direct_multimodal_for_attached_image_when_browser_available(monkeypatch, tmp_path):
     monkeypatch.setenv("CHATGPT_WEB_DEBUG_BASE", "http://127.0.0.1:9225")
     agent = _build_agent(monkeypatch)

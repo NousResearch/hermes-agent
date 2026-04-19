@@ -150,7 +150,6 @@ def test_format_initial_message_keeps_developer_instructions_on_remote_thread():
     assert "You are Hermes Agent. Use tools before answering." in prompt
     assert "Latest user request:\nContinue from the latest step." in prompt
 
-
 def test_format_initial_message_keeps_latest_tool_context_on_remote_thread():
     from hermes_cli.chatgpt_web import _format_initial_message
 
@@ -204,7 +203,6 @@ def test_format_initial_message_renders_multimodal_user_text_without_image_noise
 
     assert "Describe the attached image briefly." in prompt
     assert "file:///tmp/red-square.png" not in prompt
-
 
 def test_select_chatgpt_web_browser_response_text_falls_back_to_article_text():
     from hermes_cli.chatgpt_web import _select_chatgpt_web_browser_response_text

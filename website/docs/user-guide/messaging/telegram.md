@@ -112,6 +112,38 @@ hermes gateway
 
 The bot should come online within seconds. Send it a message on Telegram to verify.
 
+## Sending Generated Files from Docker-backed Terminals
+
+If your terminal backend is `docker`, keep in mind that Telegram attachments are
+sent by the **gateway process**, not from inside the container. That means the
+final `MEDIA:/...` path must be readable on the host where the gateway is
+running.
+
+Common pitfall:
+
+- the agent writes a file inside Docker to `/workspace/report.txt`
+- the model emits `MEDIA:/workspace/report.txt`
+- Telegram delivery fails because `/workspace/report.txt` only exists inside the
+  container, not on the host
+
+Recommended pattern:
+
+```yaml
+terminal:
+  backend: docker
+  docker_volumes:
+    - "/home/user/.hermes/cache/documents:/output"
+```
+
+Then:
+
+- write files inside Docker to `/output/...`
+- emit the **host-visible** path in `MEDIA:`, for example:
+  `MEDIA:/home/user/.hermes/cache/documents/report.txt`
+
+If you already have a `docker_volumes:` section, add the new mount to the same
+list. YAML duplicate keys silently override earlier ones.
+
 ## Webhook Mode
 
 By default, Hermes connects to Telegram using **long polling** — the gateway makes outbound requests to Telegram's servers to fetch new updates. This works well for local and always-on deployments.

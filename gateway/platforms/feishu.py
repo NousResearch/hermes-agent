@@ -119,6 +119,8 @@ _MARKDOWN_HINT_RE = re.compile(
     re.MULTILINE,
 )
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
+_MARKDOWN_FENCE_OPEN_RE = re.compile(r"^```([^\n`]*)\s*$")
+_MARKDOWN_FENCE_CLOSE_RE = re.compile(r"^```\s*$")
 _MENTION_RE = re.compile(r"@_user_\d+")
 _MULTISPACE_RE = re.compile(r"[ \t]{2,}")
 _POST_CONTENT_INVALID_RE = re.compile(r"content format of the post type is incorrect", re.IGNORECASE)
@@ -430,21 +432,64 @@ def _coerce_required_int(value: Any, default: int, min_value: int = 0) -> int:
 
 
 def _build_markdown_post_payload(content: str) -> str:
+    rows = _build_markdown_post_rows(content)
     return json.dumps(
         {
             "zh_cn": {
-                "content": [
-                    [
-                        {
-                            "tag": "md",
-                            "text": content,
-                        }
-                    ]
-                ],
+                "content": rows,
             }
         },
         ensure_ascii=False,
     )
+
+
+def _build_markdown_post_rows(content: str) -> List[List[Dict[str, str]]]:
+    """Build Feishu post rows while isolating fenced code blocks.
+
+    Feishu's `md` renderer can swallow trailing content when a fenced code block
+    appears inside one large markdown element. Split the reply at real fence
+    lines so prose before/after the code block remains visible while code stays
+    in a dedicated row.
+    """
+    if not content:
+        return [[{"tag": "md", "text": ""}]]
+    if "```" not in content:
+        return [[{"tag": "md", "text": content}]]
+
+    rows: List[List[Dict[str, str]]] = []
+    current: List[str] = []
+    in_code_block = False
+
+    def _flush_current() -> None:
+        nonlocal current
+        if not current:
+            return
+        segment = "\n".join(current)
+        if segment.strip():
+            rows.append([{"tag": "md", "text": segment}])
+        current = []
+
+    for raw_line in content.splitlines():
+        stripped_line = raw_line.strip()
+        is_fence = bool(
+            _MARKDOWN_FENCE_CLOSE_RE.match(stripped_line)
+            if in_code_block
+            else _MARKDOWN_FENCE_OPEN_RE.match(stripped_line)
+        )
+
+        if is_fence:
+            if not in_code_block:
+                _flush_current()
+            current.append(raw_line)
+            in_code_block = not in_code_block
+            if not in_code_block:
+                _flush_current()
+            continue
+
+        current.append(raw_line)
+
+    _flush_current()
+    return rows or [[{"tag": "md", "text": content}]]
 
 
 def parse_feishu_post_payload(payload: Any) -> FeishuPostParseResult:

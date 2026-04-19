@@ -27,7 +27,7 @@ from tui_gateway.render import make_stream_renderer, render_diff, render_message
 
 _sessions: dict[str, dict] = {}
 _methods: dict[str, callable] = {}
-_pending: dict[str, threading.Event] = {}
+_pending: dict[str, tuple[str, threading.Event]] = {}
 _answers: dict[str, str] = {}
 _db = None
 _stdout_lock = threading.Lock()
@@ -296,7 +296,7 @@ def _enable_gateway_prompts() -> None:
 def _block(event: str, sid: str, payload: dict, timeout: int = 300) -> str:
     rid = uuid.uuid4().hex[:8]
     ev = threading.Event()
-    _pending[rid] = ev
+    _pending[rid] = (sid, ev)
     payload["request_id"] = rid
     _emit(event, sid, payload)
     ev.wait(timeout=timeout)
@@ -304,10 +304,19 @@ def _block(event: str, sid: str, payload: dict, timeout: int = 300) -> str:
     return _answers.pop(rid, "")
 
 
-def _clear_pending():
-    for rid, ev in list(_pending.items()):
-        _answers[rid] = ""
-        ev.set()
+def _clear_pending(sid: str | None = None) -> None:
+    """Release pending prompts with an empty answer.
+
+    When *sid* is provided, only prompts owned by that session are
+    released — critical for session.interrupt, which must not
+    collaterally cancel clarify/sudo/secret prompts on unrelated
+    sessions sharing the same tui_gateway process.  When *sid* is
+    None, every pending prompt is released (used during shutdown).
+    """
+    for rid, (owner_sid, ev) in list(_pending.items()):
+        if sid is None or owner_sid == sid:
+            _answers[rid] = ""
+            ev.set()
 
 
 # ── Agent factory ────────────────────────────────────────────────────
@@ -1224,6 +1233,13 @@ def _(rid, params: dict) -> dict:
     session, err = _sess(params, rid)
     if err:
         return err
+    # Reject during an in-flight turn.  If we mutated history while
+    # the agent thread is running, prompt.submit's post-run history
+    # write would either clobber the undo (version matches) or
+    # silently drop the agent's output (version mismatch, see below).
+    # Neither is what the user wants — make them /interrupt first.
+    if session.get("running"):
+        return _err(rid, 4009, "session busy — /interrupt the current turn before /undo")
     removed = 0
     with session["history_lock"]:
         history = session.get("history", [])
@@ -1243,6 +1259,8 @@ def _(rid, params: dict) -> dict:
     session, err = _sess(params, rid)
     if err:
         return err
+    if session.get("running"):
+        return _err(rid, 4009, "session busy — /interrupt the current turn before /compress")
     try:
         with session["history_lock"]:
             removed, usage = _compress_session_history(session, str(params.get("focus_topic", "") or "").strip())
@@ -1336,7 +1354,11 @@ def _(rid, params: dict) -> dict:
         return err
     if hasattr(session["agent"], "interrupt"):
         session["agent"].interrupt()
-    _clear_pending()
+    # Scope the pending-prompt release to THIS session.  A global
+    # _clear_pending() would collaterally cancel clarify/sudo/secret
+    # prompts on unrelated sessions sharing the same tui_gateway
+    # process, silently resolving them to empty strings.
+    _clear_pending(params.get("session_id", ""))
     try:
         from tools.approval import resolve_gateway_approval
         resolve_gateway_approval(session["session_key"], "deny", resolve_all=True)
@@ -1443,12 +1465,33 @@ def _(rid, params: dict) -> dict:
             )
 
             last_reasoning = None
+            status_note = None
             if isinstance(result, dict):
                 if isinstance(result.get("messages"), list):
                     with session["history_lock"]:
-                        if int(session.get("history_version", 0)) == history_version:
+                        current_version = int(session.get("history_version", 0))
+                        if current_version == history_version:
                             session["history"] = result["messages"]
                             session["history_version"] = history_version + 1
+                        else:
+                            # History mutated externally during the turn
+                            # (undo/compress/retry/rollback now guard on
+                            # session.running, but this is the defensive
+                            # backstop for any path that slips past).
+                            # Surface the desync rather than silently
+                            # dropping the agent's output — the UI can
+                            # show the response and warn that it was
+                            # not persisted.
+                            print(
+                                f"[tui_gateway] prompt.submit: history_version mismatch "
+                                f"(expected={history_version} current={current_version}) — "
+                                f"agent output NOT written to session history",
+                                file=sys.stderr,
+                            )
+                            status_note = (
+                                "History changed during this turn — the response above is visible "
+                                "but was not saved to session history."
+                            )
                 raw = result.get("final_response", "")
                 status = "interrupted" if result.get("interrupted") else "error" if result.get("error") else "complete"
                 lr = result.get("last_reasoning")
@@ -1461,6 +1504,8 @@ def _(rid, params: dict) -> dict:
             payload = {"text": raw, "usage": _get_usage(agent), "status": status}
             if last_reasoning:
                 payload["reasoning"] = last_reasoning
+            if status_note:
+                payload["warning"] = status_note
             rendered = render_message(raw, cols)
             if rendered:
                 payload["rendered"] = rendered
@@ -1652,9 +1697,10 @@ def _(rid, params: dict) -> dict:
 
 def _respond(rid, params, key):
     r = params.get("request_id", "")
-    ev = _pending.get(r)
-    if not ev:
+    entry = _pending.get(r)
+    if not entry:
         return _err(rid, 4009, f"no pending {key} request")
+    _, ev = entry
     _answers[r] = params.get(key, "")
     ev.set()
     return _ok(rid, {"status": "ok"})
@@ -2168,6 +2214,8 @@ def _(rid, params: dict) -> dict:
     if name == "retry":
         if not session:
             return _err(rid, 4001, "no active session to retry")
+        if session.get("running"):
+            return _err(rid, 4009, "session busy — /interrupt the current turn before /retry")
         history = session.get("history", [])
         if not history:
             return _err(rid, 4018, "no previous user message to retry")
@@ -2578,6 +2626,13 @@ def _(rid, params: dict) -> dict:
     file_path = params.get("file_path", "")
     if not target:
         return _err(rid, 4014, "hash required")
+    # Full-history rollback mutates session history.  Rejecting during
+    # an in-flight turn prevents prompt.submit from silently dropping
+    # the agent's output (version mismatch path) or clobbering the
+    # rollback (version-matches path).  A file-scoped rollback only
+    # touches disk, so we allow it.
+    if not file_path and session.get("running"):
+        return _err(rid, 4009, "session busy — /interrupt the current turn before full rollback.restore")
     try:
         def go(mgr, cwd):
             resolved = _resolve_checkpoint_hash(mgr, cwd, target)

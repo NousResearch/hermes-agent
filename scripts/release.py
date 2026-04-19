@@ -77,6 +77,7 @@ AUTHOR_MAP = {
     "Asunfly@users.noreply.github.com": "Asunfly",
     "2500400+honghua@users.noreply.github.com": "honghua",
     "nish3451@users.noreply.github.com": "nish3451",
+    "135070653+sgaofen@users.noreply.github.com": "sgaofen",
     # contributors (manual mapping from git names)
     "ahmedsherif95@gmail.com": "asheriif",
     "liujinkun@bytedance.com": "liujinkun2025",
@@ -215,6 +216,7 @@ AUTHOR_MAP = {
     "ziliangpeng@users.noreply.github.com": "ziliangpeng",
     "centripetal-star@users.noreply.github.com": "centripetal-star",
     "LeonSGP43@users.noreply.github.com": "LeonSGP43",
+    "154585401+LeonSGP43@users.noreply.github.com": "LeonSGP43",
     "Lubrsy706@users.noreply.github.com": "Lubrsy706",
     "niyant@spicefi.xyz": "spniyant",
     "olafthiele@gmail.com": "olafthiele",

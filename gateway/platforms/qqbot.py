@@ -189,6 +189,10 @@ class QQAdapter(BasePlatformAdapter):
         # Upload cache: content_hash -> {file_info, file_uuid, expires_at}
         self._upload_cache: Dict[str, Dict[str, Any]] = {}
 
+        # Circuit breaker: per-chat consecutive failure tracking
+        self._chat_failures: Dict[str, int] = {}
+        self._circuit_breaker_threshold = 3
+
     # ------------------------------------------------------------------
     # Properties
     # ------------------------------------------------------------------
@@ -1560,37 +1564,68 @@ class QQAdapter(BasePlatformAdapter):
     async def _send_chunk(
         self, chat_id: str, content: str, reply_to: Optional[str] = None,
     ) -> SendResult:
-        """Send a single chunk with retry + exponential backoff."""
+        """Send a single chunk with retry + exponential backoff.
+
+        Uses 2 internal retries (outer _send_with_retry adds more).
+        QQ-specific permanent errors (sandbox, offline, permission, rate_limit,
+        system_error, 429, 403) are never retried.
+        A per-chat circuit breaker skips retries after 3 consecutive failures.
+        """
+        # Circuit breaker check
+        failures = self._chat_failures.get(chat_id, 0)
+        if failures >= self._circuit_breaker_threshold:
+            logger.warning("[%s] Circuit breaker open for %s (%d consecutive failures), skipping retry",
+                           self.name, chat_id, failures)
+            return SendResult(
+                success=False,
+                error=f"Circuit breaker open: {failures} consecutive failures for {chat_id}",
+                retryable=False,
+            )
+
         last_exc: Optional[Exception] = None
         chat_type = self._guess_chat_type(chat_id)
 
-        for attempt in range(3):
+        for attempt in range(2):
             try:
                 if chat_type == "c2c":
-                    return await self._send_c2c_text(chat_id, content, reply_to)
+                    result = await self._send_c2c_text(chat_id, content, reply_to)
                 elif chat_type == "group":
-                    return await self._send_group_text(chat_id, content, reply_to)
+                    result = await self._send_group_text(chat_id, content, reply_to)
                 elif chat_type == "guild":
-                    return await self._send_guild_text(chat_id, content, reply_to)
+                    result = await self._send_guild_text(chat_id, content, reply_to)
                 else:
                     return SendResult(success=False, error=f"Unknown chat type for {chat_id}")
+                # Success — reset failure counter
+                self._chat_failures.pop(chat_id, None)
+                return result
             except Exception as exc:
                 last_exc = exc
                 err = str(exc).lower()
-                # Permanent errors — don't retry
-                if any(k in err for k in ("invalid", "forbidden", "not found", "bad request")):
+                # QQ-specific permanent errors — don't retry
+                if any(k in err for k in (
+                    "invalid", "forbidden", "not found", "bad request",
+                    "sandbox", "offline", "permission", "rate_limit",
+                    "system_error", "429", "403",
+                )):
                     break
                 # Transient — back off and retry
-                if attempt < 2:
+                if attempt < 1:
                     delay = 1.0 * (2 ** attempt)
-                    logger.warning("[%s] send retry %d/3 after %.1fs: %s",
+                    logger.warning("[%s] send retry %d/2 after %.1fs: %s",
                                    self.name, attempt + 1, delay, exc)
                     await asyncio.sleep(delay)
 
         error_msg = str(last_exc) if last_exc else "Unknown error"
         logger.error("[%s] Send failed: %s", self.name, error_msg)
-        retryable = not any(k in error_msg.lower()
-                            for k in ("invalid", "forbidden", "not found"))
+        # Increment failure counter for circuit breaker
+        self._chat_failures[chat_id] = self._chat_failures.get(chat_id, 0) + 1
+        is_permanent = any(k in error_msg.lower()
+                           for k in (
+                               "invalid", "forbidden", "not found",
+                               "sandbox", "offline", "permission",
+                               "rate_limit", "system_error", "429", "403",
+                           ))
+        retryable = not is_permanent
         return SendResult(success=False, error=error_msg, retryable=retryable)
 
     async def _send_c2c_text(

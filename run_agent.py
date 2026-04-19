@@ -6760,8 +6760,9 @@ class AIAgent:
         Alibaba/DashScope keeps dots (e.g. qwen3.5-plus).
         MiniMax keeps dots (e.g. MiniMax-M2.7).
         OpenCode Go/Zen keeps dots for non-Claude models (e.g. minimax-m2.5-free).
-        ZAI/Zhipu keeps dots (e.g. glm-4.7, glm-5.1)."""
-        if (getattr(self, "provider", "") or "").lower() in {"alibaba", "minimax", "minimax-cn", "opencode-go", "opencode-zen", "zai"}:
+        ZAI/Zhipu keeps dots (e.g. glm-4.7, glm-5.1).
+        Bedrock keeps dots (e.g. global.anthropic.claude-opus-4-7, us.anthropic.claude-sonnet-4-6)."""
+        if (getattr(self, "provider", "") or "").lower() in {"alibaba", "minimax", "minimax-cn", "opencode-go", "opencode-zen", "zai", "bedrock"}:
             return True
         base = (getattr(self, "base_url", "") or "").lower()
         return "dashscope" in base or "aliyuncs" in base or "minimax" in base or "opencode.ai/zen/" in base or "bigmodel.cn" in base

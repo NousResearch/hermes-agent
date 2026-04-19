@@ -7173,7 +7173,7 @@ class AIAgent:
         except Exception:
             _fixed_temperature_for_model = None
         if _fixed_temperature_for_model is not None:
-            fixed_temperature = _fixed_temperature_for_model(self.model)
+            fixed_temperature = _fixed_temperature_for_model(self.model, self.base_url)
             if fixed_temperature is not None:
                 api_kwargs["temperature"] = fixed_temperature
         if self._is_qwen_portal():
@@ -7619,7 +7619,7 @@ class AIAgent:
             _aux_available = True
             # Use the fixed-temperature override (e.g. kimi-for-coding → 0.6) if
             # the model has a strict contract; otherwise the historical 0.3 default.
-            _flush_temperature = _fixed_temperature_for_model(self.model)
+            _flush_temperature = _fixed_temperature_for_model(self.model, self.base_url)
             if _flush_temperature is None:
                 _flush_temperature = 0.3
             try:
@@ -8675,7 +8675,7 @@ class AIAgent:
             except Exception:
                 _fixed_temperature_for_model = None
             _summary_temperature = (
-                _fixed_temperature_for_model(self.model)
+                _fixed_temperature_for_model(self.model, self.base_url)
                 if _fixed_temperature_for_model is not None
                 else None
             )

@@ -54,14 +54,18 @@ _project_env = Path(__file__).parent / ".env"
 load_hermes_dotenv(hermes_home=_hermes_home, project_env=_project_env)
 
 
-def _effective_temperature_for_model(model: str, requested_temperature: float) -> float:
+def _effective_temperature_for_model(
+    model: str,
+    requested_temperature: float,
+    base_url: Optional[str] = None,
+) -> float:
     """Apply fixed model temperature contracts to direct client calls."""
     try:
         from agent.auxiliary_client import _fixed_temperature_for_model
     except Exception:
         return requested_temperature
 
-    fixed_temperature = _fixed_temperature_for_model(model)
+    fixed_temperature = _fixed_temperature_for_model(model, base_url)
     if fixed_temperature is not None:
         return fixed_temperature
     return requested_temperature
@@ -583,6 +587,7 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
                 summary_temperature = _effective_temperature_for_model(
                     self.config.summarization_model,
                     self.config.temperature,
+                    self.config.base_url,
                 )
                 
                 if getattr(self, '_use_call_llm', False):
@@ -649,6 +654,7 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
                 summary_temperature = _effective_temperature_for_model(
                     self.config.summarization_model,
                     self.config.temperature,
+                    self.config.base_url,
                 )
                 
                 if getattr(self, '_use_call_llm', False):

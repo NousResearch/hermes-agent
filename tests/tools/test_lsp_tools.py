@@ -15,6 +15,18 @@ from tools.lsp_tools import (
 )
 
 
+class TestLspRepoCodeKnowledgeFraming:
+    def test_repo_code_knowledge_toolset_treats_lsp_primitives_as_canonical(self):
+        repo_code_tools = set(resolve_toolset("repo-code-knowledge"))
+        assert {"lsp_document_symbols", "lsp_definition", "lsp_diagnostics"} <= repo_code_tools
+
+    def test_lsp_schemas_mention_repo_code_knowledge_grounding(self):
+        assert "repo/code knowledge primitive" in LSP_DOCUMENT_SYMBOLS_SCHEMA["description"]
+        assert "semantic local source grounding" in LSP_DOCUMENT_SYMBOLS_SCHEMA["description"]
+        assert "repo/code knowledge primitive" in LSP_DEFINITION_SCHEMA["description"]
+        assert "repo/code knowledge primitive" in LSP_DIAGNOSTICS_SCHEMA["description"]
+
+
 def _frame(payload):
     body = json.dumps(payload).encode("utf-8")
     return f"Content-Length: {len(body)}\r\n\r\n".encode("ascii") + body

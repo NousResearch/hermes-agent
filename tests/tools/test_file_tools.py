@@ -8,12 +8,27 @@ import json
 import logging
 from unittest.mock import MagicMock, patch
 
+from toolsets import resolve_toolset
 from tools.file_tools import (
     READ_FILE_SCHEMA,
     WRITE_FILE_SCHEMA,
     PATCH_SCHEMA,
     SEARCH_FILES_SCHEMA,
 )
+
+
+class TestRepoCodeKnowledgeFraming:
+    def test_repo_code_knowledge_toolset_treats_file_primitives_as_canonical(self):
+        repo_code_tools = set(resolve_toolset("repo-code-knowledge"))
+        assert {"read_file", "search_files"} <= repo_code_tools
+
+    def test_read_file_schema_mentions_repo_code_knowledge_grounding(self):
+        assert "repo/code knowledge primitive" in READ_FILE_SCHEMA["description"]
+        assert "local source grounding" in READ_FILE_SCHEMA["description"]
+
+    def test_search_files_schema_mentions_repo_code_knowledge_grounding(self):
+        assert "repo/code knowledge primitive" in SEARCH_FILES_SCHEMA["description"]
+        assert "codebase grounding" in SEARCH_FILES_SCHEMA["description"]
 
 
 class TestReadFileHandler:
@@ -30,6 +45,12 @@ class TestReadFileHandler:
         result = json.loads(read_file_tool("/tmp/test.txt"))
         assert result["content"] == "line1\nline2"
         assert result["total_lines"] == 2
+        assert result["knowledge_surface"] == {
+            "surface": "repo-code-knowledge",
+            "surface_role": "local-file-grounding",
+            "operation": "read_file",
+            "source": "builtin",
+        }
         mock_ops.read_file.assert_called_once_with("/tmp/test.txt", 1, 500)
 
     @patch("tools.file_tools._get_file_ops")
@@ -173,6 +194,12 @@ class TestSearchHandler:
         from tools.file_tools import search_tool
         result = json.loads(search_tool(pattern="TODO", target="content", path="."))
         assert "matches" in result
+        assert result["knowledge_surface"] == {
+            "surface": "repo-code-knowledge",
+            "surface_role": "local-file-grounding",
+            "operation": "search_files",
+            "source": "builtin",
+        }
         mock_ops.search.assert_called_once()
 
     @patch("tools.file_tools._get_file_ops")

@@ -11,6 +11,18 @@ from tools.ast_tools import (
 )
 
 
+class TestAstRepoCodeKnowledgeFraming:
+    def test_repo_code_knowledge_toolset_treats_ast_primitives_as_canonical(self):
+        repo_code_tools = set(resolve_toolset("repo-code-knowledge"))
+        assert {"ast_list_defs", "ast_find_nodes"} <= repo_code_tools
+
+    def test_ast_schemas_mention_repo_code_knowledge_grounding(self):
+        assert "repo/code knowledge primitive" in AST_LIST_DEFS_SCHEMA["description"]
+        assert "local source grounding" in AST_LIST_DEFS_SCHEMA["description"]
+        assert "repo/code knowledge primitive" in AST_FIND_NODES_SCHEMA["description"]
+        assert "targeted structural lookup" in AST_FIND_NODES_SCHEMA["description"]
+
+
 class TestAstToolRegistration:
     def test_exports_expected_tools_and_schemas(self):
         names = {tool["name"] for tool in AST_TOOLS}

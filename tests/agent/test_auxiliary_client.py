@@ -701,6 +701,49 @@ class TestExplicitProviderRouting:
         assert response.choices[0].message.tool_calls[0].function.name == "memory"
         assert response.choices[0].message.tool_calls[0].function.arguments == '{"action": "add", "target": "user", "content": "remember this"}'
 
+    def test_chatgpt_web_auxiliary_client_preserves_multimodal_content(self, monkeypatch):
+        captured = {}
+
+        monkeypatch.setattr(
+            "agent.auxiliary_client.resolve_chatgpt_web_runtime_credentials",
+            lambda **kwargs: {
+                "provider": "chatgpt-web",
+                "api_key": "chatgpt-web-token",
+                "base_url": "https://chatgpt.com/backend-api/f",
+                "session_token": "chatgpt-session-token",
+            },
+        )
+
+        def _fake_stream(**kwargs):
+            captured.update(kwargs)
+            return {
+                "content": "red square",
+                "model": kwargs["model"],
+                "finish_reason": "stop",
+            }
+
+        monkeypatch.setattr("agent.auxiliary_client.stream_chatgpt_web_completion", _fake_stream)
+
+        client, _model = resolve_provider_client("chatgpt-web", model="gpt-5-4-thinking")
+        response = client.chat.completions.create(
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "Describe the attached image briefly."},
+                        {"type": "image_url", "image_url": {"url": "file:///tmp/red-square.png"}},
+                    ],
+                }
+            ],
+            timeout=12,
+        )
+
+        assert captured["messages"][0]["content"] == [
+            {"type": "text", "text": "Describe the attached image briefly."},
+            {"type": "input_image", "image_url": "file:///tmp/red-square.png"},
+        ]
+        assert response.choices[0].message.content == "red square"
+
 class TestGetTextAuxiliaryClient:
     """Test the full resolution chain for get_text_auxiliary_client."""
 

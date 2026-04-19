@@ -3130,6 +3130,17 @@ class GatewayRunner:
         if canonical == "background":
             return await self._handle_background_command(event)
 
+        if canonical == "copilot":
+            from hermes_cli.copilot_cmd import handle_copilot_slash
+            import io, contextlib
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+                try:
+                    handle_copilot_slash(event.text)
+                except SystemExit:
+                    pass
+            return buf.getvalue().strip() or "Done."
+
         if canonical == "btw":
             return await self._handle_btw_command(event)
 

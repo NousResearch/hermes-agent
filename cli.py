@@ -5520,6 +5520,9 @@ class HermesCLI:
             self._handle_snapshot_command(cmd_original)
         elif canonical == "stop":
             self._handle_stop_command()
+        elif canonical == "copilot":
+            from hermes_cli.copilot_cmd import handle_copilot_slash
+            handle_copilot_slash(cmd_original)
         elif canonical == "background":
             self._handle_background_command(cmd_original)
         elif canonical == "btw":

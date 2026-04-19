@@ -935,7 +935,7 @@ class TestSchemaInit:
     def test_schema_version(self, db):
         cursor = db._conn.execute("SELECT version FROM schema_version")
         version = cursor.fetchone()[0]
-        assert version == 6
+        assert version == 7
 
     def test_title_column_exists(self, db):
         """Verify the title column was created in the sessions table."""
@@ -991,12 +991,12 @@ class TestSchemaInit:
         conn.commit()
         conn.close()
 
-        # Open with SessionDB — should migrate to v6
+        # Open with SessionDB — should migrate to v7
         migrated_db = SessionDB(db_path=db_path)
 
         # Verify migration
         cursor = migrated_db._conn.execute("SELECT version FROM schema_version")
-        assert cursor.fetchone()[0] == 6
+        assert cursor.fetchone()[0] == 7
 
         # Verify title column exists and is NULL for existing sessions
         session = migrated_db.get_session("existing")
@@ -1375,3 +1375,306 @@ class TestConcurrentWriteSafety:
         assert "30" in src, (
             "SQLite timeout should be at least 30s to handle CLI/gateway lock contention"
         )
+
+
+# =========================================================================
+# Copilot job lifecycle
+# =========================================================================
+
+class TestCopilotJobLifecycle:
+    def test_schema_version_is_7(self, db):
+        cursor = db._conn.execute("SELECT version FROM schema_version")
+        assert cursor.fetchone()[0] == 7
+
+    def test_copilot_tables_exist(self, db):
+        cursor = db._conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+        )
+        tables = {row[0] for row in cursor.fetchall()}
+        assert "copilot_jobs" in tables
+        assert "copilot_job_events" in tables
+
+    def test_create_and_get_job(self, db):
+        job_id = db.create_copilot_job(
+            job_id="cj_test_001",
+            repo_slug="fridai-client",
+            repo_path="/workspace/repos/proservice/fridai-client",
+            prompt="Fix the login bug",
+            signal_source="cli",
+        )
+        assert job_id == "cj_test_001"
+
+        job = db.get_copilot_job("cj_test_001")
+        assert job is not None
+        assert job["repo_slug"] == "fridai-client"
+        assert job["state"] == "pending"
+        assert job["owner"] == "hermes"
+        assert job["prompt"] == "Fix the login bug"
+
+    def test_get_nonexistent_job(self, db):
+        assert db.get_copilot_job("nonexistent") is None
+
+    def test_list_jobs(self, db):
+        db.create_copilot_job(
+            job_id="cj_a", repo_slug="repo-a", repo_path="/a"
+        )
+        db.create_copilot_job(
+            job_id="cj_b", repo_slug="repo-b", repo_path="/b"
+        )
+        jobs = db.list_copilot_jobs()
+        assert len(jobs) == 2
+
+    def test_list_jobs_by_state(self, db):
+        db.create_copilot_job(
+            job_id="cj_a", repo_slug="repo-a", repo_path="/a"
+        )
+        db.create_copilot_job(
+            job_id="cj_b", repo_slug="repo-b", repo_path="/b"
+        )
+        db.transition_copilot_job("cj_a", "running")
+        pending = db.list_copilot_jobs(state="pending")
+        running = db.list_copilot_jobs(state="running")
+        assert len(pending) == 1
+        assert pending[0]["id"] == "cj_b"
+        assert len(running) == 1
+        assert running[0]["id"] == "cj_a"
+
+    def test_find_active_job_for_repo(self, db):
+        db.create_copilot_job(
+            job_id="cj_1", repo_slug="fridai-client", repo_path="/fc"
+        )
+        found = db.find_active_copilot_job_for_repo("fridai-client")
+        assert found is not None
+        assert found["id"] == "cj_1"
+
+        assert db.find_active_copilot_job_for_repo("nonexistent") is None
+
+    def test_transition_pending_to_running(self, db):
+        db.create_copilot_job(
+            job_id="cj_1", repo_slug="repo", repo_path="/r"
+        )
+        job = db.transition_copilot_job("cj_1", "running")
+        assert job["state"] == "running"
+
+    def test_transition_running_to_idle(self, db):
+        db.create_copilot_job(
+            job_id="cj_1", repo_slug="repo", repo_path="/r"
+        )
+        db.transition_copilot_job("cj_1", "running")
+        job = db.transition_copilot_job("cj_1", "idle")
+        assert job["state"] == "idle"
+        assert job["idle_since"] is not None
+
+    def test_transition_idle_to_running_clears_idle_since(self, db):
+        db.create_copilot_job(
+            job_id="cj_1", repo_slug="repo", repo_path="/r"
+        )
+        db.transition_copilot_job("cj_1", "running")
+        db.transition_copilot_job("cj_1", "idle")
+        job = db.transition_copilot_job("cj_1", "running")
+        assert job["state"] == "running"
+        assert job["idle_since"] is None
+
+    def test_transition_idle_to_closed(self, db):
+        db.create_copilot_job(
+            job_id="cj_1", repo_slug="repo", repo_path="/r"
+        )
+        db.transition_copilot_job("cj_1", "running")
+        db.transition_copilot_job("cj_1", "idle")
+        job = db.transition_copilot_job("cj_1", "closed")
+        assert job["state"] == "closed"
+        assert job["closed_at"] is not None
+
+    def test_invalid_transition_raises(self, db):
+        db.create_copilot_job(
+            job_id="cj_1", repo_slug="repo", repo_path="/r"
+        )
+        with pytest.raises(ValueError, match="Invalid transition"):
+            db.transition_copilot_job("cj_1", "closed")
+
+    def test_transition_nonexistent_job_raises(self, db):
+        with pytest.raises(ValueError, match="not found"):
+            db.transition_copilot_job("nonexistent", "running")
+
+    def test_transition_to_failed_with_error(self, db):
+        db.create_copilot_job(
+            job_id="cj_1", repo_slug="repo", repo_path="/r"
+        )
+        job = db.transition_copilot_job(
+            "cj_1", "failed", error_text="subprocess died"
+        )
+        assert job["state"] == "failed"
+        assert job["error_text"] == "subprocess died"
+        assert job["closed_at"] is not None
+
+    def test_record_event_without_state_change(self, db):
+        db.create_copilot_job(
+            job_id="cj_1", repo_slug="repo", repo_path="/r"
+        )
+        db.record_copilot_job_event("cj_1", "heartbeat", '{"cpu": 42}')
+        events = db.get_copilot_job_events("cj_1")
+        # 1 from creation + 1 heartbeat
+        assert len(events) == 2
+        assert events[1]["event_type"] == "heartbeat"
+        assert events[1]["from_state"] == "pending"
+        assert events[1]["to_state"] == "pending"
+
+    def test_update_remote_details(self, db):
+        db.create_copilot_job(
+            job_id="cj_1", repo_slug="repo", repo_path="/r"
+        )
+        db.update_copilot_job_remote(
+            "cj_1",
+            copilot_session_id="ses_abc",
+            remote_name="remote-1",
+            pid=12345,
+            attach_command="docker exec -it foo copilot --connect=ses_abc",
+        )
+        job = db.get_copilot_job("cj_1")
+        assert job["copilot_session_id"] == "ses_abc"
+        assert job["remote_name"] == "remote-1"
+        assert job["pid"] == 12345
+        assert "ses_abc" in job["attach_command"]
+
+    def test_mark_idle(self, db):
+        db.create_copilot_job(
+            job_id="cj_1", repo_slug="repo", repo_path="/r"
+        )
+        db.transition_copilot_job("cj_1", "running")
+        job = db.mark_copilot_job_idle("cj_1")
+        assert job["state"] == "idle"
+
+    def test_close_job(self, db):
+        db.create_copilot_job(
+            job_id="cj_1", repo_slug="repo", repo_path="/r"
+        )
+        db.transition_copilot_job("cj_1", "running")
+        db.transition_copilot_job("cj_1", "idle")
+        job = db.close_copilot_job("cj_1")
+        assert job["state"] == "closed"
+
+    def test_takeover(self, db):
+        db.create_copilot_job(
+            job_id="cj_1", repo_slug="repo", repo_path="/r"
+        )
+        job = db.take_over_copilot_job("cj_1")
+        assert job["owner"] == "human"
+        events = db.get_copilot_job_events("cj_1")
+        takeover_events = [e for e in events if e["event_type"] == "takeover"]
+        assert len(takeover_events) == 1
+
+    def test_takeover_nonexistent_raises(self, db):
+        with pytest.raises(ValueError, match="not found"):
+            db.take_over_copilot_job("nonexistent")
+
+    def test_create_job_records_creation_event(self, db):
+        db.create_copilot_job(
+            job_id="cj_1", repo_slug="repo", repo_path="/r"
+        )
+        events = db.get_copilot_job_events("cj_1")
+        assert len(events) == 1
+        assert events[0]["event_type"] == "created"
+        assert events[0]["to_state"] == "pending"
+
+    def test_full_lifecycle(self, db):
+        """pending -> running -> idle -> closed with events at each step."""
+        db.create_copilot_job(
+            job_id="cj_1", repo_slug="repo", repo_path="/r"
+        )
+        db.transition_copilot_job("cj_1", "running")
+        db.record_copilot_job_event("cj_1", "output_captured")
+        db.transition_copilot_job("cj_1", "idle")
+        db.transition_copilot_job("cj_1", "closed")
+
+        job = db.get_copilot_job("cj_1")
+        assert job["state"] == "closed"
+        assert job["closed_at"] is not None
+
+        events = db.get_copilot_job_events("cj_1")
+        event_types = [e["event_type"] for e in events]
+        assert event_types == [
+            "created", "transition", "output_captured", "transition", "transition"
+        ]
+
+
+class TestCopilotJobMigrationFromV6:
+    def test_migration_from_v6(self, tmp_path):
+        """Simulate a v6 database and verify migration to v7 adds copilot tables."""
+        import sqlite3
+
+        db_path = tmp_path / "migrate_v6_test.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.executescript("""
+            CREATE TABLE schema_version (version INTEGER NOT NULL);
+            INSERT INTO schema_version (version) VALUES (6);
+
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                source TEXT NOT NULL,
+                user_id TEXT,
+                model TEXT,
+                model_config TEXT,
+                system_prompt TEXT,
+                parent_session_id TEXT,
+                started_at REAL NOT NULL,
+                ended_at REAL,
+                end_reason TEXT,
+                message_count INTEGER DEFAULT 0,
+                tool_call_count INTEGER DEFAULT 0,
+                input_tokens INTEGER DEFAULT 0,
+                output_tokens INTEGER DEFAULT 0,
+                cache_read_tokens INTEGER DEFAULT 0,
+                cache_write_tokens INTEGER DEFAULT 0,
+                reasoning_tokens INTEGER DEFAULT 0,
+                billing_provider TEXT,
+                billing_base_url TEXT,
+                billing_mode TEXT,
+                estimated_cost_usd REAL,
+                actual_cost_usd REAL,
+                cost_status TEXT,
+                cost_source TEXT,
+                pricing_version TEXT,
+                title TEXT
+            );
+
+            CREATE TABLE messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT,
+                tool_call_id TEXT,
+                tool_calls TEXT,
+                tool_name TEXT,
+                timestamp REAL NOT NULL,
+                token_count INTEGER,
+                finish_reason TEXT,
+                reasoning TEXT,
+                reasoning_details TEXT,
+                codex_reasoning_items TEXT
+            );
+        """)
+        conn.commit()
+        conn.close()
+
+        # Open with SessionDB — should migrate to v7
+        migrated_db = SessionDB(db_path=db_path)
+
+        cursor = migrated_db._conn.execute("SELECT version FROM schema_version")
+        assert cursor.fetchone()[0] == 7
+
+        # Verify copilot tables exist
+        cursor = migrated_db._conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+        )
+        tables = {row[0] for row in cursor.fetchall()}
+        assert "copilot_jobs" in tables
+        assert "copilot_job_events" in tables
+
+        # Verify we can create a job on the migrated DB
+        job_id = migrated_db.create_copilot_job(
+            job_id="cj_migrated",
+            repo_slug="test-repo",
+            repo_path="/test",
+        )
+        assert migrated_db.get_copilot_job(job_id) is not None
+        migrated_db.close()

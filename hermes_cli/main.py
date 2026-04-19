@@ -3062,6 +3062,12 @@ def cmd_cron(args):
     cron_command(args)
 
 
+def cmd_copilot(args):
+    """Copilot remote session management."""
+    from hermes_cli.copilot_cmd import copilot_command
+    copilot_command(args)
+
+
 def cmd_webhook(args):
     """Webhook subscription management."""
     from hermes_cli.webhook import webhook_command
@@ -4424,7 +4430,7 @@ def _coalesce_session_name_args(argv: list) -> list:
     """
     _SUBCOMMANDS = {
         "chat", "model", "gateway", "setup", "whatsapp", "login", "logout", "auth",
-        "status", "cron", "doctor", "config", "pairing", "skills", "tools",
+        "status", "cron", "copilot", "doctor", "config", "pairing", "skills", "tools",
         "mcp", "sessions", "insights", "version", "update", "uninstall",
         "profile", "dashboard",
         "honcho", "claw", "plugins", "acp",
@@ -5264,6 +5270,68 @@ For more help on a command:
     cron_subparsers.add_parser("tick", help="Run due jobs once and exit")
 
     cron_parser.set_defaults(func=cmd_cron)
+
+    # =========================================================================
+    # copilot command — Copilot remote session lifecycle
+    # =========================================================================
+    copilot_parser = subparsers.add_parser(
+        "copilot",
+        help="Manage Copilot remote sessions",
+        description="Launch, monitor, and hand off Copilot remote sessions",
+    )
+    copilot_subparsers = copilot_parser.add_subparsers(dest="copilot_action")
+
+    # copilot launch
+    cop_launch = copilot_subparsers.add_parser(
+        "launch", help="Create a new Copilot job for a repo"
+    )
+    cop_launch.add_argument(
+        "prompt", nargs="?", default=None,
+        help="Task prompt (used for repo routing if --repo is omitted)"
+    )
+    cop_launch.add_argument("--repo", help="Repo slug (e.g. fridai-client)")
+    cop_launch.add_argument("--repo-path", dest="repo_path", help="Absolute path to the repo inside the container")
+    cop_launch.add_argument("--signal-source", dest="signal_source", default="cli", help="Signal origin (default: cli)")
+    cop_launch.add_argument("--signal-ref", dest="signal_ref", help="Signal reference (e.g. Jira ticket ID)")
+    cop_launch.add_argument("--idle-ttl", dest="idle_ttl", type=int, default=300, help="Idle TTL in seconds (default: 300)")
+
+    # copilot activate
+    cop_activate = copilot_subparsers.add_parser(
+        "activate", help="Record Copilot session details for a pending job"
+    )
+    cop_activate.add_argument("job_id", help="Job ID to activate")
+    cop_activate.add_argument("--session-id", dest="session_id", help="Copilot session ID")
+    cop_activate.add_argument("--remote-name", dest="remote_name", help="Copilot remote name")
+    cop_activate.add_argument("--pid", type=int, help="Copilot process PID")
+
+    # copilot list
+    cop_list = copilot_subparsers.add_parser("list", aliases=["ls"], help="List copilot jobs")
+    cop_list.add_argument("--state", help="Filter by state (pending, running, idle, closed, failed)")
+    cop_list.add_argument("--limit", type=int, default=20, help="Max results (default: 20)")
+
+    # copilot show
+    cop_show = copilot_subparsers.add_parser("show", help="Show details of a copilot job")
+    cop_show.add_argument("job_id", help="Job ID to inspect")
+
+    # copilot takeover
+    cop_takeover = copilot_subparsers.add_parser(
+        "takeover", help="Transfer job ownership from hermes to human"
+    )
+    cop_takeover.add_argument("job_id", help="Job ID to take over")
+
+    # copilot idle
+    cop_idle = copilot_subparsers.add_parser(
+        "idle", help="Mark a running job as idle"
+    )
+    cop_idle.add_argument("job_id", help="Job ID to mark idle")
+
+    # copilot close
+    cop_close = copilot_subparsers.add_parser(
+        "close", help="Close an idle or failed job"
+    )
+    cop_close.add_argument("job_id", help="Job ID to close")
+
+    copilot_parser.set_defaults(func=cmd_copilot)
 
     # =========================================================================
     # webhook command

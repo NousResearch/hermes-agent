@@ -212,6 +212,64 @@ class TestApprovalAndSessions:
         assert stopped["app_session_id"] == started["app_session_id"]
         assert adapter.list_active_sessions_impl()["active_sessions"] == []
 
+    def test_list_active_sessions_exposes_overlay_screenshot_path(self, monkeypatch):
+        monkeypatch.setattr(adapter, "_APP_SESSIONS", {
+            "safari": {
+                "app_name": "Safari",
+                "app_session_id": "app-1",
+                "active": True,
+                "approved": True,
+                "window_title": "Docs",
+                "screenshot_path": "/tmp/shot.png",
+                "overlay_screenshot_path": "/tmp/overlay.png",
+                "virtual_cursor": {"x": 11, "y": 22, "detached": True, "visible": True},
+            }
+        })
+
+        listed = adapter.list_active_sessions_impl()
+
+        assert listed["success"] is True
+        assert listed["active_sessions"][0]["overlay_screenshot_path"] == "/tmp/overlay.png"
+
+    def test_get_app_state_refreshes_overlay_preview_for_existing_cursor(self, monkeypatch, tmp_path):
+        store_path = tmp_path / "ComputerUseAppApprovals.json"
+        monkeypatch.setattr(adapter, "_approval_store_path", lambda: store_path)
+        monkeypatch.setattr(adapter, "_APP_SESSIONS", {
+            "safari": {
+                "app_name": "Safari",
+                "app_session_id": "app-1",
+                "active": True,
+                "approved": True,
+                "screenshot_path": "/tmp/old-shot.png",
+                "virtual_cursor": {"x": 11, "y": 22, "detached": True, "visible": True},
+            }
+        })
+        adapter.approve_app_impl("Safari")
+
+        def fake_sync(session):
+            session["overlay_screenshot_path"] = "/tmp/overlay-refresh.png"
+            return "/tmp/overlay-refresh.png"
+
+        monkeypatch.setattr(adapter, "_sync_virtual_cursor_overlay", fake_sync, raising=False)
+
+        def fake_cc(**kwargs):
+            action = kwargs["action"]
+            if action == "activate_app":
+                return '{"success": true}'
+            if action == "frontmost_app":
+                return '{"success": true, "app_name": "Safari", "window_title": "Docs"}'
+            if action == "screenshot":
+                return '{"success": true, "path": "/tmp/shot.png"}'
+            raise AssertionError(action)
+
+        monkeypatch.setattr(adapter, "computer_control", fake_cc)
+
+        result = adapter.get_app_state_impl(app_session_id="app-1")
+
+        assert result["success"] is True
+        assert result["overlay_screenshot_path"] == "/tmp/overlay-refresh.png"
+        assert adapter._APP_SESSIONS["safari"]["overlay_screenshot_path"] == "/tmp/overlay-refresh.png"
+
     def test_stop_then_reopen_app_creates_new_app_session_id(self, monkeypatch, tmp_path):
         store_path = tmp_path / "ComputerUseAppApprovals.json"
         monkeypatch.setattr(adapter, "_approval_store_path", lambda: store_path)

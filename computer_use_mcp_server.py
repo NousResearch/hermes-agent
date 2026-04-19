@@ -9,6 +9,7 @@ macOS computer_control backend where possible, and returns explicit
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import uuid
 from pathlib import Path
@@ -58,11 +59,66 @@ def _session_payload(record: dict[str, Any]) -> dict[str, Any]:
         "virtual_cursor": cursor,
         "window_title": record.get("window_title", ""),
         "screenshot_path": record.get("screenshot_path", ""),
+        "overlay_screenshot_path": record.get("overlay_screenshot_path", ""),
     }
 
 
 def _fresh_virtual_cursor() -> dict[str, Any]:
     return {"x": None, "y": None, "detached": True, "visible": True}
+
+
+def _overlay_root() -> Path:
+    root = get_hermes_home() / "computer-use" / "overlay-previews"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def _overlay_preview_path(session: dict[str, Any]) -> Path:
+    app_session_id = str(session.get("app_session_id") or uuid.uuid4().hex)
+    return _overlay_root() / f"{app_session_id}-cursor-preview.png"
+
+
+def _sync_virtual_cursor_overlay(session: dict[str, Any]) -> str:
+    cursor = session.get("virtual_cursor") or {}
+    screenshot_path = Path(str(session.get("screenshot_path") or "")).expanduser()
+    if not screenshot_path.exists():
+        session["overlay_screenshot_path"] = ""
+        return ""
+
+    x = cursor.get("x")
+    y = cursor.get("y")
+    if x is None or y is None:
+        session["overlay_screenshot_path"] = ""
+        return ""
+
+    magick = shutil.which("magick") or shutil.which("convert")
+    if not magick:
+        session["overlay_screenshot_path"] = ""
+        return ""
+
+    overlay_path = _overlay_preview_path(session)
+    overlay_path.parent.mkdir(parents=True, exist_ok=True)
+    ix = int(x)
+    iy = int(y)
+    radius = 18
+    arm = 28
+    draw_args = [
+        "-stroke", "#8b5cf6",
+        "-strokewidth", "4",
+        "-fill", "rgba(139,92,246,0.18)",
+        "-draw", f"circle {ix},{iy} {ix + radius},{iy}",
+        "-draw", f"line {ix - arm},{iy} {ix + arm},{iy}",
+        "-draw", f"line {ix},{iy - arm} {ix},{iy + arm}",
+    ]
+
+    try:
+        subprocess.run([magick, str(screenshot_path), *draw_args, str(overlay_path)], check=True, capture_output=True, text=True)
+    except Exception:
+        session["overlay_screenshot_path"] = ""
+        return ""
+
+    session["overlay_screenshot_path"] = str(overlay_path)
+    return str(overlay_path)
 
 
 def _ensure_app_session(app_name: str | None, *, active: bool) -> dict[str, Any]:
@@ -312,6 +368,7 @@ def get_app_state_impl(app_name: str | None = None, app_session_id: str | None =
     session["window_title"] = frontmost.get("window_title", "")
     session["screenshot_path"] = screenshot.get("path", "")
     session.setdefault("virtual_cursor", _fresh_virtual_cursor())
+    _sync_virtual_cursor_overlay(session)
     return {
         "success": True,
         "app_name": frontmost_app_name,
@@ -362,6 +419,7 @@ def click_impl(*, index: int | None = None, x: int | None = None, y: int | None 
         cursor["x"] = x
     if y is not None:
         cursor["y"] = y
+    _sync_virtual_cursor_overlay(session)
     return _preview_pointer_response("click", session)
 
 
@@ -379,6 +437,7 @@ def scroll_impl(index: int | None = None, x: int | None = None, y: int | None = 
         cursor["x"] = x
     if y is not None:
         cursor["y"] = y
+    _sync_virtual_cursor_overlay(session)
     response = _preview_pointer_response("scroll", session)
     response["delta_y"] = delta_y
     return response
@@ -391,6 +450,7 @@ def drag_impl(start_x: int, start_y: int, end_x: int, end_y: int, app_session_id
     cursor = session.setdefault("virtual_cursor", _fresh_virtual_cursor())
     cursor["x"] = end_x
     cursor["y"] = end_y
+    _sync_virtual_cursor_overlay(session)
     response = _preview_pointer_response("drag", session)
     response["drag_path"] = {"start_x": start_x, "start_y": start_y, "end_x": end_x, "end_y": end_y}
     return response

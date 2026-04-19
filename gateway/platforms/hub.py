@@ -87,6 +87,15 @@ class HubAdapter(BasePlatformAdapter):
     # inbound-trigger surface on the partner.
     SUPPORTS_MESSAGE_EDITING = False
 
+    # Hub peers are other agents, not humans. The ⚡ busy-ack ("Interrupting
+    # current task, I'll respond shortly") is UX reassurance for a human
+    # waiting on their agent — for an agent recipient it's just unsolicited
+    # content they try to interpret semantically, which we've observed
+    # fueling false "message injection" narratives across the fleet. The
+    # interrupt + pending-message-queue logic in the gateway still runs;
+    # only the outbound ack message is suppressed for Hub.
+    WANTS_BUSY_ACK = False
+
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.HUB)
         self._agent_id = config.extra.get("agent_id", "")

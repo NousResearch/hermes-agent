@@ -322,3 +322,33 @@ class TestBusySessionAck:
 
         result = await runner._handle_active_session_busy_message(event, sk)
         assert result is False  # not handled, let default path try
+
+    @pytest.mark.asyncio
+    async def test_suppresses_ack_when_adapter_opts_out(self):
+        """Adapter with WANTS_BUSY_ACK=False (Hub) skips the ⚡ ack but still
+        runs interrupt + pending-queue."""
+        runner, sentinel = _make_runner()
+        adapter = _make_adapter(platform_val="hub")
+        adapter.WANTS_BUSY_ACK = False  # Hub adapter sets this at class level
+
+        event = _make_event(text="ping from peer", platform_val="hub")
+        sk = build_session_key(event.source)
+
+        agent = MagicMock()
+        agent.get_activity_summary.return_value = {
+            "api_call_count": 3,
+            "max_iterations": 30,
+            "current_tool": "terminal",
+            "last_activity_ts": time.time(),
+            "seconds_since_activity": 1.0,
+        }
+        runner._running_agents[sk] = agent
+        runner._running_agents_ts[sk] = time.time() - 60
+        runner.adapters[event.source.platform] = adapter
+
+        result = await runner._handle_active_session_busy_message(event, sk)
+
+        assert result is True  # still handled
+        adapter._send_with_retry.assert_not_called()  # no ⚡ sent to peer agent
+        agent.interrupt.assert_called_once_with("ping from peer")
+        assert sk in adapter._pending_messages  # still queued for next turn

@@ -9877,30 +9877,35 @@ class AIAgent:
                         if self.api_mode in ("chat_completions", "bedrock_converse"):
                             assistant_message = response.choices[0].message
                             if assistant_message.tool_calls:
-                                if truncated_tool_call_retries < 1:
-                                    truncated_tool_call_retries += 1
-                                    self._vprint(
-                                        f"{self.log_prefix}⚠️  Truncated tool call detected — retrying API call...",
-                                        force=True,
-                                    )
-                                    # Don't append the broken response to messages;
-                                    # just re-run the same API call from the current
-                                    # message state, giving the model another chance.
-                                    continue
                                 self._vprint(
-                                    f"{self.log_prefix}⚠️  Truncated tool call response detected again — refusing to execute incomplete tool arguments.",
+                                    f"{self.log_prefix}⚠️  Truncated tool call detected — injecting synthetic result to recover.",
                                     force=True,
                                 )
-                                self._cleanup_task_resources(effective_task_id)
-                                self._persist_session(messages, conversation_history)
-                                return {
-                                    "final_response": None,
-                                    "messages": messages,
-                                    "api_calls": api_call_count,
-                                    "completed": False,
-                                    "partial": True,
-                                    "error": "Response truncated due to output length limit",
-                                }
+                                # Append the truncated assistant turn as-is so context is preserved
+                                interim_msg = self._build_assistant_message(assistant_message, finish_reason)
+                                messages.append(interim_msg)
+                                # Inject a synthetic tool result for each in-flight tool call
+                                assistant_content_str = assistant_message.content or ""
+                                partial_preview = assistant_content_str[:500]
+                                synthetic_result = json.dumps({
+                                    "status": "truncated",
+                                    "message": (
+                                        "Your previous response was cut off because it exceeded the max token limit. "
+                                        "Do not retry the tool call. Please summarize what you have found so far "
+                                        "and continue with the next step."
+                                    ),
+                                    "partial_content": partial_preview,
+                                })
+                                for tc in assistant_message.tool_calls:
+                                    messages.append({
+                                        "role": "tool",
+                                        "content": synthetic_result,
+                                        "tool_call_id": tc.id,
+                                    })
+                                self._session_messages = messages
+                                self._save_session_log(messages)
+                                # Continue the agent loop — do NOT return or raise
+                                continue
 
                         # If we have prior messages, roll back to last complete state
                         if len(messages) > 1:

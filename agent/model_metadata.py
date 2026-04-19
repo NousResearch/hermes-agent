@@ -938,6 +938,69 @@ def _resolve_nous_context_length(model: str) -> Optional[int]:
     return None
 
 
+def read_config_context_length(
+    model: str,
+    base_url: str = "",
+) -> int | None:
+    """Read config_context_length from config.yaml for the given model.
+
+    Checks model.context_length first, then custom_providers[].models.<model>.context_length.
+    Returns None if not configured.
+    """
+    try:
+        from hermes_cli.config import load_config, get_compatible_custom_providers
+    except ImportError:
+        return None
+
+    try:
+        cfg = load_config()
+    except Exception:
+        return None
+
+    # 1. model.context_length (top-level override)
+    model_cfg = cfg.get("model", {})
+    if isinstance(model_cfg, dict):
+        raw = model_cfg.get("context_length")
+        if raw is not None:
+            try:
+                val = int(raw)
+                if val > 0:
+                    return val
+            except (TypeError, ValueError):
+                pass
+
+    # 2. custom_providers[].models.<model>.context_length
+    if base_url:
+        try:
+            custom_providers = get_compatible_custom_providers(cfg)
+        except Exception:
+            custom_providers = cfg.get("custom_providers", [])
+            if not isinstance(custom_providers, list):
+                custom_providers = []
+
+        normalized_url = base_url.rstrip("/")
+        for cp_entry in custom_providers:
+            if not isinstance(cp_entry, dict):
+                continue
+            cp_url = (cp_entry.get("base_url") or "").rstrip("/")
+            if cp_url and cp_url == normalized_url:
+                cp_models = cp_entry.get("models", {})
+                if isinstance(cp_models, dict):
+                    cp_model_cfg = cp_models.get(model, {})
+                    if isinstance(cp_model_cfg, dict):
+                        cp_ctx = cp_model_cfg.get("context_length")
+                        if cp_ctx is not None:
+                            try:
+                                val = int(cp_ctx)
+                                if val > 0:
+                                    return val
+                            except (TypeError, ValueError):
+                                pass
+                break
+
+    return None
+
+
 def get_model_context_length(
     model: str,
     base_url: str = "",

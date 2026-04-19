@@ -4712,11 +4712,16 @@ class HermesCLI:
             _cprint(f"    Capabilities: {mi.format_capabilities()}")
         else:
             try:
-                from agent.model_metadata import get_model_context_length
+                from agent.model_metadata import get_model_context_length, read_config_context_length
+                _config_ctx = read_config_context_length(
+                    result.new_model,
+                    base_url=result.base_url or self.base_url or "",
+                )
                 ctx = get_model_context_length(
                     result.new_model,
                     base_url=result.base_url or self.base_url,
                     api_key=result.api_key or self.api_key,
+                    config_context_length=_config_ctx,
                     provider=result.target_provider,
                 )
                 _cprint(f"    Context: {ctx:,} tokens")
@@ -4939,11 +4944,16 @@ class HermesCLI:
         else:
             # Fallback to old context length lookup
             try:
-                from agent.model_metadata import get_model_context_length
+                from agent.model_metadata import get_model_context_length, read_config_context_length
+                _config_ctx = read_config_context_length(
+                    result.new_model,
+                    base_url=result.base_url or self.base_url or "",
+                )
                 ctx = get_model_context_length(
                     result.new_model,
                     base_url=result.base_url or self.base_url,
                     api_key=result.api_key or self.api_key,
+                    config_context_length=_config_ctx,
                     provider=result.target_provider,
                 )
                 _cprint(f"    Context: {ctx:,} tokens")

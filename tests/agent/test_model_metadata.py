@@ -28,6 +28,7 @@ from agent.model_metadata import (
     get_model_context_length,
     get_next_probe_tier,
     get_cached_context_length,
+    read_config_context_length,
     parse_context_limit_from_error,
     save_context_length,
     fetch_model_metadata,
@@ -711,3 +712,108 @@ class TestContextLengthCache:
         with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):
             save_context_length(model, url, 200000)
             assert get_cached_context_length(model, url) == 200000
+
+
+# =========================================================================
+# read_config_context_length — config.yaml context_length resolution
+# =========================================================================
+
+class TestReadConfigContextLength:
+    """Tests for read_config_context_length() helper."""
+
+    def test_model_context_length_from_config(self):
+        """model.context_length in config is returned."""
+        mock_cfg = {"model": {"context_length": 500000}}
+        with patch("hermes_cli.config.load_config", return_value=mock_cfg):
+            result = read_config_context_length("any-model")
+        assert result == 500000
+
+    def test_custom_providers_context_length(self):
+        """custom_providers[].models.<model>.context_length is returned."""
+        mock_cfg = {
+            "custom_providers": [{
+                "name": "my-provider",
+                "base_url": "https://api.example.com/v1",
+                "models": {
+                    "gpt-5.4": {"context_length": 1000000},
+                },
+            }],
+        }
+        with patch("hermes_cli.config.load_config", return_value=mock_cfg), \
+             patch("hermes_cli.config.get_compatible_custom_providers", return_value=mock_cfg["custom_providers"]):
+            result = read_config_context_length(
+                "gpt-5.4",
+                base_url="https://api.example.com/v1",
+            )
+        assert result == 1000000
+
+    def test_model_context_length_takes_priority(self):
+        """model.context_length overrides custom_providers per-model."""
+        mock_cfg = {
+            "model": {"context_length": 256000},
+            "custom_providers": [{
+                "name": "my-provider",
+                "base_url": "https://api.example.com/v1",
+                "models": {"gpt-5.4": {"context_length": 1000000}},
+            }],
+        }
+        with patch("hermes_cli.config.load_config", return_value=mock_cfg):
+            result = read_config_context_length(
+                "gpt-5.4",
+                base_url="https://api.example.com/v1",
+            )
+        assert result == 256000
+
+    def test_no_config_returns_none(self):
+        """No config data returns None."""
+        with patch("hermes_cli.config.load_config", return_value={}):
+            result = read_config_context_length("some-model")
+        assert result is None
+
+    def test_invalid_context_length_ignored(self):
+        """Non-integer context_length is ignored."""
+        mock_cfg = {"model": {"context_length": "not-a-number"}}
+        with patch("hermes_cli.config.load_config", return_value=mock_cfg):
+            result = read_config_context_length("some-model")
+        assert result is None
+
+    def test_zero_context_length_ignored(self):
+        """context_length=0 is treated as unset."""
+        mock_cfg = {"model": {"context_length": 0}}
+        with patch("hermes_cli.config.load_config", return_value=mock_cfg):
+            result = read_config_context_length("some-model")
+        assert result is None
+
+    def test_base_url_mismatch_skips_custom_providers(self):
+        """Non-matching base_url skips custom_providers lookup."""
+        mock_cfg = {
+            "custom_providers": [{
+                "name": "my-provider",
+                "base_url": "https://other.example.com/v1",
+                "models": {"gpt-5.4": {"context_length": 1000000}},
+            }],
+        }
+        with patch("hermes_cli.config.load_config", return_value=mock_cfg), \
+             patch("hermes_cli.config.get_compatible_custom_providers", return_value=mock_cfg["custom_providers"]):
+            result = read_config_context_length(
+                "gpt-5.4",
+                base_url="https://api.example.com/v1",
+            )
+        assert result is None
+
+    def test_trailing_slash_normalized(self):
+        """Trailing slashes in base_url are normalized for matching."""
+        mock_cfg = {
+            "custom_providers": [{
+                "name": "my-provider",
+                "base_url": "https://api.example.com/v1",
+                "models": {"gpt-5.4": {"context_length": 1000000}},
+            }],
+        }
+        with patch("hermes_cli.config.load_config", return_value=mock_cfg), \
+             patch("hermes_cli.config.get_compatible_custom_providers", return_value=mock_cfg["custom_providers"]):
+            result = read_config_context_length(
+                "gpt-5.4",
+                base_url="https://api.example.com/v1/",
+            )
+        assert result == 1000000

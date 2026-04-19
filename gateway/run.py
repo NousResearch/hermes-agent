@@ -3645,12 +3645,17 @@ class GatewayRunner:
         if "@" in message_text:
             try:
                 from agent.context_references import preprocess_context_references_async
-                from agent.model_metadata import get_model_context_length
+                from agent.model_metadata import get_model_context_length, read_config_context_length
 
                 _msg_cwd = os.environ.get("TERMINAL_CWD", os.path.expanduser("~"))
+                _config_ctx = read_config_context_length(
+                    self._model,
+                    base_url=self._base_url or "",
+                )
                 _msg_ctx_len = get_model_context_length(
                     self._model,
                     base_url=self._base_url or "",
+                    config_context_length=_config_ctx,
                 )
                 _ctx_result = await preprocess_context_references_async(
                     message_text,
@@ -5349,11 +5354,16 @@ class GatewayRunner:
             lines.append(f"Capabilities: {mi.format_capabilities()}")
         else:
             try:
-                from agent.model_metadata import get_model_context_length
+                from agent.model_metadata import get_model_context_length, read_config_context_length
+                _config_ctx = read_config_context_length(
+                    result.new_model,
+                    base_url=result.base_url or current_base_url or "",
+                )
                 ctx = get_model_context_length(
                     result.new_model,
                     base_url=result.base_url or current_base_url,
                     api_key=result.api_key or current_api_key,
+                    config_context_length=_config_ctx,
                     provider=result.target_provider,
                 )
                 lines.append(f"Context: {ctx:,} tokens")

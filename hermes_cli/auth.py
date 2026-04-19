@@ -2850,16 +2850,21 @@ def _prompt_model_selection(
         choices = [_label(mid) for mid in ordered]
         choices.append("Enter custom model name")
 
+        footer_lines: list[str] | None = None
         if _unavailable:
-            effective_title = "Select default model (free models):"
-        else:
-            effective_title = menu_title
+            _upgrade_url = (portal_url or DEFAULT_NOUS_PORTAL_URL).rstrip("/")
+            footer_lines = [
+                f"── Unavailable models (requires paid tier — upgrade at {_upgrade_url}) ──",
+            ]
+            for mid in _unavailable:
+                footer_lines.append(f"  {_label(mid)}")
 
         idx = curses_single_select(
-            effective_title,
+            menu_title,
             choices,
             default_index=default_idx,
             cancel_label="Skip (keep current)",
+            footer_lines=footer_lines,
         )
         if idx is None:
             return None

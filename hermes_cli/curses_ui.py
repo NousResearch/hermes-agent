@@ -405,17 +405,27 @@ def curses_single_select(
     default_index: int = 0,
     *,
     cancel_label: str = "Cancel",
+    footer_lines: List[str] | None = None,
 ) -> int | None:
     """Curses single-select menu. Returns selected index or None on cancel.
 
     Works inside prompt_toolkit because curses.wrapper() restores the terminal
     safely, unlike simple_term_menu which conflicts with /dev/tty.
+
+    ``title`` may contain newlines — each line is rendered on its own row so
+    callers can supply a multi-line header (e.g. a pricing column legend).
+    ``footer_lines`` is rendered dimly below the items and is useful for
+    supplementary information such as unavailable-model hints.
     """
     all_items = list(items) + [cancel_label]
     cancel_idx = len(items)
+    footer = list(footer_lines or [])
+    title_lines = title.splitlines() or [""]
 
     if not sys.stdin.isatty():
-        return _numbered_single_fallback(title, all_items, cancel_idx)
+        return _numbered_single_fallback(
+            title, all_items, cancel_idx, footer_lines=footer
+        )
 
     try:
         import curses
@@ -431,6 +441,8 @@ def curses_single_select(
                 curses.init_pair(2, curses.COLOR_YELLOW, -1)
             cursor = min(default_index, len(all_items) - 1)
             scroll_offset = 0
+            title_rows = len(title_lines)
+            items_start = title_rows + 1  # +1 for the hint row
 
             while True:
                 stdscr.clear()
@@ -440,25 +452,32 @@ def curses_single_select(
                     hattr = curses.A_BOLD
                     if curses.has_colors():
                         hattr |= curses.color_pair(2)
-                    stdscr.addnstr(0, 0, title, max_x - 1, hattr)
-                    stdscr.addnstr(
-                        1, 0,
-                        "  ↑↓ navigate  ENTER confirm  ESC/q cancel",
-                        max_x - 1, curses.A_DIM,
-                    )
+                    for row, line in enumerate(title_lines):
+                        if row >= max_y:
+                            break
+                        attr = hattr if row == 0 else curses.A_NORMAL
+                        stdscr.addnstr(row, 0, line, max_x - 1, attr)
+                    if title_rows < max_y:
+                        stdscr.addnstr(
+                            title_rows, 0,
+                            "  ↑↓ navigate  ENTER confirm  ESC/q cancel",
+                            max_x - 1, curses.A_DIM,
+                        )
                 except curses.error:
                     pass
 
-                visible_rows = max_y - 3
+                reserved = items_start + len(footer) + 1  # +1 for trailing row
+                visible_rows = max(1, max_y - reserved)
                 if cursor < scroll_offset:
                     scroll_offset = cursor
                 elif cursor >= scroll_offset + visible_rows:
                     scroll_offset = cursor - visible_rows + 1
 
+                last_item_row = items_start
                 for draw_i, i in enumerate(
                     range(scroll_offset, min(len(all_items), scroll_offset + visible_rows))
                 ):
-                    y = draw_i + 3
+                    y = draw_i + items_start
                     if y >= max_y - 1:
                         break
                     arrow = "→" if i == cursor else " "
@@ -472,6 +491,18 @@ def curses_single_select(
                         stdscr.addnstr(y, 0, line, max_x - 1, attr)
                     except curses.error:
                         pass
+                    last_item_row = y
+
+                if footer:
+                    footer_start = last_item_row + 2
+                    for i, fline in enumerate(footer):
+                        y = footer_start + i
+                        if y >= max_y - 1:
+                            break
+                        try:
+                            stdscr.addnstr(y, 0, fline, max_x - 1, curses.A_DIM)
+                        except curses.error:
+                            pass
 
                 stdscr.refresh()
                 key = read_curses_key(stdscr, curses)
@@ -494,20 +525,26 @@ def curses_single_select(
         return result_holder[0]
 
     except Exception:
-        all_items = list(items) + [cancel_label]
-        cancel_idx = len(items)
-        return _numbered_single_fallback(title, all_items, cancel_idx)
+        return _numbered_single_fallback(
+            title, list(items) + [cancel_label], len(items), footer_lines=footer
+        )
 
 
 def _numbered_single_fallback(
     title: str,
     items: List[str],
     cancel_idx: int,
+    *,
+    footer_lines: List[str] | None = None,
 ) -> int | None:
     """Text-based numbered fallback for single-select."""
     print(f"\n  {title}\n")
     for i, label in enumerate(items, 1):
         print(f"  {i}. {label}")
+    if footer_lines:
+        print()
+        for line in footer_lines:
+            print(f"  {line}")
     print()
     try:
         val = input(f"  Choice [1-{len(items)}]: ").strip()

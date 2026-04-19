@@ -112,6 +112,38 @@ hermes gateway
 
 The bot should come online within seconds. Send it a message on Telegram to verify.
 
+## Sending Generated Files from Docker-backed Terminals
+
+If your terminal backend is `docker`, keep in mind that Telegram attachments are
+sent by the **gateway process**, not from inside the container. That means the
+final `MEDIA:/...` path must be readable on the host where the gateway is
+running.
+
+Common pitfall:
+
+- the agent writes a file inside Docker to `/workspace/report.txt`
+- the model emits `MEDIA:/workspace/report.txt`
+- Telegram delivery fails because `/workspace/report.txt` only exists inside the
+  container, not on the host
+
+Recommended pattern:
+
+```yaml
+terminal:
+  backend: docker
+  docker_volumes:
+    - "/home/user/.hermes/cache/documents:/output"
+```
+
+Then:
+
+- write files inside Docker to `/output/...`
+- emit the **host-visible** path in `MEDIA:`, for example:
+  `MEDIA:/home/user/.hermes/cache/documents/report.txt`
+
+If you already have a `docker_volumes:` section, add the new mount to the same
+list. YAML duplicate keys silently override earlier ones.
+
 ## Webhook Mode
 
 By default, Hermes connects to Telegram using **long polling** — the gateway makes outbound requests to Telegram's servers to fetch new updates. This works well for local and always-on deployments.
@@ -172,6 +204,27 @@ fly deploy
 
 The gateway log should show: `[telegram] Connected to Telegram (webhook mode)`.
 
+## Proxy Support
+
+If Telegram's API is blocked or you need to route traffic through a proxy, set a Telegram-specific proxy URL. This takes priority over the generic `HTTPS_PROXY` / `HTTP_PROXY` env vars.
+
+**Option 1: config.yaml (recommended)**
+
+```yaml
+telegram:
+  proxy_url: "socks5://127.0.0.1:1080"
+```
+
+**Option 2: environment variable**
+
+```bash
+TELEGRAM_PROXY=socks5://127.0.0.1:1080
+```
+
+Supported schemes: `http://`, `https://`, `socks5://`.
+
+The proxy applies to both the main Telegram connection and the fallback IP transport. If no Telegram-specific proxy is set, the gateway falls back to `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY` (or macOS system proxy auto-detection).
+
 ## Home Channel
 
 Use the `/sethome` command in any Telegram chat (DM or group) to designate it as the **home channel**. Scheduled tasks (cron jobs) deliver their results to this channel.
@@ -228,6 +281,7 @@ Hermes Agent works in Telegram group chats with a few considerations:
   - replies to one of the bot's messages
   - `@botusername` mentions
   - matches for one of your configured regex wake words in `telegram.mention_patterns`
+- Use `telegram.ignored_threads` to keep Hermes silent in specific Telegram forum topics, even when the group would otherwise allow free responses or mention-triggered replies
 - If `telegram.require_mention` is left unset or false, Hermes keeps the previous open-group behavior and responds to normal group messages it can see
 
 ### Example group trigger configuration
@@ -239,9 +293,13 @@ telegram:
   require_mention: true
   mention_patterns:
     - "^\\s*chompy\\b"
+  ignored_threads:
+    - 31
+    - "42"
 ```
 
 This example allows all the usual direct triggers plus messages that begin with `chompy`, even if they do not use an `@mention`.
+Messages in Telegram topics `31` and `42` are always ignored before the mention and free-response checks run.
 
 ### Notes on `mention_patterns`
 
@@ -396,40 +454,6 @@ The current model and provider are displayed at the top. All navigation happens 
 If you know the exact model name, type `/model <name>` directly to skip the picker. You can also type `/model <name> --global` to persist the change across sessions.
 :::
 
-## Webhook Mode
-
-By default, the Telegram adapter connects via **long polling** — the gateway makes outbound connections to Telegram's servers. This works everywhere but keeps a persistent connection open.
-
-**Webhook mode** is an alternative where Telegram pushes updates to your server over HTTPS. This is ideal for **serverless and cloud deployments** (Fly.io, Railway, etc.) where inbound HTTP can wake a suspended machine.
-
-### Configuration
-
-Set the `TELEGRAM_WEBHOOK_URL` environment variable to enable webhook mode:
-
-```bash
-# Required — your public HTTPS endpoint
-TELEGRAM_WEBHOOK_URL=https://app.fly.dev/telegram
-
-# Optional — local listen port (default: 8443)
-TELEGRAM_WEBHOOK_PORT=8443
-
-# Optional — secret token for update verification (auto-generated if not set)
-TELEGRAM_WEBHOOK_SECRET=my-secret-token
-```
-
-Or in `~/.hermes/config.yaml`:
-
-```yaml
-telegram:
-  webhook_mode: true
-```
-
-When `TELEGRAM_WEBHOOK_URL` is set, the gateway starts an HTTP server listening on `0.0.0.0:<port>` and registers the webhook URL with Telegram. The URL path is extracted from the webhook URL (defaults to `/telegram`).
-
-:::warning
-Telegram requires a **valid TLS certificate** on the webhook endpoint. Self-signed certificates will be rejected. Use a reverse proxy (nginx, Caddy) or a platform that provides TLS termination (Fly.io, Railway, Cloudflare Tunnel).
-:::
-
 ## DNS-over-HTTPS Fallback IPs
 
 In some restricted networks, `api.telegram.org` may resolve to an IP that is unreachable. The Telegram adapter includes a **fallback IP** mechanism that transparently retries connections against alternative IPs while preserving the correct TLS hostname and SNI.
@@ -525,6 +549,29 @@ Unlike Discord (where reactions are additive), Telegram's Bot API replaces all b
 :::tip
 If the bot doesn't have permission to add reactions in a group, the reaction calls fail silently and message processing continues normally.
 :::
+
+## Per-Channel Prompts
+
+Assign ephemeral system prompts to specific Telegram groups or forum topics. The prompt is injected at runtime on every turn — never persisted to transcript history — so changes take effect immediately.
+
+```yaml
+telegram:
+  channel_prompts:
+    "-1001234567890": |
+      You are a research assistant. Focus on academic sources,
+      citations, and concise synthesis.
+    "42":  |
+      This topic is for creative writing feedback. Be warm and
+      constructive.
+```
+
+Keys are chat IDs (groups/supergroups) or forum topic IDs. For forum groups, topic-level prompts override the group-level prompt:
+
+- Message in topic `42` inside group `-1001234567890` → uses topic `42`'s prompt
+- Message in topic `99` (no explicit entry) → falls back to group `-1001234567890`'s prompt
+- Message in a group with no entry → no channel prompt applied
+
+Numeric YAML keys are automatically normalized to strings.
 
 ## Troubleshooting
 

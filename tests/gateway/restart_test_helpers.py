@@ -93,6 +93,12 @@ def make_restart_runner(
     runner._running_agent_count = GatewayRunner._running_agent_count.__get__(
         runner, GatewayRunner
     )
+    runner._snapshot_running_agents = GatewayRunner._snapshot_running_agents.__get__(
+        runner, GatewayRunner
+    )
+    runner._notify_active_sessions_of_shutdown = (
+        GatewayRunner._notify_active_sessions_of_shutdown.__get__(runner, GatewayRunner)
+    )
     runner._launch_detached_restart_command = GatewayRunner._launch_detached_restart_command.__get__(
         runner, GatewayRunner
     )

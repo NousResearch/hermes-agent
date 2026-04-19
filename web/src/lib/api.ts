@@ -1,11 +1,22 @@
 const BASE = "";
 
-// Ephemeral session token for protected endpoints (reveal).
-// Fetched once on first reveal request and cached in memory.
+// Ephemeral session token for protected endpoints.
+// Injected into index.html by the server — never fetched via API.
+declare global {
+  interface Window {
+    __HERMES_SESSION_TOKEN__?: string;
+  }
+}
 let _sessionToken: string | null = null;
 
-async function fetchJSON<T>(url: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE}${url}`, init);
+export async function fetchJSON<T>(url: string, init?: RequestInit): Promise<T> {
+  // Inject the session token into all /api/ requests.
+  const headers = new Headers(init?.headers);
+  const token = window.__HERMES_SESSION_TOKEN__;
+  if (token && !headers.has("Authorization")) {
+    headers.set("Authorization", `Bearer ${token}`);
+  }
+  const res = await fetch(`${BASE}${url}`, { ...init, headers });
   if (!res.ok) {
     const text = await res.text().catch(() => res.statusText);
     throw new Error(`${res.status}: ${text}`);
@@ -15,9 +26,12 @@ async function fetchJSON<T>(url: string, init?: RequestInit): Promise<T> {
 
 async function getSessionToken(): Promise<string> {
   if (_sessionToken) return _sessionToken;
-  const resp = await fetchJSON<{ token: string }>("/api/auth/session-token");
-  _sessionToken = resp.token;
-  return _sessionToken;
+  const injected = window.__HERMES_SESSION_TOKEN__;
+  if (injected) {
+    _sessionToken = injected;
+    return _sessionToken;
+  }
+  throw new Error("Session token not available — page must be served by the Hermes dashboard server");
 }
 
 export const api = {
@@ -168,6 +182,22 @@ export const api = {
       },
     );
   },
+
+  // Dashboard themes
+  getThemes: () =>
+    fetchJSON<ThemeListResponse>("/api/dashboard/themes"),
+  setTheme: (name: string) =>
+    fetchJSON<{ ok: boolean; theme: string }>("/api/dashboard/theme", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    }),
+
+  // Dashboard plugins
+  getPlugins: () =>
+    fetchJSON<PluginManifestResponse[]>("/api/dashboard/plugins"),
+  rescanPlugins: () =>
+    fetchJSON<{ ok: boolean; count: number }>("/api/dashboard/plugins/rescan"),
 };
 
 export interface PlatformStatus {
@@ -183,6 +213,7 @@ export interface StatusResponse {
   config_version: number;
   env_path: string;
   gateway_exit_reason: string | null;
+  gateway_health_url: string | null;
   gateway_pid: number | null;
   gateway_platforms: Record<string, PlatformStatus>;
   gateway_running: boolean;
@@ -400,4 +431,26 @@ export interface OAuthPollResponse {
   status: "pending" | "approved" | "denied" | "expired" | "error";
   error_message?: string | null;
   expires_at?: number | null;
+}
+
+// ── Dashboard theme types ──────────────────────────────────────────────
+
+export interface ThemeListResponse {
+  themes: Array<{ name: string; label: string; description: string }>;
+  active: string;
+}
+
+// ── Dashboard plugin types ─────────────────────────────────────────────
+
+export interface PluginManifestResponse {
+  name: string;
+  label: string;
+  description: string;
+  icon: string;
+  version: string;
+  tab: { path: string; position: string };
+  entry: string;
+  css?: string | null;
+  has_api: boolean;
+  source: string;
 }

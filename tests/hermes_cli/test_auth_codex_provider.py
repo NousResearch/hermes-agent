@@ -14,7 +14,6 @@ from hermes_cli.auth import (
     PROVIDER_REGISTRY,
     _read_codex_tokens,
     _save_codex_tokens,
-    _write_codex_cli_tokens,
     _import_codex_cli_tokens,
     get_codex_auth_status,
     get_provider_auth_state,
@@ -180,98 +179,6 @@ def test_codex_tokens_not_written_to_shared_file(tmp_path, monkeypatch):
     # Hermes auth store should have the tokens
     data = _read_codex_tokens()
     assert data["tokens"]["access_token"] == "hermes-at"
-
-
-def test_write_codex_cli_tokens_creates_file(tmp_path, monkeypatch):
-    """_write_codex_cli_tokens creates ~/.codex/auth.json with refreshed tokens."""
-    codex_home = tmp_path / "codex-cli"
-    monkeypatch.setenv("CODEX_HOME", str(codex_home))
-
-    _write_codex_cli_tokens("new-access", "new-refresh", last_refresh="2026-04-12T00:00:00Z")
-
-    auth_path = codex_home / "auth.json"
-    assert auth_path.exists()
-    data = json.loads(auth_path.read_text())
-    assert data["tokens"]["access_token"] == "new-access"
-    assert data["tokens"]["refresh_token"] == "new-refresh"
-    assert data["last_refresh"] == "2026-04-12T00:00:00Z"
-    # Verify file permissions are restricted
-    assert (auth_path.stat().st_mode & 0o777) == 0o600
-
-
-def test_write_codex_cli_tokens_preserves_existing(tmp_path, monkeypatch):
-    """_write_codex_cli_tokens preserves extra fields in existing auth.json."""
-    codex_home = tmp_path / "codex-cli"
-    codex_home.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setenv("CODEX_HOME", str(codex_home))
-
-    existing = {
-        "tokens": {
-            "access_token": "old-access",
-            "refresh_token": "old-refresh",
-            "extra_field": "preserved",
-        },
-        "last_refresh": "2026-01-01T00:00:00Z",
-        "custom_key": "keep_me",
-    }
-    (codex_home / "auth.json").write_text(json.dumps(existing))
-
-    _write_codex_cli_tokens("updated-access", "updated-refresh")
-
-    data = json.loads((codex_home / "auth.json").read_text())
-    assert data["tokens"]["access_token"] == "updated-access"
-    assert data["tokens"]["refresh_token"] == "updated-refresh"
-    assert data["tokens"]["extra_field"] == "preserved"
-    assert data["custom_key"] == "keep_me"
-    # last_refresh not updated since we didn't pass it
-    assert data["last_refresh"] == "2026-01-01T00:00:00Z"
-
-
-def test_write_codex_cli_tokens_handles_missing_dir(tmp_path, monkeypatch):
-    """_write_codex_cli_tokens creates parent directories if missing."""
-    codex_home = tmp_path / "does" / "not" / "exist"
-    monkeypatch.setenv("CODEX_HOME", str(codex_home))
-
-    _write_codex_cli_tokens("at", "rt")
-
-    assert (codex_home / "auth.json").exists()
-    data = json.loads((codex_home / "auth.json").read_text())
-    assert data["tokens"]["access_token"] == "at"
-
-
-def test_refresh_codex_auth_tokens_writes_back_to_cli(tmp_path, monkeypatch):
-    """After refreshing, _refresh_codex_auth_tokens writes back to ~/.codex/auth.json."""
-    from hermes_cli.auth import _refresh_codex_auth_tokens
-
-    hermes_home = tmp_path / "hermes"
-    codex_home = tmp_path / "codex-cli"
-    hermes_home.mkdir(parents=True, exist_ok=True)
-    codex_home.mkdir(parents=True, exist_ok=True)
-    (hermes_home / "auth.json").write_text(json.dumps({"version": 1, "providers": {}}))
-    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-    monkeypatch.setenv("CODEX_HOME", str(codex_home))
-
-    # Write initial CLI tokens
-    (codex_home / "auth.json").write_text(json.dumps({
-        "tokens": {"access_token": "old-at", "refresh_token": "old-rt"},
-    }))
-
-    # Mock the pure refresh to return new tokens
-    monkeypatch.setattr("hermes_cli.auth.refresh_codex_oauth_pure", lambda *a, **kw: {
-        "access_token": "refreshed-at",
-        "refresh_token": "refreshed-rt",
-        "last_refresh": "2026-04-12T01:00:00Z",
-    })
-
-    _refresh_codex_auth_tokens(
-        {"access_token": "old-at", "refresh_token": "old-rt"},
-        timeout_seconds=10,
-    )
-
-    # Verify CLI file was updated
-    cli_data = json.loads((codex_home / "auth.json").read_text())
-    assert cli_data["tokens"]["access_token"] == "refreshed-at"
-    assert cli_data["tokens"]["refresh_token"] == "refreshed-rt"
 
 
 def test_resolve_returns_hermes_auth_store_source(tmp_path, monkeypatch):

@@ -112,6 +112,10 @@ _RATE_LIMIT_PATTERNS = [
     "please retry after",
     "resource_exhausted",
     "rate increased too quickly",  # Alibaba/DashScope throttling
+    # AWS Bedrock throttling
+    "throttlingexception",
+    "too many concurrent requests",
+    "servicequotaexceededexception",
 ]
 
 # Usage-limit patterns that need disambiguation (could be billing OR rate_limit)
@@ -171,6 +175,11 @@ _CONTEXT_OVERFLOW_PATTERNS = [
     # Chinese error messages (some providers return these)
     "超过最大长度",
     "上下文长度",
+    # AWS Bedrock Converse API error patterns
+    "input is too long",
+    "max input token",
+    "input token",
+    "exceeds the maximum number of input tokens",
 ]
 
 # Model not found patterns

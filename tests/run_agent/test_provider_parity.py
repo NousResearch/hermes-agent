@@ -60,6 +60,9 @@ def _make_agent(monkeypatch, provider, api_mode="chat_completions", base_url="ht
     )
     if model:
         kwargs["model"] = model
+    base_url="https://openrouter.ai/api/v1",
+    api_key="test-key",
+    base_url="https://openrouter.ai/api/v1",
     return AIAgent(**kwargs)
 
 
@@ -246,6 +249,19 @@ class TestBuildApiKwargsChatCompletionsServiceTier:
         messages = [{"role": "user", "content": "hi"}]
         kwargs = agent._build_api_kwargs(messages)
         assert "service_tier" not in kwargs
+
+
+class TestBuildApiKwargsKimiFixedTemperature:
+    def test_kimi_for_coding_forces_temperature_on_main_chat_path(self, monkeypatch):
+        agent = _make_agent(
+            monkeypatch,
+            "kimi-coding",
+            base_url="https://api.kimi.com/coding/v1",
+            model="kimi-for-coding",
+        )
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        assert kwargs["temperature"] == 0.6
 
 
 class TestBuildApiKwargsAIGateway:
@@ -805,7 +821,10 @@ class TestCodexReasoningPreflight:
         reasoning_items = [i for i in normalized if i.get("type") == "reasoning"]
         assert len(reasoning_items) == 1
         assert reasoning_items[0]["encrypted_content"] == "abc123encrypted"
-        assert reasoning_items[0]["id"] == "r_001"
+        # Note: "id" is intentionally excluded from normalized output —
+        # with store=False the API returns 404 on server-side id resolution.
+        # The id is only used for local deduplication via seen_ids.
+        assert "id" not in reasoning_items[0]
         assert reasoning_items[0]["summary"] == [{"type": "summary_text", "text": "Thinking about it"}]
 
     def test_reasoning_item_without_id(self, monkeypatch):

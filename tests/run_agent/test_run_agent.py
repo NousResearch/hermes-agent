@@ -55,6 +55,7 @@ def agent():
     ):
         a = AIAgent(
             api_key="test-key-1234567890",
+            base_url="https://openrouter.ai/api/v1",
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,
@@ -76,6 +77,7 @@ def agent_with_memory_tool():
     ):
         a = AIAgent(
             api_key="test-k...7890",
+            base_url="https://openrouter.ai/api/v1",
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,
@@ -112,12 +114,14 @@ def test_aiagent_reuses_existing_errors_log_handler():
         ):
             AIAgent(
                 api_key="test-k...7890",
+                base_url="https://openrouter.ai/api/v1",
                 quiet_mode=True,
                 skip_context_files=True,
                 skip_memory=True,
             )
             AIAgent(
                 api_key="test-k...7890",
+                base_url="https://openrouter.ai/api/v1",
                 quiet_mode=True,
                 skip_context_files=True,
                 skip_memory=True,
@@ -313,6 +317,60 @@ class TestStripThinkBlocks:
         result = agent._strip_think_blocks("<thought>orphaned reasoning without close")
         assert "<thought>" not in result
 
+    # ─── Unterminated-block coverage (#8878, #9568, #10408) ──────────────
+    # Reasoning models served via NIM / MiniMax M2.7 frequently drop the
+    # closing tag, leaking raw reasoning into assistant content. The open
+    # tag appears at a block boundary (start of text or after a newline);
+    # everything from that tag to end-of-string is stripped.
+
+    def test_unterminated_think_block_content_stripped(self, agent):
+        """Content after unterminated <think> is fully stripped."""
+        result = agent._strip_think_blocks("<think>orphaned reasoning without close")
+        assert "orphaned reasoning" not in result
+        assert result.strip() == ""
+
+    def test_unterminated_thought_block_content_stripped(self, agent):
+        """Gemma-style <thought> with no close is fully stripped."""
+        result = agent._strip_think_blocks("<thought>orphaned reasoning without close")
+        assert "orphaned reasoning" not in result
+        assert result.strip() == ""
+
+    def test_unterminated_multiline_block_stripped(self, agent):
+        """Multi-line unterminated blocks are stripped in full."""
+        result = agent._strip_think_blocks(
+            "<think>\nmulti\nline\nreasoning\nthat never closes"
+        )
+        assert "multi" not in result
+        assert "never closes" not in result
+
+    def test_unterminated_block_after_answer_preserves_prefix(self, agent):
+        """Visible answer before a line-starting unterminated tag is kept."""
+        result = agent._strip_think_blocks(
+            "Answer is 42.\n<think>actually let me reconsider"
+        )
+        assert "Answer is 42." in result
+        assert "reconsider" not in result
+
+    def test_inline_think_mention_in_prose_not_over_stripped(self, agent):
+        """Mid-line `<think>` mentioned in prose must not swallow the rest
+        of the content (the block-boundary check prevents this)."""
+        text = "Use the <think> tag like this in your prose."
+        result = agent._strip_think_blocks(text)
+        # Block-boundary check prevents unterminated-strip from firing
+        assert "prose" in result
+        assert "Use the" in result
+
+    def test_mixed_case_closed_pair_stripped(self, agent):
+        """Mixed-case variants <THINK>…</THINK>, <Thinking>…</Thinking> are
+        handled by case-insensitive closed-pair regex, so the trailing
+        content is preserved."""
+        result = agent._strip_think_blocks("<THINK>upper</THINK>final")
+        assert "upper" not in result
+        assert "final" in result
+        result = agent._strip_think_blocks("<Thinking>mixed</Thinking>final")
+        assert "mixed" not in result
+        assert "final" in result
+
 
 class TestExtractReasoning:
     def test_reasoning_field(self, agent):
@@ -491,6 +549,7 @@ class TestInit:
         ):
             a = AIAgent(
                 api_key="test-key-1234567890",
+                base_url="https://openrouter.ai/api/v1",
                 model="openai/gpt-4o",
                 quiet_mode=True,
                 skip_context_files=True,
@@ -542,6 +601,7 @@ class TestInit:
         ):
             a = AIAgent(
                 api_key="test-key-1234567890",
+                base_url="https://openrouter.ai/api/v1",
                 quiet_mode=True,
                 skip_context_files=True,
                 skip_memory=True,
@@ -557,6 +617,7 @@ class TestInit:
         ):
             a = AIAgent(
                 api_key="test-key-1234567890",
+                base_url="https://openrouter.ai/api/v1",
                 quiet_mode=True,
                 skip_context_files=True,
                 skip_memory=True,
@@ -694,6 +755,7 @@ class TestBuildSystemPrompt:
         ):
             agent = AIAgent(
                 api_key="test-k...7890",
+                base_url="https://openrouter.ai/api/v1",
                 quiet_mode=True,
                 skip_context_files=True,
                 skip_memory=True,
@@ -726,6 +788,7 @@ class TestToolUseEnforcementConfig:
             a = AIAgent(
                 model=model,
                 api_key="test-key-1234567890",
+                base_url="https://openrouter.ai/api/v1",
                 quiet_mode=True,
                 skip_context_files=True,
                 skip_memory=True,
@@ -822,6 +885,7 @@ class TestToolUseEnforcementConfig:
         ):
             a = AIAgent(
                 api_key="test-key-1234567890",
+                base_url="https://openrouter.ai/api/v1",
                 quiet_mode=True,
                 skip_context_files=True,
                 skip_memory=True,
@@ -928,6 +992,7 @@ class TestBuildApiKwargs:
         kwargs = agent._build_api_kwargs(messages)
         assert kwargs["max_tokens"] == 4096
 
+
     def test_qwen_portal_formats_messages_and_metadata(self, agent):
         agent.base_url = "https://portal.qwen.ai/v1"
         agent._base_url_lower = agent.base_url.lower()
@@ -984,6 +1049,46 @@ class TestBuildApiKwargs:
         kwargs = agent._build_api_kwargs(messages)
         assert kwargs["max_tokens"] == 65536
 
+    def test_ollama_think_false_on_effort_none(self, agent):
+        """Custom (Ollama) provider with effort=none should inject think=false."""
+        agent.provider = "custom"
+        agent.base_url = "http://localhost:11434/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.reasoning_config = {"effort": "none"}
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        assert kwargs.get("extra_body", {}).get("think") is False
+
+    def test_ollama_think_false_on_enabled_false(self, agent):
+        """Custom (Ollama) provider with enabled=false should inject think=false."""
+        agent.provider = "custom"
+        agent.base_url = "http://localhost:11434/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.reasoning_config = {"enabled": False}
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        assert kwargs.get("extra_body", {}).get("think") is False
+
+    def test_ollama_no_think_param_when_reasoning_enabled(self, agent):
+        """Custom provider with reasoning enabled should NOT inject think=false."""
+        agent.provider = "custom"
+        agent.base_url = "http://localhost:11434/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.reasoning_config = {"enabled": True, "effort": "medium"}
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        assert kwargs.get("extra_body", {}).get("think") is None
+
+    def test_non_custom_provider_unaffected(self, agent):
+        """OpenRouter provider with effort=none should NOT inject think=false."""
+        agent.provider = "openrouter"
+        agent.model = "qwen/qwen3.5-plus-02-15"
+        agent.reasoning_config = {"effort": "none"}
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        assert kwargs.get("extra_body", {}).get("think") is None
+
+
 
 class TestBuildAssistantMessage:
     def test_basic_message(self, agent):
@@ -1036,6 +1141,41 @@ class TestBuildAssistantMessage:
         msg = _mock_assistant_msg(content="", tool_calls=[tc])
         result = agent._build_assistant_message(msg, "tool_calls")
         assert "extra_content" not in result["tool_calls"][0]
+
+    def test_think_blocks_stripped_from_content(self, agent):
+        """Inline <think> blocks are stripped from stored content (#8878, #9568).
+
+        The reasoning is captured into ``msg['reasoning']`` via the inline
+        fallback in ``_extract_reasoning``; the raw tags in ``content`` are
+        redundant and leak to messaging platforms / pollute titles /
+        inflate context if left in place.
+        """
+        msg = _mock_assistant_msg(
+            content="<think>internal reasoning</think>The actual answer."
+        )
+        result = agent._build_assistant_message(msg, "stop")
+        assert "<think>" not in result["content"]
+        assert "internal reasoning" not in result["content"]
+        assert "The actual answer." in result["content"]
+        # Reasoning preserved separately via inline extraction fallback
+        assert result["reasoning"] == "internal reasoning"
+
+    def test_think_blocks_stripped_preserves_normal_content(self, agent):
+        """Content without reasoning tags passes through unchanged."""
+        msg = _mock_assistant_msg(content="No thinking here.")
+        result = agent._build_assistant_message(msg, "stop")
+        assert result["content"] == "No thinking here."
+
+    def test_unterminated_think_block_stripped(self, agent):
+        """Unterminated <think> block (MiniMax / NIM dropped close tag) is
+        fully stripped from stored content."""
+        msg = _mock_assistant_msg(
+            content="<think>reasoning that never closes on this NIM endpoint"
+        )
+        result = agent._build_assistant_message(msg, "stop")
+        assert "<think>" not in result["content"]
+        assert "reasoning that never closes" not in result["content"]
+        assert result["content"] == ""
 
 
 class TestFormatToolsForSystemMessage:
@@ -1145,6 +1285,7 @@ class TestExecuteToolCalls:
         tc = _mock_tool_call(name="web_search", arguments='{"q":"test"}', call_id="c1")
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
         messages = []
+        agent.platform = "cli"
         agent.tool_progress_callback = None
 
         with patch("run_agent.handle_function_call", return_value="search result"), \
@@ -1153,6 +1294,21 @@ class TestExecuteToolCalls:
 
         mock_print.assert_called_once()
         assert "search" in str(mock_print.call_args.args[0]).lower()
+        assert len(messages) == 1
+        assert messages[0]["role"] == "tool"
+
+    def test_quiet_tool_output_suppressed_without_progress_callback_for_non_cli_agent(self, agent):
+        tc = _mock_tool_call(name="web_search", arguments='{"q":"test"}', call_id="c1")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
+        messages = []
+        agent.platform = None
+        agent.tool_progress_callback = None
+
+        with patch("run_agent.handle_function_call", return_value="search result"), \
+             patch.object(agent, "_safe_print") as mock_print:
+            agent._execute_tool_calls(mock_msg, messages, "task-1")
+
+        mock_print.assert_not_called()
         assert len(messages) == 1
         assert messages[0]["role"] == "tool"
 
@@ -1736,6 +1892,30 @@ class TestRunConversation:
         assert all("message_count" in c and "messages" not in c for c in pre_request_calls)
         assert all("usage" in c and "response" not in c for c in post_request_calls)
 
+    def test_content_with_tool_calls_stays_silent_for_non_cli_quiet_mode(self, agent):
+        self._setup_agent(agent)
+        agent.platform = None
+        tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
+        resp1 = _mock_response(
+            content="I'll search for that.",
+            finish_reason="tool_calls",
+            tool_calls=[tc],
+        )
+        resp2 = _mock_response(content="Done searching", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [resp1, resp2]
+
+        with (
+            patch("run_agent.handle_function_call", return_value="search result"),
+            patch.object(agent, "_safe_print") as mock_print,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("search something")
+
+        assert result["final_response"] == "Done searching"
+        mock_print.assert_not_called()
+
     def test_interrupt_breaks_loop(self, agent):
         self._setup_agent(agent)
 
@@ -2201,6 +2381,114 @@ class TestRunConversation:
         second_call_messages = agent.client.chat.completions.create.call_args_list[1].kwargs["messages"]
         assert second_call_messages[-1]["role"] == "user"
         assert "truncated by the output length limit" in second_call_messages[-1]["content"]
+
+    def test_ollama_glm_stop_after_tools_without_terminal_boundary_requests_continuation(self, agent):
+        """Ollama-hosted GLM responses can misreport truncated output as stop."""
+        self._setup_agent(agent)
+        agent.base_url = "http://localhost:11434/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.model = "glm-5.1:cloud"
+
+        tool_turn = _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[_mock_tool_call(name="web_search", arguments="{}", call_id="c1")],
+        )
+        misreported_stop = _mock_response(
+            content="Based on the search results, the best next",
+            finish_reason="stop",
+        )
+        continued = _mock_response(
+            content=" step is to update the config.",
+            finish_reason="stop",
+        )
+        agent.client.chat.completions.create.side_effect = [
+            tool_turn,
+            misreported_stop,
+            continued,
+        ]
+
+        with (
+            patch("run_agent.handle_function_call", return_value="search result"),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["completed"] is True
+        assert result["api_calls"] == 3
+        assert (
+            result["final_response"]
+            == "Based on the search results, the best next step is to update the config."
+        )
+
+        third_call_messages = agent.client.chat.completions.create.call_args_list[2].kwargs["messages"]
+        assert third_call_messages[-1]["role"] == "user"
+        assert "truncated by the output length limit" in third_call_messages[-1]["content"]
+
+    def test_ollama_glm_stop_with_terminal_boundary_does_not_continue(self, agent):
+        """Complete Ollama/GLM responses should not be reclassified as truncated."""
+        self._setup_agent(agent)
+        agent.base_url = "http://localhost:11434/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.model = "glm-5.1:cloud"
+
+        tool_turn = _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[_mock_tool_call(name="web_search", arguments="{}", call_id="c1")],
+        )
+        complete_stop = _mock_response(
+            content="Based on the search results, the best next step is to update the config.",
+            finish_reason="stop",
+        )
+        agent.client.chat.completions.create.side_effect = [tool_turn, complete_stop]
+
+        with (
+            patch("run_agent.handle_function_call", return_value="search result"),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["completed"] is True
+        assert result["api_calls"] == 2
+        assert (
+            result["final_response"]
+            == "Based on the search results, the best next step is to update the config."
+        )
+
+    def test_non_ollama_stop_without_terminal_boundary_does_not_continue(self, agent):
+        """The stop->length workaround should stay scoped to Ollama/GLM backends."""
+        self._setup_agent(agent)
+        agent.base_url = "https://api.openai.com/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.model = "gpt-4o-mini"
+
+        tool_turn = _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[_mock_tool_call(name="web_search", arguments="{}", call_id="c1")],
+        )
+        normal_stop = _mock_response(
+            content="Based on the search results, the best next",
+            finish_reason="stop",
+        )
+        agent.client.chat.completions.create.side_effect = [tool_turn, normal_stop]
+
+        with (
+            patch("run_agent.handle_function_call", return_value="search result"),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["completed"] is True
+        assert result["api_calls"] == 2
+        assert result["final_response"] == "Based on the search results, the best next"
 
     def test_length_thinking_exhausted_skips_continuation(self, agent):
         """When finish_reason='length' but content is only thinking, skip retries."""
@@ -3284,7 +3572,7 @@ class TestAnthropicBaseUrlPassthrough:
         ):
             mock_build.return_value = MagicMock()
             a = AIAgent(
-                api_key="sk-ant-api03-test1234567890",
+                api_key="sk-ant...7890",
                 api_mode="anthropic_messages",
                 quiet_mode=True,
                 skip_context_files=True,
@@ -3308,6 +3596,7 @@ class TestAnthropicCredentialRefresh:
             mock_build.side_effect = [old_client, new_client]
             agent = AIAgent(
                 api_key="sk-ant-oat01-stale-token",
+                base_url="https://openrouter.ai/api/v1",
                 api_mode="anthropic_messages",
                 quiet_mode=True,
                 skip_context_files=True,
@@ -3338,6 +3627,7 @@ class TestAnthropicCredentialRefresh:
         ):
             agent = AIAgent(
                 api_key="sk-ant-oat01-same-token",
+                base_url="https://openrouter.ai/api/v1",
                 api_mode="anthropic_messages",
                 quiet_mode=True,
                 skip_context_files=True,
@@ -3365,6 +3655,7 @@ class TestAnthropicCredentialRefresh:
         ):
             agent = AIAgent(
                 api_key="sk-ant-oat01-current-token",
+                base_url="https://openrouter.ai/api/v1",
                 api_mode="anthropic_messages",
                 quiet_mode=True,
                 skip_context_files=True,
@@ -3966,8 +4257,8 @@ class TestMemoryNudgeCounterPersistence:
         """Counters must exist on the agent after __init__."""
         with patch("run_agent.get_tool_definitions", return_value=[]):
             a = AIAgent(
-                model="test", api_key="test-key", provider="openrouter",
-                skip_context_files=True, skip_memory=True,
+                model="test", api_key="test-key", base_url="http://localhost:1234/v1",
+                provider="openrouter", skip_context_files=True, skip_memory=True,
             )
         assert hasattr(a, "_turns_since_memory")
         assert hasattr(a, "_iters_since_skill")
@@ -3998,3 +4289,63 @@ class TestDeadRetryCode:
             f"Expected 2 occurrences of 'if retry_count >= max_retries:' "
             f"but found {occurrences}"
         )
+
+
+class TestMemoryContextSanitization:
+    """run_conversation() must strip leaked <memory-context> blocks from user input."""
+
+    def test_memory_context_stripped_from_user_message(self):
+        """Verify that <memory-context> blocks are removed before the message
+        enters the conversation loop — prevents stale Honcho injection from
+        leaking into user text."""
+        import inspect
+        src = inspect.getsource(AIAgent.run_conversation)
+        # The sanitize_context call must appear in run_conversation's preamble
+        assert "sanitize_context(user_message)" in src
+        assert "sanitize_context(persist_user_message)" in src
+
+    def test_sanitize_context_strips_full_block(self):
+        """End-to-end: a user message with an embedded memory-context block
+        is cleaned to just the actual user text."""
+        from agent.memory_manager import sanitize_context
+        user_text = "how is the honcho working"
+        injected = (
+            user_text + "\n\n"
+            "<memory-context>\n"
+            "[System note: The following is recalled memory context, "
+            "NOT new user input. Treat as informational background data.]\n\n"
+            "## User Representation\n"
+            "[2026-01-13 02:13:00] stale observation about AstroMap\n"
+            "</memory-context>"
+        )
+        result = sanitize_context(injected)
+        assert "memory-context" not in result.lower()
+        assert "stale observation" not in result
+        assert "how is the honcho working" in result
+
+
+class TestMemoryProviderTurnStart:
+    """run_conversation() must call memory_manager.on_turn_start() before prefetch_all().
+
+    Without this call, providers like Honcho never update _turn_count, so cadence
+    checks (contextCadence, dialecticCadence) are always satisfied — every turn
+    fires both context refresh and dialectic, ignoring the configured cadence.
+    """
+
+    def test_on_turn_start_called_before_prefetch(self):
+        """Source-level check: on_turn_start appears before prefetch_all in run_conversation."""
+        import inspect
+        src = inspect.getsource(AIAgent.run_conversation)
+        # Find the actual method calls, not comments
+        idx_turn_start = src.index(".on_turn_start(")
+        idx_prefetch = src.index(".prefetch_all(")
+        assert idx_turn_start < idx_prefetch, (
+            "on_turn_start() must be called before prefetch_all() in run_conversation "
+            "so that memory providers have the correct turn count for cadence checks"
+        )
+
+    def test_on_turn_start_uses_user_turn_count(self):
+        """Source-level check: on_turn_start receives self._user_turn_count."""
+        import inspect
+        src = inspect.getsource(AIAgent.run_conversation)
+        assert "on_turn_start(self._user_turn_count" in src

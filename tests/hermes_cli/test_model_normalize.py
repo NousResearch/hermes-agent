@@ -93,6 +93,59 @@ class TestCopilotDotPreservation:
         assert result == expected
 
 
+# ── Copilot model-name normalization (issue #6879 regression) ──────────
+
+class TestCopilotModelNormalization:
+    """Copilot requires bare dot-notation model IDs.
+
+    Regression coverage for issue #6879 and the broken Copilot branch
+    that previously left vendor-prefixed Anthropic IDs (e.g.
+    ``anthropic/claude-sonnet-4.6``) and dash-notation Claude IDs (e.g.
+    ``claude-sonnet-4-6``) unchanged, causing the Copilot API to reject
+    the request with HTTP 400 "model_not_supported".
+    """
+
+    @pytest.mark.parametrize("model,expected", [
+        # Vendor-prefixed Anthropic IDs — prefix must be stripped.
+        ("anthropic/claude-opus-4.6",   "claude-opus-4.6"),
+        ("anthropic/claude-sonnet-4.6", "claude-sonnet-4.6"),
+        ("anthropic/claude-sonnet-4.5", "claude-sonnet-4.5"),
+        ("anthropic/claude-haiku-4.5",  "claude-haiku-4.5"),
+        # Vendor-prefixed OpenAI IDs — prefix must be stripped.
+        ("openai/gpt-5.4",              "gpt-5.4"),
+        ("openai/gpt-4o",               "gpt-4o"),
+        ("openai/gpt-4o-mini",          "gpt-4o-mini"),
+        # Dash-notation Claude IDs — must be converted to dot-notation.
+        ("claude-opus-4-6",             "claude-opus-4.6"),
+        ("claude-sonnet-4-6",           "claude-sonnet-4.6"),
+        ("claude-sonnet-4-5",           "claude-sonnet-4.5"),
+        ("claude-haiku-4-5",            "claude-haiku-4.5"),
+        # Combined: vendor-prefixed + dash-notation.
+        ("anthropic/claude-opus-4-6",   "claude-opus-4.6"),
+        ("anthropic/claude-sonnet-4-6", "claude-sonnet-4.6"),
+        # Already-canonical inputs pass through unchanged.
+        ("claude-sonnet-4.6",           "claude-sonnet-4.6"),
+        ("gpt-5.4",                     "gpt-5.4"),
+        ("gpt-5-mini",                  "gpt-5-mini"),
+    ])
+    def test_copilot_normalization(self, model, expected):
+        assert normalize_model_for_provider(model, "copilot") == expected
+
+    @pytest.mark.parametrize("model,expected", [
+        ("anthropic/claude-sonnet-4.6", "claude-sonnet-4.6"),
+        ("claude-sonnet-4-6",           "claude-sonnet-4.6"),
+        ("claude-opus-4-6",             "claude-opus-4.6"),
+        ("openai/gpt-5.4",              "gpt-5.4"),
+    ])
+    def test_copilot_acp_normalization(self, model, expected):
+        """Copilot ACP shares the same API expectations as HTTP Copilot."""
+        assert normalize_model_for_provider(model, "copilot-acp") == expected
+
+    def test_openai_codex_still_strips_openai_prefix(self):
+        """Regression: openai-codex must still strip the openai/ prefix."""
+        assert normalize_model_for_provider("openai/gpt-5.4", "openai-codex") == "gpt-5.4"
+
+
 # ── Aggregator providers (regression) ──────────────────────────────────
 
 class TestAggregatorProviders:

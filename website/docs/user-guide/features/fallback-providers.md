@@ -47,6 +47,13 @@ Both `provider` and `model` are **required**. If either is missing, the fallback
 | MiniMax | `minimax` | `MINIMAX_API_KEY` |
 | MiniMax (China) | `minimax-cn` | `MINIMAX_CN_API_KEY` |
 | DeepSeek | `deepseek` | `DEEPSEEK_API_KEY` |
+| NVIDIA NIM | `nvidia` | `NVIDIA_API_KEY` (optional: `NVIDIA_BASE_URL`) |
+| Ollama Cloud | `ollama-cloud` | `OLLAMA_API_KEY` |
+| Google Gemini (OAuth) | `google-gemini-cli` | `hermes model` (Google OAuth; optional: `HERMES_GEMINI_PROJECT_ID`) |
+| Google AI Studio | `gemini` | `GOOGLE_API_KEY` (alias: `GEMINI_API_KEY`) |
+| xAI (Grok) | `xai` (alias `grok`) | `XAI_API_KEY` (optional: `XAI_BASE_URL`) |
+| AWS Bedrock | `bedrock` | Standard boto3 auth (`AWS_REGION` + `AWS_PROFILE` or `AWS_ACCESS_KEY_ID`) |
+| Qwen Portal (OAuth) | `qwen-oauth` | `hermes model` (Qwen Portal OAuth; optional: `HERMES_QWEN_BASE_URL`) |
 | OpenCode Zen | `opencode-zen` | `OPENCODE_ZEN_API_KEY` |
 | OpenCode Go | `opencode-go` | `OPENCODE_GO_API_KEY` |
 | Kilo Code | `kilocode` | `KILOCODE_API_KEY` |
@@ -54,18 +61,18 @@ Both `provider` and `model` are **required**. If either is missing, the fallback
 | Arcee AI | `arcee` | `ARCEEAI_API_KEY` |
 | Alibaba / DashScope | `alibaba` | `DASHSCOPE_API_KEY` |
 | Hugging Face | `huggingface` | `HF_TOKEN` |
-| Custom endpoint | `custom` | `base_url` + `api_key_env` (see below) |
+| Custom endpoint | `custom` | `base_url` + `key_env` (see below) |
 
 ### Custom Endpoint Fallback
 
-For a custom OpenAI-compatible endpoint, add `base_url` and optionally `api_key_env`:
+For a custom OpenAI-compatible endpoint, add `base_url` and optionally `key_env`:
 
 ```yaml
 fallback_model:
   provider: custom
   model: my-local-model
   base_url: http://localhost:8000/v1
-  api_key_env: MY_LOCAL_KEY          # env var name containing the API key
+  key_env: MY_LOCAL_KEY              # env var name containing the API key
 ```
 
 ### When Fallback Triggers
@@ -121,7 +128,7 @@ fallback_model:
   provider: custom
   model: llama-3.1-70b
   base_url: http://localhost:8000/v1
-  api_key_env: LOCAL_API_KEY
+  key_env: LOCAL_API_KEY
 ```
 
 **Codex OAuth as fallback:**
@@ -162,6 +169,8 @@ Hermes uses separate lightweight models for side tasks. Each task has its own pr
 | Skills Hub | Skill search and discovery | `auxiliary.skills_hub` |
 | MCP | MCP helper operations | `auxiliary.mcp` |
 | Memory Flush | Memory consolidation | `auxiliary.flush_memories` |
+| Approval | Smart command-approval classification | `auxiliary.approval` |
+| Title Generation | Session title summaries | `auxiliary.title_generation` |
 
 ### Auto-Detection Chain
 
@@ -335,5 +344,7 @@ See [Scheduled Tasks (Cron)](/docs/user-guide/features/cron) for full configurat
 | Skills hub | Auto-detection chain | `auxiliary.skills_hub` |
 | MCP helpers | Auto-detection chain | `auxiliary.mcp` |
 | Memory flush | Auto-detection chain | `auxiliary.flush_memories` |
+| Approval classification | Auto-detection chain | `auxiliary.approval` |
+| Title generation | Auto-detection chain | `auxiliary.title_generation` |
 | Delegation | Provider override only (no automatic fallback) | `delegation.provider` / `delegation.model` |
 | Cron jobs | Per-job provider override only (no automatic fallback) | Per-job `provider` / `model` |

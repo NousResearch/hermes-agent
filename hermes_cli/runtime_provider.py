@@ -22,6 +22,7 @@ from hermes_cli.auth import (
     resolve_nous_runtime_credentials,
     resolve_codex_runtime_credentials,
     resolve_qwen_runtime_credentials,
+    resolve_gemini_oauth_runtime_credentials,
     resolve_api_key_provider_credentials,
     resolve_external_process_provider_credentials,
     has_usable_secret,
@@ -41,6 +42,8 @@ def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
     tool calls with reasoning (chat/completions returns 400).
     """
     normalized = (base_url or "").strip().lower().rstrip("/")
+    if "api.x.ai" in normalized:
+        return "codex_responses"
     if "api.openai.com" in normalized and "openrouter" not in normalized:
         return "codex_responses"
     return None
@@ -124,7 +127,7 @@ def _copilot_runtime_api_mode(model_cfg: Dict[str, Any], api_key: str) -> str:
         return "chat_completions"
 
 
-_VALID_API_MODES = {"chat_completions", "codex_responses", "anthropic_messages"}
+_VALID_API_MODES = {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse"}
 
 
 def _parse_api_mode(raw: Any) -> Optional[str]:
@@ -154,6 +157,9 @@ def _resolve_runtime_from_pool_entry(
     elif provider == "qwen-oauth":
         api_mode = "chat_completions"
         base_url = base_url or DEFAULT_QWEN_BASE_URL
+    elif provider == "google-gemini-cli":
+        api_mode = "chat_completions"
+        base_url = base_url or "cloudcode-pa://google"
     elif provider == "anthropic":
         api_mode = "anthropic_messages"
         cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
@@ -163,10 +169,13 @@ def _resolve_runtime_from_pool_entry(
         base_url = cfg_base_url or base_url or "https://api.anthropic.com"
     elif provider == "openrouter":
         base_url = base_url or OPENROUTER_BASE_URL
+    elif provider == "xai":
+        api_mode = "codex_responses"
     elif provider == "nous":
         api_mode = "chat_completions"
     elif provider == "copilot":
         api_mode = _copilot_runtime_api_mode(model_cfg, getattr(entry, "runtime_api_key", ""))
+        base_url = base_url or PROVIDER_REGISTRY["copilot"].inference_base_url
     else:
         configured_provider = str(model_cfg.get("provider") or "").strip().lower()
         # Honour model.base_url from config.yaml when the configured provider
@@ -627,6 +636,8 @@ def _resolve_explicit_runtime(
         api_mode = "chat_completions"
         if provider == "copilot":
             api_mode = _copilot_runtime_api_mode(model_cfg, api_key)
+        elif provider == "xai":
+            api_mode = "codex_responses"
         else:
             configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
             if configured_mode:
@@ -797,6 +808,26 @@ def resolve_runtime_provider(
             logger.info("Qwen OAuth credentials failed; "
                         "falling through to next provider.")
 
+    if provider == "google-gemini-cli":
+        try:
+            creds = resolve_gemini_oauth_runtime_credentials()
+            return {
+                "provider": "google-gemini-cli",
+                "api_mode": "chat_completions",
+                "base_url": creds.get("base_url", ""),
+                "api_key": creds.get("api_key", ""),
+                "source": creds.get("source", "google-oauth"),
+                "expires_at_ms": creds.get("expires_at_ms"),
+                "email": creds.get("email", ""),
+                "project_id": creds.get("project_id", ""),
+                "requested_provider": requested_provider,
+            }
+        except AuthError:
+            if requested_provider != "auto":
+                raise
+            logger.info("Google Gemini OAuth credentials failed; "
+                        "falling through to next provider.")
+
     if provider == "copilot-acp":
         creds = resolve_external_process_provider_credentials(provider)
         return {
@@ -836,6 +867,77 @@ def resolve_runtime_provider(
             "requested_provider": requested_provider,
         }
 
+    # AWS Bedrock (native Converse API via boto3)
+    if provider == "bedrock":
+        from agent.bedrock_adapter import (
+            has_aws_credentials,
+            resolve_aws_auth_env_var,
+            resolve_bedrock_region,
+            is_anthropic_bedrock_model,
+        )
+        # When the user explicitly selected bedrock (not auto-detected),
+        # trust boto3's credential chain — it handles IMDS, ECS task roles,
+        # Lambda execution roles, SSO, and other implicit sources that our
+        # env-var check can't detect.
+        is_explicit = requested_provider in ("bedrock", "aws", "aws-bedrock", "amazon-bedrock", "amazon")
+        if not is_explicit and not has_aws_credentials():
+            raise AuthError(
+                "No AWS credentials found for Bedrock. Configure one of:\n"
+                "  - AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY\n"
+                "  - AWS_PROFILE (for SSO / named profiles)\n"
+                "  - IAM instance role (EC2, ECS, Lambda)\n"
+                "Or run 'aws configure' to set up credentials.",
+                code="no_aws_credentials",
+            )
+        # Read bedrock-specific config from config.yaml
+        from hermes_cli.config import load_config as _load_bedrock_config
+        _bedrock_cfg = _load_bedrock_config().get("bedrock", {})
+        # Region priority: config.yaml bedrock.region → env var → us-east-1
+        region = (_bedrock_cfg.get("region") or "").strip() or resolve_bedrock_region()
+        auth_source = resolve_aws_auth_env_var() or "aws-sdk-default-chain"
+        # Build guardrail config if configured
+        _gr = _bedrock_cfg.get("guardrail", {})
+        guardrail_config = None
+        if _gr.get("guardrail_identifier") and _gr.get("guardrail_version"):
+            guardrail_config = {
+                "guardrailIdentifier": _gr["guardrail_identifier"],
+                "guardrailVersion": _gr["guardrail_version"],
+            }
+            if _gr.get("stream_processing_mode"):
+                guardrail_config["streamProcessingMode"] = _gr["stream_processing_mode"]
+            if _gr.get("trace"):
+                guardrail_config["trace"] = _gr["trace"]
+        # Dual-path routing: Claude models use AnthropicBedrock SDK for full
+        # feature parity (prompt caching, thinking budgets, adaptive thinking).
+        # Non-Claude models use the Converse API for multi-model support.
+        _current_model = str(model_cfg.get("default") or "").strip()
+        if is_anthropic_bedrock_model(_current_model):
+            # Claude on Bedrock → AnthropicBedrock SDK → anthropic_messages path
+            runtime = {
+                "provider": "bedrock",
+                "api_mode": "anthropic_messages",
+                "base_url": f"https://bedrock-runtime.{region}.amazonaws.com",
+                "api_key": "aws-sdk",
+                "source": auth_source,
+                "region": region,
+                "bedrock_anthropic": True,  # Signal to use AnthropicBedrock client
+                "requested_provider": requested_provider,
+            }
+        else:
+            # Non-Claude (Nova, DeepSeek, Llama, etc.) → Converse API
+            runtime = {
+                "provider": "bedrock",
+                "api_mode": "bedrock_converse",
+                "base_url": f"https://bedrock-runtime.{region}.amazonaws.com",
+                "api_key": "aws-sdk",
+                "source": auth_source,
+                "region": region,
+                "requested_provider": requested_provider,
+            }
+        if guardrail_config:
+            runtime["guardrail_config"] = guardrail_config
+        return runtime
+
     # API-key providers (z.ai/GLM, Kimi, MiniMax, MiniMax-CN)
     pconfig = PROVIDER_REGISTRY.get(provider)
     if pconfig and pconfig.auth_type == "api_key":
@@ -852,6 +954,8 @@ def resolve_runtime_provider(
         api_mode = "chat_completions"
         if provider == "copilot":
             api_mode = _copilot_runtime_api_mode(model_cfg, creds.get("api_key", ""))
+        elif provider == "xai":
+            api_mode = "codex_responses"
         else:
             configured_provider = str(model_cfg.get("provider") or "").strip().lower()
             # Only honor persisted api_mode when it belongs to the same provider family.

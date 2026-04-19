@@ -6,6 +6,7 @@ and implement the required methods.
 """
 
 import asyncio
+import inspect
 import ipaddress
 import logging
 import os
@@ -669,6 +670,15 @@ class MessageEvent:
     # Original platform data
     raw_message: Any = None
     message_id: Optional[str] = None
+
+    # Platform-specific update identifier.  For Telegram this is the
+    # ``update_id`` from the PTB Update wrapper; other platforms currently
+    # ignore it.  Used by ``/restart`` to record the triggering update so the
+    # new gateway can advance the Telegram offset past it and avoid processing
+    # the same ``/restart`` twice if PTB's graceful-shutdown ACK times out
+    # ("Error while calling `get_updates` one more time to mark all fetched
+    # updates" in gateway.log).
+    platform_update_id: Optional[int] = None
     
     # Media attachments
     # media_urls: local file paths (for vision tool access)
@@ -682,6 +692,10 @@ class MessageEvent:
     # Auto-loaded skill(s) for topic/channel bindings (e.g., Telegram DM Topics,
     # Discord channel_skill_bindings).  A single name or ordered list.
     auto_skill: Optional[str | list[str]] = None
+
+    # Per-channel ephemeral system prompt (e.g. Discord channel_prompts).
+    # Applied at API call time and never persisted to transcript history.
+    channel_prompt: Optional[str] = None
     
     # Internal flag — set for synthetic events (e.g. background process
     # completion notifications) that must bypass user authorization checks.
@@ -730,25 +744,56 @@ def merge_pending_message_event(
     pending_messages: Dict[str, MessageEvent],
     session_key: str,
     event: MessageEvent,
+    *,
+    merge_text: bool = False,
 ) -> None:
     """Store or merge a pending event for a session.
 
     Photo bursts/albums often arrive as multiple near-simultaneous PHOTO
     events. Merge those into the existing queued event so the next turn sees
-    the whole burst, while non-photo follow-ups still replace the pending
-    event normally.
+    the whole burst.
+
+    When ``merge_text`` is enabled, rapid follow-up TEXT events are appended
+    instead of replacing the pending turn. This is used for Telegram bursty
+    follow-ups so a multi-part user thought is not silently truncated to only
+    the last queued fragment.
     """
     existing = pending_messages.get(session_key)
-    if (
-        existing
-        and getattr(existing, "message_type", None) == MessageType.PHOTO
-        and event.message_type == MessageType.PHOTO
-    ):
-        existing.media_urls.extend(event.media_urls)
-        existing.media_types.extend(event.media_types)
-        if event.text:
-            existing.text = BasePlatformAdapter._merge_caption(existing.text, event.text)
-        return
+    if existing:
+        existing_is_photo = getattr(existing, "message_type", None) == MessageType.PHOTO
+        incoming_is_photo = event.message_type == MessageType.PHOTO
+        existing_has_media = bool(existing.media_urls)
+        incoming_has_media = bool(event.media_urls)
+
+        if existing_is_photo and incoming_is_photo:
+            existing.media_urls.extend(event.media_urls)
+            existing.media_types.extend(event.media_types)
+            if event.text:
+                existing.text = BasePlatformAdapter._merge_caption(existing.text, event.text)
+            return
+
+        if existing_has_media or incoming_has_media:
+            if incoming_has_media:
+                existing.media_urls.extend(event.media_urls)
+                existing.media_types.extend(event.media_types)
+            if event.text:
+                if existing.text:
+                    existing.text = BasePlatformAdapter._merge_caption(existing.text, event.text)
+                else:
+                    existing.text = event.text
+            if existing_is_photo or incoming_is_photo:
+                existing.message_type = MessageType.PHOTO
+            return
+
+        if (
+            merge_text
+            and getattr(existing, "message_type", None) == MessageType.TEXT
+            and event.message_type == MessageType.TEXT
+        ):
+            if event.text:
+                existing.text = f"{existing.text}\n{event.text}" if existing.text else event.text
+            return
+
     pending_messages[session_key] = event
 
 
@@ -774,6 +819,36 @@ _RETRYABLE_ERROR_PATTERNS = (
 
 # Type for message handlers
 MessageHandler = Callable[[MessageEvent], Awaitable[Optional[str]]]
+
+
+def resolve_channel_prompt(
+    config_extra: dict,
+    channel_id: str,
+    parent_id: str | None = None,
+) -> str | None:
+    """Resolve a per-channel ephemeral prompt from platform config.
+
+    Looks up ``channel_prompts`` in the adapter's ``config.extra`` dict.
+    Prefers an exact match on *channel_id*; falls back to *parent_id*
+    (useful for forum threads / child channels inheriting a parent prompt).
+
+    Returns the prompt string, or None if no match is found.  Blank/whitespace-
+    only prompts are treated as absent.
+    """
+    prompts = config_extra.get("channel_prompts") or {}
+    if not isinstance(prompts, dict):
+        return None
+
+    for key in (channel_id, parent_id):
+        if not key:
+            continue
+        prompt = prompts.get(key)
+        if prompt is None:
+            continue
+        prompt = str(prompt).strip()
+        if prompt:
+            return prompt
+    return None
 
 
 class BasePlatformAdapter(ABC):
@@ -805,6 +880,12 @@ class BasePlatformAdapter(ABC):
         # Gateway shutdown cancels these so an old gateway instance doesn't keep
         # working on a task after --replace or manual restarts.
         self._background_tasks: set[asyncio.Task] = set()
+        # One-shot callbacks to fire after the main response is delivered.
+        # Keyed by session_key. Values are either a bare callback (legacy) or
+        # a ``(generation, callback)`` tuple so GatewayRunner can make deferred
+        # deliveries generation-aware and avoid stale runs clearing callbacks
+        # registered by a fresher run for the same session.
+        self._post_delivery_callbacks: Dict[str, Any] = {}
         self._expected_cancelled_tasks: set[asyncio.Task] = set()
         self._busy_session_handler: Optional[Callable[[MessageEvent, str], Awaitable[bool]]] = None
         # Chats where auto-TTS on voice input is disabled (set by /voice off)
@@ -975,16 +1056,40 @@ class BasePlatformAdapter(ABC):
         """
         pass
 
+    # Default: the adapter treats ``finalize=True`` on edit_message as a
+    # no-op and is happy to have the stream consumer skip redundant final
+    # edits.  Subclasses that *require* an explicit finalize call to close
+    # out the message lifecycle (e.g. rich card / AI assistant surfaces
+    # such as DingTalk AI Cards) override this to True (class attribute or
+    # property) so the stream consumer knows not to short-circuit.
+    REQUIRES_EDIT_FINALIZE: bool = False
+
     async def edit_message(
         self,
         chat_id: str,
         message_id: str,
         content: str,
+        *,
+        finalize: bool = False,
     ) -> SendResult:
         """
         Edit a previously sent message. Optional — platforms that don't
         support editing return success=False and callers fall back to
         sending a new message.
+
+        ``finalize`` signals that this is the last edit in a streaming
+        sequence.  Most platforms (Telegram, Slack, Discord, Matrix,
+        etc.) treat it as a no-op because their edit APIs have no notion
+        of message lifecycle state — an edit is an edit.  Platforms that
+        render streaming updates with a distinct "in progress" state and
+        require explicit closure (e.g. rich card / AI assistant surfaces
+        such as DingTalk AI Cards) use it to finalize the message and
+        transition the UI out of the streaming indicator — those should
+        also set ``REQUIRES_EDIT_FINALIZE = True`` so callers route a
+        final edit through even when content is unchanged.  Callers
+        should set ``finalize=True`` on the final edit of a streamed
+        response (typically when ``got_done`` fires in the stream
+        consumer) and leave it ``False`` on intermediate edits.
         """
         return SendResult(success=False, error="Not supported")
 
@@ -1221,7 +1326,7 @@ class BasePlatformAdapter(ABC):
                 path = path[1:-1].strip()
             path = path.lstrip("`\"'").rstrip("`\"',.;:)}]")
             if path:
-                media.append((path, has_voice_tag))
+                media.append((os.path.expanduser(path), has_voice_tag))
 
         # Remove MEDIA tags from content (including surrounding quote/backtick wrappers)
         if media:
@@ -1298,7 +1403,13 @@ class BasePlatformAdapter(ABC):
 
         return paths, cleaned
 
-    async def _keep_typing(self, chat_id: str, interval: float = 2.0, metadata=None) -> None:
+    async def _keep_typing(
+        self,
+        chat_id: str,
+        interval: float = 2.0,
+        metadata=None,
+        stop_event: asyncio.Event | None = None,
+    ) -> None:
         """
         Continuously send typing indicator until cancelled.
         
@@ -1312,9 +1423,18 @@ class BasePlatformAdapter(ABC):
         """
         try:
             while True:
+                if stop_event is not None and stop_event.is_set():
+                    return
                 if chat_id not in self._typing_paused:
                     await self.send_typing(chat_id, metadata=metadata)
-                await asyncio.sleep(interval)
+                if stop_event is None:
+                    await asyncio.sleep(interval)
+                    continue
+                try:
+                    await asyncio.wait_for(stop_event.wait(), timeout=interval)
+                except asyncio.TimeoutError:
+                    continue
+                return
         except asyncio.CancelledError:
             pass  # Normal cancellation when handler completes
         finally:
@@ -1340,6 +1460,59 @@ class BasePlatformAdapter(ABC):
     def resume_typing_for_chat(self, chat_id: str) -> None:
         """Resume typing indicator for a chat after approval resolves."""
         self._typing_paused.discard(chat_id)
+
+    async def interrupt_session_activity(self, session_key: str, chat_id: str) -> None:
+        """Signal the active session loop to stop and clear typing immediately."""
+        if session_key:
+            interrupt_event = self._active_sessions.get(session_key)
+            if interrupt_event is not None:
+                interrupt_event.set()
+        try:
+            await self.stop_typing(chat_id)
+        except Exception:
+            pass
+
+    def register_post_delivery_callback(
+        self,
+        session_key: str,
+        callback: Callable,
+        *,
+        generation: int | None = None,
+    ) -> None:
+        """Register a deferred callback to fire after the main response.
+
+        ``generation`` lets callers tie the callback to a specific gateway run
+        generation so stale runs cannot clear callbacks owned by a fresher run.
+        """
+        if not session_key or not callable(callback):
+            return
+        if generation is None:
+            self._post_delivery_callbacks[session_key] = callback
+        else:
+            self._post_delivery_callbacks[session_key] = (int(generation), callback)
+
+    def pop_post_delivery_callback(
+        self,
+        session_key: str,
+        *,
+        generation: int | None = None,
+    ) -> Callable | None:
+        """Pop a deferred callback, optionally requiring generation ownership."""
+        if not session_key:
+            return None
+        entry = self._post_delivery_callbacks.get(session_key)
+        if entry is None:
+            return None
+        if isinstance(entry, tuple) and len(entry) == 2:
+            entry_generation, callback = entry
+            if generation is not None and int(entry_generation) != int(generation):
+                return None
+            self._post_delivery_callbacks.pop(session_key, None)
+            return callback if callable(callback) else None
+        if generation is not None:
+            return None
+        self._post_delivery_callbacks.pop(session_key, None)
+        return entry if callable(entry) else None
 
     # ── Processing lifecycle hooks ──────────────────────────────────────────
     # Subclasses override these to react to message processing events
@@ -1509,7 +1682,9 @@ class BasePlatformAdapter(ABC):
             # session lifecycle and its cleanup races with the running task
             # (see PR #4926).
             cmd = event.get_command()
-            if cmd in ("approve", "deny", "status", "stop", "new", "reset", "background", "restart"):
+            from hermes_cli.commands import should_bypass_active_session
+
+            if should_bypass_active_session(cmd):
                 logger.debug(
                     "[%s] Command '/%s' bypassing active-session guard for %s",
                     self.name, cmd, session_key,
@@ -1609,10 +1784,23 @@ class BasePlatformAdapter(ABC):
         # Fall back to a new Event only if the entry was removed externally.
         interrupt_event = self._active_sessions.get(session_key) or asyncio.Event()
         self._active_sessions[session_key] = interrupt_event
+        callback_generation = getattr(interrupt_event, "_hermes_run_generation", None)
         
         # Start continuous typing indicator (refreshes every 2 seconds)
         _thread_metadata = {"thread_id": event.source.thread_id} if event.source.thread_id else None
-        typing_task = asyncio.create_task(self._keep_typing(event.source.chat_id, metadata=_thread_metadata))
+        _keep_typing_kwargs = {"metadata": _thread_metadata}
+        try:
+            _keep_typing_sig = inspect.signature(self._keep_typing)
+        except (TypeError, ValueError):
+            _keep_typing_sig = None
+        if _keep_typing_sig is None or "stop_event" in _keep_typing_sig.parameters:
+            _keep_typing_kwargs["stop_event"] = interrupt_event
+        typing_task = asyncio.create_task(
+            self._keep_typing(
+                event.source.chat_id,
+                **_keep_typing_kwargs,
+            )
+        )
         
         try:
             await self._run_processing_hook("on_processing_start", event)
@@ -1624,6 +1812,21 @@ class BasePlatformAdapter(ABC):
             # streaming already delivered the text (already_sent=True) or
             # when the message was queued behind an active agent.  Log at
             # DEBUG to avoid noisy warnings for expected behavior.
+            #
+            # Suppress stale response when the session was interrupted by a
+            # new message that hasn't been consumed yet.  The pending message
+            # is processed by the pending-message handler below (#8221/#2483).
+            if (
+                response
+                and interrupt_event.is_set()
+                and session_key in self._pending_messages
+            ):
+                logger.info(
+                    "[%s] Suppressing stale response for interrupted session %s",
+                    self.name,
+                    session_key,
+                )
+                response = None
             if not response:
                 logger.debug("[%s] Handler returned empty/None response for %s", self.name, event.source.chat_id)
             if response:
@@ -1806,9 +2009,18 @@ class BasePlatformAdapter(ABC):
             if session_key in self._pending_messages:
                 pending_event = self._pending_messages.pop(session_key)
                 logger.debug("[%s] Processing queued message from interrupt", self.name)
-                # Clean up current session before processing pending
-                if session_key in self._active_sessions:
-                    del self._active_sessions[session_key]
+                # Keep the _active_sessions entry live across the turn chain
+                # and only CLEAR the interrupt Event — do NOT delete the entry.
+                # If we deleted here, a concurrent inbound message arriving
+                # during the awaits below would pass the Level-1 guard, spawn
+                # its own _process_message_background, and run simultaneously
+                # with the recursive drain below.  Two agents on one
+                # session_key = duplicate responses, duplicate tool calls.
+                # Clearing the Event keeps the guard live so follow-ups take
+                # the busy-handler path (queue + interrupt) as intended.
+                _active = self._active_sessions.get(session_key)
+                if _active is not None:
+                    _active.clear()
                 typing_task.cancel()
                 try:
                     await typing_task
@@ -1845,6 +2057,21 @@ class BasePlatformAdapter(ABC):
             except Exception:
                 pass  # Last resort — don't let error reporting crash the handler
         finally:
+            # Fire any one-shot post-delivery callback registered for this
+            # session (e.g. deferred background-review notifications).
+            _callback_generation = callback_generation
+            if hasattr(self, "pop_post_delivery_callback"):
+                _post_cb = self.pop_post_delivery_callback(
+                    session_key,
+                    generation=_callback_generation,
+                )
+            else:
+                _post_cb = getattr(self, "_post_delivery_callbacks", {}).pop(session_key, None)
+            if callable(_post_cb):
+                try:
+                    _post_cb()
+                except Exception:
+                    pass
             # Stop typing indicator
             typing_task.cancel()
             try:
@@ -1858,9 +2085,37 @@ class BasePlatformAdapter(ABC):
                     await self.stop_typing(event.source.chat_id)
             except Exception:
                 pass
-            # Clean up session tracking
-            if session_key in self._active_sessions:
-                del self._active_sessions[session_key]
+            # Late-arrival drain: a message may have arrived during the
+            # cleanup awaits above (typing_task cancel, stop_typing).  Such
+            # messages passed the Level-1 guard (entry still live, Event
+            # possibly set) and landed in _pending_messages via the
+            # busy-handler path.  Without this block, we would delete the
+            # active-session entry and the queued message would be silently
+            # dropped (user never gets a reply).
+            late_pending = self._pending_messages.pop(session_key, None)
+            if late_pending is not None:
+                logger.debug(
+                    "[%s] Late-arrival pending message during cleanup — spawning drain task",
+                    self.name,
+                )
+                _active = self._active_sessions.get(session_key)
+                if _active is not None:
+                    _active.clear()
+                drain_task = asyncio.create_task(
+                    self._process_message_background(late_pending, session_key)
+                )
+                try:
+                    self._background_tasks.add(drain_task)
+                    drain_task.add_done_callback(self._background_tasks.discard)
+                except TypeError:
+                    # Tests stub create_task() with non-hashable sentinels; tolerate.
+                    pass
+                # Leave _active_sessions[session_key] populated — the drain
+                # task's own lifecycle will clean it up.
+            else:
+                # Clean up session tracking
+                if session_key in self._active_sessions:
+                    del self._active_sessions[session_key]
     
     async def cancel_background_tasks(self) -> None:
         """Cancel any in-flight background message-processing tasks.
@@ -1868,12 +2123,26 @@ class BasePlatformAdapter(ABC):
         Used during gateway shutdown/replacement so active sessions from the old
         process do not keep running after adapters are being torn down.
         """
-        tasks = [task for task in self._background_tasks if not task.done()]
-        for task in tasks:
-            self._expected_cancelled_tasks.add(task)
-            task.cancel()
-        if tasks:
+        # Loop until no new tasks appear.  Without this, a message
+        # arriving during the `await asyncio.gather` below would spawn
+        # a fresh _process_message_background task (added to
+        # self._background_tasks at line ~1668 via handle_message),
+        # and the _background_tasks.clear() at the end of this method
+        # would drop the reference — the task runs untracked against a
+        # disconnecting adapter, logs send-failures, and may linger
+        # until it completes on its own.  Retrying the drain until the
+        # task set stabilizes closes the window.
+        MAX_DRAIN_ROUNDS = 5
+        for _ in range(MAX_DRAIN_ROUNDS):
+            tasks = [task for task in self._background_tasks if not task.done()]
+            if not tasks:
+                break
+            for task in tasks:
+                self._expected_cancelled_tasks.add(task)
+                task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
+            # Loop: late-arrival tasks spawned during the gather above
+            # will be in self._background_tasks now.  Re-check.
         self._background_tasks.clear()
         self._expected_cancelled_tasks.clear()
         self._pending_messages.clear()
@@ -1898,6 +2167,7 @@ class BasePlatformAdapter(ABC):
         chat_topic: Optional[str] = None,
         user_id_alt: Optional[str] = None,
         chat_id_alt: Optional[str] = None,
+        is_bot: bool = False,
     ) -> SessionSource:
         """Helper to build a SessionSource for this platform."""
         # Normalize empty topic to None
@@ -1914,6 +2184,7 @@ class BasePlatformAdapter(ABC):
             chat_topic=chat_topic.strip() if chat_topic else None,
             user_id_alt=user_id_alt,
             chat_id_alt=chat_id_alt,
+            is_bot=is_bot,
         )
     
     @abstractmethod

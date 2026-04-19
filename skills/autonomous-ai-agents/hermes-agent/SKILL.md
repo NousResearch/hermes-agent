@@ -313,7 +313,7 @@ Type these during an interactive chat session.
 ```
 ~/.hermes/config.yaml       Main configuration
 ~/.hermes/.env              API keys and secrets
-~/.hermes/skills/           Installed skills
+$HERMES_HOME/skills/        Installed skills
 ~/.hermes/sessions/         Session transcripts
 ~/.hermes/logs/             Gateway and error logs
 ~/.hermes/auth.json         OAuth tokens and credential pools
@@ -351,8 +351,8 @@ Full config reference: https://hermes-agent.nousresearch.com/docs/user-guide/con
 |----------|------|-------------|
 | OpenRouter | API key | `OPENROUTER_API_KEY` |
 | Anthropic | API key | `ANTHROPIC_API_KEY` |
-| Nous Portal | OAuth | `hermes login --provider nous` |
-| OpenAI Codex | OAuth | `hermes login --provider openai-codex` |
+| Nous Portal | OAuth | `hermes auth` |
+| OpenAI Codex | OAuth | `hermes auth` |
 | GitHub Copilot | Token | `COPILOT_GITHUB_TOKEN` |
 | Google Gemini | API key | `GOOGLE_API_KEY` or `GEMINI_API_KEY` |
 | DeepSeek | API key | `DEEPSEEK_API_KEY` |
@@ -650,9 +650,9 @@ registry.register(
 )
 ```
 
-**2. Add import** in `model_tools.py` → `_discover_tools()` list.
+**2. Add to `toolsets.py`** → `_HERMES_CORE_TOOLS` list.
 
-**3. Add to `toolsets.py`** → `_HERMES_CORE_TOOLS` list.
+Auto-discovery: any `tools/*.py` file with a top-level `registry.register()` call is imported automatically — no manual list needed.
 
 All handlers must return JSON strings. Use `get_hermes_home()` for paths, never hardcode `~/.hermes`.
 

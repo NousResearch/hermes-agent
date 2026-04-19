@@ -2,8 +2,10 @@
 
 import json
 import threading
+from pathlib import Path
+from unittest.mock import patch
 
-from tools.registry import ToolRegistry
+from tools.registry import ToolRegistry, discover_builtin_tools
 
 
 def _dummy_handler(args, **kwargs):
@@ -284,6 +286,76 @@ class TestCheckFnExceptionHandling:
         available, unavailable = reg.check_tool_availability()
         assert "works" in available
         assert any(u["name"] == "crashes" for u in unavailable)
+
+
+class TestBuiltinDiscovery:
+    def test_matches_previous_manual_builtin_tool_set(self):
+        expected = {
+            "tools.browser_tool",
+            "tools.clarify_tool",
+            "tools.code_execution_tool",
+            "tools.cronjob_tools",
+            "tools.delegate_tool",
+            "tools.feishu_doc_tool",
+            "tools.feishu_drive_tool",
+            "tools.file_tools",
+            "tools.homeassistant_tool",
+            "tools.image_generation_tool",
+            "tools.memory_tool",
+            "tools.mixture_of_agents_tool",
+            "tools.process_registry",
+            "tools.rl_training_tool",
+            "tools.send_message_tool",
+            "tools.session_search_tool",
+            "tools.skill_manager_tool",
+            "tools.skills_tool",
+            "tools.terminal_tool",
+            "tools.todo_tool",
+            "tools.tts_tool",
+            "tools.vision_tools",
+            "tools.web_tools",
+        }
+
+        with patch("tools.registry.importlib.import_module"):
+            imported = discover_builtin_tools(Path(__file__).resolve().parents[2] / "tools")
+
+        assert set(imported) == expected
+
+    def test_imports_only_self_registering_modules(self, tmp_path):
+        tools_dir = tmp_path / "tools"
+        tools_dir.mkdir()
+        (tools_dir / "__init__.py").write_text("", encoding="utf-8")
+        (tools_dir / "registry.py").write_text("", encoding="utf-8")
+        (tools_dir / "alpha.py").write_text(
+            "from tools.registry import registry\nregistry.register(name='alpha', toolset='x', schema={}, handler=lambda *_a, **_k: '{}')\n",
+            encoding="utf-8",
+        )
+        (tools_dir / "beta.py").write_text("VALUE = 1\n", encoding="utf-8")
+
+        with patch("tools.registry.importlib.import_module") as mock_import:
+            imported = discover_builtin_tools(tools_dir)
+
+        assert imported == ["tools.alpha"]
+        mock_import.assert_called_once_with("tools.alpha")
+
+    def test_skips_mcp_tool_even_if_it_registers(self, tmp_path):
+        tools_dir = tmp_path / "tools"
+        tools_dir.mkdir()
+        (tools_dir / "__init__.py").write_text("", encoding="utf-8")
+        (tools_dir / "mcp_tool.py").write_text(
+            "from tools.registry import registry\nregistry.register(name='mcp_alpha', toolset='mcp-test', schema={}, handler=lambda *_a, **_k: '{}')\n",
+            encoding="utf-8",
+        )
+        (tools_dir / "alpha.py").write_text(
+            "from tools.registry import registry\nregistry.register(name='alpha', toolset='x', schema={}, handler=lambda *_a, **_k: '{}')\n",
+            encoding="utf-8",
+        )
+
+        with patch("tools.registry.importlib.import_module") as mock_import:
+            imported = discover_builtin_tools(tools_dir)
+
+        assert imported == ["tools.alpha"]
+        mock_import.assert_called_once_with("tools.alpha")
 
 
 class TestEmojiMetadata:

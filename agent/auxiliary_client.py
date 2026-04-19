@@ -788,11 +788,19 @@ class _ChatGptWebCompletionsAdapter:
         model: str,
         base_url: str,
         session_token: str = "",
+        cookie_header: str = "",
+        browser_cookies=None,
+        user_agent: str = "",
+        device_id: str = "",
     ):
         self._access_token = access_token
         self._model = model
         self._base_url = base_url
         self._session_token = session_token
+        self._cookie_header = cookie_header
+        self._browser_cookies = browser_cookies
+        self._user_agent = user_agent
+        self._device_id = device_id
 
     def create(self, **kwargs) -> Any:
         messages = kwargs.get("messages", []) or []
@@ -828,6 +836,10 @@ class _ChatGptWebCompletionsAdapter:
             messages=payload_messages,
             instructions=instructions,
             session_token=self._session_token,
+            cookie_header=self._cookie_header,
+            browser_cookies=self._browser_cookies,
+            user_agent=self._user_agent,
+            device_id=self._device_id,
             timeout=timeout,
             history_and_training_disabled=True,
         )
@@ -862,7 +874,18 @@ class _ChatGptWebChatShim:
 class ChatGptWebAuxiliaryClient:
     """OpenAI-client-compatible wrapper over ChatGPT Web transport."""
 
-    def __init__(self, *, access_token: str, model: str, base_url: str, session_token: str = ""):
+    def __init__(
+        self,
+        *,
+        access_token: str,
+        model: str,
+        base_url: str,
+        session_token: str = "",
+        cookie_header: str = "",
+        browser_cookies=None,
+        user_agent: str = "",
+        device_id: str = "",
+    ):
         self._access_token = access_token
         self._session_token = session_token
         self.api_key = access_token
@@ -873,6 +896,10 @@ class ChatGptWebAuxiliaryClient:
                 model=model,
                 base_url=base_url,
                 session_token=session_token,
+                cookie_header=cookie_header,
+                browser_cookies=browser_cookies,
+                user_agent=user_agent,
+                device_id=device_id,
             )
         )
 
@@ -3550,6 +3577,10 @@ def resolve_provider_client(
             )
             return None, None
         session_token = str(creds.get("session_token") or os.getenv("CHATGPT_WEB_SESSION_TOKEN", "")).strip()
+        cookie_header = str(creds.get("cookie_header") or os.getenv("CHATGPT_WEB_COOKIE_HEADER", "")).strip()
+        browser_cookies = creds.get("browser_cookies")
+        user_agent = str(creds.get("user_agent") or os.getenv("CHATGPT_WEB_USER_AGENT", "")).strip()
+        device_id = str(creds.get("device_id") or os.getenv("CHATGPT_WEB_DEVICE_ID", "")).strip()
         resolved_base = str(
             explicit_base_url or creds.get("base_url") or "https://chatgpt.com/backend-api/f"
         ).strip().rstrip("/")
@@ -3562,6 +3593,10 @@ def resolve_provider_client(
             model=final_model,
             base_url=resolved_base,
             session_token=session_token,
+            cookie_header=cookie_header,
+            browser_cookies=browser_cookies,
+            user_agent=user_agent,
+            device_id=device_id,
         )
         return (_to_async_client(client, final_model) if async_mode else (client, final_model))
 

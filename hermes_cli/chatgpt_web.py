@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import copy
 import hashlib
@@ -9,14 +10,21 @@ import json
 import os
 import random
 import time
+import urllib.parse
+import urllib.request
 import uuid
 from collections import OrderedDict
 from contextlib import nullcontext
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Iterable, Optional
 
 import httpx
+
+try:
+    import websockets
+except ImportError:
+    websockets = None  # type: ignore[assignment]
 
 DEFAULT_CHATGPT_WEB_BASE_URL = "https://chatgpt.com/backend-api/f"
 DEFAULT_CHATGPT_WEB_MODELS = [
@@ -60,8 +68,9 @@ def _parse_cookie_header(raw_cookie_header: str) -> "OrderedDict[str, str]":
             continue
         name, value = chunk.split("=", 1)
         name = name.strip()
-        if name:
-            cookies[name] = value.strip()
+        if not name:
+            continue
+        cookies[name] = value.strip()
     return cookies
 
 
@@ -84,17 +93,19 @@ def _normalize_browser_cookies(browser_cookies: Any) -> list[dict[str, Any]]:
             continue
         name = str(item.get("name") or "").strip()
         value = str(item.get("value") or "").strip()
+        domain = str(item.get("domain") or "").strip()
+        path = str(item.get("path") or "").strip() or "/"
         if not name or not value:
             continue
-        domain = str(item.get("domain") or "").strip()
-        path = str(item.get("path") or "").strip()
         key = (name, domain, path)
         if key in seen:
             continue
         seen.add(key)
-        normalized_item = dict(item)
-        normalized_item["name"] = name
-        normalized_item["value"] = value
+        normalized_item: dict[str, Any] = {"name": name, "value": value}
+        if domain:
+            normalized_item["domain"] = domain
+        if path:
+            normalized_item["path"] = path
         normalized.append(normalized_item)
     return normalized
 
@@ -123,14 +134,118 @@ def _build_cookie_header(
     return "; ".join(f"{name}={value}" for name, value in cookies.items())
 
 
+async def _chatgpt_web_browser_fetch(
+    *,
+    debug_base: str,
+    url: str,
+    method: str = "GET",
+    headers: Optional[dict[str, str]] = None,
+    json_body: Any = None,
+) -> dict[str, Any]:
+    if websockets is None:
+        raise RuntimeError("Python package 'websockets' is required for browser-backed ChatGPT Web transport")
+
+    with urllib.request.urlopen(f"{debug_base}/json/list", timeout=5) as response:
+        pages = json.load(response)
+
+    page = None
+    for item in pages:
+        if item.get("type") == "page" and "chatgpt.com" in str(item.get("url") or ""):
+            page = item
+            break
+    if page is None:
+        raise RuntimeError(f"No ChatGPT page is open on {debug_base}")
+
+    ws_url = str(page.get("webSocketDebuggerUrl") or "").strip()
+    if not ws_url:
+        raise RuntimeError(f"ChatGPT page on {debug_base} has no DevTools websocket URL")
+
+    async with websockets.connect(ws_url, max_size=50_000_000) as ws:
+        next_id = 1
+
+        async def send(method_name: str, params: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+            nonlocal next_id
+            payload = {"id": next_id, "method": method_name}
+            if params is not None:
+                payload["params"] = params
+            await ws.send(json.dumps(payload))
+            my_id = next_id
+            next_id += 1
+            while True:
+                message = json.loads(await ws.recv())
+                if message.get("id") == my_id:
+                    return message
+
+        await send("Runtime.enable")
+        expression = (
+            "(async () => {\n"
+            f"  const url = {json.dumps(url)};\n"
+            f"  const method = {json.dumps(str(method or 'GET').upper())};\n"
+            f"  const headers = {json.dumps(headers or {}, ensure_ascii=False)};\n"
+            f"  const jsonBody = {json.dumps(json_body, ensure_ascii=False)};\n"
+            "  const options = {method, headers, credentials: 'include'};\n"
+            "  if (jsonBody !== null) options.body = JSON.stringify(jsonBody);\n"
+            "  const response = await fetch(url, options);\n"
+            "  const text = await response.text();\n"
+            "  return JSON.stringify({status: response.status, ok: response.ok, text});\n"
+            "})()"
+        )
+        result = await send(
+            "Runtime.evaluate",
+            {
+                "expression": expression,
+                "awaitPromise": True,
+                "returnByValue": True,
+            },
+        )
+        payload = result.get("result", {}).get("result", {}).get("value")
+        if not isinstance(payload, str):
+            raise RuntimeError("Browser-backed ChatGPT Web fetch did not return a JSON payload")
+        parsed = json.loads(payload)
+        if not isinstance(parsed, dict):
+            raise RuntimeError("Browser-backed ChatGPT Web fetch returned invalid data")
+        return parsed
+
+
+def _chatgpt_web_browser_fetch_sync(
+    *,
+    debug_base: str,
+    url: str,
+    method: str = "GET",
+    headers: Optional[dict[str, str]] = None,
+    json_body: Any = None,
+) -> dict[str, Any]:
+    return asyncio.run(
+        _chatgpt_web_browser_fetch(
+            debug_base=debug_base,
+            url=url,
+            method=method,
+            headers=headers,
+            json_body=json_body,
+        )
+    )
+
+
+def _raise_for_chatgpt_web_status(url: str, method: str, status_code: int, text: str) -> None:
+    if int(status_code) < 400:
+        return
+    request = httpx.Request(str(method or "GET").upper(), url)
+    response = httpx.Response(status_code=int(status_code), request=request, text=text)
+    raise httpx.HTTPStatusError(
+        f"Client error '{status_code} Forbidden' for url '{url}'" if int(status_code) == 403 else f"HTTP {status_code} for url '{url}'",
+        request=request,
+        response=response,
+    )
+
+
 def _build_chatgpt_web_headers(
     *,
     access_token: str,
     session_token: str = "",
-    cookie_header: str = "",
-    browser_cookies: Any = None,
     user_agent: str = "",
     device_id: str = "",
+    cookie_header: str = "",
+    browser_cookies: Any = None,
     accept: str = "application/json",
 ) -> dict[str, str]:
     resolved_device_id = (
@@ -166,6 +281,8 @@ def _fetch_chatgpt_web_access_token_from_session(
     *,
     user_agent: str = "",
     device_id: str = "",
+    cookie_header: str = "",
+    browser_cookies: Any = None,
     timeout: float = 15.0,
 ) -> str:
     session_token = (session_token or "").strip()
@@ -177,7 +294,12 @@ def _fetch_chatgpt_web_access_token_from_session(
         "Accept": "application/json",
         "User-Agent": user_agent or _default_user_agent(),
         "Oai-Device-Id": did,
-        "Cookie": _build_cookie_header(session_token=session_token, device_id=did),
+        "Cookie": _build_cookie_header(
+            session_token=session_token,
+            device_id=did,
+            cookie_header=cookie_header,
+            browser_cookies=browser_cookies,
+        ),
     }
     response = httpx.get(
         "https://chatgpt.com/api/auth/session",
@@ -198,6 +320,9 @@ def resolve_chatgpt_web_runtime_credentials(*, force_refresh: bool = False) -> d
 
     access_token = os.getenv("CHATGPT_WEB_ACCESS_TOKEN", "").strip()
     session_token = os.getenv("CHATGPT_WEB_SESSION_TOKEN", "").strip()
+    cookie_header = os.getenv("CHATGPT_WEB_COOKIE_HEADER", "").strip()
+    user_agent = os.getenv("CHATGPT_WEB_USER_AGENT", "").strip()
+    device_id = os.getenv("CHATGPT_WEB_DEVICE_ID", "").strip()
     if access_token:
         return {
             "provider": "chatgpt-web",
@@ -205,14 +330,25 @@ def resolve_chatgpt_web_runtime_credentials(*, force_refresh: bool = False) -> d
             "base_url": DEFAULT_CHATGPT_WEB_BASE_URL,
             "source": "access-token",
             "session_token": session_token,
+            "cookie_header": cookie_header,
+            "user_agent": user_agent,
+            "device_id": device_id,
         }
     if session_token:
         return {
             "provider": "chatgpt-web",
-            "api_key": _fetch_chatgpt_web_access_token_from_session(session_token),
+            "api_key": _fetch_chatgpt_web_access_token_from_session(
+                session_token,
+                user_agent=user_agent,
+                device_id=device_id,
+                cookie_header=cookie_header,
+            ),
             "base_url": DEFAULT_CHATGPT_WEB_BASE_URL,
             "source": "session-token",
             "session_token": session_token,
+            "cookie_header": cookie_header,
+            "user_agent": user_agent,
+            "device_id": device_id,
         }
 
     try:
@@ -221,12 +357,25 @@ def resolve_chatgpt_web_runtime_credentials(*, force_refresh: bool = False) -> d
 
         pool = load_pool("chatgpt-web")
         if pool and pool.has_credentials():
-            entry = pool.select()
+            entry = pool.select() or pool.peek()
+            if entry is None:
+                entries = pool.entries()
+                entry = entries[0] if entries else None
             if entry is not None:
                 pool_api_key = str(getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "") or "").strip()
                 pool_session_token = str(getattr(entry, "session_token", "") or "").strip()
+                pool_cookie_header = str(getattr(entry, "cookie_header", "") or "").strip()
+                pool_browser_cookies = getattr(entry, "browser_cookies", None)
+                pool_user_agent = str(getattr(entry, "user_agent", "") or "").strip()
+                pool_device_id = str(getattr(entry, "device_id", "") or "").strip()
                 if pool_session_token and (not pool_api_key or _codex_access_token_is_expiring(pool_api_key, 0)):
-                    pool_api_key = _fetch_chatgpt_web_access_token_from_session(pool_session_token)
+                    pool_api_key = _fetch_chatgpt_web_access_token_from_session(
+                        pool_session_token,
+                        user_agent=pool_user_agent,
+                        device_id=pool_device_id,
+                        cookie_header=pool_cookie_header,
+                        browser_cookies=pool_browser_cookies,
+                    )
                 if pool_api_key:
                     return {
                         "provider": "chatgpt-web",
@@ -234,6 +383,10 @@ def resolve_chatgpt_web_runtime_credentials(*, force_refresh: bool = False) -> d
                         "base_url": (getattr(entry, "runtime_base_url", None) or getattr(entry, "base_url", "") or DEFAULT_CHATGPT_WEB_BASE_URL).rstrip("/"),
                         "source": f"pool:{getattr(entry, 'label', 'unknown')}",
                         "session_token": pool_session_token,
+                        "cookie_header": pool_cookie_header,
+                        "browser_cookies": pool_browser_cookies,
+                        "user_agent": pool_user_agent,
+                        "device_id": pool_device_id,
                     }
     except Exception:
         pass
@@ -247,6 +400,9 @@ def resolve_chatgpt_web_runtime_credentials(*, force_refresh: bool = False) -> d
         "base_url": DEFAULT_CHATGPT_WEB_BASE_URL,
         "source": "codex-oauth",
         "session_token": "",
+        "cookie_header": cookie_header,
+        "user_agent": user_agent,
+        "device_id": device_id,
     }
 
 
@@ -256,20 +412,35 @@ def fetch_chatgpt_web_model_ids(
     session_token: str = "",
     user_agent: str = "",
     device_id: str = "",
+    cookie_header: str = "",
+    browser_cookies: Any = None,
     timeout: float = 15.0,
 ) -> list[str]:
     token = (access_token or "").strip()
     resolved_session = (session_token or os.getenv("CHATGPT_WEB_SESSION_TOKEN", "")).strip()
+    resolved_cookie_header = str(cookie_header or os.getenv("CHATGPT_WEB_COOKIE_HEADER", "")).strip()
+    resolved_browser_cookies = browser_cookies
+    resolved_user_agent = str(user_agent or os.getenv("CHATGPT_WEB_USER_AGENT", "")).strip()
+    resolved_device_id = str(device_id or os.getenv("CHATGPT_WEB_DEVICE_ID", "")).strip()
     if not token:
-        token = resolve_chatgpt_web_runtime_credentials().get("api_key", "")
+        resolved_creds = resolve_chatgpt_web_runtime_credentials()
+        token = str(resolved_creds.get("api_key") or "").strip()
+        resolved_session = str(resolved_session or resolved_creds.get("session_token") or "").strip()
+        resolved_cookie_header = str(resolved_cookie_header or resolved_creds.get("cookie_header") or "").strip()
+        if resolved_browser_cookies is None:
+            resolved_browser_cookies = resolved_creds.get("browser_cookies")
+        resolved_user_agent = str(resolved_user_agent or resolved_creds.get("user_agent") or "").strip()
+        resolved_device_id = str(resolved_device_id or resolved_creds.get("device_id") or "").strip()
     if not token:
         return list(DEFAULT_CHATGPT_WEB_MODELS)
 
     headers = _build_chatgpt_web_headers(
         access_token=token,
         session_token=resolved_session,
-        user_agent=user_agent,
-        device_id=device_id,
+        user_agent=resolved_user_agent,
+        device_id=resolved_device_id,
+        cookie_header=resolved_cookie_header,
+        browser_cookies=resolved_browser_cookies,
     )
     try:
         response = httpx.get(
@@ -346,14 +517,30 @@ def _prepare_conversation(
     if conversation_id:
         payload["conversation_id"] = conversation_id
 
-    response = client.post(
-        "https://chatgpt.com/backend-api/f/conversation/prepare",
-        headers=headers,
-        json=payload,
-    )
-    if response.status_code >= 400:
-        return ""
-    data = response.json()
+    debug_base = _chatgpt_web_debug_base()
+    if debug_base:
+        browser_response = _chatgpt_web_browser_fetch_sync(
+            debug_base=debug_base,
+            url="https://chatgpt.com/backend-api/f/conversation/prepare",
+            method="POST",
+            headers=headers,
+            json_body=payload,
+        )
+        if int(browser_response.get("status") or 0) >= 400:
+            return ""
+        try:
+            data = json.loads(str(browser_response.get("text") or "{}"))
+        except Exception:
+            data = {}
+    else:
+        response = client.post(
+            "https://chatgpt.com/backend-api/f/conversation/prepare",
+            headers=headers,
+            json=payload,
+        )
+        if response.status_code >= 400:
+            return ""
+        data = response.json()
     return str(data.get("conduit_token") or "").strip()
 
 
@@ -362,13 +549,30 @@ def _chat_requirements(
     *,
     headers: dict[str, str],
 ) -> dict[str, Any]:
-    response = client.post(
-        "https://chatgpt.com/backend-api/sentinel/chat-requirements",
-        headers=headers,
-        json={},
-    )
-    response.raise_for_status()
-    payload = response.json()
+    debug_base = _chatgpt_web_debug_base()
+    if debug_base:
+        browser_response = _chatgpt_web_browser_fetch_sync(
+            debug_base=debug_base,
+            url="https://chatgpt.com/backend-api/sentinel/chat-requirements",
+            method="POST",
+            headers=headers,
+            json_body={},
+        )
+        _raise_for_chatgpt_web_status(
+            "https://chatgpt.com/backend-api/sentinel/chat-requirements",
+            "POST",
+            int(browser_response.get("status") or 0),
+            str(browser_response.get("text") or ""),
+        )
+        payload = json.loads(str(browser_response.get("text") or "{}"))
+    else:
+        response = client.post(
+            "https://chatgpt.com/backend-api/sentinel/chat-requirements",
+            headers=headers,
+            json={},
+        )
+        response.raise_for_status()
+        payload = response.json()
     return payload if isinstance(payload, dict) else {}
 
 
@@ -547,12 +751,29 @@ def _fetch_chatgpt_web_conversation(
     headers: dict[str, str],
     conversation_id: str,
 ) -> dict[str, Any]:
-    response = client.get(
-        f"https://chatgpt.com/backend-api/conversation/{conversation_id}",
-        headers=headers,
-    )
-    response.raise_for_status()
-    payload = response.json()
+    url = f"https://chatgpt.com/backend-api/conversation/{conversation_id}"
+    debug_base = _chatgpt_web_debug_base()
+    if debug_base:
+        browser_response = _chatgpt_web_browser_fetch_sync(
+            debug_base=debug_base,
+            url=url,
+            method="GET",
+            headers=headers,
+        )
+        _raise_for_chatgpt_web_status(
+            url,
+            "GET",
+            int(browser_response.get("status") or 0),
+            str(browser_response.get("text") or ""),
+        )
+        payload = json.loads(str(browser_response.get("text") or "{}"))
+    else:
+        response = client.get(
+            url,
+            headers=headers,
+        )
+        response.raise_for_status()
+        payload = response.json()
     return payload if isinstance(payload, dict) else {}
 
 
@@ -610,13 +831,33 @@ def _fetch_chatgpt_web_file_download_link(
     if check_context_scopes_for_conversation_id:
         params["check_context_scopes_for_conversation_id"] = check_context_scopes_for_conversation_id
 
-    response = client.get(
-        f"https://chatgpt.com/backend-api/files/download/{resolved_file_id}",
-        headers=headers,
-        params=params,
-    )
-    response.raise_for_status()
-    payload = response.json()
+    url = f"https://chatgpt.com/backend-api/files/download/{resolved_file_id}"
+    debug_base = _chatgpt_web_debug_base()
+    if debug_base:
+        query = urllib.parse.urlencode(params)
+        if query:
+            url = f"{url}?{query}"
+        browser_response = _chatgpt_web_browser_fetch_sync(
+            debug_base=debug_base,
+            url=url,
+            method="GET",
+            headers=headers,
+        )
+        _raise_for_chatgpt_web_status(
+            url,
+            "GET",
+            int(browser_response.get("status") or 0),
+            str(browser_response.get("text") or ""),
+        )
+        payload = json.loads(str(browser_response.get("text") or "{}"))
+    else:
+        response = client.get(
+            url,
+            headers=headers,
+            params=params,
+        )
+        response.raise_for_status()
+        payload = response.json()
     return payload if isinstance(payload, dict) else {}
 
 
@@ -945,108 +1186,131 @@ def stream_chatgpt_web_completion(
         image_message_ids: list[str] = []
         resolved_images: list[dict[str, Any]] = []
         api_start = time.monotonic()
-        with client.stream(
-            "POST",
-            "https://chatgpt.com/backend-api/f/conversation",
-            headers=headers,
-            json=payload,
-        ) as response:
-            response.raise_for_status()
-            try:
-                for line in response.iter_lines():
-                    if not line:
-                        continue
-                    if isinstance(line, bytes):
-                        line = line.decode("utf-8", "ignore")
-                    if not isinstance(line, str) or not line.startswith("data: "):
-                        continue
-                    raw = line[6:].strip()
-                    if not raw:
-                        continue
-                    if raw == "[DONE]":
-                        break
-                    try:
-                        event = json.loads(raw)
-                    except Exception:
-                        continue
-                    if not isinstance(event, dict):
-                        continue
+        def _consume_event_lines(lines: Iterable[Any]) -> None:
+            nonlocal final_text, assistant_message_id, final_conversation_id
+            nonlocal assistant_message, saw_stream_complete, saw_image_generation
+            nonlocal image_message_ids
+            for line in lines:
+                if not line:
+                    continue
+                if isinstance(line, bytes):
+                    line = line.decode("utf-8", "ignore")
+                if not isinstance(line, str) or not line.startswith("data: "):
+                    continue
+                raw = line[6:].strip()
+                if not raw:
+                    continue
+                if raw == "[DONE]":
+                    break
+                try:
+                    event = json.loads(raw)
+                except Exception:
+                    continue
+                if not isinstance(event, dict):
+                    continue
 
-                    event_conversation_id = str(event.get("conversation_id") or "").strip()
-                    if not event_conversation_id:
-                        nested_v = event.get("v")
-                        if isinstance(nested_v, dict):
-                            event_conversation_id = str(nested_v.get("conversation_id") or "").strip()
-                    if event_conversation_id:
-                        final_conversation_id = event_conversation_id
+                event_conversation_id = str(event.get("conversation_id") or "").strip()
+                if not event_conversation_id:
+                    nested_v = event.get("v")
+                    if isinstance(nested_v, dict):
+                        event_conversation_id = str(nested_v.get("conversation_id") or "").strip()
+                if event_conversation_id:
+                    final_conversation_id = event_conversation_id
 
-                    event_type = str(event.get("type") or "").strip()
-                    if event_type == "message_stream_complete":
-                        saw_stream_complete = True
-                    elif event_type == "server_ste_metadata":
-                        metadata = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
-                        if (
-                            str(metadata.get("tool_name") or "").strip() == "ImageGenToolTemporal"
-                            or str(metadata.get("turn_use_case") or "").strip().lower() == "image gen"
-                        ):
-                            saw_image_generation = True
+                event_type = str(event.get("type") or "").strip()
+                if event_type == "message_stream_complete":
+                    saw_stream_complete = True
+                elif event_type == "server_ste_metadata":
+                    metadata = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
+                    if (
+                        str(metadata.get("tool_name") or "").strip() == "ImageGenToolTemporal"
+                        or str(metadata.get("turn_use_case") or "").strip().lower() == "image gen"
+                    ):
+                        saw_image_generation = True
 
-                    marker_message_id = str(event.get("message_id") or "").strip()
-                    if marker_message_id:
-                        assistant_message_id = marker_message_id
+                marker_message_id = str(event.get("message_id") or "").strip()
+                if marker_message_id:
+                    assistant_message_id = marker_message_id
 
-                    message = _extract_event_message(event)
-                    if isinstance(message, dict):
-                        if _message_suggests_image_generation(message):
-                            saw_image_generation = True
-                            message_id = str(message.get("id") or "").strip()
-                            if message_id and message_id not in image_message_ids:
-                                image_message_ids.append(message_id)
+                message = _extract_event_message(event)
+                if isinstance(message, dict):
+                    if _message_suggests_image_generation(message):
+                        saw_image_generation = True
+                        message_id = str(message.get("id") or "").strip()
+                        if message_id and message_id not in image_message_ids:
+                            image_message_ids.append(message_id)
 
-                        author = message.get("author") if isinstance(message.get("author"), dict) else {}
-                        if author.get("role") == "assistant":
-                            assistant_message = copy.deepcopy(message)
-                            message_id = str(message.get("id") or "").strip()
-                            if message_id:
-                                assistant_message_id = message_id
-                            text = _extract_message_text(assistant_message)
-                            if text:
-                                delta = text[len(final_text):] if text.startswith(final_text) else text
-                                final_text = text
-                                if delta and on_delta is not None:
-                                    on_delta(delta)
-                        continue
-
-                    patch_ops = event.get("v") if isinstance(event.get("v"), list) else None
-                    is_patch_event = (
-                        str(event.get("o") or "").strip().lower() == "patch"
-                        or _looks_like_message_patch_list(patch_ops)
-                    )
-                    if is_patch_event and patch_ops is not None:
-                        if assistant_message is None:
-                            assistant_message = {
-                                "id": assistant_message_id,
-                                "author": {"role": "assistant"},
-                                "content": {"content_type": "text", "parts": [""]},
-                                "metadata": {},
-                            }
-                        for patch_op in patch_ops:
-                            if not isinstance(patch_op, dict):
-                                continue
-                            if not _apply_message_patch(assistant_message, patch_op):
-                                continue
-                            if _message_suggests_image_generation(assistant_message):
-                                saw_image_generation = True
-                            text = _extract_message_text(assistant_message)
-                            if not text:
-                                continue
+                    author = message.get("author") if isinstance(message.get("author"), dict) else {}
+                    if author.get("role") == "assistant":
+                        assistant_message = copy.deepcopy(message)
+                        message_id = str(message.get("id") or "").strip()
+                        if message_id:
+                            assistant_message_id = message_id
+                        text = _extract_message_text(assistant_message)
+                        if text:
                             delta = text[len(final_text):] if text.startswith(final_text) else text
                             final_text = text
                             if delta and on_delta is not None:
                                 on_delta(delta)
-            except httpx.RemoteProtocolError:
-                if not final_text.strip() and not saw_stream_complete:
-                    raise
+                    continue
+
+                patch_ops = event.get("v") if isinstance(event.get("v"), list) else None
+                is_patch_event = (
+                    str(event.get("o") or "").strip().lower() == "patch"
+                    or _looks_like_message_patch_list(patch_ops)
+                )
+                if is_patch_event and patch_ops is not None:
+                    if assistant_message is None:
+                        assistant_message = {
+                            "id": assistant_message_id,
+                            "author": {"role": "assistant"},
+                            "content": {"content_type": "text", "parts": [""]},
+                            "metadata": {},
+                        }
+                    for patch_op in patch_ops:
+                        if not isinstance(patch_op, dict):
+                            continue
+                        if not _apply_message_patch(assistant_message, patch_op):
+                            continue
+                        if _message_suggests_image_generation(assistant_message):
+                            saw_image_generation = True
+                        text = _extract_message_text(assistant_message)
+                        if not text:
+                            continue
+                        delta = text[len(final_text):] if text.startswith(final_text) else text
+                        final_text = text
+                        if delta and on_delta is not None:
+                            on_delta(delta)
+
+        debug_base = _chatgpt_web_debug_base()
+        if debug_base:
+            browser_response = _chatgpt_web_browser_fetch_sync(
+                debug_base=debug_base,
+                url="https://chatgpt.com/backend-api/f/conversation",
+                method="POST",
+                headers=headers,
+                json_body=payload,
+            )
+            _raise_for_chatgpt_web_status(
+                "https://chatgpt.com/backend-api/f/conversation",
+                "POST",
+                int(browser_response.get("status") or 0),
+                str(browser_response.get("text") or ""),
+            )
+            _consume_event_lines(str(browser_response.get("text") or "").splitlines())
+        else:
+            with client.stream(
+                "POST",
+                "https://chatgpt.com/backend-api/f/conversation",
+                headers=headers,
+                json=payload,
+            ) as response:
+                response.raise_for_status()
+                try:
+                    _consume_event_lines(response.iter_lines())
+                except httpx.RemoteProtocolError:
+                    if not final_text.strip() and not saw_stream_complete:
+                        raise
 
         if final_conversation_id and saw_image_generation:
             default_image_timeout = float(os.getenv("CHATGPT_WEB_IMAGE_POLL_TIMEOUT", "240"))

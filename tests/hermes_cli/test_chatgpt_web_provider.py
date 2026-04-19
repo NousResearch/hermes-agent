@@ -104,6 +104,9 @@ def test_resolve_chatgpt_web_runtime_credentials_prefers_session_token_exchange(
     from hermes_cli.chatgpt_web import DEFAULT_CHATGPT_WEB_BASE_URL, resolve_chatgpt_web_runtime_credentials
 
     monkeypatch.setenv("CHATGPT_WEB_SESSION_TOKEN", "session-token")
+    monkeypatch.setenv("CHATGPT_WEB_COOKIE_HEADER", "cf_clearance=cf-cookie; oai-did=device-cookie")
+    monkeypatch.setenv("CHATGPT_WEB_USER_AGENT", "Mozilla/Test")
+    monkeypatch.setenv("CHATGPT_WEB_DEVICE_ID", "device-cookie")
     monkeypatch.delenv("CHATGPT_WEB_ACCESS_TOKEN", raising=False)
     monkeypatch.setattr(
         "hermes_cli.chatgpt_web._fetch_chatgpt_web_access_token_from_session",
@@ -116,6 +119,9 @@ def test_resolve_chatgpt_web_runtime_credentials_prefers_session_token_exchange(
     assert creds["api_key"] == "access-from-session"
     assert creds["base_url"] == DEFAULT_CHATGPT_WEB_BASE_URL
     assert creds["source"] == "session-token"
+    assert creds["cookie_header"] == "cf_clearance=cf-cookie; oai-did=device-cookie"
+    assert creds["user_agent"] == "Mozilla/Test"
+    assert creds["device_id"] == "device-cookie"
 
 
 def test_format_initial_message_keeps_developer_instructions_on_remote_thread():
@@ -380,6 +386,10 @@ def test_resolve_chatgpt_web_runtime_credentials_refreshes_pool_session_token(tm
                             "source": "manual:session_token",
                             "access_token": "",
                             "session_token": "session-cookie-token",
+                            "cookie_header": "cf_clearance=cf-cookie; oai-did=device-cookie",
+                            "browser_cookies": [{"name": "cf_clearance", "value": "cf-cookie"}],
+                            "device_id": "device-cookie",
+                            "user_agent": "Mozilla/Test",
                             "base_url": DEFAULT_CHATGPT_WEB_BASE_URL,
                         }
                     ]
@@ -395,6 +405,32 @@ def test_resolve_chatgpt_web_runtime_credentials_refreshes_pool_session_token(tm
     assert creds["base_url"] == DEFAULT_CHATGPT_WEB_BASE_URL
     assert creds["source"] == "pool:session-cookie"
     assert creds["session_token"] == "session-cookie-token"
+    assert creds["cookie_header"] == "cf_clearance=cf-cookie; oai-did=device-cookie"
+    assert creds["browser_cookies"] == [{"name": "cf_clearance", "value": "cf-cookie"}]
+    assert creds["device_id"] == "device-cookie"
+    assert creds["user_agent"] == "Mozilla/Test"
+
+
+def test_build_chatgpt_web_headers_merge_browser_cookie_state():
+    from hermes_cli.chatgpt_web import _build_chatgpt_web_headers
+
+    headers = _build_chatgpt_web_headers(
+        access_token="chatgpt-web-token",
+        session_token="session-cookie",
+        cookie_header="cf_clearance=cf-cookie",
+        browser_cookies=[{"name": "extra_cookie", "value": "extra-value"}],
+        device_id="device-cookie",
+        user_agent="Mozilla/Test",
+        accept="text/event-stream",
+    )
+
+    assert headers["Authorization"] == "Bearer chatgpt-web-token"
+    assert headers["User-Agent"] == "Mozilla/Test"
+    assert headers["Accept"] == "text/event-stream"
+    assert "cf_clearance=cf-cookie" in headers["Cookie"]
+    assert "extra_cookie=extra-value" in headers["Cookie"]
+    assert "__Secure-next-auth.session-token=session-cookie" in headers["Cookie"]
+    assert "oai-did=device-cookie" in headers["Cookie"]
 
 
 def test_format_initial_message_includes_tool_calls_and_tool_responses():

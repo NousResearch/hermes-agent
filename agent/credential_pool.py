@@ -87,6 +87,7 @@ _EXTRA_KEYS = frozenset({
     "token_type", "scope", "client_id", "portal_base_url", "obtained_at",
     "expires_in", "agent_key_id", "agent_key_expires_in", "agent_key_reused",
     "agent_key_obtained_at", "session_token", "tls",
+    "cookie_header", "browser_cookies", "device_id", "user_agent",
 })
 
 

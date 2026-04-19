@@ -366,6 +366,10 @@ def test_auth_add_chatgpt_web_session_token_persists_pool_entry(tmp_path, monkey
         api_key = "session-cookie"
         label = "cookie-login"
         token_mode = "session_token"
+        cookie_header = "cf_clearance=cf-cookie; oai-did=device-cookie"
+        browser_cookies = [{"name": "cf_clearance", "value": "cf-cookie"}]
+        device_id = "device-cookie"
+        user_agent = "Mozilla/Test"
 
     auth_add_command(_Args())
 
@@ -376,6 +380,10 @@ def test_auth_add_chatgpt_web_session_token_persists_pool_entry(tmp_path, monkey
     assert entry["auth_type"] == "api_key"
     assert entry["access_token"] == token
     assert entry["session_token"] == "session-cookie"
+    assert entry["cookie_header"] == "cf_clearance=cf-cookie; oai-did=device-cookie"
+    assert entry["browser_cookies"] == [{"name": "cf_clearance", "value": "cf-cookie"}]
+    assert entry["device_id"] == "device-cookie"
+    assert entry["user_agent"] == "Mozilla/Test"
     assert entry["base_url"] == DEFAULT_CHATGPT_WEB_BASE_URL
 
 
@@ -411,7 +419,17 @@ def test_auth_browser_command_bootstraps_chatgpt_web_from_termux_browser(tmp_pat
     monkeypatch.setattr(auth_commands_mod, "_find_termux_x11_command", lambda: "/usr/bin/termux-x11")
     monkeypatch.setattr(auth_commands_mod, "_find_chromium_browser_command", lambda: "/usr/bin/chromium-browser")
     monkeypatch.setattr(auth_commands_mod, "_wait_for_debugger", lambda *args, **kwargs: None)
-    monkeypatch.setattr(auth_commands_mod, "_wait_for_chatgpt_web_session_token", lambda *args, **kwargs: "session-cookie")
+    monkeypatch.setattr(
+        auth_commands_mod,
+        "_wait_for_chatgpt_web_browser_auth_state",
+        lambda *args, **kwargs: {
+            "session_token": "session-cookie",
+            "cookie_header": "cf_clearance=cf-cookie; oai-did=device-cookie",
+            "browser_cookies": [{"name": "cf_clearance", "value": "cf-cookie"}],
+            "device_id": "device-cookie",
+            "user_agent": "Mozilla/Test",
+        },
+    )
     monkeypatch.setattr(auth_commands_mod, "_launch_chatgpt_web_browser", lambda *args, **kwargs: fake_proc)
     monkeypatch.setattr(
         auth_commands_mod,
@@ -434,6 +452,10 @@ def test_auth_browser_command_bootstraps_chatgpt_web_from_termux_browser(tmp_pat
     assert captured["args"].token_mode == "session_token"
     assert captured["args"].api_key == "session-cookie"
     assert captured["args"].label == "termux-x11-browser"
+    assert captured["args"].cookie_header == "cf_clearance=cf-cookie; oai-did=device-cookie"
+    assert captured["args"].browser_cookies == [{"name": "cf_clearance", "value": "cf-cookie"}]
+    assert captured["args"].device_id == "device-cookie"
+    assert captured["args"].user_agent == "Mozilla/Test"
     assert "Stored chatgpt-web credential from Termux browser" in output
     assert "credential pool" in output.lower()
     assert "hermes auth list" in output
@@ -470,7 +492,17 @@ def test_auth_browser_command_bootstraps_chatgpt_web_from_windows_browser(tmp_pa
     monkeypatch.setattr(auth_commands_mod, "_find_desktop_browser_command", lambda: "C:/Program Files/Microsoft/Edge/Application/msedge.exe")
     monkeypatch.setattr(auth_commands_mod, "_launch_chatgpt_web_desktop_browser", lambda *args, **kwargs: (fake_proc, ["http://127.0.0.1:9222"]))
     monkeypatch.setattr(auth_commands_mod, "_wait_for_any_debugger", lambda *args, **kwargs: "http://127.0.0.1:9222")
-    monkeypatch.setattr(auth_commands_mod, "_wait_for_chatgpt_web_session_token", lambda *args, **kwargs: "session-cookie")
+    monkeypatch.setattr(
+        auth_commands_mod,
+        "_wait_for_chatgpt_web_browser_auth_state",
+        lambda *args, **kwargs: {
+            "session_token": "session-cookie",
+            "cookie_header": "cf_clearance=cf-cookie; oai-did=device-cookie",
+            "browser_cookies": [{"name": "cf_clearance", "value": "cf-cookie"}],
+            "device_id": "device-cookie",
+            "user_agent": "Mozilla/Test",
+        },
+    )
     monkeypatch.setattr(auth_commands_mod, "auth_add_command", lambda args: captured.setdefault("args", args))
 
     class _Args:
@@ -487,6 +519,10 @@ def test_auth_browser_command_bootstraps_chatgpt_web_from_windows_browser(tmp_pa
     assert captured["args"].token_mode == "session_token"
     assert captured["args"].api_key == "session-cookie"
     assert captured["args"].label == "windows-browser"
+    assert captured["args"].cookie_header == "cf_clearance=cf-cookie; oai-did=device-cookie"
+    assert captured["args"].browser_cookies == [{"name": "cf_clearance", "value": "cf-cookie"}]
+    assert captured["args"].device_id == "device-cookie"
+    assert captured["args"].user_agent == "Mozilla/Test"
     assert "Stored chatgpt-web credential from Windows browser" in output
     assert fake_proc.terminated is True
     assert fake_proc.killed is False

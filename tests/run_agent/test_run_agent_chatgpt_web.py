@@ -204,6 +204,46 @@ def test_build_api_kwargs_chatgpt_web_prefers_terminal_for_platform_details(monk
     assert '"command": "uname -a"' in rewritten_user
 
 
+def test_build_api_kwargs_chatgpt_web_prefers_terminal_for_whoami(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    agent.tools = [
+        {"type": "function", "function": {"name": "terminal", "description": "Run shell commands", "parameters": {"type": "object"}}},
+    ]
+
+    kwargs = agent._build_api_kwargs([
+        {"role": "system", "content": "Be concise."},
+        {"role": "user", "content": "Try terminal tool and check whoami on it"},
+    ])
+
+    rewritten_user = kwargs["messages"][-1]["content"]
+    assert kwargs["history_and_training_disabled"] is True
+    assert 'The tool available for this turn is: terminal.' in rewritten_user
+    assert '"command": "whoami"' in rewritten_user
+    assert "Do not answer the user yet." in rewritten_user
+
+
+def test_wrap_chatgpt_web_response_synthesizes_terminal_call_for_whoami(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    agent.tools = [
+        {"type": "function", "function": {"name": "terminal", "description": "Run shell commands", "parameters": {"type": "object"}}},
+    ]
+
+    agent._build_api_kwargs([
+        {"role": "system", "content": "Be concise."},
+        {"role": "user", "content": "Try terminal tool and check whoami on it"},
+    ])
+
+    wrapped = agent._wrap_chatgpt_web_response({
+        "content": "It seems like there's an issue with accessing the terminal tool right now.",
+        "finish_reason": "stop",
+    })
+
+    tool_calls = wrapped.choices[0].message.tool_calls
+    assert tool_calls is not None
+    assert tool_calls[0].function.name == "terminal"
+    assert json.loads(tool_calls[0].function.arguments) == {"command": "whoami"}
+    assert wrapped.choices[0].message.content == ""
+
 
 def test_build_api_kwargs_chatgpt_web_prefers_memory_for_remember_requests(monkeypatch):
     agent = _build_agent(monkeypatch)
@@ -1495,6 +1535,11 @@ class _FakeHTTPResponse:
 def test_chatgpt_web_download_image_to_dir_uses_auth_headers_for_estuary_urls(monkeypatch, tmp_path):
     agent = _build_agent(monkeypatch, model="gpt-5-instant")
     captured = {}
+    agent._chatgpt_web_session_token = "session-cookie"
+    agent._chatgpt_web_cookie_header = "cf_clearance=cf-cookie"
+    agent._chatgpt_web_browser_cookies = [{"name": "extra_cookie", "value": "extra-value"}]
+    agent._chatgpt_web_user_agent = "Mozilla/Test"
+    agent._chatgpt_web_device_id = "device-cookie"
 
     def _fake_get(url, headers=None, timeout=None, follow_redirects=None):
         captured["url"] = url
@@ -1516,6 +1561,10 @@ def test_chatgpt_web_download_image_to_dir_uses_auth_headers_for_estuary_urls(mo
 
     assert captured["url"].startswith("https://chatgpt.com/backend-api/estuary/content")
     assert captured["headers"]["Authorization"] == "Bearer chatgpt-web-token"
+    assert "cf_clearance=cf-cookie" in captured["headers"]["Cookie"]
+    assert "extra_cookie=extra-value" in captured["headers"]["Cookie"]
+    assert "__Secure-next-auth.session-token=session-cookie" in captured["headers"]["Cookie"]
+    assert captured["headers"]["Oai-Device-Id"] == "device-cookie"
     assert saved_path.name == "rainforest.png"
     assert saved_path.read_bytes() == b"png-bytes"
 

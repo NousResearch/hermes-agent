@@ -427,6 +427,8 @@ def test_format_initial_message_includes_tool_calls_and_tool_responses():
     assert "search_files" in prompt
     assert "<tool_response>" in prompt
     assert "hermes_cli/chatgpt_web.py" in prompt
+    assert "Hermes continuation hint" in prompt
+    assert "Do not reply with progress narration like 'I will continue'." in prompt
 
 
 

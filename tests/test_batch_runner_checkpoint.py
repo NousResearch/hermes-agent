@@ -2,6 +2,7 @@
 
 import json
 import os
+import tempfile
 from pathlib import Path
 from threading import Lock
 from unittest.mock import patch, MagicMock
@@ -157,3 +158,46 @@ class TestResumePreservesProgress:
 
         assert checkpoint_data["completed_prompts"] == []
         assert checkpoint_data["run_name"] == "test_run"
+
+
+class TestDiscardedNoReasoningCompleted:
+    """Verify that prompts discarded for no-reasoning are marked as completed
+    so --resume does not retry them forever."""
+
+    def test_discarded_prompt_marked_completed_in_batch_worker(self):
+        """Regression test: discarded_no_reasoning prompts must enter completed_in_batch."""
+        import sys
+        from pathlib import Path
+        sys.path.insert(0, str(Path(__file__).parent.parent))
+        from batch_runner import _process_batch_worker
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmpdir = Path(tmpdir)
+            batch_output = tmpdir / "batch_output.jsonl"
+
+            # Create a mock _process_single_prompt that returns no-reasoning result
+            def mock_process_single_prompt(*args, **kwargs):
+                return {
+                    "success": True,
+                    "trajectory": [{"role": "assistant", "content": "x"}],
+                    "reasoning_stats": {"has_any_reasoning": False},
+                    "tool_stats": {},
+                    "metadata": {},
+                    "completed": True,
+                    "api_calls": 1,
+                    "toolsets_used": [],
+                }
+
+            batch_data = [(0, {"prompt": "hi"})]
+            config = {"verbose": False}
+
+            with patch("batch_runner._process_single_prompt", side_effect=mock_process_single_prompt):
+                result = _process_batch_worker((
+                    1, batch_data, str(batch_output), set(), config
+                ))
+
+            # The discarded prompt should be in completed_prompts
+            assert result["discarded_no_reasoning"] == 1
+            assert 0 in result["completed_prompts"], (
+                "Discarded prompt should be marked completed to prevent infinite retry on --resume"
+            )

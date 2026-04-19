@@ -234,6 +234,7 @@ _CATEGORY_MERGE: Dict[str, str] = {
     "human_delay": "display",
     "smart_model_routing": "agent",
     "dashboard": "display",
+    "code_execution": "agent",
 }
 
 # Display order for tabs — unlisted categories sort alphabetically after these.

@@ -3717,9 +3717,13 @@ class TestStreamingApiCall:
         callback.assert_any_call("World")
 
     def test_tool_call_accumulation(self, agent):
+        # Per OpenAI streaming spec, function names are delivered atomically
+        # in the first chunk; only `arguments` is fragmented across chunks.
+        # The accumulator uses assignment for names (immune to MiniMax/NIM
+        # resends of the full name) and `+=` for arguments.
         chunks = [
-            _make_chunk(tool_calls=[_make_tc_delta(0, "call_1", "web_", '{"q":')]),
-            _make_chunk(tool_calls=[_make_tc_delta(0, None, "search", '"test"}')]),
+            _make_chunk(tool_calls=[_make_tc_delta(0, "call_1", "web_search", '{"q":')]),
+            _make_chunk(tool_calls=[_make_tc_delta(0, None, None, '"test"}')]),
             _make_chunk(finish_reason="tool_calls"),
         ]
         agent.client.chat.completions.create.return_value = iter(chunks)

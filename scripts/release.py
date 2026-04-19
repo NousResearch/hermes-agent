@@ -219,6 +219,7 @@ AUTHOR_MAP = {
     "82095453+iacker@users.noreply.github.com": "iacker",
     "sontianye@users.noreply.github.com": "sontianye",
     "jackjin1997@users.noreply.github.com": "jackjin1997",
+    "1037461232@qq.com": "jackjin1997",
     "danieldoderlein@users.noreply.github.com": "danieldoderlein",
     "lrawnsley@users.noreply.github.com": "lrawnsley",
     "taeuk178@users.noreply.github.com": "taeuk178",

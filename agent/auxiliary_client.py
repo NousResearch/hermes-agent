@@ -116,8 +116,25 @@ _KIMI_THINKING_MODELS: frozenset = frozenset({
     "kimi-k2-thinking-turbo",
 })
 
+# Moonshot's public chat endpoint (api.moonshot.ai/v1) enforces a different
+# temperature contract than the Coding Plan endpoint above.  Empirically,
+# `kimi-k2.5` on the public API rejects 0.6 with HTTP 400
+# "invalid temperature: only 1 is allowed for this model" — the Coding Plan
+# lock (0.6 for non-thinking) does not apply.  `kimi-k2-turbo-preview` and the
+# thinking variants already match the Coding Plan contract on the public
+# endpoint, so we only override the models that diverge.
+# Users hit this endpoint when `KIMI_API_KEY` is a legacy `sk-*` key (the
+# `sk-kimi-*` prefix routes to api.kimi.com/coding/v1 instead — see
+# hermes_cli/auth.py:_kimi_base_url_for_key).
+_KIMI_PUBLIC_API_OVERRIDES: Dict[str, float] = {
+    "kimi-k2.5": 1.0,
+}
 
-def _fixed_temperature_for_model(model: Optional[str]) -> Optional[float]:
+
+def _fixed_temperature_for_model(
+    model: Optional[str],
+    base_url: Optional[str] = None,
+) -> Optional[float]:
     """Return a required temperature override for models with strict contracts.
 
     Moonshot's kimi-for-coding endpoint rejects any non-approved temperature on
@@ -125,15 +142,31 @@ def _fixed_temperature_for_model(model: Optional[str]) -> Optional[float]:
     variants require 1.0.  An optional ``vendor/`` prefix (e.g.
     ``moonshotai/kimi-k2.5``) is tolerated for aggregator routings.
 
+    When ``base_url`` points to Moonshot's public chat endpoint
+    (``api.moonshot.ai``), the contract changes for ``kimi-k2.5``: the public
+    API only accepts ``temperature=1``, not 0.6.  That override takes precedence
+    over the Coding Plan defaults above.
+
     Returns ``None`` for every other model, including ``kimi-k2-instruct*``
     which is the separate non-coding K2 family with variable temperature.
     """
     normalized = (model or "").strip().lower()
+    bare = normalized.rsplit("/", 1)[-1]
+
+    # Public Moonshot API has a stricter contract for some models than the
+    # Coding Plan endpoint — check it first so it wins on conflict.
+    if base_url and "api.moonshot.ai" in base_url.lower():
+        public = _KIMI_PUBLIC_API_OVERRIDES.get(bare)
+        if public is not None:
+            logger.debug(
+                "Forcing temperature=%s for %r on public Moonshot API", public, model
+            )
+            return public
+
     fixed = _FIXED_TEMPERATURE_MODELS.get(normalized)
     if fixed is not None:
         logger.debug("Forcing temperature=%s for model %r (fixed map)", fixed, model)
         return fixed
-    bare = normalized.rsplit("/", 1)[-1]
     if bare in _KIMI_THINKING_MODELS:
         logger.debug("Forcing temperature=1.0 for kimi thinking model %r", model)
         return 1.0
@@ -2417,7 +2450,7 @@ def _build_call_kwargs(
         "timeout": timeout,
     }
 
-    fixed_temperature = _fixed_temperature_for_model(model)
+    fixed_temperature = _fixed_temperature_for_model(model, base_url)
     if fixed_temperature is not None:
         temperature = fixed_temperature
 
@@ -2598,11 +2631,14 @@ def call_llm(
                      task, resolved_provider or "auto", final_model or "default",
                      f" at {_base_info}" if _base_info and "openrouter" not in _base_info else "")
 
+    # Pass the client's actual base_url (not just resolved_base_url) so
+    # endpoint-specific temperature overrides can distinguish
+    # api.moonshot.ai vs api.kimi.com/coding even on auto-detected routes.
     kwargs = _build_call_kwargs(
         resolved_provider, final_model, messages,
         temperature=temperature, max_tokens=max_tokens,
         tools=tools, timeout=effective_timeout, extra_body=extra_body,
-        base_url=resolved_base_url)
+        base_url=_base_info or resolved_base_url)
 
     # Convert image blocks for Anthropic-compatible endpoints (e.g. MiniMax)
     _client_base = str(getattr(client, "base_url", "") or "")
@@ -2656,7 +2692,8 @@ def call_llm(
                     fb_label, fb_model, messages,
                     temperature=temperature, max_tokens=max_tokens,
                     tools=tools, timeout=effective_timeout,
-                    extra_body=extra_body)
+                    extra_body=extra_body,
+                    base_url=str(getattr(fb_client, "base_url", "") or ""))
                 return _validate_llm_response(
                     fb_client.chat.completions.create(**fb_kwargs), task)
         raise
@@ -2791,14 +2828,17 @@ async def async_call_llm(
 
     effective_timeout = timeout if timeout is not None else _get_task_timeout(task)
 
+    # Pass the client's actual base_url (not just resolved_base_url) so
+    # endpoint-specific temperature overrides can distinguish
+    # api.moonshot.ai vs api.kimi.com/coding even on auto-detected routes.
+    _client_base = str(getattr(client, "base_url", "") or "")
     kwargs = _build_call_kwargs(
         resolved_provider, final_model, messages,
         temperature=temperature, max_tokens=max_tokens,
         tools=tools, timeout=effective_timeout, extra_body=extra_body,
-        base_url=resolved_base_url)
+        base_url=_client_base or resolved_base_url)
 
     # Convert image blocks for Anthropic-compatible endpoints (e.g. MiniMax)
-    _client_base = str(getattr(client, "base_url", "") or "")
     if _is_anthropic_compat_endpoint(resolved_provider, _client_base):
         kwargs["messages"] = _convert_openai_images_to_anthropic(kwargs["messages"])
 
@@ -2834,7 +2874,8 @@ async def async_call_llm(
                     fb_label, fb_model, messages,
                     temperature=temperature, max_tokens=max_tokens,
                     tools=tools, timeout=effective_timeout,
-                    extra_body=extra_body)
+                    extra_body=extra_body,
+                    base_url=str(getattr(fb_client, "base_url", "") or ""))
                 # Convert sync fallback client to async
                 async_fb, async_fb_model = _to_async_client(fb_client, fb_model or "")
                 if async_fb_model and async_fb_model != fb_kwargs.get("model"):

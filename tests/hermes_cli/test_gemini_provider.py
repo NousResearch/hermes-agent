@@ -22,7 +22,7 @@ class TestGeminiProviderRegistry:
         assert pconfig.id == "gemini"
         assert pconfig.name == "Google AI Studio"
         assert pconfig.auth_type == "api_key"
-        assert pconfig.inference_base_url == "https://generativelanguage.googleapis.com/v1beta/openai"
+        assert pconfig.inference_base_url == "https://generativelanguage.googleapis.com/v1beta"
 
     def test_gemini_env_vars(self):
         pconfig = PROVIDER_REGISTRY["gemini"]
@@ -99,7 +99,7 @@ class TestGeminiCredentials:
         creds = resolve_api_key_provider_credentials("gemini")
         assert creds["provider"] == "gemini"
         assert creds["api_key"] == "google-secret"
-        assert creds["base_url"] == "https://generativelanguage.googleapis.com/v1beta/openai"
+        assert creds["base_url"] == "https://generativelanguage.googleapis.com/v1beta"
 
     def test_resolve_with_gemini_api_key(self, monkeypatch):
         monkeypatch.setenv("GEMINI_API_KEY", "gemini-secret")
@@ -119,7 +119,7 @@ class TestGeminiCredentials:
         assert result["provider"] == "gemini"
         assert result["api_mode"] == "chat_completions"
         assert result["api_key"] == "google-key"
-        assert result["base_url"] == "https://generativelanguage.googleapis.com/v1beta/openai"
+        assert result["base_url"] == "https://generativelanguage.googleapis.com/v1beta"
 
 
 # ── Model Catalog ──
@@ -193,50 +193,45 @@ class TestGeminiAgentInit:
         importlib.reload(run_agent)
 
     def test_gemini_agent_uses_chat_completions(self, monkeypatch):
-        """Gemini falls through to chat_completions — no special elif needed."""
+        """Gemini still reports chat_completions even though the transport is native."""
         monkeypatch.setenv("GOOGLE_API_KEY", "test-key")
-        with patch("run_agent.OpenAI") as mock_openai:
-            mock_openai.return_value = MagicMock()
+        with patch("agent.gemini_native_adapter.GeminiNativeClient") as mock_client:
+            mock_client.return_value = MagicMock()
             from run_agent import AIAgent
             agent = AIAgent(
                 model="gemini-2.5-flash",
                 provider="gemini",
                 api_key="test-key",
-                base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+                base_url="https://generativelanguage.googleapis.com/v1beta",
             )
             assert agent.api_mode == "chat_completions"
             assert agent.provider == "gemini"
 
-    def test_gemini_uses_bearer_auth(self, monkeypatch):
-        """Gemini OpenAI-compatible endpoint should receive the real API key."""
+    def test_gemini_agent_uses_native_client(self, monkeypatch):
         monkeypatch.setenv("GOOGLE_API_KEY", "AIzaSy_REAL_KEY")
-        real_key = "AIzaSy_REAL_KEY"
-        with patch("run_agent.OpenAI") as mock_openai:
-            mock_openai.return_value = MagicMock()
+        with patch("agent.gemini_native_adapter.GeminiNativeClient") as mock_client, \
+             patch("run_agent.OpenAI") as mock_openai:
+            mock_client.return_value = MagicMock()
             from run_agent import AIAgent
             AIAgent(
                 model="gemini-2.5-flash",
                 provider="gemini",
-                api_key=real_key,
-                base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+                api_key="AIzaSy_REAL_KEY",
+                base_url="https://generativelanguage.googleapis.com/v1beta",
             )
-        call_kwargs = mock_openai.call_args[1]
-        assert call_kwargs.get("api_key") == real_key
-        headers = call_kwargs.get("default_headers", {})
-        assert "x-goog-api-key" not in headers
+        assert mock_client.called
+        mock_openai.assert_not_called()
 
-    def test_gemini_resolve_provider_client_auth(self, monkeypatch):
-        """resolve_provider_client('gemini') should pass the real API key through."""
+    def test_gemini_resolve_provider_client_uses_native_client(self, monkeypatch):
+        """resolve_provider_client('gemini') should build GeminiNativeClient."""
         monkeypatch.setenv("GEMINI_API_KEY", "AIzaSy_TEST_KEY")
-        real_key = "AIzaSy_TEST_KEY"
-        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
-            mock_openai.return_value = MagicMock()
+        with patch("agent.gemini_native_adapter.GeminiNativeClient") as mock_client, \
+             patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            mock_client.return_value = MagicMock()
             from agent.auxiliary_client import resolve_provider_client
             resolve_provider_client("gemini")
-        call_kwargs = mock_openai.call_args[1]
-        assert call_kwargs.get("api_key") == real_key
-        headers = call_kwargs.get("default_headers", {})
-        assert "x-goog-api-key" not in headers
+        assert mock_client.called
+        mock_openai.assert_not_called()
 
 
 # ── models.dev Integration ──

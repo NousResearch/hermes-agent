@@ -275,6 +275,7 @@ AUTHOR_MAP = {
     "junminliu@gmail.com": "JimLiu",
     "jarvischer@gmail.com": "maxchernin",
     "levantam.98.2324@gmail.com": "LVT382009",
+    "zhurongcheng@rcrai.com": "heykb",
 }
 
 

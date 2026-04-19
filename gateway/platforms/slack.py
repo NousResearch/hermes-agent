@@ -366,6 +366,20 @@ class SlackAdapter(BasePlatformAdapter):
             # in an assistant-enabled context. Falls back to reactions.
             logger.debug("[Slack] assistant.threads.setStatus failed: %s", e)
 
+    def _dm_top_level_threads_as_sessions(self) -> bool:
+        """Whether top-level Slack DMs get per-message session threads.
+
+        Defaults to ``True`` so each visible DM reply thread is isolated as its
+        own Hermes session — matching the per-thread behavior channels already
+        have.  Set ``platforms.slack.extra.dm_top_level_threads_as_sessions``
+        to ``false`` in config.yaml to revert to the legacy behavior where all
+        top-level DMs share one continuous session.
+        """
+        raw = self.config.extra.get("dm_top_level_threads_as_sessions")
+        if raw is None:
+            return True  # default: each DM thread is its own session
+        return str(raw).strip().lower() in ("1", "true", "yes", "on")
+
     def _resolve_thread_ts(
         self,
         reply_to: Optional[str] = None,
@@ -996,10 +1010,14 @@ class SlackAdapter(BasePlatformAdapter):
         # Build thread_ts for session keying.
         # In channels: fall back to ts so each top-level @mention starts a
         #   new thread/session (the bot always replies in a thread).
-        # In DMs: only use the real thread_ts — top-level DMs should share
-        #   one continuous session, threaded DMs get their own session.
+        # In DMs: fall back to ts so each top-level DM reply thread gets
+        #   its own session key (matching channel behavior). Set
+        #   dm_top_level_threads_as_sessions: false in config to revert to
+        #   legacy single-session-per-DM-channel behavior.
         if is_dm:
-            thread_ts = event.get("thread_ts") or assistant_meta.get("thread_ts")  # None for top-level DMs
+            thread_ts = event.get("thread_ts") or assistant_meta.get("thread_ts")
+            if not thread_ts and self._dm_top_level_threads_as_sessions():
+                thread_ts = ts
         else:
             thread_ts = event.get("thread_ts") or ts  # ts fallback for channels
 
@@ -1167,6 +1185,12 @@ class SlackAdapter(BasePlatformAdapter):
             thread_id=thread_ts,
         )
 
+        # Per-channel ephemeral prompt
+        from gateway.platforms.base import resolve_channel_prompt
+        _channel_prompt = resolve_channel_prompt(
+            self.config.extra, channel_id, None,
+        )
+
         msg_event = MessageEvent(
             text=text,
             message_type=msg_type,
@@ -1176,6 +1200,7 @@ class SlackAdapter(BasePlatformAdapter):
             media_urls=media_urls,
             media_types=media_types,
             reply_to_message_id=thread_ts if thread_ts != ts else None,
+            channel_prompt=_channel_prompt,
         )
 
         # Only react when bot is directly addressed (DM or @mention).

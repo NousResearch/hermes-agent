@@ -70,6 +70,7 @@ DEFAULT_CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
 DEFAULT_QWEN_BASE_URL = "https://portal.qwen.ai/v1"
 DEFAULT_GITHUB_MODELS_BASE_URL = "https://api.githubcopilot.com"
 DEFAULT_COPILOT_ACP_BASE_URL = "acp://copilot"
+DEFAULT_OLLAMA_CLOUD_BASE_URL = "https://ollama.com/v1"
 CODEX_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 CODEX_OAUTH_TOKEN_URL = "https://auth.openai.com/oauth/token"
 CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120
@@ -127,6 +128,7 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         auth_type="api_key",
         inference_base_url=DEFAULT_GITHUB_MODELS_BASE_URL,
         api_key_env_vars=("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"),
+        base_url_env_var="COPILOT_API_BASE_URL",
     ),
     "copilot-acp": ProviderConfig(
         id="copilot-acp",
@@ -158,6 +160,21 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         inference_base_url="https://api.moonshot.ai/v1",
         api_key_env_vars=("KIMI_API_KEY",),
         base_url_env_var="KIMI_BASE_URL",
+    ),
+    "kimi-coding-cn": ProviderConfig(
+        id="kimi-coding-cn",
+        name="Kimi / Moonshot (China)",
+        auth_type="api_key",
+        inference_base_url="https://api.moonshot.cn/v1",
+        api_key_env_vars=("KIMI_CN_API_KEY",),
+    ),
+    "arcee": ProviderConfig(
+        id="arcee",
+        name="Arcee AI",
+        auth_type="api_key",
+        inference_base_url="https://api.arcee.ai/api/v1",
+        api_key_env_vars=("ARCEEAI_API_KEY",),
+        base_url_env_var="ARCEE_BASE_URL",
     ),
     "minimax": ProviderConfig(
         id="minimax",
@@ -208,7 +225,7 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
     ),
     "ai-gateway": ProviderConfig(
         id="ai-gateway",
-        name="AI Gateway",
+        name="Vercel AI Gateway",
         auth_type="api_key",
         inference_base_url="https://ai-gateway.vercel.sh/v1",
         api_key_env_vars=("AI_GATEWAY_API_KEY",),
@@ -258,6 +275,22 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("XIAOMI_API_KEY",),
         base_url_env_var="XIAOMI_BASE_URL",
     ),
+    "ollama-cloud": ProviderConfig(
+        id="ollama-cloud",
+        name="Ollama Cloud",
+        auth_type="api_key",
+        inference_base_url=DEFAULT_OLLAMA_CLOUD_BASE_URL,
+        api_key_env_vars=("OLLAMA_API_KEY",),
+        base_url_env_var="OLLAMA_BASE_URL",
+    ),
+    "bedrock": ProviderConfig(
+        id="bedrock",
+        name="AWS Bedrock",
+        auth_type="aws_sdk",
+        inference_base_url="https://bedrock-runtime.us-east-1.amazonaws.com",
+        api_key_env_vars=(),
+        base_url_env_var="BEDROCK_BASE_URL",
+    ),
 }
 
 
@@ -306,44 +339,6 @@ def _resolve_kimi_base_url(api_key: str, default_url: str, env_override: str) ->
         return KIMI_CODE_BASE_URL
     return default_url
 
-
-def _gh_cli_candidates() -> list[str]:
-    """Return candidate ``gh`` binary paths, including common Homebrew installs."""
-    candidates: list[str] = []
-
-    resolved = shutil.which("gh")
-    if resolved:
-        candidates.append(resolved)
-
-    for candidate in (
-        "/opt/homebrew/bin/gh",
-        "/usr/local/bin/gh",
-        str(Path.home() / ".local" / "bin" / "gh"),
-    ):
-        if candidate in candidates:
-            continue
-        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
-            candidates.append(candidate)
-
-    return candidates
-
-
-def _try_gh_cli_token() -> Optional[str]:
-    """Return a token from ``gh auth token`` when the GitHub CLI is available."""
-    for gh_path in _gh_cli_candidates():
-        try:
-            result = subprocess.run(
-                [gh_path, "auth", "token"],
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-        except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
-            logger.debug("gh CLI token lookup failed (%s): %s", gh_path, exc)
-            continue
-        if result.returncode == 0 and result.stdout.strip():
-            return result.stdout.strip()
-    return None
 
 
 _PLACEHOLDER_SECRET_VALUES = {
@@ -405,13 +400,16 @@ def _resolve_api_key_provider_secret(
 # Z.AI has separate billing for general vs coding plans, and global vs China
 # endpoints.  A key that works on one may return "Insufficient balance" on
 # another.  We probe at setup time and store the working endpoint.
+# Each entry lists candidate models to try in order — newer coding plan accounts
+# may only have access to recent models (glm-5.1, glm-5v-turbo) while older
+# ones still use glm-4.7.
 
 ZAI_ENDPOINTS = [
-    # (id, base_url, default_model, label)
-    ("global",        "https://api.z.ai/api/paas/v4",        "glm-5",   "Global"),
-    ("cn",            "https://open.bigmodel.cn/api/paas/v4", "glm-5",   "China"),
-    ("coding-global", "https://api.z.ai/api/coding/paas/v4",  "glm-4.7", "Global (Coding Plan)"),
-    ("coding-cn",     "https://open.bigmodel.cn/api/coding/paas/v4", "glm-4.7", "China (Coding Plan)"),
+    # (id, base_url, probe_models, label)
+    ("global",        "https://api.z.ai/api/paas/v4",        ["glm-5"],   "Global"),
+    ("cn",            "https://open.bigmodel.cn/api/paas/v4", ["glm-5"],   "China"),
+    ("coding-global", "https://api.z.ai/api/coding/paas/v4",  ["glm-5.1", "glm-5v-turbo", "glm-4.7"], "Global (Coding Plan)"),
+    ("coding-cn",     "https://open.bigmodel.cn/api/coding/paas/v4", ["glm-5.1", "glm-5v-turbo", "glm-4.7"], "China (Coding Plan)"),
 ]
 
 
@@ -419,35 +417,37 @@ def detect_zai_endpoint(api_key: str, timeout: float = 8.0) -> Optional[Dict[str
     """Probe z.ai endpoints to find one that accepts this API key.
 
     Returns {"id": ..., "base_url": ..., "model": ..., "label": ...} for the
-    first working endpoint, or None if all fail.
+    first working endpoint, or None if all fail.  For endpoints with multiple
+    candidate models, tries each in order and returns the first that succeeds.
     """
-    for ep_id, base_url, model, label in ZAI_ENDPOINTS:
-        try:
-            resp = httpx.post(
-                f"{base_url}/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": model,
-                    "stream": False,
-                    "max_tokens": 1,
-                    "messages": [{"role": "user", "content": "ping"}],
-                },
-                timeout=timeout,
-            )
-            if resp.status_code == 200:
-                logger.debug("Z.AI endpoint probe: %s (%s) OK", ep_id, base_url)
-                return {
-                    "id": ep_id,
-                    "base_url": base_url,
-                    "model": model,
-                    "label": label,
-                }
-            logger.debug("Z.AI endpoint probe: %s returned %s", ep_id, resp.status_code)
-        except Exception as exc:
-            logger.debug("Z.AI endpoint probe: %s failed: %s", ep_id, exc)
+    for ep_id, base_url, probe_models, label in ZAI_ENDPOINTS:
+        for model in probe_models:
+            try:
+                resp = httpx.post(
+                    f"{base_url}/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": model,
+                        "stream": False,
+                        "max_tokens": 1,
+                        "messages": [{"role": "user", "content": "ping"}],
+                    },
+                    timeout=timeout,
+                )
+                if resp.status_code == 200:
+                    logger.debug("Z.AI endpoint probe: %s (%s) model=%s OK", ep_id, base_url, model)
+                    return {
+                        "id": ep_id,
+                        "base_url": base_url,
+                        "model": model,
+                        "label": label,
+                    }
+                logger.debug("Z.AI endpoint probe: %s model=%s returned %s", ep_id, model, resp.status_code)
+            except Exception as exc:
+                logger.debug("Z.AI endpoint probe: %s model=%s failed: %s", ep_id, model, exc)
     return None
 
 
@@ -928,7 +928,10 @@ def resolve_provider(
     _PROVIDER_ALIASES = {
         "glm": "zai", "z-ai": "zai", "z.ai": "zai", "zhipu": "zai",
         "google": "gemini", "google-gemini": "gemini", "google-ai-studio": "gemini",
+        "x-ai": "xai", "x.ai": "xai", "grok": "xai",
         "kimi": "kimi-coding", "kimi-for-coding": "kimi-coding", "moonshot": "kimi-coding",
+        "kimi-cn": "kimi-coding-cn", "moonshot-cn": "kimi-coding-cn",
+        "arcee-ai": "arcee", "arceeai": "arcee",
         "minimax-china": "minimax-cn", "minimax_cn": "minimax-cn",
         "claude": "anthropic", "claude-code": "anthropic",
         "github": "copilot", "github-copilot": "copilot",
@@ -939,11 +942,13 @@ def resolve_provider(
         "qwen-portal": "qwen-oauth", "qwen-cli": "qwen-oauth", "qwen-oauth": "qwen-oauth",
         "hf": "huggingface", "hugging-face": "huggingface", "huggingface-hub": "huggingface",
         "mimo": "xiaomi", "xiaomi-mimo": "xiaomi",
+        "aws": "bedrock", "aws-bedrock": "bedrock", "amazon-bedrock": "bedrock", "amazon": "bedrock",
         "go": "opencode-go", "opencode-go-sub": "opencode-go",
         "kilo": "kilocode", "kilo-code": "kilocode", "kilo-gateway": "kilocode",
         # Local server aliases — route through the generic custom provider
         "lmstudio": "custom", "lm-studio": "custom", "lm_studio": "custom",
-        "ollama": "custom", "vllm": "custom", "llamacpp": "custom",
+        "ollama": "custom", "ollama_cloud": "ollama-cloud",
+        "vllm": "custom", "llamacpp": "custom",
         "llama.cpp": "custom", "llama-cpp": "custom",
     }
     normalized = _PROVIDER_ALIASES.get(normalized, normalized)
@@ -994,6 +999,15 @@ def resolve_provider(
         for env_var in pconfig.api_key_env_vars:
             if has_usable_secret(os.getenv(env_var, "")):
                 return pid
+
+    # AWS Bedrock — detect via boto3 credential chain (IAM roles, SSO, env vars).
+    # This runs after API-key providers so explicit keys always win.
+    try:
+        from agent.bedrock_adapter import has_aws_credentials
+        if has_aws_credentials():
+            return "bedrock"
+    except ImportError:
+        pass  # boto3 not installed — skip Bedrock auto-detection
 
     raise AuthError(
         "No inference provider configured. Run 'hermes model' to choose a "
@@ -2282,7 +2296,40 @@ def resolve_nous_runtime_credentials(
 # =============================================================================
 
 def get_nous_auth_status() -> Dict[str, Any]:
-    """Status snapshot for `hermes status` output."""
+    """Status snapshot for `hermes status` output.
+
+    Checks the credential pool first (where the dashboard device-code flow
+    and ``hermes auth`` store credentials), then falls back to the legacy
+    auth-store provider state.
+    """
+    # Check credential pool first — the dashboard device-code flow saves
+    # here but may not have written to the auth store yet.
+    try:
+        from agent.credential_pool import load_pool
+        pool = load_pool("nous")
+        if pool and pool.has_credentials():
+            entry = pool.select()
+            if entry is not None:
+                access_token = (
+                    getattr(entry, "access_token", None)
+                    or getattr(entry, "runtime_api_key", "")
+                )
+                if access_token:
+                    return {
+                        "logged_in": True,
+                        "portal_base_url": getattr(entry, "portal_base_url", None)
+                            or getattr(entry, "base_url", None),
+                        "inference_base_url": getattr(entry, "inference_base_url", None)
+                            or getattr(entry, "base_url", None),
+                        "access_token": access_token,
+                        "access_expires_at": getattr(entry, "expires_at", None),
+                        "agent_key_expires_at": getattr(entry, "agent_key_expires_at", None),
+                        "has_refresh_token": bool(getattr(entry, "refresh_token", None)),
+                    }
+    except Exception:
+        pass
+
+    # Fall back to auth-store provider state
     state = get_provider_auth_state("nous")
     if not state:
         return {
@@ -2366,7 +2413,7 @@ def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
     if pconfig.base_url_env_var:
         env_url = os.getenv(pconfig.base_url_env_var, "").strip()
 
-    if provider_id == "kimi-coding":
+    if provider_id in ("kimi-coding", "kimi-coding-cn"):
         base_url = _resolve_kimi_base_url(api_key, pconfig.inference_base_url, env_url)
     elif env_url:
         base_url = env_url
@@ -2428,6 +2475,13 @@ def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
     pconfig = PROVIDER_REGISTRY.get(target)
     if pconfig and pconfig.auth_type == "api_key":
         return get_api_key_provider_status(target)
+    # AWS SDK providers (Bedrock) — check via boto3 credential chain
+    if pconfig and pconfig.auth_type == "aws_sdk":
+        try:
+            from agent.bedrock_adapter import has_aws_credentials
+            return {"logged_in": has_aws_credentials(), "provider": target}
+        except ImportError:
+            return {"logged_in": False, "provider": target, "error": "boto3 not installed"}
     return {"logged_in": False}
 
 
@@ -2452,7 +2506,7 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
     if pconfig.base_url_env_var:
         env_url = os.getenv(pconfig.base_url_env_var, "").strip()
 
-    if provider_id == "kimi-coding":
+    if provider_id in ("kimi-coding", "kimi-coding-cn"):
         base_url = _resolve_kimi_base_url(api_key, pconfig.inference_base_url, env_url)
     elif provider_id == "zai":
         base_url = _resolve_zai_base_url(api_key, pconfig.inference_base_url, env_url)

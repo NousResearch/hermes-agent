@@ -212,7 +212,7 @@ def show_status(args):
     if managed_nous_tools_enabled():
         features = get_nous_subscription_features(config)
         print()
-        print(color("◆ Nous Subscription Features", Colors.CYAN, Colors.BOLD))
+        print(color("◆ Nous Tool Gateway", Colors.CYAN, Colors.BOLD))
         if not features.nous_auth_present:
             print("  Nous Portal   ✗ not logged in")
         else:
@@ -230,6 +230,18 @@ def show_status(args):
             else:
                 state = "not configured"
             print(f"  {feature.label:<15} {check_mark(feature.available or feature.active or feature.managed_by_nous)} {state}")
+    elif nous_logged_in:
+        # Logged into Nous but on the free tier — show upgrade nudge
+        print()
+        print(color("◆ Nous Tool Gateway", Colors.CYAN, Colors.BOLD))
+        print("  Your free-tier Nous account does not include Tool Gateway access.")
+        print("  Upgrade your subscription to unlock managed web, image, TTS, and browser tools.")
+        try:
+            portal_url = nous_status.get("portal_base_url", "").rstrip("/")
+            if portal_url:
+                print(f"  Upgrade: {portal_url}")
+        except Exception:
+            pass
 
     # =========================================================================
     # API-Key Providers
@@ -305,6 +317,7 @@ def show_status(args):
         "WeCom Callback": ("WECOM_CALLBACK_CORP_ID", None),
         "Weixin": ("WEIXIN_ACCOUNT_ID", "WEIXIN_HOME_CHANNEL"),
         "BlueBubbles": ("BLUEBUBBLES_SERVER_URL", "BLUEBUBBLES_HOME_CHANNEL"),
+        "QQBot": ("QQ_APP_ID", "QQ_HOME_CHANNEL"),
     }
     
     for name, (token_var, home_var) in platforms.items():
@@ -346,23 +359,35 @@ def show_status(args):
             print("  Note:         Android may stop background jobs when Termux is suspended")
 
     elif sys.platform.startswith('linux'):
-        try:
-            from hermes_cli.gateway import get_service_name
-            _gw_svc = get_service_name()
-        except Exception:
-            _gw_svc = "hermes-gateway"
-        try:
-            result = subprocess.run(
-                ["systemctl", "--user", "is-active", _gw_svc],
-                capture_output=True,
-                text=True,
-                timeout=5
-            )
-            is_active = result.stdout.strip() == "active"
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            is_active = False
-        print(f"  Status:       {check_mark(is_active)} {'running' if is_active else 'stopped'}")
-        print("  Manager:      systemd (user)")
+        from hermes_constants import is_container
+        if is_container():
+            # Docker/Podman: no systemd — check for running gateway processes
+            try:
+                from hermes_cli.gateway import find_gateway_pids
+                gateway_pids = find_gateway_pids()
+                is_active = len(gateway_pids) > 0
+            except Exception:
+                is_active = False
+            print(f"  Status:       {check_mark(is_active)} {'running' if is_active else 'stopped'}")
+            print("  Manager:      docker (foreground)")
+        else:
+            try:
+                from hermes_cli.gateway import get_service_name
+                _gw_svc = get_service_name()
+            except Exception:
+                _gw_svc = "hermes-gateway"
+            try:
+                result = subprocess.run(
+                    ["systemctl", "--user", "is-active", _gw_svc],
+                    capture_output=True,
+                    text=True,
+                    timeout=5
+                )
+                is_active = result.stdout.strip() == "active"
+            except (FileNotFoundError, subprocess.TimeoutExpired):
+                is_active = False
+            print(f"  Status:       {check_mark(is_active)} {'running' if is_active else 'stopped'}")
+            print("  Manager:      systemd (user)")
         
     elif sys.platform == 'darwin':
         from hermes_cli.gateway import get_launchd_label

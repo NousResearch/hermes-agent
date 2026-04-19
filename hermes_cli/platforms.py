@@ -35,6 +35,7 @@ PLATFORMS: OrderedDict[str, PlatformInfo] = OrderedDict([
     ("wecom",          PlatformInfo(label="💬 WeCom",           default_toolset="hermes-wecom")),
     ("wecom_callback", PlatformInfo(label="💬 WeCom Callback",  default_toolset="hermes-wecom-callback")),
     ("weixin",         PlatformInfo(label="💬 Weixin",          default_toolset="hermes-weixin")),
+    ("qqbot",          PlatformInfo(label="💬 QQBot",           default_toolset="hermes-qqbot")),
     ("webhook",        PlatformInfo(label="🔗 Webhook",         default_toolset="hermes-webhook")),
     ("api_server",     PlatformInfo(label="🌐 API Server",      default_toolset="hermes-api-server")),
 ])

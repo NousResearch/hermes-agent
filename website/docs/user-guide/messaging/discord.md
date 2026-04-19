@@ -297,6 +297,7 @@ discord:
   reactions: true                 # Add emoji reactions during processing
   ignored_channels: []            # Channel IDs where bot never responds
   no_thread_channels: []          # Channel IDs where bot responds without threading
+  channel_prompts: {}             # Per-channel ephemeral system prompts
 
 # Session isolation (applies to all gateway platforms, not just Discord)
 group_sessions_per_user: true     # Isolate sessions per user in shared channels
@@ -380,6 +381,28 @@ discord:
 ```
 
 Useful for channels dedicated to bot interaction where threads would add unnecessary noise.
+
+#### `discord.channel_prompts`
+
+**Type:** mapping — **Default:** `{}`
+
+Per-channel ephemeral system prompts that are injected on every turn in the matching Discord channel or thread without being persisted to transcript history.
+
+```yaml
+discord:
+  channel_prompts:
+    "1234567890": |
+      This channel is for research tasks. Prefer deep comparisons,
+      citations, and concise synthesis.
+    "9876543210": |
+      This forum is for therapy-style support. Be warm, grounded,
+      and non-judgmental.
+```
+
+Behavior:
+- Exact thread/channel ID matches win.
+- If a message arrives inside a thread or forum post and that thread has no explicit entry, Hermes falls back to the parent channel/forum ID.
+- Prompts are applied ephemerally at runtime, so changing them affects future turns immediately without rewriting past session history.
 
 #### `group_sessions_per_user`
 

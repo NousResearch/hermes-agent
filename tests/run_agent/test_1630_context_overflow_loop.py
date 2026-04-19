@@ -136,33 +136,29 @@ class TestGatewaySkipsPersistenceOnFailure:
     the gateway should NOT persist messages to the transcript."""
 
     def test_agent_failed_early_detected(self):
-        """The agent_failed_early flag is True when failed=True and
-        no final_response."""
+        """The agent_failed_early flag is True when failed=True,
+        regardless of final_response."""
         agent_result = {
             "failed": True,
             "final_response": None,
             "messages": [],
             "error": "Non-retryable client error",
         }
-        agent_failed_early = (
-            agent_result.get("failed")
-            and not agent_result.get("final_response")
-        )
+        agent_failed_early = bool(agent_result.get("failed"))
         assert agent_failed_early
 
-    def test_agent_with_response_not_failed_early(self):
-        """When the agent has a final_response, it's not a failed-early
-        scenario even if failed=True."""
+    def test_agent_failed_with_error_response_still_detected(self):
+        """When _run_agent_blocking converts an error to final_response,
+        the failed flag should still trigger agent_failed_early.  This
+        was the core bug in #9893 — the old guard checked
+        ``not final_response`` which was always truthy after conversion."""
         agent_result = {
             "failed": True,
-            "final_response": "Here is a partial response",
+            "final_response": "⚠️ Request payload too large: max compression attempts reached.",
             "messages": [],
         }
-        agent_failed_early = (
-            agent_result.get("failed")
-            and not agent_result.get("final_response")
-        )
-        assert not agent_failed_early
+        agent_failed_early = bool(agent_result.get("failed"))
+        assert agent_failed_early
 
     def test_successful_agent_not_failed_early(self):
         """A successful agent result should not trigger skip."""
@@ -170,11 +166,39 @@ class TestGatewaySkipsPersistenceOnFailure:
             "final_response": "Hello!",
             "messages": [{"role": "assistant", "content": "Hello!"}],
         }
-        agent_failed_early = (
-            agent_result.get("failed")
-            and not agent_result.get("final_response")
-        )
+        agent_failed_early = bool(agent_result.get("failed"))
         assert not agent_failed_early
+
+
+class TestCompressionExhaustedFlag:
+    """When compression is exhausted, the agent should set both
+    failed=True and compression_exhausted=True so the gateway can
+    auto-reset the session.  (#9893)"""
+
+    def test_compression_exhausted_returns_carry_flag(self):
+        """Simulate the return dict from a compression-exhausted agent."""
+        agent_result = {
+            "messages": [],
+            "completed": False,
+            "api_calls": 3,
+            "error": "Request payload too large: max compression attempts (3) reached.",
+            "partial": True,
+            "failed": True,
+            "compression_exhausted": True,
+        }
+        assert agent_result.get("failed")
+        assert agent_result.get("compression_exhausted")
+
+    def test_normal_failure_not_compression_exhausted(self):
+        """Non-compression failures should not have compression_exhausted."""
+        agent_result = {
+            "messages": [],
+            "completed": False,
+            "failed": True,
+            "error": "Invalid API response after 3 retries",
+        }
+        assert agent_result.get("failed")
+        assert not agent_result.get("compression_exhausted")
 
 
 # ---------------------------------------------------------------------------

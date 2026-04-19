@@ -31,12 +31,25 @@ Set it to `false` only if you explicitly want one shared conversation per chat.
 
 ## Step 1: Create a Feishu / Lark App
 
+### Recommended: Scan-to-Create (one command)
+
+```bash
+hermes gateway setup
+```
+
+Select **Feishu / Lark** and scan the QR code with your Feishu or Lark mobile app. Hermes will automatically create a bot application with the correct permissions and save the credentials.
+
+### Alternative: Manual Setup
+
+If scan-to-create is not available, the wizard falls back to manual input:
+
 1. Open the Feishu or Lark developer console:
    - Feishu: [https://open.feishu.cn/](https://open.feishu.cn/)
    - Lark: [https://open.larksuite.com/](https://open.larksuite.com/)
 2. Create a new app.
 3. In **Credentials & Basic Info**, copy the **App ID** and **App Secret**.
 4. Enable the **Bot** capability for the app.
+5. Run `hermes gateway setup`, select **Feishu / Lark**, and enter the credentials when prompted.
 
 :::warning
 Keep the App Secret private. Anyone with it can impersonate your app.

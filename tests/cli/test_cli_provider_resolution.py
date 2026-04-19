@@ -308,7 +308,7 @@ def test_codex_provider_replaces_incompatible_default_model(monkeypatch):
 
 
 def test_model_flow_nous_prints_subscription_guidance_without_mutating_explicit_tts(monkeypatch, capsys):
-    monkeypatch.setenv("HERMES_ENABLE_NOUS_MANAGED_TOOLS", "1")
+    monkeypatch.setattr("hermes_cli.nous_subscription.managed_nous_tools_enabled", lambda: True)
     config = {
         "model": {"provider": "nous", "default": "claude-opus-4-6"},
         "tts": {"provider": "elevenlabs"},
@@ -333,21 +333,17 @@ def test_model_flow_nous_prints_subscription_guidance_without_mutating_explicit_
     monkeypatch.setattr("hermes_cli.auth._prompt_model_selection", lambda model_ids, current_model="", pricing=None, **kw: "claude-opus-4-6")
     monkeypatch.setattr("hermes_cli.auth._save_model_choice", lambda model: None)
     monkeypatch.setattr("hermes_cli.auth._update_config_for_provider", lambda provider, url: None)
-    monkeypatch.setattr(
-        "hermes_cli.nous_subscription.get_nous_subscription_explainer_lines",
-        lambda: ["Nous subscription enables managed web tools."],
-    )
 
     hermes_main._model_flow_nous(config, current_model="claude-opus-4-6")
 
     out = capsys.readouterr().out
-    assert "Nous subscription enables managed web tools." in out
+    assert "Default model set to:" in out
     assert config["tts"]["provider"] == "elevenlabs"
     assert config["browser"]["cloud_provider"] == "browser-use"
 
 
-def test_model_flow_nous_applies_managed_tts_default_when_unconfigured(monkeypatch, capsys):
-    monkeypatch.setenv("HERMES_ENABLE_NOUS_MANAGED_TOOLS", "1")
+def test_model_flow_nous_offers_tool_gateway_prompt_when_unconfigured(monkeypatch, capsys):
+    monkeypatch.setattr("hermes_cli.nous_subscription.managed_nous_tools_enabled", lambda: True)
     config = {
         "model": {"provider": "nous", "default": "claude-opus-4-6"},
         "tts": {"provider": "edge"},
@@ -355,13 +351,13 @@ def test_model_flow_nous_applies_managed_tts_default_when_unconfigured(monkeypat
 
     monkeypatch.setattr(
         "hermes_cli.auth.get_provider_auth_state",
-        lambda provider: {"access_token": "nous-token"},
+        lambda provider: {"access_token": "***"},
     )
     monkeypatch.setattr(
         "hermes_cli.auth.resolve_nous_runtime_credentials",
         lambda *args, **kwargs: {
             "base_url": "https://inference.example.com/v1",
-            "api_key": "nous-key",
+            "api_key": "***",
         },
     )
     monkeypatch.setattr(
@@ -371,17 +367,12 @@ def test_model_flow_nous_applies_managed_tts_default_when_unconfigured(monkeypat
     monkeypatch.setattr("hermes_cli.auth._prompt_model_selection", lambda model_ids, current_model="", pricing=None, **kw: "claude-opus-4-6")
     monkeypatch.setattr("hermes_cli.auth._save_model_choice", lambda model: None)
     monkeypatch.setattr("hermes_cli.auth._update_config_for_provider", lambda provider, url: None)
-    monkeypatch.setattr(
-        "hermes_cli.nous_subscription.get_nous_subscription_explainer_lines",
-        lambda: ["Nous subscription enables managed web tools."],
-    )
-
     hermes_main._model_flow_nous(config, current_model="claude-opus-4-6")
 
     out = capsys.readouterr().out
-    assert "Nous subscription enables managed web tools." in out
-    assert "OpenAI TTS via your Nous subscription" in out
-    assert config["tts"]["provider"] == "openai"
+    # Tool Gateway prompt should be shown (input() raises OSError in pytest
+    # which is caught, so the prompt text appears but nothing is applied)
+    assert "Tool Gateway" in out
 
 
 def test_codex_provider_uses_config_model(monkeypatch):
@@ -576,8 +567,9 @@ def test_model_flow_custom_saves_verified_v1_base_url(monkeypatch, capsys):
     monkeypatch.setattr("hermes_cli.config.save_config", lambda cfg: None)
 
     # After the probe detects a single model ("llm"), the flow asks
-    # "Use this model? [Y/n]:" — confirm with Enter, then context length.
-    answers = iter(["http://localhost:8000", "local-key", "", ""])
+    # "Use this model? [Y/n]:" — confirm with Enter, then context length,
+    # then display name.
+    answers = iter(["http://localhost:8000", "local-key", "", "", "", ""])
     monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
     monkeypatch.setattr("getpass.getpass", lambda _prompt="": next(answers))
 
@@ -641,3 +633,46 @@ def test_cmd_model_forwards_nous_login_tls_options(monkeypatch):
         "ca_bundle": "/tmp/local-ca.pem",
         "insecure": True,
     }
+
+
+# ---------------------------------------------------------------------------
+# _auto_provider_name — unit tests
+# ---------------------------------------------------------------------------
+
+def test_auto_provider_name_localhost():
+    from hermes_cli.main import _auto_provider_name
+    assert _auto_provider_name("http://localhost:11434/v1") == "Local (localhost:11434)"
+    assert _auto_provider_name("http://127.0.0.1:1234/v1") == "Local (127.0.0.1:1234)"
+
+
+def test_auto_provider_name_runpod():
+    from hermes_cli.main import _auto_provider_name
+    assert "RunPod" in _auto_provider_name("https://xyz.runpod.io/v1")
+
+
+def test_auto_provider_name_remote():
+    from hermes_cli.main import _auto_provider_name
+    result = _auto_provider_name("https://api.together.xyz/v1")
+    assert result == "Api.together.xyz"
+
+
+def test_save_custom_provider_uses_provided_name(monkeypatch, tmp_path):
+    """When a display name is passed, it should appear in the saved entry."""
+    import yaml
+    from hermes_cli.main import _save_custom_provider
+
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(yaml.dump({}))
+
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config", lambda: yaml.safe_load(cfg_path.read_text()) or {},
+    )
+    saved = {}
+    def _save(cfg):
+        saved.update(cfg)
+    monkeypatch.setattr("hermes_cli.config.save_config", _save)
+
+    _save_custom_provider("http://localhost:11434/v1", name="Ollama")
+    entries = saved.get("custom_providers", [])
+    assert len(entries) == 1
+    assert entries[0]["name"] == "Ollama"

@@ -16,7 +16,7 @@ model:
   #   "nous"         - Nous Portal OAuth (requires: hermes login)
   #   "nous-api"     - Nous Portal API key (requires: NOUS_API_KEY)
   #   "anthropic"    - Direct Anthropic API (requires: ANTHROPIC_API_KEY)
-  #   "openai-codex" - OpenAI Codex (requires: hermes login --provider openai-codex)
+  #   "openai-codex" - OpenAI Codex (requires: hermes auth)
   #   "copilot"      - GitHub Copilot / GitHub Models (requires: GITHUB_TOKEN)
   #   "gemini"      - Use Google AI Studio direct (requires: GOOGLE_API_KEY or GEMINI_API_KEY)
   #   "zai"         - Use z.ai / ZhipuAI GLM models (requires: GLM_API_KEY)
@@ -25,6 +25,8 @@ model:
   #   "minimax-cn"   - MiniMax China (requires: MINIMAX_CN_API_KEY)
   #   "huggingface"  - Hugging Face Inference (requires: HF_TOKEN)
   #   "xiaomi"       - Xiaomi MiMo (requires: XIAOMI_API_KEY)
+  #   "arcee"        - Arcee AI Trinity models (requires: ARCEEAI_API_KEY)
+  #   "ollama-cloud" - Ollama Cloud (requires: OLLAMA_API_KEY — https://ollama.com/settings)
   #   "kilocode"     - KiloCode gateway (requires: KILOCODE_API_KEY)
   #   "ai-gateway"   - Vercel AI Gateway (requires: AI_GATEWAY_API_KEY)
   #
@@ -35,12 +37,6 @@ model:
   #     provider: "lmstudio"
   #     base_url: "http://localhost:1234/v1"
   #   No API key needed — local servers typically ignore auth.
-  #
-  #   For Ollama Cloud (https://ollama.com/pricing):
-  #     provider: "custom"
-  #     base_url: "https://ollama.com/v1"
-  #   Set OLLAMA_API_KEY in .env — automatically picked up when base_url
-  #   points to ollama.com.
   #
   # Can also be overridden with --provider flag or HERMES_INFERENCE_PROVIDER env var.
   provider: "auto"
@@ -309,15 +305,8 @@ compression:
   # compression of older turns.
   protect_last_n: 20
 
-  # Model to use for generating summaries (fast/cheap recommended)
-  # This model compresses the middle turns into a concise summary.
-  # IMPORTANT: it receives the full middle section of the conversation, so it
-  # MUST support a context length at least as large as your main model's.
-  summary_model: "google/gemini-3-flash-preview"
-  
-  # Provider for the summary model (default: "auto")
-  # Options: "auto", "openrouter", "nous", "main"
-  # summary_provider: "auto"
+  # To pin a specific model/provider for compression summaries, use the
+  # auxiliary section below (auxiliary.compression.provider / model).
 
 # =============================================================================
 # Auxiliary Models (Advanced — Experimental)
@@ -343,6 +332,7 @@ compression:
 #   "openrouter" - Force OpenRouter (requires OPENROUTER_API_KEY)
 #   "nous"       - Force Nous Portal (requires: hermes login)
 #   "gemini"      - Force Google AI Studio direct (requires: GOOGLE_API_KEY or GEMINI_API_KEY)
+#   "ollama-cloud" - Ollama Cloud (requires: OLLAMA_API_KEY)
 #   "codex"       - Force Codex OAuth (requires: hermes model → Codex).
 #                  Uses gpt-5.3-codex which supports vision.
 #   "main"       - Use your custom endpoint (OPENAI_BASE_URL + OPENAI_API_KEY).
@@ -529,7 +519,7 @@ agent:
 #   - A preset like "hermes-cli" or "hermes-telegram" (curated tool set)
 #   - A list of individual toolsets to compose your own (see list below)
 #
-# Supported platform keys: cli, telegram, discord, whatsapp, slack
+# Supported platform keys: cli, telegram, discord, whatsapp, slack, qqbot
 #
 # Examples:
 #
@@ -558,6 +548,7 @@ agent:
 #   slack:         hermes-slack          (same as telegram)
 #   signal:        hermes-signal         (same as telegram)
 #   homeassistant: hermes-homeassistant  (same as telegram)
+#   qqbot:            hermes-qqbot            (same as telegram)
 #
 platform_toolsets:
   cli: [hermes-cli]
@@ -567,6 +558,19 @@ platform_toolsets:
   slack: [hermes-slack]
   signal: [hermes-signal]
   homeassistant: [hermes-homeassistant]
+  qqbot: [hermes-qqbot]
+
+# =============================================================================
+# Gateway Platform Settings
+# =============================================================================
+# Optional per-platform messaging settings.
+# Platform-specific knobs live under `extra`.
+#
+# platforms:
+#   telegram:
+#     reply_to_mode: "first"  # off | first | all
+#     extra:
+#       disable_link_previews: false  # Set true to suppress Telegram URL previews in bot messages
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Available toolsets (use these names in platform_toolsets or the toolsets list)

@@ -1,5 +1,6 @@
 """Tests for topic-aware gateway progress updates."""
 
+import asyncio
 import importlib
 import sys
 import time
@@ -378,6 +379,25 @@ class PreviewedResponseAgent:
         }
 
 
+class StreamingRefineAgent:
+    def __init__(self, **kwargs):
+        self.stream_delta_callback = kwargs.get("stream_delta_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        if self.stream_delta_callback:
+            self.stream_delta_callback("Continuing to refine:")
+        time.sleep(0.1)
+        if self.stream_delta_callback:
+            self.stream_delta_callback(" Final answer.")
+        return {
+            "final_response": "Continuing to refine: Final answer.",
+            "response_previewed": True,
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
 class QueuedCommentaryAgent:
     calls = 0
 
@@ -396,6 +416,42 @@ class QueuedCommentaryAgent:
         }
 
 
+class BackgroundReviewAgent:
+    def __init__(self, **kwargs):
+        self.background_review_callback = kwargs.get("background_review_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        if self.background_review_callback:
+            self.background_review_callback("💾 Skill 'prospect-scanner' created.")
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class VerboseAgent:
+    """Agent that emits a tool call with args whose JSON exceeds 200 chars."""
+    LONG_CODE = "x" * 300
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        self.tool_progress_callback(
+            "tool.started", "execute_code", None,
+            {"code": self.LONG_CODE},
+        )
+        time.sleep(0.35)
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
 async def _run_with_agent(
     monkeypatch,
     tmp_path,
@@ -404,6 +460,10 @@ async def _run_with_agent(
     session_id,
     pending_text=None,
     config_data=None,
+    platform=Platform.TELEGRAM,
+    chat_id="-1001",
+    chat_type="group",
+    thread_id="17585",
 ):
     if config_data:
         import yaml
@@ -418,7 +478,7 @@ async def _run_with_agent(
     fake_run_agent.AIAgent = agent_cls
     monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
 
-    adapter = ProgressCaptureAdapter()
+    adapter = ProgressCaptureAdapter(platform=platform)
     runner = _make_runner(adapter)
     gateway_run = importlib.import_module("gateway.run")
     if config_data and "streaming" in config_data:
@@ -426,12 +486,14 @@ async def _run_with_agent(
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
     source = SessionSource(
-        platform=Platform.TELEGRAM,
-        chat_id="-1001",
-        chat_type="group",
-        thread_id="17585",
+        platform=platform,
+        chat_id=chat_id,
+        chat_type=chat_type,
+        thread_id=thread_id,
     )
-    session_key = "agent:main:telegram:group:-1001:17585"
+    session_key = f"agent:main:{platform.value}:{chat_type}:{chat_id}"
+    if thread_id:
+        session_key = f"{session_key}:{thread_id}"
     if pending_text is not None:
         adapter._pending_messages[session_key] = MessageEvent(
             text=pending_text,
@@ -527,6 +589,27 @@ async def test_run_agent_streaming_does_not_enable_completed_interim_commentary(
 
 
 @pytest.mark.asyncio
+async def test_display_streaming_does_not_enable_gateway_streaming(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        CommentaryAgent,
+        session_id="sess-display-streaming-cli-only",
+        config_data={
+            "display": {
+                "streaming": True,
+                "interim_assistant_messages": True,
+            },
+            "streaming": {"enabled": False},
+        },
+    )
+
+    assert result.get("already_sent") is not True
+    assert adapter.edits == []
+    assert [call["content"] for call in adapter.sent] == ["I'll inspect the repo first."]
+
+
+@pytest.mark.asyncio
 async def test_run_agent_interim_commentary_works_with_tool_progress_off(monkeypatch, tmp_path):
     adapter, result = await _run_with_agent(
         monkeypatch,
@@ -560,6 +643,30 @@ async def test_run_agent_previewed_final_marks_already_sent(monkeypatch, tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_run_agent_matrix_streaming_omits_cursor(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        StreamingRefineAgent,
+        session_id="sess-matrix-streaming",
+        config_data={
+            "display": {"tool_progress": "off", "interim_assistant_messages": False},
+            "streaming": {"enabled": True, "edit_interval": 0.01, "buffer_threshold": 1},
+        },
+        platform=Platform.MATRIX,
+        chat_id="!room:matrix.example.org",
+        chat_type="group",
+        thread_id="$thread",
+    )
+
+    assert result.get("already_sent") is True
+    all_text = [call["content"] for call in adapter.sent] + [call["content"] for call in adapter.edits]
+    assert all_text, "expected streamed Matrix content to be sent or edited"
+    assert all("▉" not in text for text in all_text)
+    assert any("Continuing to refine:" in text for text in all_text)
+
+
+@pytest.mark.asyncio
 async def test_run_agent_queued_message_does_not_treat_commentary_as_final(monkeypatch, tmp_path):
     QueuedCommentaryAgent.calls = 0
     adapter, result = await _run_with_agent(
@@ -575,3 +682,105 @@ async def test_run_agent_queued_message_does_not_treat_commentary_as_final(monke
     assert result["final_response"] == "final response 2"
     assert "I'll inspect the repo first." in sent_texts
     assert "final response 1" in sent_texts
+
+
+@pytest.mark.asyncio
+async def test_run_agent_defers_background_review_notification_until_release(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        BackgroundReviewAgent,
+        session_id="sess-bg-review-order",
+        config_data={"display": {"interim_assistant_messages": True}},
+    )
+
+    assert result["final_response"] == "done"
+    assert adapter.sent == []
+
+
+@pytest.mark.asyncio
+async def test_base_processing_releases_post_delivery_callback_after_main_send():
+    """Post-delivery callbacks on the adapter fire after the main response."""
+    adapter = ProgressCaptureAdapter()
+
+    async def _handler(event):
+        return "done"
+
+    adapter.set_message_handler(_handler)
+
+    released = []
+
+    def _post_delivery_cb():
+        released.append(True)
+        adapter.sent.append(
+            {
+                "chat_id": "bg-review",
+                "content": "💾 Skill 'prospect-scanner' created.",
+                "reply_to": None,
+                "metadata": None,
+            }
+        )
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="-1001",
+        chat_type="group",
+        thread_id="17585",
+    )
+    event = MessageEvent(
+        text="hello",
+        message_type=MessageType.TEXT,
+        source=source,
+        message_id="msg-1",
+    )
+    session_key = "agent:main:telegram:group:-1001:17585"
+    adapter._active_sessions[session_key] = asyncio.Event()
+    adapter._post_delivery_callbacks[session_key] = _post_delivery_cb
+
+    await adapter._process_message_background(event, session_key)
+
+    sent_texts = [call["content"] for call in adapter.sent]
+    assert sent_texts == ["done", "💾 Skill 'prospect-scanner' created."]
+    assert released == [True]
+
+
+@pytest.mark.asyncio
+async def test_verbose_mode_does_not_truncate_args_by_default(monkeypatch, tmp_path):
+    """Verbose mode with default tool_preview_length (0) should NOT truncate args.
+
+    Previously, verbose mode capped args at 200 chars when tool_preview_length
+    was 0 (default).  The user explicitly opted into verbose — show full detail.
+    """
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        VerboseAgent,
+        session_id="sess-verbose-no-truncate",
+        config_data={"display": {"tool_progress": "verbose", "tool_preview_length": 0}},
+    )
+
+    assert result["final_response"] == "done"
+    # The full 300-char 'x' string should be present, not truncated to 200
+    all_content = " ".join(call["content"] for call in adapter.sent)
+    all_content += " ".join(call["content"] for call in adapter.edits)
+    assert VerboseAgent.LONG_CODE in all_content
+
+
+@pytest.mark.asyncio
+async def test_verbose_mode_respects_explicit_tool_preview_length(monkeypatch, tmp_path):
+    """When tool_preview_length is set to a positive value, verbose truncates to that."""
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        VerboseAgent,
+        session_id="sess-verbose-explicit-cap",
+        config_data={"display": {"tool_progress": "verbose", "tool_preview_length": 50}},
+    )
+
+    assert result["final_response"] == "done"
+    all_content = " ".join(call["content"] for call in adapter.sent)
+    all_content += " ".join(call["content"] for call in adapter.edits)
+    # Should be truncated — full 300-char string NOT present
+    assert VerboseAgent.LONG_CODE not in all_content
+    # But should still contain the truncated portion with "..."
+    assert "..." in all_content

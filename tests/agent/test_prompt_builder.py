@@ -18,6 +18,7 @@ from agent.prompt_builder import (
     build_skills_system_prompt,
     build_nous_subscription_prompt,
     build_context_files_prompt,
+    build_environment_hints,
     CONTEXT_FILE_MAX_CHARS,
     DEFAULT_AGENT_IDENTITY,
     TOOL_USE_ENFORCEMENT_GUIDANCE,
@@ -26,6 +27,7 @@ from agent.prompt_builder import (
     MEMORY_GUIDANCE,
     SESSION_SEARCH_GUIDANCE,
     PLATFORM_HINTS,
+    WSL_ENVIRONMENT_HINT,
 )
 from hermes_cli.nous_subscription import NousFeatureState, NousSubscriptionFeatures
 
@@ -411,7 +413,7 @@ class TestBuildSkillsSystemPrompt:
 
 class TestBuildNousSubscriptionPrompt:
     def test_includes_active_subscription_features(self, monkeypatch):
-        monkeypatch.setenv("HERMES_ENABLE_NOUS_MANAGED_TOOLS", "1")
+        monkeypatch.setattr("tools.tool_backend_helpers.managed_nous_tools_enabled", lambda: True)
         monkeypatch.setattr(
             "hermes_cli.nous_subscription.get_nous_subscription_features",
             lambda config=None: NousSubscriptionFeatures(
@@ -435,7 +437,7 @@ class TestBuildNousSubscriptionPrompt:
         assert "do not ask the user for Firecrawl, FAL, OpenAI TTS, or Browser-Use API keys" in prompt
 
     def test_non_subscriber_prompt_includes_relevant_upgrade_guidance(self, monkeypatch):
-        monkeypatch.setenv("HERMES_ENABLE_NOUS_MANAGED_TOOLS", "1")
+        monkeypatch.setattr("tools.tool_backend_helpers.managed_nous_tools_enabled", lambda: True)
         monkeypatch.setattr(
             "hermes_cli.nous_subscription.get_nous_subscription_features",
             lambda config=None: NousSubscriptionFeatures(
@@ -458,7 +460,7 @@ class TestBuildNousSubscriptionPrompt:
         assert "Do not mention subscription unless" in prompt
 
     def test_feature_flag_off_returns_empty_prompt(self, monkeypatch):
-        monkeypatch.delenv("HERMES_ENABLE_NOUS_MANAGED_TOOLS", raising=False)
+        monkeypatch.setattr("tools.tool_backend_helpers.managed_nous_tools_enabled", lambda: False)
 
         prompt = build_nous_subscription_prompt({"web_search"})
 
@@ -768,6 +770,29 @@ class TestPromptBuilderConstants:
         assert "discord" in PLATFORM_HINTS
         assert "cron" in PLATFORM_HINTS
         assert "cli" in PLATFORM_HINTS
+
+
+# =========================================================================
+# Environment hints
+# =========================================================================
+
+class TestEnvironmentHints:
+    def test_wsl_hint_constant_mentions_mnt(self):
+        assert "/mnt/c/" in WSL_ENVIRONMENT_HINT
+        assert "WSL" in WSL_ENVIRONMENT_HINT
+
+    def test_build_environment_hints_on_wsl(self, monkeypatch):
+        import agent.prompt_builder as _pb
+        monkeypatch.setattr(_pb, "is_wsl", lambda: True)
+        result = _pb.build_environment_hints()
+        assert "/mnt/" in result
+        assert "WSL" in result
+
+    def test_build_environment_hints_not_wsl(self, monkeypatch):
+        import agent.prompt_builder as _pb
+        monkeypatch.setattr(_pb, "is_wsl", lambda: False)
+        result = _pb.build_environment_hints()
+        assert result == ""
 
 
 # =========================================================================

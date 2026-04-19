@@ -12,6 +12,7 @@ from gateway.config import Platform
 from tools.send_message_tool import (
     _parse_target_ref,
     _send_discord,
+    _send_matrix_via_adapter,
     _send_telegram,
     _send_to_platform,
     send_message_tool,
@@ -576,7 +577,7 @@ class TestSendToPlatformChunking:
 
         sent_calls = []
 
-        async def fake_send(token, chat_id, message, media_files=None, thread_id=None):
+        async def fake_send(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False):
             sent_calls.append(media_files or [])
             return {"success": True, "platform": "telegram", "chat_id": chat_id, "message_id": str(len(sent_calls))}
 
@@ -593,6 +594,103 @@ class TestSendToPlatformChunking:
         assert len(sent_calls) >= 3
         assert all(call == [] for call in sent_calls[:-1])
         assert sent_calls[-1] == media
+
+    def test_matrix_media_uses_native_adapter_helper(self):
+
+        doc_path = Path("/tmp/test-send-message-matrix.pdf")
+        doc_path.write_bytes(b"%PDF-1.4 test")
+
+        try:
+            helper = AsyncMock(return_value={"success": True, "platform": "matrix", "chat_id": "!room:example.com", "message_id": "$evt"})
+            with patch("tools.send_message_tool._send_matrix_via_adapter", helper):
+                result = asyncio.run(
+                    _send_to_platform(
+                        Platform.MATRIX,
+                        SimpleNamespace(enabled=True, token="tok", extra={"homeserver": "https://matrix.example.com"}),
+                        "!room:example.com",
+                        "here you go",
+                        media_files=[(str(doc_path), False)],
+                    )
+                )
+
+            assert result["success"] is True
+            helper.assert_awaited_once()
+            call = helper.await_args
+            assert call.args[1] == "!room:example.com"
+            assert call.args[2] == "here you go"
+            assert call.kwargs["media_files"] == [(str(doc_path), False)]
+        finally:
+            doc_path.unlink(missing_ok=True)
+
+    def test_matrix_text_only_uses_lightweight_path(self):
+        """Text-only Matrix sends should NOT go through the heavy adapter path."""
+        helper = AsyncMock()
+        lightweight = AsyncMock(return_value={"success": True, "platform": "matrix", "chat_id": "!room:ex.com", "message_id": "$txt"})
+        with patch("tools.send_message_tool._send_matrix_via_adapter", helper), \
+             patch("tools.send_message_tool._send_matrix", lightweight):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.MATRIX,
+                    SimpleNamespace(enabled=True, token="tok", extra={"homeserver": "https://matrix.example.com"}),
+                    "!room:ex.com",
+                    "just text, no files",
+                )
+            )
+
+        assert result["success"] is True
+        helper.assert_not_awaited()
+        lightweight.assert_awaited_once()
+
+    def test_send_matrix_via_adapter_sends_document(self, tmp_path):
+        file_path = tmp_path / "report.pdf"
+        file_path.write_bytes(b"%PDF-1.4 test")
+
+        calls = []
+
+        class FakeAdapter:
+            def __init__(self, _config):
+                self.connected = False
+
+            async def connect(self):
+                self.connected = True
+                calls.append(("connect",))
+                return True
+
+            async def send(self, chat_id, message, metadata=None):
+                calls.append(("send", chat_id, message, metadata))
+                return SimpleNamespace(success=True, message_id="$text")
+
+            async def send_document(self, chat_id, file_path, metadata=None):
+                calls.append(("send_document", chat_id, file_path, metadata))
+                return SimpleNamespace(success=True, message_id="$file")
+
+            async def disconnect(self):
+                calls.append(("disconnect",))
+
+        fake_module = SimpleNamespace(MatrixAdapter=FakeAdapter)
+
+        with patch.dict(sys.modules, {"gateway.platforms.matrix": fake_module}):
+            result = asyncio.run(
+                _send_matrix_via_adapter(
+                    SimpleNamespace(enabled=True, token="tok", extra={"homeserver": "https://matrix.example.com"}),
+                    "!room:example.com",
+                    "report attached",
+                    media_files=[(str(file_path), False)],
+                )
+            )
+
+        assert result == {
+            "success": True,
+            "platform": "matrix",
+            "chat_id": "!room:example.com",
+            "message_id": "$file",
+        }
+        assert calls == [
+            ("connect",),
+            ("send", "!room:example.com", "report attached", None),
+            ("send_document", "!room:example.com", str(file_path), None),
+            ("disconnect",),
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -658,6 +756,17 @@ class TestSendTelegramHtmlDetection:
         kwargs = bot.send_message.await_args.kwargs
         assert kwargs["parse_mode"] == "MarkdownV2"
 
+    def test_disable_link_previews_sets_disable_web_page_preview(self, monkeypatch):
+        bot = self._make_bot()
+        _install_telegram_mock(monkeypatch, bot)
+
+        asyncio.run(
+            _send_telegram("tok", "123", "https://example.com", disable_link_previews=True)
+        )
+
+        kwargs = bot.send_message.await_args.kwargs
+        assert kwargs["disable_web_page_preview"] is True
+
     def test_html_with_code_and_pre_tags(self, monkeypatch):
         bot = self._make_bot()
         _install_telegram_mock(monkeypatch, bot)
@@ -707,6 +816,23 @@ class TestSendTelegramHtmlDetection:
         second_call = bot.send_message.await_args_list[1].kwargs
         assert second_call["parse_mode"] is None
 
+    def test_transient_bad_gateway_retries_text_send(self, monkeypatch):
+        bot = self._make_bot()
+        bot.send_message = AsyncMock(
+            side_effect=[
+                Exception("502 Bad Gateway"),
+                SimpleNamespace(message_id=2),
+            ]
+        )
+        _install_telegram_mock(monkeypatch, bot)
+
+        with patch("asyncio.sleep", new=AsyncMock()) as sleep_mock:
+            result = asyncio.run(_send_telegram("tok", "123", "hello"))
+
+        assert result["success"] is True
+        assert bot.send_message.await_count == 2
+        sleep_mock.assert_awaited_once()
+
 
 # ---------------------------------------------------------------------------
 # Tests for Discord thread_id support
@@ -750,6 +876,38 @@ class TestParseTargetRefDiscord:
         assert chat_id == "123456"
         assert thread_id == "789"
         assert is_explicit is True
+
+
+class TestParseTargetRefMatrix:
+    """_parse_target_ref correctly handles Matrix room IDs and user MXIDs."""
+
+    def test_matrix_room_id_is_explicit(self):
+        """Matrix room IDs (!) are recognized as explicit targets."""
+        chat_id, thread_id, is_explicit = _parse_target_ref("matrix", "!HLOQwxYGgFPMPJUSNR:matrix.org")
+        assert chat_id == "!HLOQwxYGgFPMPJUSNR:matrix.org"
+        assert thread_id is None
+        assert is_explicit is True
+
+    def test_matrix_user_mxid_is_explicit(self):
+        """Matrix user MXIDs (@) are recognized as explicit targets."""
+        chat_id, thread_id, is_explicit = _parse_target_ref("matrix", "@hermes:matrix.org")
+        assert chat_id == "@hermes:matrix.org"
+        assert thread_id is None
+        assert is_explicit is True
+
+    def test_matrix_alias_is_not_explicit(self):
+        """Matrix room aliases (#) are NOT explicit — they need resolution."""
+        chat_id, thread_id, is_explicit = _parse_target_ref("matrix", "#general:matrix.org")
+        assert chat_id is None
+        assert is_explicit is False
+
+    def test_matrix_prefix_only_matches_matrix_platform(self):
+        """! and @ prefixes are only treated as explicit for the matrix platform."""
+        chat_id, _, is_explicit = _parse_target_ref("telegram", "!something")
+        assert is_explicit is False
+
+        chat_id, _, is_explicit = _parse_target_ref("discord", "@someone")
+        assert is_explicit is False
 
 
 class TestSendDiscordThreadId:
@@ -854,3 +1012,225 @@ class TestSendToPlatformDiscordThread:
         send_mock.assert_awaited_once()
         _, call_kwargs = send_mock.await_args
         assert call_kwargs["thread_id"] is None
+
+
+# ---------------------------------------------------------------------------
+# Discord media attachment support
+# ---------------------------------------------------------------------------
+
+
+class TestSendDiscordMedia:
+    """_send_discord uploads media files via multipart/form-data."""
+
+    @staticmethod
+    def _build_mock(response_status, response_data=None, response_text="error body"):
+        """Build a properly-structured aiohttp mock chain."""
+        mock_resp = MagicMock()
+        mock_resp.status = response_status
+        mock_resp.json = AsyncMock(return_value=response_data or {"id": "msg123"})
+        mock_resp.text = AsyncMock(return_value=response_text)
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=None)
+
+        mock_session = MagicMock()
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=None)
+        mock_session.post = MagicMock(return_value=mock_resp)
+
+        return mock_session, mock_resp
+
+    def test_text_and_media_sends_both(self, tmp_path):
+        """Text message is sent first, then each media file as multipart."""
+        img = tmp_path / "photo.png"
+        img.write_bytes(b"\x89PNG fake image data")
+
+        mock_session, _ = self._build_mock(200, {"id": "msg999"})
+        with patch("aiohttp.ClientSession", return_value=mock_session):
+            result = asyncio.run(
+                _send_discord("tok", "111", "hello", media_files=[(str(img), False)])
+            )
+
+        assert result["success"] is True
+        assert result["message_id"] == "msg999"
+        # Two POSTs: one text JSON, one multipart upload
+        assert mock_session.post.call_count == 2
+
+    def test_media_only_skips_text_post(self, tmp_path):
+        """When message is empty and media is present, text POST is skipped."""
+        img = tmp_path / "photo.png"
+        img.write_bytes(b"\x89PNG fake image data")
+
+        mock_session, _ = self._build_mock(200, {"id": "media_only"})
+        with patch("aiohttp.ClientSession", return_value=mock_session):
+            result = asyncio.run(
+                _send_discord("tok", "222", "  ", media_files=[(str(img), False)])
+            )
+
+        assert result["success"] is True
+        # Only one POST: the media upload (text was whitespace-only)
+        assert mock_session.post.call_count == 1
+
+    def test_missing_media_file_collected_as_warning(self):
+        """Non-existent media paths produce warnings but don't fail."""
+        mock_session, _ = self._build_mock(200, {"id": "txt_ok"})
+        with patch("aiohttp.ClientSession", return_value=mock_session):
+            result = asyncio.run(
+                _send_discord("tok", "333", "hello", media_files=[("/nonexistent/file.png", False)])
+            )
+
+        assert result["success"] is True
+        assert "warnings" in result
+        assert any("not found" in w for w in result["warnings"])
+        # Only the text POST was made, media was skipped
+        assert mock_session.post.call_count == 1
+
+    def test_media_upload_failure_collected_as_warning(self, tmp_path):
+        """Failed media upload becomes a warning, text still succeeds."""
+        img = tmp_path / "photo.png"
+        img.write_bytes(b"\x89PNG fake image data")
+
+        # First call (text) succeeds, second call (media) returns 413
+        text_resp = MagicMock()
+        text_resp.status = 200
+        text_resp.json = AsyncMock(return_value={"id": "txt_ok"})
+        text_resp.__aenter__ = AsyncMock(return_value=text_resp)
+        text_resp.__aexit__ = AsyncMock(return_value=None)
+
+        media_resp = MagicMock()
+        media_resp.status = 413
+        media_resp.text = AsyncMock(return_value="Request Entity Too Large")
+        media_resp.__aenter__ = AsyncMock(return_value=media_resp)
+        media_resp.__aexit__ = AsyncMock(return_value=None)
+
+        mock_session = MagicMock()
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=None)
+        mock_session.post = MagicMock(side_effect=[text_resp, media_resp])
+
+        with patch("aiohttp.ClientSession", return_value=mock_session):
+            result = asyncio.run(
+                _send_discord("tok", "444", "hello", media_files=[(str(img), False)])
+            )
+
+        assert result["success"] is True
+        assert result["message_id"] == "txt_ok"
+        assert "warnings" in result
+        assert any("413" in w for w in result["warnings"])
+
+    def test_no_text_no_media_returns_error(self):
+        """Empty text with no media returns error dict."""
+        mock_session, _ = self._build_mock(200)
+        with patch("aiohttp.ClientSession", return_value=mock_session):
+            result = asyncio.run(
+                _send_discord("tok", "555", "", media_files=[])
+            )
+
+        # Text is empty but media_files is empty, so text POST fires
+        # (the "skip text if media present" condition isn't met)
+        assert result["success"] is True
+
+    def test_multiple_media_files_uploaded_separately(self, tmp_path):
+        """Each media file gets its own multipart POST."""
+        img1 = tmp_path / "a.png"
+        img1.write_bytes(b"img1")
+        img2 = tmp_path / "b.jpg"
+        img2.write_bytes(b"img2")
+
+        mock_session, _ = self._build_mock(200, {"id": "last"})
+        with patch("aiohttp.ClientSession", return_value=mock_session):
+            result = asyncio.run(
+                _send_discord("tok", "666", "hi", media_files=[
+                    (str(img1), False), (str(img2), False)
+                ])
+            )
+
+        assert result["success"] is True
+        # 1 text POST + 2 media POSTs = 3
+        assert mock_session.post.call_count == 3
+
+
+class TestSendToPlatformDiscordMedia:
+    """_send_to_platform routes Discord media correctly."""
+
+    def test_media_files_passed_on_last_chunk_only(self):
+        """Discord media_files are only passed on the final chunk."""
+        call_log = []
+
+        async def mock_send_discord(token, chat_id, message, thread_id=None, media_files=None):
+            call_log.append({"message": message, "media_files": media_files or []})
+            return {"success": True, "platform": "discord", "chat_id": chat_id, "message_id": "1"}
+
+        # A message long enough to get chunked (Discord limit is 2000)
+        long_msg = "A" * 1900 + " " + "B" * 1900
+
+        with patch("tools.send_message_tool._send_discord", side_effect=mock_send_discord):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.DISCORD,
+                    SimpleNamespace(enabled=True, token="tok", extra={}),
+                    "999",
+                    long_msg,
+                    media_files=[("/fake/img.png", False)],
+                )
+            )
+
+        assert result["success"] is True
+        assert len(call_log) == 2  # Message was chunked
+        assert call_log[0]["media_files"] == []  # First chunk: no media
+        assert call_log[1]["media_files"] == [("/fake/img.png", False)]  # Last chunk: media attached
+
+    def test_single_chunk_gets_media(self):
+        """Short message (single chunk) gets media_files directly."""
+        send_mock = AsyncMock(return_value={"success": True, "message_id": "1"})
+
+        with patch("tools.send_message_tool._send_discord", send_mock):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.DISCORD,
+                    SimpleNamespace(enabled=True, token="tok", extra={}),
+                    "888",
+                    "short message",
+                    media_files=[("/fake/img.png", False)],
+                )
+            )
+
+        assert result["success"] is True
+        send_mock.assert_awaited_once()
+        call_kwargs = send_mock.await_args.kwargs
+        assert call_kwargs["media_files"] == [("/fake/img.png", False)]
+
+
+class TestSendMatrixUrlEncoding:
+    """_send_matrix URL-encodes Matrix room IDs in the API path."""
+
+    def test_room_id_is_percent_encoded_in_url(self):
+        """Matrix room IDs with ! and : are percent-encoded in the PUT URL."""
+        import aiohttp
+
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value={"event_id": "$evt123"})
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=None)
+
+        mock_session = MagicMock()
+        mock_session.put = MagicMock(return_value=mock_resp)
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=None)
+
+        with patch("aiohttp.ClientSession", return_value=mock_session):
+            from tools.send_message_tool import _send_matrix
+            result = asyncio.get_event_loop().run_until_complete(
+                _send_matrix(
+                    "test_token",
+                    {"homeserver": "https://matrix.example.org"},
+                    "!HLOQwxYGgFPMPJUSNR:matrix.org",
+                    "hello",
+                )
+            )
+
+        assert result["success"] is True
+        # Verify the URL was called with percent-encoded room ID
+        put_url = mock_session.put.call_args[0][0]
+        assert "%21HLOQwxYGgFPMPJUSNR%3Amatrix.org" in put_url
+        assert "!HLOQwxYGgFPMPJUSNR:matrix.org" not in put_url

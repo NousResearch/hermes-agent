@@ -40,13 +40,6 @@ class TestSkinConfig:
         assert skin.get_branding("agent_name") == "Hermes Agent"
         assert skin.get_branding("nonexistent", "fallback") == "fallback"
 
-    def test_get_spinner_list_empty_for_default(self):
-        from hermes_cli.skin_engine import load_skin
-        skin = load_skin("default")
-        # Default skin has no custom spinner config
-        assert skin.get_spinner_list("waiting_faces") == []
-        assert skin.get_spinner_list("thinking_verbs") == []
-
     def test_get_spinner_wings_empty_for_default(self):
         from hermes_cli.skin_engine import load_skin
         skin = load_skin("default")
@@ -68,9 +61,6 @@ class TestBuiltinSkins:
     def test_ares_has_spinner_customization(self):
         from hermes_cli.skin_engine import load_skin
         skin = load_skin("ares")
-        assert len(skin.get_spinner_list("waiting_faces")) > 0
-        assert len(skin.get_spinner_list("thinking_faces")) > 0
-        assert len(skin.get_spinner_list("thinking_verbs")) > 0
         wings = skin.get_spinner_wings()
         assert len(wings) > 0
         assert isinstance(wings[0], tuple)
@@ -87,6 +77,28 @@ class TestBuiltinSkins:
         skin = load_skin("slate")
         assert skin.name == "slate"
         assert skin.get_color("banner_title") == "#7eb8f6"
+
+    def test_daylight_skin_loads(self):
+        from hermes_cli.skin_engine import load_skin
+
+        skin = load_skin("daylight")
+        assert skin.name == "daylight"
+        assert skin.tool_prefix == "│"
+        assert skin.get_color("banner_title") == "#0F172A"
+        assert skin.get_color("status_bar_bg") == "#E5EDF8"
+        assert skin.get_color("voice_status_bg") == "#E5EDF8"
+        assert skin.get_color("completion_menu_bg") == "#F8FAFC"
+        assert skin.get_color("completion_menu_current_bg") == "#DBEAFE"
+        assert skin.get_color("completion_menu_meta_bg") == "#EEF2FF"
+        assert skin.get_color("completion_menu_meta_current_bg") == "#BFDBFE"
+
+    def test_warm_lightmode_skin_loads(self):
+        from hermes_cli.skin_engine import load_skin
+
+        skin = load_skin("warm-lightmode")
+        assert skin.name == "warm-lightmode"
+        assert skin.get_color("banner_text") == "#2C1810"
+        assert skin.get_color("completion_menu_bg") == "#F5EFE0"
 
     def test_unknown_skin_falls_back_to_default(self):
         from hermes_cli.skin_engine import load_skin
@@ -124,6 +136,8 @@ class TestSkinManagement:
         assert "ares" in names
         assert "mono" in names
         assert "slate" in names
+        assert "daylight" in names
+        assert "warm-lightmode" in names
         for s in skins:
             assert "source" in s
             assert s["source"] == "builtin"
@@ -136,6 +150,24 @@ class TestSkinManagement:
     def test_init_skin_from_empty_config(self):
         from hermes_cli.skin_engine import init_skin_from_config, get_active_skin_name
         init_skin_from_config({})
+        assert get_active_skin_name() == "default"
+
+    def test_init_skin_from_null_display(self):
+        """display: null should fall back to default, not crash."""
+        from hermes_cli.skin_engine import init_skin_from_config, get_active_skin_name
+        init_skin_from_config({"display": None})
+        assert get_active_skin_name() == "default"
+
+    def test_init_skin_from_non_dict_display(self):
+        """display: <non-dict> should fall back to default."""
+        from hermes_cli.skin_engine import init_skin_from_config, get_active_skin_name
+        init_skin_from_config({"display": "invalid"})
+        assert get_active_skin_name() == "default"
+
+        init_skin_from_config({"display": 42})
+        assert get_active_skin_name() == "default"
+
+        init_skin_from_config({"display": []})
         assert get_active_skin_name() == "default"
 
 
@@ -252,6 +284,15 @@ class TestCliBrandingHelpers:
             "completion-menu.completion.current",
             "completion-menu.meta.completion",
             "completion-menu.meta.completion.current",
+            "status-bar",
+            "status-bar-strong",
+            "status-bar-dim",
+            "status-bar-good",
+            "status-bar-warn",
+            "status-bar-bad",
+            "status-bar-critical",
+            "voice-status",
+            "voice-status-recording",
             "clarify-border",
             "clarify-title",
             "clarify-question",
@@ -287,3 +328,9 @@ class TestCliBrandingHelpers:
         assert overrides["clarify-title"] == f"{skin.get_color('banner_title')} bold"
         assert overrides["sudo-prompt"] == f"{skin.get_color('ui_error')} bold"
         assert overrides["approval-title"] == f"{skin.get_color('ui_warn')} bold"
+
+        set_active_skin("daylight")
+        skin = get_active_skin()
+        overrides = get_prompt_toolkit_style_overrides()
+        assert overrides["status-bar"] == f"bg:{skin.get_color('status_bar_bg')} {skin.get_color('banner_text')}"
+        assert overrides["voice-status"] == f"bg:{skin.get_color('voice_status_bg')} {skin.get_color('ui_label')}"

@@ -167,6 +167,63 @@ class TestBlueBubblesWebhookParsing:
             chat_identifier = sender
         assert chat_identifier == "user@example.com"
 
+    def test_webhook_extracts_chat_guid_from_chats_array_dm(self, monkeypatch):
+        """BB v1.9+ webhook payloads omit top-level chatGuid; GUID is in chats[0].guid."""
+        adapter = _make_adapter(monkeypatch)
+        payload = {
+            "type": "new-message",
+            "data": {
+                "guid": "MESSAGE-GUID",
+                "text": "hello",
+                "handle": {"address": "+15551234567"},
+                "isFromMe": False,
+                "chats": [
+                    {"guid": "any;-;+15551234567", "chatIdentifier": "+15551234567"}
+                ],
+            },
+        }
+        record = adapter._extract_payload_record(payload) or {}
+        chat_guid = adapter._value(
+            record.get("chatGuid"),
+            payload.get("chatGuid"),
+            record.get("chat_guid"),
+            payload.get("chat_guid"),
+            payload.get("guid"),
+        )
+        if not chat_guid:
+            _chats = record.get("chats") or []
+            if _chats and isinstance(_chats[0], dict):
+                chat_guid = _chats[0].get("guid") or _chats[0].get("chatGuid")
+        assert chat_guid == "any;-;+15551234567"
+
+    def test_webhook_extracts_chat_guid_from_chats_array_group(self, monkeypatch):
+        """Group chat GUIDs contain ;+; and must be extracted from chats array."""
+        adapter = _make_adapter(monkeypatch)
+        payload = {
+            "type": "new-message",
+            "data": {
+                "guid": "MESSAGE-GUID",
+                "text": "hello everyone",
+                "handle": {"address": "+15551234567"},
+                "isFromMe": False,
+                "isGroup": True,
+                "chats": [{"guid": "any;+;chat-uuid-abc123"}],
+            },
+        }
+        record = adapter._extract_payload_record(payload) or {}
+        chat_guid = adapter._value(
+            record.get("chatGuid"),
+            payload.get("chatGuid"),
+            record.get("chat_guid"),
+            payload.get("chat_guid"),
+            payload.get("guid"),
+        )
+        if not chat_guid:
+            _chats = record.get("chats") or []
+            if _chats and isinstance(_chats[0], dict):
+                chat_guid = _chats[0].get("guid") or _chats[0].get("chatGuid")
+        assert chat_guid == "any;+;chat-uuid-abc123"
+
     def test_extract_payload_record_accepts_list_data(self, monkeypatch):
         adapter = _make_adapter(monkeypatch)
         payload = {
@@ -385,6 +442,28 @@ class TestBlueBubblesWebhookUrl:
         adapter = _make_adapter(monkeypatch, webhook_host="192.168.1.50")
         assert "192.168.1.50" in adapter._webhook_url
 
+    def test_register_url_embeds_password(self, monkeypatch):
+        """_webhook_register_url should append ?password=... for inbound auth."""
+        adapter = _make_adapter(monkeypatch, password="secret123")
+        assert adapter._webhook_register_url.endswith("?password=secret123")
+        assert adapter._webhook_register_url.startswith(adapter._webhook_url)
+
+    def test_register_url_url_encodes_password(self, monkeypatch):
+        """Passwords with special characters must be URL-encoded."""
+        adapter = _make_adapter(monkeypatch, password="W9fTC&L5JL*@")
+        assert "password=W9fTC%26L5JL%2A%40" in adapter._webhook_register_url
+
+    def test_register_url_omits_query_when_no_password(self, monkeypatch):
+        """If no password is configured, the register URL should be the bare URL."""
+        monkeypatch.delenv("BLUEBUBBLES_PASSWORD", raising=False)
+        from gateway.platforms.bluebubbles import BlueBubblesAdapter
+        cfg = PlatformConfig(
+            enabled=True,
+            extra={"server_url": "http://localhost:1234", "password": ""},
+        )
+        adapter = BlueBubblesAdapter(cfg)
+        assert adapter._webhook_register_url == adapter._webhook_url
+
 
 class TestBlueBubblesWebhookRegistration:
     """Tests for _register_webhook, _unregister_webhook, _find_registered_webhooks."""
@@ -500,7 +579,7 @@ class TestBlueBubblesWebhookRegistration:
         """Crash resilience — existing registration is reused, no POST needed."""
         import asyncio
         adapter = _make_adapter(monkeypatch)
-        url = adapter._webhook_url
+        url = adapter._webhook_register_url
         adapter.client = self._mock_client(
             get_response={"status": 200, "data": [
                 {"id": 7, "url": url, "events": ["new-message"]},
@@ -548,7 +627,7 @@ class TestBlueBubblesWebhookRegistration:
     def test_unregister_removes_matching(self, monkeypatch):
         import asyncio
         adapter = _make_adapter(monkeypatch)
-        url = adapter._webhook_url
+        url = adapter._webhook_register_url
         adapter.client = self._mock_client(
             get_response={"status": 200, "data": [
                 {"id": 10, "url": url},
@@ -563,7 +642,7 @@ class TestBlueBubblesWebhookRegistration:
         """Multiple orphaned registrations for same URL — all get removed."""
         import asyncio
         adapter = _make_adapter(monkeypatch)
-        url = adapter._webhook_url
+        url = adapter._webhook_register_url
         deleted_ids = []
 
         async def mock_delete(*args, **kwargs):

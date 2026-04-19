@@ -72,7 +72,7 @@ In addition to built-in tools, Hermes can load tools dynamically from MCP server
 | `ha_list_services` | List available Home Assistant services (actions) for device control. Shows what actions can be performed on each device type and what parameters they accept. Use this to discover how to control devices found via ha_list_entities. | — |
 
 :::note
-**Honcho tools** (`honcho_conclude`, `honcho_context`, `honcho_profile`, `honcho_search`) are no longer built-in. They are available via the Honcho memory provider plugin at `plugins/memory/honcho/`. See [Plugins](../user-guide/features/plugins.md) for installation and usage.
+**Honcho tools** (`honcho_profile`, `honcho_search`, `honcho_context`, `honcho_reasoning`, `honcho_conclude`) are no longer built-in. They are available via the Honcho memory provider plugin at `plugins/memory/honcho/`. See [Memory Providers](../user-guide/features/memory-providers.md) for installation and usage.
 :::
 
 ## `image_gen` toolset

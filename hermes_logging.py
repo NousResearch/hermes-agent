@@ -79,12 +79,7 @@ def set_session_context(session_id: str) -> None:
 
 
 def clear_session_context() -> None:
-    """Clear the session ID for the current thread.
-
-    Optional — ``set_session_context()`` overwrites the previous value,
-    so explicit clearing is only needed if the thread is reused for
-    non-conversation work after ``run_conversation()`` returns.
-    """
+    """Clear the session ID for the current thread."""
     _session_context.session_id = None
 
 
@@ -363,6 +358,7 @@ def _add_rotating_handler(
     path.parent.mkdir(parents=True, exist_ok=True)
     handler = _ManagedRotatingFileHandler(
         str(path), maxBytes=max_bytes, backupCount=backup_count,
+        encoding="utf-8",
     )
     handler.setLevel(level)
     handler.setFormatter(formatter)

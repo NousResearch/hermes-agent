@@ -12,7 +12,7 @@ The messaging gateway is the long-running process that connects Hermes to 14+ ex
 
 | File | Purpose |
 |------|---------|
-| `gateway/run.py` | `GatewayRunner` — main loop, slash commands, message dispatch (~7,500 lines) |
+| `gateway/run.py` | `GatewayRunner` — main loop, slash commands, message dispatch (~9,000 lines) |
 | `gateway/session.py` | `SessionStore` — conversation persistence and session key construction |
 | `gateway/delivery.py` | Outbound message delivery to target platforms/channels |
 | `gateway/pairing.py` | DM pairing flow for user authorization |
@@ -162,6 +162,7 @@ gateway/platforms/
 ├── wecom.py             # WeCom (WeChat Work) callback
 ├── weixin.py            # Weixin (personal WeChat) via iLink Bot API
 ├── bluebubbles.py       # Apple iMessage via BlueBubbles macOS server
+├── qqbot.py             # QQ Bot (Tencent QQ) via Official API v2
 ├── webhook.py           # Inbound/outbound webhook adapter
 ├── api_server.py        # REST API server adapter
 └── homeassistant.py     # Home Assistant conversation integration

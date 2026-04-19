@@ -26,7 +26,7 @@ from hermes_cli.auth import (
     resolve_external_process_provider_credentials,
     has_usable_secret,
 )
-from hermes_cli.config import load_config
+from hermes_cli.config import get_compatible_custom_providers, load_config
 from hermes_constants import OPENROUTER_BASE_URL
 
 
@@ -41,6 +41,8 @@ def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
     tool calls with reasoning (chat/completions returns 400).
     """
     normalized = (base_url or "").strip().lower().rstrip("/")
+    if "api.x.ai" in normalized:
+        return "codex_responses"
     if "api.openai.com" in normalized and "openrouter" not in normalized:
         return "codex_responses"
     return None
@@ -124,7 +126,7 @@ def _copilot_runtime_api_mode(model_cfg: Dict[str, Any], api_key: str) -> str:
         return "chat_completions"
 
 
-_VALID_API_MODES = {"chat_completions", "codex_responses", "anthropic_messages"}
+_VALID_API_MODES = {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse"}
 
 
 def _parse_api_mode(raw: Any) -> Optional[str]:
@@ -163,10 +165,13 @@ def _resolve_runtime_from_pool_entry(
         base_url = cfg_base_url or base_url or "https://api.anthropic.com"
     elif provider == "openrouter":
         base_url = base_url or OPENROUTER_BASE_URL
+    elif provider == "xai":
+        api_mode = "codex_responses"
     elif provider == "nous":
         api_mode = "chat_completions"
     elif provider == "copilot":
         api_mode = _copilot_runtime_api_mode(model_cfg, getattr(entry, "runtime_api_key", ""))
+        base_url = base_url or PROVIDER_REGISTRY["copilot"].inference_base_url
     else:
         configured_provider = str(model_cfg.get("provider") or "").strip().lower()
         # Honour model.base_url from config.yaml when the configured provider
@@ -275,14 +280,59 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
             return None
 
     config = load_config()
+    
+    # First check providers: dict (new-style user-defined providers)
+    providers = config.get("providers")
+    if isinstance(providers, dict):
+        for ep_name, entry in providers.items():
+            if not isinstance(entry, dict):
+                continue
+            # Match exact name or normalized name
+            name_norm = _normalize_custom_provider_name(ep_name)
+            # Resolve the API key from the env var name stored in key_env
+            key_env = str(entry.get("key_env", "") or "").strip()
+            resolved_api_key = os.getenv(key_env, "").strip() if key_env else ""
+            # Fall back to inline api_key when key_env is absent or unresolvable
+            if not resolved_api_key:
+                resolved_api_key = str(entry.get("api_key", "") or "").strip()
+
+            if requested_norm in {ep_name, name_norm, f"custom:{name_norm}"}:
+                # Found match by provider key
+                base_url = entry.get("api") or entry.get("url") or entry.get("base_url") or ""
+                if base_url:
+                    return {
+                        "name": entry.get("name", ep_name),
+                        "base_url": base_url.strip(),
+                        "api_key": resolved_api_key,
+                        "model": entry.get("default_model", ""),
+                    }
+            # Also check the 'name' field if present
+            display_name = entry.get("name", "")
+            if display_name:
+                display_norm = _normalize_custom_provider_name(display_name)
+                if requested_norm in {display_name, display_norm, f"custom:{display_norm}"}:
+                    # Found match by display name
+                    base_url = entry.get("api") or entry.get("url") or entry.get("base_url") or ""
+                    if base_url:
+                        return {
+                            "name": display_name,
+                            "base_url": base_url.strip(),
+                            "api_key": resolved_api_key,
+                            "model": entry.get("default_model", ""),
+                        }
+
+    # Fall back to custom_providers: list (legacy format)
     custom_providers = config.get("custom_providers")
-    if not isinstance(custom_providers, list):
-        if isinstance(custom_providers, dict):
-            logger.warning(
-                "custom_providers in config.yaml is a dict, not a list. "
-                "Each entry must be prefixed with '-' in YAML. "
-                "Run 'hermes doctor' for details."
-            )
+    if isinstance(custom_providers, dict):
+        logger.warning(
+            "custom_providers in config.yaml is a dict, not a list. "
+            "Each entry must be prefixed with '-' in YAML. "
+            "Run 'hermes doctor' for details."
+        )
+        return None
+
+    custom_providers = get_compatible_custom_providers(config)
+    if not custom_providers:
         return None
 
     for entry in custom_providers:
@@ -294,13 +344,21 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
             continue
         name_norm = _normalize_custom_provider_name(name)
         menu_key = f"custom:{name_norm}"
-        if requested_norm not in {name_norm, menu_key}:
+        provider_key = str(entry.get("provider_key", "") or "").strip()
+        provider_key_norm = _normalize_custom_provider_name(provider_key) if provider_key else ""
+        provider_menu_key = f"custom:{provider_key_norm}" if provider_key_norm else ""
+        if requested_norm not in {name_norm, menu_key, provider_key_norm, provider_menu_key}:
             continue
         result = {
             "name": name.strip(),
             "base_url": base_url.strip(),
             "api_key": str(entry.get("api_key", "") or "").strip(),
         }
+        key_env = str(entry.get("key_env", "") or "").strip()
+        if key_env:
+            result["key_env"] = key_env
+        if provider_key:
+            result["provider_key"] = provider_key
         api_mode = _parse_api_mode(entry.get("api_mode"))
         if api_mode:
             result["api_mode"] = api_mode
@@ -342,6 +400,7 @@ def _resolve_named_custom_runtime(
     api_key_candidates = [
         (explicit_api_key or "").strip(),
         str(custom_provider.get("api_key", "") or "").strip(),
+        os.getenv(str(custom_provider.get("key_env", "") or "").strip(), "").strip(),
         os.getenv("OPENAI_API_KEY", "").strip(),
         os.getenv("OPENROUTER_API_KEY", "").strip(),
     ]
@@ -557,7 +616,7 @@ def _resolve_explicit_runtime(
 
         base_url = explicit_base_url
         if not base_url:
-            if provider == "kimi-coding":
+            if provider in ("kimi-coding", "kimi-coding-cn"):
                 creds = resolve_api_key_provider_credentials(provider)
                 base_url = creds.get("base_url", "").rstrip("/")
             else:
@@ -573,6 +632,8 @@ def _resolve_explicit_runtime(
         api_mode = "chat_completions"
         if provider == "copilot":
             api_mode = _copilot_runtime_api_mode(model_cfg, api_key)
+        elif provider == "xai":
+            api_mode = "codex_responses"
         else:
             configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
             if configured_mode:
@@ -782,6 +843,77 @@ def resolve_runtime_provider(
             "requested_provider": requested_provider,
         }
 
+    # AWS Bedrock (native Converse API via boto3)
+    if provider == "bedrock":
+        from agent.bedrock_adapter import (
+            has_aws_credentials,
+            resolve_aws_auth_env_var,
+            resolve_bedrock_region,
+            is_anthropic_bedrock_model,
+        )
+        # When the user explicitly selected bedrock (not auto-detected),
+        # trust boto3's credential chain — it handles IMDS, ECS task roles,
+        # Lambda execution roles, SSO, and other implicit sources that our
+        # env-var check can't detect.
+        is_explicit = requested_provider in ("bedrock", "aws", "aws-bedrock", "amazon-bedrock", "amazon")
+        if not is_explicit and not has_aws_credentials():
+            raise AuthError(
+                "No AWS credentials found for Bedrock. Configure one of:\n"
+                "  - AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY\n"
+                "  - AWS_PROFILE (for SSO / named profiles)\n"
+                "  - IAM instance role (EC2, ECS, Lambda)\n"
+                "Or run 'aws configure' to set up credentials.",
+                code="no_aws_credentials",
+            )
+        # Read bedrock-specific config from config.yaml
+        from hermes_cli.config import load_config as _load_bedrock_config
+        _bedrock_cfg = _load_bedrock_config().get("bedrock", {})
+        # Region priority: config.yaml bedrock.region → env var → us-east-1
+        region = (_bedrock_cfg.get("region") or "").strip() or resolve_bedrock_region()
+        auth_source = resolve_aws_auth_env_var() or "aws-sdk-default-chain"
+        # Build guardrail config if configured
+        _gr = _bedrock_cfg.get("guardrail", {})
+        guardrail_config = None
+        if _gr.get("guardrail_identifier") and _gr.get("guardrail_version"):
+            guardrail_config = {
+                "guardrailIdentifier": _gr["guardrail_identifier"],
+                "guardrailVersion": _gr["guardrail_version"],
+            }
+            if _gr.get("stream_processing_mode"):
+                guardrail_config["streamProcessingMode"] = _gr["stream_processing_mode"]
+            if _gr.get("trace"):
+                guardrail_config["trace"] = _gr["trace"]
+        # Dual-path routing: Claude models use AnthropicBedrock SDK for full
+        # feature parity (prompt caching, thinking budgets, adaptive thinking).
+        # Non-Claude models use the Converse API for multi-model support.
+        _current_model = str(model_cfg.get("default") or "").strip()
+        if is_anthropic_bedrock_model(_current_model):
+            # Claude on Bedrock → AnthropicBedrock SDK → anthropic_messages path
+            runtime = {
+                "provider": "bedrock",
+                "api_mode": "anthropic_messages",
+                "base_url": f"https://bedrock-runtime.{region}.amazonaws.com",
+                "api_key": "aws-sdk",
+                "source": auth_source,
+                "region": region,
+                "bedrock_anthropic": True,  # Signal to use AnthropicBedrock client
+                "requested_provider": requested_provider,
+            }
+        else:
+            # Non-Claude (Nova, DeepSeek, Llama, etc.) → Converse API
+            runtime = {
+                "provider": "bedrock",
+                "api_mode": "bedrock_converse",
+                "base_url": f"https://bedrock-runtime.{region}.amazonaws.com",
+                "api_key": "aws-sdk",
+                "source": auth_source,
+                "region": region,
+                "requested_provider": requested_provider,
+            }
+        if guardrail_config:
+            runtime["guardrail_config"] = guardrail_config
+        return runtime
+
     # API-key providers (z.ai/GLM, Kimi, MiniMax, MiniMax-CN)
     pconfig = PROVIDER_REGISTRY.get(provider)
     if pconfig and pconfig.auth_type == "api_key":
@@ -798,6 +930,8 @@ def resolve_runtime_provider(
         api_mode = "chat_completions"
         if provider == "copilot":
             api_mode = _copilot_runtime_api_mode(model_cfg, creds.get("api_key", ""))
+        elif provider == "xai":
+            api_mode = "codex_responses"
         else:
             configured_provider = str(model_cfg.get("provider") or "").strip().lower()
             # Only honor persisted api_mode when it belongs to the same provider family.

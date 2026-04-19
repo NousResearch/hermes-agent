@@ -8,6 +8,10 @@ description: "Text-to-speech and voice message transcription across all platform
 
 Hermes Agent supports both text-to-speech output and voice message transcription across all messaging platforms.
 
+:::tip Nous Subscribers
+If you have a paid [Nous Portal](https://portal.nousresearch.com) subscription, OpenAI TTS is available through the **[Tool Gateway](tool-gateway.md)** without a separate OpenAI API key. Run `hermes model` or `hermes tools` to enable it.
+:::
+
 ## Text-to-Speech
 
 Convert text to speech with six providers:
@@ -36,8 +40,10 @@ Convert text to speech with six providers:
 # In ~/.hermes/config.yaml
 tts:
   provider: "edge"              # "edge" | "elevenlabs" | "openai" | "minimax" | "mistral" | "neutts"
+  speed: 1.0                    # Global speed multiplier (provider-specific settings override this)
   edge:
     voice: "en-US-AriaNeural"   # 322 voices, 74 languages
+    speed: 1.0                  # Converted to rate percentage (+/-%)
   elevenlabs:
     voice_id: "pNInz6obpgDQGcFmaJgB"  # Adam
     model_id: "eleven_multilingual_v2"
@@ -45,6 +51,7 @@ tts:
     model: "gpt-4o-mini-tts"
     voice: "alloy"              # alloy, echo, fable, onyx, nova, shimmer
     base_url: "https://api.openai.com/v1"  # Override for OpenAI-compatible TTS endpoints
+    speed: 1.0                  # 0.25 - 4.0
   minimax:
     model: "speech-2.8-hd"     # speech-2.8-hd (default), speech-2.8-turbo
     voice_id: "English_Graceful_Lady"  # See https://platform.minimax.io/faq/system-voice-id
@@ -60,6 +67,8 @@ tts:
     model: neuphonic/neutts-air-q4-gguf
     device: cpu
 ```
+
+**Speed control**: The global `tts.speed` value applies to all providers by default. Each provider can override it with its own `speed` setting (e.g., `tts.openai.speed: 1.5`). Provider-specific speed takes precedence over the global value. Default is `1.0` (normal speed).
 
 ### Telegram Voice Bubbles & ffmpeg
 

@@ -267,7 +267,6 @@ Run `nix build .#configKeys && cat result` to see every leaf config key extracte
 
     # ── Documents ──────────────────────────────────────────────────────
     documents = {
-      "SOUL.md" = builtins.readFile /home/user/.hermes/SOUL.md;
       "USER.md" = ./documents/USER.md;
     };
 
@@ -316,7 +315,7 @@ Quick reference for the most common things Nix users want to customize:
 | Change the LLM model | `settings.model.default` | `"anthropic/claude-sonnet-4"` |
 | Use a different provider endpoint | `settings.model.base_url` | `"https://openrouter.ai/api/v1"` |
 | Add API keys | `environmentFiles` | `[ config.sops.secrets."hermes-env".path ]` |
-| Give the agent a personality | `documents."SOUL.md"` | `builtins.readFile ./my-soul.md` |
+| Give the agent a personality | `${services.hermes-agent.stateDir}/.hermes/SOUL.md` | manage the file directly |
 | Add MCP tool servers | `mcpServers.<name>` | See [MCP Servers](#mcp-servers) |
 | Mount host directories into container | `container.extraVolumes` | `[ "/data:/data:rw" ]` |
 | Pass GPU access to container | `container.extraOptions` | `[ "--gpus" "all" ]` |
@@ -397,17 +396,14 @@ The file is only copied if `auth.json` doesn't already exist (unless `authFileFo
 
 The `documents` option installs files into the agent's working directory (the `workingDirectory`, which the agent reads as its workspace). Hermes looks for specific filenames by convention:
 
-- **`SOUL.md`** — the agent's system prompt / personality. Hermes reads this on startup and uses it as persistent instructions that shape its behavior across all conversations.
 - **`USER.md`** — context about the user the agent is interacting with.
 - Any other files you place here are visible to the agent as workspace files.
+
+The agent identity file is separate: Hermes loads its primary `SOUL.md` from `$HERMES_HOME/SOUL.md`, which in the NixOS module is `${services.hermes-agent.stateDir}/.hermes/SOUL.md`. Putting `SOUL.md` in `documents` only creates a workspace file and will not replace the main persona file.
 
 ```nix
 {
   services.hermes-agent.documents = {
-    "SOUL.md" = ''
-      You are a helpful research assistant specializing in NixOS packaging.
-      Always cite sources and prefer reproducible solutions.
-    '';
     "USER.md" = ./documents/USER.md;  # path reference, copied from Nix store
   };
 }

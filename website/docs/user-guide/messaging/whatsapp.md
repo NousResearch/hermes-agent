@@ -174,6 +174,33 @@ whatsapp:
 
 ---
 
+## Message Formatting & Delivery
+
+WhatsApp supports **streaming (progressive) responses** — the bot edits its message in real-time as the AI generates text, just like Discord and Telegram. Internally, WhatsApp is classified as a TIER_MEDIUM platform for delivery capabilities.
+
+### Chunking
+
+Long responses are automatically split into multiple messages at **4,096 characters** per chunk (WhatsApp's practical display limit). You don't need to configure anything — the gateway handles splitting and sends chunks sequentially.
+
+### WhatsApp-Compatible Markdown
+
+Standard Markdown in AI responses is automatically converted to WhatsApp's native formatting:
+
+| Markdown | WhatsApp | Renders as |
+|----------|----------|------------|
+| `**bold**` | `*bold*` | **bold** |
+| `~~strikethrough~~` | `~strikethrough~` | ~~strikethrough~~ |
+| `# Heading` | `*Heading*` | Bold text (no native headings) |
+| `[link text](url)` | `link text (url)` | Inline URL |
+
+Code blocks and inline code are preserved as-is since WhatsApp supports triple-backtick formatting natively.
+
+### Tool Progress
+
+When the agent calls tools (web search, file operations, etc.), WhatsApp displays real-time progress indicators showing which tool is running. This is enabled by default — no configuration needed.
+
+---
+
 ## Troubleshooting
 
 | Problem | Solution |

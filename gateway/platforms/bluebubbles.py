@@ -224,6 +224,21 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             host = "localhost"
         return f"http://{host}:{self.webhook_port}{self.webhook_path}"
 
+    @property
+    def _webhook_register_url(self) -> str:
+        """Webhook URL registered with BlueBubbles, including the password as
+        a query param so inbound webhook POSTs carry credentials.
+
+        BlueBubbles posts events to the exact URL registered via
+        ``/api/v1/webhook``. Its webhook registration API does not support
+        custom headers, so embedding the password in the URL is the only
+        way to authenticate inbound webhooks without disabling auth.
+        """
+        base = self._webhook_url
+        if self.password:
+            return f"{base}?password={quote(self.password, safe='')}"
+        return base
+
     async def _find_registered_webhooks(self, url: str) -> list:
         """Return list of BB webhook entries matching *url*."""
         try:
@@ -245,7 +260,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         if not self.client:
             return False
 
-        webhook_url = self._webhook_url
+        webhook_url = self._webhook_register_url
 
         # Crash resilience — reuse an existing registration if present
         existing = await self._find_registered_webhooks(webhook_url)
@@ -257,7 +272,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
 
         payload = {
             "url": webhook_url,
-            "events": ["new-message", "updated-message", "message"],
+            "events": ["new-message", "updated-message"],
         }
 
         try:
@@ -292,7 +307,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         if not self.client:
             return False
 
-        webhook_url = self._webhook_url
+        webhook_url = self._webhook_register_url
         removed = False
 
         try:
@@ -604,35 +619,6 @@ class BlueBubblesAdapter(BasePlatformAdapter):
     # Tapback reactions
     # ------------------------------------------------------------------
 
-    async def send_reaction(
-        self,
-        chat_id: str,
-        message_guid: str,
-        reaction: str,
-        part_index: int = 0,
-    ) -> SendResult:
-        """Send a tapback reaction (requires Private API helper)."""
-        if not self._private_api_enabled or not self._helper_connected:
-            return SendResult(
-                success=False, error="Private API helper not connected"
-            )
-        guid = await self._resolve_chat_guid(chat_id)
-        if not guid:
-            return SendResult(success=False, error=f"Chat not found: {chat_id}")
-        try:
-            res = await self._api_post(
-                "/api/v1/message/react",
-                {
-                    "chatGuid": guid,
-                    "selectedMessageGuid": message_guid,
-                    "reaction": reaction,
-                    "partIndex": part_index,
-                },
-            )
-            return SendResult(success=True, raw_response=res)
-        except Exception as exc:
-            return SendResult(success=False, error=str(exc))
-
     # ------------------------------------------------------------------
     # Chat info
     # ------------------------------------------------------------------
@@ -864,6 +850,12 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             payload.get("chat_guid"),
             payload.get("guid"),
         )
+        # Fallback: BlueBubbles v1.9+ webhook payloads omit top-level chatGuid;
+        # the chat GUID is nested under data.chats[0].guid instead.
+        if not chat_guid:
+            _chats = record.get("chats") or []
+            if _chats and isinstance(_chats[0], dict):
+                chat_guid = _chats[0].get("guid") or _chats[0].get("chatGuid")
         chat_identifier = self._value(
             record.get("chatIdentifier"),
             record.get("identifier"),

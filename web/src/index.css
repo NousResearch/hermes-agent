@@ -1,0 +1,197 @@
+@import "tailwindcss";
+
+/* ------------------------------------------------------------------ */
+/* Hermes Agent — Design tokens                                        */
+/* Matched to hermes-agent.nousresearch.com (dark teal theme)          */
+/* ------------------------------------------------------------------ */
+
+/* --- Font faces --- */
+@font-face { font-family: "Collapse"; src: url("/fonts/Collapse-Regular.woff2") format("woff2"); font-weight: 400; font-display: swap; }
+@font-face { font-family: "Collapse"; src: url("/fonts/Collapse-Bold.woff2") format("woff2"); font-weight: 700; font-display: swap; }
+@font-face { font-family: "Courier Prime"; src: url("/fonts/CourierPrime-Regular.woff2") format("woff2"); font-weight: 400; font-display: swap; }
+@font-face { font-family: "Courier Prime"; src: url("/fonts/CourierPrime-Bold.woff2") format("woff2"); font-weight: 700; font-display: swap; }
+@font-face { font-family: "RulesCompressed"; src: url("/fonts/RulesCompressed-Regular.woff2") format("woff2"); font-weight: 400; font-display: swap; }
+@font-face { font-family: "RulesCompressed"; src: url("/fonts/RulesCompressed-Medium.woff2") format("woff2"); font-weight: 600; font-display: swap; }
+@font-face { font-family: "RulesExpanded"; src: url("/fonts/RulesExpanded-Regular.woff2") format("woff2"); font-weight: 400; font-display: swap; }
+@font-face { font-family: "RulesExpanded"; src: url("/fonts/RulesExpanded-Bold.woff2") format("woff2"); font-weight: 700; font-display: swap; }
+@font-face { font-family: "Mondwest"; src: url("/fonts/Mondwest-Regular.woff2") format("woff2"); font-weight: 400; font-display: swap; }
+
+@theme {
+  /* ---- Hermes palette (dark teal, from live site) ---- */
+  --color-background: #041C1C;
+  --color-foreground: #ffe6cb;
+  --color-card: #062424;
+  --color-card-foreground: #ffe6cb;
+  --color-primary: #ffe6cb;
+  --color-primary-foreground: #041C1C;
+  --color-secondary: #0a2e2e;
+  --color-secondary-foreground: #ffe6cb;
+  --color-muted: #083030;
+  --color-muted-foreground: #8aaa9a;
+  --color-accent: #0c3838;
+  --color-accent-foreground: #ffe6cb;
+  --color-destructive: #fb2c36;
+  --color-destructive-foreground: #fff;
+  --color-success: #4ade80;
+  --color-warning: #ffbd38;
+  --color-border: color-mix(in srgb, #ffe6cb 15%, transparent);
+  --color-input: color-mix(in srgb, #ffe6cb 15%, transparent);
+  --color-ring: #ffe6cb;
+  --color-popover: #062424;
+  --color-popover-foreground: #ffe6cb;
+
+  /* ---- Font stacks ---- */
+  --font-sans: "Mondwest", Arial, sans-serif;
+  --font-mono: "Courier Prime", "Courier New", monospace;
+  --font-display: "Mondwest", Arial, sans-serif;
+  --font-expanded: "RulesExpanded", Arial, sans-serif;
+  --font-compressed: "RulesCompressed", Arial, sans-serif;
+}
+
+/* ---- Global body ---- */
+body {
+  margin: 0;
+  font-family: "Mondwest", Arial, sans-serif;
+  background: var(--color-background);
+  color: var(--color-foreground);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+/* ---- Selection ---- */
+::selection {
+  background: var(--color-foreground);
+  color: var(--color-background);
+}
+
+/* ---- Scrollbars (thin, subtle) ---- */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+*:hover {
+  scrollbar-color: color-mix(in srgb, var(--color-foreground) 15%, transparent) transparent;
+}
+html, body {
+  overflow-x: hidden;
+  scrollbar-color: color-mix(in srgb, var(--color-foreground) 25%, transparent) transparent;
+}
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--color-foreground) 20%, transparent);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--color-foreground) 35%, transparent);
+}
+
+/* ---- Hide scrollbar utility ---- */
+.scrollbar-none {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
+
+/* ---- Code blocks ---- */
+code {
+  font-family: "Courier Prime", "Courier New", monospace;
+  font-size: 0.85em;
+  padding: 0.15em 0.4em;
+  border-radius: 0;
+  background: color-mix(in srgb, var(--color-foreground) 8%, transparent);
+}
+
+/* ---- Dither texture ---- */
+.dither {
+  background: repeating-conic-gradient(currentColor 0% 25%, #0000 0% 50%) 0 0 / 2px 2px;
+}
+
+/* ---- Blink cursor (only on group hover, like canonical) ---- */
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+.blink {
+  display: none;
+}
+.group:hover .blink {
+  display: inline-block;
+  animation: blink 1s step-end infinite;
+}
+
+/* ---- Page transitions ---- */
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes toast-in {
+  from { opacity: 0; transform: translateX(16px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+@keyframes toast-out {
+  from { opacity: 1; transform: translateX(0); }
+  to   { opacity: 0; transform: translateX(16px); }
+}
+
+/* ---- Plus-lighter blend for headings ---- */
+.blend-lighter {
+  mix-blend-mode: plus-lighter;
+}
+
+/* ---- Font utilities ---- */
+.font-display { font-family: "Mondwest", Arial, sans-serif; }
+.font-expanded { font-family: "RulesExpanded", Arial, sans-serif; }
+.font-compressed { font-family: "RulesCompressed", Arial, sans-serif; }
+.font-courier { font-family: "Courier Prime", "Courier New", monospace; }
+.font-collapse { font-family: "Collapse", Arial, sans-serif; }
+.font-mono-ui { font-family: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, monospace; }
+
+/* ---- Subtle grain overlay for badges ---- */
+.grain {
+  position: relative;
+}
+.grain::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  opacity: 0.12;
+  pointer-events: none;
+  background: repeating-conic-gradient(currentColor 0% 25%, #0000 0% 50%) 0 0 / 2px 2px;
+}
+
+/* ---- Global noise grain (canonical: color-dodge, #eaeaea, high density) ---- */
+.noise-overlay {
+  pointer-events: none;
+  position: fixed;
+  inset: 0;
+  z-index: 101;
+  mix-blend-mode: color-dodge;
+  opacity: 0.10;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 512 512' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' fill='%23eaeaea' filter='url(%23n)' opacity='0.6'/%3E%3C/svg%3E");
+  background-size: 512px 512px;
+}
+
+/* ---- Vignette (canonical: top-left amber radial, lighten blend) ---- */
+.warm-glow {
+  pointer-events: none;
+  position: fixed;
+  inset: 0;
+  z-index: 99;
+  mix-blend-mode: lighten;
+  opacity: 0.22;
+  background: radial-gradient(ellipse at 0% 0%, rgba(255,189,56,0.35) 0%, rgba(255,189,56,0) 60%);
+}
+
+/* ---- Reduced motion ---- */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

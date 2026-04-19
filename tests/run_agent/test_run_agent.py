@@ -302,6 +302,17 @@ class TestStripThinkBlocks:
         assert "<think>" not in result
         assert "visible" in result
 
+    def test_thought_block_removed(self, agent):
+        """Gemma 4 uses <thought> tags for inline reasoning."""
+        result = agent._strip_think_blocks("<thought>internal reasoning</thought> answer")
+        assert "internal reasoning" not in result
+        assert "<thought>" not in result
+        assert "answer" in result
+
+    def test_orphaned_thought_tag(self, agent):
+        result = agent._strip_think_blocks("<thought>orphaned reasoning without close")
+        assert "<thought>" not in result
+
 
 class TestExtractReasoning:
     def test_reasoning_field(self, agent):
@@ -869,6 +880,7 @@ class TestBuildApiKwargs:
         assert kwargs["extra_body"]["reasoning"] == {"enabled": False}
 
     def test_reasoning_not_sent_for_unsupported_openrouter_model(self, agent):
+        agent.base_url = "https://openrouter.ai/api/v1"
         agent.model = "minimax/minimax-m2.5"
         messages = [{"role": "user", "content": "hi"}]
         kwargs = agent._build_api_kwargs(messages)
@@ -915,6 +927,7 @@ class TestBuildApiKwargs:
         messages = [{"role": "user", "content": "hi"}]
         kwargs = agent._build_api_kwargs(messages)
         assert kwargs["max_tokens"] == 4096
+
 
     def test_qwen_portal_formats_messages_and_metadata(self, agent):
         agent.base_url = "https://portal.qwen.ai/v1"
@@ -971,6 +984,46 @@ class TestBuildApiKwargs:
         messages = [{"role": "system", "content": "sys"}, {"role": "user", "content": "hi"}]
         kwargs = agent._build_api_kwargs(messages)
         assert kwargs["max_tokens"] == 65536
+
+    def test_ollama_think_false_on_effort_none(self, agent):
+        """Custom (Ollama) provider with effort=none should inject think=false."""
+        agent.provider = "custom"
+        agent.base_url = "http://localhost:11434/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.reasoning_config = {"effort": "none"}
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        assert kwargs.get("extra_body", {}).get("think") is False
+
+    def test_ollama_think_false_on_enabled_false(self, agent):
+        """Custom (Ollama) provider with enabled=false should inject think=false."""
+        agent.provider = "custom"
+        agent.base_url = "http://localhost:11434/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.reasoning_config = {"enabled": False}
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        assert kwargs.get("extra_body", {}).get("think") is False
+
+    def test_ollama_no_think_param_when_reasoning_enabled(self, agent):
+        """Custom provider with reasoning enabled should NOT inject think=false."""
+        agent.provider = "custom"
+        agent.base_url = "http://localhost:11434/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.reasoning_config = {"enabled": True, "effort": "medium"}
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        assert kwargs.get("extra_body", {}).get("think") is None
+
+    def test_non_custom_provider_unaffected(self, agent):
+        """OpenRouter provider with effort=none should NOT inject think=false."""
+        agent.provider = "openrouter"
+        agent.model = "qwen/qwen3.5-plus-02-15"
+        agent.reasoning_config = {"effort": "none"}
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        assert kwargs.get("extra_body", {}).get("think") is None
+
 
 
 class TestBuildAssistantMessage:
@@ -1430,7 +1483,7 @@ class TestConcurrentToolExecution:
                 tool_call_id=None,
                 session_id=agent.session_id,
                 enabled_tools=list(agent.valid_tool_names),
-
+                skip_pre_tool_call_hook=True,
             )
             assert result == "result"
 
@@ -1476,6 +1529,73 @@ class TestConcurrentToolExecution:
             result = agent._invoke_tool("todo", {"todos": []}, "task-1")
             mock_todo.assert_called_once()
         assert "ok" in result
+
+    def test_invoke_tool_blocked_returns_error_and_skips_execution(self, agent, monkeypatch):
+        """_invoke_tool should return error JSON when a plugin blocks the tool."""
+        monkeypatch.setattr(
+            "hermes_cli.plugins.get_pre_tool_call_block_message",
+            lambda *args, **kwargs: "Blocked by test policy",
+        )
+        with patch("tools.todo_tool.todo_tool", side_effect=AssertionError("should not run")) as mock_todo:
+            result = agent._invoke_tool("todo", {"todos": []}, "task-1")
+
+        assert json.loads(result) == {"error": "Blocked by test policy"}
+        mock_todo.assert_not_called()
+
+    def test_invoke_tool_blocked_skips_handle_function_call(self, agent, monkeypatch):
+        """Blocked registry tools should not reach handle_function_call."""
+        monkeypatch.setattr(
+            "hermes_cli.plugins.get_pre_tool_call_block_message",
+            lambda *args, **kwargs: "Blocked",
+        )
+        with patch("run_agent.handle_function_call", side_effect=AssertionError("should not run")):
+            result = agent._invoke_tool("web_search", {"q": "test"}, "task-1")
+
+        assert json.loads(result) == {"error": "Blocked"}
+
+    def test_sequential_blocked_tool_skips_checkpoints_and_callbacks(self, agent, monkeypatch):
+        """Sequential path: blocked tool should not trigger checkpoints or start callbacks."""
+        tool_call = _mock_tool_call(name="write_file",
+                                    arguments='{"path":"test.txt","content":"hello"}',
+                                    call_id="c1")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tool_call])
+        messages = []
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.get_pre_tool_call_block_message",
+            lambda *args, **kwargs: "Blocked by policy",
+        )
+        agent._checkpoint_mgr.enabled = True
+        agent._checkpoint_mgr.ensure_checkpoint = MagicMock(
+            side_effect=AssertionError("checkpoint should not run")
+        )
+
+        starts = []
+        agent.tool_start_callback = lambda *a: starts.append(a)
+
+        with patch("run_agent.handle_function_call", side_effect=AssertionError("should not run")):
+            agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
+
+        agent._checkpoint_mgr.ensure_checkpoint.assert_not_called()
+        assert starts == []
+        assert len(messages) == 1
+        assert messages[0]["role"] == "tool"
+        assert json.loads(messages[0]["content"]) == {"error": "Blocked by policy"}
+
+    def test_blocked_memory_tool_does_not_reset_counter(self, agent, monkeypatch):
+        """Blocked memory tool should not reset the nudge counter."""
+        agent._turns_since_memory = 5
+        monkeypatch.setattr(
+            "hermes_cli.plugins.get_pre_tool_call_block_message",
+            lambda *args, **kwargs: "Blocked",
+        )
+        with patch("tools.memory_tool.memory_tool", side_effect=AssertionError("should not run")):
+            result = agent._invoke_tool(
+                "memory", {"action": "add", "target": "memory", "content": "x"}, "task-1",
+            )
+
+        assert json.loads(result) == {"error": "Blocked"}
+        assert agent._turns_since_memory == 5
 
 
 class TestPathsOverlap:
@@ -1564,6 +1684,7 @@ class TestHandleMaxIterations:
         assert "API down" in result
 
     def test_summary_skips_reasoning_for_unsupported_openrouter_model(self, agent):
+        agent.base_url = "https://openrouter.ai/api/v1"
         agent.model = "minimax/minimax-m2.5"
         resp = _mock_response(content="Summary")
         agent.client.chat.completions.create.return_value = resp
@@ -1694,27 +1815,6 @@ class TestRunConversation:
         assert result["completed"] is True
         assert result["api_calls"] == 2
 
-    def test_inline_think_blocks_reasoning_only_accepted(self, agent):
-        """Inline <think> reasoning-only responses accepted with (empty) content, no retries."""
-        self._setup_agent(agent)
-        empty_resp = _mock_response(
-            content="<think>internal reasoning</think>",
-            finish_reason="stop",
-        )
-        agent.client.chat.completions.create.side_effect = [empty_resp]
-        with (
-            patch.object(agent, "_persist_session"),
-            patch.object(agent, "_save_trajectory"),
-            patch.object(agent, "_cleanup_task_resources"),
-        ):
-            result = agent.run_conversation("answer me")
-        assert result["completed"] is True
-        assert result["final_response"] == "(empty)"
-        assert result["api_calls"] == 1  # no retries
-        # Reasoning should be preserved in the assistant message
-        assistant_msgs = [m for m in result["messages"] if m.get("role") == "assistant"]
-        assert any(m.get("reasoning") for m in assistant_msgs)
-
     def test_reasoning_only_local_resumed_no_compression_triggered(self, agent):
         """Reasoning-only responses no longer trigger compression — prefill then accepted."""
         self._setup_agent(agent)
@@ -1730,9 +1830,9 @@ class TestRunConversation:
             {"role": "assistant", "content": "old answer"},
         ]
 
-        # 3 responses: original + 2 prefill continuations (structured reasoning triggers prefill)
+        # 6 responses: original + 2 prefill + 3 retries after prefill exhaustion
         with (
-            patch.object(agent, "_interruptible_api_call", side_effect=[empty_resp, empty_resp, empty_resp]),
+            patch.object(agent, "_interruptible_api_call", side_effect=[empty_resp] * 6),
             patch.object(agent, "_compress_context") as mock_compress,
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
@@ -1743,18 +1843,18 @@ class TestRunConversation:
         mock_compress.assert_not_called()  # no compression triggered
         assert result["completed"] is True
         assert result["final_response"] == "(empty)"
-        assert result["api_calls"] == 3  # 1 original + 2 prefill continuations
+        assert result["api_calls"] == 6  # 1 original + 2 prefill + 3 retries
 
     def test_reasoning_only_response_prefill_then_empty(self, agent):
-        """Structured reasoning-only triggers prefill continuation (up to 2), then falls through to (empty)."""
+        """Structured reasoning-only triggers prefill (2), then retries (3), then (empty)."""
         self._setup_agent(agent)
         empty_resp = _mock_response(
             content=None,
             finish_reason="stop",
             reasoning_content="structured reasoning answer",
         )
-        # 3 responses: original + 2 prefill continuations, all reasoning-only
-        agent.client.chat.completions.create.side_effect = [empty_resp, empty_resp, empty_resp]
+        # 6 responses: 1 original + 2 prefill + 3 retries after prefill exhaustion
+        agent.client.chat.completions.create.side_effect = [empty_resp] * 6
         with (
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
@@ -1763,7 +1863,7 @@ class TestRunConversation:
             result = agent.run_conversation("answer me")
         assert result["completed"] is True
         assert result["final_response"] == "(empty)"
-        assert result["api_calls"] == 3  # 1 original + 2 prefill continuations
+        assert result["api_calls"] == 6  # 1 original + 2 prefill + 3 retries
 
     def test_reasoning_only_prefill_succeeds_on_continuation(self, agent):
         """When prefill continuation produces content, it becomes the final response."""
@@ -1938,6 +2038,88 @@ class TestRunConversation:
         failure_msgs = [m for m in status_messages if "no content" in m.lower() or "no fallback" in m.lower()]
         assert len(failure_msgs) >= 1, f"Expected at least 1 failure status, got: {status_messages}"
 
+    def test_partial_stream_recovery_uses_streamed_content(self, agent):
+        """When streaming fails after partial delivery, recovered partial content becomes final response."""
+        self._setup_agent(agent)
+        # Simulate a partial-stream-stub response: content recovered from streaming
+        partial_resp = _mock_response(
+            content="Here is the partial answer that was stream",
+            finish_reason="stop",
+        )
+        agent.client.chat.completions.create.return_value = partial_resp
+        # Simulate that streaming had already delivered this text
+        agent._current_streamed_assistant_text = "Here is the partial answer that was stream"
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("explain something")
+        # The partial content should be used as-is (not empty, not retried)
+        assert result["completed"] is True
+        assert result["final_response"] == "Here is the partial answer that was stream"
+        assert result["api_calls"] == 1  # No retries
+
+    def test_partial_stream_recovery_on_empty_stub(self, agent):
+        """When stub response has no content but text was streamed, use streamed text."""
+        self._setup_agent(agent)
+        # Stub response with no content (old behavior before fix)
+        empty_stub = _mock_response(content=None, finish_reason="stop")
+
+        def _fake_api_call(api_kwargs):
+            # Simulate what streaming does: accumulate text before returning
+            # a stub with no content (connection died mid-stream)
+            agent._current_streamed_assistant_text = "The answer to your question is that"
+            return empty_stub
+
+        status_messages = []
+
+        def _capture_status(msg):
+            status_messages.append(msg)
+
+        with (
+            patch.object(agent, "_interruptible_api_call", side_effect=_fake_api_call),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch.object(agent, "_emit_status", side_effect=_capture_status),
+        ):
+            result = agent.run_conversation("ask me")
+        # Should recover partial streamed content, not fall through to (empty)
+        assert result["completed"] is True
+        assert result["final_response"] == "The answer to your question is that"
+        assert result["api_calls"] == 1  # No wasted retries
+        # Should emit the stream-interrupted status, NOT the empty-retry status
+        recovery_msgs = [m for m in status_messages if "stream interrupted" in m.lower()]
+        assert len(recovery_msgs) >= 1, f"Expected stream recovery status, got: {status_messages}"
+        # Should NOT have retry statuses
+        retry_msgs = [m for m in status_messages if "retrying" in m.lower()]
+        assert len(retry_msgs) == 0, f"Should not retry when stream content exists: {status_messages}"
+
+    def test_partial_stream_recovery_preempts_prior_turn_fallback(self, agent):
+        """Partial streamed content takes priority over _last_content_with_tools fallback."""
+        self._setup_agent(agent)
+        # Set up the prior-turn fallback content (from a previous turn with tool calls)
+        agent._last_content_with_tools = "Old content from prior turn with tools"
+        # Stub response with no content
+        empty_stub = _mock_response(content=None, finish_reason="stop")
+
+        def _fake_api_call(api_kwargs):
+            # Simulate partial streaming before connection death
+            agent._current_streamed_assistant_text = "Fresh partial content from this turn"
+            return empty_stub
+
+        with (
+            patch.object(agent, "_interruptible_api_call", side_effect=_fake_api_call),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("question")
+        # Should use the streamed content, not the old prior-turn fallback
+        assert result["final_response"] == "Fresh partial content from this turn"
+        assert result["api_calls"] == 1
+
     def test_nous_401_refreshes_after_remint_and_retries(self, agent):
         self._setup_agent(agent)
         agent.provider = "nous"
@@ -2060,6 +2242,114 @@ class TestRunConversation:
         second_call_messages = agent.client.chat.completions.create.call_args_list[1].kwargs["messages"]
         assert second_call_messages[-1]["role"] == "user"
         assert "truncated by the output length limit" in second_call_messages[-1]["content"]
+
+    def test_ollama_glm_stop_after_tools_without_terminal_boundary_requests_continuation(self, agent):
+        """Ollama-hosted GLM responses can misreport truncated output as stop."""
+        self._setup_agent(agent)
+        agent.base_url = "http://localhost:11434/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.model = "glm-5.1:cloud"
+
+        tool_turn = _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[_mock_tool_call(name="web_search", arguments="{}", call_id="c1")],
+        )
+        misreported_stop = _mock_response(
+            content="Based on the search results, the best next",
+            finish_reason="stop",
+        )
+        continued = _mock_response(
+            content=" step is to update the config.",
+            finish_reason="stop",
+        )
+        agent.client.chat.completions.create.side_effect = [
+            tool_turn,
+            misreported_stop,
+            continued,
+        ]
+
+        with (
+            patch("run_agent.handle_function_call", return_value="search result"),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["completed"] is True
+        assert result["api_calls"] == 3
+        assert (
+            result["final_response"]
+            == "Based on the search results, the best next step is to update the config."
+        )
+
+        third_call_messages = agent.client.chat.completions.create.call_args_list[2].kwargs["messages"]
+        assert third_call_messages[-1]["role"] == "user"
+        assert "truncated by the output length limit" in third_call_messages[-1]["content"]
+
+    def test_ollama_glm_stop_with_terminal_boundary_does_not_continue(self, agent):
+        """Complete Ollama/GLM responses should not be reclassified as truncated."""
+        self._setup_agent(agent)
+        agent.base_url = "http://localhost:11434/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.model = "glm-5.1:cloud"
+
+        tool_turn = _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[_mock_tool_call(name="web_search", arguments="{}", call_id="c1")],
+        )
+        complete_stop = _mock_response(
+            content="Based on the search results, the best next step is to update the config.",
+            finish_reason="stop",
+        )
+        agent.client.chat.completions.create.side_effect = [tool_turn, complete_stop]
+
+        with (
+            patch("run_agent.handle_function_call", return_value="search result"),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["completed"] is True
+        assert result["api_calls"] == 2
+        assert (
+            result["final_response"]
+            == "Based on the search results, the best next step is to update the config."
+        )
+
+    def test_non_ollama_stop_without_terminal_boundary_does_not_continue(self, agent):
+        """The stop->length workaround should stay scoped to Ollama/GLM backends."""
+        self._setup_agent(agent)
+        agent.base_url = "https://api.openai.com/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.model = "gpt-4o-mini"
+
+        tool_turn = _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[_mock_tool_call(name="web_search", arguments="{}", call_id="c1")],
+        )
+        normal_stop = _mock_response(
+            content="Based on the search results, the best next",
+            finish_reason="stop",
+        )
+        agent.client.chat.completions.create.side_effect = [tool_turn, normal_stop]
+
+        with (
+            patch("run_agent.handle_function_call", return_value="search result"),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["completed"] is True
+        assert result["api_calls"] == 2
+        assert result["final_response"] == "Based on the search results, the best next"
 
     def test_length_thinking_exhausted_skips_continuation(self, agent):
         """When finish_reason='length' but content is only thinking, skip retries."""
@@ -3426,8 +3716,8 @@ class TestStreamingApiCall:
         call_kwargs = agent.client.chat.completions.create.call_args
         assert call_kwargs[1].get("stream") is True or call_kwargs.kwargs.get("stream") is True
 
-    def test_api_exception_falls_back_to_non_streaming(self, agent):
-        """When streaming fails before any deltas, fallback to non-streaming is attempted."""
+    def test_api_exception_propagates_no_non_streaming_fallback(self, agent):
+        """When streaming fails before any deltas, error propagates to the main retry loop."""
         agent.client.chat.completions.create.side_effect = ConnectionError("fail")
         # Prevent stream retry logic from replacing the mock client
         with patch.object(agent, "_replace_primary_openai_client", return_value=False):
@@ -3825,8 +4115,8 @@ class TestMemoryNudgeCounterPersistence:
         """Counters must exist on the agent after __init__."""
         with patch("run_agent.get_tool_definitions", return_value=[]):
             a = AIAgent(
-                model="test", api_key="test-key", provider="openrouter",
-                skip_context_files=True, skip_memory=True,
+                model="test", api_key="test-key", base_url="http://localhost:1234/v1",
+                provider="openrouter", skip_context_files=True, skip_memory=True,
             )
         assert hasattr(a, "_turns_since_memory")
         assert hasattr(a, "_iters_since_skill")
@@ -3857,3 +4147,63 @@ class TestDeadRetryCode:
             f"Expected 2 occurrences of 'if retry_count >= max_retries:' "
             f"but found {occurrences}"
         )
+
+
+class TestMemoryContextSanitization:
+    """run_conversation() must strip leaked <memory-context> blocks from user input."""
+
+    def test_memory_context_stripped_from_user_message(self):
+        """Verify that <memory-context> blocks are removed before the message
+        enters the conversation loop — prevents stale Honcho injection from
+        leaking into user text."""
+        import inspect
+        src = inspect.getsource(AIAgent.run_conversation)
+        # The sanitize_context call must appear in run_conversation's preamble
+        assert "sanitize_context(user_message)" in src
+        assert "sanitize_context(persist_user_message)" in src
+
+    def test_sanitize_context_strips_full_block(self):
+        """End-to-end: a user message with an embedded memory-context block
+        is cleaned to just the actual user text."""
+        from agent.memory_manager import sanitize_context
+        user_text = "how is the honcho working"
+        injected = (
+            user_text + "\n\n"
+            "<memory-context>\n"
+            "[System note: The following is recalled memory context, "
+            "NOT new user input. Treat as informational background data.]\n\n"
+            "## User Representation\n"
+            "[2026-01-13 02:13:00] stale observation about AstroMap\n"
+            "</memory-context>"
+        )
+        result = sanitize_context(injected)
+        assert "memory-context" not in result.lower()
+        assert "stale observation" not in result
+        assert "how is the honcho working" in result
+
+
+class TestMemoryProviderTurnStart:
+    """run_conversation() must call memory_manager.on_turn_start() before prefetch_all().
+
+    Without this call, providers like Honcho never update _turn_count, so cadence
+    checks (contextCadence, dialecticCadence) are always satisfied — every turn
+    fires both context refresh and dialectic, ignoring the configured cadence.
+    """
+
+    def test_on_turn_start_called_before_prefetch(self):
+        """Source-level check: on_turn_start appears before prefetch_all in run_conversation."""
+        import inspect
+        src = inspect.getsource(AIAgent.run_conversation)
+        # Find the actual method calls, not comments
+        idx_turn_start = src.index(".on_turn_start(")
+        idx_prefetch = src.index(".prefetch_all(")
+        assert idx_turn_start < idx_prefetch, (
+            "on_turn_start() must be called before prefetch_all() in run_conversation "
+            "so that memory providers have the correct turn count for cadence checks"
+        )
+
+    def test_on_turn_start_uses_user_turn_count(self):
+        """Source-level check: on_turn_start receives self._user_turn_count."""
+        import inspect
+        src = inspect.getsource(AIAgent.run_conversation)
+        assert "on_turn_start(self._user_turn_count" in src

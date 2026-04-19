@@ -5,7 +5,6 @@ Pure display functions with no HermesCLI state dependency.
 
 import json
 import logging
-import os
 import shutil
 import subprocess
 import threading

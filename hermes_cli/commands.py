@@ -12,6 +12,9 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
+import subprocess
+import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -73,6 +76,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="[focus topic]"),
     CommandDef("rollback", "List or restore filesystem checkpoints", "Session",
                args_hint="[number]"),
+    CommandDef("snapshot", "Create or restore state snapshots of Hermes config/state", "Session",
+               aliases=("snap",), args_hint="[create|restore <id>|prune]"),
     CommandDef("stop", "Kill all running background processes", "Session"),
     CommandDef("approve", "Approve a pending dangerous command", "Session",
                gateway_only=True, args_hint="[session|always]"),
@@ -129,6 +134,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("cron", "Manage scheduled tasks", "Tools & Skills",
                cli_only=True, args_hint="[subcommand]",
                subcommands=("list", "add", "create", "edit", "pause", "resume", "run", "remove")),
+    CommandDef("reload", "Reload .env variables into the running session", "Tools & Skills"),
     CommandDef("reload-mcp", "Reload MCP servers from config", "Tools & Skills",
                aliases=("reload_mcp",)),
     CommandDef("browser", "Connect browser tools to your live Chrome via CDP", "Tools & Skills",
@@ -154,10 +160,11 @@ COMMAND_REGISTRY: list[CommandDef] = [
                cli_only=True, args_hint="<path>"),
     CommandDef("update", "Update Hermes Agent to the latest version", "Info",
                gateway_only=True),
+    CommandDef("debug", "Upload debug report (system info + logs) and get shareable links", "Info"),
 
     # Exit
     CommandDef("quit", "Exit the CLI", "Exit",
-               cli_only=True, aliases=("exit", "q")),
+               cli_only=True, aliases=("exit",)),
 ]
 
 
@@ -184,52 +191,6 @@ def resolve_command(name: str) -> CommandDef | None:
     Accepts names with or without the leading slash.
     """
     return _COMMAND_LOOKUP.get(name.lower().lstrip("/"))
-
-
-def rebuild_lookups() -> None:
-    """Rebuild all derived lookup dicts from the current COMMAND_REGISTRY.
-
-    Called after plugin commands are registered so they appear in help,
-    autocomplete, gateway dispatch, Telegram menu, and Slack mapping.
-    """
-    global GATEWAY_KNOWN_COMMANDS
-
-    _COMMAND_LOOKUP.clear()
-    _COMMAND_LOOKUP.update(_build_command_lookup())
-
-    COMMANDS.clear()
-    for cmd in COMMAND_REGISTRY:
-        if not cmd.gateway_only:
-            COMMANDS[f"/{cmd.name}"] = _build_description(cmd)
-            for alias in cmd.aliases:
-                COMMANDS[f"/{alias}"] = f"{cmd.description} (alias for /{cmd.name})"
-
-    COMMANDS_BY_CATEGORY.clear()
-    for cmd in COMMAND_REGISTRY:
-        if not cmd.gateway_only:
-            cat = COMMANDS_BY_CATEGORY.setdefault(cmd.category, {})
-            cat[f"/{cmd.name}"] = COMMANDS[f"/{cmd.name}"]
-            for alias in cmd.aliases:
-                cat[f"/{alias}"] = COMMANDS[f"/{alias}"]
-
-    SUBCOMMANDS.clear()
-    for cmd in COMMAND_REGISTRY:
-        if cmd.subcommands:
-            SUBCOMMANDS[f"/{cmd.name}"] = list(cmd.subcommands)
-    for cmd in COMMAND_REGISTRY:
-        key = f"/{cmd.name}"
-        if key in SUBCOMMANDS or not cmd.args_hint:
-            continue
-        m = _PIPE_SUBS_RE.search(cmd.args_hint)
-        if m:
-            SUBCOMMANDS[key] = m.group(0).split("|")
-
-    GATEWAY_KNOWN_COMMANDS = frozenset(
-        name
-        for cmd in COMMAND_REGISTRY
-        if not cmd.cli_only or cmd.gateway_config_gate
-        for name in (cmd.name, *cmd.aliases)
-    )
 
 
 def _build_description(cmd: CommandDef) -> str:
@@ -489,7 +450,7 @@ def _collect_gateway_skill_entries(
             name = sanitize_name(cmd_name) if sanitize_name else cmd_name
             if not name:
                 continue
-            desc = "Plugin command"
+            desc = plugin_cmds[cmd_name].get("description", "Plugin command")
             if len(desc) > desc_limit:
                 desc = desc[:desc_limit - 3] + "..."
             plugin_pairs.append((name, desc))
@@ -621,6 +582,116 @@ def discord_skill_commands(
     )
 
 
+def discord_skill_commands_by_category(
+    reserved_names: set[str],
+) -> tuple[dict[str, list[tuple[str, str, str]]], list[tuple[str, str, str]], int]:
+    """Return skill entries organized by category for Discord ``/skill`` subcommand groups.
+
+    Skills whose directory is nested at least 2 levels under ``SKILLS_DIR``
+    (e.g. ``creative/ascii-art/SKILL.md``) are grouped by their top-level
+    category.  Root-level skills (e.g. ``dogfood/SKILL.md``) are returned as
+    *uncategorized* — the caller should register them as direct subcommands
+    of the ``/skill`` group.
+
+    The same filtering as :func:`discord_skill_commands` is applied: hub
+    skills excluded, per-platform disabled excluded, names clamped.
+
+    Returns:
+        ``(categories, uncategorized, hidden_count)``
+
+        - *categories*: ``{category_name: [(name, description, cmd_key), ...]}``
+        - *uncategorized*: ``[(name, description, cmd_key), ...]``
+        - *hidden_count*: skills dropped due to Discord group limits
+          (25 subcommand groups, 25 subcommands per group)
+    """
+    from pathlib import Path as _P
+
+    _platform_disabled: set[str] = set()
+    try:
+        from agent.skill_utils import get_disabled_skill_names
+        _platform_disabled = get_disabled_skill_names(platform="discord")
+    except Exception:
+        pass
+
+    # Collect raw skill data --------------------------------------------------
+    categories: dict[str, list[tuple[str, str, str]]] = {}
+    uncategorized: list[tuple[str, str, str]] = []
+    _names_used: set[str] = set(reserved_names)
+    hidden = 0
+
+    try:
+        from agent.skill_commands import get_skill_commands
+        from tools.skills_tool import SKILLS_DIR
+        _skills_dir = SKILLS_DIR.resolve()
+        _hub_dir = (SKILLS_DIR / ".hub").resolve()
+        skill_cmds = get_skill_commands()
+
+        for cmd_key in sorted(skill_cmds):
+            info = skill_cmds[cmd_key]
+            skill_path = info.get("skill_md_path", "")
+            if not skill_path:
+                continue
+            sp = _P(skill_path).resolve()
+            # Skip skills outside SKILLS_DIR or from the hub
+            if not str(sp).startswith(str(_skills_dir)):
+                continue
+            if str(sp).startswith(str(_hub_dir)):
+                continue
+
+            skill_name = info.get("name", "")
+            if skill_name in _platform_disabled:
+                continue
+
+            raw_name = cmd_key.lstrip("/")
+            # Clamp to 32 chars (Discord limit)
+            discord_name = raw_name[:32]
+            if discord_name in _names_used:
+                continue
+            _names_used.add(discord_name)
+
+            desc = info.get("description", "")
+            if len(desc) > 100:
+                desc = desc[:97] + "..."
+
+            # Determine category from the relative path within SKILLS_DIR.
+            # e.g. creative/ascii-art/SKILL.md → parts = ("creative", "ascii-art")
+            try:
+                rel = sp.parent.relative_to(_skills_dir)
+            except ValueError:
+                continue
+            parts = rel.parts
+            if len(parts) >= 2:
+                cat = parts[0]
+                categories.setdefault(cat, []).append((discord_name, desc, cmd_key))
+            else:
+                uncategorized.append((discord_name, desc, cmd_key))
+    except Exception:
+        pass
+
+    # Enforce Discord limits: 25 subcommand groups, 25 subcommands each ------
+    _MAX_GROUPS = 25
+    _MAX_PER_GROUP = 25
+
+    trimmed_categories: dict[str, list[tuple[str, str, str]]] = {}
+    group_count = 0
+    for cat in sorted(categories):
+        if group_count >= _MAX_GROUPS:
+            hidden += len(categories[cat])
+            continue
+        entries = categories[cat][:_MAX_PER_GROUP]
+        hidden += max(0, len(categories[cat]) - _MAX_PER_GROUP)
+        trimmed_categories[cat] = entries
+        group_count += 1
+
+    # Uncategorized skills also count against the 25 top-level limit
+    remaining_slots = _MAX_GROUPS - group_count
+    if len(uncategorized) > remaining_slots:
+        hidden += len(uncategorized) - remaining_slots
+        uncategorized = uncategorized[:remaining_slots]
+
+    return trimmed_categories, uncategorized, hidden
+
+
 def slack_subcommand_map() -> dict[str, str]:
     """Return subcommand -> /command mapping for Slack /hermes handler.
 
@@ -652,6 +723,10 @@ class SlashCommandCompleter(Completer):
     ) -> None:
         self._skill_commands_provider = skill_commands_provider
         self._command_filter = command_filter
+        # Cached project file list for fuzzy @ completions
+        self._file_cache: list[str] = []
+        self._file_cache_time: float = 0.0
+        self._file_cache_cwd: str = ""
 
     def _command_allowed(self, slash_command: str) -> bool:
         if self._command_filter is None:
@@ -769,8 +844,7 @@ class SlashCommandCompleter(Completer):
             return None
         return word
 
-    @staticmethod
-    def _context_completions(word: str, limit: int = 30):
+    def _context_completions(self, word: str, limit: int = 30):
         """Yield Claude Code-style @ context completions.
 
         Bare ``@`` or ``@partial`` shows static references and matching
@@ -836,46 +910,138 @@ class SlashCommandCompleter(Completer):
                     count += 1
                 return
 
-        # Bare @ or @partial — show matching files/folders from cwd
+        # Bare @ or @partial — fuzzy project-wide file search
         query = word[1:]  # strip the @
-        if not query:
-            search_dir, match_prefix = ".", ""
-        else:
-            expanded = os.path.expanduser(query)
-            if expanded.endswith("/"):
-                search_dir, match_prefix = expanded, ""
-            else:
-                search_dir = os.path.dirname(expanded) or "."
-                match_prefix = os.path.basename(expanded)
+        yield from self._fuzzy_file_completions(word, query, limit)
 
-        try:
-            entries = os.listdir(search_dir)
-        except OSError:
+    def _get_project_files(self) -> list[str]:
+        """Return cached list of project files (refreshed every 5s)."""
+        cwd = os.getcwd()
+        now = time.monotonic()
+        if (
+            self._file_cache
+            and self._file_cache_cwd == cwd
+            and now - self._file_cache_time < 5.0
+        ):
+            return self._file_cache
+
+        files: list[str] = []
+        # Try rg first (fast, respects .gitignore), then fd, then find.
+        for cmd in [
+            ["rg", "--files", "--sortr=modified", cwd],
+            ["rg", "--files", cwd],
+            ["fd", "--type", "f", "--base-directory", cwd],
+        ]:
+            tool = cmd[0]
+            if not shutil.which(tool):
+                continue
+            try:
+                proc = subprocess.run(
+                    cmd, capture_output=True, text=True, timeout=2,
+                    cwd=cwd,
+                )
+                if proc.returncode == 0 and proc.stdout.strip():
+                    raw = proc.stdout.strip().split("\n")
+                    # Store relative paths
+                    for p in raw[:5000]:
+                        rel = os.path.relpath(p, cwd) if os.path.isabs(p) else p
+                        files.append(rel)
+                    break
+            except (subprocess.TimeoutExpired, OSError):
+                continue
+
+        self._file_cache = files
+        self._file_cache_time = now
+        self._file_cache_cwd = cwd
+        return files
+
+    @staticmethod
+    def _score_path(filepath: str, query: str) -> int:
+        """Score a file path against a fuzzy query. Higher = better match."""
+        if not query:
+            return 1  # show everything when query is empty
+
+        filename = os.path.basename(filepath)
+        lower_file = filename.lower()
+        lower_path = filepath.lower()
+        lower_q = query.lower()
+
+        # Exact filename match
+        if lower_file == lower_q:
+            return 100
+        # Filename starts with query
+        if lower_file.startswith(lower_q):
+            return 80
+        # Filename contains query as substring
+        if lower_q in lower_file:
+            return 60
+        # Full path contains query
+        if lower_q in lower_path:
+            return 40
+        # Initials / abbreviation match: e.g. "fo" matches "file_operations"
+        # Check if query chars appear in order in filename
+        qi = 0
+        for c in lower_file:
+            if qi < len(lower_q) and c == lower_q[qi]:
+                qi += 1
+        if qi == len(lower_q):
+            # Bonus if matches land on word boundaries (after _, -, /, .)
+            boundary_hits = 0
+            qi = 0
+            prev = "_"  # treat start as boundary
+            for c in lower_file:
+                if qi < len(lower_q) and c == lower_q[qi]:
+                    if prev in "_-./":
+                        boundary_hits += 1
+                    qi += 1
+                prev = c
+            if boundary_hits >= len(lower_q) * 0.5:
+                return 35
+            return 25
+        return 0
+
+    def _fuzzy_file_completions(self, word: str, query: str, limit: int = 20):
+        """Yield fuzzy file completions for bare @query."""
+        files = self._get_project_files()
+
+        if not query:
+            # No query — show recently modified files (already sorted by mtime)
+            for fp in files[:limit]:
+                is_dir = fp.endswith("/")
+                filename = os.path.basename(fp)
+                kind = "folder" if is_dir else "file"
+                meta = "dir" if is_dir else _file_size_label(
+                    os.path.join(os.getcwd(), fp)
+                )
+                yield Completion(
+                    f"@{kind}:{fp}",
+                    start_position=-len(word),
+                    display=filename,
+                    display_meta=meta,
+                )
             return
 
-        count = 0
-        prefix_lower = match_prefix.lower()
-        for entry in sorted(entries):
-            if match_prefix and not entry.lower().startswith(prefix_lower):
-                continue
-            if entry.startswith("."):
-                continue  # skip hidden files in bare @ mode
-            if count >= limit:
-                break
-            full_path = os.path.join(search_dir, entry)
-            is_dir = os.path.isdir(full_path)
-            display_path = os.path.relpath(full_path)
-            suffix = "/" if is_dir else ""
+        # Score and rank
+        scored = []
+        for fp in files:
+            s = self._score_path(fp, query)
+            if s > 0:
+                scored.append((s, fp))
+        scored.sort(key=lambda x: (-x[0], x[1]))
+
+        for _, fp in scored[:limit]:
+            is_dir = fp.endswith("/")
+            filename = os.path.basename(fp)
             kind = "folder" if is_dir else "file"
-            meta = "dir" if is_dir else _file_size_label(full_path)
-            completion = f"@{kind}:{display_path}{suffix}"
-            yield Completion(
-                completion,
-                start_position=-len(word),
-                display=entry + suffix,
-                display_meta=meta,
+            meta = "dir" if is_dir else _file_size_label(
+                os.path.join(os.getcwd(), fp)
             )
-            count += 1
+            yield Completion(
+                f"@{kind}:{fp}",
+                start_position=-len(word),
+                display=filename,
+                display_meta=f"{fp}  {meta}" if meta else fp,
+            )
 
     def _model_completions(self, sub_text: str, sub_lower: str):
         """Yield completions for /model from config aliases + built-in aliases."""
@@ -972,6 +1138,22 @@ class SlashCommandCompleter(Completer):
                     display=cmd,
                     display_meta=f"⚡ {short_desc}",
                 )
+
+        # Plugin-registered slash commands
+        try:
+            from hermes_cli.plugins import get_plugin_commands
+            for cmd_name, cmd_info in get_plugin_commands().items():
+                if cmd_name.startswith(word):
+                    desc = str(cmd_info.get("description", "Plugin command"))
+                    short_desc = desc[:50] + ("..." if len(desc) > 50 else "")
+                    yield Completion(
+                        self._completion_text(cmd_name, word),
+                        start_position=-len(word),
+                        display=f"/{cmd_name}",
+                        display_meta=f"🔌 {short_desc}",
+                    )
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------

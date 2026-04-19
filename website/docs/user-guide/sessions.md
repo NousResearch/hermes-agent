@@ -46,6 +46,7 @@ Each session is tagged with its source platform:
 | `wecom` | WeCom (WeChat Work) |
 | `weixin` | Weixin (personal WeChat) |
 | `bluebubbles` | Apple iMessage via BlueBubbles macOS server |
+| `qqbot` | QQ Bot (Tencent QQ) via Official API v2 |
 | `homeassistant` | Home Assistant conversation |
 | `webhook` | Incoming webhooks |
 | `api-server` | API server requests |
@@ -327,7 +328,7 @@ On messaging platforms, sessions are keyed by a deterministic session key built 
 | Discord DM | `agent:main:discord:dm:<chat_id>` | One session per DM chat |
 | WhatsApp DM | `agent:main:whatsapp:dm:<chat_id>` | One session per DM chat |
 | Group chat | `agent:main:<platform>:group:<chat_id>:<user_id>` | Per-user inside the group when the platform exposes a user ID |
-| Group thread/topic | `agent:main:<platform>:group:<chat_id>:<thread_id>:<user_id>` | Per-user inside that thread/topic |
+| Group thread/topic | `agent:main:<platform>:group:<chat_id>:<thread_id>` | Shared session for all thread participants (default). Per-user with `thread_sessions_per_user: true`. |
 | Channel | `agent:main:<platform>:channel:<chat_id>:<user_id>` | Per-user inside the channel when the platform exposes a user ID |
 
 When Hermes cannot get a participant identifier for a shared chat, it falls back to one shared session for that room.

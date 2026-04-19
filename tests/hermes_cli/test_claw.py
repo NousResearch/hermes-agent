@@ -1,6 +1,7 @@
 """Tests for hermes claw commands."""
 
 from argparse import Namespace
+import subprocess
 from types import ModuleType
 from unittest.mock import MagicMock, patch
 
@@ -196,6 +197,11 @@ class TestClawCommand:
 
 class TestCmdMigrate:
     """Test the migrate command handler."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_openclaw_running(self):
+        with patch.object(claw_mod, "_detect_openclaw_processes", return_value=[]):
+            yield
 
     def test_error_when_source_missing(self, tmp_path, capsys):
         args = Namespace(
@@ -626,3 +632,120 @@ class TestPrintMigrationReport:
         claw_mod._print_migration_report(report, dry_run=False)
         captured = capsys.readouterr()
         assert "Nothing to migrate" in captured.out
+
+
+class TestDetectOpenclawProcesses:
+    def test_returns_match_when_pgrep_finds_openclaw(self):
+        with patch.object(claw_mod, "sys") as mock_sys:
+            mock_sys.platform = "linux"
+            with patch.object(claw_mod, "subprocess") as mock_subprocess:
+                # systemd check misses, pgrep finds openclaw
+                mock_subprocess.run.side_effect = [
+                    MagicMock(returncode=1, stdout=""),  # systemctl
+                    MagicMock(returncode=0, stdout="1234\n"),  # pgrep
+                ]
+                mock_subprocess.TimeoutExpired = subprocess.TimeoutExpired
+                result = claw_mod._detect_openclaw_processes()
+                assert len(result) == 1
+                assert "1234" in result[0]
+
+    def test_returns_empty_when_pgrep_finds_nothing(self):
+        with patch.object(claw_mod, "sys") as mock_sys:
+            mock_sys.platform = "darwin"
+            with patch.object(claw_mod, "subprocess") as mock_subprocess:
+                mock_subprocess.run.side_effect = [
+                    MagicMock(returncode=1, stdout=""),  # systemctl (not found)
+                    MagicMock(returncode=1, stdout=""),  # pgrep
+                ]
+                mock_subprocess.TimeoutExpired = subprocess.TimeoutExpired
+                result = claw_mod._detect_openclaw_processes()
+                assert result == []
+
+    def test_detects_systemd_service(self):
+        with patch.object(claw_mod, "sys") as mock_sys:
+            mock_sys.platform = "linux"
+            with patch.object(claw_mod, "subprocess") as mock_subprocess:
+                mock_subprocess.run.side_effect = [
+                    MagicMock(returncode=0, stdout="active\n"),  # systemctl
+                    MagicMock(returncode=1, stdout=""),  # pgrep
+                ]
+                mock_subprocess.TimeoutExpired = subprocess.TimeoutExpired
+                result = claw_mod._detect_openclaw_processes()
+                assert len(result) == 1
+                assert "systemd" in result[0]
+
+    def test_returns_match_on_windows_when_openclaw_exe_running(self):
+        with patch.object(claw_mod, "sys") as mock_sys:
+            mock_sys.platform = "win32"
+            with patch.object(claw_mod, "subprocess") as mock_subprocess:
+                mock_subprocess.run.side_effect = [
+                    MagicMock(returncode=0, stdout="openclaw.exe                 1234 Console    1     45,056 K\n"),
+                ]
+                result = claw_mod._detect_openclaw_processes()
+                assert len(result) >= 1
+                assert any("openclaw.exe" in r for r in result)
+
+    def test_returns_match_on_windows_when_node_exe_has_openclaw_in_cmdline(self):
+        with patch.object(claw_mod, "sys") as mock_sys:
+            mock_sys.platform = "win32"
+            with patch.object(claw_mod, "subprocess") as mock_subprocess:
+                mock_subprocess.run.side_effect = [
+                    MagicMock(returncode=0, stdout=""),  # tasklist openclaw.exe
+                    MagicMock(returncode=0, stdout=""),  # tasklist clawd.exe
+                    MagicMock(returncode=0, stdout="1234\n"),  # PowerShell
+                ]
+                result = claw_mod._detect_openclaw_processes()
+                assert len(result) >= 1
+                assert any("node.exe" in r for r in result)
+
+    def test_returns_empty_on_windows_when_nothing_found(self):
+        with patch.object(claw_mod, "sys") as mock_sys:
+            mock_sys.platform = "win32"
+            with patch.object(claw_mod, "subprocess") as mock_subprocess:
+                mock_subprocess.run.side_effect = [
+                    MagicMock(returncode=0, stdout=""),
+                    MagicMock(returncode=0, stdout=""),
+                    MagicMock(returncode=0, stdout=""),
+                ]
+                result = claw_mod._detect_openclaw_processes()
+                assert result == []
+
+
+class TestWarnIfOpenclawRunning:
+    def test_noop_when_not_running(self, capsys):
+        with patch.object(claw_mod, "_detect_openclaw_processes", return_value=[]):
+            claw_mod._warn_if_openclaw_running(auto_yes=False)
+        captured = capsys.readouterr()
+        assert captured.out == ""
+
+    def test_warns_and_exits_when_running_and_user_declines(self, capsys):
+        with patch.object(claw_mod, "_detect_openclaw_processes", return_value=["openclaw process(es) (PIDs: 1234)"]):
+            with patch.object(claw_mod, "prompt_yes_no", return_value=False):
+                with patch.object(claw_mod.sys.stdin, "isatty", return_value=True):
+                    with pytest.raises(SystemExit) as exc_info:
+                        claw_mod._warn_if_openclaw_running(auto_yes=False)
+        assert exc_info.value.code == 0
+        captured = capsys.readouterr()
+        assert "OpenClaw appears to be running" in captured.out
+
+    def test_warns_and_continues_when_running_and_user_accepts(self, capsys):
+        with patch.object(claw_mod, "_detect_openclaw_processes", return_value=["openclaw process(es) (PIDs: 1234)"]):
+            with patch.object(claw_mod, "prompt_yes_no", return_value=True):
+                with patch.object(claw_mod.sys.stdin, "isatty", return_value=True):
+                    claw_mod._warn_if_openclaw_running(auto_yes=False)
+        captured = capsys.readouterr()
+        assert "OpenClaw appears to be running" in captured.out
+
+    def test_warns_and_continues_in_auto_yes_mode(self, capsys):
+        with patch.object(claw_mod, "_detect_openclaw_processes", return_value=["openclaw process(es) (PIDs: 1234)"]):
+            claw_mod._warn_if_openclaw_running(auto_yes=True)
+        captured = capsys.readouterr()
+        assert "OpenClaw appears to be running" in captured.out
+
+    def test_warns_and_continues_in_non_interactive_session(self, capsys):
+        with patch.object(claw_mod, "_detect_openclaw_processes", return_value=["openclaw process(es) (PIDs: 1234)"]):
+            with patch.object(claw_mod.sys.stdin, "isatty", return_value=False):
+                claw_mod._warn_if_openclaw_running(auto_yes=False)
+        captured = capsys.readouterr()
+        assert "OpenClaw appears to be running" in captured.out
+        assert "Non-interactive session" in captured.out

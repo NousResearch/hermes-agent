@@ -871,7 +871,18 @@ def _execute_remote(
     }
 
     if status == "timeout":
-        result["error"] = f"Script timed out after {timeout}s and was killed."
+        timeout_msg = f"Script timed out after {timeout}s and was killed."
+        result["error"] = timeout_msg
+        # Include timeout message in output so the LLM always surfaces it
+        # to the user (see local path comment — same reasoning, #10807).
+        if stdout_text:
+            result["output"] = stdout_text + f"\n\n⏰ {timeout_msg}"
+        else:
+            result["output"] = f"⏰ {timeout_msg}"
+        logger.warning(
+            "execute_code (remote) timed out after %ss (limit %ss) with %d tool calls",
+            duration, timeout, tool_call_counter[0],
+        )
     elif status == "interrupted":
         result["output"] = (
             stdout_text + "\n[execution interrupted — user sent a new message]"
@@ -988,7 +999,8 @@ def execute_code(
         # (terminal.env_passthrough) are passed through.
         _SAFE_ENV_PREFIXES = ("PATH", "HOME", "USER", "LANG", "LC_", "TERM",
                               "TMPDIR", "TMP", "TEMP", "SHELL", "LOGNAME",
-                              "XDG_", "PYTHONPATH", "VIRTUAL_ENV", "CONDA")
+                              "XDG_", "PYTHONPATH", "VIRTUAL_ENV", "CONDA",
+                              "HERMES_")
         _SECRET_SUBSTRINGS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL",
                               "PASSWD", "AUTH")
         try:
@@ -1015,10 +1027,13 @@ def execute_code(
         _existing_pp = child_env.get("PYTHONPATH", "")
         child_env["PYTHONPATH"] = _hermes_root + (os.pathsep + _existing_pp if _existing_pp else "")
         # Inject user's configured timezone so datetime.now() in sandboxed
-        # code reflects the correct wall-clock time.
+        # code reflects the correct wall-clock time.  Only TZ is set —
+        # HERMES_TIMEZONE is an internal Hermes setting and must not leak
+        # into child processes.
         _tz_name = os.getenv("HERMES_TIMEZONE", "").strip()
         if _tz_name:
             child_env["TZ"] = _tz_name
+        child_env.pop("HERMES_TIMEZONE", None)
 
         # Per-profile HOME isolation: redirect system tool configs into
         # {HERMES_HOME}/home/ when that directory exists.
@@ -1113,6 +1128,10 @@ def execute_code(
         stderr_reader.start()
 
         status = "success"
+        _activity_state = {
+            "last_touch": time.monotonic(),
+            "start": exec_start,
+        }
         while proc.poll() is None:
             if _is_interrupted():
                 _kill_process_group(proc)
@@ -1122,6 +1141,13 @@ def execute_code(
                 _kill_process_group(proc, escalate=True)
                 status = "timeout"
                 break
+            # Periodic activity touch so the gateway's inactivity timeout
+            # doesn't kill the agent during long code execution (#10807).
+            try:
+                from tools.environments.base import touch_activity_if_due
+                touch_activity_if_due(_activity_state, "execute_code running")
+            except Exception:
+                pass
             time.sleep(0.2)
 
         # Wait for readers to finish draining
@@ -1175,7 +1201,20 @@ def execute_code(
         }
 
         if status == "timeout":
-            result["error"] = f"Script timed out after {timeout}s and was killed."
+            timeout_msg = f"Script timed out after {timeout}s and was killed."
+            result["error"] = timeout_msg
+            # Include timeout message in output so the LLM always surfaces it
+            # to the user.  When output is empty, models often treat the result
+            # as "nothing happened" and produce an empty response, which the
+            # gateway stream consumer silently drops (#10807).
+            if stdout_text:
+                result["output"] = stdout_text + f"\n\n⏰ {timeout_msg}"
+            else:
+                result["output"] = f"⏰ {timeout_msg}"
+            logger.warning(
+                "execute_code timed out after %ss (limit %ss) with %d tool calls",
+                duration, timeout, tool_call_counter[0],
+            )
         elif status == "interrupted":
             result["output"] = stdout_text + "\n[execution interrupted — user sent a new message]"
         elif exit_code != 0:
@@ -1327,8 +1366,7 @@ def build_execute_code_schema(enabled_sandbox_tools: set = None) -> dict:
         f"Available via `from hermes_tools import ...`:\n\n"
         f"{tool_lines}\n\n"
         "Limits: 5-minute timeout, 50KB stdout cap, max 50 tool calls per script. "
-        "terminal() is foreground-only (no background or pty). "
-        "If the session uses a cloud sandbox backend, treat it as resumable task state rather than a durable always-on machine.\n\n"
+        "terminal() is foreground-only (no background or pty).\n\n"
         "Print your final result to stdout. Use Python stdlib (json, re, math, csv, "
         "datetime, collections, etc.) for processing between tool calls.\n\n"
         "Also available (no import needed — built into hermes_tools):\n"

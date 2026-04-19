@@ -66,6 +66,7 @@ class Platform(Enum):
     WECOM_CALLBACK = "wecom_callback"
     WEIXIN = "weixin"
     BLUEBUBBLES = "bluebubbles"
+    QQBOT = "qqbot"
 
 
 @dataclass
@@ -302,6 +303,9 @@ class GatewayConfig:
                 connected.append(platform)
             # BlueBubbles uses extra dict for local server config
             elif platform == Platform.BLUEBUBBLES and config.extra.get("server_url") and config.extra.get("password"):
+                connected.append(platform)
+            # QQBot uses extra dict for app credentials
+            elif platform == Platform.QQBOT and config.extra.get("app_id") and config.extra.get("client_secret"):
                 connected.append(platform)
         return connected
     
@@ -550,6 +554,12 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["mention_patterns"] = platform_cfg["mention_patterns"]
                 if plat == Platform.DISCORD and "channel_skill_bindings" in platform_cfg:
                     bridged["channel_skill_bindings"] = platform_cfg["channel_skill_bindings"]
+                if "channel_prompts" in platform_cfg:
+                    channel_prompts = platform_cfg["channel_prompts"]
+                    if isinstance(channel_prompts, dict):
+                        bridged["channel_prompts"] = {str(k): v for k, v in channel_prompts.items()}
+                    else:
+                        bridged["channel_prompts"] = channel_prompts
                 if not bridged:
                     continue
                 plat_data = platforms_data.setdefault(plat.value, {})
@@ -621,8 +631,25 @@ def load_gateway_config() -> GatewayConfig:
                     if isinstance(frc, list):
                         frc = ",".join(str(v) for v in frc)
                     os.environ["TELEGRAM_FREE_RESPONSE_CHATS"] = str(frc)
+                ignored_threads = telegram_cfg.get("ignored_threads")
+                if ignored_threads is not None and not os.getenv("TELEGRAM_IGNORED_THREADS"):
+                    if isinstance(ignored_threads, list):
+                        ignored_threads = ",".join(str(v) for v in ignored_threads)
+                    os.environ["TELEGRAM_IGNORED_THREADS"] = str(ignored_threads)
                 if "reactions" in telegram_cfg and not os.getenv("TELEGRAM_REACTIONS"):
                     os.environ["TELEGRAM_REACTIONS"] = str(telegram_cfg["reactions"]).lower()
+                if "proxy_url" in telegram_cfg and not os.getenv("TELEGRAM_PROXY"):
+                    os.environ["TELEGRAM_PROXY"] = str(telegram_cfg["proxy_url"]).strip()
+                if "disable_link_previews" in telegram_cfg:
+                    plat_data = platforms_data.setdefault(Platform.TELEGRAM.value, {})
+                    if not isinstance(plat_data, dict):
+                        plat_data = {}
+                        platforms_data[Platform.TELEGRAM.value] = plat_data
+                    extra = plat_data.setdefault("extra", {})
+                    if not isinstance(extra, dict):
+                        extra = {}
+                        plat_data["extra"] = extra
+                    extra["disable_link_previews"] = telegram_cfg["disable_link_previews"]
 
             whatsapp_cfg = yaml_cfg.get("whatsapp", {})
             if isinstance(whatsapp_cfg, dict):
@@ -665,6 +692,17 @@ def load_gateway_config() -> GatewayConfig:
     _apply_env_overrides(config)
     
     # --- Validate loaded values ---
+    _validate_gateway_config(config)
+
+    return config
+
+
+def _validate_gateway_config(config: "GatewayConfig") -> None:
+    """Validate and sanitize a loaded GatewayConfig in place.
+
+    Called by ``load_gateway_config()`` after all config sources are merged.
+    Extracted as a separate function for testability.
+    """
     policy = config.default_reset_policy
 
     if not (0 <= policy.at_hour <= 23):
@@ -701,7 +739,31 @@ def load_gateway_config() -> GatewayConfig:
                 platform.value, env_name,
             )
 
-    return config
+    # Reject known-weak placeholder tokens.
+    # Ported from openclaw/openclaw#64586: users who copy .env.example
+    # without changing placeholder values get a clear startup error instead
+    # of a confusing "auth failed" from the platform API.
+    try:
+        from hermes_cli.auth import has_usable_secret
+    except ImportError:
+        has_usable_secret = None  # type: ignore[assignment]
+
+    if has_usable_secret is not None:
+        for platform, pconfig in config.platforms.items():
+            if not pconfig.enabled:
+                continue
+            env_name = _token_env_names.get(platform)
+            if not env_name:
+                continue
+            token = pconfig.token
+            if token and token.strip() and not has_usable_secret(token, min_length=4):
+                logger.error(
+                    "%s is enabled but %s is set to a placeholder value ('%s'). "
+                    "Set a real bot token before starting the gateway. "
+                    "The adapter will NOT be started.",
+                    platform.value, env_name, token.strip()[:6] + "...",
+                )
+                pconfig.enabled = False
 
 
 def _apply_env_overrides(config: GatewayConfig) -> None:
@@ -1073,6 +1135,32 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             chat_id=bluebubbles_home,
             name=os.getenv("BLUEBUBBLES_HOME_CHANNEL_NAME", "Home"),
         )
+
+    # QQ (Official Bot API v2)
+    qq_app_id = os.getenv("QQ_APP_ID")
+    qq_client_secret = os.getenv("QQ_CLIENT_SECRET")
+    if qq_app_id or qq_client_secret:
+        if Platform.QQBOT not in config.platforms:
+            config.platforms[Platform.QQBOT] = PlatformConfig()
+        config.platforms[Platform.QQBOT].enabled = True
+        extra = config.platforms[Platform.QQBOT].extra
+        if qq_app_id:
+            extra["app_id"] = qq_app_id
+        if qq_client_secret:
+            extra["client_secret"] = qq_client_secret
+        qq_allowed_users = os.getenv("QQ_ALLOWED_USERS", "").strip()
+        if qq_allowed_users:
+            extra["allow_from"] = qq_allowed_users
+        qq_group_allowed = os.getenv("QQ_GROUP_ALLOWED_USERS", "").strip()
+        if qq_group_allowed:
+            extra["group_allow_from"] = qq_group_allowed
+        qq_home = os.getenv("QQ_HOME_CHANNEL", "").strip()
+        if qq_home:
+            config.platforms[Platform.QQBOT].home_channel = HomeChannel(
+                platform=Platform.QQBOT,
+                chat_id=qq_home,
+                name=os.getenv("QQ_HOME_CHANNEL_NAME", "Home"),
+            )
 
     # Session settings
     idle_minutes = os.getenv("SESSION_IDLE_MINUTES")

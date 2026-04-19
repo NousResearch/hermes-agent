@@ -56,7 +56,8 @@ class TestFailoverReason:
             "overloaded", "server_error", "timeout",
             "context_overflow", "payload_too_large",
             "model_not_found", "format_error",
-            "thinking_signature", "long_context_tier", "unknown",
+            "thinking_signature", "long_context_tier",
+            "invalid_tool_args", "unknown",
         }
         actual = {r.value for r in FailoverReason}
         assert expected == actual
@@ -397,6 +398,33 @@ class TestClassifyApiError:
         e = MockAPIError("Too Many Requests", status_code=429)
         result = classify_api_error(e, provider="anthropic")
         assert result.reason == FailoverReason.rate_limit
+
+    # ── Provider-specific: Minimax invalid tool arguments ──
+
+    def test_minimax_invalid_tool_args_via_openrouter(self):
+        """OpenRouter rejecting minimax tool-call args as malformed JSON."""
+        e = MockAPIError(
+            "Minimax midstream error: invalid params, invalid function arguments json string, tool_call_id: call_abc123",
+            status_code=None,
+        )
+        result = classify_api_error(e, provider="openrouter", model="minimax/minimax-m2.7")
+        assert result.reason == FailoverReason.invalid_tool_args
+        assert result.retryable is True
+        assert result.should_compress is False
+
+    def test_minimax_invalid_tool_args_minimax_provider(self):
+        """Same error but provider field says 'minimax' directly."""
+        e = Exception(
+            "minimax midstream error: invalid params, invalid function arguments json string, tool_call_id: call_xyz"
+        )
+        result = classify_api_error(e, provider="openrouter", model="minimax/minimax-m2.7")
+        assert result.reason == FailoverReason.invalid_tool_args
+
+    def test_generic_invalid_params_not_invalid_tool_args(self):
+        """Generic 'invalid params' without tool_call_id + minimax → not this reason."""
+        e = Exception("invalid params: unsupported value")
+        result = classify_api_error(e)
+        assert result.reason != FailoverReason.invalid_tool_args
 
     # ── Transport errors ──
 

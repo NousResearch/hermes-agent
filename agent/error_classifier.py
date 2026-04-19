@@ -52,6 +52,7 @@ class FailoverReason(enum.Enum):
     # Provider-specific
     thinking_signature = "thinking_signature"  # Anthropic thinking block sig invalid
     long_context_tier = "long_context_tier"    # Anthropic "extra usage" tier gate
+    invalid_tool_args = "invalid_tool_args"     # Model generated malformed tool-call arguments
 
     # Catch-all
     unknown = "unknown"                  # Unclassifiable — retry with backoff
@@ -329,6 +330,23 @@ def classify_api_error(
         return ClassifiedError(**defaults)
 
     # ── 1. Provider-specific patterns (highest priority) ────────────
+
+    # Minimax (or routed equivalent) generated tool-call arguments that
+    # fail OpenRouter validation.  The model streams a partial/malformed
+    # JSON object; OpenRouter rejects it mid-stream with:
+    #   "minimax midstream error: invalid params, invalid function
+    #    arguments json string, tool_call_id: call_..."
+    # Retry once; on repeated failure strip the bad tool call and inject a
+    # corrective hint so the model self-repairs.  Fallback if it persists.
+    if (
+        "invalid function arguments json string" in error_msg
+        or "invalid params" in error_msg
+    ) and ("tool_call_id" in error_msg or "minimax" in error_msg):
+        return _result(
+            FailoverReason.invalid_tool_args,
+            retryable=True,
+            should_compress=False,
+        )
 
     # Anthropic thinking block signature invalid (400).
     # Don't gate on provider — OpenRouter proxies Anthropic errors, so the

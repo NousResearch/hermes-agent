@@ -160,6 +160,20 @@ class _SafeWriter:
         return getattr(self._inner, name)
 
 
+def _get_proxy_from_env() -> Optional[str]:
+    """Read proxy URL from environment variables.
+
+    Checks HTTPS_PROXY, HTTP_PROXY, ALL_PROXY (and lowercase variants) in order.
+    Returns the first valid proxy URL found, or None if no proxy is configured.
+    """
+    for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
+                "https_proxy", "http_proxy", "all_proxy"):
+        value = os.environ.get(key, "").strip()
+        if value:
+            return value
+    return None
+
+
 def _install_safe_stdio() -> None:
     """Wrap stdout/stderr so best-effort console output cannot crash the agent."""
     for stream_name in ("stdout", "stderr"):
@@ -4758,8 +4772,13 @@ class AIAgent:
                 elif hasattr(_socket, "TCP_KEEPALIVE"):
                     # macOS (uses TCP_KEEPALIVE instead of TCP_KEEPIDLE)
                     _sock_opts.append((_socket.IPPROTO_TCP, _socket.TCP_KEEPALIVE, 30))
+                # When a custom transport is provided, httpx won't auto-read proxy
+                # from env vars (allow_env_proxies = trust_env and transport is None).
+                # Explicitly read proxy settings to ensure HTTP_PROXY/HTTPS_PROXY work.
+                _proxy = _get_proxy_from_env()
                 client_kwargs["http_client"] = _httpx.Client(
                     transport=_httpx.HTTPTransport(socket_options=_sock_opts),
+                    proxy=_proxy,
                 )
             except Exception:
                 pass  # Fall through to default transport if socket opts fail

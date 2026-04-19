@@ -30,7 +30,7 @@ from typing import List, Dict, Any, Set, Optional
 # Edit this once to update all platforms simultaneously.
 _HERMES_CORE_TOOLS = [
     # Web
-    "web_search", "web_extract",
+    "web_search", "web_extract", "x_search",
     # Terminal + process management
     "terminal", "process",
     # File manipulation
@@ -86,6 +86,12 @@ TOOLSETS = {
     "search": {
         "description": "Web search only (no content extraction/scraping)",
         "tools": ["web_search"],
+        "includes": []
+    },
+
+    "x_search": {
+        "description": "Search X (Twitter) posts and threads using xAI's built-in x_search Responses API tool",
+        "tools": ["x_search"],
         "includes": []
     },
     

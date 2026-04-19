@@ -2970,3 +2970,29 @@ class TestSenderNameResolution(unittest.TestCase):
             result = asyncio.run(adapter._resolve_sender_name_from_api("ou_broken"))
 
         self.assertIsNone(result)
+
+
+class TestBuildOutboundPayloadTableDetection(unittest.TestCase):
+    """Verify that pure table content (no other Markdown) triggers post mode."""
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_pure_table_triggers_post_mode(self):
+        """A Markdown table with no other formatting should still use post, not text."""
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        # Pure table — no bold, no headings, just pipes
+        table_content = "| A | B |\n| --- | --- |\n| 1 | 2 |"
+        msg_type, _payload = adapter._build_outbound_payload(table_content)
+        self.assertEqual(msg_type, "post")
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_plain_text_still_uses_text_mode(self):
+        """Plain text with no Markdown should still use text mode."""
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        msg_type, _payload = adapter._build_outbound_payload("hello world")
+        self.assertEqual(msg_type, "text")

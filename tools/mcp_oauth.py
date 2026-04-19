@@ -40,6 +40,7 @@ import re
 import socket
 import sys
 import threading
+import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -196,6 +197,35 @@ class HermesTokenStorage:
         data = _read_json(self._tokens_path())
         if data is None:
             return None
+        # Hermes records an absolute wall-clock ``expires_at`` alongside the
+        # SDK's serialized token (see ``set_tokens``). On read we rewrite
+        # ``expires_in`` to the remaining seconds so the SDK's downstream
+        # ``update_token_expiry`` computes the correct absolute time and
+        # ``is_token_valid()`` correctly reports False for tokens that
+        # expired while the process was down.
+        #
+        # Legacy token files (pre-Fix-A) have ``expires_in`` but no
+        # ``expires_at``. We fall back to the file's mtime as a best-effort
+        # wall-clock proxy for when the token was written: if (mtime +
+        # expires_in) is in the past, clamp ``expires_in`` to zero so the
+        # SDK refreshes before the first request. This self-heals one-time
+        # on the next successful ``set_tokens``, which writes the new
+        # ``expires_at`` field. The stored ``expires_at`` is stripped before
+        # model_validate because it's not part of the SDK's OAuthToken schema.
+        absolute_expiry = data.pop("expires_at", None)
+        if absolute_expiry is not None:
+            data["expires_in"] = int(max(absolute_expiry - time.time(), 0))
+        elif data.get("expires_in") is not None:
+            try:
+                file_mtime = self._tokens_path().stat().st_mtime
+            except OSError:
+                file_mtime = None
+            if file_mtime is not None:
+                try:
+                    implied_expiry = file_mtime + int(data["expires_in"])
+                    data["expires_in"] = int(max(implied_expiry - time.time(), 0))
+                except (TypeError, ValueError):
+                    pass
         try:
             return OAuthToken.model_validate(data)
         except (ValueError, TypeError, KeyError) as exc:
@@ -203,7 +233,23 @@ class HermesTokenStorage:
             return None
 
     async def set_tokens(self, tokens: "OAuthToken") -> None:
-        _write_json(self._tokens_path(), tokens.model_dump(exclude_none=True))
+        payload = tokens.model_dump(exclude_none=True)
+        # Persist an absolute ``expires_at`` so a process restart can
+        # reconstruct the correct remaining TTL. Without this the MCP SDK's
+        # ``_initialize`` reloads a relative ``expires_in`` which has no
+        # wall-clock reference, leaving ``context.token_expiry_time=None``
+        # and ``is_token_valid()`` falsely reporting True. See Fix A in
+        # ``mcp-oauth-token-diagnosis`` skill + Claude Code's
+        # ``OAuthTokens.expiresAt`` persistence (auth.ts ~180).
+        expires_in = payload.get("expires_in")
+        if expires_in is not None:
+            try:
+                payload["expires_at"] = time.time() + int(expires_in)
+            except (TypeError, ValueError):
+                # Mock tokens or unusual shapes: skip the expires_at write
+                # rather than fail persistence.
+                pass
+        _write_json(self._tokens_path(), payload)
         logger.debug("OAuth tokens saved for %s", self._server_name)
 
     # -- client info -------------------------------------------------------

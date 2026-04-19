@@ -45,6 +45,7 @@ jobs:
             -n auto \
             --cov=. \
             --cov-report=xml \
+            --cov-report=html \
             --cov-report=term-missing:skip-covered \
             --cov-config=.coveragerc
         env:
@@ -66,6 +67,7 @@ jobs:
           name: coverage-report
           path: |
             coverage.xml
+            .coverage
             htmlcov/
           retention-days: 7
 
@@ -114,10 +116,12 @@ jobs:
         run: |
           # Install coverage tool
           pip install coverage
-          
+
           # Check overall coverage (adjust threshold as needed)
           coverage report --fail-under=70 || {
             echo "::warning::Coverage is below 70%. Consider adding more tests."
             # Don't fail the build, just warn
             exit 0
           }
+        env:
+          COVERAGE_FILE: .coverage

@@ -4,6 +4,7 @@ from argparse import Namespace
 import subprocess
 from types import ModuleType
 from unittest.mock import MagicMock, patch
+import os
 
 import pytest
 
@@ -96,8 +97,8 @@ class TestScanWorkspaceState:
         (ws / "sessions").mkdir()
         findings = claw_mod._scan_workspace_state(tmp_path)
         descs = [desc for _, desc in findings]
-        assert any("workspace/todo.json" in d for d in descs)
-        assert any("workspace/sessions" in d for d in descs)
+        assert any(os.path.join("workspace", "todo.json") in d for d in descs)
+        assert any(os.path.join("workspace", "sessions") in d for d in descs)
 
     def test_ignores_hidden_dirs(self, tmp_path):
         scan_dir = tmp_path / "scan_target"

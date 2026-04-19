@@ -15,6 +15,45 @@ import { patchOverlayState } from '../../overlayStore.js'
 import { patchUiState } from '../../uiStore.js'
 import type { SlashCommand } from '../types.js'
 
+// ── Chinese translations for slash command help text ───────────────────
+
+const HELP_ZH: Record<string, string> = {
+  help: '列出命令和快捷键',
+  quit: '退出 Hermes',
+  clear: '开始新会话',
+  resume: '恢复之前的会话',
+  compact: '切换紧凑显示模式',
+  details: '控制 AI 详情可见性',
+  fortune: '显示本地幸运签语',
+  copy: '复制选中内容或 AI 回复',
+  paste: '粘贴剪贴板图片',
+  logs: '查看网关日志',
+  statusbar: '切换状态栏',
+  queue: '检查或排队消息',
+  steer: '在下次工具调用后注入消息（不中断）',
+  undo: '撤销最近一轮对话',
+  retry: '重试上一条用户消息'
+}
+
+const HOTKEYS_ZH = [
+  ['Ctrl+D', '退出'],
+  ['Ctrl+C', '中断'],
+  ['Ctrl+K', '清屏'],
+  ['Ctrl+L', '清屏（同 Ctrl+K）'],
+  ['Ctrl+N', '新会话'],
+  ['Ctrl+R', '恢复会话'],
+  ['Ctrl+S', '保存会话'],
+  ['Ctrl+Z', '撤销'],
+  ['Ctrl+Y', '重试'],
+  ['Alt+Enter', '换行输入'],
+  ['Tab', '自动补全'],
+  ['↑/↓', '浏览历史记录'],
+  ['Ctrl+G', '切换详情模式'],
+  ['Ctrl+M', '切换紧凑模式'],
+  ['Ctrl+Q', '退出'],
+  ['Ctrl+P', '粘贴剪贴板图片']
+] as const
+
 const flagFromArg = (arg: string, current: boolean): boolean | null => {
   if (!arg) {
     return !current
@@ -53,15 +92,17 @@ export const coreCommands: SlashCommand[] = [
         sections.push({ text: `${ctx.local.catalog.skillCount} skill commands available — /skills to browse` })
       }
 
+      const isZh = ctx.ui.theme.brand.helpHeader === '(^_^)? 命令列表'
+
       sections.push(
         {
           rows: [
-            ['/details [hidden|collapsed|expanded|cycle]', 'set agent detail visibility mode'],
-            ['/fortune [random|daily]', 'show a random or daily local fortune']
+            ['/details [hidden|collapsed|expanded|cycle]', isZh ? '设置 AI 详情可见性模式' : 'set agent detail visibility mode'],
+            ['/fortune [random|daily]', isZh ? '显示随机或每日幸运签语' : 'show a random or daily local fortune']
           ],
           title: 'TUI'
         },
-        { rows: HOTKEYS, title: 'Hotkeys' }
+        { rows: isZh ? HOTKEYS_ZH : HOTKEYS, title: isZh ? '快捷键' : 'Hotkeys' }
       )
 
       ctx.transcript.panel(ctx.ui.theme.brand.helpHeader, sections)

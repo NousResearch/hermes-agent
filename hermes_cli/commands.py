@@ -176,8 +176,107 @@ COMMAND_REGISTRY: list[CommandDef] = [
 
 
 # ---------------------------------------------------------------------------
-# Derived lookups -- rebuilt once at import time, refreshed by rebuild_lookups()
+# Chinese translations for slash command descriptions & categories
 # ---------------------------------------------------------------------------
+
+_DESCRIPTION_ZH: dict[str, str] = {
+    # Session
+    "Start a new session (fresh session ID + history)": "开始新会话（全新会话 ID 和记录）",
+    "Clear screen and start a new session": "清屏并开始新会话",
+    "Show conversation history": "显示对话记录",
+    "Save the current conversation": "保存当前对话",
+    "Retry the last message (resend to agent)": "重试上一条消息（重新发送给 AI）",
+    "Remove the last user/assistant exchange": "撤销最近一轮用户与 AI 的对话",
+    "Set a title for the current session": "为当前会话设置标题",
+    "Branch the current session (explore a different path)": "分支当前会话（探索不同路径）",
+    "Manually compress conversation context": "手动压缩对话上下文",
+    "List or restore filesystem checkpoints": "列出或恢复文件系统快照",
+    "Create or restore state snapshots of Hermes config/state": "创建或恢复 Hermes 配置/状态的快照",
+    "Kill all running background processes": "终止所有正在运行的后台进程",
+    "Approve a pending dangerous command": "审批待处理的危险命令",
+    "Deny a pending dangerous command": "拒绝待处理的危险命令",
+    "Run a prompt in the background": "在后台运行一个提示词",
+    "Ephemeral side question using session context (no tools, not persisted)": "使用会话上下文的临时旁问（不使用工具，不保存）",
+    "Show active agents and running tasks": "显示活跃代理和运行中的任务",
+    "Queue a prompt for the next turn (doesn't interrupt)": "将提示词加入队列等待下一轮（不中断当前任务）",
+    "Inject a message after the next tool call without interrupting": "在下次工具调用后注入消息（不中断当前任务）",
+    "Show session info": "显示会话信息",
+    "Show active profile name and home directory": "显示当前配置文件名称和主目录",
+    "Set this chat as the home channel": "将此聊天设为主页频道",
+    "Resume a previously-named session": "恢复之前命名的会话",
+    # Configuration
+    "Show current configuration": "显示当前配置",
+    "Switch model for this session": "切换当前会话的模型",
+    "Show available providers and current provider": "显示可用提供商和当前提供商",
+    "Show Google Gemini Code Assist quota usage": "显示 Google Gemini Code Assist 配额使用情况",
+    "Set a predefined personality": "设置预设人格",
+    "Toggle the context/model status bar": "切换上下文/模型状态栏",
+    "Cycle tool progress display: off -> new -> all -> verbose": "切换工具进度显示模式：关闭 -> 新任务 -> 全部 -> 详细",
+    "Toggle YOLO mode (skip all dangerous command approvals)": "切换 YOLO 模式（跳过所有危险命令审批）",
+    "Manage reasoning effort and display": "管理推理力度和显示",
+    "Toggle fast mode — OpenAI Priority Processing / Anthropic Fast Mode (Normal/Fast)": "切换快速模式 — OpenAI 优先处理 / Anthropic 快速模式（正常/快速）",
+    "Show or change the display skin/theme": "显示或更改显示皮肤/主题",
+    "Toggle voice mode": "切换语音模式",
+    # Tools & Skills
+    "Manage tools: /tools [list|disable|enable] [name...]": "管理工具：/tools [列表|禁用|启用] [名称...]",
+    "List available toolsets": "列出可用工具集",
+    "Search, install, inspect, or manage skills": "搜索、安装、检查或管理技能",
+    "Manage scheduled tasks": "管理定时任务",
+    "Reload .env variables into the running session": "将 .env 变量重新加载到运行中的会话",
+    "Reload MCP servers from config": "从配置重新加载 MCP 服务器",
+    "Connect browser tools to your live Chrome via CDP": "通过 CDP 将浏览器工具连接到正在运行的 Chrome",
+    "List installed plugins and their status": "列出已安装的插件及其状态",
+    # Info
+    "Browse all commands and skills (paginated)": "浏览所有命令和技能（分页）",
+    "Show available commands": "显示可用命令",
+    "Gracefully restart the gateway after draining active runs": "排空当前任务后优雅地重启网关",
+    "Show token usage and rate limits for the current session": "显示当前会话的 token 使用量和速率限制",
+    "Show usage insights and analytics": "显示使用洞察和分析",
+    "Show gateway/messaging platform status": "显示网关/消息平台状态",
+    "Copy the last assistant response to clipboard": "将 AI 的最后一条回复复制到剪贴板",
+    "Attach clipboard image from your clipboard": "从剪贴板附加图片",
+    "Attach a local image file for your next prompt": "为下一次提示词附加本地图片文件",
+    "Update Hermes Agent to the latest version": "更新 Hermes Agent 到最新版本",
+    "Upload debug report (system info + logs) and get shareable links": "上传调试报告（系统信息 + 日志）并获取分享链接",
+    # Exit
+    "Exit the CLI": "退出 CLI",
+}
+
+_CATEGORY_ZH: dict[str, str] = {
+    "Session": "会话",
+    "Configuration": "配置",
+    "Tools & Skills": "工具与技能",
+    "Info": "信息",
+    "Exit": "退出",
+}
+
+
+def _get_language() -> str:
+    """Read the current language from config (approvals.language or language)."""
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        lang = (cfg.get("approvals") or {}).get("language", "") or ""
+        if not lang:
+            lang = cfg.get("language", "") or ""
+        return lang.lower() if lang else ""
+    except Exception:
+        return ""
+
+
+def _desc_zh(desc: str) -> str:
+    """Return Chinese translation of a description if language is zh."""
+    if _get_language() == "zh":
+        return _DESCRIPTION_ZH.get(desc, desc)
+    return desc
+
+
+def _cat_zh(cat: str) -> str:
+    """Return Chinese translation of a category if language is zh."""
+    if _get_language() == "zh":
+        return _CATEGORY_ZH.get(cat, cat)
+    return cat
+
 
 def _build_command_lookup() -> dict[str, CommandDef]:
     """Map every name and alias to its CommandDef."""
@@ -208,21 +307,25 @@ def _build_description(cmd: CommandDef) -> str:
 
 
 # Backwards-compatible flat dict: "/command" -> description
+# Uses localized descriptions when language is zh
 COMMANDS: dict[str, str] = {}
 for _cmd in COMMAND_REGISTRY:
     if not _cmd.gateway_only:
-        COMMANDS[f"/{_cmd.name}"] = _build_description(_cmd)
+        desc = _desc_zh(_build_description(_cmd))
+        COMMANDS[f"/{_cmd.name}"] = desc
         for _alias in _cmd.aliases:
-            COMMANDS[f"/{_alias}"] = f"{_cmd.description} (alias for /{_cmd.name})"
+            COMMANDS[f"/{_alias}"] = f"{desc} (alias for /{_cmd.name})"
 
 # Backwards-compatible categorized dict
+# Uses localized category names and descriptions when language is zh
 COMMANDS_BY_CATEGORY: dict[str, dict[str, str]] = {}
 for _cmd in COMMAND_REGISTRY:
     if not _cmd.gateway_only:
-        _cat = COMMANDS_BY_CATEGORY.setdefault(_cmd.category, {})
-        _cat[f"/{_cmd.name}"] = COMMANDS[f"/{_cmd.name}"]
+        _cat = _cat_zh(_cmd.category)
+        _cat_dict = COMMANDS_BY_CATEGORY.setdefault(_cat, {})
+        _cat_dict[f"/{_cmd.name}"] = COMMANDS[f"/{_cmd.name}"]
         for _alias in _cmd.aliases:
-            _cat[f"/{_alias}"] = COMMANDS[f"/{_alias}"]
+            _cat_dict[f"/{_alias}"] = COMMANDS[f"/{_alias}"]
 
 
 # Subcommands lookup: "/cmd" -> ["sub1", "sub2", ...]
@@ -367,7 +470,8 @@ def gateway_help_lines() -> list[str]:
                 continue
             alias_parts.append(f"`/{a}`")
         alias_note = f" (alias: {', '.join(alias_parts)})" if alias_parts else ""
-        lines.append(f"`/{cmd.name}{args}` -- {cmd.description}{alias_note}")
+        desc = _desc_zh(cmd.description)
+        lines.append(f"`/{cmd.name}{args}` -- {desc}{alias_note}")
     return lines
 
 
@@ -385,7 +489,7 @@ def telegram_bot_commands() -> list[tuple[str, str]]:
             continue
         tg_name = _sanitize_telegram_name(cmd.name)
         if tg_name:
-            result.append((tg_name, cmd.description))
+            result.append((tg_name, _desc_zh(cmd.description)))
     return result
 
 

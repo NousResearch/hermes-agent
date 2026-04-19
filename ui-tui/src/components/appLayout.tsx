@@ -6,6 +6,7 @@ import type { AppLayoutProgressProps, AppLayoutProps } from '../app/interfaces.j
 import { $isBlocked } from '../app/overlayStore.js'
 import { $uiState } from '../app/uiStore.js'
 import { PLACEHOLDER } from '../content/placeholders.js'
+import { isMac } from '../lib/platform.js'
 import type { Theme } from '../theme.js'
 import type { DetailsMode } from '../types.js'
 
@@ -235,6 +236,7 @@ const ComposerPane = memo(function ComposerPane({
             <Box flexGrow={1} position="relative">
               <TextInput
                 columns={Math.max(20, composer.cols - pw)}
+                allowClipboardHotkeys={isMac}
                 onChange={composer.updateInput}
                 onPaste={composer.handleTextPaste}
                 onSubmit={composer.submit}

@@ -5,7 +5,9 @@ from __future__ import annotations
 import logging
 import os
 import re
+import ipaddress
 from typing import Any, Dict, Optional
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +49,26 @@ def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
     if "api.openai.com" in normalized and "openrouter" not in normalized:
         return "codex_responses"
     return None
+
+
+def _is_loopback_base_url(base_url: str) -> bool:
+    """Return True when ``base_url`` targets localhost / loopback IPs."""
+    candidate = str(base_url or "").strip()
+    if not candidate:
+        return False
+    try:
+        parsed = urlparse(candidate)
+    except Exception:
+        return False
+    host = (parsed.hostname or "").strip().lower()
+    if not host:
+        return False
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 def _auto_detect_local_model(base_url: str) -> str:
@@ -401,13 +423,19 @@ def _resolve_named_custom_runtime(
             pool_result["model"] = model_name
         return pool_result
 
+    is_loopback = _is_loopback_base_url(base_url)
+    is_ollama_cloud = "ollama.com" in base_url.lower()
     api_key_candidates = [
         (explicit_api_key or "").strip(),
         str(custom_provider.get("api_key", "") or "").strip(),
         os.getenv(str(custom_provider.get("key_env", "") or "").strip(), "").strip(),
-        os.getenv("OPENAI_API_KEY", "").strip(),
-        os.getenv("OPENROUTER_API_KEY", "").strip(),
+        (os.getenv("OLLAMA_API_KEY", "").strip() if is_ollama_cloud else ""),
     ]
+    if not is_loopback:
+        api_key_candidates.extend([
+            os.getenv("OPENAI_API_KEY", "").strip(),
+            os.getenv("OPENROUTER_API_KEY", "").strip(),
+        ])
     api_key = next((candidate for candidate in api_key_candidates if has_usable_secret(candidate)), "")
 
     result = {
@@ -480,14 +508,18 @@ def _resolve_openrouter_runtime(
         # Custom endpoint: use api_key from config when using config base_url (#1760).
         # When the endpoint is Ollama Cloud, check OLLAMA_API_KEY — it's
         # the canonical env var for ollama.com authentication.
+        _is_loopback_url = _is_loopback_base_url(base_url)
         _is_ollama_url = "ollama.com" in base_url.lower()
         api_key_candidates = [
             explicit_api_key,
             (cfg_api_key if use_config_base_url else ""),
             (os.getenv("OLLAMA_API_KEY") if _is_ollama_url else ""),
-            os.getenv("OPENAI_API_KEY"),
-            os.getenv("OPENROUTER_API_KEY"),
         ]
+        if not _is_loopback_url:
+            api_key_candidates.extend([
+                os.getenv("OPENAI_API_KEY"),
+                os.getenv("OPENROUTER_API_KEY"),
+            ])
     api_key = next(
         (str(candidate or "").strip() for candidate in api_key_candidates if has_usable_secret(candidate)),
         "",

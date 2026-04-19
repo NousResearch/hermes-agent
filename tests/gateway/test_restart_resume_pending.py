@@ -516,6 +516,84 @@ async def test_clean_drain_does_not_mark_resume_pending():
     running_agent.interrupt.assert_not_called()
 
 
+@pytest.mark.asyncio
+async def test_drain_timeout_only_marks_still_running_sessions():
+    """A session that finished gracefully during the drain window must
+    NOT be marked ``resume_pending`` — it completed cleanly and its
+    next turn should be a normal fresh turn, not one prefixed with the
+    restart-interruption system note.
+
+    Regression guard for using ``self._running_agents`` at timeout
+    rather than the ``active_agents`` drain-start snapshot.
+    """
+    runner, adapter = make_restart_runner()
+    adapter.disconnect = AsyncMock()
+    # Long enough for the finisher to exit, short enough to still time out
+    # with the stuck session still present.
+    runner._restart_drain_timeout = 0.3
+
+    session_key_finisher = "agent:main:telegram:dm:A"
+    session_key_stuck = "agent:main:telegram:dm:B"
+    runner._running_agents = {
+        session_key_finisher: MagicMock(),
+        session_key_stuck: MagicMock(),
+    }
+
+    async def finish_one():
+        await asyncio.sleep(0.05)
+        runner._running_agents.pop(session_key_finisher, None)
+
+    asyncio.create_task(finish_one())
+
+    session_store = MagicMock()
+    session_store.mark_resume_pending = MagicMock(return_value=True)
+    runner.session_store = session_store
+
+    with patch("gateway.status.remove_pid_file"), patch(
+        "gateway.status.write_runtime_status"
+    ):
+        await runner.stop()
+
+    calls = session_store.mark_resume_pending.call_args_list
+    marked = {args[0][0] for args in calls}
+    # Only the session still running at timeout is marked; the finisher is not.
+    assert marked == {session_key_stuck}
+
+
+@pytest.mark.asyncio
+async def test_drain_timeout_skips_pending_sentinel_sessions():
+    """Pending sentinels — sessions whose AIAgent construction hasn't
+    produced a real agent yet — are skipped by
+    ``_interrupt_running_agents()``.  The resume_pending marking must
+    mirror that: no agent started means no turn was interrupted.
+    """
+    from gateway.run import _AGENT_PENDING_SENTINEL
+
+    runner, adapter = make_restart_runner()
+    adapter.disconnect = AsyncMock()
+    runner._restart_drain_timeout = 0.05
+
+    session_key_real = "agent:main:telegram:dm:A"
+    session_key_sentinel = "agent:main:telegram:dm:B"
+    runner._running_agents = {
+        session_key_real: MagicMock(),
+        session_key_sentinel: _AGENT_PENDING_SENTINEL,
+    }
+
+    session_store = MagicMock()
+    session_store.mark_resume_pending = MagicMock(return_value=True)
+    runner.session_store = session_store
+
+    with patch("gateway.status.remove_pid_file"), patch(
+        "gateway.status.write_runtime_status"
+    ):
+        await runner.stop()
+
+    calls = session_store.mark_resume_pending.call_args_list
+    marked = {args[0][0] for args in calls}
+    assert marked == {session_key_real}
+
+
 # ---------------------------------------------------------------------------
 # Shutdown banner wording
 # ---------------------------------------------------------------------------

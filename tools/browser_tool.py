@@ -620,7 +620,10 @@ def _cleanup_inactive_browser_sessions():
         try:
             elapsed = int(current_time - _session_last_activity.get(task_id, current_time))
             logger.info("Cleaning up inactive session for task: %s (inactive for %ss)", task_id, elapsed)
-            cleanup_browser(task_id)
+            # Force cleanup even for persistent sessions - the browser state
+            # is saved before the daemon exits, so the next start will restore
+            # the session with all cookies intact.
+            cleanup_browser(task_id, force=True)
             with _cleanup_lock:
                 if task_id in _session_last_activity:
                     del _session_last_activity[task_id]
@@ -985,11 +988,38 @@ BROWSER_TOOL_SCHEMAS = [
 # Utility Functions
 # ============================================================================
 
+def _managed_persistence_enabled() -> bool:
+    """Return whether Hermes-managed persistence is enabled for local browser.
+
+    When enabled, sessions use a stable session name so cookies survive
+    Hermes process restarts.  When disabled (default), each session gets
+    a random name (ephemeral).
+
+    Controlled by ``browser.local.managed_persistence`` in config.yaml.
+    Mirrors Camofox's ``browser.camofox.managed_persistence`` pattern.
+    """
+    try:
+        from hermes_cli.config import load_config
+        return bool(load_config().get("browser", {}).get("local", {}).get("managed_persistence", False))
+    except Exception as exc:
+        logger.warning("managed_persistence check failed, defaulting to disabled: %s", exc)
+        return False
+
+
 def _create_local_session(task_id: str) -> Dict[str, str]:
+    import os
     import uuid
-    session_name = f"h_{uuid.uuid4().hex[:10]}"
-    logger.info("Created local browser session %s for task %s",
-                session_name, task_id)
+    # Ephemeral by default — each process gets a random session name.
+    # When browser.local.managed_persistence is enabled in config.yaml,
+    # use a stable session name so cookies survive Hermes restarts
+    # (mirrors Camofox's managed_persistence pattern).
+    managed = _managed_persistence_enabled()
+    if managed:
+        session_name = os.environ.get("HERMES_BROWSER_SESSION", "hermes")
+    else:
+        session_name = f"h_{uuid.uuid4().hex[:10]}"
+    logger.info("Created local browser session %s for task %s (managed=%s)",
+                session_name, task_id, managed)
     return {
         "session_name": session_name,
         "bb_session_id": None,
@@ -2348,18 +2378,32 @@ def _cleanup_old_recordings(max_age_hours=72):
 # Cleanup and Management Functions
 # ============================================================================
 
-def cleanup_browser(task_id: Optional[str] = None) -> None:
+def cleanup_browser(task_id: Optional[str] = None, force: bool = False) -> None:
     """
     Clean up browser session for a task.
     
     Called automatically when a task completes or when inactivity timeout is reached.
     Closes both the agent-browser/Browserbase session and Camofox sessions.
     
+    Within a conversation, sessions persist via the _active_sessions cache,
+    so cleanup is a no-op by default. The force=True argument bypasses this
+    and actually closes the browser (used by the inactivity reaper and atexit).
+    
     Args:
         task_id: Task identifier to clean up
+        force: If True, bypass persistent session protection and close the browser
     """
     if task_id is None:
         task_id = "default"
+
+    # Skip cleanup within a conversation — _active_sessions keeps the session
+    # alive so cookies persist across turns.  The inactivity reaper still
+    # tears down idle sessions by calling cleanup_browser(force=True).
+    if not force:
+        logger.debug("cleanup_browser: skipping close for task=%s (not forced)", task_id)
+        with _cleanup_lock:
+            _active_sessions.pop(task_id, None)
+        return
 
     # Stop the CDP supervisor for this task FIRST so we close our WebSocket
     # before the backend tears down the underlying CDP endpoint.

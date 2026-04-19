@@ -23,8 +23,8 @@ If you have ever wanted Hermes to use a tool that already exists somewhere else,
 1. Install MCP support (already included if you used the standard install script):
 
 ```bash
-cd ~/.hermes/hermes-agent
-uv pip install -e ".[mcp]"
+cd /path/to/hermes-agent
+source venv/bin/activate && uv pip install -e ".[mcp]"
 ```
 
 2. Add an MCP server to `~/.hermes/config.yaml`:
@@ -382,7 +382,7 @@ Check:
 
 ```bash
 # Verify MCP deps are installed (already included in standard install)
-cd ~/.hermes/hermes-agent && uv pip install -e ".[mcp]"
+cd /path/to/hermes-agent && uv pip install -e ".[mcp]"
 
 node --version
 npx --version

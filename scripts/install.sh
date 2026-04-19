@@ -1353,7 +1353,7 @@ print_success() {
     echo -e "   ${YELLOW}Config:${NC}    ~/.hermes/config.yaml"
     echo -e "   ${YELLOW}API Keys:${NC}  ~/.hermes/.env"
     echo -e "   ${YELLOW}Data:${NC}      ~/.hermes/cron/, sessions/, logs/"
-    echo -e "   ${YELLOW}Code:${NC}      ~/.hermes/hermes-agent/"
+    echo -e "   ${YELLOW}Code:${NC}      $INSTALL_DIR/"
     echo ""
 
     echo -e "${CYAN}─────────────────────────────────────────────────────────${NC}"

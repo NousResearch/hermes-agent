@@ -3574,6 +3574,13 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
     """
     results = {"env_added": [], "config_added": [], "warnings": []}
 
+    # ── Pre-populate the expanded-config cache so that save_config()
+    # can restore ${VAR} templates even when migration steps use
+    # read_raw_config() instead of load_config().  Without this, the
+    # first migration save may write expanded secrets to disk.
+    # ──
+    load_config()
+
     # ── Always: sanitize .env (split concatenated keys) ──
     try:
         fixes = sanitize_env_file()
@@ -4524,7 +4531,7 @@ _FALLBACK_COMMENT = """
 #   minimax-cn   (MINIMAX_CN_API_KEY)  — MiniMax (China)
 #   bedrock      (AWS IAM / boto3)     — AWS Bedrock (Converse API)
 #
-# For custom OpenAI-compatible endpoints, add base_url and key_env.
+# For custom OpenAI-compatible endpoints, add base_url and api_key_env.
 #
 # fallback_model:
 #   provider: openrouter
@@ -4556,7 +4563,7 @@ _COMMENTED_SECTIONS = """
 #   minimax-cn   (MINIMAX_CN_API_KEY)  — MiniMax (China)
 #   bedrock      (AWS IAM / boto3)     — AWS Bedrock (Converse API)
 #
-# For custom OpenAI-compatible endpoints, add base_url and key_env.
+# For custom OpenAI-compatible endpoints, add base_url and api_key_env.
 #
 # fallback_model:
 #   provider: openrouter
@@ -4605,7 +4612,14 @@ def save_config(config: Dict[str, Any]):
             extra_content="".join(parts) if parts else None,
         )
         _secure_file(config_path)
-        _LAST_EXPANDED_CONFIG_BY_PATH[str(config_path)] = copy.deepcopy(current_normalized)
+        # Cache the expanded form so subsequent save_config() calls can
+        # restore ${VAR} templates even when the caller passes raw config
+        # (e.g. during migration).  Without this, the cache would contain
+        # raw templates and _preserve_env_ref_templates() would be unable
+        # to match expanded values back to their original templates. (#11864)
+        _LAST_EXPANDED_CONFIG_BY_PATH[str(config_path)] = copy.deepcopy(
+            _expand_env_vars(current_normalized)
+        )
 
 
 def load_env() -> Dict[str, str]:

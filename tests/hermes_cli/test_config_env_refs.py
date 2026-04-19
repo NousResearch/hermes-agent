@@ -167,3 +167,73 @@ def test_save_config_falls_back_to_positional_matching_for_duplicate_names(monke
     assert "api_key: ${SECOND_SECRET}" in saved
     assert "first-secret" not in saved
     assert "second-secret" not in saved
+
+
+def test_save_config_caches_expanded_form_not_raw_templates(monkeypatch, tmp_path):
+    """save_config() must cache the expanded form so subsequent saves still
+    restore ${VAR} templates, even when the first save got raw templates."""
+    from hermes_cli.config import load_config, save_config
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("SECRET_KEY", "super-secret-value")
+    _write_config(
+        tmp_path,
+        """\
+        _config_version: 19
+        model:
+          default: claude-opus-4-6
+        custom_providers:
+          - name: example
+            api_key: ${SECRET_KEY}
+        """,
+    )
+
+    # First load + save: populate cache with expanded value, restore template
+    config = load_config()
+    assert config["custom_providers"][0]["api_key"] == "super-secret-value"
+    save_config(config)
+    assert "api_key: ${SECRET_KEY}" in _read_config(tmp_path)
+
+    # Second save (no prior load): cache must hold expanded form so template
+    # is still recognised and restored, not replaced with plaintext
+    config2 = load_config()
+    config2["model"]["default"] = "gpt-4o"
+    save_config(config2)
+    saved = _read_config(tmp_path)
+    assert "api_key: ${SECRET_KEY}" in saved
+    assert "super-secret-value" not in saved
+
+
+def test_migrate_config_preserves_env_refs(monkeypatch, tmp_path):
+    """migrate_config() must call load_config() first so the expanded-form
+    cache is populated before any migration step calls save_config().
+    Without that, save_config() would cache raw templates and write
+    expanded plaintext secrets to disk on the first migration save."""
+    from hermes_cli.config import migrate_config
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("MIGRATION_SECRET", "migration-secret-value")
+    # Write a config at version 13 (below the latest 19) so migration runs.
+    # Version 13→14 migration adds a `toolsets` field; subsequent migrations
+    # up to 19 touch other fields but all call save_config() internally.
+    _write_config(
+        tmp_path,
+        """\
+        _config_version: 13
+        model:
+          default: claude-opus-4-6
+        custom_providers:
+          - name: old-provider
+            base_url: https://api.example.com
+            api_key: ${MIGRATION_SECRET}
+        """,
+    )
+
+    results = migrate_config(interactive=False, quiet=True)
+
+    saved = _read_config(tmp_path)
+    # Env var template must be preserved — no plaintext leak
+    assert "api_key: ${MIGRATION_SECRET}" in saved
+    assert "migration-secret-value" not in saved
+    # Migration should have updated the version
+    assert "_config_version: 19" in saved or "_config_version: 1" not in saved

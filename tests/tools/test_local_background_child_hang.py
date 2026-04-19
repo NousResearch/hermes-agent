@@ -109,3 +109,46 @@ class TestBackgroundChildDoesNotHang:
         assert "日本語" in result["output"]
         assert "café" in result["output"]
         assert "résumé" in result["output"]
+
+    def test_utf8_multibyte_across_read_boundary(self, local_env):
+        """Multibyte UTF-8 characters straddling a 4096-byte ``os.read()`` boundary
+        must be decoded correctly via the incremental decoder — not lost to a
+        ``UnicodeDecodeError`` fallback.  Regression for a bug in the first draft
+        of the fix where a strict ``bytes.decode('utf-8')`` on each raw chunk
+        wiped the entire buffer as soon as any chunk split a multi-byte char.
+        """
+        # 10000 "日" chars = 30000 bytes — guaranteed to cross multiple 4096
+        # read boundaries, and most boundaries will land in the middle of the
+        # 3-byte UTF-8 encoding of U+65E5.
+        cmd = (
+            'python3 -c \'import sys; '
+            'sys.stdout.buffer.write(chr(0x65e5).encode("utf-8") * 10000); '
+            'sys.stdout.buffer.write(b"\\n")\''
+        )
+        result = local_env.execute(cmd, timeout=10)
+        assert result["returncode"] == 0
+        # All 10000 characters must survive the round-trip
+        assert result["output"].count("\u65e5") == 10000, (
+            f"lost multibyte chars across read boundaries: got "
+            f"{result['output'].count(chr(0x65e5))} / 10000"
+        )
+        # And the "[binary output detected ...]" fallback must NOT fire
+        assert "binary output detected" not in result["output"]
+
+    def test_invalid_utf8_uses_replacement_not_fallback(self, local_env):
+        """Truly invalid byte sequences must be substituted with U+FFFD (matching
+        the pre-fix ``errors='replace'`` behaviour of the old ``TextIOWrapper``
+        drain), not clobber the entire buffer with a fallback placeholder.
+        """
+        # Write a deliberate invalid UTF-8 lead byte sandwiched between valid ASCII
+        cmd = (
+            'python3 -c \'import sys; '
+            'sys.stdout.buffer.write(b"before "); '
+            'sys.stdout.buffer.write(b"\\xff\\xfe"); '
+            'sys.stdout.buffer.write(b" after\\n")\''
+        )
+        result = local_env.execute(cmd, timeout=5)
+        assert result["returncode"] == 0
+        assert "before" in result["output"]
+        assert "after" in result["output"]
+        assert "binary output detected" not in result["output"]

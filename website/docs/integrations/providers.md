@@ -332,6 +332,21 @@ No configuration is needed — caching activates automatically when an xAI endpo
 
 xAI also ships a dedicated TTS endpoint (`/v1/tts`). Select **xAI TTS** in `hermes tools` → Voice & TTS, or see the [Voice & TTS](../user-guide/features/tts.md#text-to-speech) page for config.
 
+#### `x_search` tool — Search X (Twitter) via xAI
+
+Enable **🐦 X (Twitter) Search** in `hermes tools` and Hermes exposes an `x_search` tool that queries X posts using xAI's built-in `x_search` Responses API tool. Requires `XAI_API_KEY` (same key as the xAI provider).
+
+Optional `config.yaml` section:
+
+```yaml
+x_search:
+  model: grok-4.20-reasoning    # default
+  timeout_seconds: 180          # default (min 30)
+  retries: 2                    # default
+```
+
+The tool returns a natural-language answer with citations to the source X posts, and supports filtering by handles (up to 10 per query).
+
 ### Ollama Cloud — Managed Ollama Models, OAuth + API Key
 
 [Ollama Cloud](https://ollama.com/cloud) hosts the same open-weight catalog as local Ollama but without the GPU requirement. Pick it in `hermes model` as **Ollama Cloud**, paste your API key from [ollama.com/settings/keys](https://ollama.com/settings/keys), and Hermes auto-discovers the available models.

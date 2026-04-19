@@ -131,6 +131,8 @@ export interface Translations {
     transcript: string;
     backToList: string;
     deleteConversation: string;
+    deleteConversationConfirm: string;
+    deletingConversation: string;
     loadMore: string;
     visibleMessages: string;
     linkedSessions: string;

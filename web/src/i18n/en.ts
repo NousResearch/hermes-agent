@@ -126,6 +126,8 @@ export const en: Translations = {
     transcript: "Transcript",
     backToList: "Back to conversations",
     deleteConversation: "Delete conversation",
+    deleteConversationConfirm: "Delete this conversation? This may remove linked sessions and cannot be undone.",
+    deletingConversation: "Deleting...",
     loadMore: "Load more",
     visibleMessages: "visible msgs",
     linkedSessions: "linked sessions",

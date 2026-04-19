@@ -475,6 +475,27 @@ def test_delete_conversation_orphans_visible_descendants_under_hidden_intermedia
         db.close()
 
 
+
+def test_list_conversations_clamps_direct_pagination_inputs(monkeypatch, tmp_path):
+    import hermes_state
+    from hermes_cli.dashboard_conversations import list_conversations
+
+    db_path = tmp_path / "pagination-clamp.db"
+    _seed_conversation_graph(db_path)
+
+    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", db_path)
+
+    clamped = list_conversations(limit=0, offset=-10)
+    assert clamped["limit"] == 1
+    assert clamped["offset"] == 0
+    assert len(clamped["sessions"]) == 1
+
+    capped = list_conversations(limit=999999, offset=-10)
+    assert capped["limit"] == 500
+    assert capped["offset"] == 0
+    assert len(capped["sessions"]) == capped["total"] == 3
+
+
 class TestDashboardConversationsAPI:
     @pytest.fixture(autouse=True)
     def _setup(self, monkeypatch, tmp_path):
@@ -596,6 +617,20 @@ class TestDashboardConversationsAPI:
             first_data["sessions"][0]["thread_root_id"],
             second_data["sessions"][0]["thread_root_id"],
         ] == [self.ids["branch_keep"], self.ids["root"]]
+
+    @pytest.mark.parametrize(
+        ("params", "field"),
+        [
+            ({"limit": 0}, "limit"),
+            ({"limit": 999999}, "limit"),
+            ({"offset": -10}, "offset"),
+        ],
+    )
+    def test_list_conversations_rejects_invalid_pagination_params(self, params, field):
+        resp = self.client.get("/api/conversations", params=params)
+
+        assert resp.status_code == 422
+        assert any(error["loc"][-1] == field for error in resp.json()["detail"])
 
     def test_get_conversation_messages_filters_hidden_messages_across_chain(self):
         resp = self.client.get(f"/api/conversations/{self.ids['root']}/messages")

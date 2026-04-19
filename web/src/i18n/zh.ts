@@ -126,6 +126,8 @@ export const zh: Translations = {
     transcript: "转录",
     backToList: "返回会话列表",
     deleteConversation: "删除会话",
+    deleteConversationConfirm: "要删除这个会话吗？这可能会移除关联会话，且无法撤销。",
+    deletingConversation: "删除中...",
     loadMore: "加载更多",
     visibleMessages: "可见消息",
     linkedSessions: "关联会话",

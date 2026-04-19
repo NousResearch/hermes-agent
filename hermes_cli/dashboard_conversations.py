@@ -13,6 +13,9 @@ VISIBLE_ROLES = {"user", "assistant"}
 CLI_SOURCE = "cli"
 ALL_SOURCES = "all"
 LINEAGE_TOLERANCE_SECONDS = 3.0
+DEFAULT_CONVERSATION_LIMIT = 200
+MAX_CONVERSATION_LIMIT = 500
+MAX_CONVERSATION_SCAN = 100000
 SYNTHETIC_USER_PREFIXES = (
     "[system:",
     "you've reached the maximum number of tool-calling iterations allowed.",
@@ -49,6 +52,22 @@ def _normalize_text(value: Any) -> str:
 
 def _safe_text(value: Any) -> str:
     return str(value or "")
+
+
+def _normalize_pagination(limit: Any, offset: Any) -> tuple[int, int]:
+    try:
+        normalized_limit = int(limit)
+    except (TypeError, ValueError):
+        normalized_limit = DEFAULT_CONVERSATION_LIMIT
+
+    try:
+        normalized_offset = int(offset)
+    except (TypeError, ValueError):
+        normalized_offset = 0
+
+    normalized_limit = min(max(normalized_limit, 1), MAX_CONVERSATION_LIMIT)
+    normalized_offset = max(normalized_offset, 0)
+    return normalized_limit, normalized_offset
 
 
 def _looks_synthetic_user_text(value: Any) -> bool:
@@ -133,12 +152,15 @@ def _conversation_snippet(text: str, query: str, width: int = 180) -> str:
 
 
 def _load_session_graph(db: SessionDB) -> tuple[list[str], dict[str, dict[str, Any]], dict[str | None, list[str]]]:
-    sessions = db.list_sessions_rich(limit=100000, offset=0, include_children=True)
+    sessions = db.list_sessions_rich(limit=MAX_CONVERSATION_SCAN, offset=0, include_children=True)
     now = time.time()
     ordered_ids: list[str] = []
     by_id: dict[str, dict[str, Any]] = {}
     children_by_parent: dict[str | None, list[str]] = {}
 
+    # SessionDB's public helpers do not expose a graph-wide compaction scan, so
+    # this module reads directly from the underlying connection while holding
+    # SessionDB's lock. Keep the SQL narrow and regression-tested.
     with db._lock:
         cursor = db._conn.execute(
             """
@@ -387,6 +409,9 @@ def _strip_compaction_artifact(content: str) -> str:
 
 
 def _fetch_session_visible_messages(db: SessionDB, session_id: str) -> list[dict[str, Any]]:
+    # SessionDB exposes get_messages(session_id), but the conversations view
+    # needs a tighter projection/order for transcript stitching and search, so
+    # it uses a direct read under the shared DB lock.
     with db._lock:
         cursor = db._conn.execute(
             "SELECT id, session_id, role, content, timestamp FROM messages WHERE session_id = ? ORDER BY timestamp, id",
@@ -576,10 +601,17 @@ def _delete_display_conversation(db: SessionDB, root_id: str, by_id: dict[str, d
             "deleted_messages": deleted_messages,
         }
 
+    # Delete + orphaning must happen atomically. SessionDB does not currently
+    # expose a public multi-session mutation for this operation, so we route the
+    # write through its transactional helper.
     return db._execute_write(_do)
 
 
-def list_conversations(q: str = "", source: str = ALL_SOURCES, limit: int = 500, offset: int = 0) -> dict[str, Any]:
+def list_conversations(q: str = "", source: str = ALL_SOURCES, limit: int = DEFAULT_CONVERSATION_LIMIT, offset: int = 0) -> dict[str, Any]:
+    limit, offset = _normalize_pagination(limit, offset)
+    source = _safe_text(source).strip() or ALL_SOURCES
+    q = _safe_text(q).strip()
+
     db = SessionDB()
     try:
         ordered_ids, by_id, children_by_parent = _load_session_graph(db)
@@ -601,7 +633,7 @@ def list_conversations(q: str = "", source: str = ALL_SOURCES, limit: int = 500,
 
         sources = sorted({str(conversation.get("source") or "unknown") for conversation, _ in conversations})
         all_total = len(conversations)
-        query = _safe_text(q).strip()
+        query = q
         filtered: list[dict[str, Any]] = []
 
         for conversation, conversation_ids in conversations:

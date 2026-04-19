@@ -48,7 +48,7 @@ from hermes_cli.config import (
 from gateway.status import get_running_pid, read_runtime_status
 
 try:
-    from fastapi import FastAPI, HTTPException, Request
+    from fastapi import FastAPI, HTTPException, Query, Request
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
     from fastapi.staticfiles import StaticFiles
@@ -1670,7 +1670,12 @@ async def cancel_oauth_session(session_id: str, request: Request):
 
 
 @app.get("/api/conversations")
-async def get_conversations(q: str = "", source: str = "all", limit: int = 500, offset: int = 0):
+async def get_conversations(
+    q: str = "",
+    source: str = "all",
+    limit: int = Query(default=200, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+):
     try:
         from hermes_cli.dashboard_conversations import list_conversations
 

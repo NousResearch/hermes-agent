@@ -118,10 +118,12 @@ function mergeConversationPages(existing: ConversationInfo[], incoming: Conversa
 function ConversationRow({
   conversation,
   selected,
+  disabled,
   onSelect,
 }: {
   conversation: ConversationInfo;
   selected: boolean;
+  disabled: boolean;
   onSelect: (id: string) => void;
 }) {
   const { t, locale } = useI18n();
@@ -136,10 +138,17 @@ function ConversationRow({
       type="button"
       aria-pressed={selected}
       onClick={() => onSelect(conversationId(conversation))}
-      className={`w-full border p-3 text-left transition-colors cursor-pointer ${
+      disabled={disabled}
+      className={`w-full border p-3 text-left transition-colors ${
+        disabled
+          ? "cursor-default opacity-70"
+          : "cursor-pointer"
+      } ${
         selected
           ? "border-foreground/25 bg-foreground/8"
-          : "border-border hover:bg-secondary/30"
+          : disabled
+            ? "border-border"
+            : "border-border hover:bg-secondary/30"
       }`}
     >
       <div className="flex items-start justify-between gap-3">
@@ -186,11 +195,13 @@ function ConversationSection({
   title,
   conversations,
   selectedId,
+  selectionLocked,
   onSelect,
 }: {
   title: string;
   conversations: ConversationInfo[];
   selectedId: string | null;
+  selectionLocked: boolean;
   onSelect: (id: string) => void;
 }) {
   if (!conversations.length) return null;
@@ -206,6 +217,7 @@ function ConversationSection({
             key={conversationId(conversation)}
             conversation={conversation}
             selected={selectedId === conversationId(conversation)}
+            disabled={selectionLocked}
             onSelect={onSelect}
           />
         ))}
@@ -250,6 +262,7 @@ function TranscriptPane({
   loading,
   error,
   isMobile,
+  deletePending,
   onBack,
   onDelete,
   onRetry,
@@ -261,6 +274,7 @@ function TranscriptPane({
   loading: boolean;
   error: string;
   isMobile: boolean;
+  deletePending: boolean;
   onBack: () => void;
   onDelete: () => void;
   onRetry: () => void;
@@ -307,9 +321,16 @@ function TranscriptPane({
               <span>{t.conversations.updated} {relativeTimeLabel(conversation.last_active, locale)}</span>
             </div>
           </div>
-          <Button variant="outline" size="sm" onClick={onDelete} aria-label={t.conversations.deleteConversation}>
-            <Trash2 className="h-3.5 w-3.5" />
-            {t.conversations.deleteConversation}
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={onDelete}
+            disabled={deletePending}
+            aria-label={t.conversations.deleteConversation}
+            aria-busy={deletePending}
+          >
+            {deletePending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+            {deletePending ? t.conversations.deletingConversation : t.conversations.deleteConversation}
           </Button>
         </div>
       </CardHeader>
@@ -358,6 +379,7 @@ export default function ConversationsPage() {
   const [hasMore, setHasMore] = useState(false);
   const [nextOffset, setNextOffset] = useState(0);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [deletePending, setDeletePending] = useState(false);
   const [listError, setListError] = useState("");
   const [detailError, setDetailError] = useState("");
   const [isMobile, setIsMobile] = useState(isMobileViewport());
@@ -365,6 +387,7 @@ export default function ConversationsPage() {
   const listRequestRef = useRef(0);
   const detailRequestRef = useRef(0);
   const selectedIdRef = useRef<string | null>(selectedId);
+  const skipNextListReloadRef = useRef(false);
 
   const resetTranscriptState = useCallback(() => {
     setMessages([]);
@@ -419,6 +442,7 @@ export default function ConversationsPage() {
         const nextSources = [ALL_SOURCES, ...response.sources.filter((value) => value && value !== ALL_SOURCES)];
         const responseOffset = typeof response.offset === "number" ? response.offset : offset;
         const followingOffset = responseOffset + nextSessions.length;
+        const resetSourceFilter = !append && sourceFilter !== ALL_SOURCES && !nextSources.includes(sourceFilter);
 
         setConversations((current) => (append ? mergeConversationPages(current, nextSessions) : nextSessions));
         setSourceOptions(nextSources);
@@ -426,11 +450,11 @@ export default function ConversationsPage() {
         setFilteredTotal(response.total || 0);
         setNextOffset(followingOffset);
         setHasMore(followingOffset < (response.total || 0));
-        if (!append && sourceFilter !== ALL_SOURCES && !nextSources.includes(sourceFilter)) {
+        if (resetSourceFilter) {
           setSourceFilter(ALL_SOURCES);
         }
 
-        return nextSessions;
+        return { sessions: nextSessions, resetSourceFilter };
       } catch (error) {
         if (listRequestRef.current !== requestId) return null;
         if (!append) {
@@ -489,11 +513,14 @@ export default function ConversationsPage() {
   }, [selectedId]);
 
   useEffect(() => {
+    if (deletePending) {
+      return;
+    }
     const timer = window.setTimeout(() => {
       setQuery(searchInput.trim());
     }, SEARCH_DEBOUNCE_MS);
     return () => window.clearTimeout(timer);
-  }, [searchInput]);
+  }, [searchInput, deletePending]);
 
   useEffect(() => {
     const handleResize = () => {
@@ -512,10 +539,20 @@ export default function ConversationsPage() {
   }, []);
 
   useEffect(() => {
+    if (deletePending) {
+      return;
+    }
+    if (skipNextListReloadRef.current) {
+      skipNextListReloadRef.current = false;
+      return;
+    }
     loadConversations();
-  }, [loadConversations]);
+  }, [loadConversations, deletePending]);
 
   useEffect(() => {
+    if (deletePending) {
+      return;
+    }
     if (!conversations.length) {
       if (selectedId !== null) setSelectedId(null);
       if (isMobile) setMobileMode("list");
@@ -526,7 +563,7 @@ export default function ConversationsPage() {
     if (!stillSelected) {
       setSelectedId(conversationId(conversations[0]));
     }
-  }, [conversations, selectedId, isMobile]);
+  }, [conversations, selectedId, isMobile, deletePending]);
 
   useLayoutEffect(() => {
     if (!selectedId || (isMobile && mobileMode !== "detail")) {
@@ -561,7 +598,9 @@ export default function ConversationsPage() {
   };
 
   const handleRefresh = async () => {
-    const refreshedSessions = await loadConversations();
+    if (deletePending) return;
+    const refreshed = await loadConversations();
+    const refreshedSessions = refreshed?.sessions;
     const currentSelectedId = selectedIdRef.current;
     if (
       currentSelectedId &&
@@ -573,20 +612,28 @@ export default function ConversationsPage() {
   };
 
   const handleLoadMore = async () => {
-    if (!hasMore || loadingMore || listLoading) return;
+    if (deletePending || !hasMore || loadingMore || listLoading) return;
     await loadConversations({ append: true, offset: nextOffset });
   };
 
   const handleDelete = async () => {
-    if (!selectedConversation) return;
+    if (!selectedConversation || deletePending) return;
+    if (!window.confirm(t.conversations.deleteConversationConfirm)) return;
 
+    setDeletePending(true);
+    skipNextListReloadRef.current = true;
+    setDetailError("");
     try {
       await api.deleteConversation(conversationId(selectedConversation));
       if (isMobile) setMobileMode("list");
-      setSelectedId(null);
-      await loadConversations();
+      const refreshed = await loadConversations();
+      if (refreshed?.resetSourceFilter) {
+        skipNextListReloadRef.current = false;
+      }
     } catch (error) {
       setDetailError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setDeletePending(false);
     }
   };
 
@@ -609,7 +656,7 @@ export default function ConversationsPage() {
               {allTotal}
             </Badge>
           )}
-          <Button variant="outline" size="sm" onClick={handleRefresh} disabled={listLoading || loadingMore}>
+          <Button variant="outline" size="sm" onClick={handleRefresh} disabled={deletePending || listLoading || loadingMore}>
             <RefreshCw className={`h-3.5 w-3.5 ${listLoading || loadingMore ? "animate-spin" : ""}`} />
             {t.common.refresh}
           </Button>
@@ -637,6 +684,7 @@ export default function ConversationsPage() {
                   onChange={(event) => setSearchInput(event.target.value)}
                   placeholder={t.conversations.searchPlaceholder}
                   className="h-8 pl-8 pr-8 text-xs"
+                  disabled={deletePending}
                 />
                 {searchInput && (
                   <button
@@ -644,6 +692,7 @@ export default function ConversationsPage() {
                     className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground cursor-pointer"
                     onClick={() => setSearchInput("")}
                     aria-label={t.common.clear}
+                    disabled={deletePending}
                   >
                     <X className="h-3 w-3" />
                   </button>
@@ -657,7 +706,10 @@ export default function ConversationsPage() {
                       key={source}
                       type="button"
                       onClick={() => setSourceFilter(source)}
-                      className={`border px-2 py-1 text-[0.65rem] uppercase tracking-[0.14em] transition-colors cursor-pointer ${
+                      disabled={deletePending}
+                      className={`border px-2 py-1 text-[0.65rem] uppercase tracking-[0.14em] transition-colors ${
+                        deletePending ? "cursor-default opacity-70" : "cursor-pointer"
+                      } ${
                         selected
                           ? "border-foreground/30 bg-foreground/10 text-foreground"
                           : "border-border text-muted-foreground hover:text-foreground hover:bg-secondary/30"
@@ -693,19 +745,21 @@ export default function ConversationsPage() {
                     title={t.conversations.active}
                     conversations={groups.active}
                     selectedId={selectedId}
+                    selectionLocked={deletePending}
                     onSelect={handleSelect}
                   />
                   <ConversationSection
                     title={t.conversations.recent}
                     conversations={groups.recent}
                     selectedId={selectedId}
+                    selectionLocked={deletePending}
                     onSelect={handleSelect}
                   />
                   {listError && (
                     <p className="text-sm text-destructive">{t.conversations.listError} {listError}</p>
                   )}
                   {hasMore && (
-                    <Button variant="outline" size="sm" onClick={handleLoadMore} disabled={listLoading || loadingMore}>
+                    <Button variant="outline" size="sm" onClick={handleLoadMore} disabled={deletePending || listLoading || loadingMore}>
                       {loadingMore ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
                       {t.conversations.loadMore}
                     </Button>
@@ -725,6 +779,7 @@ export default function ConversationsPage() {
             loading={detailLoading}
             error={detailError}
             isMobile={isMobile}
+            deletePending={deletePending}
             onBack={() => {
               cancelTranscriptRequest();
               setMobileMode("list");

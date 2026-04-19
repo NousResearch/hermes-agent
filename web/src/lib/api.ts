@@ -42,7 +42,7 @@ export const api = {
     const qs = new URLSearchParams();
     if (params.q) qs.set("q", params.q);
     if (params.source) qs.set("source", params.source);
-    qs.set("limit", String(params.limit ?? 500));
+    qs.set("limit", String(params.limit ?? 200));
     qs.set("offset", String(params.offset ?? 0));
     return fetchJSON<PaginatedConversations>(`/api/conversations?${qs.toString()}`);
   },

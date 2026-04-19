@@ -773,6 +773,17 @@ class WhatsAppAdapter(BasePlatformAdapter):
         """Send a video natively via bridge — plays inline in WhatsApp."""
         return await self._send_media_to_bridge(chat_id, video_path, "video", caption)
 
+    async def send_voice(
+        self,
+        chat_id: str,
+        audio_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        **kwargs,
+    ) -> SendResult:
+        """Send an audio file as a WhatsApp voice message via bridge."""
+        return await self._send_media_to_bridge(chat_id, audio_path, "audio", caption)
+
     async def send_document(
         self,
         chat_id: str,

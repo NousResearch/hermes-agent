@@ -1117,10 +1117,20 @@ class TestBuildAssistantMessage:
         assert "reasoning_details" in result
         assert result["reasoning_details"][0]["text"] == "step1"
 
-    def test_empty_content(self, agent):
+    def test_none_content_preserved(self, agent):
+        """None content must stay None — not normalized to "" — so
+        Anthropic-compatible proxies don't emit empty text blocks (#11906)."""
         msg = _mock_assistant_msg(content=None)
         result = agent._build_assistant_message(msg, "stop")
-        assert result["content"] == ""
+        assert result["content"] is None
+
+    def test_none_content_with_tool_calls(self, agent):
+        """Tool-call-only responses have content=None; must not become ""."""
+        tc = _mock_tool_call(name="web_search", arguments='{"q":"test"}', call_id="c1")
+        msg = _mock_assistant_msg(content=None, tool_calls=[tc])
+        result = agent._build_assistant_message(msg, "tool_calls")
+        assert result["content"] is None
+        assert len(result["tool_calls"]) == 1
 
     def test_tool_call_extra_content_preserved(self, agent):
         """Gemini thinking models attach extra_content with thought_signature

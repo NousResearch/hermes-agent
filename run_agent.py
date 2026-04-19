@@ -7267,8 +7267,11 @@ class AIAgent:
 
         # Sanitize surrogates from API response — some models (e.g. Kimi/GLM via Ollama)
         # can return invalid surrogate code points that crash json.dumps() on persist.
-        _raw_content = assistant_message.content or ""
-        _san_content = _sanitize_surrogates(_raw_content)
+        # Keep None as None — normalizing to "" causes Anthropic-compatible
+        # proxies to emit empty text blocks which triggers HTTP 400:
+        # "messages: text content blocks must be non-empty" (#11906)
+        _raw_content = assistant_message.content
+        _san_content = _sanitize_surrogates(_raw_content) if _raw_content else _raw_content
         if reasoning_text:
             reasoning_text = _sanitize_surrogates(reasoning_text)
 

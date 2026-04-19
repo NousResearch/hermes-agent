@@ -100,9 +100,13 @@ UI_COMPONENTS: Dict[str, Dict[str, Any]] = {
     "ui_uploader": {
         "display": "Prompt user to upload files via the chat UI",
         "description": (
-            "Ask the merchant to upload one or more files. The frontend "
-            "renders an upload widget inline in the chat. Use this when you "
-            "need image_url(s) before running vision_analyze."
+            "Render an image/file upload widget inline in the chat. "
+            "**ONLY call this when the task truly needs visual input** — "
+            "e.g. 新品上架 / 发图 / 传照片 / 以图搜款 / 识图改款 / 商品主图. "
+            "DO NOT call for: price changes, stock queries, text-only "
+            "searches, category lookups, or any operation on an existing "
+            "商品 (those each have dedicated apm_* tools). Typical "
+            "upstream of vision_analyze + ui_product_editor."
         ),
         "parameters": {
             "type": "object",

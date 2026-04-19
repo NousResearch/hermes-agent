@@ -106,3 +106,57 @@ class TestIsLocalEndpoint:
     ])
     def test_remote_endpoints(self, url):
         assert is_local_endpoint(url) is False
+
+
+class TestCloudProxiedModelDetection:
+    """Verify is_cloud_proxied_model() correctly identifies cloud-proxied
+    models that should NOT receive infinite local timeouts.
+
+    Cloud-proxied models (e.g. "qwen3.5:cloud") are served on a local
+    endpoint (Ollama proxy) but forward to remote APIs.  They must keep
+    standard cloud timeouts to avoid indefinite hangs on upstream failures.
+    """
+
+    @pytest.mark.parametrize("model", [
+        "qwen3.5:cloud",
+        "glm-5.1:cloud",
+        "kimi-k2:cloud",
+        "mistral-cloud",
+        "deepseek-v3-cloud",
+    ])
+    def test_cloud_proxied_models_detected(self, model):
+        """Models with :cloud or -cloud suffix should be detected."""
+        from agent.model_metadata import is_cloud_proxied_model
+        assert is_cloud_proxied_model(model) is True
+
+    @pytest.mark.parametrize("model", [
+        "llama3.1:8b",
+        "codellama",
+        "qwen2.5-coder:32b",
+        "mistral:7b",
+        "deepseek-coder-v2:16b",
+        "glm-4:9b",
+        # Edge cases — cloud as a word not suffix
+        "cloud-llama",
+        "opencloud",
+    ])
+    def test_truly_local_models_not_detected(self, model):
+        """Truly local models should NOT be flagged as cloud-proxied."""
+        from agent.model_metadata import is_cloud_proxied_model
+        assert is_cloud_proxied_model(model) is False
+
+    @pytest.mark.parametrize("model", [None, "", "   "])
+    def test_empty_or_none_model(self, model):
+        """Empty or None model names should return False."""
+        from agent.model_metadata import is_cloud_proxied_model
+        assert is_cloud_proxied_model(model) is False
+
+    @pytest.mark.parametrize("model", [
+        "QWEN3.5:CLOUD",
+        "GLM-5.1:Cloud",
+        "Mistral-Cloud",
+    ])
+    def test_case_insensitive(self, model):
+        """Detection should be case-insensitive."""
+        from agent.model_metadata import is_cloud_proxied_model
+        assert is_cloud_proxied_model(model) is True

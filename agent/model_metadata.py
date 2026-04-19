@@ -310,6 +310,30 @@ def is_local_endpoint(base_url: str) -> bool:
     return False
 
 
+# Suffixes that indicate a model is cloud-proxied through a local server
+# (e.g. Ollama proxy routing "qwen3.5:cloud" to a remote API).
+# These models are on a local endpoint but the actual inference is remote,
+# so they should NOT get the relaxed infinite timeouts that truly local
+# models receive — a hung upstream connection can block indefinitely.
+_CLOUD_PROXY_SUFFIXES = (":cloud", "-cloud")
+
+
+def is_cloud_proxied_model(model: str) -> bool:
+    """Return True if the model name indicates cloud-proxied inference.
+
+    Models like "qwen3.5:cloud" or "glm-5.1:cloud" are served by a local
+    proxy (e.g. Ollama) that forwards requests to a remote cloud API.
+    Despite being on a local endpoint, they are subject to cloud-latency
+    issues (upstream hangs, connection drops) and should use standard
+    cloud timeouts rather than the infinite timeouts given to truly
+    local models.
+    """
+    if not model:
+        return False
+    lower = model.lower()
+    return any(lower.endswith(s) for s in _CLOUD_PROXY_SUFFIXES)
+
+
 def detect_local_server_type(base_url: str) -> Optional[str]:
     """Detect which local server is running at base_url by probing known endpoints.
 

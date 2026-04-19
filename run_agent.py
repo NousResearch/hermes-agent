@@ -89,6 +89,7 @@ from agent.model_metadata import (
     get_next_probe_tier, parse_context_limit_from_error,
     parse_available_output_tokens_from_error,
     save_context_length, is_local_endpoint,
+    is_cloud_proxied_model,
     query_ollama_num_ctx,
 )
 from agent.context_compressor import ContextCompressor
@@ -5421,7 +5422,7 @@ class AIAgent:
         # apply richer recovery (credential rotation, provider fallback).
         _stale_base = float(os.getenv("HERMES_API_CALL_STALE_TIMEOUT", 300.0))
         _base_url = getattr(self, "_base_url", None) or ""
-        if _stale_base == 300.0 and _base_url and is_local_endpoint(_base_url):
+        if _stale_base == 300.0 and _base_url and is_local_endpoint(_base_url) and not is_cloud_proxied_model(self.model):
             _stale_timeout = float("inf")
         else:
             _est_tokens = sum(len(str(v)) for v in api_kwargs.get("messages", [])) // 4
@@ -5727,7 +5728,7 @@ class AIAgent:
             # prefill on large contexts before producing the first token.
             # Auto-increase the httpx read timeout unless the user explicitly
             # overrode HERMES_STREAM_READ_TIMEOUT.
-            if _stream_read_timeout == 120.0 and self.base_url and is_local_endpoint(self.base_url):
+            if _stream_read_timeout == 120.0 and self.base_url and is_local_endpoint(self.base_url) and not is_cloud_proxied_model(self.model):
                 _stream_read_timeout = _base_timeout
                 logger.debug(
                     "Local provider detected (%s) — stream read timeout raised to %.0fs",
@@ -6147,7 +6148,7 @@ class AIAgent:
         # Local providers (Ollama, oMLX, llama-cpp) can take 300+ seconds
         # for prefill on large contexts.  Disable the stale detector unless
         # the user explicitly set HERMES_STREAM_STALE_TIMEOUT.
-        if _stream_stale_timeout_base == 180.0 and self.base_url and is_local_endpoint(self.base_url):
+        if _stream_stale_timeout_base == 180.0 and self.base_url and is_local_endpoint(self.base_url) and not is_cloud_proxied_model(self.model):
             _stream_stale_timeout = float("inf")
             logger.debug("Local provider detected (%s) — stale stream timeout disabled", self.base_url)
         else:

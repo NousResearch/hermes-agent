@@ -186,6 +186,43 @@ def test_native_http_error_keeps_status_and_retry_after():
     assert "quota exhausted" in str(err)
 
 
+def test_native_client_accepts_injected_http_client():
+    from agent.gemini_native_adapter import GeminiNativeClient
+
+    injected = SimpleNamespace(close=lambda: None)
+    client = GeminiNativeClient(api_key="AIza-test", http_client=injected)
+    assert client._http is injected
+
+
+@pytest.mark.asyncio
+async def test_async_native_client_streams_without_requiring_async_iterator_from_sync_client():
+    from agent.gemini_native_adapter import AsyncGeminiNativeClient
+
+    chunk = SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content="hi"), finish_reason=None)])
+    sync_stream = iter([chunk])
+
+    def _advance(iterator):
+        try:
+            return False, next(iterator)
+        except StopIteration:
+            return True, None
+
+    sync_client = SimpleNamespace(
+        api_key="AIza-test",
+        base_url="https://generativelanguage.googleapis.com/v1beta",
+        chat=SimpleNamespace(completions=SimpleNamespace(create=lambda **kwargs: sync_stream)),
+        _advance_stream_iterator=_advance,
+        close=lambda: None,
+    )
+
+    async_client = AsyncGeminiNativeClient(sync_client)
+    stream = await async_client.chat.completions.create(stream=True)
+    collected = []
+    async for item in stream:
+        collected.append(item)
+    assert collected == [chunk]
+
+
 def test_stream_event_translation_emits_tool_call_delta_with_stable_index():
     from agent.gemini_native_adapter import translate_stream_event
 
@@ -209,4 +246,30 @@ def test_stream_event_translation_emits_tool_call_delta_with_stable_index():
     assert first[0].choices[0].delta.tool_calls[0].index == 0
     assert second[0].choices[0].delta.tool_calls[0].index == 0
     assert first[0].choices[0].delta.tool_calls[0].id == second[0].choices[0].delta.tool_calls[0].id
+    assert first[0].choices[0].delta.tool_calls[0].function.arguments == '{"q": "abc"}'
+    assert second[0].choices[0].delta.tool_calls[0].function.arguments == ""
     assert first[-1].choices[0].finish_reason == "tool_calls"
+
+
+def test_stream_event_translation_keeps_identical_calls_in_distinct_parts():
+    from agent.gemini_native_adapter import translate_stream_event
+
+    event = {
+        "candidates": [
+            {
+                "content": {
+                    "parts": [
+                        {"functionCall": {"name": "search", "args": {"q": "abc"}}},
+                        {"functionCall": {"name": "search", "args": {"q": "abc"}}},
+                    ]
+                },
+                "finishReason": "STOP",
+            }
+        ]
+    }
+
+    chunks = translate_stream_event(event, model="gemini-2.5-flash", tool_call_indices={})
+    tool_chunks = [chunk for chunk in chunks if chunk.choices[0].delta.tool_calls]
+    assert tool_chunks[0].choices[0].delta.tool_calls[0].index == 0
+    assert tool_chunks[1].choices[0].delta.tool_calls[0].index == 1
+    assert tool_chunks[0].choices[0].delta.tool_calls[0].id != tool_chunks[1].choices[0].delta.tool_calls[0].id

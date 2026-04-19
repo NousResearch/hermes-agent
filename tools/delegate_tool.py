@@ -53,6 +53,58 @@ _DEFAULT_MAX_CONCURRENT_CHILDREN = 3
 MAX_DEPTH = 2  # parent (0) -> child (1) -> grandchild rejected (2)
 
 
+def _get_persona_config(persona: Optional[str]) -> dict:
+    """Return the per-persona config block from ``delegation.personas.<name>``.
+
+    Reads from config.yaml so users can control model, max_tokens, and other
+    per-persona settings without touching source code.
+
+    Example config.yaml::
+
+        delegation:
+          personas:
+            vision:
+              model: gemma4-31b   # route this persona to a specific model
+              max_tokens: 4096    # cap output length for this persona
+            searcher:
+              max_tokens: 8192
+
+    Returns an empty dict when the persona is not configured or config is
+    unavailable — callers must treat all keys as optional.
+    """
+    if not persona:
+        return {}
+    try:
+        cfg = _load_config()
+        raw = cfg.get("personas", {}).get(persona, {})
+        return dict(raw) if isinstance(raw, dict) else {}
+    except Exception as e:
+        logger.debug("Could not load persona config for '%s': %s", persona, e)
+        return {}
+
+
+def _load_persona_soul(persona: Optional[str]) -> Optional[str]:
+    """Load SOUL.md from ``~/.hermes/profiles/<persona>/SOUL.md`` if present.
+
+    When found, the file content is prepended to the subagent's system prompt
+    so the child agent adopts the persona's identity and behavior guidelines.
+    Returns ``None`` when the persona is unset or the file does not exist.
+    """
+    if not persona:
+        return None
+    try:
+        from pathlib import Path
+        soul_path = Path.home() / ".hermes" / "profiles" / persona / "SOUL.md"
+        if soul_path.exists():
+            content = soul_path.read_text(encoding="utf-8").strip()
+            logger.debug("Loaded persona SOUL.md for '%s' from %s", persona, soul_path)
+            return content
+        logger.debug("No SOUL.md found for persona '%s' at %s", persona, soul_path)
+    except Exception as e:
+        logger.warning("Failed to load SOUL.md for persona '%s': %s", persona, e)
+    return None
+
+
 def _get_max_concurrent_children() -> int:
     """Read delegation.max_concurrent_children from config, falling back to
     DELEGATION_MAX_CONCURRENT_CHILDREN env var, then the default (3).
@@ -92,13 +144,18 @@ def _build_child_system_prompt(
     context: Optional[str] = None,
     *,
     workspace_path: Optional[str] = None,
+    persona: Optional[str] = None,
 ) -> str:
     """Build a focused system prompt for a child agent."""
-    parts = [
-        "You are a focused subagent working on a specific delegated task.",
-        "",
-        f"YOUR TASK:\n{goal}",
-    ]
+    persona_content = _load_persona_soul(persona)
+    if persona_content:
+        parts = [persona_content, "", "---", "", f"YOUR TASK:\n{goal}"]
+    else:
+        parts = [
+            "You are a focused subagent working on a specific delegated task.",
+            "",
+            f"YOUR TASK:\n{goal}",
+        ]
     if context and context.strip():
         parts.append(f"\nCONTEXT:\n{context}")
     if workspace_path and str(workspace_path).strip():
@@ -271,6 +328,7 @@ def _build_child_agent(
     max_iterations: int,
     task_count: int,
     parent_agent,
+    persona: Optional[str] = None,
     # Credential overrides from delegation config (provider:model resolution)
     override_provider: Optional[str] = None,
     override_base_url: Optional[str] = None,
@@ -319,7 +377,7 @@ def _build_child_agent(
         child_toolsets = _strip_blocked_tools(DEFAULT_TOOLSETS)
 
     workspace_hint = _resolve_workspace_hint(parent_agent)
-    child_prompt = _build_child_system_prompt(goal, context, workspace_path=workspace_hint)
+    child_prompt = _build_child_system_prompt(goal, context, workspace_path=workspace_hint, persona=persona)
     # Extract parent's API key so subagents inherit auth (e.g. Nous Portal).
     parent_api_key = getattr(parent_agent, "api_key", None)
     if (not parent_api_key) and hasattr(parent_agent, "_client_kwargs"):
@@ -345,8 +403,29 @@ def _build_child_agent(
 
         child_thinking_cb = _child_thinking
 
-    # Resolve effective credentials: config override > parent inherit
-    effective_model = model or parent_agent.model
+    # Resolve per-persona settings from delegation.personas.<name> in config.yaml.
+    # This allows users to override model and max_tokens per persona without
+    # touching source code — changes take effect on the next delegate_task call.
+    persona_cfg = _get_persona_config(persona)
+    # "auto" means inherit from parent — treat same as unset
+    _raw_model = str(persona_cfg.get("model") or "").strip()
+    persona_model_override = "" if _raw_model.lower() == "auto" else _raw_model
+    persona_max_tokens = persona_cfg.get("max_tokens")
+    if persona_max_tokens is not None:
+        try:
+            persona_max_tokens = int(persona_max_tokens)
+        except (TypeError, ValueError):
+            logger.warning(
+                "delegation.personas.%s.max_tokens=%r is not a valid integer; "
+                "falling back to parent value", persona, persona_max_tokens,
+            )
+            persona_max_tokens = None
+
+    # Resolve effective model: caller override > persona override > parent inherit
+    # "auto" persona model and empty string both fall through to parent model.
+    effective_model = model or persona_model_override or parent_agent.model
+    if persona_model_override and not model:
+        logger.debug("Persona '%s' → model override: %s", persona, persona_model_override)
     effective_provider = override_provider or getattr(parent_agent, "provider", None)
     effective_base_url = override_base_url or parent_agent.base_url
     effective_api_key = override_api_key or parent_api_key
@@ -382,7 +461,7 @@ def _build_child_agent(
         acp_command=effective_acp_command,
         acp_args=effective_acp_args,
         max_iterations=max_iterations,
-        max_tokens=getattr(parent_agent, "max_tokens", None),
+        max_tokens=persona_max_tokens if persona_max_tokens is not None else getattr(parent_agent, "max_tokens", None),
         reasoning_config=child_reasoning,
         prefill_messages=getattr(parent_agent, "prefill_messages", None),
         enabled_toolsets=child_toolsets,
@@ -685,6 +764,7 @@ def delegate_task(
     max_iterations: Optional[int] = None,
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
+    persona: Optional[str] = None,
     parent_agent=None,
 ) -> str:
     """
@@ -737,7 +817,7 @@ def delegate_task(
             )
         task_list = tasks
     elif goal and isinstance(goal, str) and goal.strip():
-        task_list = [{"goal": goal, "context": context, "toolsets": toolsets}]
+        task_list = [{"goal": goal, "context": context, "toolsets": toolsets, "persona": persona}]
     else:
         return tool_error("Provide either 'goal' (single task) or 'tasks' (batch).")
 
@@ -768,10 +848,12 @@ def delegate_task(
     children = []
     try:
         for i, t in enumerate(task_list):
+            task_persona = t.get("persona") or persona
             child = _build_child_agent(
                 task_index=i, goal=t["goal"], context=t.get("context"),
                 toolsets=t.get("toolsets") or toolsets, model=creds["model"],
                 max_iterations=effective_max_iter, task_count=n_tasks, parent_agent=parent_agent,
+                persona=task_persona,
                 override_provider=creds["provider"], override_base_url=creds["base_url"],
                 override_api_key=creds["api_key"],
                 override_api_mode=creds["api_mode"],
@@ -1137,6 +1219,15 @@ DELEGATE_TASK_SCHEMA = {
                             "items": {"type": "string"},
                             "description": "Per-task ACP args override.",
                         },
+                        "persona": {
+                            "type": "string",
+                            "description": (
+                                "Specialist persona for this task. Loads ~/.hermes/profiles/{persona}/SOUL.md. "
+                                "ALWAYS set when task matches: "
+                                "'vision'(靈之眼/images), 'searcher'(通天搜/research), 'scientist'(太虛/analysis), "
+                                "'strategist'(玄機/decisions), 'coder'(鑄劍/implement), 'qa'(審判/review), 'ideator'(混沌/ideas)."
+                            ),
+                        },
                     },
                     "required": ["goal"],
                 },
@@ -1173,6 +1264,22 @@ DELEGATE_TASK_SCHEMA = {
                     "Only used when acp_command is set. Example: ['--acp', '--stdio', '--model', 'claude-opus-4-6']"
                 ),
             },
+            "persona": {
+                "type": "string",
+                "description": (
+                    "Specialist persona for the subagent (single-task mode). "
+                    "Loads ~/.hermes/profiles/{persona}/SOUL.md as the subagent's identity. "
+                    "AUTOMATIC DISPATCH RULES — you MUST set this without being asked:\n"
+                    "- 'vision'     (靈之眼): any image, photo, screenshot, diagram, chart, scan, visual content\n"
+                    "- 'searcher'   (通天搜): lookup, research, web search, documentation, literature, fact-finding\n"
+                    "- 'scientist'  (太虛):   analysis, reasoning, hypothesis, causal explanation, cross-domain synthesis\n"
+                    "- 'strategist' (玄機):   synthesize findings into strategy/decisions, prioritize next actions\n"
+                    "- 'coder'      (鑄劍):   implement code from specification, write tests, run and verify\n"
+                    "- 'qa'         (審判):   review code/output quality, find bugs, approve or reject deliverables\n"
+                    "- 'ideator'    (混沌):   generate creative ideas, explore solution space, lateral thinking\n"
+                    "In batch mode, set persona per-task instead."
+                ),
+            },
         },
         "required": [],
     },
@@ -1194,6 +1301,7 @@ registry.register(
         max_iterations=args.get("max_iterations"),
         acp_command=args.get("acp_command"),
         acp_args=args.get("acp_args"),
+        persona=args.get("persona"),
         parent_agent=kw.get("parent_agent")),
     check_fn=check_delegate_requirements,
     emoji="🔀",

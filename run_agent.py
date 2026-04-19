@@ -7800,6 +7800,7 @@ class AIAgent:
                 toolsets=function_args.get("toolsets"),
                 tasks=function_args.get("tasks"),
                 max_iterations=function_args.get("max_iterations"),
+                persona=function_args.get("persona"),
                 parent_agent=self,
             )
         else:
@@ -8333,6 +8334,7 @@ class AIAgent:
                         toolsets=function_args.get("toolsets"),
                         tasks=tasks_arg,
                         max_iterations=function_args.get("max_iterations"),
+                        persona=function_args.get("persona"),
                         parent_agent=self,
                     )
                     _delegate_result = function_result

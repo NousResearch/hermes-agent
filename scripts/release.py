@@ -177,6 +177,7 @@ AUTHOR_MAP = {
     "duerzy@gmail.com": "duerzy",
     "emozilla@nousresearch.com": "emozilla",
     "fancydirty@gmail.com": "fancydirty",
+    "farion1231@gmail.com": "farion1231",
     "floptopbot33@gmail.com": "flobo3",
     "fontana.pedro93@gmail.com": "pefontana",
     "francis.x.fitzpatrick@gmail.com": "fxfitz",

@@ -2035,12 +2035,8 @@ class HermesCLI:
 
         _agent_running = getattr(self, '_agent_running', False)
         _inference_total = getattr(self, '_inference_total_seconds', 0.0)
-        if _agent_running:
-            # Live counter while inference is in progress (from message send time)
-            elapsed_seconds = max(0.0, (datetime.now() - self.session_start).total_seconds())
-        else:
-            # Frozen total inference time when idle; 0 means no message sent yet
-            elapsed_seconds = _inference_total
+        # Always show live counter during inference; frozen total when idle
+        elapsed_seconds = max(0.0, (datetime.now() - self.session_start).total_seconds()) if _agent_running else _inference_total
         snapshot = {
             "model_name": model_name,
             "model_short": model_short,
@@ -2773,7 +2769,7 @@ class HermesCLI:
                 self._stream_text_ansi = f"\033[38;2;{_r};{_g};{_b}m"
             except (ValueError, IndexError):
                 self._stream_text_ansi = ""
-            _cprint("")  # blank line before streamed response
+            _cprint("")  # blank line between user bubble and response
 
         self._stream_buf += text
 
@@ -2809,9 +2805,7 @@ class HermesCLI:
             _cprint(f"{_STREAM_PAD}{_tc}{self._stream_buf}{_RST}" if _tc else f"{_STREAM_PAD}{self._stream_buf}")
             self._stream_buf = ""
 
-        # Add blank line after streamed response
-        if self._stream_box_opened:
-            _cprint("")
+        # No trailing blank line — the next user bubble provides visual separation
 
     # -- Streaming markdown helpers ------------------------------------------
 
@@ -2924,7 +2918,7 @@ class HermesCLI:
                 label = "⚕ Hermes"
             w = shutil.get_terminal_size().columns
             self._stream_md_term_width = w  # cache for chunk rendering; avoids syscall per chunk
-            _cprint("")  # blank line before streamed response
+            _cprint("")  # blank line between user bubble and response
 
         # Find the safe render boundary
         boundary = self._find_block_boundary(self._stream_md_buf, self._stream_md_rendered)
@@ -8541,11 +8535,9 @@ class HermesCLI:
                         response, self.markdown_enabled,
                         code_theme=_code_theme, text_color=_resp_text,
                     )
-                    # Borderless output: blank line, content, blank line.
-                    # No panel title or horizontal rules — clean like Claude Code.
-                    _chat_console.print()
+                    # Borderless output — blank line separates user bubble from response.
+                    _cprint("")
                     _chat_console.print(_renderable)
-                    _chat_console.print()
 
             # Print post-response summary (model/context info that was hidden during response)
             # Signal that a response has been received (status bar switches to ∑/↩ mode)
@@ -8835,24 +8827,22 @@ class HermesCLI:
         ordering.
         """
         return [
-            item for item in [
-                Window(height=0),
-                sudo_widget,
-                secret_widget,
-                approval_widget,
-                clarify_widget,
-                model_picker_widget,
-                spinner_widget,
-                spacer,
-                *self._get_extra_tui_widgets(),
-                status_bar,
-                input_rule_top,
-                image_bar,
-                input_area,
-                input_rule_bot,
-                voice_status_bar,
-                completions_menu,
-            ] if item is not None
+            Window(height=0),
+            sudo_widget,
+            secret_widget,
+            approval_widget,
+            clarify_widget,
+            spinner_widget,
+            spacer,
+            *self._get_extra_tui_widgets(),
+            Window(height=1),  # blank line between response output and status bar
+            status_bar,
+            input_rule_top,
+            image_bar,
+            input_area,
+            input_rule_bot,
+            voice_status_bar,
+            completions_menu,
         ]
 
     def run(self):
@@ -10321,7 +10311,7 @@ class HermesCLI:
                         expanded = _paste_ref_re.sub(_expand_ref, user_input)
                         total_lines = expanded.count('\n') + 1
                         n_pastes = len(paste_refs)
-                        print()
+                        _cprint("")
                         # Show any surrounding user text alongside the paste summary
                         split_parts = _paste_ref_re.split(user_input)
                         visible_user_text = " ".join(
@@ -10341,13 +10331,13 @@ class HermesCLI:
                         if '\n' in user_input:
                             first_line = user_input.split('\n')[0]
                             line_count = user_input.count('\n') + 1
-                            print()
+                            _cprint("")
                             ChatConsole().print(
                                 f"[bold {_accent_hex()}]●[/] [bold]{_escape(first_line)}[/] "
                                 f"[dim](+{line_count - 1} lines)[/]"
                             )
                         else:
-                            print()
+                            _cprint("")
                             ChatConsole().print(f"[bold {_accent_hex()}]●[/] [bold]{_escape(user_input)}[/]")
                     
                     # Show image attachment count

@@ -361,7 +361,30 @@ class EmailAdapter(BasePlatformAdapter):
                     if status != "OK":
                         continue
 
-                    raw_email = msg_data[0][1]
+                    # Guard against malformed IMAP FETCH responses.
+                    # Some IMAP servers return [b')'] or [None] or nested
+                    # ints in place of the (header, body) tuple, which would
+                    # surface as cryptic errors such as
+                    # "'int' object has no attribute 'decode'" once the
+                    # value hits email_lib.message_from_bytes. Skip the
+                    # offending message instead of killing the poll loop.
+                    try:
+                        raw_email = msg_data[0][1]
+                    except (IndexError, TypeError):
+                        logger.warning(
+                            "[Email] Skipping UID %s: unexpected IMAP response structure (%r)",
+                            uid,
+                            msg_data,
+                        )
+                        continue
+                    if not isinstance(raw_email, (bytes, bytearray)):
+                        logger.warning(
+                            "[Email] Skipping UID %s: IMAP payload not bytes (got %s)",
+                            uid,
+                            type(raw_email).__name__,
+                        )
+                        continue
+
                     msg = email_lib.message_from_bytes(raw_email)
 
                     sender_raw = msg.get("From", "")

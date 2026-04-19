@@ -86,6 +86,117 @@ def test_list_authenticated_providers_dedupes_models_when_default_in_list(monkey
     assert user_prov["models"].count("model-a") == 1, "model-a should not be duplicated"
 
 
+def test_list_authenticated_providers_enumerates_dict_format_models(monkeypatch):
+    """providers: dict entries with ``models:`` as a dict keyed by model id
+    (canonical Hermes write format) should surface every key in the picker.
+
+    Regression: the ``providers:`` dict path previously only accepted
+    list-format ``models:`` and silently dropped dict-format entries,
+    even though Hermes's own writer and downstream readers use dict format.
+    """
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+
+    user_providers = {
+        "local-ollama": {
+            "name": "Local Ollama",
+            "api": "http://localhost:11434/v1",
+            "default_model": "minimax-m2.7:cloud",
+            "models": {
+                "minimax-m2.7:cloud": {"context_length": 196608},
+                "kimi-k2.5:cloud": {"context_length": 200000},
+                "glm-5.1:cloud": {"context_length": 202752},
+            },
+        }
+    }
+
+    providers = list_authenticated_providers(
+        current_provider="local-ollama",
+        user_providers=user_providers,
+        custom_providers=[],
+        max_models=50,
+    )
+
+    user_prov = next(
+        (p for p in providers if p.get("is_user_defined") and p["slug"] == "local-ollama"),
+        None,
+    )
+
+    assert user_prov is not None
+    assert user_prov["total_models"] == 3
+    assert user_prov["models"] == [
+        "minimax-m2.7:cloud",
+        "kimi-k2.5:cloud",
+        "glm-5.1:cloud",
+    ]
+
+
+def test_list_authenticated_providers_dict_models_without_default_model(monkeypatch):
+    """Dict-format ``models:`` without a ``default_model`` must still expose
+    every dict key, not collapse to an empty list."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+
+    user_providers = {
+        "multimodel": {
+            "api": "http://example.com/v1",
+            "models": {
+                "alpha": {"context_length": 8192},
+                "beta": {"context_length": 16384},
+            },
+        }
+    }
+
+    providers = list_authenticated_providers(
+        current_provider="",
+        user_providers=user_providers,
+        custom_providers=[],
+    )
+
+    user_prov = next(
+        (p for p in providers if p.get("is_user_defined") and p["slug"] == "multimodel"),
+        None,
+    )
+
+    assert user_prov is not None
+    assert user_prov["total_models"] == 2
+    assert set(user_prov["models"]) == {"alpha", "beta"}
+
+
+def test_list_authenticated_providers_dict_models_dedupe_with_default(monkeypatch):
+    """When ``default_model`` is also a key in the ``models:`` dict, it must
+    appear exactly once (list already had this for list-format models)."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+
+    user_providers = {
+        "my-provider": {
+            "api": "http://example.com/v1",
+            "default_model": "model-a",
+            "models": {
+                "model-a": {"context_length": 8192},
+                "model-b": {"context_length": 16384},
+                "model-c": {"context_length": 32768},
+            },
+        }
+    }
+
+    providers = list_authenticated_providers(
+        current_provider="my-provider",
+        user_providers=user_providers,
+        custom_providers=[],
+    )
+
+    user_prov = next(
+        (p for p in providers if p.get("is_user_defined")),
+        None,
+    )
+
+    assert user_prov is not None
+    assert user_prov["total_models"] == 3
+    assert user_prov["models"].count("model-a") == 1
+
+
 def test_list_authenticated_providers_fallback_to_default_only(monkeypatch):
     """When no models array is provided, should fall back to default_model."""
     monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})

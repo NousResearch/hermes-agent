@@ -156,3 +156,100 @@ def test_list_deduplicates_same_model_in_group(monkeypatch):
     assert len(my_rows) == 1
     assert my_rows[0]["models"] == ["llama3", "mistral"]
     assert my_rows[0]["total_models"] == 2
+
+
+def test_list_enumerates_dict_format_models_alongside_default(monkeypatch):
+    """custom_providers entry with dict-format ``models:`` plus singular
+    ``model:`` should surface the default and every dict key.
+
+    Regression: Hermes's own writer stores configured models as a dict
+    keyed by model id, but the /model picker previously only honored the
+    singular ``model:`` field, so multi-model custom providers appeared
+    to have only the active model.
+    """
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+
+    providers = list_authenticated_providers(
+        current_provider="openai-codex",
+        user_providers={},
+        custom_providers=[
+            {
+                "name": "DeepSeek",
+                "base_url": "https://api.deepseek.com",
+                "api_mode": "chat_completions",
+                "model": "deepseek-chat",
+                "models": {
+                    "deepseek-chat": {"context_length": 128000},
+                    "deepseek-reasoner": {"context_length": 128000},
+                },
+            }
+        ],
+        max_models=50,
+    )
+
+    ds_rows = [p for p in providers if p["name"] == "DeepSeek"]
+    assert len(ds_rows) == 1
+    assert ds_rows[0]["models"] == ["deepseek-chat", "deepseek-reasoner"]
+    assert ds_rows[0]["total_models"] == 2
+
+
+def test_list_enumerates_dict_format_models_without_singular_model(monkeypatch):
+    """Dict-format ``models:`` with no singular ``model:`` should still
+    enumerate every dict key (previously the picker reported 0 models)."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+
+    providers = list_authenticated_providers(
+        current_provider="openai-codex",
+        user_providers={},
+        custom_providers=[
+            {
+                "name": "Thor",
+                "base_url": "http://thor.lab:8337/v1",
+                "models": {
+                    "gemma-4-26B-A4B-it-MXFP4_MOE": {"context_length": 262144},
+                    "Qwen3.5-35B-A3B-MXFP4_MOE": {"context_length": 262144},
+                    "gemma-4-31B-it-Q4_K_M": {"context_length": 262144},
+                },
+            }
+        ],
+        max_models=50,
+    )
+
+    thor_rows = [p for p in providers if p["name"] == "Thor"]
+    assert len(thor_rows) == 1
+    assert set(thor_rows[0]["models"]) == {
+        "gemma-4-26B-A4B-it-MXFP4_MOE",
+        "Qwen3.5-35B-A3B-MXFP4_MOE",
+        "gemma-4-31B-it-Q4_K_M",
+    }
+    assert thor_rows[0]["total_models"] == 3
+
+
+def test_list_dedupes_dict_model_matching_singular_default(monkeypatch):
+    """When the singular ``model:`` is also a key in the ``models:`` dict,
+    it must appear exactly once in the picker."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+
+    providers = list_authenticated_providers(
+        current_provider="openai-codex",
+        user_providers={},
+        custom_providers=[
+            {
+                "name": "DeepSeek",
+                "base_url": "https://api.deepseek.com",
+                "model": "deepseek-chat",
+                "models": {
+                    "deepseek-chat": {"context_length": 128000},
+                    "deepseek-reasoner": {"context_length": 128000},
+                },
+            }
+        ],
+        max_models=50,
+    )
+
+    ds_rows = [p for p in providers if p["name"] == "DeepSeek"]
+    assert ds_rows[0]["models"].count("deepseek-chat") == 1
+    assert ds_rows[0]["models"] == ["deepseek-chat", "deepseek-reasoner"]

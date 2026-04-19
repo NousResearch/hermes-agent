@@ -227,6 +227,83 @@ def test_list_authenticated_providers_fallback_to_default_only(monkeypatch):
     assert user_prov["models"] == ["single-model"]
 
 
+def test_list_authenticated_providers_accepts_base_url_and_singular_model(monkeypatch):
+    """providers: dict entries written in canonical Hermes shape
+    (``base_url`` + singular ``model``) should resolve the same as the
+    legacy ``api`` + ``default_model`` shape.
+
+    Regression: section 3 previously only read ``api``/``url`` and
+    ``default_model``, so new-shape entries written by Hermes's own writer
+    surfaced with empty ``api_url`` and no default.
+    """
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+
+    user_providers = {
+        "custom": {
+            "base_url": "http://example.com/v1",
+            "model": "gpt-5.4",
+            "models": {
+                "gpt-5.4": {},
+                "grok-4.20-beta": {},
+                "minimax-m2.7": {},
+            },
+        }
+    }
+
+    providers = list_authenticated_providers(
+        current_provider="custom",
+        user_providers=user_providers,
+        custom_providers=[],
+        max_models=50,
+    )
+
+    custom = next((p for p in providers if p["slug"] == "custom"), None)
+    assert custom is not None
+    assert custom["api_url"] == "http://example.com/v1"
+    assert custom["models"] == ["gpt-5.4", "grok-4.20-beta", "minimax-m2.7"]
+    assert custom["total_models"] == 3
+
+
+def test_list_authenticated_providers_dedupes_when_user_and_custom_overlap(monkeypatch):
+    """When the same slug appears in both ``providers:`` dict and
+    ``custom_providers:`` list, emit exactly one row (providers: dict wins
+    since it is processed first).
+
+    Regression: section 3 previously had no ``seen_slugs`` check, so
+    overlapping entries produced two picker rows for the same provider.
+    """
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+
+    providers = list_authenticated_providers(
+        current_provider="custom",
+        user_providers={
+            "custom": {
+                "base_url": "http://example.com/v1",
+                "model": "gpt-5.4",
+                "models": {
+                    "gpt-5.4": {},
+                    "grok-4.20-beta": {},
+                },
+            }
+        },
+        custom_providers=[
+            {
+                "name": "custom",
+                "base_url": "http://example.com/v1",
+                "model": "legacy-only-model",
+            }
+        ],
+        max_models=50,
+    )
+
+    matches = [p for p in providers if p["slug"] == "custom"]
+    assert len(matches) == 1
+    # providers: dict wins — legacy-only-model is suppressed.
+    assert matches[0]["models"] == ["gpt-5.4", "grok-4.20-beta"]
+
+
 # =============================================================================
 # Tests for _get_named_custom_provider with providers: dict
 # =============================================================================

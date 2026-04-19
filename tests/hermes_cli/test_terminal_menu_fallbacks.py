@@ -72,6 +72,36 @@ def test_remove_custom_provider_falls_back_on_terminalmenu_runtime_error(tmp_pat
     ]
 
 
+def test_remove_custom_provider_handles_providers_dict_only(tmp_path, monkeypatch):
+    from hermes_cli.main import _remove_custom_provider
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setitem(
+        sys.modules,
+        "simple_term_menu",
+        types.SimpleNamespace(TerminalMenu=_BrokenTerminalMenu),
+    )
+
+    cfg = load_config()
+    cfg["providers"] = {
+        "local-a": {"name": "Local A", "api": "http://localhost:8001/v1"},
+        "local-b": {"name": "Local B", "api": "http://localhost:8002/v1"},
+    }
+    cfg.pop("custom_providers", None)
+    save_config(cfg)
+
+    responses = iter(["1"])
+    monkeypatch.setattr("builtins.input", lambda _prompt="": next(responses))
+
+    _remove_custom_provider(cfg)
+
+    reloaded = load_config()
+    assert "custom_providers" not in reloaded
+    assert reloaded["providers"] == {
+        "local-b": {"name": "Local B", "api": "http://localhost:8002/v1"},
+    }
+
+
 def test_named_custom_provider_model_picker_falls_back_on_terminalmenu_runtime_error(tmp_path, monkeypatch):
     from hermes_cli.main import _model_flow_named_custom
 

@@ -217,14 +217,22 @@ class SessionTree:
 
         Returns the leaf SessionNode or None if session_id not found.
 
-        IMPORTANT: Only follows children whose end_reason is 'compression' or
-        NULL (active session). Stops at session_reset/session_switch boundaries
-        because those represent independent conversations, not continuations.
+        IMPORTANT: Only follows children of nodes whose end_reason is
+        'compression'. session_reset/session_switch/active nodes' children
+        represent independent conversations, not compression continuations.
+        Within the compression chain, the active (end_reason=None) final node
+        IS the leaf — it's the current tail of the compressed conversation.
         """
         current = self._nodes.get(session_id)
         visited = set()
         while current and current.id not in visited:
             visited.add(current.id)
+
+            # Only traverse into children if current node is a compression split.
+            # session_reset / session_switch / active nodes have independent children.
+            if not current.is_compressed:
+                return current
+
             # Look for compression/active children
             compression_child = None
             for child in current.children:
@@ -920,6 +928,16 @@ class SessionDB:
             )
             row = cursor.fetchone()
         return dict(row) if row else None
+
+    def get_session_end_reason(self, session_id: str) -> Optional[str]:
+        """Get the end_reason for a session. Returns None if session not found."""
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT end_reason FROM sessions WHERE id = ?",
+                (session_id,)
+            )
+            row = cursor.fetchone()
+            return row["end_reason"] if row else None
 
     def resolve_session_by_title(self, title: str) -> Optional[str]:
         """Resolve a title to a session ID, preferring the latest in a lineage.

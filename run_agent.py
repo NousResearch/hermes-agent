@@ -7599,7 +7599,7 @@ class AIAgent:
             if messages and messages[-1].get("_flush_sentinel") == _sentinel:
                 messages.pop()
 
-    def _compress_context(self, messages: list, system_message: str, *, approx_tokens: int = None, task_id: str = "default", focus_topic: str = None) -> tuple:
+    def _compress_context(self, messages: list, system_message: str, *, approx_tokens: int = None, task_id: str = "default", focus_topic: str = None, on_session_split=None) -> tuple:
         """Compress conversation context and split the session in SQLite.
 
         Args:
@@ -7654,6 +7654,13 @@ class AIAgent:
                     model=self.model,
                     parent_session_id=old_session_id,
                 )
+                # Notify caller immediately so sessions.json is updated
+                # even if the process crashes before the outer caller saves.
+                if on_session_split:
+                    try:
+                        on_session_split(self.session_id)
+                    except Exception:
+                        pass
                 # Auto-number the title for the continuation session
                 if old_title:
                     try:

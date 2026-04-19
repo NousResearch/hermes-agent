@@ -601,7 +601,49 @@ class SessionStore:
             except OSError as e:
                 logger.debug("Could not remove temp file %s: %s", tmp_path, e)
             raise
-    
+
+    def update_session_id_and_save(self, session_key: str, new_session_id: str) -> bool:
+        """Atomically update a session entry's session_id and persist to disk.
+
+        Thread-safe replacement for:
+            entry.session_id = new_id
+            self._save()
+        """
+        with self._lock:
+            entry = self._entries.get(session_key)
+            if entry:
+                entry.session_id = new_session_id
+                entry.updated_at = _now()
+                self._save()
+                return True
+            return False
+
+    def ensure_placeholder_entry(self, session_key: str, source) -> tuple:
+        """Create a placeholder entry if session_key doesn't exist in _entries.
+
+        Used after gateway restart when the session_key wasn't loaded from sessions.json.
+        Prevents get_or_create_session from creating a spurious new session.
+        Returns (entry, is_new_placeholder).
+        """
+        with self._lock:
+            self._ensure_loaded_locked()
+            if session_key in self._entries:
+                return self._entries[session_key], False
+            _now_ts = _now()
+            _placeholder = SessionEntry(
+                session_key=session_key,
+                session_id="",
+                created_at=_now_ts,
+                updated_at=_now_ts,
+                origin=source,
+                display_name=source.chat_name if hasattr(source, 'chat_name') else None,
+                platform=source.platform if hasattr(source, 'platform') else None,
+                chat_type=source.chat_type if hasattr(source, 'chat_type') else None,
+            )
+            self._entries[session_key] = _placeholder
+            self._save()
+            return _placeholder, True
+
     def _generate_session_key(self, source: SessionSource) -> str:
         """Generate a session key from a source."""
         return build_session_key(
@@ -767,12 +809,8 @@ class SessionStore:
                     if self._db is not None:
                         try:
                             # Query if this session has end_reason='compression'
-                            cursor = self._db._conn.execute(
-                                "SELECT end_reason FROM sessions WHERE id = ?",
-                                (entry.session_id,)
-                            )
-                            row = cursor.fetchone()
-                            if row and row["end_reason"] == "compression":
+                            end_reason = self._db.get_session_end_reason(entry.session_id)
+                            if end_reason == "compression":
                                 # Follow compression chain to find latest leaf
                                 leaf = self._db._find_latest_leaf(entry.session_id)
                                 if leaf is not None:
@@ -783,10 +821,9 @@ class SessionStore:
                                         old_session_id,
                                         new_session_id
                                     )
-                                    # Re-acquire lock to update and save
-                                    with self._lock:
-                                        entry.session_id = new_session_id
-                                        self._save()
+                                    # Lock already held (outer with self._lock at line 706)
+                                    entry.session_id = new_session_id
+                                    self._save()
                         except Exception as e:
                             # If anything fails, just return entry as-is
                             logger.debug("Failed to detect stale compressed session: %s", e)
@@ -1204,12 +1241,8 @@ class SessionStore:
         if self._db is not None:
             try:
                 # Query end_reason for session_id
-                cursor = self._db._conn.execute(
-                    "SELECT end_reason FROM sessions WHERE id = ?",
-                    (session_id,)
-                )
-                row = cursor.fetchone()
-                if row and row["end_reason"] == "compression":
+                end_reason = self._db.get_session_end_reason(session_id)
+                if end_reason == "compression":
                     leaf = self._db._find_latest_leaf(session_id)
                     if leaf is not None:
                         logger.warning(

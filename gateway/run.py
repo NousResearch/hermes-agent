@@ -4103,11 +4103,17 @@ class GatewayRunner:
                                     _hyg_agent._print_fn = lambda *a, **kw: None
 
                                     loop = asyncio.get_running_loop()
+                                    # Define callback to immediately persist session split
+                                    def _hyg_on_split(new_sid):
+                                        self.session_store.update_session_id_and_save(
+                                            session_entry.session_key, new_sid
+                                        )
                                     _compressed, _ = await loop.run_in_executor(
                                         None,
                                         lambda: _hyg_agent._compress_context(
                                             _hyg_msgs, "",
                                             approx_tokens=_approx_tokens,
+                                            on_session_split=_hyg_on_split,
                                         ),
                                     )
 
@@ -4116,9 +4122,6 @@ class GatewayRunner:
                                     # the NEW session so the old transcript stays intact
                                     # and searchable via session_search.
                                     _hyg_new_sid = _hyg_agent.session_id
-                                    if _hyg_new_sid != session_entry.session_id:
-                                        session_entry.session_id = _hyg_new_sid
-                                        self.session_store._save()
 
                                     self.session_store.rewrite_transcript(
                                         session_entry.session_id, _compressed
@@ -6781,9 +6784,14 @@ class GatewayRunner:
                     return "Nothing to compress yet (the transcript is still all protected context)."
 
                 loop = asyncio.get_running_loop()
+                # Define callback to immediately persist session split
+                def _compress_on_split(new_sid):
+                    self.session_store.update_session_id_and_save(
+                        session_entry.session_key, new_sid
+                    )
                 compressed, _ = await loop.run_in_executor(
                     None,
-                    lambda: tmp_agent._compress_context(msgs, "", approx_tokens=approx_tokens, focus_topic=focus_topic)
+                    lambda: tmp_agent._compress_context(msgs, "", approx_tokens=approx_tokens, focus_topic=focus_topic, on_session_split=_compress_on_split)
                 )
 
                 # _compress_context already calls end_session() on the old session
@@ -6791,9 +6799,6 @@ class GatewayRunner:
                 # session_id for the continuation.  Write the compressed messages
                 # into the NEW session so the original history stays searchable.
                 new_session_id = tmp_agent.session_id
-                if new_session_id != session_entry.session_id:
-                    session_entry.session_id = new_session_id
-                    self.session_store._save()
 
                 self.session_store.rewrite_transcript(new_session_id, compressed)
                 # Reset stored token count — transcript changed, old value is stale
@@ -6907,28 +6912,8 @@ class GatewayRunner:
 
         # After gateway restart, the session_key may not exist in _entries.
         # Avoid creating a spurious new session by checking if the entry exists.
-        from gateway.session import _now, SessionEntry
-        import uuid as _uuid
-        _is_placeholder_entry = False
-        with self.session_store._lock:
-            self.session_store._ensure_loaded_locked()
-            if session_key not in self.session_store._entries:
-                # Create a placeholder entry that will be replaced by switch_session
-                # This prevents get_or_create_session from creating a spurious new session
-                _is_placeholder_entry = True
-                _now_ts = _now()
-                _placeholder_entry = SessionEntry(
-                    session_key=session_key,
-                    session_id="",  # Will be set by switch_session
-                    created_at=_now_ts,
-                    updated_at=_now_ts,
-                    origin=source,
-                    display_name=source.chat_name,
-                    platform=source.platform,
-                    chat_type=source.chat_type,
-                )
-                self.session_store._entries[session_key] = _placeholder_entry
-                self.session_store._save()
+        _placeholder_result = self.session_store.ensure_placeholder_entry(session_key, source)
+        _is_placeholder_entry = _placeholder_result[1]  # is_new_placeholder
 
         current_entry = self.session_store.get_or_create_session(source)
         current_sid = current_entry.session_id
@@ -7065,8 +7050,13 @@ class GatewayRunner:
             target_id = leaf_node.id
 
         # Check if already on that session
-        # Skip this check for placeholder entries (created after restart when session_key not in _entries)
-        if not _is_placeholder_entry and current_entry.session_id == target_id:
+        # Skip if placeholder entry OR no cached agent (restart scenario where
+        # sessions.json has the mapping but no agent transcript is loaded yet).
+        _has_active_agent = (
+            session_key in self._running_agents
+            or (session_key in getattr(self, "_agent_cache", {}))
+        )
+        if not _is_placeholder_entry and _has_active_agent and current_entry.session_id == target_id:
             return f"📌 Already on session **{name}**."
 
         # Flush memories for current session before switching
@@ -9852,10 +9842,9 @@ class GatewayRunner:
                     "Session split detected: %s → %s (compression)",
                     session_id, agent.session_id,
                 )
-                entry = self.session_store._entries.get(session_key)
-                if entry:
-                    entry.session_id = agent.session_id
-                    self.session_store._save()
+                self.session_store.update_session_id_and_save(
+                    session_key, agent.session_id
+                )
 
             effective_session_id = getattr(agent, 'session_id', session_id) if agent else session_id
 

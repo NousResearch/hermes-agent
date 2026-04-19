@@ -7,6 +7,8 @@ import type {
   SudoRespondResponse,
   VoiceRecordResponse
 } from '../gatewayTypes.js'
+
+import { writeClipboardText } from '../lib/clipboard.js'
 import { writeOsc52Clipboard } from '../lib/osc52.js'
 import { isAction, isMac } from '../lib/platform.js'
 
@@ -30,9 +32,17 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
   const copySelection = () => {
     const text = terminal.selection.copySelection()
 
-    if (text) {
-      actions.sys(`copied ${text.length} chars`)
+    if (!text) {
+      return
     }
+
+    void writeClipboardText(text).then(copied => {
+      if (!copied) {
+        writeOsc52Clipboard(text)
+      }
+    })
+
+    actions.sys(`copied ${text.length} chars`)
   }
 
   const clearSelection = () => {
@@ -249,7 +259,14 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       const inputSel = getInputSelection()
 
       if (inputSel && inputSel.end > inputSel.start) {
-        writeOsc52Clipboard(inputSel.value.slice(inputSel.start, inputSel.end))
+        const text = inputSel.value.slice(inputSel.start, inputSel.end)
+
+        void writeClipboardText(text).then(copied => {
+          if (!copied) {
+            writeOsc52Clipboard(text)
+          }
+        })
+
         inputSel.clear()
       }
 

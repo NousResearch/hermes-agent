@@ -28,7 +28,6 @@ import { Select, SelectOption } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useI18n } from "@/i18n";
-import { useTheme } from "@/themes";
 
 // ---------------------------------------------------------------------------
 // Plugin registry — plugins call register() to add their component.
@@ -126,6 +125,5 @@ export function exposePluginSDK() {
 
     // Hooks
     useI18n,
-    useTheme,
   };
 }

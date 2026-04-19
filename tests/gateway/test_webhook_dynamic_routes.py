@@ -1,12 +1,14 @@
 """Tests for webhook adapter dynamic route loading."""
 
 import json
-import os
 import pytest
-from pathlib import Path
 
 from gateway.config import PlatformConfig
-from gateway.platforms.webhook import WebhookAdapter, _DYNAMIC_ROUTES_FILENAME
+from gateway.platforms.webhook import (
+    WebhookAdapter,
+    _DYNAMIC_ROUTES_FILENAME,
+    _INSECURE_NO_AUTH,
+)
 
 
 def _make_adapter(routes=None, extra=None):
@@ -81,7 +83,16 @@ class TestDynamicRouteLoading:
 
     def test_corrupted_file(self, tmp_path):
         (tmp_path / _DYNAMIC_ROUTES_FILENAME).write_text("not json")
-        adapter = _make_adapter(routes={"static": {"secret": "s"}})
+        adapter = _make_adapter(routes={"static": {"secret": "***"}})
         adapter._reload_dynamic_routes()
         assert "static" in adapter._routes
         assert len(adapter._dynamic_routes) == 0
+
+    def test_rejects_insecure_public_dynamic_route(self, tmp_path):
+        (tmp_path / _DYNAMIC_ROUTES_FILENAME).write_text(
+            json.dumps({"danger": {"secret": _INSECURE_NO_AUTH, "prompt": "x"}})
+        )
+        adapter = _make_adapter(extra={"host": "0.0.0.0"})
+        adapter._reload_dynamic_routes()
+        assert adapter._routes == {}
+        assert adapter._dynamic_routes == {}

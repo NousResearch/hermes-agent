@@ -46,6 +46,7 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     SendResult,
+    is_network_accessible,
 )
 
 logger = logging.getLogger(__name__)
@@ -108,12 +109,10 @@ class WebhookAdapter(BasePlatformAdapter):
     # Lifecycle
     # ------------------------------------------------------------------
 
-    async def connect(self) -> bool:
-        # Load agent-created subscriptions before validating
-        self._reload_dynamic_routes()
-
-        # Validate routes at startup — secret is required per route
-        for name, route in self._routes.items():
+    def _validate_routes(self, routes: Dict[str, dict]) -> None:
+        """Validate webhook route auth requirements for current bind host."""
+        public_bind = is_network_accessible(self._host)
+        for name, route in routes.items():
             secret = route.get("secret", self._global_secret)
             if not secret:
                 raise ValueError(
@@ -121,6 +120,20 @@ class WebhookAdapter(BasePlatformAdapter):
                     f"Set 'secret' on the route or globally. "
                     f"For testing without auth, set secret to '{_INSECURE_NO_AUTH}'."
                 )
+            if public_bind and secret == _INSECURE_NO_AUTH:
+                raise ValueError(
+                    f"[webhook] Route '{name}' uses '{_INSECURE_NO_AUTH}' while binding to "
+                    f"network-accessible host {self._host}. Refusing to expose unauthenticated "
+                    f"webhook endpoint on a public interface. Use 127.0.0.1 for local testing "
+                    f"or configure a real secret before exposing the webhook server."
+                )
+
+    async def connect(self) -> bool:
+        # Load agent-created subscriptions before validating
+        self._reload_dynamic_routes()
+
+        # Validate routes at startup — secret is required per route
+        self._validate_routes(self._routes)
 
         app = web.Application()
         app.router.add_get("/health", self._handle_health)
@@ -261,11 +274,14 @@ class WebhookAdapter(BasePlatformAdapter):
             if not isinstance(data, dict):
                 return
             # Merge: static routes take precedence over dynamic ones
-            self._dynamic_routes = {
+            dynamic_routes = {
                 k: v for k, v in data.items()
                 if k not in self._static_routes
             }
-            self._routes = {**self._dynamic_routes, **self._static_routes}
+            merged_routes = {**dynamic_routes, **self._static_routes}
+            self._validate_routes(merged_routes)
+            self._dynamic_routes = dynamic_routes
+            self._routes = merged_routes
             self._dynamic_routes_mtime = mtime
             logger.info(
                 "[webhook] Reloaded %d dynamic route(s): %s",

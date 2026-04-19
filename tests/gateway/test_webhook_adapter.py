@@ -352,7 +352,7 @@ class TestHTTPHandling:
     async def test_connect_starts_server(self):
         """connect() starts the HTTP listener and marks adapter as connected."""
         routes = {"r1": {"secret": _INSECURE_NO_AUTH, "prompt": "x"}}
-        adapter = _make_adapter(routes=routes, port=0)
+        adapter = _make_adapter(routes=routes, host="127.0.0.1", port=0)
         # Use port 0 — the OS picks a free port, but aiohttp requires a real bind.
         # We just test that the method completes and marks connected.
         # Need to mock TCPSite to avoid actual binding.
@@ -370,6 +370,14 @@ class TestHTTPHandling:
             mock_site_inst.start.assert_awaited_once()
 
         await adapter.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_connect_rejects_insecure_no_auth_on_public_interface(self):
+        routes = {"r1": {"secret": _INSECURE_NO_AUTH, "prompt": "x"}}
+        adapter = _make_adapter(routes=routes, host="0.0.0.0", port=0)
+
+        with pytest.raises(ValueError, match="INSECURE_NO_AUTH"):
+            await adapter.connect()
 
     @pytest.mark.asyncio
     async def test_disconnect_cleans_up(self):

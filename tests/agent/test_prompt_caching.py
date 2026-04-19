@@ -141,3 +141,23 @@ class TestApplyAnthropicCacheControl:
             elif "cache_control" in msg:
                 count += 1
         assert count <= 4
+
+    def test_clones_messages_without_mutating_original(self):
+        msgs = [
+            {"role": "system", "content": "System"},
+            {"role": "user", "content": [{"type": "text", "text": "old"}]},
+            {"role": "assistant", "content": "recent-1"},
+            {"role": "user", "content": "recent-2"},
+            {"role": "assistant", "content": "recent-3"},
+        ]
+
+        original = copy.deepcopy(msgs)
+        result = apply_anthropic_cache_control(msgs)
+
+        # Returned structure is isolated from later in-place retry sanitization.
+        assert result[0] is not msgs[0]
+        assert result[1] is not msgs[1]
+        assert result[1]["content"] is not msgs[1]["content"]
+        assert result[1]["content"][0] is not msgs[1]["content"][0]
+        # Original input must stay unchanged.
+        assert msgs == original

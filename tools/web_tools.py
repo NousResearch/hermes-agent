@@ -368,7 +368,16 @@ def _normalize_tavily_documents(response: dict, fallback_url: str = "") -> List[
 
 # ─── Brave Search Client ─────────────────────────────────────────────────────
 
-_BRAVE_BASE_URL = "https://api.search.brave.com/res/v1"
+_BRAVE_DEFAULT_BASE_URL = "https://api.search.brave.com/res/v1"
+
+
+def _get_brave_base_url() -> str:
+    """Return the Brave API base URL, honouring the ``BRAVE_API_URL`` override.
+
+    The override is read at call time (not at import time) so tests and
+    runtime config changes take effect without reloading the module.
+    """
+    return (os.getenv("BRAVE_API_URL") or _BRAVE_DEFAULT_BASE_URL).rstrip("/")
 
 
 def _brave_search(query: str, limit: int = 5) -> dict:
@@ -378,7 +387,12 @@ def _brave_search(query: str, limit: int = 5) -> dict:
     automatically when ``FIRECRAWL_API_KEY`` is configured, and returns a
     clear ``tool_error`` otherwise. ``web_crawl_tool`` is gated by the
     existing ``check_firecrawl_api_key()`` guard in that function.
-    Auth is via the ``X-Subscription-Token`` header.
+
+    Auth is via the ``X-Subscription-Token`` header. ``search_lang`` is
+    intentionally *not* set — Brave auto-detects the query language, which
+    gives better results for non-English users than pinning to a single
+    locale. Callers that need a specific locale can send ``BRAVE_API_URL``
+    to a proxy that injects the parameter.
     """
     api_key = os.getenv("BRAVE_API_KEY")
     if not api_key:
@@ -386,10 +400,11 @@ def _brave_search(query: str, limit: int = 5) -> dict:
             "BRAVE_API_KEY environment variable not set. "
             "Get your API key at https://api-dashboard.search.brave.com/"
         )
-    url = f"{_BRAVE_BASE_URL}/web/search"
+    url = f"{_get_brave_base_url()}/web/search"
     headers = {
         "X-Subscription-Token": api_key,
         "Accept": "application/json",
+        "Accept-Encoding": "gzip",
     }
     params = {
         "q": query,
@@ -404,16 +419,23 @@ def _brave_search(query: str, limit: int = 5) -> dict:
 def _normalize_brave_search_results(response: dict) -> dict:
     """Normalize Brave /web/search response to the standard web search format.
 
-    Brave returns ``{web: {results: [{title, url, description, ...}]}}``.
-    We map to ``{success, data: {web: [{title, url, description, position}]}}``.
+    Brave returns ``{web: {results: [{title, url, description, extra_snippets, ...}]}}``.
+    We map to ``{success, data: {web: [{title, url, description, position}]}}``
+    and merge up to two ``extra_snippets`` into the description so the caller
+    gets the richer context Brave provides without changing the output shape.
     """
     raw_results = (response.get("web") or {}).get("results") or []
     web_results = []
     for i, result in enumerate(raw_results):
+        description = result.get("description", "") or ""
+        extra = result.get("extra_snippets") or []
+        if extra:
+            joined_extra = " ".join(s for s in extra[:2] if s)
+            description = f"{description} {joined_extra}".strip() if description else joined_extra
         web_results.append({
             "title": result.get("title", ""),
             "url": result.get("url", ""),
-            "description": result.get("description", ""),
+            "description": description,
             "position": i + 1,
         })
     return {"success": True, "data": {"web": web_results}}

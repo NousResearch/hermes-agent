@@ -236,6 +236,15 @@ TOOL_CATEGORIES = {
                 ],
             },
             {
+                "name": "Brave Search",
+                "badge": "free tier",
+                "tag": "Independent index, privacy-focused — 2000 free queries/mo; search only (extract/crawl need Firecrawl)",
+                "web_backend": "brave",
+                "env_vars": [
+                    {"key": "BRAVE_API_KEY", "prompt": "Brave Search API key", "url": "https://api-dashboard.search.brave.com/"},
+                ],
+            },
+            {
                 "name": "Firecrawl Self-Hosted",
                 "badge": "free · self-hosted",
                 "tag": "Run your own Firecrawl instance (Docker)",

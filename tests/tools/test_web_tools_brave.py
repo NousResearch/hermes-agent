@@ -87,6 +87,36 @@ class TestBraveSearchRequest:
                 with pytest.raises(_httpx.HTTPStatusError):
                     _brave_search("q")
 
+    def test_does_not_set_search_lang(self):
+        """Hermes must NOT pin ``search_lang`` — Brave's auto-detection gives
+        better results for non-English queries. Regression guard for a bug
+        where an earlier approach hardcoded ``search_lang: \"en\"``."""
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"web": {"results": []}}
+        mock_response.raise_for_status = MagicMock()
+
+        with patch.dict(os.environ, {"BRAVE_API_KEY": "k"}):
+            with patch("tools.web_tools.httpx.get", return_value=mock_response) as mock_get:
+                from tools.web_tools import _brave_search
+                _brave_search("recette de pain au miel", limit=3)
+                params = mock_get.call_args.kwargs.get("params") or {}
+                assert "search_lang" not in params
+
+    def test_brave_api_url_override(self):
+        """``BRAVE_API_URL`` env var redirects the request to a custom host
+        (useful for proxies / self-hosted gateways). Trailing slashes are
+        stripped so both ``https://proxy/`` and ``https://proxy`` work."""
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"web": {"results": []}}
+        mock_response.raise_for_status = MagicMock()
+
+        with patch.dict(os.environ, {"BRAVE_API_KEY": "k", "BRAVE_API_URL": "https://brave.proxy.internal/v1/"}):
+            with patch("tools.web_tools.httpx.get", return_value=mock_response) as mock_get:
+                from tools.web_tools import _brave_search
+                _brave_search("q")
+                called_url = mock_get.call_args.args[0]
+                assert called_url == "https://brave.proxy.internal/v1/web/search"
+
 
 # ─── _normalize_brave_search_results ─────────────────────────────────────────
 
@@ -141,6 +171,43 @@ class TestNormalizeBraveSearchResults:
         assert web[0]["url"] == ""
         assert web[0]["description"] == ""
         assert web[0]["position"] == 1
+
+    def test_extra_snippets_merged_into_description(self):
+        """Brave's ``extra_snippets`` hold additional context from the page.
+        We merge the first two into the description so the caller sees
+        richer information without having to know about the Brave-specific
+        field."""
+        from tools.web_tools import _normalize_brave_search_results
+        raw = {"web": {"results": [{
+            "title": "T", "url": "https://x", "description": "Main description.",
+            "extra_snippets": ["First extra.", "Second extra.", "Third dropped."],
+        }]}}
+        result = _normalize_brave_search_results(raw)
+        desc = result["data"]["web"][0]["description"]
+        assert "Main description." in desc
+        assert "First extra." in desc
+        assert "Second extra." in desc
+        # Only first two are merged
+        assert "Third dropped." not in desc
+
+    def test_extra_snippets_used_when_description_empty(self):
+        """When Brave returns no main description, fall back to snippets only."""
+        from tools.web_tools import _normalize_brave_search_results
+        raw = {"web": {"results": [{
+            "title": "T", "url": "https://x", "description": "",
+            "extra_snippets": ["Only snippet."],
+        }]}}
+        result = _normalize_brave_search_results(raw)
+        assert result["data"]["web"][0]["description"] == "Only snippet."
+
+    def test_no_extra_snippets(self):
+        """Absent ``extra_snippets`` → description unchanged (no trailing space)."""
+        from tools.web_tools import _normalize_brave_search_results
+        raw = {"web": {"results": [{
+            "title": "T", "url": "https://x", "description": "Just main.",
+        }]}}
+        result = _normalize_brave_search_results(raw)
+        assert result["data"]["web"][0]["description"] == "Just main."
 
 
 # ─── Backend detection ───────────────────────────────────────────────────────

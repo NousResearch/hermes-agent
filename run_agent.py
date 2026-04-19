@@ -832,6 +832,16 @@ class AIAgent:
         self._interrupt_thread_signal_pending = False
         self._client_lock = threading.RLock()
 
+        # /steer mechanism — inject a user note into the next tool result
+        # without interrupting the agent. Unlike interrupt(), steer() does
+        # NOT set _interrupt_requested; it waits for the current tool batch
+        # to finish naturally, then the drain hook appends the text to the
+        # last tool result's content so the model sees it on its next
+        # iteration. Message-role alternation is preserved (we modify an
+        # existing tool message rather than inserting a new user turn).
+        self._pending_steer: Optional[str] = None
+        self._pending_steer_lock = threading.Lock()
+
         # Concurrent-tool worker thread tracking.  `_execute_tool_calls_concurrent`
         # runs each tool on its own ThreadPoolExecutor worker — those worker
         # threads have tids distinct from `_execution_thread_id`, so
@@ -1044,16 +1054,6 @@ class AIAgent:
                     }
                 elif "portal.qwen.ai" in effective_base.lower():
                     client_kwargs["default_headers"] = _qwen_portal_headers()
-                elif "generativelanguage.googleapis.com" in effective_base.lower():
-                    # Google's OpenAI-compatible endpoint only accepts x-goog-api-key.
-                    # The OpenAI SDK auto-injects Authorization: Bearer when api_key= is
-                    # set to a real value, causing HTTP 400 "Multiple authentication
-                    # credentials received".  Pass a placeholder so the SDK does not
-                    # emit Bearer, and carry the real key via x-goog-api-key instead.
-                    # Fixes: https://github.com/NousResearch/hermes-agent/issues/7893
-                    real_key = client_kwargs["api_key"]
-                    client_kwargs["api_key"] = "not-used"
-                    client_kwargs["default_headers"] = {"x-goog-api-key": real_key}
             else:
                 # No explicit creds — use the centralized provider router
                 from agent.auxiliary_client import resolve_provider_client
@@ -1305,31 +1305,6 @@ class AIAgent:
         if not skip_memory:
             try:
                 _mem_provider_name = mem_config.get("provider", "") if mem_config else ""
-
-                # Auto-migrate: if Honcho was actively configured (enabled +
-                # credentials) but memory.provider is not set, activate the
-                # honcho plugin automatically.  Just having the config file
-                # is not enough — the user may have disabled Honcho or the
-                # file may be from a different tool.
-                if not _mem_provider_name:
-                    try:
-                        from plugins.memory.honcho.client import HonchoClientConfig as _HCC
-                        _hcfg = _HCC.from_global_config()
-                        if _hcfg.enabled and (_hcfg.api_key or _hcfg.base_url):
-                            _mem_provider_name = "honcho"
-                            # Persist so this only auto-migrates once
-                            try:
-                                from hermes_cli.config import load_config as _lc, save_config as _sc
-                                _cfg = _lc()
-                                _cfg.setdefault("memory", {})["provider"] = "honcho"
-                                _sc(_cfg)
-                            except Exception:
-                                pass
-                            if not self.quiet_mode:
-                                print("  ✓ Auto-migrated Honcho to memory provider plugin.")
-                                print("    Your config and data are preserved.\n")
-                    except Exception:
-                        pass
 
                 if _mem_provider_name:
                     from agent.memory_manager import MemoryManager as _MemoryManager
@@ -1941,13 +1916,16 @@ class AIAgent:
     def _should_emit_quiet_tool_messages(self) -> bool:
         """Return True when quiet-mode tool summaries should print directly.
 
-        When the caller provides ``tool_progress_callback`` (for example the CLI
-        TUI or a gateway progress renderer), that callback owns progress display.
-        Emitting quiet-mode summary lines here duplicates progress and leaks tool
-        previews into flows that are expected to stay silent, such as
-        ``hermes chat -q``.
+        Quiet mode is used by both the interactive CLI and embedded/library
+        callers. The CLI may still want compact progress hints when no callback
+        owns rendering. Embedded/library callers, on the other hand, expect
+        quiet mode to be truly silent.
         """
-        return self.quiet_mode and not self.tool_progress_callback
+        return (
+            self.quiet_mode
+            and not self.tool_progress_callback
+            and getattr(self, "platform", "") == "cli"
+        )
 
     def _emit_status(self, message: str) -> None:
         """Emit a lifecycle status message to both CLI and gateway channels.
@@ -2172,17 +2150,49 @@ class AIAgent:
         return bool(cleaned.strip())
     
     def _strip_think_blocks(self, content: str) -> str:
-        """Remove reasoning/thinking blocks from content, returning only visible text."""
+        """Remove reasoning/thinking blocks from content, returning only visible text.
+
+        Handles four cases:
+          1. Closed tag pairs (``<think>…</think>``) — the common path when
+             the provider emits complete reasoning blocks.
+          2. Unterminated open tag at a block boundary (start of text or
+             after a newline) — e.g. MiniMax M2.7 / NIM endpoints where the
+             closing tag is dropped.  Everything from the open tag to end
+             of string is stripped.  The block-boundary check mirrors
+             ``gateway/stream_consumer.py``'s filter so models that mention
+             ``<think>`` in prose aren't over-stripped.
+          3. Stray orphan open/close tags that slip through.
+          4. Tag variants: ``<think>``, ``<thinking>``, ``<reasoning>``,
+             ``<REASONING_SCRATCHPAD>``, ``<thought>`` (Gemma 4), all
+             case-insensitive.
+        """
         if not content:
             return ""
-        # Strip all reasoning tag variants: <think>, <thinking>, <THINKING>,
-        # <reasoning>, <REASONING_SCRATCHPAD>, <thought> (Gemma 4)
-        content = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL)
+        # 1. Closed tag pairs — case-insensitive for all variants so
+        #    mixed-case tags (<THINK>, <Thinking>) don't slip through to
+        #    the unterminated-tag pass and take trailing content with them.
+        content = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL | re.IGNORECASE)
         content = re.sub(r'<thinking>.*?</thinking>', '', content, flags=re.DOTALL | re.IGNORECASE)
-        content = re.sub(r'<reasoning>.*?</reasoning>', '', content, flags=re.DOTALL)
-        content = re.sub(r'<REASONING_SCRATCHPAD>.*?</REASONING_SCRATCHPAD>', '', content, flags=re.DOTALL)
+        content = re.sub(r'<reasoning>.*?</reasoning>', '', content, flags=re.DOTALL | re.IGNORECASE)
+        content = re.sub(r'<REASONING_SCRATCHPAD>.*?</REASONING_SCRATCHPAD>', '', content, flags=re.DOTALL | re.IGNORECASE)
         content = re.sub(r'<thought>.*?</thought>', '', content, flags=re.DOTALL | re.IGNORECASE)
-        content = re.sub(r'</?(?:think|thinking|reasoning|thought|REASONING_SCRATCHPAD)>\s*', '', content, flags=re.IGNORECASE)
+        # 2. Unterminated reasoning block — open tag at a block boundary
+        #    (start of text, or after a newline) with no matching close.
+        #    Strip from the tag to end of string.  Fixes #8878 / #9568
+        #    (MiniMax M2.7 leaking raw reasoning into assistant content).
+        content = re.sub(
+            r'(?:^|\n)[ \t]*<(?:think|thinking|reasoning|thought|REASONING_SCRATCHPAD)\b[^>]*>.*$',
+            '',
+            content,
+            flags=re.DOTALL | re.IGNORECASE,
+        )
+        # 3. Stray orphan open/close tags that slipped through.
+        content = re.sub(
+            r'</?(?:think|thinking|reasoning|thought|REASONING_SCRATCHPAD)>\s*',
+            '',
+            content,
+            flags=re.IGNORECASE,
+        )
         return content
 
     @staticmethod
@@ -3265,6 +3275,129 @@ class AIAgent:
                     _set_interrupt(False, _wtid)
                 except Exception:
                     pass
+        # A hard interrupt supersedes any pending /steer — the steer was
+        # meant for the agent's next tool-call iteration, which will no
+        # longer happen. Drop it instead of surprising the user with a
+        # late injection on the post-interrupt turn.
+        _steer_lock = getattr(self, "_pending_steer_lock", None)
+        if _steer_lock is not None:
+            with _steer_lock:
+                self._pending_steer = None
+
+    def steer(self, text: str) -> bool:
+        """
+        Inject a user message into the next tool result without interrupting.
+
+        Unlike interrupt(), this does NOT stop the current tool call. The
+        text is stashed and the agent loop appends it to the LAST tool
+        result's content once the current tool batch finishes. The model
+        sees the steer as part of the tool output on its next iteration.
+
+        Thread-safe: callable from gateway/CLI/TUI threads. Multiple calls
+        before the drain point concatenate with newlines.
+
+        Args:
+            text: The user text to inject. Empty strings are ignored.
+
+        Returns:
+            True if the steer was accepted, False if the text was empty.
+        """
+        if not text or not text.strip():
+            return False
+        cleaned = text.strip()
+        _lock = getattr(self, "_pending_steer_lock", None)
+        if _lock is None:
+            # Test stubs that built AIAgent via object.__new__ skip __init__.
+            # Fall back to direct attribute set; no concurrent callers expected
+            # in those stubs.
+            existing = getattr(self, "_pending_steer", None)
+            self._pending_steer = (existing + "\n" + cleaned) if existing else cleaned
+            return True
+        with _lock:
+            if self._pending_steer:
+                self._pending_steer = self._pending_steer + "\n" + cleaned
+            else:
+                self._pending_steer = cleaned
+        return True
+
+    def _drain_pending_steer(self) -> Optional[str]:
+        """Return the pending steer text (if any) and clear the slot.
+
+        Safe to call from the agent execution thread after appending tool
+        results. Returns None when no steer is pending.
+        """
+        _lock = getattr(self, "_pending_steer_lock", None)
+        if _lock is None:
+            text = getattr(self, "_pending_steer", None)
+            self._pending_steer = None
+            return text
+        with _lock:
+            text = self._pending_steer
+            self._pending_steer = None
+        return text
+
+    def _apply_pending_steer_to_tool_results(self, messages: list, num_tool_msgs: int) -> None:
+        """Append any pending /steer text to the last tool result in this turn.
+
+        Called at the end of a tool-call batch, before the next API call.
+        The steer is appended to the last ``role:"tool"`` message's content
+        with a clear marker so the model understands it came from the user
+        and NOT from the tool itself. Role alternation is preserved —
+        nothing new is inserted, we only modify existing content.
+
+        Args:
+            messages: The running messages list.
+            num_tool_msgs: Number of tool results appended in this batch;
+                used to locate the tail slice safely.
+        """
+        if num_tool_msgs <= 0 or not messages:
+            return
+        steer_text = self._drain_pending_steer()
+        if not steer_text:
+            return
+        # Find the last tool-role message in the recent tail. Skipping
+        # non-tool messages defends against future code appending
+        # something else at the boundary.
+        target_idx = None
+        for j in range(len(messages) - 1, max(len(messages) - num_tool_msgs - 1, -1), -1):
+            msg = messages[j]
+            if isinstance(msg, dict) and msg.get("role") == "tool":
+                target_idx = j
+                break
+        if target_idx is None:
+            # No tool result in this batch (e.g. all skipped by interrupt);
+            # put the steer back so the caller's fallback path can deliver
+            # it as a normal next-turn user message.
+            _lock = getattr(self, "_pending_steer_lock", None)
+            if _lock is not None:
+                with _lock:
+                    if self._pending_steer:
+                        self._pending_steer = self._pending_steer + "\n" + steer_text
+                    else:
+                        self._pending_steer = steer_text
+            else:
+                existing = getattr(self, "_pending_steer", None)
+                self._pending_steer = (existing + "\n" + steer_text) if existing else steer_text
+            return
+        marker = f"\n\n[USER STEER (injected mid-run, not tool output): {steer_text}]"
+        existing_content = messages[target_idx].get("content", "")
+        if not isinstance(existing_content, str):
+            # Anthropic multimodal content blocks — preserve them and append
+            # a text block at the end.
+            try:
+                blocks = list(existing_content) if existing_content else []
+                blocks.append({"type": "text", "text": marker.lstrip()})
+                messages[target_idx]["content"] = blocks
+            except Exception:
+                # Fall back to string replacement if content shape is unexpected.
+                messages[target_idx]["content"] = f"{existing_content}{marker}"
+        else:
+            messages[target_idx]["content"] = existing_content + marker
+        logger.info(
+            "Delivered /steer to agent after tool batch (%d chars): %s",
+            len(steer_text),
+            steer_text[:120] + ("..." if len(steer_text) > 120 else ""),
+        )
 
     def _touch_activity(self, desc: str) -> None:
         """Update the last-activity timestamp and description (thread-safe)."""
@@ -5112,17 +5245,6 @@ class AIAgent:
             self._client_kwargs["default_headers"] = {"User-Agent": "KimiCLI/1.30.0"}
         elif "portal.qwen.ai" in normalized:
             self._client_kwargs["default_headers"] = _qwen_portal_headers()
-        elif "generativelanguage.googleapis.com" in normalized:
-            # Google's endpoint rejects Bearer tokens; use x-goog-api-key instead.
-            # Swap the real key out of api_key and into the header so the OpenAI
-            # SDK does not emit Authorization: Bearer.
-            # Fixes: https://github.com/NousResearch/hermes-agent/issues/7893
-            real_key = self._client_kwargs.get("api_key", "")
-            if real_key and real_key != "not-used":
-                self._client_kwargs["api_key"] = "not-used"
-            self._client_kwargs["default_headers"] = {
-                "x-goog-api-key": real_key or self._client_kwargs.get("api_key", ""),
-            }
         else:
             self._client_kwargs.pop("default_headers", None)
 
@@ -5579,7 +5701,7 @@ class AIAgent:
                 raise result["error"]
             return result["response"]
 
-        result = {"response": None, "error": None}
+        result = {"response": None, "error": None, "partial_tool_names": []}
         request_client_holder = {"client": None}
         first_delta_fired = {"done": False}
         deltas_were_sent = {"yes": False}  # Track if any deltas were fired (for fallback)
@@ -5735,7 +5857,15 @@ class AIAgent:
                             entry["id"] = tc_delta.id
                         if tc_delta.function:
                             if tc_delta.function.name:
-                                entry["function"]["name"] += tc_delta.function.name
+                                # Use assignment, not +=.  Function names are
+                                # atomic identifiers delivered complete in the
+                                # first chunk (OpenAI spec).  Some providers
+                                # (MiniMax M2.7 via NVIDIA NIM) resend the full
+                                # name in every chunk; concatenation would
+                                # produce "read_fileread_file".  Assignment
+                                # (matching the OpenAI Node SDK / LiteLLM /
+                                # Vercel AI patterns) is immune to this.
+                                entry["function"]["name"] = tc_delta.function.name
                             if tc_delta.function.arguments:
                                 entry["function"]["arguments"] += tc_delta.function.arguments
                         extra = getattr(tc_delta, "extra_content", None)
@@ -5751,6 +5881,14 @@ class AIAgent:
                             tool_gen_notified.add(idx)
                             _fire_first_delta()
                             self._fire_tool_gen_started(name)
+                            # Record the partial tool-call name so the outer
+                            # stub-builder can surface a user-visible warning
+                            # if streaming dies before this tool's arguments
+                            # are fully delivered.  Without this, a stall
+                            # during tool-call JSON generation lets the stub
+                            # at line ~6107 return `tool_calls=None`, silently
+                            # discarding the attempted action.
+                            result["partial_tool_names"].append(name)
 
                 if chunk.choices[0].finish_reason:
                     finish_reason = chunk.choices[0].finish_reason
@@ -6117,13 +6255,44 @@ class AIAgent:
                 _partial_text = (
                     getattr(self, "_current_streamed_assistant_text", "") or ""
                 ).strip() or None
-                logger.warning(
-                    "Partial stream delivered before error; returning stub "
-                    "response with %s chars of recovered content to prevent "
-                    "duplicate messages: %s",
-                    len(_partial_text or ""),
-                    result["error"],
-                )
+
+                # If the stream died while the model was emitting a tool call,
+                # the stub below will silently set `tool_calls=None` and the
+                # agent loop will treat the turn as complete — the attempted
+                # action is lost with no user-facing signal.  Append a
+                # human-visible warning to the stub content so (a) the user
+                # knows something failed, and (b) the next turn's model sees
+                # in conversation history what was attempted and can retry.
+                _partial_names = list(result.get("partial_tool_names") or [])
+                if _partial_names:
+                    _name_str = ", ".join(_partial_names[:3])
+                    if len(_partial_names) > 3:
+                        _name_str += f", +{len(_partial_names) - 3} more"
+                    _warn = (
+                        f"\n\n⚠ Stream stalled mid tool-call "
+                        f"({_name_str}); the action was not executed. "
+                        f"Ask me to retry if you want to continue."
+                    )
+                    _partial_text = (_partial_text or "") + _warn
+                    # Also fire as a streaming delta so the user sees it now
+                    # instead of only in the persisted transcript.
+                    try:
+                        self._fire_stream_delta(_warn)
+                    except Exception:
+                        pass
+                    logger.warning(
+                        "Partial stream dropped tool call(s) %s after %s chars "
+                        "of text; surfaced warning to user: %s",
+                        _partial_names, len(_partial_text or ""), result["error"],
+                    )
+                else:
+                    logger.warning(
+                        "Partial stream delivered before error; returning stub "
+                        "response with %s chars of recovered content to prevent "
+                        "duplicate messages: %s",
+                        len(_partial_text or ""),
+                        result["error"],
+                    )
                 _stub_msg = SimpleNamespace(
                     role="assistant", content=_partial_text, tool_calls=None,
                     reasoning_content=None,
@@ -6881,8 +7050,20 @@ class AIAgent:
         if self.tools:
             api_kwargs["tools"] = self.tools
 
-        if self.max_tokens is not None:
+        # ── max_tokens for chat_completions ──────────────────────────────
+        # Priority: ephemeral override (error recovery / length-continuation
+        # boost) > user-configured max_tokens > provider-specific defaults.
+        _ephemeral_out = getattr(self, "_ephemeral_max_output_tokens", None)
+        if _ephemeral_out is not None:
+            self._ephemeral_max_output_tokens = None  # consume immediately
+            api_kwargs.update(self._max_tokens_param(_ephemeral_out))
+        elif self.max_tokens is not None:
             api_kwargs.update(self._max_tokens_param(self.max_tokens))
+        elif "integrate.api.nvidia.com" in self._base_url_lower:
+            # NVIDIA NIM defaults to a very low max_tokens when omitted,
+            # causing models like GLM-4.7 to truncate immediately (thinking
+            # tokens alone exhaust the budget).  16384 provides adequate room.
+            api_kwargs.update(self._max_tokens_param(16384))
         elif self._is_qwen_portal():
             # Qwen Portal defaults to a very low max_tokens when omitted.
             # Reasoning models (qwen3-coder-plus) exhaust that budget on
@@ -7090,6 +7271,20 @@ class AIAgent:
         _san_content = _sanitize_surrogates(_raw_content)
         if reasoning_text:
             reasoning_text = _sanitize_surrogates(reasoning_text)
+
+        # Strip inline reasoning tags (<think>…</think> etc.) from the stored
+        # assistant content.  Reasoning was already captured into
+        # ``reasoning_text`` above (either from structured fields or the
+        # inline-block fallback), so the raw tags in content are redundant.
+        # Leaving them in place caused reasoning to leak to messaging
+        # platforms (#8878, #9568), inflate context on subsequent turns
+        # (#9306 observed 16% content-size reduction on a real MiniMax
+        # session), and pollute generated session titles.  One strip at the
+        # storage boundary cleans content for every downstream consumer:
+        # API replay, session transcript, gateway delivery, CLI display,
+        # compression, title generation.
+        if isinstance(_san_content, str) and _san_content:
+            _san_content = self._strip_think_blocks(_san_content).strip()
 
         msg = {
             "role": "assistant",
@@ -7912,6 +8107,13 @@ class AIAgent:
             turn_tool_msgs = messages[-num_tools:]
             enforce_turn_budget(turn_tool_msgs, env=get_active_env(effective_task_id))
 
+        # ── /steer injection ──────────────────────────────────────────────
+        # Append any pending user steer text to the last tool result so the
+        # agent sees it on its next iteration. Runs AFTER budget enforcement
+        # so the steer marker is never truncated. See steer() for details.
+        if num_tools > 0:
+            self._apply_pending_steer_to_tool_results(messages, num_tools)
+
     def _execute_tool_calls_sequential(self, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
         """Execute tool calls sequentially (original behavior). Used for single calls or interactive tools."""
         for i, tool_call in enumerate(assistant_message.tool_calls, 1):
@@ -8123,7 +8325,7 @@ class AIAgent:
             elif self._context_engine_tool_names and function_name in self._context_engine_tool_names:
                 # Context engine tools (lcm_grep, lcm_describe, lcm_expand, etc.)
                 spinner = None
-                if self.quiet_mode and not self.tool_progress_callback:
+                if self._should_emit_quiet_tool_messages():
                     face = random.choice(KawaiiSpinner.get_waiting_faces())
                     emoji = _get_tool_emoji(function_name)
                     preview = _build_tool_preview(function_name, function_args) or function_name
@@ -8141,7 +8343,7 @@ class AIAgent:
                     cute_msg = _get_cute_tool_message_impl(function_name, function_args, tool_duration, result=_ce_result)
                     if spinner:
                         spinner.stop(cute_msg)
-                    elif self.quiet_mode:
+                    elif self._should_emit_quiet_tool_messages():
                         self._vprint(f"  {cute_msg}")
             elif self._memory_manager and self._memory_manager.has_tool(function_name):
                 # Memory provider tools (hindsight_retain, honcho_search, etc.)
@@ -8290,6 +8492,12 @@ class AIAgent:
         num_tools_seq = len(assistant_message.tool_calls)
         if num_tools_seq > 0:
             enforce_turn_budget(messages[-num_tools_seq:], env=get_active_env(effective_task_id))
+
+        # ── /steer injection ──────────────────────────────────────────────
+        # See _execute_tool_calls_parallel for the rationale. Same hook,
+        # applied to sequential execution as well.
+        if num_tools_seq > 0:
+            self._apply_pending_steer_to_tool_results(messages, num_tools_seq)
 
 
 
@@ -9967,7 +10175,7 @@ class AIAgent:
                         _dhh = _dhh_fn()
                         print(f"{self.log_prefix}     • Check ANTHROPIC_TOKEN in {_dhh}/.env for Hermes-managed OAuth/setup tokens")
                         print(f"{self.log_prefix}     • Check ANTHROPIC_API_KEY in {_dhh}/.env for API keys or legacy token values")
-                        print(f"{self.log_prefix}     • For API keys: verify at https://console.anthropic.com/settings/keys")
+                        print(f"{self.log_prefix}     • For API keys: verify at https://platform.claude.com/settings/keys")
                         print(f"{self.log_prefix}     • For Claude Code: run 'claude /login' to refresh, then retry")
                         print(f"{self.log_prefix}     • Legacy cleanup: hermes config set ANTHROPIC_TOKEN \"\"")
                         print(f"{self.log_prefix}     • Clear stale keys: hermes config set ANTHROPIC_API_KEY \"\"")
@@ -10611,6 +10819,12 @@ class AIAgent:
                 continue
 
             if restart_with_length_continuation:
+                # Progressively boost the output token budget on each retry.
+                # Retry 1 → 2× base, retry 2 → 3× base, capped at 32 768.
+                # Applies to all providers via _ephemeral_max_output_tokens.
+                _boost_base = self.max_tokens if self.max_tokens else 4096
+                _boost = _boost_base * (length_continue_retries + 1)
+                self._ephemeral_max_output_tokens = min(_boost, 32768)
                 continue
 
             # Guard: if all retries exhausted without a successful response
@@ -10973,17 +11187,10 @@ class AIAgent:
                         self._last_content_tools_all_housekeeping = _all_housekeeping
                         if _all_housekeeping and self._has_stream_consumers():
                             self._mute_post_response = True
-                        elif self.quiet_mode:
+                        elif self._should_emit_quiet_tool_messages():
                             clean = self._strip_think_blocks(turn_content).strip()
                             if clean:
-                                relayed = False
-                                if (
-                                    self.tool_progress_callback
-                                    and getattr(self, "platform", "") == "tui"
-                                ):
-                                    relayed = True
-                                if not relayed:
-                                    self._vprint(f"  ┊ 💬 {clean}")
+                                self._vprint(f"  ┊ 💬 {clean}")
                     
                     # Pop thinking-only prefill message(s) before appending
                     # (tool-call path — same rationale as the final-response path).
@@ -11571,6 +11778,12 @@ class AIAgent:
             "cost_status": self.session_cost_status,
             "cost_source": self.session_cost_source,
         }
+        # If a /steer landed after the final assistant turn (no more tool
+        # batches to drain into), hand it back to the caller so it can be
+        # delivered as the next user turn instead of being silently lost.
+        _leftover_steer = self._drain_pending_steer()
+        if _leftover_steer:
+            result["pending_steer"] = _leftover_steer
         self._response_was_previewed = False
         
         # Include interrupt message if one triggered the interrupt

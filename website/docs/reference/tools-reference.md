@@ -6,9 +6,9 @@ description: "Authoritative reference for Hermes built-in tools, grouped by tool
 
 # Built-in Tools Reference
 
-This page documents all 47 built-in tools in the Hermes tool registry, grouped by toolset. Availability varies by platform, credentials, and enabled toolsets.
+This page documents all 53 built-in tools in the Hermes tool registry, grouped by toolset. Availability varies by platform, credentials, and enabled toolsets.
 
-**Quick counts:** 10 browser tools, 4 file tools, 10 RL tools, 4 Home Assistant tools, 2 terminal tools, 2 web tools, and 15 standalone tools across other toolsets.
+**Quick counts:** 11 browser tools, 4 file tools, 10 RL tools, 4 Home Assistant tools, 2 terminal tools, 2 web tools, 5 Feishu tools, and 15 standalone tools across other toolsets.
 
 :::tip MCP Tools
 In addition to built-in tools, Hermes can load tools dynamically from MCP servers. MCP tools appear with a server-name prefix (e.g., `github_create_issue` for the `github` MCP server). See [MCP Integration](/docs/user-guide/features/mcp) for configuration.
@@ -19,6 +19,7 @@ In addition to built-in tools, Hermes can load tools dynamically from MCP server
 | Tool | Description | Requires environment |
 |------|-------------|----------------------|
 | `browser_back` | Navigate back to the previous page in browser history. Requires browser_navigate to be called first. | — |
+| `browser_cdp` | Send a raw Chrome DevTools Protocol (CDP) command. Escape hatch for browser operations not covered by browser_navigate, browser_click, browser_console, etc. Only available when a CDP endpoint is reachable at session start — via `/browser connect` or `browser.cdp_url` config. See https://chromedevtools.github.io/devtools-protocol/ | — |
 | `browser_click` | Click on an element identified by its ref ID from the snapshot (e.g., '@e5'). The ref IDs are shown in square brackets in the snapshot output. Requires browser_navigate and browser_snapshot to be called first. | — |
 | `browser_console` | Get browser console output and JavaScript errors from the current page. Returns console.log/warn/error/info messages and uncaught JS exceptions. Use this to detect silent JavaScript errors, failed API calls, and application warnings. Requi… | — |
 | `browser_get_images` | Get a list of all images on the current page with their URLs and alt text. Useful for finding images to analyze with the vision tool. Requires browser_navigate to be called first. | — |
@@ -52,6 +53,25 @@ In addition to built-in tools, Hermes can load tools dynamically from MCP server
 | Tool | Description | Requires environment |
 |------|-------------|----------------------|
 | `delegate_task` | Spawn one or more subagents to work on tasks in isolated contexts. Each subagent gets its own conversation, terminal session, and toolset. Only the final summary is returned -- intermediate tool results never enter your context window. TWO… | — |
+
+## `feishu_doc` toolset
+
+Scoped to the Feishu document-comment intelligent-reply handler (`gateway/platforms/feishu_comment.py`). Not exposed on `hermes-cli` or the regular Feishu chat adapter.
+
+| Tool | Description | Requires environment |
+|------|-------------|----------------------|
+| `feishu_doc_read` | Read the full text content of a Feishu/Lark document (Docx, Doc, or Sheet) given its file_type and token. | Feishu app credentials |
+
+## `feishu_drive` toolset
+
+Scoped to the Feishu document-comment handler. Drives comment read/write operations on drive files.
+
+| Tool | Description | Requires environment |
+|------|-------------|----------------------|
+| `feishu_drive_add_comment` | Add a top-level comment on a Feishu/Lark document or file. | Feishu app credentials |
+| `feishu_drive_list_comments` | List whole-document comments on a Feishu/Lark file, most recent first. | Feishu app credentials |
+| `feishu_drive_list_comment_replies` | List replies on a specific Feishu comment thread (whole-doc or local-selection). | Feishu app credentials |
+| `feishu_drive_reply_comment` | Post a reply on a Feishu comment thread, with optional `@`-mention. | Feishu app credentials |
 
 ## `file` toolset
 

@@ -1,6 +1,7 @@
-import { Box, Text } from '@hermes/ink'
+import { Box, Link, Text } from '@hermes/ink'
 import { memo, type ReactNode, useMemo } from 'react'
 
+import { highlightLine, isHighlightable } from '../lib/syntax.js'
 import type { Theme } from '../theme.js'
 
 const FENCE_RE = /^\s*(`{3,}|~{3,})(.*)$/
@@ -22,10 +23,12 @@ type Fence = {
   len: number
 }
 
-const renderLink = (key: number, t: Theme, label: string) => (
-  <Text color={t.color.amber} key={key} underline>
-    {label}
-  </Text>
+const renderLink = (key: number, t: Theme, label: string, url: string) => (
+  <Link key={key} url={url}>
+    <Text color={t.color.amber} underline>
+      {label}
+    </Text>
+  </Link>
 )
 
 const trimBareUrl = (value: string) => {
@@ -37,11 +40,17 @@ const trimBareUrl = (value: string) => {
   }
 }
 
-const renderAutolink = (key: number, t: Theme, raw: string) => (
-  <Text color={t.color.amber} key={key} underline>
-    {raw.replace(/^mailto:/, '')}
-  </Text>
-)
+const renderAutolink = (key: number, t: Theme, raw: string) => {
+  const url = raw.startsWith('mailto:') ? raw : raw.includes('@') && !raw.startsWith('http') ? `mailto:${raw}` : raw
+
+  return (
+    <Link key={key} url={url}>
+      <Text color={t.color.amber} underline>
+        {raw.replace(/^mailto:/, '')}
+      </Text>
+    </Link>
+  )
+}
 
 const indentDepth = (indent: string) => Math.floor(indent.replace(/\t/g, '  ').length / 2)
 
@@ -141,7 +150,7 @@ function MdInline({ t, text }: { t: Theme; text: string }) {
         </Text>
       )
     } else if (m[4] && m[5]) {
-      parts.push(renderLink(parts.length, t, m[4]))
+      parts.push(renderLink(parts.length, t, m[4], m[5]))
     } else if (m[6]) {
       parts.push(renderAutolink(parts.length, t, m[6]))
     } else if (m[7]) {
@@ -282,11 +291,28 @@ function MdImpl({ compact, t, text }: MdProps) {
         start('code')
 
         const isDiff = lang === 'diff'
+        const highlighted = !isDiff && isHighlightable(lang)
 
         nodes.push(
           <Box flexDirection="column" key={key} paddingLeft={2}>
             {lang && !isDiff && <Text color={t.color.dim}>{'─ ' + lang}</Text>}
             {block.map((l, j) => {
+              if (highlighted) {
+                return (
+                  <Text key={j}>
+                    {highlightLine(l, lang, t).map(([color, text], k) =>
+                      color ? (
+                        <Text color={color} key={k}>
+                          {text}
+                        </Text>
+                      ) : (
+                        <Text key={k}>{text}</Text>
+                      )
+                    )}
+                  </Text>
+                )
+              }
+
               const add = isDiff && l.startsWith('+')
               const del = isDiff && l.startsWith('-')
               const hunk = isDiff && l.startsWith('@@')

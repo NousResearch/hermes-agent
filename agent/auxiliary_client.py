@@ -99,11 +99,48 @@ _FIXED_TEMPERATURE_MODELS: Dict[str, float] = {
     "kimi-for-coding": 0.6,
 }
 
+# Moonshot's kimi-for-coding endpoint (api.kimi.com/coding) documents:
+# "k2.5 model will use a fixed value 1.0, non-thinking mode will use a fixed
+# value 0.6.  Any other value will result in an error."  The same lock applies
+# to the other k2.* models served on that endpoint.  Enumerated explicitly so
+# non-coding siblings like `kimi-k2-instruct` (variable temperature, served on
+# the standard chat API and third parties) are NOT clamped.
+# Source: https://platform.kimi.ai/docs/guide/kimi-k2-5-quickstart
+_KIMI_INSTANT_MODELS: frozenset = frozenset({
+    "kimi-k2.5",
+    "kimi-k2-turbo-preview",
+    "kimi-k2-0905-preview",
+})
+_KIMI_THINKING_MODELS: frozenset = frozenset({
+    "kimi-k2-thinking",
+    "kimi-k2-thinking-turbo",
+})
+
 
 def _fixed_temperature_for_model(model: Optional[str]) -> Optional[float]:
-    """Return a required temperature override for models with strict contracts."""
+    """Return a required temperature override for models with strict contracts.
+
+    Moonshot's kimi-for-coding endpoint rejects any non-approved temperature on
+    the k2.5 family.  Non-thinking variants require exactly 0.6; thinking
+    variants require 1.0.  An optional ``vendor/`` prefix (e.g.
+    ``moonshotai/kimi-k2.5``) is tolerated for aggregator routings.
+
+    Returns ``None`` for every other model, including ``kimi-k2-instruct*``
+    which is the separate non-coding K2 family with variable temperature.
+    """
     normalized = (model or "").strip().lower()
-    return _FIXED_TEMPERATURE_MODELS.get(normalized)
+    fixed = _FIXED_TEMPERATURE_MODELS.get(normalized)
+    if fixed is not None:
+        logger.debug("Forcing temperature=%s for model %r (fixed map)", fixed, model)
+        return fixed
+    bare = normalized.rsplit("/", 1)[-1]
+    if bare in _KIMI_THINKING_MODELS:
+        logger.debug("Forcing temperature=1.0 for kimi thinking model %r", model)
+        return 1.0
+    if bare in _KIMI_INSTANT_MODELS:
+        logger.debug("Forcing temperature=0.6 for kimi instant model %r", model)
+        return 0.6
+    return None
 
 # Default auxiliary models for direct API-key providers (cheap/fast for side tasks)
 _API_KEY_PROVIDER_AUX_MODELS: Dict[str, str] = {
@@ -745,15 +782,6 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
                 from hermes_cli.models import copilot_default_headers
 
                 extra["default_headers"] = copilot_default_headers()
-            elif "generativelanguage.googleapis.com" in base_url.lower():
-                # Google's OpenAI-compatible endpoint only accepts x-goog-api-key.
-                # Passing api_key= causes the SDK to inject Authorization: Bearer,
-                # which Google rejects with HTTP 400 "Multiple authentication
-                # credentials received". Use a placeholder for api_key and pass
-                # the real key via x-goog-api-key header instead.
-                # Fixes: https://github.com/NousResearch/hermes-agent/issues/7893
-                extra["default_headers"] = {"x-goog-api-key": api_key}
-                api_key = "not-used"
             return OpenAI(api_key=api_key, base_url=base_url, **extra), model
 
         creds = resolve_api_key_provider_credentials(provider_id)
@@ -775,15 +803,6 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
             from hermes_cli.models import copilot_default_headers
 
             extra["default_headers"] = copilot_default_headers()
-        elif "generativelanguage.googleapis.com" in base_url.lower():
-            # Google's OpenAI-compatible endpoint only accepts x-goog-api-key.
-            # Passing api_key= causes the SDK to inject Authorization: Bearer,
-            # which Google rejects with HTTP 400 "Multiple authentication
-            # credentials received". Use a placeholder for api_key and pass
-            # the real key via x-goog-api-key header instead.
-            # Fixes: https://github.com/NousResearch/hermes-agent/issues/7893
-            extra["default_headers"] = {"x-goog-api-key": api_key}
-            api_key = "not-used"
         return OpenAI(api_key=api_key, base_url=base_url, **extra), model
 
     return None, None
@@ -1629,16 +1648,6 @@ def resolve_provider_client(
             from hermes_cli.models import copilot_default_headers
 
             headers.update(copilot_default_headers())
-        elif "generativelanguage.googleapis.com" in base_url.lower():
-            # Google's OpenAI-compatible endpoint only accepts x-goog-api-key.
-            # Passing api_key= causes the OpenAI SDK to inject Authorization: Bearer,
-            # which Google rejects with HTTP 400 "Multiple authentication credentials
-            # received". Use a placeholder for api_key and pass the real key via
-            # x-goog-api-key header instead.
-            # Fixes: https://github.com/NousResearch/hermes-agent/issues/7893
-            headers["x-goog-api-key"] = api_key
-            api_key = "not-used"
-
         client = OpenAI(api_key=api_key, base_url=base_url,
                         **({"default_headers": headers} if headers else {}))
 

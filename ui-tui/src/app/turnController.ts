@@ -1,5 +1,6 @@
 import { REASONING_PULSE_MS, STREAM_BATCH_MS } from '../config/timing.js'
 import type { SessionInterruptResponse, SubagentEventPayload } from '../gatewayTypes.js'
+import { hasReasoningTag, splitReasoning } from '../lib/reasoning.js'
 import {
   buildToolTrailLine,
   estimateTokensRough,
@@ -11,7 +12,7 @@ import type { ActiveTool, ActivityItem, Msg, SubagentProgress } from '../types.j
 
 import { resetOverlayState } from './overlayStore.js'
 import { patchTurnState, resetTurnState } from './turnStore.js'
-import { patchUiState } from './uiStore.js'
+import { getUiState, patchUiState } from './uiStore.js'
 
 const INTERRUPT_COOLDOWN_MS = 1500
 const ACTIVITY_LIMIT = 8
@@ -121,18 +122,31 @@ class TurnController {
   }
 
   flushStreamingSegment() {
-    const text = this.bufRef.trimStart()
+    const raw = this.bufRef.trimStart()
 
-    if (!text) {
+    if (!raw) {
       return
     }
 
-    const tools = this.pendingSegmentTools
+    const split = hasReasoningTag(raw) ? splitReasoning(raw) : { reasoning: '', text: raw }
+
+    if (split.reasoning && !this.reasoningText.trim()) {
+      this.reasoningText = split.reasoning
+      patchTurnState({ reasoning: this.reasoningText, reasoningTokens: estimateTokensRough(this.reasoningText) })
+    }
+
+    const text = split.text
 
     this.streamTimer = clear(this.streamTimer)
-    this.segmentMessages = [...this.segmentMessages, { role: 'assistant', text, ...(tools.length && { tools }) }]
+
+    if (text) {
+      const tools = this.pendingSegmentTools
+
+      this.segmentMessages = [...this.segmentMessages, { role: 'assistant', text, ...(tools.length && { tools }) }]
+      this.pendingSegmentTools = []
+    }
+
     this.bufRef = ''
-    this.pendingSegmentTools = []
     patchTurnState({ streamPendingTools: [], streamSegments: this.segmentMessages, streaming: '' })
   }
 
@@ -187,8 +201,11 @@ class TurnController {
   }
 
   recordMessageComplete(payload: { rendered?: string; reasoning?: string; text?: string }) {
-    const finalText = (payload.rendered ?? payload.text ?? this.bufRef).trimStart()
-    const savedReasoning = this.reasoningText.trim() || String(payload.reasoning ?? '').trim()
+    const rawText = (payload.rendered ?? payload.text ?? this.bufRef).trimStart()
+    const split = splitReasoning(rawText)
+    const finalText = split.text
+    const existingReasoning = this.reasoningText.trim() || String(payload.reasoning ?? '').trim()
+    const savedReasoning = [existingReasoning, existingReasoning ? '' : split.reasoning].filter(Boolean).join('\n\n')
     const savedReasoningTokens = savedReasoning ? estimateTokensRough(savedReasoning) : 0
     const savedToolTokens = this.toolTokenAcc
     const tools = this.pendingSegmentTools
@@ -226,10 +243,17 @@ class TurnController {
     }
 
     this.bufRef = rendered ?? this.bufRef + text
-    this.scheduleStreaming()
+
+    if (getUiState().streaming) {
+      this.scheduleStreaming()
+    }
   }
 
   recordReasoningAvailable(text: string) {
+    if (!getUiState().showReasoning) {
+      return
+    }
+
     const incoming = text.trim()
 
     if (!incoming || this.reasoningText.trim()) {
@@ -242,6 +266,10 @@ class TurnController {
   }
 
   recordReasoningDelta(text: string) {
+    if (!getUiState().showReasoning) {
+      return
+    }
+
     this.reasoningText += text
     this.scheduleReasoning()
     this.pulseReasoningStreaming()
@@ -344,7 +372,9 @@ class TurnController {
 
     this.streamTimer = setTimeout(() => {
       this.streamTimer = null
-      patchTurnState({ streaming: this.bufRef.trimStart() })
+      const raw = this.bufRef.trimStart()
+      const visible = hasReasoningTag(raw) ? splitReasoning(raw).text : raw
+      patchTurnState({ streaming: visible })
     }, STREAM_BATCH_MS)
   }
 

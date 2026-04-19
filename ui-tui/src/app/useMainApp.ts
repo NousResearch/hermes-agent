@@ -1,11 +1,11 @@
-import { type ScrollBoxHandle, useApp, useHasSelection, useSelection, useStdout } from '@hermes/ink'
+import { type ScrollBoxHandle, useApp, useHasSelection, useSelection, useStdout, useTerminalTitle } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { STARTUP_RESUME_ID } from '../config/env.js'
 import { MAX_HISTORY, WHEEL_SCROLL_STEP } from '../config/limits.js'
 import { imageTokenMeta } from '../domain/messages.js'
-import { shortCwd } from '../domain/paths.js'
+import { fmtCwdBranch } from '../domain/paths.js'
 import { type GatewayClient } from '../gatewayClient.js'
 import type {
   ClarifyRespondResponse,
@@ -13,6 +13,7 @@ import type {
   GatewayEvent,
   TerminalResizeResponse
 } from '../gatewayTypes.js'
+import { useGitBranch } from '../hooks/useGitBranch.js'
 import { useVirtualHistory } from '../hooks/useVirtualHistory.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
 import { buildToolTrailLine, sameToolTrailGroup, toolTrailLabel } from '../lib/text.js'
@@ -284,6 +285,13 @@ export function useMainApp(gw: GatewayClient) {
 
   useConfigSync({ gw, setBellOnComplete, setVoiceEnabled, sid: ui.sid })
 
+  // ── Terminal tab title ─────────────────────────────────────────────
+  // Show model name + status so users can identify the Hermes tab.
+  const shortModel = ui.info?.model?.replace(/^.*\//, '') ?? ''
+  const titleStatus = ui.busy ? '⏳' : '✓'
+  const terminalTitle = shortModel ? `${titleStatus} ${shortModel} — Hermes` : 'Hermes'
+  useTerminalTitle(terminalTitle)
+
   useEffect(() => {
     if (!ui.sid || !stdout) {
       return
@@ -372,12 +380,13 @@ export function useMainApp(gw: GatewayClient) {
     sys
   })
 
-  const prevSidRef = useRef<null | string>(null)
+  // Drain one queued message whenever the session settles (busy → false):
+  // agent turn ends, interrupt, shell.exec finishes, error recovered, or the
+  // session first comes up with pre-queued messages. Without this, shell.exec
+  // and error paths never emit message.complete, so anything enqueued while
+  // `!sleep` / a failed turn was running would stay stuck forever.
   useEffect(() => {
-    const prev = prevSidRef.current
-    prevSidRef.current = ui.sid
-
-    if (prev !== null || !ui.sid || ui.busy || composerRefs.queueEditRef.current !== null) {
+    if (!ui.sid || ui.busy || composerRefs.queueEditRef.current !== null) {
       return
     }
 
@@ -408,7 +417,6 @@ export function useMainApp(gw: GatewayClient) {
   const onEvent = useMemo(
     () =>
       createGatewayEventHandler({
-        composer: { dequeue: composerActions.dequeue, queueEditRef: composerRefs.queueEditRef, sendQueued },
         gateway,
         session: {
           STARTUP_RESUME_ID,
@@ -424,11 +432,8 @@ export function useMainApp(gw: GatewayClient) {
     [
       appendMessage,
       bellOnComplete,
-      composerActions,
-      composerRefs,
       gateway,
       panel,
-      sendQueued,
       session.newSession,
       session.resetSession,
       session.resumeById,
@@ -613,9 +618,12 @@ export function useMainApp(gw: GatewayClient) {
     [turn, showProgressArea]
   )
 
+  const cwd = ui.info?.cwd || process.env.HERMES_CWD || process.cwd()
+  const gitBranch = useGitBranch(cwd)
+
   const appStatus = useMemo(
     () => ({
-      cwdLabel: shortCwd(ui.info?.cwd || process.env.HERMES_CWD || process.cwd()),
+      cwdLabel: fmtCwdBranch(cwd, gitBranch),
       goodVibesTick,
       sessionStartedAt: ui.sid ? sessionStartedAt : null,
       showStickyPrompt: !!stickyPrompt,
@@ -623,7 +631,7 @@ export function useMainApp(gw: GatewayClient) {
       stickyPrompt,
       voiceLabel: voiceRecording ? 'REC' : voiceProcessing ? 'STT' : `voice ${voiceEnabled ? 'on' : 'off'}`
     }),
-    [goodVibesTick, sessionStartedAt, stickyPrompt, ui, voiceEnabled, voiceProcessing, voiceRecording]
+    [cwd, gitBranch, goodVibesTick, sessionStartedAt, stickyPrompt, ui, voiceEnabled, voiceProcessing, voiceRecording]
   )
 
   const appTranscript = useMemo(

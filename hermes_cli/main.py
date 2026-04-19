@@ -897,6 +897,10 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
     _ensure_tui_node()
 
     def _node_bin(bin: str) -> str:
+        if bin == "node":
+            env_node = os.environ.get("HERMES_NODE")
+            if env_node and os.path.isfile(env_node) and os.access(env_node, os.X_OK):
+                return env_node
         path = shutil.which(bin)
         if not path:
             print(f"{bin} not found — install Node.js to use the TUI.")
@@ -3969,7 +3973,7 @@ def _model_flow_anthropic(config, current_model=""):
 
         elif choice == "2":
             print()
-            print("  Get an API key at: https://console.anthropic.com/settings/keys")
+            print("  Get an API key at: https://platform.claude.com/settings/keys")
             print()
             try:
                 import getpass
@@ -6225,8 +6229,9 @@ def cmd_dashboard(args):
         print(f"Install them with:  {sys.executable} -m pip install 'fastapi' 'uvicorn[standard]'")
         sys.exit(1)
 
-    if not _build_web_ui(PROJECT_ROOT / "web", fatal=True):
-        sys.exit(1)
+    if "HERMES_WEB_DIST" not in os.environ:
+        if not _build_web_ui(PROJECT_ROOT / "web", fatal=True):
+            sys.exit(1)
 
     from hermes_cli.web_server import start_server
 
@@ -6996,6 +7001,13 @@ For more help on a command:
     )
     wh_sub.add_argument(
         "--secret", default="", help="HMAC secret (auto-generated if omitted)"
+    )
+    wh_sub.add_argument(
+        "--deliver-only",
+        action="store_true",
+        help="Skip the agent — deliver the rendered prompt directly as the "
+        "message. Zero LLM cost. Requires --deliver to be a real target "
+        "(not 'log').",
     )
 
     webhook_subparsers.add_parser(

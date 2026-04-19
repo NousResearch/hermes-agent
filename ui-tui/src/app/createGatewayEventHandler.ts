@@ -46,7 +46,6 @@ const pushNote = pushUnique(6)
 const pushTool = pushUnique(8)
 
 export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev: GatewayEvent) => void {
-  const { dequeue, queueEditRef, sendQueued } = ctx.composer
   const { rpc } = ctx.gateway
   const { STARTUP_RESUME_ID, newSession, resumeById, setCatalog } = ctx.session
   const { bellOnComplete, stdout, sys } = ctx.system
@@ -266,7 +265,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       case 'tool.complete':
         turnController.recordToolComplete(ev.payload.tool_id, ev.payload.name, ev.payload.error, ev.payload.summary)
 
-        if (ev.payload.inline_diff) {
+        if (ev.payload.inline_diff && getUiState().inlineDiffs) {
           sys(ev.payload.inline_diff)
         }
 
@@ -392,16 +391,6 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         if (ev.payload?.usage) {
           patchUiState(state => ({ ...state, usage: { ...state.usage, ...ev.payload!.usage } }))
-        }
-
-        if (queueEditRef.current !== null) {
-          return
-        }
-
-        const next = dequeue()
-
-        if (next) {
-          sendQueued(next)
         }
 
         return

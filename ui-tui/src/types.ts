@@ -29,6 +29,15 @@ export interface ApprovalReq {
   description: string
 }
 
+export interface ConfirmReq {
+  cancelLabel?: string
+  confirmLabel?: string
+  danger?: boolean
+  detail?: string
+  onConfirm: () => void
+  title: string
+}
+
 export interface ClarifyReq {
   choices: string[] | null
   question: string
@@ -51,8 +60,16 @@ export type Role = 'assistant' | 'system' | 'tool' | 'user'
 export type DetailsMode = 'hidden' | 'collapsed' | 'expanded'
 export type ThinkingMode = 'collapsed' | 'truncated' | 'full'
 
+export interface McpServerStatus {
+  connected: boolean
+  name: string
+  tools: number
+  transport: string
+}
+
 export interface SessionInfo {
   cwd?: string
+  mcp_servers?: McpServerStatus[]
   model: string
   release_date?: string
   skills: Record<string, string[]>
@@ -68,6 +85,7 @@ export interface Usage {
   context_max?: number
   context_percent?: number
   context_used?: number
+  cost_usd?: number
   input: number
   output: number
   total: number

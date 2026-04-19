@@ -592,6 +592,8 @@ SUPPORTED_DOCUMENT_TYPES = {
     ".txt": "text/plain",
     ".log": "text/plain",
     ".zip": "application/zip",
+    ".html": "text/html",
+    ".htm": "text/html",
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",

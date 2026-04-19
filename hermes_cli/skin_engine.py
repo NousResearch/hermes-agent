@@ -707,15 +707,42 @@ def init_skin_from_config(config: dict) -> None:
     """Initialize the active skin from CLI config at startup.
 
     Call this once during CLI init with the loaded config dict.
+
+    If the user has not explicitly chosen a skin, auto-detects the terminal
+    background brightness and switches to a light-background skin when
+    appropriate (issue #12330).
     """
     display = config.get("display") or {}
     if not isinstance(display, dict):
         display = {}
     skin_name = display.get("skin", "default")
+
     if isinstance(skin_name, str) and skin_name.strip():
+        # User explicitly chose a skin — honour it
         set_active_skin(skin_name.strip())
-    else:
-        set_active_skin("default")
+        # Still propagate light-background flag to the Colors helper so that
+        # ANSI-coded output in subcommands also adapts, even when the user
+        # has chosen a custom skin that may not have overridden every color.
+        if skin_name.strip() in ("daylight", "warm-lightmode"):
+            try:
+                from hermes_cli.colors import set_light_background
+                set_light_background(True)
+            except Exception:
+                pass
+        return
+
+    # No explicit skin — detect terminal background and pick an appropriate one
+    try:
+        from hermes_cli.colors import is_light_background, set_light_background
+        if is_light_background():
+            set_active_skin("warm-lightmode")
+            set_light_background(True)
+            logger.info("Light terminal background detected — switching to warm-lightmode skin")
+            return
+    except Exception:
+        pass
+
+    set_active_skin("default")
 
 
 # =============================================================================

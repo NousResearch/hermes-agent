@@ -64,6 +64,10 @@ from agent.usage_pricing import (
     format_token_count_compact,
 )
 from hermes_cli.banner import _format_context_length, format_banner_version_label
+try:
+    from hermes_cli.colors import Colors as _Colors
+except ImportError:
+    _Colors = None  # type: ignore[assignment,misc]
 
 _COMMAND_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
 
@@ -692,8 +696,12 @@ def _setup_worktree(repo_root: str = None) -> Optional[Dict[str, str]]:
     import subprocess
 
     repo_root = repo_root or _git_repo_root()
+    _R = _Colors.RED if _Colors else "\033[31m"
+    _G = _Colors.GREEN if _Colors else "\033[32m"
+    _Y = _Colors.YELLOW if _Colors else "\033[33m"
+    _X = _Colors.RESET if _Colors else "\033[0m"
     if not repo_root:
-        print("\033[31m✗ --worktree requires being inside a git repository.\033[0m")
+        print(f"{_R}✗ --worktree requires being inside a git repository.{_X}")
         print("  cd into your project repo first, then run hermes -w")
         return None
 

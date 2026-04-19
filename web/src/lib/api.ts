@@ -36,6 +36,84 @@ async function getSessionToken(): Promise<string> {
 
 export const api = {
   getStatus: () => fetchJSON<StatusResponse>("/api/status"),
+  createChatSession: (title = "") =>
+    fetchJSON<{ session_id: string; title?: string | null }>("/api/chat/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title }),
+    }),
+  sendChatMessage: (sessionId: string, message: string) =>
+    fetchJSON<{ session_id: string; title?: string | null; response: string; messages: SessionMessage[] }>(
+      `/api/chat/sessions/${encodeURIComponent(sessionId)}/messages`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message }),
+      },
+    ),
+  streamChatMessage: async (
+    sessionId: string,
+    message: string,
+    handlers: {
+      onDelta?: (text: string) => void;
+      onComplete?: (payload: { session_id: string; title?: string | null; response: string; messages: SessionMessage[] }) => void;
+      onError?: (detail: string) => void;
+    },
+    options?: { signal?: AbortSignal },
+  ) => {
+    const token = await getSessionToken();
+    const res = await fetch(`${BASE}/api/chat/sessions/${encodeURIComponent(sessionId)}/stream`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ message }),
+      signal: options?.signal,
+    });
+    if (!res.ok || !res.body) {
+      const text = await res.text().catch(() => res.statusText);
+      throw new Error(`${res.status}: ${text}`);
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    const processEventBlock = (block: string) => {
+      const lines = block.split("\n");
+      let event = "message";
+      const dataLines: string[] = [];
+      for (const line of lines) {
+        if (line.startsWith("event:")) event = line.slice(6).trim();
+        if (line.startsWith("data:")) dataLines.push(line.slice(5).trim());
+      }
+      if (!dataLines.length) return;
+      const payload = JSON.parse(dataLines.join("\n"));
+      if (event === "delta") handlers.onDelta?.(payload.text ?? "");
+      else if (event === "complete") handlers.onComplete?.(payload);
+      else if (event === "error") handlers.onError?.(payload.detail ?? "Unknown stream error");
+    };
+
+    while (true) {
+      const { value, done } = await reader.read();
+      buffer += decoder.decode(value ?? new Uint8Array(), { stream: !done });
+
+      let boundary = buffer.indexOf("\n\n");
+      while (boundary >= 0) {
+        const block = buffer.slice(0, boundary).trim();
+        buffer = buffer.slice(boundary + 2);
+        if (block) processEventBlock(block);
+        boundary = buffer.indexOf("\n\n");
+      }
+
+      if (done) {
+        const trailing = buffer.trim();
+        if (trailing) processEventBlock(trailing);
+        break;
+      }
+    }
+  },
   getSessions: (limit = 20, offset = 0) =>
     fetchJSON<PaginatedSessions>(`/api/sessions?limit=${limit}&offset=${offset}`),
   getSessionMessages: (id: string) =>

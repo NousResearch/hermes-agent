@@ -56,6 +56,7 @@ export interface Translations {
     };
     nav: {
       status: string;
+      chat: string;
       sessions: string;
       analytics: string;
       logs: string;
@@ -109,6 +110,46 @@ export interface Translations {
       system: string;
       tool: string;
     };
+  };
+
+  // ── Chat page ──
+  chat: {
+    title: string;
+    newSession: string;
+    creatingSession: string;
+    noSessions: string;
+    noSessionsHint: string;
+    noMatchingSessions: string;
+    noMatchingSessionsHint: string;
+    untitledSession: string;
+    liveConversation: string;
+    sessionId: string;
+    selectOrCreate: string;
+    copySessionId: string;
+    deleteSession: string;
+    sessionDeleted: string;
+    sessionDeleteFailed: string;
+    searchSessionsPlaceholder: string;
+    clearSessionSearch: string;
+    emptyState: string;
+    emptyStateHint: string;
+    inputPlaceholder: string;
+    sending: string;
+    send: string;
+    typing: string;
+    jumpToLatest: string;
+    retry: string;
+    dismissError: string;
+    sendFailed: string;
+    hotkeysHint: string;
+    sessionCopied: string;
+    sessionCopyFailed: string;
+    copyMessage: string;
+    messageCopied: string;
+    messageCopyFailed: string;
+    stopGenerating: string;
+    generationStopped: string;
+    nowLabel: string;
   };
 
   // ── Analytics page ──

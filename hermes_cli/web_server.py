@@ -10,11 +10,13 @@ Usage:
 """
 
 import asyncio
+import contextlib
 import hmac
 import importlib.util
 import json
 import logging
 import os
+import queue
 import secrets
 import sys
 import threading
@@ -50,7 +52,7 @@ from gateway.status import get_running_pid, read_runtime_status
 try:
     from fastapi import FastAPI, HTTPException, Request
     from fastapi.middleware.cors import CORSMiddleware
-    from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+    from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
     from fastapi.staticfiles import StaticFiles
     from pydantic import BaseModel
 except ImportError:
@@ -1707,6 +1709,187 @@ async def delete_session_endpoint(session_id: str):
         return {"ok": True}
     finally:
         db.close()
+
+
+class ChatSessionCreate(BaseModel):
+    title: str = ""
+
+
+class ChatMessageCreate(BaseModel):
+    message: str
+
+
+@app.post("/api/chat/sessions")
+async def create_chat_session(body: ChatSessionCreate):
+    from datetime import datetime
+
+    from hermes_state import SessionDB
+    from run_agent import AIAgent
+
+    config = load_config()
+    model_cfg = config.get("model")
+    model_name = model_cfg.get("default") if isinstance(model_cfg, dict) else model_cfg
+    session_id = f"web_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{secrets.token_hex(3)}"
+    db = SessionDB()
+    try:
+        agent = AIAgent(
+            model=model_name,
+            quiet_mode=True,
+            platform="web",
+            session_id=session_id,
+            session_db=db,
+        )
+        del agent
+
+        title = (body.title or "").strip()
+        if title:
+            db.set_session_title(session_id, title)
+
+        session = db.get_session(session_id)
+        return {
+            "session_id": session_id,
+            "title": (session or {}).get("title") if session else title,
+        }
+    finally:
+        db.close()
+
+
+def _build_chat_agent(db, session_id: str):
+    from hermes_cli.tools_config import _get_platform_tools
+    from run_agent import AIAgent
+
+    config = load_config()
+    model_cfg = config.get("model")
+    model_name = model_cfg.get("default") if isinstance(model_cfg, dict) else model_cfg
+    enabled_toolsets = _get_platform_tools(
+        config,
+        "cli",
+        include_default_mcp_servers=False,
+    )
+    return AIAgent(
+        model=model_name,
+        quiet_mode=True,
+        platform="web",
+        session_id=session_id,
+        session_db=db,
+        enabled_toolsets=enabled_toolsets,
+    )
+
+
+@app.post("/api/chat/sessions/{session_id}/messages")
+async def send_chat_message(session_id: str, body: ChatMessageCreate):
+    from hermes_state import SessionDB
+
+    message = (body.message or "").strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="Message cannot be empty")
+
+    db = SessionDB()
+    try:
+        resolved = db.resolve_session_id(session_id)
+        if not resolved:
+            raise HTTPException(status_code=404, detail="Session not found")
+
+        history = db.get_messages_as_conversation(resolved)
+        agent = _build_chat_agent(db, resolved)
+
+        result = await asyncio.to_thread(
+            agent.run_conversation,
+            message,
+            None,
+            history,
+        )
+
+        session = db.get_session(resolved) or {"id": resolved}
+        if not session.get("title"):
+            generated_title = " ".join(message.split())[:80]
+            with contextlib.suppress(Exception):
+                if generated_title:
+                    db.set_session_title(resolved, generated_title)
+                    session = db.get_session(resolved) or session
+
+        messages = db.get_messages(resolved)
+        return {
+            "session_id": resolved,
+            "title": session.get("title"),
+            "response": result.get("final_response", "") if isinstance(result, dict) else str(result),
+            "messages": messages,
+        }
+    finally:
+        db.close()
+
+
+@app.post("/api/chat/sessions/{session_id}/stream")
+async def stream_chat_message(session_id: str, body: ChatMessageCreate):
+    from hermes_state import SessionDB
+
+    message = (body.message or "").strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="Message cannot be empty")
+
+    db = SessionDB()
+    resolved = db.resolve_session_id(session_id)
+    if not resolved:
+        db.close()
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    history = db.get_messages_as_conversation(resolved)
+    event_queue: queue.Queue = queue.Queue()
+
+    def _emit(event: str, data: dict):
+        event_queue.put((event, data))
+
+    def _run():
+        try:
+            agent = _build_chat_agent(db, resolved)
+
+            def _stream(delta: str):
+                if delta:
+                    _emit("delta", {"text": delta})
+
+            result = agent.run_conversation(
+                message,
+                None,
+                history,
+                stream_callback=_stream,
+            )
+
+            session = db.get_session(resolved) or {"id": resolved}
+            if not session.get("title"):
+                generated_title = " ".join(message.split())[:80]
+                with contextlib.suppress(Exception):
+                    if generated_title:
+                        db.set_session_title(resolved, generated_title)
+                        session = db.get_session(resolved) or session
+
+            messages = db.get_messages(resolved)
+            _emit("complete", {
+                "session_id": resolved,
+                "title": session.get("title"),
+                "response": result.get("final_response", "") if isinstance(result, dict) else str(result),
+                "messages": messages,
+            })
+        except Exception as exc:
+            _emit("error", {"detail": str(exc)})
+        finally:
+            event_queue.put(None)
+            db.close()
+
+    threading.Thread(target=_run, daemon=True).start()
+
+    async def _event_stream():
+        try:
+            while True:
+                item = await asyncio.to_thread(event_queue.get)
+                if item is None:
+                    break
+                event, payload = item
+                yield f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+        finally:
+            with contextlib.suppress(Exception):
+                db.close()
+
+    return StreamingResponse(_event_stream(), media_type="text/event-stream")
 
 
 # ---------------------------------------------------------------------------

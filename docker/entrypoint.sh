@@ -37,6 +37,27 @@ if [ "$(id -u)" = "0" ]; then
 fi
 
 # --- Running as hermes from here ---
+echo "Running as $(id -u):$(id -g) ($(id -un):$(id -gn))"
+# if SYNC_CODE_DIR is set to an existing target path that we can write to, copy the code in /opt/hermes as set in INSTALL_DIR (only the code) so that external tools can use hermes-agent and install it in their own venv.  
+# This is useful for development with bind mounts, but also for production if someone wants to use the image as a base for their own image and install hermes-agent into their own venv instead of using the bundled one.
+# check SYNC_CODE_DIR exist
+if [ ! -z "${SYNC_CODE_DIR+x}" ]; then
+    if [ -d "$SYNC_CODE_DIR" ] && [ -w "$SYNC_CODE_DIR" ]; then
+        it="${SYNC_CODE_DIR}/.testfile"; rm -f "$it"; touch "$it" 
+        if [ -f $it ]; then
+            rm -f "$it" || echo "Test file created successfully in SYNC_CODE_DIR directory, but deletion failed, it is likely not fully writable by the hermes user. We will attempt the code copy anyway."
+            echo "SYNC_CODE_DIR is set to $SYNC_CODE_DIR, copying code there"
+            rsync -a --exclude='.venv' --exclude='__pycache__' --exclude='*.pyc' --exclude='*.pyo' --exclude='.git' --exclude ".playwright" ${INSTALL_DIR}/ "$SYNC_CODE_DIR"/ --delete || echo "Failed to copy all files from ${INSTALL_DIR} to ${SYNC_CODE_DIR} directory, will continue anyway."
+            # The delete option ensures that if files are removed from the source (INSTALL_DIR), they are also removed from the target (SYNC_CODE_DIR) on subsequent runs, keeping them in sync.
+            echo "Code copied to SYNC_CODE_DIR successfully (this oes not invalidted any previous message, but the attempt was made), you can use the SYNC_CODE_DIR directory to access the code and install hermes-agent in your own venv if needed."
+        else
+            echo "Failed to write a test file to SYNC_CODE_DIR directory as the hermes user, we will skip code copy to avoid potential issues with file permissions. Please ensure that the SYNC_CODE_DIR directory is writable by the hermes user."
+        fi
+    else
+        echo "SYNC_CODE_DIR is not set to a writable directory, skipping code copy"
+    fi
+fi
+
 source "${INSTALL_DIR}/.venv/bin/activate"
 
 # Create essential directory structure.  Cache and platform directories

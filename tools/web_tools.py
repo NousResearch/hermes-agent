@@ -1,16 +1,32 @@
 #!/usr/bin/env python3
 """
-Standalone Web Tools Module
+Standalone Web and Research Knowledge Tools
 
-This module provides generic web tools that work with multiple backend providers.
-Backend is selected during ``hermes tools`` setup (web.backend in config.yaml).
-When available, Hermes can route Firecrawl calls through a Nous-hosted tool-gateway
-for Nous Subscribers only.
+This module defines Hermes-native built-in web/research grounding primitives.
+The canonical built-in surface currently exposed from this file is:
+- web_search_tool: live web search for current external information
+- web_extract_tool: text-first extraction from specific public URLs
 
-Available tools:
-- web_search_tool: Search the web for information
-- web_extract_tool: Extract content from specific web pages
-- web_crawl_tool: Crawl websites with specific instructions
+A crawl implementation also exists in this module, but it is not currently part of
+Hermes's canonical built-in web/research surface unless another layer explicitly
+registers or exposes it.
+
+Backend behavior:
+- Hermes presents a stable built-in interface while routing to the configured backend
+  selected during ``hermes tools`` setup (web.backend in config.yaml).
+- Result shape and retrieval behavior can vary somewhat by backend/provider.
+- When available, Hermes can route Firecrawl calls through a Nous-hosted tool gateway
+  for Nous Subscribers only.
+
+Text-first boundary:
+- These tools are for live web/research grounding and page text retrieval.
+- ``web_extract`` is text-first: it returns markdown/plain extracted content when a
+  backend can fetch the URL directly, and it may summarize long pages with an
+  auxiliary text model.
+- If direct retrieval fails, times out, or the task requires interactive navigation,
+  login handling, or visual inspection, use Hermes browser/document surfaces instead.
+- URL-accessed PDFs may still be converted into text when the backend supports it,
+  but document/PDF intelligence remains outside this module's product boundary.
 
 Backend compatibility:
 - Exa: https://exa.ai (search, extract)
@@ -28,15 +44,17 @@ Debug Mode:
 - Captures all tool calls, results, and compression metrics
 
 Usage:
-    from web_tools import web_search_tool, web_extract_tool, web_crawl_tool
-    
+    from web_tools import web_search_tool, web_extract_tool
+
     # Search the web
     results = web_search_tool("Python machine learning libraries", limit=3)
-    
-    # Extract content from URLs  
+
+    # Extract text-first content from URLs
     content = web_extract_tool(["https://example.com"], format="markdown")
-    
-    # Crawl a website
+
+    # Crawl is implemented here for internal/explicit use only; it is not part of
+    # Hermes's canonical built-in web/research surface unless a later layer
+    # explicitly registers or exposes it.
     crawl_data = web_crawl_tool("example.com", "Find contact information")
 """
 
@@ -570,7 +588,7 @@ async def process_content_with_llm(
                 f"\n\n[Content truncated — showing first {MAX_OUTPUT_SIZE:,} of "
                 f"{len(content):,} chars. LLM summarization timed out. "
                 f"To fix: increase auxiliary.web_extract.timeout in config.yaml, "
-                f"or use a faster auxiliary model. Use browser_navigate for the full page.]"
+                f"or use a faster auxiliary model. If you need the full page or interactive access, use the browser/document surfaces.]"
             )
         return truncated
 
@@ -1034,13 +1052,12 @@ async def _parallel_extract(urls: List[str]) -> List[Dict[str, Any]]:
 
 def web_search_tool(query: str, limit: int = 5) -> str:
     """
-    Search the web for information using available search API backend.
+    Search the live web using Hermes's built-in web/research grounding surface.
 
-    This function provides a generic interface for web search that can work
-    with multiple backends (Parallel or Firecrawl).
-
-    Note: This function returns search result metadata only (URLs, titles, descriptions).
-    Use web_extract_tool to get full content from specific URLs.
+    Hermes keeps the interface stable while routing to the configured backend.
+    This tool returns search-result metadata only (titles, URLs, descriptions)
+    so the model can identify promising external sources before deeper retrieval
+    with ``web_extract_tool``.
     
     Args:
         query (str): The search query to look up
@@ -1170,10 +1187,12 @@ async def web_extract_tool(
     min_length: int = DEFAULT_MIN_LENGTH_FOR_SUMMARIZATION
 ) -> str:
     """
-    Extract content from specific web pages using available extraction API backend.
+    Extract text-first content from specific public URLs using Hermes's built-in
+    web/research grounding surface.
 
-    This function provides a generic interface for web content extraction that
-    can work with multiple backends. Currently uses Firecrawl.
+    Hermes keeps the interface stable while routing to the configured backend.
+    This tool is for direct URL retrieval and optional auxiliary summarization,
+    not browser-driven interaction or document/PDF intelligence workflows.
 
     Args:
         urls (List[str]): List of URLs to extract content from
@@ -1302,7 +1321,7 @@ async def web_extract_tool(
                             logger.warning("Firecrawl scrape timed out for %s", url)
                             results.append({
                                 "url": url, "title": "", "content": "",
-                                "error": "Scrape timed out after 60s — page may be too large or unresponsive. Try browser_navigate instead.",
+                                "error": "Scrape timed out after 60s — page may be too large or unresponsive. If direct extraction is not enough, fall back to the browser/document surfaces.",
                             })
                             continue
 
@@ -1499,11 +1518,18 @@ async def web_crawl_tool(
     min_length: int = DEFAULT_MIN_LENGTH_FOR_SUMMARIZATION
 ) -> str:
     """
-    Crawl a website with specific instructions using available crawling API backend.
-    
-    This function provides a generic interface for web crawling that can work
-    with multiple backends. Currently uses Firecrawl.
-    
+    Crawl a website with specific instructions using an available crawling backend.
+
+    This implementation lives in ``tools/web_tools.py`` but is intentionally not
+    part of Hermes's canonical built-in web/research surface today. The current
+    built-in surface exposed via registry/toolsets remains ``web_search`` and
+    ``web_extract`` only unless some other layer explicitly registers or exposes
+    crawl later.
+
+    The function provides a generic interface for crawling across supported
+    backends. Today that means Tavily crawl support and Firecrawl/direct-gateway
+    crawl support when configured.
+
     Args:
         url (str): The base URL to crawl (can include or exclude https://)
         instructions (str): Instructions for what to crawl/extract using LLM intelligence (optional)
@@ -1627,7 +1653,9 @@ async def web_crawl_tool(
             _debug.save()
             return cleaned_result
 
-        # web_crawl requires Firecrawl or the Firecrawl tool-gateway — Parallel has no crawl API
+        # web_crawl is implemented here for explicit/internal use only and
+        # requires Firecrawl or the Firecrawl tool-gateway on this path.
+        # Parallel has no crawl API.
         if not check_firecrawl_api_key():
             return json.dumps({
                 "error": "web_crawl requires Firecrawl. Set FIRECRAWL_API_KEY, FIRECRAWL_API_URL"
@@ -1986,6 +2014,8 @@ if __name__ == "__main__":
         exit(1)
 
     print("🛠️  Web tools ready for use!")
+    print("   Canonical built-in Hermes surface from this module: web_search + web_extract")
+    print("   web_crawl is implemented here but not registered as a built-in public tool")
     
     if nous_available:
         print(f"🧠 LLM content processing available with {default_summarizer_model}")
@@ -1999,24 +2029,27 @@ if __name__ == "__main__":
         print("🐛 Debug mode disabled (set WEB_TOOLS_DEBUG=true to enable)")
     
     print("\nBasic usage:")
-    print("  from web_tools import web_search_tool, web_extract_tool, web_crawl_tool")
+    print("  from web_tools import web_search_tool, web_extract_tool")
     print("  import asyncio")
     print("")
     print("  # Search (synchronous)")
     print("  results = web_search_tool('Python tutorials')")
     print("")
-    print("  # Extract and crawl (asynchronous)")
+    print("  # Extract from the canonical built-in surface (asynchronous)")
     print("  async def main():")
     print("      content = await web_extract_tool(['https://example.com'])")
-    print("      crawl_data = await web_crawl_tool('example.com', 'Find docs')")
     print("  asyncio.run(main())")
+    print("")
+    print("  # Optional/internal crawl implementation in this module (not registry-exposed)")
+    print("  # from web_tools import web_crawl_tool")
+    print("  # crawl_data = await web_crawl_tool('example.com', 'Find docs')")
     
     if nous_available:
         print("\nLLM-enhanced usage:")
         print("  # Content automatically processed for pages >5000 chars (default)")
         print("  content = await web_extract_tool(['https://python.org/about/'])")
         print("")
-        print("  # Customize processing parameters")
+        print("  # Optional/internal crawl implementation (still not part of the built-in surface)")
         print("  crawl_data = await web_crawl_tool(")
         print("      'docs.python.org',")
         print("      'Find key concepts',")
@@ -2047,13 +2080,13 @@ from tools.registry import registry, tool_error
 
 WEB_SEARCH_SCHEMA = {
     "name": "web_search",
-    "description": "Search the web for information on any topic. Returns up to 5 relevant results with titles, URLs, and descriptions.",
+    "description": "Hermes built-in web/research grounding primitive for live web search. Use it to gather current external information and candidate sources before deeper retrieval. Hermes keeps the interface stable, but exact ranking and result details can vary by configured backend. Returns up to 5 results with titles, URLs, and descriptions.",
     "parameters": {
         "type": "object",
         "properties": {
             "query": {
                 "type": "string",
-                "description": "The search query to look up on the web"
+                "description": "Search query for live web/research grounding"
             }
         },
         "required": ["query"]
@@ -2062,14 +2095,14 @@ WEB_SEARCH_SCHEMA = {
 
 WEB_EXTRACT_SCHEMA = {
     "name": "web_extract",
-    "description": "Extract content from web page URLs. Returns page content in markdown format. Also works with PDF URLs (arxiv papers, documents, etc.) — pass the PDF link directly and it converts to markdown text. Pages under 5000 chars return full markdown; larger pages are LLM-summarized and capped at ~5000 chars per page. Pages over 2M chars are refused. If a URL fails or times out, use the browser tool to access it instead.",
+    "description": "Hermes built-in web/research grounding primitive for text-first extraction from public URLs. Returns extracted page text in markdown form when the configured backend can fetch the URL directly, and may summarize long pages with an auxiliary text model. URL-accessed PDFs may still be converted to text, but browser-driven navigation and document/PDF intelligence are outside this tool's scope. Pages under 5000 chars return full markdown; larger pages are LLM-summarized and capped at ~5000 chars per page. Pages over 2M chars are refused. If direct extraction fails, times out, or the task needs interactive/visual access, fall back to Hermes browser/document tools.",
     "parameters": {
         "type": "object",
         "properties": {
             "urls": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "List of URLs to extract content from (max 5 URLs per call)",
+                "description": "List of public URLs to extract text content from directly (max 5 URLs per call)",
                 "maxItems": 5
             }
         },

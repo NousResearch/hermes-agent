@@ -128,6 +128,7 @@ The largest optional category — covers the full ML pipeline from data curation
 | Skill | Description |
 |-------|-------------|
 | **canvas** | Canvas LMS integration — fetch enrolled courses and assignments using API token authentication. |
+| **cognition-retention** | Track what you learn, predict what you'll forget, and get proactive review nudges — Weibull forgetting curves calibrated to your personal knowledge graph via [Cognition](https://cognitionus.com). |
 | **memento-flashcards** | Spaced repetition flashcard system for learning and knowledge retention. |
 | **siyuan** | SiYuan Note API for searching, reading, creating, and managing blocks and documents in a self-hosted knowledge base. |
 | **telephony** | Give Hermes phone capabilities — provision a Twilio number, send/receive SMS/MMS, make calls, and place AI-driven outbound calls through Bland.ai or Vapi. |

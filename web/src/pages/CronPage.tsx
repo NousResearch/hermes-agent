@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Clock, Pause, Play, Plus, Trash2, Zap } from "lucide-react";
+import { H2 } from "@nous-research/ui/ui/components/typography/h2";
 import { api } from "@/lib/api";
 import type { CronJob } from "@/lib/api";
 import { useToast } from "@/hooks/useToast";
@@ -195,10 +196,10 @@ export default function CronPage() {
 
       {/* Jobs list */}
       <div className="flex flex-col gap-3">
-        <h2 className="text-sm font-medium text-muted-foreground flex items-center gap-2">
+        <H2 variant="sm" className="flex items-center gap-2 text-muted-foreground">
           <Clock className="h-4 w-4" />
           {t.cron.scheduledJobs} ({jobs.length})
-        </h2>
+        </H2>
 
         {jobs.length === 0 && (
           <Card>

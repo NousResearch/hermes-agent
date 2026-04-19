@@ -20,11 +20,22 @@ import concurrent.futures
 import json
 import logging
 import re
+import threading
+import time
 from typing import Dict, Any, List, Optional, Union
 
 from agent.auxiliary_client import async_call_llm, extract_content_or_reasoning
+
+try:
+    from tools.environments.base import touch_activity_if_due
+except Exception:  # pragma: no cover - defensive import fallback for stripped test envs
+    touch_activity_if_due = None
+
 MAX_SESSION_CHARS = 100_000
 MAX_SUMMARY_TOKENS = 10000
+_SESSION_SEARCH_POLL_INTERVAL = 0.5
+_SESSION_SEARCH_HEARTBEAT_INTERVAL = 10.0
+_SESSION_SEARCH_SUMMARY_TIMEOUT = 120.0
 
 
 def _format_timestamp(ts: Union[int, float, str, None]) -> str:
@@ -152,13 +163,28 @@ def _truncate_around_matches(
 
     best_start = 0
     best_count = 0
+    left = 0
+    right = 0
+    total_matches = len(match_positions)
     for candidate in match_positions:
         ws = max(0, candidate - max_chars // 4)  # bias: 25% before, 75% after
         we = ws + max_chars
         if we > len(full_text):
             ws = max(0, len(full_text) - max_chars)
             we = len(full_text)
-        count = sum(1 for p in match_positions if ws <= p < we)
+
+        # Advance the sorted window bounds instead of re-scanning the full
+        # match_positions list for every candidate. The previous O(n²)
+        # generator-based count could peg a CPU core for minutes on dense
+        # transcripts (for example session_search over repeated terms).
+        while left < total_matches and match_positions[left] < ws:
+            left += 1
+        if right < left:
+            right = left
+        while right < total_matches and match_positions[right] < we:
+            right += 1
+
+        count = right - left
         if count > best_count:
             best_count = count
             best_start = ws
@@ -170,6 +196,101 @@ def _truncate_around_matches(
     prefix = "...[earlier conversation truncated]...\n\n" if start > 0 else ""
     suffix = "\n\n...[later conversation truncated]..." if end < len(full_text) else ""
     return prefix + truncated + suffix
+
+
+def _make_activity_state(interval: float = _SESSION_SEARCH_HEARTBEAT_INTERVAL) -> Dict[str, float]:
+    now = time.monotonic()
+    return {
+        "start": now,
+        "last_touch": 0.0,
+        "interval": interval,
+    }
+
+
+def _touch_session_search_activity(state: Optional[Dict[str, float]], label: str) -> None:
+    if state is None or touch_activity_if_due is None:
+        return
+    try:
+        touch_activity_if_due(state, label)
+    except Exception:
+        pass
+
+
+def _run_summary_job_with_heartbeat(
+    coro_factory,
+    *,
+    timeout_seconds: float = _SESSION_SEARCH_SUMMARY_TIMEOUT,
+    label: str = "session_search summarizing matching sessions",
+    activity_state: Optional[Dict[str, float]] = None,
+):
+    """Run the async summarization bridge with polling heartbeats and a hard wall-clock deadline.
+
+    ``session_search`` is a synchronous tool, but its summarizer path bridges into
+    async auxiliary LLM calls via ``model_tools._run_async``. That bridge can block
+    silently for a long time (provider stall, event-loop deadlock, client hang), and
+    without explicit heartbeats the gateway kills the whole agent for inactivity.
+
+    This helper runs the bridge on a daemon thread, emits periodic liveness touches,
+    and returns ``None`` on timeout so callers can degrade to raw previews instead of
+    hanging the entire conversation.
+    """
+    from model_tools import _run_async
+
+    outcome: Dict[str, Any] = {"result": None, "error": None}
+
+    def _target() -> None:
+        coro = coro_factory()
+        try:
+            outcome["result"] = _run_async(coro)
+        except Exception as exc:  # pragma: no cover - exercised via caller behavior
+            outcome["error"] = exc
+        finally:
+            if asyncio.iscoroutine(coro):
+                try:
+                    coro.close()
+                except Exception:
+                    pass
+
+    worker = threading.Thread(target=_target, daemon=True)
+    worker.start()
+    start = time.monotonic()
+
+    while worker.is_alive():
+        worker.join(timeout=_SESSION_SEARCH_POLL_INTERVAL)
+        if not worker.is_alive():
+            break
+        _touch_session_search_activity(activity_state, label)
+        if time.monotonic() - start >= timeout_seconds:
+            logging.warning(
+                "Session summarization exceeded %.1fs wall-clock deadline; returning raw previews",
+                timeout_seconds,
+            )
+            return None
+
+    if outcome["error"] is not None:
+        raise outcome["error"]
+    return outcome["result"]
+
+
+def _raw_preview_for_conversation(conversation_text: str) -> str:
+    preview = (conversation_text[:500] + "\n…[truncated]") if conversation_text else "No preview available."
+    return f"[Raw preview — summarization unavailable]\n{preview}"
+
+
+def _build_summary_entry(
+    session_id: str,
+    match_info: Dict[str, Any],
+    conversation_text: str,
+    summary_text: Optional[str],
+) -> Dict[str, Any]:
+    entry = {
+        "session_id": session_id,
+        "when": _format_timestamp(match_info.get("session_started")),
+        "source": match_info.get("source", "unknown"),
+        "model": match_info.get("model"),
+    }
+    entry["summary"] = summary_text or _raw_preview_for_conversation(conversation_text)
+    return entry
 
 
 async def _summarize_session(
@@ -326,8 +447,10 @@ def session_search(
         return _list_recent_sessions(db, limit, current_session_id)
 
     query = query.strip()
+    activity_state = _make_activity_state()
 
     try:
+        _touch_session_search_activity(activity_state, "session_search scanning session index")
         # Parse role filter
         role_list = None
         if role_filter and role_filter.strip():
@@ -405,6 +528,7 @@ def session_search(
         # Prepare all sessions for parallel summarization
         tasks = []
         for session_id, match_info in seen_sessions.items():
+            _touch_session_search_activity(activity_state, "session_search loading matched sessions")
             try:
                 messages = db.get_messages_as_conversation(session_id)
                 if not messages:
@@ -421,6 +545,16 @@ def session_search(
                     exc_info=True,
                 )
 
+        if not tasks:
+            return json.dumps({
+                "success": True,
+                "query": query,
+                "results": [],
+                "count": 0,
+                "sessions_searched": len(seen_sessions),
+                "message": "No matching sessions could be prepared.",
+            }, ensure_ascii=False)
+
         # Summarize all sessions in parallel
         async def _summarize_all() -> List[Union[str, Exception]]:
             """Summarize all sessions in parallel."""
@@ -430,24 +564,29 @@ def session_search(
             ]
             return await asyncio.gather(*coros, return_exceptions=True)
 
+        timeout_fallback = False
+        timeout_message = None
         try:
             # Use _run_async() which properly manages event loops across
-            # CLI, gateway, and worker-thread contexts.  The previous
-            # pattern (asyncio.run() in a ThreadPoolExecutor) created a
-            # disposable event loop that conflicted with cached
-            # AsyncOpenAI/httpx clients bound to a different loop,
-            # causing deadlocks in gateway mode (#2681).
-            from model_tools import _run_async
-            results = _run_async(_summarize_all())
-        except concurrent.futures.TimeoutError:
-            logging.warning(
-                "Session summarization timed out after 60 seconds",
-                exc_info=True,
+            # CLI, gateway, and worker-thread contexts. We wrap it in our own
+            # poll loop so session_search emits liveness heartbeats and keeps a
+            # consistent wall-clock deadline regardless of runtime context.
+            results = _run_summary_job_with_heartbeat(
+                _summarize_all,
+                activity_state=activity_state,
             )
-            return json.dumps({
-                "success": False,
-                "error": "Session summarization timed out. Try a more specific query or reduce the limit.",
-            }, ensure_ascii=False)
+            if results is None:
+                timeout_fallback = True
+                timeout_message = (
+                    "Session summarization timeout; returned raw previews instead of hanging the tool."
+                )
+                results = [None] * len(tasks)
+        except concurrent.futures.TimeoutError:
+            timeout_fallback = True
+            timeout_message = (
+                "Session summarization timeout; returned raw previews instead of hanging the tool."
+            )
+            results = [None] * len(tasks)
 
         summaries = []
         for (session_id, match_info, conversation_text, _), result in zip(tasks, results):
@@ -458,30 +597,21 @@ def session_search(
                 )
                 result = None
 
-            entry = {
-                "session_id": session_id,
-                "when": _format_timestamp(match_info.get("session_started")),
-                "source": match_info.get("source", "unknown"),
-                "model": match_info.get("model"),
-            }
+            summaries.append(
+                _build_summary_entry(session_id, match_info, conversation_text, result)
+            )
 
-            if result:
-                entry["summary"] = result
-            else:
-                # Fallback: raw preview so matched sessions aren't silently
-                # dropped when the summarizer is unavailable (fixes #3409).
-                preview = (conversation_text[:500] + "\n…[truncated]") if conversation_text else "No preview available."
-                entry["summary"] = f"[Raw preview — summarization unavailable]\n{preview}"
-
-            summaries.append(entry)
-
-        return json.dumps({
+        response = {
             "success": True,
             "query": query,
             "results": summaries,
             "count": len(summaries),
             "sessions_searched": len(seen_sessions),
-        }, ensure_ascii=False)
+        }
+        if timeout_message:
+            response["message"] = timeout_message
+            response["timeout_fallback"] = timeout_fallback
+        return json.dumps(response, ensure_ascii=False)
 
     except Exception as e:
         logging.error("Session search failed: %s", e, exc_info=True)

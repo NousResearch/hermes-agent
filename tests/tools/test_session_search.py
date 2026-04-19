@@ -1,6 +1,8 @@
 """Tests for tools/session_search_tool.py — helper functions and search dispatcher."""
 
+import concurrent.futures
 import json
+import threading
 import time
 import pytest
 
@@ -179,6 +181,16 @@ class TestTruncateAroundMatches:
         text = pre + match1 + gap + match2 + post
         result = _truncate_around_matches(text, "alpha beta")
         assert result.lower().count("alpha beta") == 2
+
+    def test_many_match_positions_finishes_quickly(self):
+        text = ("alpha " * 5000) + ("z" * (MAX_SESSION_CHARS + 1000))
+
+        start = time.perf_counter()
+        result = _truncate_around_matches(text, "alpha")
+        elapsed = time.perf_counter() - start
+
+        assert "alpha" in result.lower()
+        assert elapsed < 0.75
 
 
 # =========================================================================
@@ -375,3 +387,87 @@ class TestSessionSearch:
         assert result["count"] == 0
         assert result["results"] == []
         assert result["sessions_searched"] == 0
+
+    def test_summary_timeout_degrades_to_raw_preview(self, monkeypatch):
+        """If summarization times out, session_search should still return usable recall."""
+        from unittest.mock import MagicMock
+        from tools.session_search_tool import session_search
+
+        mock_db = MagicMock()
+        mock_db.search_messages.return_value = [
+            {
+                "session_id": "sid-1",
+                "content": "session_search timeout investigation",
+                "source": "telegram",
+                "session_started": 1709500000,
+                "model": "test-model",
+            },
+        ]
+        mock_db.get_session.return_value = {"parent_session_id": None, "source": "telegram"}
+        mock_db.get_messages_as_conversation.return_value = [
+            {"role": "user", "content": "Please investigate session_search timeout"},
+            {"role": "assistant", "content": "Looking into inactivity watchdog behavior."},
+        ]
+
+        monkeypatch.setattr(
+            "model_tools._run_async",
+            lambda coro: (_ for _ in ()).throw(concurrent.futures.TimeoutError()),
+        )
+
+        result = json.loads(session_search(query="session_search timeout", db=mock_db))
+
+        assert result["success"] is True
+        assert result["count"] == 1
+        assert result["results"][0]["session_id"] == "sid-1"
+        assert "[Raw preview" in result["results"][0]["summary"]
+        assert "timeout" in (result.get("message") or "").lower()
+
+    def test_heartbeats_while_waiting_for_session_summaries(self, monkeypatch):
+        """Long summarization waits should keep touching activity so gateway idle timers don't fire."""
+        from unittest.mock import MagicMock
+        import tools.session_search_tool as session_search_tool
+
+        mock_db = MagicMock()
+        mock_db.search_messages.return_value = [
+            {
+                "session_id": "sid-1",
+                "content": "LCM robustness",
+                "source": "telegram",
+                "session_started": 1709500000,
+                "model": "test-model",
+            },
+        ]
+        mock_db.get_session.return_value = {"parent_session_id": None, "source": "telegram"}
+        mock_db.get_messages_as_conversation.return_value = [
+            {"role": "user", "content": "Make LCM more robust"},
+            {"role": "assistant", "content": "Investigating session search stalls."},
+        ]
+
+        touch_calls = []
+
+        def _fake_touch(state, label):
+            touch_calls.append((state.copy(), label))
+
+        def _slow_run_async(_coro):
+            time.sleep(0.15)
+            return ["summary from slow async bridge"]
+
+        monkeypatch.setattr(session_search_tool, "touch_activity_if_due", _fake_touch, raising=False)
+        monkeypatch.setattr(session_search_tool, "_SESSION_SEARCH_HEARTBEAT_INTERVAL", 0.0, raising=False)
+        monkeypatch.setattr(session_search_tool, "_SESSION_SEARCH_POLL_INTERVAL", 0.01, raising=False)
+        monkeypatch.setattr("model_tools._run_async", _slow_run_async)
+
+        result_holder = {}
+
+        def _run_search():
+            result_holder["result"] = json.loads(
+                session_search_tool.session_search(query="LCM", db=mock_db)
+            )
+
+        worker = threading.Thread(target=_run_search)
+        worker.start()
+        worker.join(timeout=1.0)
+
+        assert not worker.is_alive(), "session_search thread got stuck during test"
+        assert result_holder["result"]["success"] is True
+        assert touch_calls, "Expected session_search to emit activity heartbeats while summarizing"

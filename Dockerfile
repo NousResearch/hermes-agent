@@ -12,7 +12,7 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/opt/hermes/.playwright
 # Install system dependencies in one layer, clear APT cache
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-        build-essential nodejs npm python3 ripgrep ffmpeg gcc python3-dev libffi-dev procps git && \
+        build-essential nodejs npm python3 ripgrep ffmpeg gcc python3-dev libffi-dev procps git rsync && \
     rm -rf /var/lib/apt/lists/*
 
 # Non-root user for runtime; UID can be overridden via HERMES_UID at runtime
@@ -48,6 +48,9 @@ RUN chown hermes:hermes /opt/hermes
 USER hermes
 RUN uv venv && \
     uv pip install --no-cache-dir -e ".[all]"
+
+# Swtich back to root to force HERMES_UID and HERMES_GID logic in entrypoint.sh to work correctly (i.e. if we created the hermes user with a different UID/GID, we want to be able to chown files to that UID/GID at runtime).
+USER root
 
 # ---------- Runtime ----------
 ENV HERMES_WEB_DIST=/opt/hermes/hermes_cli/web_dist

@@ -320,6 +320,10 @@ class FeishuGroupRule:
     policy: str  # "open" | "allowlist" | "blacklist" | "admin_only" | "disabled"
     allowlist: set[str] = field(default_factory=set)
     blacklist: set[str] = field(default_factory=set)
+    require_mention: bool = True
+    # When False, the bot responds to all messages from allowed senders without
+    # requiring an explicit @mention. Recommended for private groups containing
+    # only the owner and the bot.
 
 
 @dataclass
@@ -1111,6 +1115,7 @@ class FeishuAdapter(BasePlatformAdapter):
                     policy=str(rule_cfg.get("policy", "open")).strip().lower(),
                     allowlist=set(str(u).strip() for u in rule_cfg.get("allowlist", []) if str(u).strip()),
                     blacklist=set(str(u).strip() for u in rule_cfg.get("blacklist", []) if str(u).strip()),
+                    require_mention=_to_boolean(rule_cfg.get("require_mention", True)),
                 )
 
         # Bot-level admins
@@ -3234,6 +3239,10 @@ class FeishuAdapter(BasePlatformAdapter):
         """Require an explicit @mention before group messages enter the agent."""
         if not self._allow_group_message(sender_id, chat_id):
             return False
+        # Per-group mention gate: if disabled, accept all messages from allowed senders.
+        rule = self._group_rules.get(chat_id) if chat_id else None
+        if rule and not rule.require_mention:
+            return True
         # @_all is Feishu's @everyone placeholder — always route to the bot.
         raw_content = getattr(message, "content", "") or ""
         if "@_all" in raw_content:

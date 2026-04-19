@@ -172,20 +172,36 @@ def test_read_curses_key_uses_timeout_not_nodelay():
     assert delays[-1] <= 0, "timeout must be restored to blocking after decode"
 
 
-def test_curses_single_select_returns_none_when_stdin_not_tty():
-    """Headless invocations (piped stdin, CI) must return cancel without
-    blocking on input() — matching curses_checklist's behavior."""
+def test_curses_single_select_non_tty_honors_piped_numeric_choice():
+    """Scripted callers pipe a number into stdin (e.g. tests that exercise
+    _prompt_model_selection via echo "2\\n" | hermes model). The non-TTY path
+    must dispatch to the numbered fallback so those flows still resolve to a
+    concrete choice; collapsing straight to None was a P1 regression that
+    broke test_terminal_menu_fallbacks / test_custom_provider_model_switch."""
     from hermes_cli.curses_ui import curses_single_select
 
     with patch("sys.stdin") as mock_stdin, \
-         patch("builtins.input") as mock_input:
+         patch("builtins.input", return_value="2") as mock_input, \
+         patch("builtins.print"):
         mock_stdin.isatty.return_value = False
-        result = curses_single_select(
-            "Pick one", ["a", "b", "c"], default_index=0
-        )
+        result = curses_single_select("Pick one", ["a", "b", "c"], default_index=0)
+
+    assert result == 1, "piped '2' should select index 1 via numbered fallback"
+    assert mock_input.called
+
+
+def test_curses_single_select_non_tty_returns_none_on_eof():
+    """When piped stdin is exhausted, the numbered fallback raises EOFError,
+    which must surface as a clean cancel rather than propagating."""
+    from hermes_cli.curses_ui import curses_single_select
+
+    with patch("sys.stdin") as mock_stdin, \
+         patch("builtins.input", side_effect=EOFError), \
+         patch("builtins.print"):
+        mock_stdin.isatty.return_value = False
+        result = curses_single_select("Pick one", ["a", "b", "c"])
 
     assert result is None
-    assert not mock_input.called, "curses_single_select must not read stdin when non-TTY"
 
 
 def test_prompt_model_selection_header_aligns_with_curses_rows():

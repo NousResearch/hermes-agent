@@ -440,10 +440,14 @@ def curses_single_select(
     title_lines = title.splitlines() or [""]
 
     if not sys.stdin.isatty():
-        # Headless invocation (piped stdin, CI). Matches curses_checklist's
-        # behavior: return cancel rather than block on input() and silently
-        # consume piped bytes.
-        return None
+        # Headless invocation (piped stdin, scripted tests). Fall back to the
+        # numbered prompt so callers that feed a numeric choice through stdin
+        # keep working; _numbered_single_fallback catches EOFError and returns
+        # None when there is nothing to read, so truly detached contexts still
+        # cancel cleanly without blocking.
+        return _numbered_single_fallback(
+            title, all_items, cancel_idx, footer_lines=footer
+        )
 
     try:
         import curses

@@ -1276,7 +1276,7 @@ def main(
         runner.run(resume=resume)
     
     except Exception as e:
-        print(f"\n❌ Fatal error: {e}")
+        logger.error(f"Fatal error: {e}")
         if verbose:
             traceback.print_exc()
         return 1

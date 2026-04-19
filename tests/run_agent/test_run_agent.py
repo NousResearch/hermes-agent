@@ -1142,6 +1142,41 @@ class TestBuildAssistantMessage:
         result = agent._build_assistant_message(msg, "tool_calls")
         assert "extra_content" not in result["tool_calls"][0]
 
+    def test_think_blocks_stripped_from_content(self, agent):
+        """Inline <think> blocks are stripped from stored content (#8878, #9568).
+
+        The reasoning is captured into ``msg['reasoning']`` via the inline
+        fallback in ``_extract_reasoning``; the raw tags in ``content`` are
+        redundant and leak to messaging platforms / pollute titles /
+        inflate context if left in place.
+        """
+        msg = _mock_assistant_msg(
+            content="<think>internal reasoning</think>The actual answer."
+        )
+        result = agent._build_assistant_message(msg, "stop")
+        assert "<think>" not in result["content"]
+        assert "internal reasoning" not in result["content"]
+        assert "The actual answer." in result["content"]
+        # Reasoning preserved separately via inline extraction fallback
+        assert result["reasoning"] == "internal reasoning"
+
+    def test_think_blocks_stripped_preserves_normal_content(self, agent):
+        """Content without reasoning tags passes through unchanged."""
+        msg = _mock_assistant_msg(content="No thinking here.")
+        result = agent._build_assistant_message(msg, "stop")
+        assert result["content"] == "No thinking here."
+
+    def test_unterminated_think_block_stripped(self, agent):
+        """Unterminated <think> block (MiniMax / NIM dropped close tag) is
+        fully stripped from stored content."""
+        msg = _mock_assistant_msg(
+            content="<think>reasoning that never closes on this NIM endpoint"
+        )
+        result = agent._build_assistant_message(msg, "stop")
+        assert "<think>" not in result["content"]
+        assert "reasoning that never closes" not in result["content"]
+        assert result["content"] == ""
+
 
 class TestFormatToolsForSystemMessage:
     def test_no_tools_returns_empty_array(self, agent):

@@ -24,6 +24,7 @@ import secrets
 import string
 import time
 import urllib.parse
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -235,6 +236,28 @@ class TwitterAdapter(BasePlatformAdapter):
 
         # Stream reconnection state
         self._stream_backoff = RateLimitState()
+
+        # ---- New: rate-limit tweet queue ----
+        self._tweet_queue: asyncio.Queue = asyncio.Queue()
+        self._queue_processor_task: Optional[asyncio.Task] = None
+        self._queue_enabled: bool = os.getenv("TWITTER_TWEET_QUEUE", "true").lower() in (
+            "true", "1", "yes"
+        )
+
+        # ---- New: user profile cache (LRU with TTL) ----
+        self._user_cache: OrderedDict[str, Tuple[dict, float]] = OrderedDict()
+        self._user_cache_ttl: float = 3600.0  # 1 hour
+        self._user_cache_max: int = 256
+
+        # ---- New: bookmark sync config ----
+        self._bookmark_sync_enabled: bool = os.getenv(
+            "TWITTER_BOOKMARK_SYNC", "false"
+        ).lower() in ("true", "1", "yes")
+        self._bookmark_sync_task: Optional[asyncio.Task] = None
+        self._bookmark_last_seen: Optional[str] = None
+
+        # ---- New: conversation depth config ----
+        self._conversation_depth: int = int(os.getenv("TWITTER_CONVERSATION_DEPTH", "3"))
 
         # Load persisted refresh token as fallback
         self._load_initial_tokens()
@@ -496,6 +519,19 @@ class TwitterAdapter(BasePlatformAdapter):
         await self._resolve_bot_identity()
 
         self._running = True
+
+        # Start tweet queue processor
+        if self._queue_enabled:
+            self._queue_processor_task = asyncio.ensure_future(
+                self._process_tweet_queue()
+            )
+
+        # Start bookmark sync if enabled
+        if self._bookmark_sync_enabled:
+            self._bookmark_sync_task = asyncio.ensure_future(
+                self._bookmark_sync_loop()
+            )
+
         self._mark_connected()
 
         # Start filtered stream for DMs
@@ -511,6 +547,18 @@ class TwitterAdapter(BasePlatformAdapter):
             self._stream_task.cancel()
             try:
                 await self._stream_task
+            except asyncio.CancelledError:
+                pass
+        if self._queue_processor_task and not self._queue_processor_task.done():
+            self._queue_processor_task.cancel()
+            try:
+                await self._queue_processor_task
+            except asyncio.CancelledError:
+                pass
+        if self._bookmark_sync_task and not self._bookmark_sync_task.done():
+            self._bookmark_sync_task.cancel()
+            try:
+                await self._bookmark_sync_task
             except asyncio.CancelledError:
                 pass
         if self._client and not self._client.is_closed:
@@ -669,6 +717,15 @@ class TwitterAdapter(BasePlatformAdapter):
             message_id=msg_id,
             timestamp=self._parse_timestamp(data.get("created_at")),
         )
+
+        # Enrich with user profile context
+        try:
+            user_profile = await self._get_user_context(sender_id)
+            user_ctx = self._format_user_context(user_profile)
+            if user_ctx and user_ctx != "No profile info":
+                msg_event.channel_prompt = f"[Sender context] {user_ctx}"
+        except Exception as exc:
+            logger.debug("User enrichment failed for %s: %s", sender_id, exc)
 
         await self.handle_message(msg_event)
 
@@ -896,6 +953,483 @@ class TwitterAdapter(BasePlatformAdapter):
         return media_id
 
     # ------------------------------------------------------------------
+    # Conversation context & user enrichment (NEW)
+    # ------------------------------------------------------------------
+
+    async def _get_user_context(self, user_id: str) -> dict:
+        """Fetch and cache a user's profile for enrichment.
+
+        Caches results for 1 hour using an LRU dict with TTL.
+        Returns dict with: display_name, username, bio, follower_count,
+        verified.
+        """
+        now = time.time()
+        cached = self._user_cache.get(user_id)
+        if cached:
+            profile, ts = cached
+            if now - ts < self._user_cache_ttl:
+                # Move to end (most-recently used)
+                self._user_cache.move_to_end(user_id)
+                return profile
+
+        code, data = await self._api_request(
+            "GET",
+            f"{TWITTER_API_BASE}/2/users/{user_id}",
+            params={
+                "user.fields": "description,public_metrics,verified,name,username",
+            },
+        )
+        if code == 200 and "data" in data:
+            u = data["data"]
+            metrics = u.get("public_metrics", {})
+            profile = {
+                "display_name": u.get("name", ""),
+                "username": u.get("username", ""),
+                "bio": u.get("description", ""),
+                "follower_count": metrics.get("followers_count", 0),
+                "following_count": metrics.get("following_count", 0),
+                "tweet_count": metrics.get("tweet_count", 0),
+                "verified": u.get("verified", False),
+            }
+        else:
+            profile = {
+                "display_name": "",
+                "username": "",
+                "bio": "",
+                "follower_count": 0,
+                "following_count": 0,
+                "tweet_count": 0,
+                "verified": False,
+            }
+
+        # Evict oldest if at capacity
+        if len(self._user_cache) >= self._user_cache_max:
+            self._user_cache.popitem(last=False)
+
+        self._user_cache[user_id] = (profile, now)
+        return profile
+
+    def _format_user_context(self, profile: dict) -> str:
+        """Format a user profile dict into a human-readable string."""
+        parts = []
+        if profile.get("display_name"):
+            parts.append(f"Name: {profile['display_name']}")
+        if profile.get("username"):
+            parts.append(f"@{profile['username']}")
+        if profile.get("bio"):
+            parts.append(f"Bio: {profile['bio'][:200]}")
+        if profile.get("follower_count", 0) > 0:
+            parts.append(f"Followers: {profile['follower_count']:,}")
+        if profile.get("verified"):
+            parts.append("Verified: yes")
+        return " | ".join(parts) if parts else "No profile info"
+
+    async def _get_conversation_context(
+        self, tweet_data: dict, max_depth: Optional[int] = None
+    ) -> str:
+        """Fetch parent tweets referenced by *tweet_data* for context.
+
+        Follows the referenced_tweets chain up to *max_depth* levels
+        (default: self._conversation_depth).  Returns a formatted string
+        suitable for inclusion in the agent's context.
+        """
+        if max_depth is None:
+            max_depth = self._conversation_depth
+
+        refs = tweet_data.get("referenced_tweets", [])
+        if not refs:
+            return ""
+
+        context_lines: List[str] = []
+        visited: set = set()
+
+        for ref in refs[:3]:  # process up to 3 referenced tweets per level
+            ref_type = ref.get("type", "")
+            ref_id = ref.get("id", "")
+            if not ref_id:
+                continue
+            # Don't add to visited here — _fetch_single_tweet_context checks it
+            if ref_id in visited:
+                continue
+
+            ctx = await self._fetch_single_tweet_context(
+                ref_id, ref_type, depth=0, max_depth=max_depth, visited=visited
+            )
+            if ctx:
+                context_lines.append(ctx)
+                visited.add(ref_id)  # Mark as processed after successful fetch
+
+        return "\n".join(context_lines)
+
+    async def _fetch_single_tweet_context(
+        self,
+        tweet_id: str,
+        ref_type: str,
+        depth: int,
+        max_depth: int,
+        visited: set,
+    ) -> str:
+        """Fetch a single tweet and build a context string, recursing into
+        referenced tweets up to *max_depth*."""
+        if depth >= max_depth or tweet_id in visited:
+            return ""
+
+        code, data = await self._api_request(
+            "GET",
+            f"{TWITTER_API_BASE}/2/tweets/{tweet_id}",
+            params={
+                "tweet.fields": "conversation_id,text,author_id,created_at",
+                "expansions": "author_id,referenced_tweets.id",
+                "user.fields": "username,name",
+            },
+        )
+        if code != 200 or "data" not in data:
+            return ""
+
+        tw = data["data"]
+        text = tw.get("text", "")
+        author_id = tw.get("author_id", "")
+
+        # Resolve author username from includes
+        author_name = author_id
+        for u in data.get("includes", {}).get("users", []):
+            if u.get("id") == author_id:
+                author_name = f"@{u.get('username', author_id)}"
+                break
+
+        type_label = {"replied_to": "In reply to", "quoted": "Quoting"}.get(
+            ref_type, "Referenced"
+        )
+        line = f"{type_label} {author_name}: \"{text[:280]}\""
+        lines = [line]
+
+        # Recurse into this tweet's references
+        nested_refs = tw.get("referenced_tweets", [])
+        for nref in nested_refs[:2]:
+            nid = nref.get("id", "")
+            if nid and nid not in visited:
+                visited.add(nid)
+                nested = await self._fetch_single_tweet_context(
+                    nid, nref.get("type", ""), depth + 1, max_depth, visited
+                )
+                if nested:
+                    lines.append(f"  {nested}")
+
+        return "\n".join(lines)
+
+    async def _build_conversation_tree(
+        self, tweet_id: str, max_depth: int = 5
+    ) -> str:
+        """Recursively fetch the reply chain starting from *tweet_id*.
+
+        Returns a formatted conversation tree string.  Useful for complex
+        thread context when the agent needs the full picture.
+        """
+        parts: List[str] = []
+        visited: set = set()
+        current_id = tweet_id
+        depth = 0
+
+        while current_id and depth < max_depth and current_id not in visited:
+            visited.add(current_id)
+            code, data = await self._api_request(
+                "GET",
+                f"{TWITTER_API_BASE}/2/tweets/{current_id}",
+                params={
+                    "tweet.fields": "text,author_id,conversation_id,created_at",
+                    "expansions": "author_id,referenced_tweets.id",
+                    "user.fields": "username,name",
+                },
+            )
+            if code != 200 or "data" not in data:
+                break
+
+            tw = data["data"]
+            author_id = tw.get("author_id", "")
+            author_name = author_id
+            for u in data.get("includes", {}).get("users", []):
+                if u.get("id") == author_id:
+                    author_name = f"@{u.get('username', author_id)}"
+                    break
+
+            indent = "  " * depth
+            parts.append(f"{indent}{author_name}: \"{tw.get('text', '')[:280]}\"")
+
+            # Find the parent tweet this was replying to
+            parent_id = None
+            for ref in tw.get("referenced_tweets", []):
+                if ref.get("type") == "replied_to":
+                    parent_id = ref.get("id")
+                    break
+
+            current_id = parent_id
+            depth += 1
+
+        return "\n".join(reversed(parts))
+
+    # ------------------------------------------------------------------
+    # Tweet metrics (NEW)
+    # ------------------------------------------------------------------
+
+    async def _get_tweet_metrics(self, tweet_id: str) -> dict:
+        """Fetch engagement metrics for a tweet.
+
+        GET /2/tweets/:id?tweet.fields=public_metrics
+        Returns dict with: like_count, retweet_count, reply_count,
+        quote_count, impression_count.
+        """
+        code, data = await self._api_request(
+            "GET",
+            f"{TWITTER_API_BASE}/2/tweets/{tweet_id}",
+            params={"tweet.fields": "public_metrics"},
+        )
+        if code == 200 and "data" in data:
+            pm = data["data"].get("public_metrics", {})
+            return {
+                "like_count": pm.get("like_count", 0),
+                "retweet_count": pm.get("retweet_count", 0),
+                "reply_count": pm.get("reply_count", 0),
+                "quote_count": pm.get("quote_count", 0),
+                "impression_count": pm.get("impression_count", 0),
+                "bookmark_count": pm.get("bookmark_count", 0),
+            }
+        return {
+            "like_count": 0,
+            "retweet_count": 0,
+            "reply_count": 0,
+            "quote_count": 0,
+            "impression_count": 0,
+            "bookmark_count": 0,
+        }
+
+    # ------------------------------------------------------------------
+    # Rate-limit tweet queue (NEW)
+    # ------------------------------------------------------------------
+
+    async def _process_tweet_queue(self) -> None:
+        """Background task that drains the tweet queue with rate-limit delay.
+
+        Items in the queue are tuples of
+        (payload_dict, future_to_set_result).
+        """
+        logger.info("Twitter tweet queue processor started")
+        while self._running:
+            try:
+                item = await asyncio.wait_for(self._tweet_queue.get(), timeout=5.0)
+            except asyncio.TimeoutError:
+                continue
+            except asyncio.CancelledError:
+                return
+
+            payload, result_future = item
+
+            if self._rate_limit.should_backoff():
+                wait = self._rate_limit.remaining_wait()
+                logger.info(
+                    "Tweet queue: rate-limited, waiting %.1fs (queue depth: %d)",
+                    wait,
+                    self._tweet_queue.qsize(),
+                )
+                await asyncio.sleep(wait)
+
+            code, data = await self._api_request(
+                "POST",
+                f"{TWITTER_API_BASE}/2/tweets",
+                json_body=payload,
+            )
+
+            if code == 429 and self._queue_enabled:
+                # Re-enqueue and wait
+                retry_after = 30.0
+                logger.warning(
+                    "Tweet queue: hit 429, re-enqueueing (depth: %d)",
+                    self._tweet_queue.qsize() + 1,
+                )
+                await self._tweet_queue.put((payload, result_future))
+                await asyncio.sleep(retry_after)
+                continue
+
+            if not result_future.cancelled():
+                result_future.set_result((code, data))
+
+            # Delay between tweets to stay within rate limits
+            await asyncio.sleep(1.0)
+
+        logger.info("Twitter tweet queue processor stopped")
+
+    async def _enqueue_tweet(self, payload: dict, timeout: float = 60.0) -> Tuple[int, dict]:
+        """Enqueue a tweet for rate-limit-aware posting.
+
+        Returns (status_code, data) when the tweet is processed.
+        """
+        loop = asyncio.get_event_loop()
+        future: asyncio.Future = loop.create_future()
+        await self._tweet_queue.put((payload, future))
+        logger.debug("Tweet enqueued (queue depth: %d)", self._tweet_queue.qsize())
+        try:
+            return await asyncio.wait_for(future, timeout=timeout)
+        except asyncio.TimeoutError:
+            logger.error("Tweet queue: timeout waiting for tweet to be processed")
+            return 0, {}
+
+    # ------------------------------------------------------------------
+    # Thread builder (NEW)
+    # ------------------------------------------------------------------
+
+    async def send_thread(
+        self,
+        texts: List[str],
+        reply_to: Optional[str] = None,
+    ) -> List[str]:
+        """Post multiple tweets as a reply chain (thread).
+
+        Each tweet after the first references the previous tweet's ID.
+        Returns a list of tweet IDs in order.
+        If *reply_to* is given, the first tweet replies to that tweet ID.
+
+        Respects rate limits by inserting a 1-second delay between posts.
+        """
+        tweet_ids: List[str] = []
+        prev_id = reply_to
+
+        for text in texts:
+            text = self.format_message(text)
+            if len(text) > MAX_TWEET_LENGTH:
+                text = text[: MAX_TWEET_LENGTH - 1] + "…"
+
+            payload: Dict[str, Any] = {"text": text}
+            if prev_id:
+                payload["reply"] = {"in_reply_to_tweet_id": prev_id}
+
+            code, data = await self._api_request(
+                "POST",
+                f"{TWITTER_API_BASE}/2/tweets",
+                json_body=payload,
+            )
+            if code not in (200, 201):
+                logger.error(
+                    "Thread tweet %d/%d failed (HTTP %d): %s",
+                    len(tweet_ids) + 1,
+                    len(texts),
+                    code,
+                    _truncate_for_log(json.dumps(data)),
+                )
+                break
+
+            tid = data.get("data", {}).get("id")
+            if not tid:
+                logger.error("Thread: no tweet ID in response")
+                break
+            tweet_ids.append(tid)
+            prev_id = tid
+
+            # Rate-limit delay between thread posts
+            if len(tweet_ids) < len(texts):
+                await asyncio.sleep(1.0)
+
+        logger.info(
+            "Posted thread: %d/%d tweets successful", len(tweet_ids), len(texts)
+        )
+        return tweet_ids
+
+    # ------------------------------------------------------------------
+    # Bookmark sync (NEW)
+    # ------------------------------------------------------------------
+
+    async def _bookmark_sync_loop(self) -> None:
+        """Periodically check for new bookmarked tweets."""
+        logger.info("Twitter bookmark sync started")
+        while self._running:
+            try:
+                await self._process_bookmarks()
+            except asyncio.CancelledError:
+                return
+            except Exception as exc:
+                logger.error(
+                    "Bookmark sync error: %s",
+                    _truncate_for_log(str(exc)),
+                )
+            # Check every 5 minutes
+            await asyncio.sleep(300)
+
+    async def _process_bookmarks(self) -> None:
+        """Fetch bookmarked tweets and dispatch as context events to agent.
+
+        Only processes bookmarks newer than _bookmark_last_seen.
+        """
+        params: Dict[str, Any] = {
+            "tweet.fields": "text,author_id,created_at,conversation_id",
+            "expansions": "author_id,referenced_tweets.id",
+            "user.fields": "username,name",
+            "max_results": "50",
+        }
+        if self._bookmark_last_seen:
+            params["since_id"] = self._bookmark_last_seen
+
+        code, data = await self._api_request(
+            "GET",
+            f"{TWITTER_API_BASE}/2/users/me/bookmarks",
+            params=params,
+        )
+        if code != 200:
+            logger.debug(
+                "Bookmark fetch returned %d: %s",
+                code,
+                _truncate_for_log(json.dumps(data)),
+            )
+            return
+
+        tweets = data.get("data", [])
+        if not tweets:
+            return
+
+        # Update cursor to newest bookmark
+        newest_id = tweets[0].get("id")
+        if newest_id:
+            self._bookmark_last_seen = newest_id
+
+        logger.info("Bookmark sync: processing %d bookmarked tweets", len(tweets))
+
+        # Build user lookup from includes
+        user_map: Dict[str, str] = {}
+        for u in data.get("includes", {}).get("users", []):
+            user_map[u.get("id", "")] = u.get("username", "")
+
+        for tw in tweets:
+            author_id = tw.get("author_id", "")
+            author_name = f"@{user_map.get(author_id, author_id)}"
+            text = tw.get("text", "")
+            tweet_id = tw.get("id", "")
+
+            # Build context with conversation thread if available
+            context_parts = [f"Bookmarked tweet by {author_name}: \"{text}\""]
+            refs = tw.get("referenced_tweets", [])
+            for ref in refs:
+                if ref.get("type") == "replied_to":
+                    ctx = await self._get_conversation_context(tw)
+                    if ctx:
+                        context_parts.append(f"Context: {ctx}")
+
+            source = self.build_source(
+                chat_id="bookmarks",
+                chat_name="Twitter Bookmarks",
+                chat_type="bookmark",
+                user_id=author_id,
+                user_name=author_name,
+            )
+
+            msg_event = MessageEvent(
+                text="\n".join(context_parts),
+                message_type=MessageType.TEXT,
+                source=source,
+                raw_message=tw,
+                message_id=tweet_id,
+                timestamp=self._parse_timestamp(tw.get("created_at")),
+            )
+
+            await self.handle_message(msg_event)
+
+    # ------------------------------------------------------------------
     # Platform adapter interface
     # ------------------------------------------------------------------
 
@@ -908,8 +1442,13 @@ class TwitterAdapter(BasePlatformAdapter):
         chat_id: str,
         image_url: str,
         caption: str = "",
+        *,
+        alt_text: Optional[str] = None,
     ) -> SendResult:
-        """Post a tweet with an image."""
+        """Post a tweet with an image.
+
+        *alt_text* is set on the uploaded media for accessibility.
+        """
         # Download the image
         try:
             resp = await self._http_client().get(image_url)
@@ -924,6 +1463,10 @@ class TwitterAdapter(BasePlatformAdapter):
         media_id = await self.upload_media(media_bytes)
         if not media_id:
             return SendResult(success=False, error="Media upload failed")
+
+        # Set alt text on the media if provided
+        if alt_text:
+            await self._set_media_alt_text(media_id, alt_text)
 
         payload: Dict[str, Any] = {
             "text": caption or "",
@@ -944,6 +1487,40 @@ class TwitterAdapter(BasePlatformAdapter):
 
         tweet_id = data.get("data", {}).get("id")
         return SendResult(success=True, message_id=tweet_id)
+
+    async def _set_media_alt_text(self, media_id: str, alt_text: str) -> bool:
+        """Set alt text on an uploaded media object.
+
+        Uses the legacy media metadata endpoint.
+        POST /1.1/media/metadata/create.json
+        """
+        await self._ensure_valid_token()
+        try:
+            resp = await self._http_client().post(
+                f"{TWITTER_UPLOAD_BASE}/1.1/media/metadata/create.json",
+                headers=self._auth_headers(),
+                json={
+                    "media_id": media_id,
+                    "alt_text": {"text": alt_text[:1000]},
+                },
+            )
+            if resp.status_code in (200, 201, 204):
+                logger.debug("Set alt text for media %s", media_id)
+                return True
+            logger.warning(
+                "Failed to set alt text for media %s (HTTP %d): %s",
+                media_id,
+                resp.status_code,
+                _truncate_for_log(resp.text),
+            )
+            return False
+        except httpx.HTTPError as exc:
+            logger.warning(
+                "Alt text network error for media %s: %s",
+                media_id,
+                _truncate_for_log(str(exc)),
+            )
+            return False
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Get information about a Twitter user or conversation."""

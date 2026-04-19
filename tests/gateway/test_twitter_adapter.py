@@ -1225,3 +1225,605 @@ class TestConnectionLifecycle:
 
         assert not adapter._running
         client.aclose.assert_called_once()
+
+
+# ===========================================================================
+# 17. User profile enrichment (NEW)
+# ===========================================================================
+
+class TestUserEnrichment:
+    """Verify user profile fetching with LRU cache."""
+
+    @pytest.mark.asyncio
+    async def test_get_user_context_success(self):
+        adapter = _make_adapter()
+        user_data = {
+            "data": {
+                "name": "Alice Smith",
+                "username": "alice",
+                "description": "Software developer",
+                "verified": True,
+                "public_metrics": {
+                    "followers_count": 1500,
+                    "following_count": 300,
+                    "tweet_count": 5000,
+                },
+            }
+        }
+        adapter._api_request = AsyncMock(return_value=(200, user_data))
+
+        profile = await adapter._get_user_context("user_123")
+        assert profile["display_name"] == "Alice Smith"
+        assert profile["username"] == "alice"
+        assert profile["bio"] == "Software developer"
+        assert profile["follower_count"] == 1500
+        assert profile["verified"] is True
+
+    @pytest.mark.asyncio
+    async def test_get_user_context_caching(self):
+        adapter = _make_adapter()
+        user_data = {
+            "data": {
+                "name": "Bob",
+                "username": "bob",
+                "description": "",
+                "public_metrics": {"followers_count": 100},
+            }
+        }
+        adapter._api_request = AsyncMock(return_value=(200, user_data))
+
+        # First call — fetches from API
+        await adapter._get_user_context("user_456")
+        assert adapter._api_request.call_count == 1
+
+        # Second call — should use cache
+        await adapter._get_user_context("user_456")
+        assert adapter._api_request.call_count == 1  # No additional API call
+
+    @pytest.mark.asyncio
+    async def test_get_user_context_cache_expiry(self):
+        adapter = _make_adapter()
+        adapter._user_cache_ttl = 0.1  # 100ms TTL for test
+        user_data = {"data": {"name": "Test", "username": "test", "public_metrics": {}}}
+        adapter._api_request = AsyncMock(return_value=(200, user_data))
+
+        await adapter._get_user_context("user_ttl")
+        assert adapter._api_request.call_count == 1
+
+        # Wait for cache to expire
+        await asyncio.sleep(0.15)
+
+        await adapter._get_user_context("user_ttl")
+        assert adapter._api_request.call_count == 2  # Re-fetched
+
+    @pytest.mark.asyncio
+    async def test_get_user_context_api_failure(self):
+        adapter = _make_adapter()
+        adapter._api_request = AsyncMock(return_value=(404, {}))
+
+        profile = await adapter._get_user_context("nonexistent")
+        assert profile["display_name"] == ""
+        assert profile["follower_count"] == 0
+
+    def test_format_user_context(self):
+        adapter = _make_adapter()
+        profile = {
+            "display_name": "Alice",
+            "username": "alice",
+            "bio": "Developer",
+            "follower_count": 500,
+            "verified": False,
+        }
+        result = adapter._format_user_context(profile)
+        assert "Alice" in result
+        assert "@alice" in result
+        assert "Developer" in result
+        assert "500" in result
+
+    def test_format_user_context_empty(self):
+        adapter = _make_adapter()
+        result = adapter._format_user_context({})
+        assert result == "No profile info"
+
+    @pytest.mark.asyncio
+    async def test_lru_eviction(self):
+        adapter = _make_adapter()
+        adapter._user_cache_max = 3
+        user_counter = [0]
+
+        async def mock_api(method, url, **kwargs):
+            idx = user_counter[0]
+            return 200, {
+                "data": {
+                    "name": f"User{idx}",
+                    "username": f"user{idx}",
+                    "public_metrics": {"followers_count": idx},
+                }
+            }
+
+        adapter._api_request = AsyncMock(side_effect=mock_api)
+
+        # Fill cache to capacity
+        for i in range(3):
+            user_counter[0] = i
+            await adapter._get_user_context(f"uid_{i}")
+
+        assert len(adapter._user_cache) == 3
+
+        # Adding one more should evict the oldest
+        user_counter[0] = 3
+        await adapter._get_user_context("uid_3")
+
+        assert len(adapter._user_cache) == 3  # Still at capacity
+        assert "uid_0" not in adapter._user_cache  # Oldest evicted
+        assert "uid_3" in adapter._user_cache  # Newest present
+
+
+# ===========================================================================
+# 18. Conversation context fetching (NEW)
+# ===========================================================================
+
+class TestConversationContext:
+    """Verify conversation context fetching from referenced tweets."""
+
+    @pytest.mark.asyncio
+    async def test_get_conversation_context_reply(self):
+        adapter = _make_adapter()
+        tweet_data = {
+            "referenced_tweets": [
+                {"type": "replied_to", "id": "parent_1"}
+            ]
+        }
+
+        async def mock_api(method, url, **kwargs):
+            if "parent_1" in url:
+                return 200, {
+                    "data": {
+                        "text": "Original tweet text",
+                        "author_id": "author_1",
+                    },
+                    "includes": {
+                        "users": [{"id": "author_1", "username": "bob"}]
+                    },
+                }
+            return 200, {}
+
+        adapter._api_request = AsyncMock(side_effect=mock_api)
+
+        context = await adapter._get_conversation_context(tweet_data)
+        assert "In reply to" in context
+        assert "@bob" in context
+        assert "Original tweet text" in context
+
+    @pytest.mark.asyncio
+    async def test_get_conversation_context_no_refs(self):
+        adapter = _make_adapter()
+        tweet_data = {"referenced_tweets": []}
+        context = await adapter._get_conversation_context(tweet_data)
+        assert context == ""
+
+    @pytest.mark.asyncio
+    async def test_get_conversation_context_nested(self):
+        adapter = _make_adapter()
+        adapter._conversation_depth = 3
+        tweet_data = {
+            "referenced_tweets": [
+                {"type": "replied_to", "id": "level1"}
+            ]
+        }
+
+        async def mock_api(method, url, **kwargs):
+            if "level1" in url:
+                return 200, {
+                    "data": {
+                        "text": "Level 1 reply",
+                        "author_id": "a1",
+                        "referenced_tweets": [
+                            {"type": "replied_to", "id": "level0"}
+                        ],
+                    },
+                    "includes": {"users": [{"id": "a1", "username": "user1"}]},
+                }
+            if "level0" in url:
+                return 200, {
+                    "data": {
+                        "text": "Level 0 original",
+                        "author_id": "a0",
+                    },
+                    "includes": {"users": [{"id": "a0", "username": "user0"}]},
+                }
+            return 200, {}
+
+        adapter._api_request = AsyncMock(side_effect=mock_api)
+
+        context = await adapter._get_conversation_context(tweet_data)
+        assert "@user1" in context
+        assert "Level 1 reply" in context
+
+    @pytest.mark.asyncio
+    async def test_get_conversation_context_max_depth(self):
+        adapter = _make_adapter()
+        adapter._conversation_depth = 1  # Only 1 level deep
+
+        tweet_data = {
+            "referenced_tweets": [{"type": "replied_to", "id": "t1"}]
+        }
+
+        async def mock_api(method, url, **kwargs):
+            if "t1" in url:
+                return 200, {
+                    "data": {
+                        "text": "T1",
+                        "author_id": "a1",
+                        "referenced_tweets": [
+                            {"type": "replied_to", "id": "t0"}
+                        ],
+                    },
+                    "includes": {"users": [{"id": "a1", "username": "u1"}]},
+                }
+            return 200, {}
+
+        adapter._api_request = AsyncMock(side_effect=mock_api)
+        context = await adapter._get_conversation_context(tweet_data)
+        # Should have T1 but not follow to t0 due to depth limit
+        assert "T1" in context
+
+
+# ===========================================================================
+# 19. Conversation tree building (NEW)
+# ===========================================================================
+
+class TestConversationTree:
+    """Verify conversation tree building."""
+
+    @pytest.mark.asyncio
+    async def test_build_conversation_tree(self):
+        adapter = _make_adapter()
+
+        async def mock_api(method, url, **kwargs):
+            if "tweet_2" in url:
+                return 200, {
+                    "data": {
+                        "text": "Reply tweet",
+                        "author_id": "user_b",
+                        "referenced_tweets": [
+                            {"type": "replied_to", "id": "tweet_1"}
+                        ],
+                    },
+                    "includes": {"users": [{"id": "user_b", "username": "bob"}]},
+                }
+            if "tweet_1" in url:
+                return 200, {
+                    "data": {
+                        "text": "Original tweet",
+                        "author_id": "user_a",
+                    },
+                    "includes": {"users": [{"id": "user_a", "username": "alice"}]},
+                }
+            return 404, {}
+
+        adapter._api_request = AsyncMock(side_effect=mock_api)
+
+        tree = await adapter._build_conversation_tree("tweet_2", max_depth=3)
+        assert "@alice" in tree
+        assert "@bob" in tree
+        assert "Original tweet" in tree
+        assert "Reply tweet" in tree
+
+    @pytest.mark.asyncio
+    async def test_build_conversation_tree_api_error(self):
+        adapter = _make_adapter()
+        adapter._api_request = AsyncMock(return_value=(404, {}))
+
+        tree = await adapter._build_conversation_tree("nonexistent")
+        assert tree == ""
+
+
+# ===========================================================================
+# 20. Tweet metrics (NEW)
+# ===========================================================================
+
+class TestTweetMetrics:
+    """Verify tweet metrics fetching."""
+
+    @pytest.mark.asyncio
+    async def test_get_tweet_metrics_success(self):
+        adapter = _make_adapter()
+        adapter._api_request = AsyncMock(return_value=(200, {
+            "data": {
+                "public_metrics": {
+                    "like_count": 42,
+                    "retweet_count": 10,
+                    "reply_count": 5,
+                    "quote_count": 3,
+                    "impression_count": 1000,
+                    "bookmark_count": 8,
+                }
+            }
+        }))
+
+        metrics = await adapter._get_tweet_metrics("tweet_123")
+        assert metrics["like_count"] == 42
+        assert metrics["retweet_count"] == 10
+        assert metrics["impression_count"] == 1000
+        assert metrics["bookmark_count"] == 8
+
+    @pytest.mark.asyncio
+    async def test_get_tweet_metrics_api_error(self):
+        adapter = _make_adapter()
+        adapter._api_request = AsyncMock(return_value=(404, {}))
+
+        metrics = await adapter._get_tweet_metrics("bad_id")
+        assert metrics["like_count"] == 0
+        assert metrics["impression_count"] == 0
+
+
+# ===========================================================================
+# 21. Thread builder (NEW)
+# ===========================================================================
+
+class TestThreadBuilder:
+    """Verify the explicit thread builder method."""
+
+    @pytest.mark.asyncio
+    async def test_send_thread_creates_chain(self):
+        adapter = _make_adapter()
+
+        call_log = []
+
+        async def mock_api(method, url, **kwargs):
+            if method == "POST" and "/tweets" in url:
+                body = kwargs.get("json_body", {})
+                call_log.append(body)
+                tid = f"t{len(call_log)}"
+                return 201, {"data": {"id": tid}}
+            return 200, {}
+
+        adapter._api_request = AsyncMock(side_effect=mock_api)
+
+        ids = await adapter.send_thread(["First", "Second", "Third"])
+        assert len(ids) == 3
+        assert ids == ["t1", "t2", "t3"]
+
+        # Verify chaining
+        assert "reply" not in call_log[0]  # No parent for first tweet
+        assert call_log[1]["reply"]["in_reply_to_tweet_id"] == "t1"
+        assert call_log[2]["reply"]["in_reply_to_tweet_id"] == "t2"
+
+    @pytest.mark.asyncio
+    async def test_send_thread_with_reply_to(self):
+        adapter = _make_adapter()
+
+        call_log = []
+
+        async def mock_api(method, url, **kwargs):
+            if method == "POST" and "/tweets" in url:
+                body = kwargs.get("json_body", {})
+                call_log.append(body)
+                return 201, {"data": {f"id": f"t{len(call_log)}"}}
+            return 200, {}
+
+        adapter._api_request = AsyncMock(side_effect=mock_api)
+
+        ids = await adapter.send_thread(["A", "B"], reply_to="parent_tweet")
+        assert len(ids) == 2
+        assert call_log[0]["reply"]["in_reply_to_tweet_id"] == "parent_tweet"
+        assert call_log[1]["reply"]["in_reply_to_tweet_id"] == "t1"
+
+    @pytest.mark.asyncio
+    async def test_send_thread_stops_on_error(self):
+        adapter = _make_adapter()
+
+        async def mock_api(method, url, **kwargs):
+            if method == "POST" and "/tweets" in url:
+                return 403, {"error": "forbidden"}
+            return 200, {}
+
+        adapter._api_request = AsyncMock(side_effect=mock_api)
+
+        ids = await adapter.send_thread(["First", "Second"])
+        assert len(ids) == 0
+
+
+# ===========================================================================
+# 22. Image alt text (NEW)
+# ===========================================================================
+
+class TestImageAltText:
+    """Verify image alt text support."""
+
+    @pytest.mark.asyncio
+    async def test_send_image_with_alt_text(self):
+        adapter = _make_adapter()
+        adapter._access_token = "fake"
+        adapter._token_expiry = time.time() + 3600
+
+        adapter.upload_media = AsyncMock(return_value="media_123")
+        adapter._set_media_alt_text = AsyncMock(return_value=True)
+        adapter._api_request = AsyncMock(return_value=(201, {"data": {"id": "tweet_1"}}))
+
+        client = MagicMock()
+        client.is_closed = False
+        img_resp = MagicMock()
+        img_resp.status_code = 200
+        img_resp.content = b"\xff\xd8\xff" + b"\x00" * 100
+        img_resp.raise_for_status = MagicMock()
+        client.get = AsyncMock(return_value=img_resp)
+        adapter._client = client
+
+        result = await adapter.send_image(
+            "ignored", "https://example.com/img.jpg",
+            caption="Look at this!", alt_text="A beautiful sunset"
+        )
+        assert result.success
+        adapter._set_media_alt_text.assert_called_once_with("media_123", "A beautiful sunset")
+
+    @pytest.mark.asyncio
+    async def test_send_image_without_alt_text(self):
+        adapter = _make_adapter()
+        adapter._access_token = "fake"
+        adapter._token_expiry = time.time() + 3600
+
+        adapter.upload_media = AsyncMock(return_value="media_456")
+        adapter._set_media_alt_text = AsyncMock()
+        adapter._api_request = AsyncMock(return_value=(201, {"data": {"id": "tweet_2"}}))
+
+        client = MagicMock()
+        client.is_closed = False
+        img_resp = MagicMock()
+        img_resp.status_code = 200
+        img_resp.content = b"\xff\xd8\xff"
+        img_resp.raise_for_status = MagicMock()
+        client.get = AsyncMock(return_value=img_resp)
+        adapter._client = client
+
+        result = await adapter.send_image("ignored", "https://example.com/img.jpg")
+        assert result.success
+        adapter._set_media_alt_text.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_set_media_alt_text_success(self):
+        adapter = _make_adapter()
+        adapter._access_token = "fake"
+        adapter._token_expiry = time.time() + 3600
+
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.text = ""
+
+        client = MagicMock()
+        client.is_closed = False
+        client.post = AsyncMock(return_value=resp)
+        adapter._client = client
+
+        result = await adapter._set_media_alt_text("media_1", "Alt text here")
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_set_media_alt_text_truncates(self):
+        adapter = _make_adapter()
+        adapter._access_token = "fake"
+        adapter._token_expiry = time.time() + 3600
+
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.text = ""
+
+        client = MagicMock()
+        client.is_closed = False
+        client.post = AsyncMock(return_value=resp)
+        adapter._client = client
+
+        long_text = "X" * 2000
+        result = await adapter._set_media_alt_text("media_1", long_text)
+        assert result is True
+        # Verify the text was truncated in the call
+        call_args = client.post.call_args
+        payload = call_args.kwargs.get("json", {})
+        assert len(payload["alt_text"]["text"]) <= 1000
+
+
+# ===========================================================================
+# 23. Rate limit queue (NEW)
+# ===========================================================================
+
+class TestRateLimitQueue:
+    """Verify the rate-limit tweet queue."""
+
+    @pytest.mark.asyncio
+    async def test_enqueue_tweet(self):
+        adapter = _make_adapter()
+        adapter._running = True
+        adapter._queue_enabled = True
+
+        # Mock _api_request to succeed
+        adapter._api_request = AsyncMock(return_value=(201, {"data": {"id": "queued_tweet"}}))
+
+        # Start the queue processor
+        task = asyncio.ensure_future(adapter._process_tweet_queue())
+
+        # Enqueue a tweet
+        code, data = await adapter._enqueue_tweet({"text": "queued"})
+        assert code == 201
+        assert data["data"]["id"] == "queued_tweet"
+
+        adapter._running = False
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    @pytest.mark.asyncio
+    async def test_queue_depth_logging(self):
+        adapter = _make_adapter()
+        adapter._running = True
+
+        # Verify queue tracks depth
+        await adapter._tweet_queue.put(({"text": "test"}, asyncio.Future()))
+        assert adapter._tweet_queue.qsize() == 1
+
+        adapter._running = False
+
+
+# ===========================================================================
+# 24. Bookmark sync (NEW)
+# ===========================================================================
+
+class TestBookmarkSync:
+    """Verify bookmark sync functionality."""
+
+    @pytest.mark.asyncio
+    async def test_process_bookmarks_success(self):
+        adapter = _make_adapter()
+        adapter._bookmark_last_seen = None
+
+        adapter._api_request = AsyncMock(return_value=(200, {
+            "data": [
+                {
+                    "id": "bm_1",
+                    "text": "Interesting bookmark",
+                    "author_id": "author_1",
+                    "created_at": "2025-01-01T00:00:00Z",
+                }
+            ],
+            "includes": {
+                "users": [{"id": "author_1", "username": "smartguy"}]
+            },
+        }))
+
+        received = []
+        async def mock_handle(event):
+            received.append(event)
+        adapter.handle_message = mock_handle
+
+        await adapter._process_bookmarks()
+        assert len(received) == 1
+        assert "Interesting bookmark" in received[0].text
+        assert adapter._bookmark_last_seen == "bm_1"
+
+    @pytest.mark.asyncio
+    async def test_process_bookmarks_empty(self):
+        adapter = _make_adapter()
+        adapter._api_request = AsyncMock(return_value=(200, {"data": []}))
+
+        received = []
+        async def mock_handle(event):
+            received.append(event)
+        adapter.handle_message = mock_handle
+
+        await adapter._process_bookmarks()
+        assert len(received) == 0
+
+    @pytest.mark.asyncio
+    async def test_process_bookmarks_api_error(self):
+        adapter = _make_adapter()
+        adapter._api_request = AsyncMock(return_value=(403, {"error": "forbidden"}))
+
+        received = []
+        async def mock_handle(event):
+            received.append(event)
+        adapter.handle_message = mock_handle
+
+        await adapter._process_bookmarks()
+        assert len(received) == 0  # No bookmarks processed on error

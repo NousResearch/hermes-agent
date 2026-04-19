@@ -1,4 +1,5 @@
 import atexit
+import concurrent.futures
 import copy
 import json
 import os
@@ -35,6 +36,23 @@ _cfg_lock = threading.Lock()
 _cfg_cache: dict | None = None
 _cfg_mtime: float | None = None
 _SLASH_WORKER_TIMEOUT_S = max(5.0, float(os.environ.get("HERMES_TUI_SLASH_TIMEOUT_S", "45") or 45))
+
+# ── Async RPC dispatch (#12546) ──────────────────────────────────────
+# A handful of handlers block the dispatcher loop in entry.py for seconds
+# to minutes (slash.exec, cli.exec, shell.exec, session.resume,
+# session.branch). While they're running, inbound RPCs — notably
+# approval.respond and session.interrupt — sit unread in the stdin pipe.
+# We route only those slow handlers onto a small thread pool; everything
+# else stays on the main thread so ordering stays sane for the fast path.
+# write_json is already _stdout_lock-guarded, so concurrent response
+# writes are safe.
+_LONG_HANDLERS = frozenset({"cli.exec", "session.branch", "session.resume", "shell.exec", "slash.exec"})
+
+_pool = concurrent.futures.ThreadPoolExecutor(
+    max_workers=max(2, int(os.environ.get("HERMES_TUI_RPC_POOL_WORKERS", "4") or 4)),
+    thread_name_prefix="tui-rpc",
+)
+atexit.register(lambda: _pool.shutdown(wait=False, cancel_futures=True))
 
 # Reserve real stdout for JSON-RPC only; redirect Python's stdout to stderr
 # so stray print() from libraries/tools becomes harmless gateway.stderr instead
@@ -198,6 +216,29 @@ def handle_request(req: dict) -> dict | None:
     if not fn:
         return _err(req.get("id"), -32601, f"unknown method: {req.get('method')}")
     return fn(req.get("id"), req.get("params", {}))
+
+
+def dispatch(req: dict) -> dict | None:
+    """Route inbound RPCs — long handlers to the pool, everything else inline.
+
+    Returns a response dict when handled inline. Returns None when the
+    handler was scheduled on the pool; the worker writes its own
+    response via write_json when done.
+    """
+    if req.get("method") not in _LONG_HANDLERS:
+        return handle_request(req)
+
+    def run():
+        try:
+            resp = handle_request(req)
+        except Exception as exc:
+            resp = _err(req.get("id"), -32000, f"handler error: {exc}")
+        if resp is not None:
+            write_json(resp)
+
+    _pool.submit(run)
+
+    return None
 
 
 def _wait_agent(session: dict, rid: str, timeout: float = 30.0) -> dict | None:

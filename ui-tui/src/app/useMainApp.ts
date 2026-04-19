@@ -380,12 +380,13 @@ export function useMainApp(gw: GatewayClient) {
     sys
   })
 
-  const prevSidRef = useRef<null | string>(null)
+  // Drain one queued message whenever the session settles (busy → false):
+  // agent turn ends, interrupt, shell.exec finishes, error recovered, or the
+  // session first comes up with pre-queued messages. Without this, shell.exec
+  // and error paths never emit message.complete, so anything enqueued while
+  // `!sleep` / a failed turn was running would stay stuck forever.
   useEffect(() => {
-    const prev = prevSidRef.current
-    prevSidRef.current = ui.sid
-
-    if (prev !== null || !ui.sid || ui.busy || composerRefs.queueEditRef.current !== null) {
+    if (!ui.sid || ui.busy || composerRefs.queueEditRef.current !== null) {
       return
     }
 
@@ -416,7 +417,6 @@ export function useMainApp(gw: GatewayClient) {
   const onEvent = useMemo(
     () =>
       createGatewayEventHandler({
-        composer: { dequeue: composerActions.dequeue, queueEditRef: composerRefs.queueEditRef, sendQueued },
         gateway,
         session: {
           STARTUP_RESUME_ID,
@@ -432,11 +432,8 @@ export function useMainApp(gw: GatewayClient) {
     [
       appendMessage,
       bellOnComplete,
-      composerActions,
-      composerRefs,
       gateway,
       panel,
-      sendQueued,
       session.newSession,
       session.resetSession,
       session.resumeById,

@@ -7,7 +7,6 @@ import type {
   SudoRespondResponse,
   VoiceRecordResponse
 } from '../gatewayTypes.js'
-
 import { writeOsc52Clipboard } from '../lib/osc52.js'
 
 import { getInputSelection } from './inputSelectionStore.js'

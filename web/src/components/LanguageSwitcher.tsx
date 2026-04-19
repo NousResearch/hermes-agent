@@ -1,4 +1,4 @@
-import { Typography } from "@nous-research/ui/ui/components/typography/index";
+import { Typography } from "@nous-research/ui";
 import { useI18n } from "@/i18n/context";
 
 /**
@@ -19,7 +19,9 @@ export function LanguageSwitcher() {
       aria-label={t.language.switchTo}
     >
       {/* Show the *current* language's flag — tooltip advertises the click action */}
-      <span className="text-base leading-none">{locale === "en" ? "🇬🇧" : "🇨🇳"}</span>
+      <span className="text-base leading-none">
+        {locale === "en" ? "🇬🇧" : "🇨🇳"}
+      </span>
       <Typography
         mondwest
         className="hidden sm:inline tracking-wide uppercase text-[0.65rem]"

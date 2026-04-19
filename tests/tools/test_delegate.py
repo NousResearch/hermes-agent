@@ -66,7 +66,12 @@ class TestDelegateRequirements(unittest.TestCase):
         self.assertIn("tasks", props)
         self.assertIn("context", props)
         self.assertIn("toolsets", props)
+        self.assertIn("model", props)
+        self.assertIn("provider", props)
         self.assertIn("max_iterations", props)
+        task_props = props["tasks"]["items"]["properties"]
+        self.assertIn("model", task_props)
+        self.assertIn("provider", task_props)
         self.assertNotIn("maxItems", props["tasks"])  # removed — limit is now runtime-configurable
 
 
@@ -160,6 +165,100 @@ class TestDelegateTask(unittest.TestCase):
         self.assertEqual(result["results"][0]["summary"], "Result A")
         self.assertEqual(result["results"][1]["summary"], "Result B")
         self.assertIn("total_duration_seconds", result)
+
+    @patch("tools.delegate_tool._build_child_agent")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    @patch("tools.delegate_tool._load_config")
+    def test_top_level_model_provider_override_beats_config(self, mock_cfg, mock_creds, mock_build):
+        mock_cfg.return_value = {
+            "max_iterations": 45,
+            "model": "cx/gpt-5.3-codex",
+            "provider": "omnirouter",
+        }
+        mock_creds.side_effect = [
+            {
+                "model": "antigravity/gemini-3.1-pro-low",
+                "provider": "omnirouter",
+                "base_url": "http://localhost:20128/v1",
+                "api_key": "gemini-key",
+                "api_mode": "chat_completions",
+                "command": None,
+                "args": [],
+            }
+        ]
+        mock_child = MagicMock()
+        mock_build.return_value = mock_child
+        parent = _make_mock_parent()
+
+        with patch("tools.delegate_tool._run_single_child", return_value={
+            "task_index": 0, "status": "completed", "summary": "ok", "api_calls": 1, "duration_seconds": 1.0
+        }):
+            delegate_task(
+                goal="Prototype with Stitch",
+                model="antigravity/gemini-3.1-pro-low",
+                provider="omnirouter",
+                parent_agent=parent,
+            )
+
+        mock_creds.assert_called_once()
+        override_cfg = mock_creds.call_args.args[0]
+        self.assertEqual(override_cfg["model"], "antigravity/gemini-3.1-pro-low")
+        self.assertEqual(override_cfg["provider"], "omnirouter")
+
+    @patch("tools.delegate_tool._build_child_agent")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    @patch("tools.delegate_tool._load_config")
+    def test_per_task_model_provider_override_beats_top_level_and_config(self, mock_cfg, mock_creds, mock_build):
+        mock_cfg.return_value = {
+            "max_iterations": 45,
+            "model": "cx/gpt-5.3-codex",
+            "provider": "omnirouter",
+        }
+        mock_creds.side_effect = [
+            {
+                "model": "antigravity/gemini-3.1-pro-low",
+                "provider": "omnirouter",
+                "base_url": "http://localhost:20128/v1",
+                "api_key": "gemini-key",
+                "api_mode": "chat_completions",
+                "command": None,
+                "args": [],
+            },
+            {
+                "model": "cx/gpt-5.3-codex",
+                "provider": "omnirouter",
+                "base_url": "http://localhost:20128/v1",
+                "api_key": "codex-key",
+                "api_mode": "chat_completions",
+                "command": None,
+                "args": [],
+            },
+        ]
+        mock_build.side_effect = [MagicMock(), MagicMock()]
+        parent = _make_mock_parent()
+
+        with patch("tools.delegate_tool._run_single_child", return_value={
+            "task_index": 0, "status": "completed", "summary": "ok", "api_calls": 1, "duration_seconds": 1.0
+        }):
+            delegate_task(
+                tasks=[
+                    {"goal": "Prototype", "model": "antigravity/gemini-3.1-pro-low", "provider": "omnirouter"},
+                    {"goal": "Implement", "model": "cx/gpt-5.3-codex", "provider": "omnirouter"},
+                ],
+                model="antigravity/gemini-3-flash",
+                provider="omnirouter",
+                parent_agent=parent,
+            )
+
+        self.assertEqual(mock_creds.call_count, 2)
+        first_cfg = mock_creds.call_args_list[0].args[0]
+        second_cfg = mock_creds.call_args_list[1].args[0]
+        self.assertEqual(first_cfg["model"], "antigravity/gemini-3.1-pro-low")
+        self.assertEqual(second_cfg["model"], "cx/gpt-5.3-codex")
+        first_build = mock_build.call_args_list[0].kwargs
+        second_build = mock_build.call_args_list[1].kwargs
+        self.assertEqual(first_build["model"], "antigravity/gemini-3.1-pro-low")
+        self.assertEqual(second_build["model"], "cx/gpt-5.3-codex")
 
     @patch("tools.delegate_tool._run_single_child")
     def test_batch_capped_at_3(self, mock_run):

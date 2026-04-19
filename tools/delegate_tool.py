@@ -681,6 +681,8 @@ def delegate_task(
     goal: Optional[str] = None,
     context: Optional[str] = None,
     toolsets: Optional[List[str]] = None,
+    model: Optional[str] = None,
+    provider: Optional[str] = None,
     tasks: Optional[List[Dict[str, Any]]] = None,
     max_iterations: Optional[int] = None,
     acp_command: Optional[str] = None,
@@ -714,16 +716,6 @@ def delegate_task(
     default_max_iter = cfg.get("max_iterations", DEFAULT_MAX_ITERATIONS)
     effective_max_iter = max_iterations or default_max_iter
 
-    # Resolve delegation credentials (provider:model pair).
-    # When delegation.provider is configured, this resolves the full credential
-    # bundle (base_url, api_key, api_mode) via the same runtime provider system
-    # used by CLI/gateway startup.  When unconfigured, returns None values so
-    # children inherit from the parent.
-    try:
-        creds = _resolve_delegation_credentials(cfg, parent_agent)
-    except ValueError as exc:
-        return tool_error(str(exc))
-
     # Normalize to task list
     max_children = _get_max_concurrent_children()
     if tasks and isinstance(tasks, list):
@@ -737,7 +729,13 @@ def delegate_task(
             )
         task_list = tasks
     elif goal and isinstance(goal, str) and goal.strip():
-        task_list = [{"goal": goal, "context": context, "toolsets": toolsets}]
+        task_list = [{
+            "goal": goal,
+            "context": context,
+            "toolsets": toolsets,
+            "model": model,
+            "provider": provider,
+        }]
     else:
         return tool_error("Provide either 'goal' (single task) or 'tasks' (batch).")
 
@@ -768,6 +766,19 @@ def delegate_task(
     children = []
     try:
         for i, t in enumerate(task_list):
+            task_cfg = dict(cfg)
+            if provider is not None:
+                task_cfg["provider"] = provider
+            if model is not None:
+                task_cfg["model"] = model
+            if t.get("provider") is not None:
+                task_cfg["provider"] = t.get("provider")
+            if t.get("model") is not None:
+                task_cfg["model"] = t.get("model")
+            try:
+                creds = _resolve_delegation_credentials(task_cfg, parent_agent)
+            except ValueError as exc:
+                return tool_error(str(exc))
             child = _build_child_agent(
                 task_index=i, goal=t["goal"], context=t.get("context"),
                 toolsets=t.get("toolsets") or toolsets, model=creds["model"],
@@ -1116,6 +1127,20 @@ DELEGATE_TASK_SCHEMA = {
                     "['terminal', 'file', 'web'] for full-stack tasks."
                 ),
             },
+            "model": {
+                "type": "string",
+                "description": (
+                    "Optional subagent model override. When set together with provider, "
+                    "this task can route to a different model than delegation.model."
+                ),
+            },
+            "provider": {
+                "type": "string",
+                "description": (
+                    "Optional subagent provider override. Uses the same provider names as "
+                    "runtime provider resolution and overrides delegation.provider."
+                ),
+            },
             "tasks": {
                 "type": "array",
                 "items": {
@@ -1127,6 +1152,14 @@ DELEGATE_TASK_SCHEMA = {
                             "type": "array",
                             "items": {"type": "string"},
                             "description": f"Toolsets for this specific task. Available: {_TOOLSET_LIST_STR}. Use 'web' for network access, 'terminal' for shell, 'browser' for web interaction.",
+                        },
+                        "model": {
+                            "type": "string",
+                            "description": "Per-task subagent model override. Takes precedence over the top-level model and delegation.model.",
+                        },
+                        "provider": {
+                            "type": "string",
+                            "description": "Per-task subagent provider override. Takes precedence over the top-level provider and delegation.provider.",
                         },
                         "acp_command": {
                             "type": "string",
@@ -1190,6 +1223,8 @@ registry.register(
         goal=args.get("goal"),
         context=args.get("context"),
         toolsets=args.get("toolsets"),
+        model=args.get("model"),
+        provider=args.get("provider"),
         tasks=args.get("tasks"),
         max_iterations=args.get("max_iterations"),
         acp_command=args.get("acp_command"),

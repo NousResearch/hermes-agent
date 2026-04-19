@@ -2434,6 +2434,48 @@ class TestAdapterBehavior(unittest.TestCase):
         )
 
     @patch.dict(os.environ, {}, clear=True)
+    def test_build_post_payload_keeps_fence_like_code_lines_inside_code_block(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        payload = json.loads(
+            adapter._build_post_payload(
+                "before\n```python\n```oops\n```\nafter"
+            )
+        )
+
+        self.assertEqual(
+            payload["zh_cn"]["content"],
+            [
+                [{"tag": "md", "text": "before"}],
+                [{"tag": "md", "text": "```python\n```oops\n```"}],
+                [{"tag": "md", "text": "after"}],
+            ],
+        )
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_build_post_payload_preserves_trailing_spaces_in_code_block(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        payload = json.loads(
+            adapter._build_post_payload(
+                "before\n```python\nline with two spaces  \n```\nafter"
+            )
+        )
+
+        self.assertEqual(
+            payload["zh_cn"]["content"],
+            [
+                [{"tag": "md", "text": "before"}],
+                [{"tag": "md", "text": "```python\nline with two spaces  \n```"}],
+                [{"tag": "md", "text": "after"}],
+            ],
+        )
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_send_falls_back_to_text_when_post_payload_is_rejected(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter

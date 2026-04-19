@@ -377,7 +377,19 @@ class SessionEntry:
     # this session (create a new session_id) so the user starts fresh.
     # Set by /stop to break stuck-resume loops (#7536).
     suspended: bool = False
-    
+
+    # When True the session was interrupted by a gateway restart/shutdown
+    # drain timeout, but recovery is still expected.  Unlike ``suspended``,
+    # ``resume_pending`` preserves the existing session_id on next access —
+    # the user stays on the same transcript and the agent auto-continues
+    # from where it left off.  Cleared after the next successful turn.
+    # Escalation to ``suspended`` is handled by the existing
+    # ``.restart_failure_counts`` stuck-loop counter (#7536), not by a
+    # parallel counter on this entry.
+    resume_pending: bool = False
+    resume_reason: Optional[str] = None  # e.g. "restart_timeout"
+    last_resume_marked_at: Optional[datetime] = None
+
     def to_dict(self) -> Dict[str, Any]:
         result = {
             "session_key": self.session_key,
@@ -397,6 +409,13 @@ class SessionEntry:
             "cost_status": self.cost_status,
             "memory_flushed": self.memory_flushed,
             "suspended": self.suspended,
+            "resume_pending": self.resume_pending,
+            "resume_reason": self.resume_reason,
+            "last_resume_marked_at": (
+                self.last_resume_marked_at.isoformat()
+                if self.last_resume_marked_at
+                else None
+            ),
         }
         if self.origin:
             result["origin"] = self.origin.to_dict()
@@ -414,7 +433,15 @@ class SessionEntry:
                 platform = Platform(data["platform"])
             except ValueError as e:
                 logger.debug("Unknown platform value %r: %s", data["platform"], e)
-        
+
+        last_resume_marked_at = None
+        _lrma = data.get("last_resume_marked_at")
+        if _lrma:
+            try:
+                last_resume_marked_at = datetime.fromisoformat(_lrma)
+            except (TypeError, ValueError):
+                last_resume_marked_at = None
+
         return cls(
             session_key=data["session_key"],
             session_id=data["session_id"],
@@ -434,6 +461,9 @@ class SessionEntry:
             cost_status=data.get("cost_status", "unknown"),
             memory_flushed=data.get("memory_flushed", False),
             suspended=data.get("suspended", False),
+            resume_pending=data.get("resume_pending", False),
+            resume_reason=data.get("resume_reason"),
+            last_resume_marked_at=last_resume_marked_at,
         )
 
 
@@ -710,9 +740,23 @@ class SessionStore:
                 entry = self._entries[session_key]
 
                 # Auto-reset sessions marked as suspended (e.g. after /stop
-                # broke a stuck loop — #7536).
+                # broke a stuck loop — #7536).  ``suspended`` is the hard
+                # forced-wipe signal and always wins over ``resume_pending``,
+                # so repeated interrupted restarts that escalate via the
+                # existing ``.restart_failure_counts`` stuck-loop counter
+                # still converge to a clean slate.
                 if entry.suspended:
                     reset_reason = "suspended"
+                elif entry.resume_pending:
+                    # Restart-interrupted session: preserve the session_id
+                    # and return the existing entry so the transcript
+                    # reloads intact.  ``resume_pending`` is cleared after
+                    # the NEXT successful turn completes (not here), which
+                    # means a re-interrupted retry keeps trying — the
+                    # stuck-loop counter handles terminal escalation.
+                    entry.updated_at = now
+                    self._save()
+                    return entry
                 else:
                     reset_reason = self._should_reset(entry, source)
                 if not reset_reason:
@@ -802,6 +846,55 @@ class SessionStore:
                 return True
         return False
 
+    def mark_resume_pending(
+        self,
+        session_key: str,
+        reason: str = "restart_timeout",
+    ) -> bool:
+        """Mark a session as resumable after a restart interruption.
+
+        Unlike ``suspend_session()``, this preserves the existing
+        ``session_id`` and the transcript.  The next call to
+        ``get_or_create_session()`` for this key returns the same entry
+        so the user auto-resumes on the same conversation lane.
+
+        Returns True if the session existed and was marked.
+        """
+        with self._lock:
+            self._ensure_loaded_locked()
+            if session_key in self._entries:
+                entry = self._entries[session_key]
+                # Never override an explicit ``suspended`` — that is a hard
+                # forced-wipe signal (from /stop or stuck-loop escalation).
+                if entry.suspended:
+                    return False
+                entry.resume_pending = True
+                entry.resume_reason = reason
+                entry.last_resume_marked_at = _now()
+                self._save()
+                return True
+        return False
+
+    def clear_resume_pending(self, session_key: str) -> bool:
+        """Clear the resume-pending flag after a successful resumed turn.
+
+        Called from the gateway after ``run_conversation()`` returns a
+        final response for a session that had ``resume_pending=True``,
+        signalling that recovery succeeded.
+
+        Returns True if a flag was cleared.
+        """
+        with self._lock:
+            self._ensure_loaded_locked()
+            entry = self._entries.get(session_key)
+            if entry is None or not entry.resume_pending:
+                return False
+            entry.resume_pending = False
+            entry.resume_reason = None
+            entry.last_resume_marked_at = None
+            self._save()
+            return True
+
     def prune_old_entries(self, max_age_days: int) -> int:
         """Drop SessionEntry records older than max_age_days.
 
@@ -861,6 +954,12 @@ class SessionStore:
         (#7536).  Only suspends sessions updated within *max_age_seconds*
         to avoid resetting long-idle sessions that are harmless to resume.
         Returns the number of sessions that were suspended.
+
+        Entries flagged ``resume_pending=True`` are skipped — those were
+        marked intentionally by the drain-timeout path as recoverable.
+        Terminal escalation for genuinely stuck ``resume_pending`` sessions
+        is handled by the existing ``.restart_failure_counts`` stuck-loop
+        counter, which runs after this method on startup.
         """
         from datetime import timedelta
 
@@ -869,6 +968,8 @@ class SessionStore:
         with self._lock:
             self._ensure_loaded_locked()
             for entry in self._entries.values():
+                if entry.resume_pending:
+                    continue
                 if not entry.suspended and entry.updated_at >= cutoff:
                     entry.suspended = True
                     count += 1

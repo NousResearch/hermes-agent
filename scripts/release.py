@@ -105,6 +105,8 @@ AUTHOR_MAP = {
     "blspear@gmail.com": "BrennerSpear",
     "akhater@gmail.com": "akhater",
     "239876380+handsdiff@users.noreply.github.com": "handsdiff",
+    "hesapacicam112@gmail.com": "etherman-os",
+    "mark.ramsell@rivermounts.com": "mark-ramsell",
     "gpickett00@gmail.com": "gpickett00",
     "mcosma@gmail.com": "wakamex",
     "clawdia.nash@proton.me": "clawdia-nash",

@@ -131,6 +131,13 @@ def list_active_sessions_impl() -> dict[str, Any]:
     }
 
 
+def _current_active_session() -> dict[str, Any] | None:
+    active_records = [record for record in _APP_SESSIONS.values() if record.get("active")]
+    if not active_records:
+        return None
+    return active_records[-1]
+
+
 def stop_app_session_impl(app_name: str | None = None, app_session_id: str | None = None) -> dict[str, Any]:
     record = _find_session(app_name=app_name, app_session_id=app_session_id)
     if not record:
@@ -268,13 +275,29 @@ def get_app_state_impl(app_name: str | None = None) -> dict[str, Any]:
 
 
 def type_text_impl(text: str) -> dict[str, Any]:
+    session = _current_active_session()
+    if not session:
+        return {
+            "success": False,
+            "session_required": True,
+            "session_id": _SESSION_ID,
+            "error": "No active app session. Call get_app_state(app_name=...) before typing.",
+        }
     result = _decode(computer_control(action="keystroke", text=text))
-    return {"success": not bool(result.get("error")), **result}
+    return {"success": not bool(result.get("error")), **result, **_session_payload(session), "session_id": _SESSION_ID}
 
 
 def press_key_impl(key: str, modifiers: list[str] | None = None) -> dict[str, Any]:
+    session = _current_active_session()
+    if not session:
+        return {
+            "success": False,
+            "session_required": True,
+            "session_id": _SESSION_ID,
+            "error": "No active app session. Call get_app_state(app_name=...) before pressing keys.",
+        }
     result = _decode(computer_control(action="keystroke", key=key, modifiers=modifiers or []))
-    return {"success": not bool(result.get("error")), **result}
+    return {"success": not bool(result.get("error")), **result, **_session_payload(session), "session_id": _SESSION_ID}
 
 
 def _unsupported(action: str) -> dict[str, Any]:

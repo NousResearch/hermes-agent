@@ -190,7 +190,18 @@ class TestApprovalAndSessions:
 
 
 class TestKeyboardTools:
+    def test_type_text_impl_requires_active_session(self, monkeypatch):
+        monkeypatch.setattr(adapter, "_APP_SESSIONS", {})
+
+        result = adapter.type_text_impl("uwu")
+
+        assert result["success"] is False
+        assert result["session_required"] is True
+
     def test_type_text_impl_maps_to_computer_control(self, monkeypatch):
+        monkeypatch.setattr(adapter, "_APP_SESSIONS", {
+            "safari": {"app_name": "Safari", "app_session_id": "app-1", "active": True, "approved": True}
+        })
         seen = {}
 
         def fake_cc(**kwargs):
@@ -202,9 +213,21 @@ class TestKeyboardTools:
         result = adapter.type_text_impl("uwu")
 
         assert result["success"] is True
+        assert result["app_session_id"] == "app-1"
         assert seen == {"action": "keystroke", "text": "uwu"}
 
+    def test_press_key_impl_requires_active_session(self, monkeypatch):
+        monkeypatch.setattr(adapter, "_APP_SESSIONS", {})
+
+        result = adapter.press_key_impl("return", ["command"])
+
+        assert result["success"] is False
+        assert result["session_required"] is True
+
     def test_press_key_impl_maps_modifiers(self, monkeypatch):
+        monkeypatch.setattr(adapter, "_APP_SESSIONS", {
+            "safari": {"app_name": "Safari", "app_session_id": "app-1", "active": True, "approved": True}
+        })
         seen = {}
 
         def fake_cc(**kwargs):
@@ -216,6 +239,7 @@ class TestKeyboardTools:
         result = adapter.press_key_impl("return", ["command", "shift"])
 
         assert result["success"] is True
+        assert result["app_session_id"] == "app-1"
         assert seen == {"action": "keystroke", "key": "return", "modifiers": ["command", "shift"]}
 
 

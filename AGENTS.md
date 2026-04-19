@@ -336,6 +336,15 @@ Activate with `/skin cyberpunk` or `display.skin: cyberpunk` in config.yaml.
 ---
 
 ## Important Policies
+### Hermes Continuity Protection
+
+Hermes itself is long-lived infrastructure for this project. Protect it separately from any optional UI surface.
+
+- If the user asks to remove, park, disable, or clean up a desktop app, native client, browser surface, wrapper, preview app, or local UI experiment, do **not** stop or uninstall the Hermes gateway, WhatsApp bridge, launchd service, or other Hermes runtime unless they explicitly say to take Hermes offline.
+- Default interpretation: remove the client surface, preserve Hermes availability.
+- Before stopping any Hermes service, state exactly which layer is being stopped: UI app, local desktop surface, gateway service, WhatsApp bridge, or Hermes runtime.
+- If a request is ambiguous, preserve the gateway and messaging runtime by default.
+
 ### Prompt Caching Must Not Break
 
 Hermes-Agent ensures caching remains valid throughout a conversation. **Do NOT implement changes that would:**

@@ -69,6 +69,11 @@ class TenantPolicy(Base):
     max_top_k = Column(Integer, default=8, nullable=False)
     max_question_chars = Column(Integer, default=4000, nullable=False)
 
+    # External/public API policy controls
+    daily_external_api_budget = Column(Integer, default=200, nullable=False)
+    external_api_timeout_cap_seconds = Column(Integer, default=8, nullable=False)
+    public_api_allowlist_json = Column(Text, default="[]", nullable=False)
+
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
@@ -237,6 +242,29 @@ class AuditEvent(Base):
     resource_id = Column(String(128), default="", nullable=False)
     metadata_json = Column(Text, default="{}", nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class PublicApiProvider(Base):
+    __tablename__ = "public_api_providers"
+    __table_args__ = (
+        UniqueConstraint("name", name="uq_public_api_provider_name"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(128), nullable=False, index=True)
+    category = Column(String(64), default="open-data", nullable=False)
+    base_url = Column(String(1000), nullable=False)
+    auth_type = Column(String(32), default="none", nullable=False)
+    docs_url = Column(String(1000), default="", nullable=False)
+    cors = Column(String(32), default="unknown", nullable=False)
+    enabled = Column(Boolean, default=True, nullable=False)
+    tenant_scope = Column(String(32), default="global", nullable=False)
+    default_timeout_seconds = Column(Integer, default=5, nullable=False)
+    rate_limit_hint = Column(String(255), default="", nullable=False)
+    normalization_strategy = Column(String(64), default="auto", nullable=False)
+    sample_query_json = Column(Text, default="{}", nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
 
 class IngestionJob(Base):

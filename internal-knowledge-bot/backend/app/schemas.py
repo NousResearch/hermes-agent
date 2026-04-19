@@ -155,9 +155,62 @@ class HandoffOut(BaseModel):
 
 
 class IntegrationConnectRequest(BaseModel):
-    provider: str = Field(pattern="^(slack|notion|gdrive|webhook)$")
+    provider: str = Field(pattern="^(slack|notion|gdrive|webhook|hermes|public_api)$")
     display_name: str
     config: dict[str, Any] = Field(default_factory=dict)
+
+
+class PublicApiProviderOut(BaseModel):
+    id: int
+    name: str
+    category: str
+    base_url: str
+    auth_type: str
+    docs_url: str
+    cors: str
+    enabled: bool
+    tenant_scope: str
+    default_timeout_seconds: int
+    rate_limit_hint: str
+    normalization_strategy: str
+    sample_query: dict[str, Any]
+    allowed_for_tenant: bool
+
+
+class PublicApiFetchRequest(BaseModel):
+    provider: str = Field(min_length=2, max_length=128)
+    path: str = Field(default="")
+    query: dict[str, Any] = Field(default_factory=dict)
+    timeout_seconds: int | None = Field(default=None, ge=1, le=60)
+    retries: int = Field(default=1, ge=0, le=2)
+    idempotency_key: str | None = None
+
+
+class PublicApiFetchResponse(BaseModel):
+    success: bool
+    provider: str
+    url: str
+    status_code: int
+    item_count: int
+    items: list[dict[str, Any]]
+    raw: dict[str, Any] | list[Any] | str | int | float | bool | None = None
+    run_id: int | None = None
+    run_status: str | None = None
+    budget_enforced: bool = False
+    external_api_budget_remaining: int | None = None
+
+
+class HermesToolInvokeRequest(BaseModel):
+    tool_name: str = Field(min_length=1, max_length=128)
+    args: dict[str, Any] = Field(default_factory=dict)
+    task_id: str | None = None
+
+
+class HermesToolInvokeResponse(BaseModel):
+    success: bool
+    tool_name: str
+    task_id: str
+    result: dict[str, Any]
 
 
 class TenantPolicyRule(BaseModel):

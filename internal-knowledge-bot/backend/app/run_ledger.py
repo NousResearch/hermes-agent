@@ -47,6 +47,12 @@ def _apply_pack_defaults(policy: TenantPolicy) -> None:
     policy.daily_cost_budget_usd = float(pack["daily_cost_budget_usd"])
     policy.max_top_k = int(pack["max_top_k"])
     policy.max_question_chars = int(pack["max_question_chars"])
+    if getattr(policy, "daily_external_api_budget", None) is None:
+        policy.daily_external_api_budget = 200
+    if getattr(policy, "external_api_timeout_cap_seconds", None) is None:
+        policy.external_api_timeout_cap_seconds = 8
+    if getattr(policy, "public_api_allowlist_json", None) is None:
+        policy.public_api_allowlist_json = "[]"
 
 
 def get_or_create_tenant_policy(db: Session, tenant_id: int) -> TenantPolicy:
@@ -54,6 +60,19 @@ def get_or_create_tenant_policy(db: Session, tenant_id: int) -> TenantPolicy:
     if p:
         if not p.policy_pack:
             p.policy_pack = "balanced"
+        patched = False
+        if getattr(p, "daily_external_api_budget", None) is None:
+            p.daily_external_api_budget = 200
+            patched = True
+        if getattr(p, "external_api_timeout_cap_seconds", None) is None:
+            p.external_api_timeout_cap_seconds = 8
+            patched = True
+        if getattr(p, "public_api_allowlist_json", None) in (None, ""):
+            p.public_api_allowlist_json = "[]"
+            patched = True
+        if patched:
+            db.add(p)
+            db.flush()
         return p
 
     p = TenantPolicy(tenant_id=tenant_id, policy_pack="balanced")

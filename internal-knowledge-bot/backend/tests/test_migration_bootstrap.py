@@ -40,3 +40,28 @@ def test_bootstrap_adds_missing_policy_columns(tmp_path):
     assert "daily_cost_budget_usd" in cols
     assert "max_top_k" in cols
     assert "max_question_chars" in cols
+    assert "daily_external_api_budget" in cols
+    assert "external_api_timeout_cap_seconds" in cols
+    assert "public_api_allowlist_json" in cols
+
+
+def test_bootstrap_creates_public_api_providers_table(tmp_path):
+    db_path = tmp_path / "legacy-no-provider-table.db"
+    engine = create_engine(f"sqlite:///{db_path}", future=True)
+
+    # no pre-created tables needed; bootstrap should create provider registry table
+    summary = run_startup_schema_bootstrap(engine)
+    assert summary["dialect"] == "sqlite"
+
+    with engine.begin() as conn:
+        tables = conn.execute(text("SELECT name FROM sqlite_master WHERE type='table' AND name='public_api_providers'"))
+        row = tables.fetchone()
+        assert row is not None
+
+        cols = conn.execute(text("PRAGMA table_info('public_api_providers')")).fetchall()
+        col_names = {r[1] for r in cols}
+
+    assert "name" in col_names
+    assert "base_url" in col_names
+    assert "tenant_scope" in col_names
+    assert "sample_query_json" in col_names

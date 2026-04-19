@@ -19,6 +19,7 @@ manually during review.
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 from pathlib import Path
 
@@ -30,8 +31,11 @@ SCRIPTS_DIR = (
 )
 sys.path.insert(0, str(SCRIPTS_DIR))
 
+import adapters    # noqa: E402
 import algorithms  # noqa: E402
 import evaluator   # noqa: E402
+import llm         # noqa: E402
+import sandbox     # noqa: E402
 import storage     # noqa: E402
 
 
@@ -349,3 +353,276 @@ class TestSuccessiveHalving:
         assert len(survivors) == 2
         # The longest inputs should survive.
         assert all(len(s.genome) >= 7 for s in survivors)
+
+
+# ---------------------------------------------------------------------------
+# sandbox.py
+# ---------------------------------------------------------------------------
+
+
+class TestSandbox:
+    def test_simple_candidate_runs(self):
+        result = sandbox.run_candidate_code(
+            "print('hello world')",
+            timeout_s=5, cpu_s=3, mem_mb=128,
+        )
+        assert result.ok
+        assert result.returncode == 0
+        assert "hello world" in result.stdout
+
+    def test_syntax_error_fails_cleanly(self):
+        result = sandbox.run_candidate_code(
+            "def broken(:",
+            timeout_s=5, cpu_s=3, mem_mb=128,
+        )
+        assert not result.ok
+        assert not result.timed_out
+        assert result.returncode != 0
+
+    def test_runaway_loop_killed_by_timeout(self):
+        import time as _time
+        start = _time.perf_counter()
+        result = sandbox.run_candidate_code(
+            "while True:\n    pass\n",
+            timeout_s=1.0, cpu_s=2.0, mem_mb=128,
+        )
+        elapsed = _time.perf_counter() - start
+        assert result.timed_out, f"expected timeout; got returncode={result.returncode}"
+        # Hard upper bound: wall-clock timeout + 2s overhead (subprocess spin-up + rlimit fallback).
+        assert elapsed < 3.0
+
+    def test_parse_pytest_summary(self):
+        assert sandbox._parse_pytest_summary("3 passed, 1 failed in 0.02s") == 0.75
+        assert sandbox._parse_pytest_summary("no matching tests found") == 0.0
+        assert sandbox._parse_pytest_summary("5 passed in 0.01s") == 1.0
+
+
+# ---------------------------------------------------------------------------
+# adapters.py (Tier 2 external CLIs + Tier 3 DSPy bridge)
+# ---------------------------------------------------------------------------
+
+
+class TestAdapterGracefulAbsence:
+    def test_openevolve_missing_raises_adapter_unavailable(self, monkeypatch):
+        monkeypatch.setattr("shutil.which", lambda _b: None)
+        adapter = adapters.openevolve_adapter()
+        with pytest.raises(adapters.AdapterUnavailable) as exc:
+            adapter.ensure_available()
+        assert "openevolve" in str(exc.value)
+        assert "Apache 2.0" in str(exc.value)
+
+    def test_darwinian_evolver_install_hint_mentions_license(self, monkeypatch):
+        monkeypatch.setattr("shutil.which", lambda _b: None)
+        adapter = adapters.darwinian_evolver_adapter()
+        with pytest.raises(adapters.AdapterUnavailable) as exc:
+            adapter.ensure_available()
+        assert "AGPL" in str(exc.value)
+
+
+class TestDspyBridge:
+    def _seed_experiment(self, tmp_path):
+        conn = storage.open_db(tmp_path / "lineage.db")
+        a = storage.insert_candidate(conn, "a", 0)
+        b = storage.insert_candidate(conn, "b", 1, parents=[(a, "paraphrase", "h1")])
+        c = storage.insert_candidate(conn, "c", 2, parents=[(b, "critique_then_edit", "h2")])
+        for cid, val in ((a, 0.1), (b, 0.5), (c, 0.9)):
+            storage.record_fitness(conn, cid, "accuracy", val, held_out=False)
+            storage.record_fitness(conn, cid, "accuracy", val - 0.1, held_out=True)
+        return conn
+
+    def test_export_dspy_jsonl_default_keeps_best_per_generation(self, tmp_path):
+        conn = self._seed_experiment(tmp_path)
+        out = tmp_path / "export.jsonl"
+        n = adapters.export_dspy_jsonl(conn, out)
+        assert n == 3   # one per generation
+        records = [json.loads(line) for line in out.read_text().splitlines()]
+        assert all(r["schema"] == "dspy-offline/v1" for r in records)
+        assert all("text" in r and "metric" in r for r in records)
+
+    def test_export_dspy_jsonl_all_emits_every_candidate(self, tmp_path):
+        conn = self._seed_experiment(tmp_path)
+        out = tmp_path / "export-all.jsonl"
+        n = adapters.export_dspy_jsonl(conn, out, include_all_generations=True)
+        assert n == 3   # three distinct candidates here
+
+    def test_export_gepa_trace_filters_to_reflective_operators(self, tmp_path):
+        conn = self._seed_experiment(tmp_path)
+        out = tmp_path / "gepa.jsonl"
+        n = adapters.export_gepa_trace(conn, out)
+        assert n == 1   # only the critique_then_edit edge qualifies
+        rec = json.loads(out.read_text().splitlines()[0])
+        assert rec["operator"] == "critique_then_edit"
+        assert rec["parent"]["genome"] == "b"
+        assert rec["child"]["genome"] == "c"
+
+
+# ---------------------------------------------------------------------------
+# llm.py
+# ---------------------------------------------------------------------------
+
+
+class TestLLMClient:
+    """Exercises the LLM client without hitting a real endpoint.
+
+    We install a mock ``httpx.AsyncClient.post`` that records the request
+    body, so we can assert seed propagation, budget recording, and
+    Retry-After handling.
+    """
+
+    def _canned_response(self, text="OK", prompt_tokens=10, completion_tokens=5, status=200, headers=None):
+        class _Resp:
+            def __init__(self):
+                self.status_code = status
+                self.headers = headers or {}
+            def raise_for_status(self):
+                if self.status_code >= 400:
+                    import httpx as _httpx
+                    raise _httpx.HTTPStatusError("err", request=None, response=None)  # type: ignore[arg-type]
+            def json(self):
+                return {
+                    "choices": [{"message": {"content": text}}],
+                    "usage": {"prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens},
+                }
+        return _Resp()
+
+    def test_seed_is_propagated_to_request_body(self):
+        seen_bodies: list[dict] = []
+
+        async def fake_post(self, url, json=None, **kw):
+            seen_bodies.append(json)
+            resp = TestLLMClient()._canned_response()
+            return resp
+
+        import httpx as _httpx
+        original = _httpx.AsyncClient.post
+        _httpx.AsyncClient.post = fake_post  # type: ignore[assignment]
+        try:
+            async def _run():
+                async with llm.LLMClient(model="m", base_url="http://x", api_key="k") as client:
+                    await client.complete("sys", "usr", seed=4242)
+            asyncio.run(_run())
+        finally:
+            _httpx.AsyncClient.post = original  # type: ignore[assignment]
+
+        assert seen_bodies
+        assert seen_bodies[0]["seed"] == 4242
+        assert seen_bodies[0]["messages"][0]["role"] == "system"
+
+    def test_budget_ledger_records_and_raises_on_cap(self):
+        async def fake_post(self, url, json=None, **kw):
+            return TestLLMClient()._canned_response(prompt_tokens=1000, completion_tokens=500)
+
+        import httpx as _httpx
+        original = _httpx.AsyncClient.post
+        _httpx.AsyncClient.post = fake_post  # type: ignore[assignment]
+        try:
+            ledger = llm.BudgetLedger(
+                cap_usd=0.003,                 # two 0.002 calls exceed this
+                input_rate_per_million=1.0,
+                output_rate_per_million=2.0,
+            )
+            async def _run():
+                async with llm.LLMClient(model="m", base_url="http://x", api_key="", budget=ledger) as client:
+                    # call 1: 1000 * $1/M + 500 * $2/M = $0.002 → under cap
+                    await client.complete("s", "u")
+                    # call 2: another $0.002 → total $0.004 >= cap → raise
+                    with pytest.raises(llm.BudgetExceeded):
+                        await client.complete("s", "u")
+            asyncio.run(_run())
+        finally:
+            _httpx.AsyncClient.post = original  # type: ignore[assignment]
+        assert ledger.calls == 2
+        assert ledger.spent_usd >= 0.003
+
+
+# ---------------------------------------------------------------------------
+# MAP-Elites coverage property (acceptance checklist #4)
+# ---------------------------------------------------------------------------
+
+
+class TestMapElitesCoverage:
+    def test_random_population_fills_significant_fraction(self):
+        import random
+        rng = random.Random(0)
+        arch = algorithms.MapElitesArchive(
+            bin_counts=(4, 4), lows=(0, 0), highs=(4, 4),
+        )
+        for i in range(200):
+            desc = (rng.uniform(0, 4), rng.uniform(0, 4))
+            ind = algorithms.Individual(
+                cid=str(i), genome=str(i), fitness=rng.random(), descriptor=desc,
+            )
+            arch.place(ind)
+        # 200 uniform samples into a 4×4 grid should cover essentially
+        # all 16 bins with astronomically high probability.
+        assert arch.coverage() >= 0.6
+
+
+# ---------------------------------------------------------------------------
+# End-to-end: mocked LLM run of a single generation (acceptance checklist #7)
+# ---------------------------------------------------------------------------
+
+
+class TestEndToEnd:
+    def test_single_generation_improves_best_fitness(self, tmp_path, monkeypatch):
+        """With a fixed LLM that always returns the string `concise`, the
+        brevity-bonus fitness climbs from the seed after one generation."""
+        exp = tmp_path / "demo"
+        exp.mkdir()
+        (exp / "seed").mkdir()
+        (exp / "logs").mkdir()
+        (exp / "seed" / "initial.txt").write_text("Summarize it.\n")
+        (exp / "fitness.py").write_text(
+            "def fitness(candidate, context):\n"
+            "    bonus = 0.3 if 'concise' in candidate.lower() else 0.0\n"
+            "    return 0.5 + bonus\n"
+        )
+        storage.open_db(exp / "lineage.db").close()
+
+        # Patch httpx.AsyncClient.post to return a fixed mutation result.
+        async def fake_post(self, url, json=None, **kw):
+            class _R:
+                status_code = 200
+                headers: dict = {}
+                def raise_for_status(self): pass
+                def json(self_inner):
+                    return {
+                        "choices": [{"message": {"content": "Summarize it concisely."}}],
+                        "usage": {"prompt_tokens": 20, "completion_tokens": 5},
+                    }
+            return _R()
+
+        import httpx as _httpx
+        monkeypatch.setattr(_httpx.AsyncClient, "post", fake_post)
+
+        # Build a minimal argparse.Namespace and run the loop synchronously.
+        import argparse
+        args = argparse.Namespace(
+            dir=str(exp),
+            generations=1,
+            pop=2,
+            budget=0.0,
+            algorithm="es",
+            concurrency=2,
+            seed=7,
+            input_rate=0.0,
+            output_rate=0.0,
+        )
+        # Import the runner lazily to ensure our sys.path is set up first.
+        sys.path.insert(0, str(SCRIPTS_DIR))
+        import evolver  # noqa: WPS433
+        result = asyncio.run(evolver._run_loop(args, exp))
+        assert result["ok"]
+        assert result["generations_run"] >= 1
+
+        # Inspect the lineage — we should have at least one offspring whose
+        # fitness beats the seed's 0.5.
+        conn = storage.open_db(exp / "lineage.db")
+        rows = storage.get_best(conn, "fitness", k=1)
+        assert rows, "no fitness rows persisted"
+        assert rows[0]["value"] > 0.5, f"expected improvement over seed; got {rows[0]}"
+        # And the replay hash should be reproducible now that all writes settled.
+        h1 = storage.lineage_hash(conn)
+        h2 = storage.lineage_hash(conn)
+        assert h1 == h2
+        conn.close()

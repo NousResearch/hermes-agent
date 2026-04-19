@@ -63,7 +63,7 @@ Invoke this skill when the user asks for any of:
 - "Find the best prompt for ..."
 - "Generate variations of ... and pick the best"
 - "Run a prompt optimization loop / genetic algorithm on ..."
-- "Tune this prompt against these I/O examples"
+- "Tune this prompt against these input/output pairs"
 - "Bridge this experiment to DSPy / GEPA / hermes-agent-self-evolution"
 
 Do **not** use for:
@@ -241,7 +241,7 @@ parents without re-evaluation.
 python3 ~/.hermes/skills/research/darwinian-evolver/scripts/evolver.py --help
 
 # Run the packaged example end-to-end (requires local LLM configured)
-cd ~/.hermes/skills/research/darwinian-evolver/examples/summarize_10_words
+cd ~/.hermes/skills/research/darwinian-evolver/demos/summarize_10_words
 python3 ../../scripts/evolver.py init summarize_10w --task prompt
 python3 ../../scripts/evolver.py run summarize_10w --generations 5 --budget 0.10
 

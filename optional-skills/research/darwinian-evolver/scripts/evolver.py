@@ -42,6 +42,7 @@ from typing import Any
 # on sys.path by default.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import adapters    # noqa: E402
 import algorithms  # noqa: E402
 import operators   # noqa: E402
 import storage     # noqa: E402
@@ -534,21 +535,14 @@ def cmd_budget(args: argparse.Namespace) -> None:
 def cmd_export(args: argparse.Namespace) -> None:
     exp = _resolve_experiment(args.dir)
     conn = storage.open_db(exp / "lineage.db")
-    if args.format not in {"dspy-jsonl", "gepa-trace"}:
-        _err(f"unknown export format {args.format!r}")
     out_path = exp / f"export-{args.format}.jsonl"
-    with out_path.open("w", encoding="utf-8") as fh:
-        for objective in _discover_objectives(conn):
-            for row in storage.get_best(conn, objective, k=1_000):
-                fh.write(json.dumps({
-                    "candidate_id": row["id"],
-                    "genome":       row["genome"],
-                    "generation":   row["generation"],
-                    "fitness":      {objective: row["value"]},
-                    "held_out":     bool(row.get("held_out")),
-                    "source":       "darwinian-evolver",
-                }, ensure_ascii=False) + "\n")
-    _out({"ok": True, "path": str(out_path), "format": args.format})
+    if args.format == "dspy-jsonl":
+        n = adapters.export_dspy_jsonl(conn, out_path, include_all_generations=args.all)
+    elif args.format == "gepa-trace":
+        n = adapters.export_gepa_trace(conn, out_path)
+    else:
+        _err(f"unknown export format {args.format!r}")
+    _out({"ok": True, "path": str(out_path), "format": args.format, "records": n})
     conn.close()
 
 
@@ -619,6 +613,8 @@ def _build_parser() -> argparse.ArgumentParser:
     pe = sub.add_parser("export", help="export experiment for downstream pipelines")
     pe.add_argument("dir")
     pe.add_argument("--format", choices=["dspy-jsonl", "gepa-trace"], required=True)
+    pe.add_argument("--all", action="store_true",
+                    help="dspy-jsonl only: emit every candidate (default keeps the best per generation)")
     pe.set_defaults(fn=cmd_export)
 
     prp = sub.add_parser("replay", help="print the lineage hash for determinism checks")

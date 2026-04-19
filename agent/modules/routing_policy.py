@@ -6,14 +6,15 @@ optional MissionContract into a concrete Dispatch descriptor that specifies
 exactly which system should receive control and what payload to forward.»
 
 Event emitted: hermes.route.dispatched
-Wire-up: task C§1.9
+Wire-up: task C§1.9 (EventEmitter instance injected by turn_handler)
 """
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
 from typing import Any, Literal, Optional
+
+from agent.modules.event_emitter import EventEmitter
 
 
 # ---------------------------------------------------------------------------
@@ -67,6 +68,22 @@ class Dispatch:
     """
     target: DispatchTarget
     payload: dict[str, Any] = field(default_factory=dict)
+
+
+# ---------------------------------------------------------------------------
+# Module-level emitter (injected by turn_handler)
+# ---------------------------------------------------------------------------
+
+_emitter: Optional[EventEmitter] = None
+
+
+def set_emitter(emitter: EventEmitter) -> None:
+    """Inject the shared event emitter.
+
+    Called by turn_handler.run_turn() before processing.
+    """
+    global _emitter
+    _emitter = emitter
 
 
 # ---------------------------------------------------------------------------
@@ -139,19 +156,10 @@ def apply_routing_policy(
 
     dispatch = Dispatch(target=target, payload=dispatch_payload)
 
-    _emit_event("hermes.route.dispatched", {
-        "target": dispatch.target,
-        "mission_id": dispatch_payload.get("mission_id"),
-    })
+    if _emitter is not None:
+        _emitter.emit("hermes.route.dispatched", {
+            "target": dispatch.target,
+            "mission_id": dispatch_payload.get("mission_id"),
+        })
 
     return dispatch
-
-
-# ---------------------------------------------------------------------------
-# Internal helpers
-# ---------------------------------------------------------------------------
-
-def _emit_event(event: str, payload: dict[str, Any]) -> None:
-    """Emit a structured event as a JSON line to stdout."""
-    line = json.dumps({"event": event, **payload}, separators=(",", ":"))
-    print(line, flush=True)

@@ -7,14 +7,15 @@ brief acknowledgement, full detail, executive summary, approval request, or a
 status-update ping.»
 
 Event emitted: hermes.response.shaped
-Wire-up: task C§1.9
+Wire-up: task C§1.9 (EventEmitter instance injected by turn_handler)
 """
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
 from typing import Any, Literal, Optional
+
+from agent.modules.event_emitter import EventEmitter
 
 
 # ---------------------------------------------------------------------------
@@ -92,6 +93,21 @@ _SHAPE_TABLE: dict[
 
 _DEFAULT_SHAPE: tuple[ResponseMode, Tone, Optional[str]] = ("brief", "neutral", None)
 
+# ---------------------------------------------------------------------------
+# Module-level emitter (injected by turn_handler)
+# ---------------------------------------------------------------------------
+
+_emitter: Optional[EventEmitter] = None
+
+
+def set_emitter(emitter: EventEmitter) -> None:
+    """Inject the shared event emitter.
+
+    Called by turn_handler.run_turn() before processing.
+    """
+    global _emitter
+    _emitter = emitter
+
 
 def select_response_mode(
     dispatch: Dispatch,
@@ -124,21 +140,12 @@ def select_response_mode(
 
     shape = ResponseShape(mode=mode, tone=tone, template=template, metadata=meta)
 
-    _emit_event("hermes.response.shaped", {
-        "mode": shape.mode,
-        "tone": shape.tone,
-        "template": shape.template,
-        "dispatch_target": dispatch.target,
-    })
+    if _emitter is not None:
+        _emitter.emit("hermes.response.shaped", {
+            "mode": shape.mode,
+            "tone": shape.tone,
+            "template": shape.template,
+            "dispatch_target": dispatch.target,
+        })
 
     return shape
-
-
-# ---------------------------------------------------------------------------
-# Internal helpers
-# ---------------------------------------------------------------------------
-
-def _emit_event(event: str, payload: dict[str, Any]) -> None:
-    """Emit a structured event as a JSON line to stdout."""
-    line = json.dumps({"event": event, **payload}, separators=(",", ":"))
-    print(line, flush=True)

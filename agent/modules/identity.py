@@ -8,17 +8,17 @@ Phase-3 build plan reference: §C§1 table, row 1.
 Wire-up to the central Hermes entrypoint is task C§1.9 (not this file).
 
 Event emitted: ``hermes.identity.bootstrap``
-Emission mechanism: stdout JSON line (single-line, newline-terminated).
+Emission mechanism: EventEmitter instance (injected by turn_handler).
 """
 
 from __future__ import annotations
 
-import json
-import sys
 from datetime import datetime, timezone
 from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
+
+from agent.modules.event_emitter import EventEmitter
 
 
 # ---------------------------------------------------------------------------
@@ -46,19 +46,19 @@ class IdentityPacket(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Event emission
+# Module-level emitter (injected by turn_handler)
 # ---------------------------------------------------------------------------
 
+_emitter: Optional[EventEmitter] = None
 
-def _emit(event: str, payload: dict) -> None:
-    """Write a single-line JSON event to stdout.
 
-    Replace with an @agrv/hermes-events call in C§1.9 when the shared
-    event bus is wired into this workspace.
+def set_emitter(emitter: EventEmitter) -> None:
+    """Inject the shared event emitter.
+
+    Called by turn_handler.run_turn() before processing.
     """
-    line = json.dumps({"event": event, **payload}, default=str)
-    sys.stdout.write(line + "\n")
-    sys.stdout.flush()
+    global _emitter
+    _emitter = emitter
 
 
 # ---------------------------------------------------------------------------
@@ -92,14 +92,15 @@ def bootstrap_identity(bootstrap: SessionBootstrap) -> IdentityPacket:
         time=datetime.now(tz=timezone.utc),
     )
 
-    _emit(
-        "hermes.identity.bootstrap",
-        {
-            "user_id": packet.user_id,
-            "company_id": packet.company_id,
-            "mode": packet.mode,
-            "session_id": bootstrap.session_id,
-        },
-    )
+    if _emitter is not None:
+        _emitter.emit(
+            "hermes.identity.bootstrap",
+            {
+                "user_id": packet.user_id,
+                "company_id": packet.company_id,
+                "mode": packet.mode,
+                "session_id": bootstrap.session_id,
+            },
+        )
 
     return packet

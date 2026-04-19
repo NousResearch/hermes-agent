@@ -10,17 +10,17 @@ Phase-3 build plan reference: §C§1 table, row 4.
 Wire-up to the central Hermes entrypoint is task C§1.9 (not this file).
 
 Event emitted: ``hermes.intent.classified``
-Emission mechanism: stdout JSON line (single-line, newline-terminated).
+Emission mechanism: EventEmitter instance (injected by turn_handler).
 """
 
 from __future__ import annotations
 
-import json
-import sys
 from enum import Enum
+from typing import Optional
 
 from pydantic import BaseModel
 
+from agent.modules.event_emitter import EventEmitter
 from agent.modules.interpreter import Interpretation
 
 # ---------------------------------------------------------------------------
@@ -70,19 +70,19 @@ class ClassifiedIntent(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Event emission
+# Module-level emitter (injected by turn_handler)
 # ---------------------------------------------------------------------------
 
+_emitter: Optional[EventEmitter] = None
 
-def _emit(event: str, payload: dict) -> None:
-    """Write a single-line JSON event to stdout.
 
-    Replace with an @agrv/hermes-events call in C§1.9 when the shared
-    event bus is wired into this workspace.
+def set_emitter(emitter: EventEmitter) -> None:
+    """Inject the shared event emitter.
+
+    Called by turn_handler.run_turn() before processing.
     """
-    line = json.dumps({"event": event, **payload}, default=str)
-    sys.stdout.write(line + "\n")
-    sys.stdout.flush()
+    global _emitter
+    _emitter = emitter
 
 
 # ---------------------------------------------------------------------------
@@ -105,14 +105,15 @@ def classify_intent(interpretation: Interpretation) -> ClassifiedIntent:
         interpretation=interpretation,
     )
 
-    _emit(
-        "hermes.intent.classified",
-        {
-            "route": result.route.value,
-            "confidence": result.confidence,
-            "intent": interpretation.intent,
-            "topic": interpretation.topic,
-        },
-    )
+    if _emitter is not None:
+        _emitter.emit(
+            "hermes.intent.classified",
+            {
+                "route": result.route.value,
+                "confidence": result.confidence,
+                "intent": interpretation.intent,
+                "topic": interpretation.topic,
+            },
+        )
 
     return result

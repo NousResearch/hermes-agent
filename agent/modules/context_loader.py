@@ -9,17 +9,16 @@ Phase-3 build plan reference: §C§1 table, row 2.
 Wire-up to the central Hermes entrypoint is task C§1.9 (not this file).
 
 Event emitted: ``hermes.context.assembled``
-Emission mechanism: stdout JSON line (single-line, newline-terminated).
+Emission mechanism: EventEmitter instance (injected by turn_handler).
 """
 
 from __future__ import annotations
 
-import json
-import sys
 from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
+from agent.modules.event_emitter import EventEmitter
 from agent.modules.identity import IdentityPacket
 
 # ---------------------------------------------------------------------------
@@ -55,19 +54,19 @@ class ContextPackage(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Event emission
+# Module-level emitter (injected by turn_handler)
 # ---------------------------------------------------------------------------
 
+_emitter: Optional[EventEmitter] = None
 
-def _emit(event: str, payload: dict) -> None:
-    """Write a single-line JSON event to stdout.
 
-    Replace with an @agrv/hermes-events call in C§1.9 when the shared
-    event bus is wired into this workspace.
+def set_emitter(emitter: EventEmitter) -> None:
+    """Inject the shared event emitter.
+
+    Called by turn_handler.run_turn() before processing.
     """
-    line = json.dumps({"event": event, **payload}, default=str)
-    sys.stdout.write(line + "\n")
-    sys.stdout.flush()
+    global _emitter
+    _emitter = emitter
 
 
 # ---------------------------------------------------------------------------
@@ -99,16 +98,17 @@ def assemble_context(
         token_budget=token_budget,
     )
 
-    _emit(
-        "hermes.context.assembled",
-        {
-            "session_id": message.session_id,
-            "user_id": identity.user_id,
-            "token_estimate": package.token_estimate,
-            "token_budget": package.token_budget,
-            "history_turns": len(package.session_history),
-            "memory_snippets": len(package.memory_snippets),
-        },
-    )
+    if _emitter is not None:
+        _emitter.emit(
+            "hermes.context.assembled",
+            {
+                "session_id": message.session_id,
+                "user_id": identity.user_id,
+                "token_estimate": package.token_estimate,
+                "token_budget": package.token_budget,
+                "history_turns": len(package.session_history),
+                "memory_snippets": len(package.memory_snippets),
+            },
+        )
 
     return package

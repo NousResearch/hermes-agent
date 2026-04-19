@@ -23,32 +23,41 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 # ---------------------------------------------------------------------------
+# Event emitter
+# ---------------------------------------------------------------------------
+from agent.modules.event_emitter import EventEmitter
+
+# ---------------------------------------------------------------------------
 # Input-pipeline submodules (Pydantic types)
 # ---------------------------------------------------------------------------
 from agent.modules.identity import (
     IdentityPacket,
     SessionBootstrap,
     bootstrap_identity,
+    set_emitter as set_identity_emitter,
 )
 from agent.modules.context_loader import (
     ContextPackage,
     UserMessage,
     assemble_context,
+    set_emitter as set_context_emitter,
 )
-from agent.modules.interpreter import Interpretation, interpret
-from agent.modules.intent_classifier import ClassifiedIntent, Route, classify_intent
+from agent.modules.interpreter import Interpretation, interpret, set_emitter as set_interp_emitter
+from agent.modules.intent_classifier import ClassifiedIntent, Route, classify_intent, set_emitter as set_classifier_emitter
 
 # ---------------------------------------------------------------------------
 # Output-pipeline submodules (dataclass types — local stubs per C§1.5–C§1.8)
 # ---------------------------------------------------------------------------
 from agent.modules import mission_compiler as _mc
-from agent.modules.routing_policy import Dispatch, apply_routing_policy
-from agent.modules.response_mode import ResponseShape, UpstreamResult, select_response_mode
+from agent.modules.mission_compiler import set_emitter as set_mc_emitter
+from agent.modules.routing_policy import Dispatch, apply_routing_policy, set_emitter as set_routing_emitter
+from agent.modules.response_mode import ResponseShape, UpstreamResult, select_response_mode, set_emitter as set_response_emitter
 from agent.modules.summarizer import (
     CompanyKPIs,
     ExecutiveSummary,
     ResultPackage,
     summarize,
+    set_emitter as set_summarizer_emitter,
 )
 
 
@@ -186,6 +195,19 @@ def run_turn(
     TurnResult
         Full pipeline output for this turn.
     """
+    # ------------------------------------------------------------------
+    # Inject shared EventEmitter into all 8 submodules
+    # ------------------------------------------------------------------
+    emitter = EventEmitter()
+    set_identity_emitter(emitter)
+    set_context_emitter(emitter)
+    set_interp_emitter(emitter)
+    set_classifier_emitter(emitter)
+    set_mc_emitter(emitter)
+    set_routing_emitter(emitter)
+    set_response_emitter(emitter)
+    set_summarizer_emitter(emitter)
+
     # ------------------------------------------------------------------
     # 1. Identity — SessionBootstrap → IdentityPacket
     # ------------------------------------------------------------------

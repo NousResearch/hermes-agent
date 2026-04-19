@@ -7,15 +7,15 @@ and Route produced by the input pipeline and assembles a typed MissionContract
 does not warrant a formal contract (clarification, approval-gate, escalation).»
 
 Event emitted: hermes.mission.compiled
-Wire-up: task C§1.9
+Wire-up: task C§1.9 (EventEmitter instance injected by turn_handler)
 """
 
 from __future__ import annotations
 
-import json
-import sys
 from dataclasses import dataclass, field
 from typing import Any, Optional
+
+from agent.modules.event_emitter import EventEmitter
 
 
 # ---------------------------------------------------------------------------
@@ -68,6 +68,22 @@ class MissionContract:
 
 
 # ---------------------------------------------------------------------------
+# Module-level emitter (injected by turn_handler)
+# ---------------------------------------------------------------------------
+
+_emitter: Optional[EventEmitter] = None
+
+
+def set_emitter(emitter: EventEmitter) -> None:
+    """Inject the shared event emitter.
+
+    Called by turn_handler.run_turn() before processing.
+    """
+    global _emitter
+    _emitter = emitter
+
+
+# ---------------------------------------------------------------------------
 # Module
 # ---------------------------------------------------------------------------
 
@@ -90,11 +106,12 @@ def compile_mission(
     Ref: Phase 2 §4.2 — Mission Compiler.
     """
     if route.target not in CONTRACTS_REQUIRING_MISSION:
-        _emit_event("hermes.mission.compiled", {
-            "mission_contract": None,
-            "reason": f"route.target={route.target!r} does not require a MissionContract",
-            "session_id": context.session_id,
-        })
+        if _emitter is not None:
+            _emitter.emit("hermes.mission.compiled", {
+                "mission_contract": None,
+                "reason": f"route.target={route.target!r} does not require a MissionContract",
+                "session_id": context.session_id,
+            })
         return None
 
     import uuid
@@ -114,22 +131,13 @@ def compile_mission(
         mode="prose",  # shim: typed mode enabled in C§1.9 after @agrv/mission-contract import
     )
 
-    _emit_event("hermes.mission.compiled", {
-        "mission_id": contract.mission_id,
-        "intent": contract.intent,
-        "target": contract.target,
-        "mode": contract.mode,
-        "session_id": context.session_id,
-    })
+    if _emitter is not None:
+        _emitter.emit("hermes.mission.compiled", {
+            "mission_id": contract.mission_id,
+            "intent": contract.intent,
+            "target": contract.target,
+            "mode": contract.mode,
+            "session_id": context.session_id,
+        })
 
     return contract
-
-
-# ---------------------------------------------------------------------------
-# Internal helpers
-# ---------------------------------------------------------------------------
-
-def _emit_event(event: str, payload: dict[str, Any]) -> None:
-    """Emit a structured event as a JSON line to stdout."""
-    line = json.dumps({"event": event, **payload}, separators=(",", ":"))
-    print(line, flush=True)

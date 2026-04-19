@@ -8,15 +8,16 @@ is kept to ≤5 bullet points, always includes a recommended next action, and
 flags any SLA breaches or open approvals.»
 
 Event emitted: hermes.summary.emitted
-Wire-up: task C§1.9
+Wire-up: task C§1.9 (EventEmitter instance injected by turn_handler)
 """
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Optional
+
+from agent.modules.event_emitter import EventEmitter
 
 
 # ---------------------------------------------------------------------------
@@ -71,6 +72,22 @@ class ExecutiveSummary:
     pending_approvals: list[str]
     generated_at: str
     kpi_deltas: dict[str, Any] = field(default_factory=dict)
+
+
+# ---------------------------------------------------------------------------
+# Module-level emitter (injected by turn_handler)
+# ---------------------------------------------------------------------------
+
+_emitter: Optional[EventEmitter] = None
+
+
+def set_emitter(emitter: EventEmitter) -> None:
+    """Inject the shared event emitter.
+
+    Called by turn_handler.run_turn() before processing.
+    """
+    global _emitter
+    _emitter = emitter
 
 
 # ---------------------------------------------------------------------------
@@ -145,13 +162,14 @@ def summarize(
         kpi_deltas=kpi_deltas,
     )
 
-    _emit_event("hermes.summary.emitted", {
-        "mission_id": summary.mission_id,
-        "success": summary.success,
-        "sla_breach": summary.sla_breach,
-        "pending_approval_count": len(summary.pending_approvals),
-        "bullet_count": len(summary.bullets),
-    })
+    if _emitter is not None:
+        _emitter.emit("hermes.summary.emitted", {
+            "mission_id": summary.mission_id,
+            "success": summary.success,
+            "sla_breach": summary.sla_breach,
+            "pending_approval_count": len(summary.pending_approvals),
+            "bullet_count": len(summary.bullets),
+        })
 
     return summary
 
@@ -165,13 +183,3 @@ def _derive_next_action(result: ResultPackage) -> str:
     if not result.success:
         return "Review errors and retry or escalate the mission."
     return "No action required — mission closed successfully."
-
-
-# ---------------------------------------------------------------------------
-# Internal helpers
-# ---------------------------------------------------------------------------
-
-def _emit_event(event: str, payload: dict[str, Any]) -> None:
-    """Emit a structured event as a JSON line to stdout."""
-    line = json.dumps({"event": event, **payload}, separators=(",", ":"))
-    print(line, flush=True)

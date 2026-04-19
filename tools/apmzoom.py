@@ -360,6 +360,57 @@ def _extract_param_schema(parameters_raw: str, skill_name: str = "") -> Dict[str
     return {"properties": properties, "required": required}
 
 
+def _maybe_autofetch_ver(skill_name: str, skill_meta: Dict[str, Any],
+                         params: Dict[str, Any]) -> None:
+    """Inject a fresh `ver` into params if the skill needs one and it's missing.
+
+    Looks up the latest ver via `gds_m_storegoodslist?goods_id=X`.  Only fires
+    when:
+      - skill_name is a write-type (editgoods*, delgoods, …) that declared
+        `ver` in the required set
+      - params has a non-empty `goods_id`
+      - params doesn't already carry a ver
+
+    Silent no-op on any failure — the subsequent validation step will catch
+    the still-missing ver and hint the LLM to fetch it manually.  Mutates
+    `params` in place.
+    """
+    if not _is_write_skill(skill_name):
+        return
+    required = _extract_param_schema(
+        skill_meta.get("parameters_raw", ""), skill_name
+    ).get("required") or []
+    if "ver" not in required:
+        return
+    if params.get("ver"):
+        return
+    goods_id = params.get("goods_id")
+    if not goods_id:
+        return
+    # Use goodseditinfo for per-goods lookup: storegoodslist's goods_id
+    # param is actually a cursor-pagination marker, not a filter.  editinfo
+    # is the authoritative "give me one goods" endpoint and returns ver too.
+    try:
+        raw = _execute_skill("gds_m_goodseditinfo", {"goods_id": int(goods_id)})
+        d = json.loads(raw)
+        r = d.get("result")
+        if not r:
+            return
+        obj = r[0] if isinstance(r, list) and r else r
+        if not isinstance(obj, dict):
+            return
+        ver = obj.get("ver")
+        if ver is None:
+            return
+        params["ver"] = ver
+        logger.info(
+            "[apmzoom] %s: auto-injected ver=%s for goods_id=%s (OCC)",
+            skill_name, ver, goods_id,
+        )
+    except Exception as e:
+        logger.debug("[apmzoom] ver auto-fetch failed for %s: %s", skill_name, e)
+
+
 def _validate_params(skill_name: str, skill_meta: Dict[str, Any],
                      params: Dict[str, Any]) -> Optional[str]:
     """Check LLM-supplied params against the skill's schema before HTTP.
@@ -559,6 +610,14 @@ def _execute_skill(skill_name: str, params: Optional[Dict[str, Any]] = None,
         meta = _parse_openclaw_endpoint_md(openclaw_md)
     else:
         meta = _parse_skill_md(skill_dir / "SKILL.md")
+
+    # OCC `ver` auto-injection for write skills.  Most gds_m_edit* endpoints
+    # declare `ver` required and reject stale values with HTTP 409.  Rather
+    # than make the LLM call storegoodslist → read ver → carry it to the
+    # edit call (2 round trips + context bloat), bridge fetches it itself
+    # when goods_id is present and ver isn't.  Runs *before* validation so
+    # the injected ver counts toward the required set.
+    _maybe_autofetch_ver(skill_name, meta, params)
 
     # Pre-flight param validation (short-circuit before HTTP).  For skills
     # whose frontmatter declares a `parameters:` spec, ensure required

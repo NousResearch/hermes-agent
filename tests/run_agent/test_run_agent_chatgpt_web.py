@@ -2262,6 +2262,7 @@ def test_wrap_chatgpt_web_response_synthesizes_followup_tool_call_for_progress_n
     assert message.tool_calls[0].function.name == "terminal"
     assert message.tool_calls[0].function.arguments == '{"command": "pwd"}'
 
+
 def test_interruptible_api_call_chatgpt_web_closes_request_client_on_interrupt(monkeypatch):
     agent = _build_agent(monkeypatch)
     entered = threading.Event()

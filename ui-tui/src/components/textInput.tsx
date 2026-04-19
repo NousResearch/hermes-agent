@@ -3,7 +3,7 @@ import * as Ink from '@hermes/ink'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { setInputSelection } from '../app/inputSelectionStore.js'
-import { readClipboardText } from '../lib/clipboard.js'
+import { readClipboardText, writeClipboardText } from '../lib/clipboard.js'
 import { isActionMod, isMac } from '../lib/platform.js'
 import { writeOsc52Clipboard } from '../lib/osc52.js'
 
@@ -528,7 +528,13 @@ export function TextInput({
         const range = selRange()
 
         if (range) {
-          writeOsc52Clipboard(vRef.current.slice(range.start, range.end))
+          const text = vRef.current.slice(range.start, range.end)
+
+          void writeClipboardText(text).then(copied => {
+            if (!copied) {
+              writeOsc52Clipboard(text)
+            }
+          })
         }
 
         return

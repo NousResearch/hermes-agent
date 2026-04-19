@@ -1,6 +1,6 @@
 # Hermes Agent - AI 上下文文档
 
-> 更新时间：2026-04-16 | 当前版本：v2026.4.13 | 上游版本：v2026.4.13
+> 更新时间：2026-04-19 | 当前版本：v2026.4.19 | 上游版本：v2026.4.19
 
 ## 项目愿景
 
@@ -475,6 +475,9 @@ python -m pytest tests/ -q
 3. **工具注册**：所有工具必须在模块导入时注册到中央注册表
 4. **命令注册**：所有斜杠命令在 `hermes_cli/commands.py` 的 `COMMAND_REGISTRY` 中定义
 5. **配置版本**：更改配置结构时必须增加 `_config_version`
+6. **Cron 审批模式**：使用 `approvals.cron_mode` 控制 cron 任务中的危险命令处理
+   - `deny`（默认）：阻止危险命令
+   - `approve`：自动批准所有危险命令
 
 ### 禁止模式
 - ❌ 不要硬编码 `~/.hermes` 路径
@@ -532,6 +535,11 @@ run_agent.py, cli.py, batch_runner.py, environments/
 - **测试工具**：`pytest tests/tools/test_your_tool.py`
 - **测试命令**：`pytest tests/cli/test_your_command.py`
 
+### 重要注意事项
+- **思考标签处理**：Hermes 会自动从 assistant 内容中移除 `<thinking>`、`<thought>`、`<reasoning>` 等标签，防止它们泄漏到消息平台、会话转录和上下文压缩中
+- **Codex 认证**：Hermes 拥有独立的 Codex 认证状态，不再与 Codex CLI 共享 `~/.codex/auth.json`
+- **Cron 任务安全**：默认情况下，cron 任务中的危险命令会被阻止（`approvals.cron_mode: deny`），需要 agent 寻找替代方案
+
 ## 相关资源
 
 ### 官方文档
@@ -552,58 +560,8 @@ run_agent.py, cli.py, batch_runner.py, environments/
 - **Atropos**：RL 训练环境（可选）
 - **Tinker**：RL 工具集成（可选）
 
-## 变更记录 (Changelog)
-
-### 2026-04-16 - 同步上游 v2026.4.13 版本变更 🚀
-- ✅ **新增备份和导入系统**：完整的 `hermes backup` 和 `hermes import` 命令
-- 📸 **新增快照功能**：`hermes backup --quick` 和 `/snapshot` 斜杠命令
-- 🔐 **新增 OAuth 提供商管理**：Web Dashboard 中的 OAuth 登录功能
-- 🇨🇳 **新增 Kimi/Moonshot 提供商**：支持中国地区的模型提供商
-- 🐛 **新增调试命令**：`/debug` 斜杠命令和 `hermes debug share`
-- 💡 **新增提示功能**：会话开始时显示随机提示（279 条提示）
-- 🎯 **新增模型选择器**：原生 `/model` 选择器模态框
-- 🌐 **新增网络配置**：`network.force_ipv4` 配置选项
-- 📝 **新增组件化日志**：带会话上下文和过滤功能的日志系统
-- 🔧 **修复 SQLite 备份安全**：使用 `sqlite3.Connection.backup()` API
-- 🛠️ **修复 78 个 CI 测试**：移除死代码和修复测试失败
-- 📚 **修复 30+ 文档错误**：全面的文档更新
-
-### 2026-04-13 16:35:00 - 代码变更同步更新 🔄
-- ✅ **新增 Web UI Dashboard**：基于 React 19 + Vite + Tailwind CSS v4 的浏览器管理界面
-- 📊 **新增 9 个页面**：Status、Config、Env、Sessions、Skills、Cron、Logs、Analytics 页面
-- 🔧 **Gateway 改进**：重启通知机制、服务重启支持（systemd）
-- 🛡️ **安全修复**：Home Assistant 工具的路径遍历验证
-- 🔤 **模型名称修复**：保留 OpenCode Zen 和 ZAI 提供商模型名称中的点
-- 📱 **WhatsApp UX 改进**：分块、格式化、流式输出改进
-- 📨 **Telegram 修复**：使用 UTF-16 代码单元进行消息长度分割
-- 🖥️ **Web 服务器**：FastAPI 后端 + React 前端的完整 Web 界面
-- 📦 **新命令**：`hermes web` 启动 Web UI Dashboard
-- 📖 **文档更新**：更新技术栈、模块结构图和核心命令
-
-### 2026-04-08 18:33:30 - 完善 ADR 体系 📋
-- ✅ **新增 3 个 ADR**：命令系统、会话管理、技能系统
-- 📊 **添加视觉化图表**：为所有 ADR 添加 10 个 Mermaid 图表
-- 🗺️ **创建 ADR 导航图**：在根 CLAUDE.md 中添加 ADR 索引和思维导图
-- 🔄 **建立反馈机制**：添加 ADR 投票、评分和贡献指南
-- 📜 **创建变更日志**：记录 ADR 的演进历史和未来计划
-
-### 2026-04-08 18:29:30 - 添加模块交互流程图 🎨
-
-### 2026-04-08 18:28:35 - 模块文档完成 🎉
-- ✅ **创建所有模块文档**：为 8 个核心模块创建完整的 CLAUDE.md
-- 📊 **文档覆盖率 100%**：所有核心模块都有详细文档
-- 🔧 **面包屑导航**：每个模块文档都包含面包屑导航
-- 📖 **接口文档**：详细的接口说明和使用示例
-- 🎯 **索引更新**：更新索引文件反映当前文档状态
-- 📈 **下一步建议**：创建测试套件覆盖报告和性能优化指南
-
-### 2026-04-08 - 初始化 AI 上下文文档 🚀
-- ✅ **创建根级文档**：生成项目级 CLAUDE.md
-- 📊 **项目分析**：识别 9 个核心模块
-- 🔧 **架构文档**：详细说明技术栈、架构模式和设计原则
-- 📖 **开发指南**：提供运行、测试、编码规范和 AI 使用指引
-- 🗺️ **模块索引**：创建模块结构图和索引表
-- 🎯 **下一步**：需要为每个模块创建详细的 CLAUDE.md 文档
+### 变更历史
+- 📋 **[CHANGELOG.md](CHANGELOG.md)** - 完整的变更记录和版本历史
 
 ---
 

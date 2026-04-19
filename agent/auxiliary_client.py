@@ -814,6 +814,10 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
             if model is None:
                 continue  # skip provider if we don't know a valid aux model
             logger.debug("Auxiliary text client: %s (%s) via pool", pconfig.name, model)
+            if provider_id == "gemini":
+                from agent.gemini_native_adapter import GeminiNativeClient
+
+                return GeminiNativeClient(api_key=api_key, base_url=base_url), model
             extra = {}
             if "api.kimi.com" in base_url.lower():
                 extra["default_headers"] = {"User-Agent": "KimiCLI/1.30.0"}
@@ -835,6 +839,10 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
         if model is None:
             continue  # skip provider if we don't know a valid aux model
         logger.debug("Auxiliary text client: %s (%s)", pconfig.name, model)
+        if provider_id == "gemini":
+            from agent.gemini_native_adapter import GeminiNativeClient
+
+            return GeminiNativeClient(api_key=api_key, base_url=base_url), model
         extra = {}
         if "api.kimi.com" in base_url.lower():
             extra["default_headers"] = {"User-Agent": "KimiCLI/1.30.0"}
@@ -1392,6 +1400,13 @@ def _to_async_client(sync_client, model: str):
     if isinstance(sync_client, AnthropicAuxiliaryClient):
         return AsyncAnthropicAuxiliaryClient(sync_client), model
     try:
+        from agent.gemini_native_adapter import GeminiNativeClient, AsyncGeminiNativeClient
+
+        if isinstance(sync_client, GeminiNativeClient):
+            return AsyncGeminiNativeClient(sync_client), model
+    except ImportError:
+        pass
+    try:
         from agent.copilot_acp_client import CopilotACPClient
         if isinstance(sync_client, CopilotACPClient):
             return sync_client, model
@@ -1686,6 +1701,14 @@ def resolve_provider_client(
 
         default_model = _API_KEY_PROVIDER_AUX_MODELS.get(provider, "")
         final_model = _normalize_resolved_model(model or default_model, provider)
+
+        if provider == "gemini":
+            from agent.gemini_native_adapter import GeminiNativeClient
+
+            client = GeminiNativeClient(api_key=api_key, base_url=base_url)
+            logger.debug("resolve_provider_client: %s (%s)", provider, final_model)
+            return (_to_async_client(client, final_model) if async_mode
+                    else (client, final_model))
 
         # Provider-specific headers
         headers = {}

@@ -689,6 +689,9 @@ DEFAULT_CONFIG = {
     # always goes to ~/.hermes/skills/.
     "skills": {
         "external_dirs": [],   # e.g. ["~/.agents/skills", "/shared/team-skills"]
+        # "eager" (default): inject full skill listing into system prompt every turn.
+        # "lazy": omit listing from system prompt; agent calls skills_list() on demand.
+        "loading": "eager",
     },
 
     # Honcho AI-native memory -- reads ~/.honcho/config.json as single source of truth.

@@ -583,8 +583,13 @@ def _skill_should_show(
 def build_skills_system_prompt(
     available_tools: "set[str] | None" = None,
     available_toolsets: "set[str] | None" = None,
+    lazy: bool = False,
 ) -> str:
     """Build a compact skill index for the system prompt.
+
+    When *lazy* is ``True``, the full skill listing is omitted from the prompt.
+    Instead a short hint tells the agent to call ``skills_list`` on demand.  This
+    saves ~1,500–2,000 system-prompt tokens when many skills are installed.
 
     Two-layer cache:
       1. In-process LRU dict keyed by (skills_dir, tools, toolsets)
@@ -603,6 +608,17 @@ def build_skills_system_prompt(
 
     if not skills_dir.exists() and not external_dirs:
         return ""
+
+    # ── Lazy loading: short hint instead of full listing ────────────────
+    if lazy:
+        return (
+            "## Skills (on-demand)\n"
+            "A skills catalog is available. Call skills_list() when you think a "
+            "specialized skill might help with your task, then load it with "
+            "skill_view(name). If a skill has issues, fix it with "
+            "skill_manage(action='patch'). After difficult/iterative tasks, "
+            "offer to save as a skill."
+        )
 
     # ── Layer 1: in-process LRU cache ─────────────────────────────────
     # Include the resolved platform so per-platform disabled-skill lists

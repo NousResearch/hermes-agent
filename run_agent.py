@@ -1405,6 +1405,7 @@ class AIAgent:
         try:
             skills_config = _agent_cfg.get("skills", {})
             self._skill_nudge_interval = int(skills_config.get("creation_nudge_interval", 10))
+            self._skills_loading = str(skills_config.get("loading", "eager")).lower()
         except Exception:
             pass
 
@@ -3772,6 +3773,7 @@ class AIAgent:
             skills_prompt = build_skills_system_prompt(
                 available_tools=self.valid_tool_names,
                 available_toolsets=avail_toolsets,
+                lazy=getattr(self, "_skills_loading", "eager") == "lazy",
             )
         else:
             skills_prompt = ""

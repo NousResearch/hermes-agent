@@ -936,6 +936,91 @@ def resolve_model_threshold(
         return float(model_thresholds[best_key])
     return default
 
+def _preview_tool_args_for_summary(
+    tool_name: str,
+    raw_args: Any,
+    *,
+    max_string_chars: int = 160,
+    max_items: int = 8,
+    max_depth: int = 4,
+    max_preview_chars: int = 2_000,
+) -> str:
+    """Return a compact, JSON-safe tool-argument preview for compaction.
+
+    Weak local tool-calling models can get confused when the compaction summary
+    contains raw function-call-shaped snippets with truncated JSON strings such
+    as ``execute_code({"code":"import ...``. Summaries are reference text, not
+    executable examples, so we convert arguments into a descriptive JSON preview
+    that preserves salient details while replacing huge multiline payloads with
+    a bounded summary string.
+    """
+
+    def _shorten_string(value: str) -> str:
+        normalized = value.replace("\r\n", "\n")
+        line_count = normalized.count("\n") + 1 if normalized else 0
+        single_line = re.sub(r"\s+", " ", normalized).strip()
+        if len(single_line) <= max_string_chars and line_count <= 2:
+            return value
+        preview = single_line[:max_string_chars]
+        if len(single_line) > max_string_chars:
+            preview += "..."
+        return f"<{len(value)} chars, {line_count} lines: {preview}>"
+
+    def _simplify(value: Any, depth: int = 0) -> Any:
+        if depth >= max_depth:
+            return f"<{type(value).__name__}>"
+        if isinstance(value, str):
+            return _shorten_string(value)
+        if isinstance(value, list):
+            items = [_simplify(item, depth + 1) for item in value[:max_items]]
+            if len(value) > max_items:
+                items.append(f"<+{len(value) - max_items} more items>")
+            return items
+        if isinstance(value, dict):
+            result = {}
+            items = list(value.items())
+            for key, item in items[:max_items]:
+                preview_key = _shorten_string(str(key))
+                if preview_key in result:
+                    suffix = 2
+                    while f"{preview_key} #{suffix}" in result:
+                        suffix += 1
+                    preview_key = f"{preview_key} #{suffix}"
+                result[preview_key] = _simplify(item, depth + 1)
+            if len(items) > max_items:
+                result["__truncated_keys__"] = len(items) - max_items
+            return result
+        return value
+
+    parsed: Any = raw_args
+    if isinstance(raw_args, str):
+        try:
+            parsed = json.loads(raw_args)
+        except (json.JSONDecodeError, TypeError):
+            parsed = {
+                "raw_args": _shorten_string(raw_args),
+                "tool": tool_name,
+            }
+
+    simplified = _simplify(parsed)
+    try:
+        serialized = json.dumps(simplified, ensure_ascii=False, sort_keys=True)
+    except TypeError:
+        fallback = {
+            "tool": _shorten_string(str(tool_name)),
+            "raw_args": _shorten_string(str(raw_args)),
+        }
+        serialized = json.dumps(fallback, ensure_ascii=False, sort_keys=True)
+
+    if len(serialized) <= max_preview_chars:
+        return serialized
+
+    bounded = {
+        "__preview_chars__": len(serialized),
+        "__truncated_preview__": _shorten_string(serialized),
+    }
+    return json.dumps(bounded, ensure_ascii=False, sort_keys=True)
+
 
 class ContextCompressor(ContextEngine):
     """Default context engine — compresses conversation context via lossy summarization.
@@ -2154,14 +2239,12 @@ class ContextCompressor(ContextEngine):
                             fn = tc.get("function", {})
                             name = fn.get("name", "?")
                             args = _redact_compaction_text(fn.get("arguments", ""))
-                            # Truncate long arguments but keep enough for context
-                            if len(args) > self._TOOL_ARGS_MAX:
-                                args = args[:self._TOOL_ARGS_HEAD] + "..."
-                            tc_parts.append(f"  {name}({args})")
                         else:
                             fn = getattr(tc, "function", None)
                             name = getattr(fn, "name", "?") if fn else "?"
-                            tc_parts.append(f"  {name}(...)")
+                            args = redact_sensitive_text(getattr(fn, "arguments", "") if fn else "")
+                        args_preview = _preview_tool_args_for_summary(name, args)
+                        tc_parts.append(f"  {name} args={args_preview}")
                     content += "\n[Tool calls:\n" + "\n".join(tc_parts) + "\n]"
                 parts.append(f"[ASSISTANT]: {content}")
                 continue

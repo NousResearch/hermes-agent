@@ -1,0 +1,21 @@
+{
+  "name": "Hermes Agent Dashboard",
+  "short_name": "Hermes",
+  "description": "Monitor and control your Hermes Agent",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#041C1C",
+  "theme_color": "#041C1C",
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}

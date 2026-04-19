@@ -28,7 +28,7 @@ The QQ Bot adapter uses the [Official QQ Bot API](https://bot.q.qq.com/wiki/deve
 ### Interactive setup
 
 ```bash
-hermes setup gateway
+hermes gateway setup
 ```
 
 Select **QQ Bot** from the platform list and follow the prompts.
@@ -52,7 +52,7 @@ QQ_CLIENT_SECRET=your-app-secret
 | `QQBOT_HOME_CHANNEL_NAME` | Display name for home channel | `Home` |
 | `QQ_ALLOWED_USERS` | Comma-separated user OpenIDs for DM access | open (all users) |
 | `QQ_ALLOW_ALL_USERS` | Set to `true` to allow all DMs | `false` |
-| `QQ_MARKDOWN_SUPPORT` | Enable QQ markdown (msg_type 2) | `true` |
+| `QQ_SANDBOX` | Route requests to the QQ sandbox gateway for development testing | `false` |
 | `QQ_STT_API_KEY` | API key for voice-to-text provider | — |
 | `QQ_STT_BASE_URL` | Base URL for STT provider | `https://open.bigmodel.cn/api/coding/paas/v4` |
 | `QQ_STT_MODEL` | STT model name | `glm-asr` |
@@ -68,7 +68,7 @@ platforms:
     extra:
       app_id: "your-app-id"
       client_secret: "your-secret"
-      markdown_support: true
+      markdown_support: true       # enable QQ markdown (msg_type 2). Config-only; no env-var equivalent.
       dm_policy: "open"          # open | allowlist | disabled
       allow_from:
         - "user_openid_1"

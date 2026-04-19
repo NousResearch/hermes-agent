@@ -105,6 +105,10 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
 
               return d.message?.trim() ? send(d.message) : sys(`/${parsed.name}: skill payload missing message`)
             }
+
+            if (d.type === 'send') {
+              return d.message?.trim() ? send(d.message) : sys(`/${parsed.name}: empty message`)
+            }
           })
           .catch(guardedErr)
       })

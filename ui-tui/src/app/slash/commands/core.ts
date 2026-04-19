@@ -1,7 +1,13 @@
+import { NO_CONFIRM_DESTRUCTIVE } from '../../../config/env.js'
 import { dailyFortune, randomFortune } from '../../../content/fortunes.js'
 import { HOTKEYS } from '../../../content/hotkeys.js'
 import { nextDetailsMode, parseDetailsMode } from '../../../domain/details.js'
-import type { ConfigGetValueResponse, ConfigSetResponse, SessionUndoResponse } from '../../../gatewayTypes.js'
+import type {
+  ConfigGetValueResponse,
+  ConfigSetResponse,
+  SessionSteerResponse,
+  SessionUndoResponse
+} from '../../../gatewayTypes.js'
 import { writeOsc52Clipboard } from '../../../lib/osc52.js'
 import type { DetailsMode, Msg, PanelSection } from '../../../types.js'
 import { patchOverlayState } from '../../overlayStore.js'
@@ -77,8 +83,27 @@ export const coreCommands: SlashCommand[] = [
         return
       }
 
-      patchUiState({ status: 'forging session…' })
-      ctx.session.newSession(cmd.startsWith('/new') ? 'new session started' : undefined)
+      const isNew = cmd.startsWith('/new')
+
+      const commit = () => {
+        patchUiState({ status: 'forging session…' })
+        ctx.session.newSession(isNew ? 'new session started' : undefined)
+      }
+
+      if (NO_CONFIRM_DESTRUCTIVE) {
+        return commit()
+      }
+
+      patchOverlayState({
+        confirm: {
+          cancelLabel: 'No, keep going',
+          confirmLabel: isNew ? 'Yes, start a new session' : 'Yes, clear the session',
+          danger: true,
+          detail: 'This ends the current conversation and clears the transcript.',
+          onConfirm: commit,
+          title: isNew ? 'Start a new session?' : 'Clear the current session?'
+        }
+      })
     }
   },
 
@@ -242,6 +267,44 @@ export const coreCommands: SlashCommand[] = [
 
       ctx.composer.enqueue(arg)
       ctx.transcript.sys(`queued: "${arg.slice(0, 50)}${arg.length > 50 ? '…' : ''}"`)
+    }
+  },
+
+  {
+    help: 'inject a message after the next tool call (no interrupt)',
+    name: 'steer',
+    run: (arg, ctx) => {
+      const payload = arg?.trim() ?? ''
+
+      if (!payload) {
+        return ctx.transcript.sys('usage: /steer <prompt>')
+      }
+
+      // If the agent isn't running, fall back to the queue so the user's
+      // message isn't lost — identical semantics to the gateway handler.
+      if (!ctx.ui.busy || !ctx.sid) {
+        ctx.composer.enqueue(payload)
+        ctx.transcript.sys(
+          `no active turn — queued for next: "${payload.slice(0, 50)}${payload.length > 50 ? '…' : ''}"`
+        )
+
+        return
+      }
+
+      ctx.gateway
+        .rpc<SessionSteerResponse>('session.steer', { session_id: ctx.sid, text: payload })
+        .then(
+          ctx.guarded<SessionSteerResponse>(r => {
+            if (r?.status === 'queued') {
+              ctx.transcript.sys(
+                `⏩ steer queued — arrives after next tool call: "${payload.slice(0, 50)}${payload.length > 50 ? '…' : ''}"`
+              )
+            } else {
+              ctx.transcript.sys('steer rejected')
+            }
+          })
+        )
+        .catch(ctx.guardedErr)
     }
   },
 

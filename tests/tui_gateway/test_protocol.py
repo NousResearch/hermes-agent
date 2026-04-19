@@ -4,6 +4,7 @@ import io
 import json
 import sys
 import threading
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -120,7 +121,9 @@ def test_block_and_respond(capture):
 
     rid = next(iter(server._pending))
     server._answers[rid] = "my_answer"
-    server._pending[rid].set()
+    # _pending values are (sid, Event) tuples — unpack to set the Event
+    _, ev = server._pending[rid]
+    ev.set()
 
     threading.Event().wait(0.1)
     assert result[0] == "my_answer"
@@ -128,7 +131,8 @@ def test_block_and_respond(capture):
 
 def test_clear_pending(server):
     ev = threading.Event()
-    server._pending["r1"] = ev
+    # _pending values are (sid, Event) tuples
+    server._pending["r1"] = ("sid-x", ev)
     server._clear_pending()
 
     assert ev.is_set()
@@ -231,3 +235,279 @@ def test_cli_exec_blocked(server, argv):
 ])
 def test_cli_exec_allowed(server, argv):
     assert server._cli_exec_blocked(argv) is None
+
+
+# ── slash.exec skill command interception ────────────────────────────
+
+
+def test_slash_exec_rejects_skill_commands(server):
+    """slash.exec must reject skill commands so the TUI falls through to command.dispatch."""
+    # Register a mock session
+    sid = "test-session"
+    server._sessions[sid] = {"session_key": sid, "agent": None}
+
+    # Mock scan_skill_commands to return a known skill
+    fake_skills = {"/hermes-agent-dev": {"name": "hermes-agent-dev", "description": "Dev workflow"}}
+
+    with patch("agent.skill_commands.get_skill_commands", return_value=fake_skills):
+        resp = server.handle_request({
+            "id": "r1",
+            "method": "slash.exec",
+            "params": {"command": "hermes-agent-dev", "session_id": sid},
+        })
+
+    # Should return an error so the TUI's .catch() fires command.dispatch
+    assert "error" in resp
+    assert resp["error"]["code"] == 4018
+    assert "skill command" in resp["error"]["message"]
+
+
+@pytest.mark.parametrize("cmd", ["retry", "queue hello", "q hello", "steer fix the test", "plan"])
+def test_slash_exec_rejects_pending_input_commands(server, cmd):
+    """slash.exec must reject commands that use _pending_input in the CLI."""
+    sid = "test-session"
+    server._sessions[sid] = {"session_key": sid, "agent": None}
+
+    resp = server.handle_request({
+        "id": "r1",
+        "method": "slash.exec",
+        "params": {"command": cmd, "session_id": sid},
+    })
+
+    assert "error" in resp
+    assert resp["error"]["code"] == 4018
+    assert "pending-input command" in resp["error"]["message"]
+
+
+def test_command_dispatch_queue_sends_message(server):
+    """command.dispatch /queue returns {type: 'send', message: ...} for the TUI."""
+    sid = "test-session"
+    server._sessions[sid] = {"session_key": sid}
+
+    resp = server.handle_request({
+        "id": "r1",
+        "method": "command.dispatch",
+        "params": {"name": "queue", "arg": "tell me about quantum computing", "session_id": sid},
+    })
+
+    assert "error" not in resp
+    result = resp["result"]
+    assert result["type"] == "send"
+    assert result["message"] == "tell me about quantum computing"
+
+
+def test_command_dispatch_queue_requires_arg(server):
+    """command.dispatch /queue without an argument returns an error."""
+    sid = "test-session"
+    server._sessions[sid] = {"session_key": sid}
+
+    resp = server.handle_request({
+        "id": "r2",
+        "method": "command.dispatch",
+        "params": {"name": "queue", "arg": "", "session_id": sid},
+    })
+
+    assert "error" in resp
+    assert resp["error"]["code"] == 4004
+
+
+def test_command_dispatch_steer_fallback_sends_message(server):
+    """command.dispatch /steer with no active agent falls back to send."""
+    sid = "test-session"
+    server._sessions[sid] = {"session_key": sid, "agent": None}
+
+    resp = server.handle_request({
+        "id": "r3",
+        "method": "command.dispatch",
+        "params": {"name": "steer", "arg": "focus on testing", "session_id": sid},
+    })
+
+    assert "error" not in resp
+    result = resp["result"]
+    assert result["type"] == "send"
+    assert result["message"] == "focus on testing"
+
+
+def test_command_dispatch_retry_finds_last_user_message(server):
+    """command.dispatch /retry walks session['history'] to find the last user message."""
+    sid = "test-session"
+    history = [
+        {"role": "user", "content": "first question"},
+        {"role": "assistant", "content": "first answer"},
+        {"role": "user", "content": "second question"},
+        {"role": "assistant", "content": "second answer"},
+    ]
+    server._sessions[sid] = {
+        "session_key": sid,
+        "agent": None,
+        "history": history,
+        "history_lock": threading.Lock(),
+        "history_version": 0,
+    }
+
+    resp = server.handle_request({
+        "id": "r4",
+        "method": "command.dispatch",
+        "params": {"name": "retry", "session_id": sid},
+    })
+
+    assert "error" not in resp
+    result = resp["result"]
+    assert result["type"] == "send"
+    assert result["message"] == "second question"
+    # Verify history was truncated: everything from last user message onward removed
+    assert len(server._sessions[sid]["history"]) == 2
+    assert server._sessions[sid]["history"][-1]["role"] == "assistant"
+    assert server._sessions[sid]["history_version"] == 1
+
+
+def test_command_dispatch_retry_empty_history(server):
+    """command.dispatch /retry with empty history returns error."""
+    sid = "test-session"
+    server._sessions[sid] = {
+        "session_key": sid,
+        "agent": None,
+        "history": [],
+        "history_lock": threading.Lock(),
+        "history_version": 0,
+    }
+
+    resp = server.handle_request({
+        "id": "r5",
+        "method": "command.dispatch",
+        "params": {"name": "retry", "session_id": sid},
+    })
+
+    assert "error" in resp
+    assert resp["error"]["code"] == 4018
+
+
+def test_command_dispatch_retry_handles_multipart_content(server):
+    """command.dispatch /retry extracts text from multipart content lists."""
+    sid = "test-session"
+    history = [
+        {"role": "user", "content": [
+            {"type": "text", "text": "analyze this"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}}
+        ]},
+        {"role": "assistant", "content": "I see the image."},
+    ]
+    server._sessions[sid] = {
+        "session_key": sid,
+        "agent": None,
+        "history": history,
+        "history_lock": threading.Lock(),
+        "history_version": 0,
+    }
+
+    resp = server.handle_request({
+        "id": "r6",
+        "method": "command.dispatch",
+        "params": {"name": "retry", "session_id": sid},
+    })
+
+    assert "error" not in resp
+    result = resp["result"]
+    assert result["type"] == "send"
+    assert result["message"] == "analyze this"
+
+
+def test_command_dispatch_returns_skill_payload(server):
+    """command.dispatch returns structured skill payload for the TUI to send()."""
+    sid = "test-session"
+    server._sessions[sid] = {"session_key": sid}
+
+    fake_skills = {"/hermes-agent-dev": {"name": "hermes-agent-dev", "description": "Dev workflow"}}
+    fake_msg = "Loaded skill content here"
+
+    with patch("agent.skill_commands.scan_skill_commands", return_value=fake_skills), \
+         patch("agent.skill_commands.build_skill_invocation_message", return_value=fake_msg):
+        resp = server.handle_request({
+            "id": "r2",
+            "method": "command.dispatch",
+            "params": {"name": "hermes-agent-dev", "session_id": sid},
+        })
+
+    assert "error" not in resp
+    result = resp["result"]
+    assert result["type"] == "skill"
+    assert result["message"] == fake_msg
+    assert result["name"] == "hermes-agent-dev"
+
+
+# ── dispatch(): pool routing for long handlers (#12546) ──────────────
+
+
+def test_dispatch_runs_short_handlers_inline(server):
+    """Non-long handlers return their response synchronously from dispatch()."""
+    server._methods["fast.ping"] = lambda rid, params: server._ok(rid, {"pong": True})
+
+    resp = server.dispatch({"id": "r1", "method": "fast.ping", "params": {}})
+
+    assert resp == {"jsonrpc": "2.0", "id": "r1", "result": {"pong": True}}
+
+
+def test_dispatch_offloads_long_handlers_and_emits_via_stdout(capture):
+    """Long handlers run on the pool and write their response via write_json."""
+    server, buf = capture
+    server._methods["slash.exec"] = lambda rid, params: server._ok(rid, {"output": "hi"})
+
+    resp = server.dispatch({"id": "r2", "method": "slash.exec", "params": {}})
+    assert resp is None
+
+    for _ in range(50):
+        if buf.getvalue():
+            break
+        time.sleep(0.01)
+
+    written = json.loads(buf.getvalue())
+    assert written == {"jsonrpc": "2.0", "id": "r2", "result": {"output": "hi"}}
+
+
+def test_dispatch_long_handler_does_not_block_fast_handler(server):
+    """A slow long handler must not prevent a concurrent fast handler from completing."""
+    released = threading.Event()
+    server._methods["slash.exec"] = lambda rid, params: (released.wait(timeout=5), server._ok(rid, {"done": True}))[1]
+    server._methods["fast.ping"] = lambda rid, params: server._ok(rid, {"pong": True})
+
+    t0 = time.monotonic()
+    assert server.dispatch({"id": "slow", "method": "slash.exec", "params": {}}) is None
+
+    fast_resp = server.dispatch({"id": "fast", "method": "fast.ping", "params": {}})
+    fast_elapsed = time.monotonic() - t0
+
+    assert fast_resp["result"] == {"pong": True}
+    assert fast_elapsed < 0.5, f"fast handler blocked for {fast_elapsed:.2f}s behind slow handler"
+
+    released.set()
+
+
+def test_dispatch_long_handler_exception_produces_error_response(capture):
+    """An exception inside a pool-dispatched handler still yields a JSON-RPC error."""
+    server, buf = capture
+
+    def boom(rid, params):
+        raise RuntimeError("kaboom")
+
+    server._methods["slash.exec"] = boom
+
+    server.dispatch({"id": "r3", "method": "slash.exec", "params": {}})
+
+    for _ in range(50):
+        if buf.getvalue():
+            break
+        time.sleep(0.01)
+
+    written = json.loads(buf.getvalue())
+    assert written["id"] == "r3"
+    assert written["error"]["code"] == -32000
+    assert "kaboom" in written["error"]["message"]
+
+
+def test_dispatch_unknown_long_method_still_goes_inline(server):
+    """Method name not in _LONG_HANDLERS takes the sync path even if handler is slow."""
+    server._methods["some.method"] = lambda rid, params: server._ok(rid, {"ok": True})
+
+    resp = server.dispatch({"id": "r4", "method": "some.method", "params": {}})
+
+    assert resp["result"] == {"ok": True}

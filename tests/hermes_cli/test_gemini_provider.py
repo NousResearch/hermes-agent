@@ -130,7 +130,7 @@ class TestGeminiModelCatalog:
         models = _PROVIDER_MODELS["gemini"]
         assert "gemini-2.5-pro" in models
         assert "gemini-2.5-flash" in models
-        assert "gemma-4-31b-it" in models
+        assert "gemma-4-31b-it" not in models
 
     def test_provider_models_has_3x(self):
         models = _PROVIDER_MODELS["gemini"]
@@ -207,14 +207,8 @@ class TestGeminiAgentInit:
             assert agent.api_mode == "chat_completions"
             assert agent.provider == "gemini"
 
-    def test_gemini_uses_x_goog_api_key_not_bearer(self, monkeypatch):
-        """Regression test for issue #7893.
-
-        When provider=gemini, the OpenAI client must be constructed with
-        api_key='not-used' and default_headers={'x-goog-api-key': real_key}.
-        This prevents the SDK from injecting Authorization: Bearer, which
-        Google's endpoint rejects with HTTP 400.
-        """
+    def test_gemini_uses_bearer_auth(self, monkeypatch):
+        """Gemini OpenAI-compatible endpoint should receive the real API key."""
         monkeypatch.setenv("GOOGLE_API_KEY", "AIzaSy_REAL_KEY")
         real_key = "AIzaSy_REAL_KEY"
         with patch("run_agent.OpenAI") as mock_openai:
@@ -227,37 +221,22 @@ class TestGeminiAgentInit:
                 base_url="https://generativelanguage.googleapis.com/v1beta/openai",
             )
         call_kwargs = mock_openai.call_args[1]
-        # The SDK must NOT receive the real key as api_key (which would emit Bearer)
-        assert call_kwargs.get("api_key") == "not-used", (
-            "api_key must be 'not-used' to suppress Authorization: Bearer for Gemini"
-        )
-        # The real key must be in x-goog-api-key header
+        assert call_kwargs.get("api_key") == real_key
         headers = call_kwargs.get("default_headers", {})
-        assert headers.get("x-goog-api-key") == real_key, (
-            "x-goog-api-key header must carry the real Gemini API key"
-        )
+        assert "x-goog-api-key" not in headers
 
     def test_gemini_resolve_provider_client_auth(self, monkeypatch):
-        """Regression test for issue #7893 — resolve_provider_client path.
-
-        When resolve_provider_client('gemini') is called, the returned OpenAI
-        client must use x-goog-api-key header, not Authorization: Bearer.
-        """
+        """resolve_provider_client('gemini') should pass the real API key through."""
         monkeypatch.setenv("GEMINI_API_KEY", "AIzaSy_TEST_KEY")
         real_key = "AIzaSy_TEST_KEY"
         with patch("agent.auxiliary_client.OpenAI") as mock_openai:
             mock_openai.return_value = MagicMock()
-            mock_openai.return_value.api_key = "not-used"
             from agent.auxiliary_client import resolve_provider_client
             resolve_provider_client("gemini")
         call_kwargs = mock_openai.call_args[1]
-        assert call_kwargs.get("api_key") == "not-used", (
-            "api_key must be 'not-used' to prevent Bearer injection for Gemini"
-        )
+        assert call_kwargs.get("api_key") == real_key
         headers = call_kwargs.get("default_headers", {})
-        assert headers.get("x-goog-api-key") == real_key, (
-            "x-goog-api-key header must carry the real Gemini API key"
-        )
+        assert "x-goog-api-key" not in headers
 
 
 # ── models.dev Integration ──
@@ -313,9 +292,32 @@ class TestGeminiModelsDev:
             result = list_agentic_models("gemini")
         assert "gemini-3-flash-preview" in result
         assert "gemini-2.5-pro" in result
-        assert "gemma-4-31b-it" in result
+        assert "gemma-4-31b-it" not in result
         # Filtered out:
         assert "gemini-embedding-001" not in result      # no tool_call
         assert "gemini-2.5-flash-preview-tts" not in result  # no tool_call
         assert "gemini-live-2.5-flash" not in result     # noise: live-
         assert "gemini-2.5-flash-preview-04-17" not in result  # noise: dated preview
+
+    def test_list_provider_models_hides_low_tpm_google_gemmas(self):
+        mock_data = {
+            "google": {
+                "models": {
+                    "gemini-2.5-pro": {},
+                    "gemma-4-31b-it": {},
+                    "gemma-3-27b-it": {},
+                    "gemini-1.5-pro": {},
+                    "gemini-2.0-flash": {},
+                }
+            }
+        }
+        with patch("agent.models_dev.fetch_models_dev", return_value=mock_data):
+            from agent.models_dev import list_provider_models
+
+            result = list_provider_models("gemini")
+
+        assert "gemini-2.5-pro" in result
+        assert "gemma-4-31b-it" not in result
+        assert "gemma-3-27b-it" not in result
+        assert "gemini-1.5-pro" not in result
+        assert "gemini-2.0-flash" not in result

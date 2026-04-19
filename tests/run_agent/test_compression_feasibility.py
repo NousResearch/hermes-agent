@@ -38,7 +38,7 @@ def _make_agent(
     agent.status_callback = None
     agent.tool_progress_callback = None
     agent._compression_warning = None
-    agent.config = None
+    agent._aux_compression_context_length_config = None
 
     compressor = MagicMock(spec=ContextCompressor)
     compressor.context_length = main_context
@@ -138,13 +138,7 @@ def test_feasibility_check_passes_config_context_length(mock_get_client, mock_ct
     get_model_context_length so custom endpoints that lack /models still
     report the correct context window (fixes #8499)."""
     agent = _make_agent(main_context=200_000, threshold_percent=0.85)
-    agent.config = {
-        "auxiliary": {
-            "compression": {
-                "context_length": 1_000_000,
-            },
-        },
-    }
+    agent._aux_compression_context_length_config = 1_000_000
     mock_client = MagicMock()
     mock_client.base_url = "http://custom-endpoint:8080/v1"
     mock_client.api_key = "sk-custom"
@@ -166,13 +160,7 @@ def test_feasibility_check_passes_config_context_length(mock_get_client, mock_ct
 def test_feasibility_check_ignores_invalid_context_length(mock_get_client, mock_ctx_len):
     """Non-integer context_length in config is silently ignored."""
     agent = _make_agent(main_context=200_000, threshold_percent=0.50)
-    agent.config = {
-        "auxiliary": {
-            "compression": {
-                "context_length": "not-a-number",
-            },
-        },
-    }
+    agent._aux_compression_context_length_config = None
     mock_client = MagicMock()
     mock_client.base_url = "http://custom:8080/v1"
     mock_client.api_key = "sk-test"
@@ -186,6 +174,58 @@ def test_feasibility_check_ignores_invalid_context_length(mock_get_client, mock_
         base_url="http://custom:8080/v1",
         api_key="sk-test",
         config_context_length=None,
+    )
+
+
+def test_init_feasibility_check_uses_aux_context_override_from_config():
+    """Real AIAgent init should cache and forward auxiliary.compression.context_length."""
+
+    class _StubCompressor:
+        def __init__(self, *args, **kwargs):
+            self.context_length = 200_000
+            self.threshold_tokens = 100_000
+            self.threshold_percent = 0.50
+
+        def get_tool_schemas(self):
+            return []
+
+        def on_session_start(self, *args, **kwargs):
+            return None
+
+    cfg = {
+        "auxiliary": {
+            "compression": {
+                "context_length": 1_000_000,
+            },
+        },
+    }
+    mock_client = MagicMock()
+    mock_client.base_url = "http://custom-endpoint:8080/v1"
+    mock_client.api_key = "sk-custom"
+
+    with (
+        patch("hermes_cli.config.load_config", return_value=cfg),
+        patch("run_agent.get_tool_definitions", return_value=[]),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+        patch("run_agent.ContextCompressor", new=_StubCompressor),
+        patch("agent.auxiliary_client.get_text_auxiliary_client", return_value=(mock_client, "custom/big-model")),
+        patch("agent.model_metadata.get_model_context_length", return_value=1_000_000) as mock_ctx_len,
+    ):
+        agent = AIAgent(
+            api_key="test-key-1234567890",
+            base_url="https://openrouter.ai/api/v1",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+
+    assert agent._aux_compression_context_length_config == 1_000_000
+    mock_ctx_len.assert_called_once_with(
+        "custom/big-model",
+        base_url="http://custom-endpoint:8080/v1",
+        api_key="sk-custom",
+        config_context_length=1_000_000,
     )
 
 

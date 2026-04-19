@@ -99,6 +99,7 @@ export function StatusRule({
   usage,
   bgCount,
   sessionStartedAt,
+  showCost,
   voiceLabel,
   t
 }: StatusRuleProps) {
@@ -136,6 +137,9 @@ export function StatusRule({
           ) : null}
           {voiceLabel ? <Text color={t.color.dim}> │ {voiceLabel}</Text> : null}
           {bgCount > 0 ? <Text color={t.color.dim}> │ {bgCount} bg</Text> : null}
+          {showCost && typeof usage.cost_usd === 'number' ? (
+            <Text color={t.color.dim}> │ ${usage.cost_usd.toFixed(4)}</Text>
+          ) : null}
         </Text>
       </Box>
 
@@ -285,6 +289,7 @@ interface StatusRuleProps {
   cwdLabel: string
   model: string
   sessionStartedAt?: number | null
+  showCost: boolean
   status: string
   statusColor: string
   t: Theme

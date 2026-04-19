@@ -37,7 +37,30 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
     in {
       packages.configKeys = configKeys;
 
-      checks = lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+      checks = {
+        # Cross-platform evaluation — catches "not supported for interpreter"
+        # errors (e.g. sphinx dropping python311) without needing a darwin builder.
+        # Evaluation is pure and instant; it doesn't build anything.
+        cross-eval = let
+          targetSystems = builtins.filter
+            (s: inputs.self.packages ? ${s})
+            [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" "x86_64-darwin" ];
+          tryEvalPkg = sys:
+            let pkg = inputs.self.packages.${sys}.default;
+            in builtins.tryEval (builtins.seq pkg.drvPath true);
+          results = map (sys: { inherit sys; result = tryEvalPkg sys; }) targetSystems;
+          failures = builtins.filter (r: !r.result.success) results;
+          failMsg = lib.concatMapStringsSep "\n" (r: "  - ${r.sys}") failures;
+        in pkgs.runCommand "hermes-cross-eval" { } (
+          if failures != [] then
+            builtins.throw "Package fails to evaluate on:\n${failMsg}"
+          else ''
+            echo "PASS: package evaluates on all ${toString (builtins.length targetSystems)} platforms"
+            mkdir -p $out
+            echo "ok" > $out/result
+          ''
+        );
+      } // lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
         # Verify binaries exist and are executable
         package-contents = pkgs.runCommand "hermes-package-contents" { } ''
           set -e
@@ -121,6 +144,29 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           echo "PASS: HERMES_TUI_DIR set in wrapper"
 
           echo "=== All bundled TUI checks passed ==="
+          mkdir -p $out
+          echo "ok" > $out/result
+        '';
+
+        # Verify HERMES_NODE is set in wrapper and points to Node 20+
+        # (string-width uses the /v regex flag which requires Node 20+)
+        hermes-node = pkgs.runCommand "hermes-node-version" { } ''
+          set -e
+          echo "=== Checking HERMES_NODE in wrapper ==="
+          grep -q "HERMES_NODE" ${hermes-agent}/bin/hermes || \
+            (echo "FAIL: HERMES_NODE not set in wrapper"; exit 1)
+          echo "PASS: HERMES_NODE present in wrapper"
+
+          HERMES_NODE=$(sed -n "s/^export HERMES_NODE='\(.*\)'/\1/p" ${hermes-agent}/bin/hermes)
+          test -x "$HERMES_NODE" || (echo "FAIL: HERMES_NODE=$HERMES_NODE not executable"; exit 1)
+          echo "PASS: HERMES_NODE executable at $HERMES_NODE"
+
+          NODE_MAJOR=$("$HERMES_NODE" --version | sed 's/^v//' | cut -d. -f1)
+          test "$NODE_MAJOR" -ge 20 || \
+            (echo "FAIL: Node v$NODE_MAJOR < 20, TUI needs /v regex flag support"; exit 1)
+          echo "PASS: Node v$NODE_MAJOR >= 20"
+
+          echo "=== All HERMES_NODE checks passed ==="
           mkdir -p $out
           echo "ok" > $out/result
         '';

@@ -319,3 +319,23 @@ async def test_start_gateway_replace_clears_marker_on_permission_denied(
     assert ok is False
     # Marker must NOT be left behind
     assert not (tmp_path / ".gateway-takeover.json").exists()
+
+
+def test_runner_warns_when_docker_gateway_lacks_explicit_output_mount(monkeypatch, tmp_path, caplog):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("TERMINAL_ENV", "docker")
+    monkeypatch.setenv("TERMINAL_DOCKER_VOLUMES", '["/etc/localtime:/etc/localtime:ro"]')
+    config = GatewayConfig(
+        platforms={
+            Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")
+        },
+        sessions_dir=tmp_path / "sessions",
+    )
+
+    with caplog.at_level("WARNING"):
+        GatewayRunner(config)
+
+    assert any(
+        "host-visible output mount" in record.message
+        for record in caplog.records
+    )

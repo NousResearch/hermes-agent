@@ -162,6 +162,28 @@ def test_format_initial_message_renders_multimodal_user_text_without_image_noise
     assert "file:///tmp/red-square.png" not in prompt
 
 
+def test_materialize_chatgpt_web_browser_image_accepts_data_urls():
+    from hermes_cli.chatgpt_web import _materialize_chatgpt_web_browser_image
+
+    png_data_url = (
+        "data:image/png;base64,"
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO7Z0xQAAAAASUVORK5CYII="
+    )
+
+    materialized_path, cleanup_path = _materialize_chatgpt_web_browser_image(png_data_url)
+
+    try:
+        assert materialized_path == cleanup_path
+        assert materialized_path.endswith(".png")
+        with open(materialized_path, "rb") as handle:
+            assert handle.read(8) == b"\x89PNG\r\n\x1a\n"
+    finally:
+        if cleanup_path:
+            import os
+            if os.path.exists(cleanup_path):
+                os.unlink(cleanup_path)
+
+
 def test_select_provider_and_model_lists_chatgpt_web_in_top_menu(monkeypatch):
     from hermes_cli import main as hermes_main
 

@@ -367,12 +367,6 @@ def _materialize_chatgpt_web_browser_image(source: str) -> tuple[str, Optional[s
     if not source:
         raise ValueError("ChatGPT Web multimodal input is empty")
 
-    if source.startswith("file://"):
-        source = source[len("file://"):]
-    expanded = os.path.expanduser(source)
-    if Path(expanded).is_file():
-        return str(Path(expanded).resolve()), None
-
     if source.startswith("data:"):
         header, _, payload = source.partition(",")
         if not payload:
@@ -387,6 +381,12 @@ def _materialize_chatgpt_web_browser_image(source: str) -> tuple[str, Optional[s
         with open(temp_path, "wb") as handle:
             handle.write(base64.b64decode(payload))
         return temp_path, temp_path
+
+    if source.startswith("file://"):
+        source = source[len("file://"):]
+    expanded = os.path.expanduser(source)
+    if Path(expanded).is_file():
+        return str(Path(expanded).resolve()), None
 
     if source.startswith("http://") or source.startswith("https://"):
         response = httpx.get(source, timeout=60.0, follow_redirects=True)

@@ -222,6 +222,31 @@ def test_build_api_kwargs_chatgpt_web_prefers_terminal_for_whoami(monkeypatch):
     assert "Do not answer the user yet." in rewritten_user
 
 
+def test_build_api_kwargs_chatgpt_web_terminal_without_prefilled_args_still_demands_guessed_tool_call(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    agent.tools = [
+        {"type": "function", "function": {"name": "terminal", "description": "Run shell commands", "parameters": {"type": "object"}}},
+    ]
+
+    kwargs = agent._build_api_kwargs([
+        {"role": "system", "content": "Be concise."},
+        {
+            "role": "user",
+            "content": (
+                "Use the terminal tool to clone https://github.com/NousResearch/hermes-agent.git "
+                "with depth 1 into /tmp/hermes-soak and then tell me the branch."
+            ),
+        },
+    ])
+
+    rewritten_user = kwargs["messages"][-1]["content"]
+    assert kwargs["history_and_training_disabled"] is True
+    assert 'The tool available for this turn is: terminal.' in rewritten_user
+    assert "You must infer the arguments yourself from the user's request and still emit a tool call now." in rewritten_user
+    assert "Do not leave the arguments object empty." in rewritten_user
+    assert '{"name": "terminal", "arguments": {"command": "git status"}}' in rewritten_user
+
+
 def test_wrap_chatgpt_web_response_synthesizes_terminal_call_for_whoami(monkeypatch):
     agent = _build_agent(monkeypatch)
     agent.tools = [

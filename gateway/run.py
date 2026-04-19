@@ -6171,13 +6171,20 @@ class GatewayRunner:
                     except Exception:
                         pass
 
-                # Send media files
+                # Send media files — route voice files through send_voice
+                # when available (fixes #12064).
                 for media_path, _is_voice in (media_files or []):
                     try:
-                        await adapter.send_document(
-                            chat_id=source.chat_id,
-                            file_path=media_path,
-                        )
+                        if _is_voice and hasattr(adapter, "send_voice"):
+                            await adapter.send_voice(
+                                chat_id=source.chat_id,
+                                audio_path=media_path,
+                            )
+                        else:
+                            await adapter.send_document(
+                                chat_id=source.chat_id,
+                                file_path=media_path,
+                            )
                     except Exception:
                         pass
             else:

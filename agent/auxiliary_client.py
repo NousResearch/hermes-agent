@@ -200,6 +200,45 @@ _CODEX_AUX_MODEL = "gpt-5.2-codex"
 _CODEX_AUX_BASE_URL = "https://chatgpt.com/backend-api/codex"
 
 
+def _codex_cloudflare_headers(access_token: str) -> Dict[str, str]:
+    """Headers required to avoid Cloudflare 403s on chatgpt.com/backend-api/codex.
+
+    The Cloudflare layer in front of the Codex endpoint whitelists a small set of
+    first-party originators (``codex_cli_rs``, ``codex_vscode``, ``codex_sdk_ts``,
+    anything starting with ``Codex``). Requests from non-residential IPs (VPS,
+    server-hosted agents) that don't advertise an allowed originator are served
+    a 403 with ``cf-mitigated: challenge`` regardless of auth correctness.
+
+    We pin ``originator: codex_cli_rs`` to match the upstream codex-rs CLI, set
+    ``User-Agent`` to a codex_cli_rs-shaped string (beats SDK fingerprinting),
+    and extract ``ChatGPT-Account-ID`` (canonical casing, from codex-rs
+    ``auth.rs``) out of the OAuth JWT's ``chatgpt_account_id`` claim.
+
+    Malformed tokens are tolerated — we drop the account-ID header rather than
+    raise, so a bad token still surfaces as an auth error (401) instead of a
+    crash at client construction.
+    """
+    headers = {
+        "User-Agent": "codex_cli_rs/0.0.0 (Hermes Agent)",
+        "originator": "codex_cli_rs",
+    }
+    if not isinstance(access_token, str) or not access_token.strip():
+        return headers
+    try:
+        import base64
+        parts = access_token.split(".")
+        if len(parts) < 2:
+            return headers
+        payload_b64 = parts[1] + "=" * (-len(parts[1]) % 4)
+        claims = json.loads(base64.urlsafe_b64decode(payload_b64))
+        acct_id = claims.get("https://api.openai.com/auth", {}).get("chatgpt_account_id")
+        if isinstance(acct_id, str) and acct_id:
+            headers["ChatGPT-Account-ID"] = acct_id
+    except Exception:
+        pass
+    return headers
+
+
 def _to_openai_base_url(base_url: str) -> str:
     """Normalize an Anthropic-style base URL to OpenAI-compatible format.
 
@@ -1052,7 +1091,11 @@ def _try_codex() -> Tuple[Optional[Any], Optional[str]]:
             return None, None
         base_url = _CODEX_AUX_BASE_URL
     logger.debug("Auxiliary client: Codex OAuth (%s via Responses API)", _CODEX_AUX_MODEL)
-    real_client = OpenAI(api_key=codex_token, base_url=base_url)
+    real_client = OpenAI(
+        api_key=codex_token,
+        base_url=base_url,
+        default_headers=_codex_cloudflare_headers(codex_token),
+    )
     return CodexAuxiliaryClient(real_client, _CODEX_AUX_MODEL), _CODEX_AUX_MODEL
 
 
@@ -1512,7 +1555,11 @@ def resolve_provider_client(
                                "but no Codex OAuth token found (run: hermes model)")
                 return None, None
             final_model = _normalize_resolved_model(model or _CODEX_AUX_MODEL, provider)
-            raw_client = OpenAI(api_key=codex_token, base_url=_CODEX_AUX_BASE_URL)
+            raw_client = OpenAI(
+                api_key=codex_token,
+                base_url=_CODEX_AUX_BASE_URL,
+                default_headers=_codex_cloudflare_headers(codex_token),
+            )
             return (raw_client, final_model)
         # Standard path: wrap in CodexAuxiliaryClient adapter
         client, default = _try_codex()

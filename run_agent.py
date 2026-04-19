@@ -1078,22 +1078,8 @@ class AIAgent:
                 elif "portal.qwen.ai" in effective_base.lower():
                     client_kwargs["default_headers"] = _qwen_portal_headers()
                 elif "chatgpt.com" in effective_base.lower():
-                    # Match official Codex CLI headers to avoid Cloudflare challenges.
-                    # The ChatGPT-Account-Id header is critical — without it,
-                    # server-hosted agents get 403 Cloudflare JS challenges.
-                    _codex_headers = {
-                        "User-Agent": "hermes-agent/1.0",
-                        "originator": "hermes-agent",
-                    }
-                    try:
-                        import base64 as _b64
-                        _jwt_payload = json.loads(_b64.b64decode(api_key.split(".")[1] + "=="))
-                        _acct_id = _jwt_payload.get("https://api.openai.com/auth", {}).get("chatgpt_account_id")
-                        if _acct_id:
-                            _codex_headers["ChatGPT-Account-Id"] = _acct_id
-                    except Exception:
-                        pass
-                    client_kwargs["default_headers"] = _codex_headers
+                    from agent.auxiliary_client import _codex_cloudflare_headers
+                    client_kwargs["default_headers"] = _codex_cloudflare_headers(api_key)
             else:
                 # No explicit creds — use the centralized provider router
                 from agent.auxiliary_client import resolve_provider_client
@@ -5330,20 +5316,10 @@ class AIAgent:
         elif "portal.qwen.ai" in normalized:
             self._client_kwargs["default_headers"] = _qwen_portal_headers()
         elif "chatgpt.com" in normalized:
-            _codex_headers = {
-                "User-Agent": "hermes-agent/1.0",
-                "originator": "hermes-agent",
-            }
-            try:
-                import base64 as _b64
-                _ak = self._client_kwargs.get("api_key", "")
-                _jwt_payload = json.loads(_b64.b64decode(_ak.split(".")[1] + "=="))
-                _acct_id = _jwt_payload.get("https://api.openai.com/auth", {}).get("chatgpt_account_id")
-                if _acct_id:
-                    _codex_headers["ChatGPT-Account-Id"] = _acct_id
-            except Exception:
-                pass
-            self._client_kwargs["default_headers"] = _codex_headers
+            from agent.auxiliary_client import _codex_cloudflare_headers
+            self._client_kwargs["default_headers"] = _codex_cloudflare_headers(
+                self._client_kwargs.get("api_key", "")
+            )
         else:
             self._client_kwargs.pop("default_headers", None)
 

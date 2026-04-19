@@ -283,6 +283,48 @@ def test_persist_dm_topic_thread_id_skips_if_already_set(tmp_path):
 # ── _get_dm_topic_info ──
 
 
+def test_persist_dm_topic_thread_id_preserves_config_on_write_failure(tmp_path):
+    """Failed writes should leave the original config.yaml intact."""
+    import yaml
+
+    config_data = {
+        "platforms": {
+            "telegram": {
+                "extra": {
+                    "dm_topics": [
+                        {
+                            "chat_id": 111,
+                            "topics": [
+                                {"name": "General", "icon_color": 123},
+                            ],
+                        }
+                    ]
+                }
+            }
+        }
+    }
+
+    config_file = tmp_path / ".hermes" / "config.yaml"
+    config_file.parent.mkdir(parents=True)
+    original_text = yaml.dump(config_data)
+    config_file.write_text(original_text, encoding="utf-8")
+
+    adapter = _make_adapter()
+
+    def fail_dump(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    with patch.object(Path, "home", return_value=tmp_path), \
+         patch.dict(os.environ, {"HERMES_HOME": str(tmp_path / ".hermes")}), \
+         patch("yaml.dump", side_effect=fail_dump):
+        adapter._persist_dm_topic_thread_id(111, "General", 999)
+
+    assert config_file.read_text(encoding="utf-8") == original_text
+    result = yaml.safe_load(config_file.read_text(encoding="utf-8"))
+    topics = result["platforms"]["telegram"]["extra"]["dm_topics"][0]["topics"]
+    assert "thread_id" not in topics[0]
+
+
 def test_get_dm_topic_info_finds_cached_topic():
     """Should return topic config when thread_id is in cache."""
     adapter = _make_adapter([

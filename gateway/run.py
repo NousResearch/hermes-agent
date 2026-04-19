@@ -589,7 +589,7 @@ class GatewayRunner:
     def __init__(self, config: Optional[GatewayConfig] = None):
         self.config = config or load_gateway_config()
         self.adapters: Dict[Platform, BasePlatformAdapter] = {}
-        self._warn_if_docker_media_delivery_is_likely_misconfigured()
+        self._warn_if_docker_media_delivery_is_risky()
 
         # Load ephemeral config from config.yaml / env vars.
         # Both are injected at API-call time only and never persisted.
@@ -696,12 +696,14 @@ class GatewayRunner:
         self._background_tasks: set = set()
 
 
-    def _warn_if_docker_media_delivery_is_likely_misconfigured(self) -> None:
-        """Warn when Docker-backed gateway setups lack an obvious output bind mount.
+    def _warn_if_docker_media_delivery_is_risky(self) -> None:
+        """Warn when Docker-backed gateways lack an explicit export mount.
 
         MEDIA delivery happens in the gateway process, so paths emitted by the model
         must be readable from the host. A plain container-local path like
-        `/workspace/report.txt` often exists only inside Docker.
+        `/workspace/report.txt` or `/output/report.txt` often exists only inside
+        Docker, so users commonly need a dedicated export mount such as
+        `host-dir:/output`.
         """
         if os.getenv("TERMINAL_ENV", "").strip().lower() != "docker":
             return
@@ -737,8 +739,8 @@ class GatewayRunner:
         logger.warning(
             "Docker backend is enabled for the messaging gateway but no explicit host-visible "
             "output mount (for example '/home/user/.hermes/cache/documents:/output') is configured. "
-            "MEDIA file delivery can fail for files that only exist inside the container, such as "
-            "'/workspace/...'."
+            "This is fine if the model already emits host-visible paths, but MEDIA file delivery can fail "
+            "for container-local paths like '/workspace/...' or '/output/...'."
         )
 
 

@@ -173,12 +173,18 @@ class ContextEngine(ABC):
         base_url: str = "",
         api_key: str = "",
         provider: str = "",
+        api_mode: str = "",
+        max_context_tokens: int | None = None,
     ) -> None:
         """Called when the user switches models or on fallback activation.
 
         Default updates context_length and recalculates threshold_tokens
         from threshold_percent. Override if your engine needs more
         (e.g. recalculate DAG budgets, switch summary models).
+
+        max_context_tokens: Optional hardware speed cap. When set, the
+        compression threshold is capped to this value regardless of the
+        model's full context window. None = no cap (default behavior).
         """
         self.context_length = context_length
         self.threshold_tokens = int(context_length * self.threshold_percent)

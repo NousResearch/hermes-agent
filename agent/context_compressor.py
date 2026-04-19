@@ -263,18 +263,32 @@ class ContextCompressor(ContextEngine):
         api_key: str = "",
         provider: str = "",
         api_mode: str = "",
+        max_context_tokens: int | None = None,
     ) -> None:
-        """Update model info after a model switch or fallback activation."""
+        """Update model info after a model switch or fallback activation.
+
+        max_context_tokens: Optional hardware speed cap. When set, the
+        compression threshold is capped to this value regardless of the
+        model's full context window. None = no cap (default behavior).
+        """
         self.model = model
         self.base_url = base_url
         self.api_key = api_key
         self.provider = provider
         self.api_mode = api_mode
         self.context_length = context_length
-        self.threshold_tokens = max(
-            int(context_length * self.threshold_percent),
-            MINIMUM_CONTEXT_LENGTH,
-        )
+        # Apply max_context_tokens cap if set
+        _raw_threshold = int(context_length * self.threshold_percent)
+        _cap = (max_context_tokens if max_context_tokens and max_context_tokens > 0
+                else self.max_context_tokens)
+        if _cap and _cap > 0:
+            _capped = min(_raw_threshold, _cap)
+        else:
+            _capped = _raw_threshold
+        self.threshold_tokens = max(_capped, MINIMUM_CONTEXT_LENGTH)
+        # Persist the cap for future update_model calls without explicit arg
+        if max_context_tokens is not None:
+            self.max_context_tokens = max_context_tokens
 
     def __init__(
         self,
@@ -290,6 +304,7 @@ class ContextCompressor(ContextEngine):
         config_context_length: int | None = None,
         provider: str = "",
         api_mode: str = "",
+        max_context_tokens: int | None = None,
     ):
         self.model = model
         self.base_url = base_url
@@ -301,20 +316,24 @@ class ContextCompressor(ContextEngine):
         self.protect_last_n = protect_last_n
         self.summary_target_ratio = max(0.10, min(summary_target_ratio, 0.80))
         self.quiet_mode = quiet_mode
+        # Store max_context_tokens for update_model persistence
+        self.max_context_tokens = max_context_tokens
 
         self.context_length = get_model_context_length(
             model, base_url=base_url, api_key=api_key,
             config_context_length=config_context_length,
             provider=provider,
         )
-        # Floor: never compress below MINIMUM_CONTEXT_LENGTH tokens even if
-        # the percentage would suggest a lower value.  This prevents premature
-        # compression on large-context models at 50% while keeping the % sane
-        # for models right at the minimum.
-        self.threshold_tokens = max(
-            int(self.context_length * threshold_percent),
-            MINIMUM_CONTEXT_LENGTH,
-        )
+        # Cap the threshold at max_context_tokens if set, then floor at
+        # MINIMUM_CONTEXT_LENGTH.  This lets local LLM hardware constraints
+        # (e.g. MI50 GPUs where PP/TG degrades above ~60K tokens) override
+        # the model's full context window.
+        _raw_threshold = int(self.context_length * threshold_percent)
+        if max_context_tokens is not None and max_context_tokens > 0:
+            _capped = min(_raw_threshold, max_context_tokens)
+        else:
+            _capped = _raw_threshold
+        self.threshold_tokens = max(_capped, MINIMUM_CONTEXT_LENGTH)
         self.compression_count = 0
 
         # Derive token budgets: ratio is relative to the threshold, not total context
@@ -328,10 +347,11 @@ class ContextCompressor(ContextEngine):
             logger.info(
                 "Context compressor initialized: model=%s context_length=%d "
                 "threshold=%d (%.0f%%) target_ratio=%.0f%% tail_budget=%d "
-                "provider=%s base_url=%s",
+                "max_context_tokens=%s provider=%s base_url=%s",
                 model, self.context_length, self.threshold_tokens,
                 threshold_percent * 100, self.summary_target_ratio * 100,
                 self.tail_token_budget,
+                max_context_tokens if max_context_tokens else "none",
                 provider or "none", base_url or "none",
             )
         self._context_probed = False  # True after a step-down from context error

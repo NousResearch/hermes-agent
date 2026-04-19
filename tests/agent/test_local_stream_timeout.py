@@ -7,6 +7,7 @@ kills during long prefill phases.
 """
 
 import os
+import socket
 import pytest
 from unittest.mock import patch
 
@@ -106,3 +107,52 @@ class TestIsLocalEndpoint:
     ])
     def test_remote_endpoints(self, url):
         assert is_local_endpoint(url) is False
+
+    @patch("socket.getaddrinfo")
+    def test_dns_resolves_to_private_ip(self, mock_getaddrinfo):
+        """Hostname that resolves to a private IP should be detected as local."""
+        # Simulate roc.lee.tc resolving to 10.1.8.41 (RFC-1918)
+        mock_getaddrinfo.return_value = [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.1.8.41", 0)),
+        ]
+        assert is_local_endpoint("http://roc.lee.tc:8080/v1") is True
+
+    @patch("socket.getaddrinfo")
+    def test_dns_resolves_to_public_ip(self, mock_getaddrinfo):
+        """Hostname that resolves to a public IP should NOT be detected as local."""
+        mock_getaddrinfo.return_value = [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("8.8.8.8", 0)),
+        ]
+        assert is_local_endpoint("https://api.example.com") is False
+
+    @patch("socket.getaddrinfo")
+    def test_dns_resolves_to_localhost(self, mock_getaddrinfo):
+        """Hostname that resolves to 127.0.0.1 should be detected as local."""
+        mock_getaddrinfo.return_value = [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 0)),
+        ]
+        assert is_local_endpoint("http://my-llm.local:11434") is True
+
+    @patch("socket.getaddrinfo")
+    def test_dns_resolves_to_ipv6_private(self, mock_getaddrinfo):
+        """Hostname that resolves to IPv6 private (fd00::) should be detected as local."""
+        import ipaddress
+        mock_getaddrinfo.return_value = [
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("fd12:3456::789", 0, 0, 0)),
+        ]
+        assert is_local_endpoint("http://mesh.local:8080") is True
+
+    @patch("socket.getaddrinfo")
+    def test_dns_resolution_fails(self, mock_getaddrinfo):
+        """Hostname that fails DNS resolution should NOT be local (fail open)."""
+        mock_getaddrinfo.side_effect = socket.gaierror("DNS failed")
+        assert is_local_endpoint("http://unresolvable-host.x:8080") is False
+
+    @patch("socket.getaddrinfo")
+    def test_dns_mixed_public_and_private(self, mock_getaddrinfo):
+        """Hostname with both public and private IPs — returns True if any IP is private."""
+        mock_getaddrinfo.return_value = [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("8.8.8.8", 0)),
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.1.2.3", 0)),
+        ]
+        assert is_local_endpoint("http://dual-stack.local:8080") is True

@@ -451,7 +451,10 @@ DEFAULT_CONFIG = {
         "threshold": 0.50,            # compress when context usage exceeds this ratio
         "target_ratio": 0.20,         # fraction of threshold to preserve as recent tail
         "protect_last_n": 20,         # minimum recent messages to keep uncompressed
-
+        # Hardware speed cap: limits compression threshold to this token count
+        # regardless of the model's full context window. For local LLM GPUs
+        # where PP/TG speed degrades above ~60K tokens. None = no cap.
+        "max_context_tokens": None,    # e.g. 65000 for MI50 GPUs
     },
 
     # AWS Bedrock provider configuration.

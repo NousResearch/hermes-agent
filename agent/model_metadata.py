@@ -307,6 +307,21 @@ def is_local_endpoint(base_url: str) -> bool:
                 return True
         except ValueError:
             pass
+    # DNS resolution: hostnames that resolve to private/local IPs are local.
+    # This handles cases like "roc.lee.tc" resolving to 10.1.8.41 (RFC-1918).
+    import socket
+    try:
+        resolved = socket.getaddrinfo(host, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
+        for _family, _type, _proto, _canon, sockaddr in resolved:
+            ip_str = sockaddr[0]
+            try:
+                addr = ipaddress.ip_address(ip_str)
+                if addr.is_private or addr.is_loopback or addr.is_link_local:
+                    return True
+            except ValueError:
+                continue
+    except (socket.gaierror, OSError):
+        pass  # Resolution failed — not local (or unreachable)
     return False
 
 

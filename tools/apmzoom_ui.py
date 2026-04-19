@@ -98,9 +98,12 @@ def set_ui_emitter(emitter: Optional[Callable[[Dict[str, Any]], None]]) -> None:
 
 UI_COMPONENTS: Dict[str, Dict[str, Any]] = {
     "ui_uploader": {
-        "display": "Prompt user to upload files via the chat UI",
+        "display": "MUST invoke: opens the image upload widget",
         "description": (
-            "Render an image/file upload widget inline in the chat. "
+            "🚨 THIS IS A TOOL YOU MUST INVOKE. Saying '请上传图片' / "
+            "'Please upload' is NOT enough — the uploader only renders "
+            "when you emit a tool_call. EMIT THIS TOOL CALL as the next "
+            "action, do not end the turn with text. "
             "**ONLY call this when the task truly needs visual input** — "
             "e.g. 新品上架 / 发图 / 传照片 / 以图搜款 / 识图改款 / 商品主图. "
             "DO NOT call for: price changes, stock queries, text-only "
@@ -130,10 +133,13 @@ UI_COMPONENTS: Dict[str, Dict[str, Any]] = {
         },
     },
     "ui_price_confirm": {
-        "display": "Confirm a price change with the merchant",
+        "display": "MUST invoke: shows price-change confirmation dialog",
         "description": (
-            "Show a diff-style confirm dialog for a price change. Use before "
-            "calling gds_m_editgoodsprice. User clicks Confirm or Cancel."
+            "🚨 THIS IS A TOOL YOU MUST INVOKE. Saying '请确认改价' / "
+            "'Please confirm' is NOT enough — the dialog only renders when "
+            "you emit a tool_call. EMIT THIS TOOL CALL as the next action, "
+            "do not end the turn with text. Shows diff (old vs new price); "
+            "merchant clicks Confirm or Cancel. Use before gds_m_editgoodsprice."
         ),
         "parameters": {
             "type": "object",
@@ -147,12 +153,16 @@ UI_COMPONENTS: Dict[str, Dict[str, Any]] = {
         },
     },
     "ui_product_editor": {
-        "display": "Render the full product editor for a single-item upload",
+        "display": "MUST invoke: opens the product editor for merchant to confirm",
         "description": (
-            "Shows vision_analyze results prefilled and lets the merchant "
-            "edit + confirm. Use in upload-image-and-publish-product after "
-            "vision + goodsclasslist. On submit, frontend returns the full "
-            "addgoods payload; you then call gds_m_addgoods with it."
+            "🚨 THIS IS A TOOL YOU MUST INVOKE. Saying '现在打开商品编辑器' / "
+            "'Now I'll open the editor' is NOT enough — the UI only renders "
+            "when you emit a tool_call to this function. If you plan to open "
+            "the editor, EMIT THIS TOOL CALL as the next action in the same "
+            "turn; do not end the turn with text. "
+            "Pre-fills vision_analyze results; merchant confirms or edits. "
+            "On submit the frontend returns the full addgoods payload. "
+            "Use after vision + goodsclasslist in upload-image-and-publish-product."
         ),
         "parameters": {
             "type": "object",
@@ -172,8 +182,12 @@ UI_COMPONENTS: Dict[str, Dict[str, Any]] = {
         },
     },
     "ui_batch_editor": {
-        "display": "Render a batch product editor for multi-item upload",
+        "display": "MUST invoke: opens the batch product editor",
         "description": (
+            "🚨 THIS IS A TOOL YOU MUST INVOKE. Saying '打开批量编辑器' / "
+            "'Opening batch editor' is NOT enough — the batch editor only "
+            "renders when you emit a tool_call. EMIT THIS TOOL CALL as the "
+            "next action, do not end the turn with text. "
             "Shows N items with vision results, lets the merchant edit each "
             "+ check the ones to publish. Use in batch-upload-and-publish "
             "after concurrent vision + goodsclasslist. On submit, frontend "

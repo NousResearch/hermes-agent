@@ -19,6 +19,7 @@ import importlib
 import json
 import logging
 import threading
+from collections import defaultdict
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Set
 
@@ -417,18 +418,43 @@ class ToolRegistry:
         unavailable = []
         seen = set()
         entries, toolset_checks = self._snapshot_state()
+        # Group entries by toolset for per-tool check evaluation
+        ts_entries = defaultdict(list)
         for entry in entries:
-            ts = entry.toolset
+            ts_entries[entry.toolset].append(entry)
+        for ts in sorted(ts_entries):
             if ts in seen:
                 continue
             seen.add(ts)
-            if self._evaluate_toolset_check(ts, toolset_checks.get(ts)):
+            # A toolset is available if ANY of its tools passes its check_fn.
+            # This handles cases like browser_cdp having a stricter check than
+            # other browser tools — the toolset should still be available when
+            # the core tools (navigate, click, etc.) work.
+            any_available = False
+            for entry in ts_entries[ts]:
+                if entry.check_fn:
+                    try:
+                        if bool(entry.check_fn()):
+                            any_available = True
+                            break
+                    except Exception:
+                        continue
+                else:
+                    any_available = True
+                    break
+            # Fall back to toolset-level check if no per-tool check passed
+            if not any_available:
+                any_available = self._evaluate_toolset_check(
+                    ts, toolset_checks.get(ts)
+                )
+            if any_available:
                 available.append(ts)
             else:
+                first = ts_entries[ts][0]
                 unavailable.append({
                     "name": ts,
-                    "env_vars": entry.requires_env,
-                    "tools": [e.name for e in entries if e.toolset == ts],
+                    "env_vars": first.requires_env,
+                    "tools": [e.name for e in ts_entries[ts]],
                 })
         return available, unavailable
 

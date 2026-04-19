@@ -1926,9 +1926,18 @@ class BasePlatformAdapter(ABC):
             if session_key in self._pending_messages:
                 pending_event = self._pending_messages.pop(session_key)
                 logger.debug("[%s] Processing queued message from interrupt", self.name)
-                # Clean up current session before processing pending
-                if session_key in self._active_sessions:
-                    del self._active_sessions[session_key]
+                # Keep the _active_sessions entry live across the turn chain
+                # and only CLEAR the interrupt Event — do NOT delete the entry.
+                # If we deleted here, a concurrent inbound message arriving
+                # during the awaits below would pass the Level-1 guard, spawn
+                # its own _process_message_background, and run simultaneously
+                # with the recursive drain below.  Two agents on one
+                # session_key = duplicate responses, duplicate tool calls.
+                # Clearing the Event keeps the guard live so follow-ups take
+                # the busy-handler path (queue + interrupt) as intended.
+                _active = self._active_sessions.get(session_key)
+                if _active is not None:
+                    _active.clear()
                 typing_task.cancel()
                 try:
                     await typing_task
@@ -1986,6 +1995,34 @@ class BasePlatformAdapter(ABC):
                     await self.stop_typing(event.source.chat_id)
             except Exception:
                 pass
+            # Late-arrival drain: a message may have arrived during the
+            # cleanup awaits above (typing_task cancel, stop_typing).  Such
+            # messages passed the Level-1 guard (entry still live, Event
+            # possibly set) and landed in _pending_messages via the
+            # busy-handler path.  Without this block, we would delete the
+            # active-session entry and the queued message would be silently
+            # dropped (user never gets a reply).
+            late_pending = self._pending_messages.pop(session_key, None)
+            if late_pending is not None:
+                logger.debug(
+                    "[%s] Late-arrival pending message during cleanup — spawning drain task",
+                    self.name,
+                )
+                _active = self._active_sessions.get(session_key)
+                if _active is not None:
+                    _active.clear()
+                drain_task = asyncio.create_task(
+                    self._process_message_background(late_pending, session_key)
+                )
+                try:
+                    self._background_tasks.add(drain_task)
+                    drain_task.add_done_callback(self._background_tasks.discard)
+                except TypeError:
+                    # Tests stub create_task() with non-hashable sentinels; tolerate.
+                    pass
+                # Leave _active_sessions[session_key] populated — the drain
+                # task's own lifecycle will clean it up.
+                return
             # Clean up session tracking
             if session_key in self._active_sessions:
                 del self._active_sessions[session_key]

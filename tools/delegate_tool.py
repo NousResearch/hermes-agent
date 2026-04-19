@@ -886,17 +886,17 @@ def delegate_task(
                 task_creds = _resolve_delegation_credentials(task_cfg, parent_agent)
             except ValueError as exc:
                 return tool_error(str(exc))
-child = _build_child_agent(
-task_index=i, goal=t["goal"], context=t.get("context"),
-toolsets=t.get("toolsets") or toolsets, model=task_creds["model"],
-max_iterations=task_max_iter, task_count=n_tasks, parent_agent=parent_agent,
-override_provider=task_creds["provider"], override_base_url=task_creds["base_url"],
-override_api_key=task_creds["api_key"],
-override_api_mode=task_creds["api_mode"],
-override_reasoning_effort=task_cfg.get("reasoning_effort"),
-override_acp_command=t.get("acp_command") or acp_command,
-override_acp_args=t.get("acp_args") or acp_args,
-)
+            child = _build_child_agent(
+                task_index=i, goal=t["goal"], context=t.get("context"),
+                toolsets=t.get("toolsets") or toolsets, model=task_creds["model"],
+                max_iterations=task_max_iter, task_count=n_tasks, parent_agent=parent_agent,
+                override_provider=task_creds["provider"], override_base_url=task_creds["base_url"],
+                override_api_key=task_creds["api_key"],
+                override_api_mode=task_creds["api_mode"],
+                override_reasoning_effort=task_cfg.get("reasoning_effort"),
+                override_acp_command=t.get("acp_command") or acp_command,
+                override_acp_args=t.get("acp_args") or acp_args,
+            )
             # Override with correct parent tool names (before child construction mutated global)
             child._delegate_saved_tool_names = _parent_tool_names
             children.append((i, t, child))

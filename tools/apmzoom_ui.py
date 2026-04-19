@@ -198,17 +198,19 @@ UI_COMPONENTS: Dict[str, Dict[str, Any]] = {
                 "class_tree": {
                     "type": "array",
                     "description": (
-                        "Raw result from goodsclasslist (tree of "
-                        "{goods_class_id, goods_class_name, ls_child}).  "
-                        "Frontend walks it to render a cascading category picker. "
-                        "Keep raw structure — less for LLM to reformat per turn."
+                        "DO NOT PASS THIS FIELD.  Bridge auto-injects the "
+                        "full goodsclasslist tree server-side so the LLM "
+                        "doesn't waste 60-90s generating ~8KB of JSON "
+                        "tokens.  Listed here only to document the prop "
+                        "the frontend receives."
                     ),
                 },
                 "make_address_options": {
                     "type": "array",
                     "description": (
-                        "Origin options, e.g. [{id:1,name:'韩国'}, {id:2,name:'中国'}, "
-                        "{id:3,name:'其他'}].  make_address_id is REQUIRED for addgoods."
+                        "DO NOT PASS THIS FIELD.  Bridge auto-injects the "
+                        "3 origin options (韩国/中国/其他).  Listed only to "
+                        "document the prop the frontend receives."
                     ),
                 },
                 "recommended_make_address_id": {
@@ -230,8 +232,6 @@ UI_COMPONENTS: Dict[str, Dict[str, Any]] = {
             "required": [
                 "preview_url",
                 "vision_fields",
-                "class_tree",
-                "make_address_options",
             ],
         },
     },
@@ -265,6 +265,45 @@ UI_COMPONENTS: Dict[str, Dict[str, Any]] = {
 }
 
 
+def _inject_ui_props(component: str, props: Dict[str, Any]) -> None:
+    """Bridge-side enrichment for ui_* tool props.
+
+    Reason: some required props (class_tree, make_address_options) carry
+    data volumes (~8KB) that DeepSeek takes 60-90 SECONDS to emit as
+    tool_call args — that's pure token generation time for data the
+    bridge already has.  Workflow now tells LLM NOT to pass these fields;
+    bridge fetches + injects them server-side before pushing the
+    hermes.ui.prompt event, so the frontend receives them unchanged and
+    the LLM's turn ends in 5-10s instead of 90s.
+    """
+    # product_editor needs goodsclasslist tree + make_address options
+    if component in ("product_editor", "batch_editor"):
+        if "class_tree" not in props or not props["class_tree"]:
+            try:
+                from tools.apmzoom import _execute_skill
+                raw = _execute_skill(
+                    "gds_m_goodsclasslist", {}, _internal=True,
+                )
+                tree = json.loads(raw).get("result") or []
+                props["class_tree"] = tree
+                logger.info(
+                    "[apmzoom_ui] %s: auto-injected class_tree (%d top-level nodes)",
+                    component, len(tree),
+                )
+            except Exception as e:
+                logger.debug("[apmzoom_ui] class_tree injection failed: %s", e)
+                props["class_tree"] = []
+
+        if "make_address_options" not in props or not props["make_address_options"]:
+            # Hardcoded; apmzoom has 3 origins, they never change
+            props["make_address_options"] = [
+                {"id": 1, "name": "韩国"},
+                {"id": 2, "name": "中国"},
+                {"id": 3, "name": "其他"},
+            ]
+        props.setdefault("recommended_make_address_id", 1)
+
+
 def _make_ui_handler(component_name: str):
     """Closure — when the LLM calls the synthetic tool, emit an SSE event
     and return a lightweight placeholder so the agent loop ends the turn
@@ -283,6 +322,12 @@ def _make_ui_handler(component_name: str):
 
         correlation_id = f"ui-{uuid.uuid4().hex[:12]}"
         component = component_name.removeprefix("ui_")
+
+        # Bridge auto-injects heavy static props (class_tree ~8KB,
+        # make_address_options) that LLM would otherwise spend 60-90s
+        # generating as tool_call args.  Silent enrichment — LLM doesn't
+        # know the field was added, frontend receives the full props.
+        _inject_ui_props(component, props)
         payload = {
             "component": component,
             "correlation_id": correlation_id,

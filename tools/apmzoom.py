@@ -411,6 +411,37 @@ def _maybe_autofetch_ver(skill_name: str, skill_meta: Dict[str, Any],
         logger.debug("[apmzoom] ver auto-fetch failed for %s: %s", skill_name, e)
 
 
+# Per-skill parameter defaults that the backend expects present even though
+# SKILL.md marks them optional.  Seen in production:
+#   gds_m_addgoods drops to 400 ("起购数量最小为1") when least_buy_num is
+#   absent, despite description saying "default 1".  Bridge injects these
+#   defaults when the caller doesn't — one place to fix upstream metadata
+#   drift without editing every workflow that calls the skill.
+_PARAM_DEFAULTS: Dict[str, Dict[str, Any]] = {
+    "gds_m_addgoods": {
+        "least_buy_num": 1,   # backend rejects 0 even though "默认1" in doc
+        "limit_buy_num": 0,   # 0 = no cap, safe default
+        "is_sell": 1,         # 1 = listed on the shop
+        "discount_percent": 1,  # 1 = no discount
+        "currency_type": 1,   # 1 = KRW for apmzoom merchants
+    },
+}
+
+
+def _apply_param_defaults(skill_name: str, params: Dict[str, Any]) -> None:
+    """Mutate `params` to fill in bridge-side defaults for well-known
+    skill fields whose upstream defaults don't actually fire.  No-op for
+    skills not in _PARAM_DEFAULTS."""
+    defaults = _PARAM_DEFAULTS.get(skill_name)
+    if not defaults:
+        return
+    for key, val in defaults.items():
+        if key not in params or params.get(key) in (None, "", 0) and key != "limit_buy_num":
+            # Note: 0 is a valid value for limit_buy_num (meaning unlimited),
+            # so don't override if explicitly set to 0.
+            params[key] = val
+
+
 def _validate_params(skill_name: str, skill_meta: Dict[str, Any],
                      params: Dict[str, Any]) -> Optional[str]:
     """Check LLM-supplied params against the skill's schema before HTTP.
@@ -618,6 +649,7 @@ def _execute_skill(skill_name: str, params: Optional[Dict[str, Any]] = None,
     # when goods_id is present and ver isn't.  Runs *before* validation so
     # the injected ver counts toward the required set.
     _maybe_autofetch_ver(skill_name, meta, params)
+    _apply_param_defaults(skill_name, params)
 
     # Pre-flight param validation (short-circuit before HTTP).  For skills
     # whose frontmatter declares a `parameters:` spec, ensure required

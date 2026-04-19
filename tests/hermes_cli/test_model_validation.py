@@ -614,20 +614,28 @@ class TestValidateGeminiModelsPrefix:
             assert result["accepted"] is True, f"{model} should resolve after prefix strip"
             assert result["recognized"] is True
 
-    def test_unknown_gemini_id_surfaces_suggestions_not_generic_reject(self):
+    def test_unknown_gemini_id_surfaces_bare_id_suggestions(self):
         """The prefix-strip fix must not accidentally route unknown Gemini
-        models into the generic "couldn't reach API" branch.  The post-
-        strip list must be used for suggestions too."""
-        result = self._validate("gemini-hypothetical")
-        # Strict branch rejects unknown IDs (even after strip) — same as
-        # any other provider whose /models endpoint responded.
+        models into the generic "couldn't reach API" branch, and the
+        suggestions list must surface the **bare** post-strip IDs —
+        never the raw ``models/…`` strings, which a user couldn't type
+        into the picker.
+
+        Uses a deliberately close-but-not-exact input
+        (``gemini-2.5-flash-nano``) that reliably generates
+        suggestions at cutoff=0.5 but stays below the auto-correct
+        threshold at cutoff=0.9.
+        """
+        result = self._validate("gemini-2.5-flash-nano")
         assert result["accepted"] is False
-        # Suggestions must reference the bare (post-strip) IDs, not the
-        # raw ``models/…`` strings — otherwise the UI would surface
-        # "Similar models: models/gemini-2.5-flash" which is useless
-        # advice because that literal can't be typed into the picker.
-        if "Similar models" in (result["message"] or ""):
-            assert "models/" not in result["message"]
+        assert "Similar models" in (result["message"] or ""), (
+            f"Expected suggestions in message: {result['message']!r}"
+        )
+        # The critical invariant: no ``models/`` leak in the suggestions
+        # text, even though the upstream API returned prefixed IDs.
+        assert "models/" not in (result["message"] or "")
+        # And a known bare ID must show up in the suggestions list.
+        assert "gemini-2.5-flash" in (result["message"] or "")
 
     def test_prefix_strip_limited_to_gemini_provider(self):
         """Canary: the strip only applies when ``normalized == "gemini"``.
@@ -670,8 +678,13 @@ class TestValidateAnthropicNoModelsEndpoint:
 
     def _validate_no_api(self, model, catalog=None):
         """Call validate_requested_model with /models returning None
-        (the simulated Anthropic auth-header mismatch) and
-        provider_model_ids returning our catalog."""
+        (the simulated Anthropic auth-header mismatch) and the static
+        ``_PROVIDER_MODELS["anthropic"]`` overridden to our fixture.
+
+        Patches ``_PROVIDER_MODELS`` rather than ``provider_model_ids``
+        because the fallback deliberately reads the static catalog
+        directly — no extra network call on the failure path."""
+        import hermes_cli.models as _hm
         probe_payload = {
             "models": None,
             "probed_url": "https://api.anthropic.com/v1/models",
@@ -679,12 +692,14 @@ class TestValidateAnthropicNoModelsEndpoint:
             "suggested_base_url": None,
             "used_fallback": False,
         }
+        patched_catalog = self._ANTHROPIC_CATALOG if catalog is None else catalog
+        patched_providers = {
+            **_hm._PROVIDER_MODELS,
+            "anthropic": patched_catalog,
+        }
         with patch("hermes_cli.models.fetch_api_models", return_value=None), \
              patch("hermes_cli.models.probe_api_models", return_value=probe_payload), \
-             patch(
-                 "hermes_cli.models.provider_model_ids",
-                 return_value=self._ANTHROPIC_CATALOG if catalog is None else catalog,
-             ):
+             patch.dict(_hm._PROVIDER_MODELS, patched_providers, clear=False):
             return validate_requested_model(
                 model,
                 "anthropic",
@@ -730,36 +745,19 @@ class TestValidateAnthropicNoModelsEndpoint:
         result = self._validate_no_api("claude-opus-4-7", catalog=[])
         assert result["accepted"] is False
 
-    def test_catalog_lookup_exception_falls_through(self):
-        """If ``provider_model_ids`` raises, behave as if no catalog was
-        available — fall through to the generic reject."""
-        probe_payload = {
-            "models": None,
-            "probed_url": "https://api.anthropic.com/v1/models",
-            "resolved_base_url": "https://api.anthropic.com",
-            "suggested_base_url": None,
-            "used_fallback": False,
-        }
-        with patch("hermes_cli.models.fetch_api_models", return_value=None), \
-             patch("hermes_cli.models.probe_api_models", return_value=probe_payload), \
-             patch(
-                 "hermes_cli.models.provider_model_ids",
-                 side_effect=RuntimeError("catalog unavailable"),
-             ):
-            result = validate_requested_model(
-                "claude-opus-4-7",
-                "anthropic",
-                api_key="fake",
-                base_url="https://api.anthropic.com",
-            )
-        assert result["accepted"] is False
-
     def test_unknown_model_includes_close_match_suggestion(self):
-        """Typo should surface the close match."""
-        result = self._validate_no_api("claude-opus-4-6")  # close to 4-7 / 4-6-20250930
-        # Either accepted-as-recognized or accepted-with-suggestions is fine;
-        # the point is that we proceed + offer context.
+        """Typo should surface a close-match suggestion in the warning
+        message — not just an accept without context.  Uses an input
+        that's close to a catalog entry (cutoff=0.4) but not an exact
+        match, so ``get_close_matches`` reliably fires."""
+        result = self._validate_no_api("claude-opus-4-7-preview")
         assert result["accepted"] is True
+        assert result["recognized"] is False
+        assert "Similar models" in (result["message"] or ""), (
+            f"Expected close-match suggestions in message: {result['message']!r}"
+        )
+        # The exact closest match in the catalog should surface.
+        assert "claude-opus-4-7" in (result["message"] or "")
 
     # --- preserved-behaviour canaries -------------------------------------
 

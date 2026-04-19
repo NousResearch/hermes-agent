@@ -2204,15 +2204,15 @@ def validate_requested_model(
     # Anthropic: ``probe_api_models`` uses ``Authorization: Bearer`` and
     # no ``anthropic-version`` header, so the probe returns ``None`` for
     # Anthropic's native API even though ``/v1/models`` does exist there.
-    # ``provider_model_ids("anthropic")`` internally uses
-    # ``_fetch_anthropic_models`` with the correct ``x-api-key`` +
-    # ``anthropic-version`` headers and falls back to the curated static
-    # list when the live fetch fails, so defer to it here.  See #12532.
+    # Use the curated static catalog directly rather than
+    # ``provider_model_ids("anthropic")`` — the latter would make a
+    # *second* live network call via ``_fetch_anthropic_models`` (5s
+    # timeout) on a failure path where the user is already waiting.
+    # The static list is the source of truth the picker populates from
+    # anyway, so it's guaranteed to contain any model a user could have
+    # selected.  See #12532.
     if normalized == "anthropic":
-        try:
-            catalog = provider_model_ids("anthropic")
-        except Exception:
-            catalog = []
+        catalog = list(_PROVIDER_MODELS.get("anthropic", []))
         if catalog:
             catalog_set = set(catalog)
             if requested in catalog_set or requested_for_lookup in catalog_set:

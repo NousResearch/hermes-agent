@@ -120,7 +120,9 @@ def test_block_and_respond(capture):
 
     rid = next(iter(server._pending))
     server._answers[rid] = "my_answer"
-    server._pending[rid].set()
+    # _pending values are (sid, Event) tuples — unpack to set the Event
+    _, ev = server._pending[rid]
+    ev.set()
 
     threading.Event().wait(0.1)
     assert result[0] == "my_answer"
@@ -128,7 +130,8 @@ def test_block_and_respond(capture):
 
 def test_clear_pending(server):
     ev = threading.Event()
-    server._pending["r1"] = ev
+    # _pending values are (sid, Event) tuples
+    server._pending["r1"] = ("sid-x", ev)
     server._clear_pending()
 
     assert ev.is_set()

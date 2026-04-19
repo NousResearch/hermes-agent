@@ -9,6 +9,7 @@ or a temp file (local).
 import json
 import logging
 import os
+import select
 import shlex
 import subprocess
 import threading
@@ -436,17 +437,53 @@ class BaseEnvironment(ABC):
         """
         output_chunks: list[str] = []
 
+        # Non-blocking drain via select().
+        #
+        # The old pattern — ``for line in proc.stdout`` — blocks on
+        # ``readline()`` until the pipe reaches EOF.  When the user's command
+        # backgrounds a process (``cmd &``, ``setsid cmd & disown``, etc.),
+        # that backgrounded grandchild inherits the write-end of our stdout
+        # pipe via ``fork()``.  Even after ``bash`` itself exits, the pipe
+        # stays open because the grandchild still holds it — so the drain
+        # thread never returns and the tool hangs for the full lifetime of
+        # the grandchild (issue #8340: users reported indefinite hangs when
+        # restarting uvicorn with ``setsid ... & disown``).
+        #
+        # The fix: select() with a short poll interval, and stop draining
+        # shortly after ``bash`` exits even if the pipe hasn't EOF'd yet.
+        # Any output the grandchild writes after that point goes to an
+        # orphaned pipe (harmless — the kernel reaps it when our end closes).
         def _drain():
-            try:
-                for line in proc.stdout:
-                    output_chunks.append(line)
-            except UnicodeDecodeError:
-                output_chunks.clear()
-                output_chunks.append(
-                    "[binary output detected — raw bytes not displayable]"
-                )
-            except (ValueError, OSError):
-                pass
+            fd = proc.stdout.fileno()
+            idle_after_exit = 0
+            while True:
+                try:
+                    ready, _, _ = select.select([fd], [], [], 0.1)
+                except (ValueError, OSError):
+                    break  # fd already closed
+                if ready:
+                    try:
+                        chunk = os.read(fd, 4096)
+                    except (ValueError, OSError):
+                        break
+                    if not chunk:
+                        break  # true EOF — all writers closed
+                    try:
+                        output_chunks.append(chunk.decode("utf-8"))
+                    except UnicodeDecodeError:
+                        output_chunks.clear()
+                        output_chunks.append(
+                            "[binary output detected — raw bytes not displayable]"
+                        )
+                        break
+                    idle_after_exit = 0
+                elif proc.poll() is not None:
+                    # bash is gone and the pipe was idle for ~100ms.  Give
+                    # it two more cycles to catch any buffered tail, then
+                    # stop — otherwise we wait forever on a grandchild pipe.
+                    idle_after_exit += 1
+                    if idle_after_exit >= 3:
+                        break
 
         drain_thread = threading.Thread(target=_drain, daemon=True)
         drain_thread.start()
@@ -553,7 +590,10 @@ class BaseEnvironment(ABC):
                 pass  # cleanup is best-effort
             raise
 
-        drain_thread.join(timeout=5)
+        # Drain thread now exits promptly after bash does (~300ms idle
+        # check).  A short join is enough; a long one would be a bug since
+        # it means the non-blocking loop itself stopped cooperating.
+        drain_thread.join(timeout=2)
 
         try:
             proc.stdout.close()

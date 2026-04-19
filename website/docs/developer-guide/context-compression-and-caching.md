@@ -332,9 +332,9 @@ Prompt caching is automatically enabled when:
 - The provider supports `cache_control` (native Anthropic API or OpenRouter)
 
 ```yaml
-# config.yaml — TTL is configurable
-model:
-  cache_ttl: "5m"   # "5m" or "1h"
+# config.yaml — TTL is configurable (must be "5m" or "1h")
+prompt_caching:
+  cache_ttl: "5m"
 ```
 
 The CLI shows caching status at startup:

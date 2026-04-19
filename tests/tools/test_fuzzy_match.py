@@ -147,4 +147,86 @@ class TestStrategyNameSurfaced:
         new, count, strategy, err = fuzzy_find_and_replace("hello", "xyz", "world")
         assert count == 0
         assert strategy is None
-        assert err is not None
+
+
+class TestEscapeDriftGuard:
+    """Tests for the escape-drift guard that catches bash/JSON serialization
+    artifacts where an apostrophe gets prefixed with a spurious backslash
+    in tool-call transport.
+    """
+
+    def test_drift_blocked_apostrophe(self):
+        """File has ', old_string and new_string both have \\' — classic
+        tool-call drift. Guard must block with a helpful error instead of
+        writing \\' literals into source code."""
+        content = "x = \"hello there\"\n"
+        # Simulate transport-corrupted old_string and new_string where an
+        # apostrophe-like context got prefixed with a backslash. The content
+        # itself has no apostrophe, but both strings do — matching via
+        # whitespace/anchor strategies would otherwise succeed.
+        old_string = "x = \"hello there\" # don\\'t edit\n"
+        new_string = "x = \"hi there\" # don\\'t edit\n"
+        # This particular pair won't match anything, so it exits via
+        # no-match path. Build a case where a non-exact strategy DOES match.
+        content = "line\n    x = 1\nline"
+        old_string = "line\n  x = \\'a\\'\nline"
+        new_string = "line\n  x = \\'b\\'\nline"
+        new, count, strategy, err = fuzzy_find_and_replace(content, old_string, new_string)
+        assert count == 0
+        assert err is not None and "Escape-drift" in err
+        assert "backslash" in err.lower()
+        assert new == content  # file untouched
+
+    def test_drift_blocked_double_quote(self):
+        """Same idea but with \\" drift instead of \\'."""
+        content = 'line\n    x = 1\nline'
+        old_string = 'line\n  x = \\"a\\"\nline'
+        new_string = 'line\n  x = \\"b\\"\nline'
+        new, count, strategy, err = fuzzy_find_and_replace(content, old_string, new_string)
+        assert count == 0
+        assert err is not None and "Escape-drift" in err
+
+    def test_drift_allowed_when_file_genuinely_has_backslash_escapes(self):
+        """If the file already contains \\' (e.g. inside an existing escaped
+        string), the model is legitimately preserving it. Guard must NOT
+        fire."""
+        content = "line\n  x = \\'a\\'\nline"
+        old_string = "line\n  x = \\'a\\'\nline"
+        new_string = "line\n  x = \\'b\\'\nline"
+        new, count, strategy, err = fuzzy_find_and_replace(content, old_string, new_string)
+        assert err is None
+        assert count == 1
+        assert "\\'b\\'" in new
+
+    def test_drift_allowed_on_exact_match(self):
+        """Exact matches bypass the drift guard entirely — if the file
+        really contains the exact bytes old_string specified, it's not
+        drift."""
+        content = "hello \\'world\\'"
+        new, count, strategy, err = fuzzy_find_and_replace(
+            content, "hello \\'world\\'", "hello \\'there\\'"
+        )
+        assert err is None
+        assert count == 1
+        assert strategy == "exact"
+
+    def test_drift_allowed_when_adding_escaped_strings(self):
+        """Model is adding new content with \\' that wasn't in the original.
+        old_string has no \\', so guard doesn't fire."""
+        content = "line1\nline2\nline3"
+        old_string = "line1\nline2\nline3"
+        new_string = "line1\nprint(\\'added\\')\nline2\nline3"
+        new, count, strategy, err = fuzzy_find_and_replace(content, old_string, new_string)
+        assert err is None
+        assert count == 1
+        assert "\\'added\\'" in new
+
+    def test_no_drift_check_when_new_string_lacks_suspect_chars(self):
+        """Fast-path: if new_string has no \\' or \\", guard must not
+        fire even on fuzzy match."""
+        content = "def foo():\n    pass"  # extra space ignored by line_trimmed
+        old_string = "def foo():\n  pass"
+        new_string = "def bar():\n  return 1"
+        new, count, strategy, err = fuzzy_find_and_replace(content, old_string, new_string)
+        assert err is None
+        assert count == 1

@@ -794,7 +794,24 @@ class ShellFileOperations(FileOperations):
         write_result = self.write_file(path, new_content)
         if write_result.error:
             return PatchResult(error=f"Failed to write changes: {write_result.error}")
-        
+
+        # Post-write verification — re-read the file and confirm the bytes we
+        # intended to write actually landed. Catches silent persistence
+        # failures (backend FS oddities, race with another task, truncated
+        # pipe, etc.) that would otherwise return success-with-diff while the
+        # file is unchanged on disk.
+        verify_cmd = f"cat {self._escape_shell_arg(path)} 2>/dev/null"
+        verify_result = self._exec(verify_cmd)
+        if verify_result.exit_code != 0:
+            return PatchResult(error=f"Post-write verification failed: could not re-read {path}")
+        if verify_result.stdout != new_content:
+            return PatchResult(error=(
+                f"Post-write verification failed for {path}: on-disk content "
+                f"differs from intended write "
+                f"(wrote {len(new_content)} chars, read back {len(verify_result.stdout)}). "
+                "The patch did not persist. Re-read the file and try again."
+            ))
+
         # Generate diff
         diff = self._unified_diff(content, new_content, path)
         

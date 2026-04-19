@@ -712,6 +712,14 @@ DEFAULT_CONFIG = {
         "auto_thread": True,           # Auto-create threads on @mention in channels (like Slack)
         "reactions": True,             # Add 👀/✅/❌ reactions to messages during processing
         "channel_prompts": {},         # Per-channel ephemeral system prompts (forum parents apply to child threads)
+        # discord_server tool: restrict which actions the agent may call.
+        # Default (empty) = all actions allowed (subject to bot privileged intents).
+        # Accepts comma-separated string ("list_guilds,list_channels,fetch_messages")
+        # or YAML list. Unknown names are dropped with a warning at load time.
+        # Actions: list_guilds, server_info, list_channels, channel_info,
+        # list_roles, member_info, search_members, fetch_messages, list_pins,
+        # pin_message, unpin_message, create_thread, add_role, remove_role.
+        "server_actions": "",
     },
 
     # WhatsApp platform settings (gateway mode)

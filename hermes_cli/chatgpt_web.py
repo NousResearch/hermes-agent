@@ -62,7 +62,6 @@ def _default_device_id() -> str:
 def _chatgpt_web_debug_base() -> str:
     return os.getenv("CHATGPT_WEB_DEBUG_BASE", "").strip()
 
-
 def _split_chatgpt_web_message_content(content: Any) -> tuple[str, list[str]]:
     """Return best-effort text plus any attached image sources."""
     if isinstance(content, str):
@@ -280,7 +279,6 @@ def _chatgpt_web_browser_fetch_sync(
             json_body=json_body,
         )
     )
-
 
 async def _chatgpt_web_cdp_send(
     ws: Any,

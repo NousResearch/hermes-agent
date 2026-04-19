@@ -295,7 +295,6 @@ def test_build_api_kwargs_chatgpt_web_prefers_terminal_for_whoami(monkeypatch):
     assert '"command": "whoami"' in rewritten_user
     assert "Do not answer the user yet." in rewritten_user
 
-
 def test_build_api_kwargs_chatgpt_web_prefers_terminal_for_path_exists_check(monkeypatch):
     agent = _build_agent(monkeypatch)
     agent.tools = [

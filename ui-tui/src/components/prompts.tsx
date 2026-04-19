@@ -5,6 +5,7 @@ import type { Theme } from '../theme.js'
 import type { ApprovalReq, ClarifyReq, ConfirmReq } from '../types.js'
 
 import { TextInput } from './textInput.js'
+import { isMac } from '../lib/platform.js'
 
 const OPTS = ['once', 'session', 'always', 'deny'] as const
 const LABELS = { always: 'Always allow', deny: 'Deny', once: 'Allow once', session: 'Allow this session' } as const
@@ -125,10 +126,12 @@ export function ClarifyPrompt({ cols = 80, onAnswer, onCancel, req, t }: Clarify
 
         <Box>
           <Text color={t.color.label}>{'> '}</Text>
-          <TextInput columns={Math.max(20, cols - 6)} onChange={setCustom} onSubmit={onAnswer} value={custom} />
+          <TextInput columns={Math.max(20, cols - 6)} allowClipboardHotkeys={isMac} onChange={setCustom} onSubmit={onAnswer} value={custom} />
         </Box>
 
-        <Text color={t.color.dim}>Enter send · Esc {choices.length ? 'back' : 'cancel'} · Ctrl+C cancel</Text>
+        <Text color={t.color.dim}>
+          Enter send · Esc {choices.length ? 'back' : 'cancel'} · {isMac ? 'Cmd+C copy · Cmd+V paste · Ctrl+C cancel' : 'Ctrl+C cancel'}
+        </Text>
       </Box>
     )
   }

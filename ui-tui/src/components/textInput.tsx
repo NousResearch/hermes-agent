@@ -3,6 +3,9 @@ import * as Ink from '@hermes/ink'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { setInputSelection } from '../app/inputSelectionStore.js'
+import { readClipboardText } from '../lib/clipboard.js'
+import { isMac } from '../lib/platform.js'
+import { writeOsc52Clipboard } from '../lib/osc52.js'
 
 type InkExt = typeof Ink & {
   stringWidth: (s: string) => number
@@ -279,6 +282,7 @@ export function TextInput({
   onChange,
   onPaste,
   onSubmit,
+  allowClipboardHotkeys = false,
   mask,
   placeholder = '',
   focus = true
@@ -484,12 +488,50 @@ export function TextInput({
 
   const ins = (v: string, c: number, s: string) => v.slice(0, c) + s + v.slice(c)
 
+  const pastePlainText = (text: string) => {
+    const cleaned = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+
+    if (!cleaned) {
+      return
+    }
+
+    const range = selRange()
+    const nextValue = range
+      ? vRef.current.slice(0, range.start) + cleaned + vRef.current.slice(range.end)
+      : vRef.current.slice(0, curRef.current) + cleaned + vRef.current.slice(curRef.current)
+    const nextCursor = range ? range.start + cleaned.length : curRef.current + cleaned.length
+
+    commit(nextValue, nextCursor)
+  }
+
   useInput(
     (inp: string, k: Key, event: InputEvent) => {
       const eventRaw = event.keypress.raw
 
-      if (eventRaw === '\x1bv' || eventRaw === '\x1bV' || eventRaw === '\x16') {
-        return void emitPaste({ cursor: curRef.current, hotkey: true, text: '', value: vRef.current })
+      if (eventRaw === '\x1bv' || eventRaw === '\x1bV' || eventRaw === '\x16' || (allowClipboardHotkeys && isMac && k.meta && inp.toLowerCase() === 'v')) {
+        if (cbPaste.current) {
+          return void emitPaste({ cursor: curRef.current, hotkey: true, text: '', value: vRef.current })
+        }
+
+        if (allowClipboardHotkeys) {
+          const text = readClipboardText()
+
+          if (text) {
+            return pastePlainText(text)
+          }
+        }
+
+        return
+      }
+
+      if (allowClipboardHotkeys && isMac && k.meta && inp.toLowerCase() === 'c') {
+        const range = selRange()
+
+        if (range) {
+          writeOsc52Clipboard(vRef.current.slice(range.start, range.end))
+        }
+
+        return
       }
 
       if (
@@ -687,6 +729,7 @@ export interface PasteEvent {
 }
 
 interface TextInputProps {
+  allowClipboardHotkeys?: boolean
   columns?: number
   focus?: boolean
   mask?: string

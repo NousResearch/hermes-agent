@@ -2033,12 +2033,26 @@ class BasePlatformAdapter(ABC):
         Used during gateway shutdown/replacement so active sessions from the old
         process do not keep running after adapters are being torn down.
         """
-        tasks = [task for task in self._background_tasks if not task.done()]
-        for task in tasks:
-            self._expected_cancelled_tasks.add(task)
-            task.cancel()
-        if tasks:
+        # Loop until no new tasks appear.  Without this, a message
+        # arriving during the `await asyncio.gather` below would spawn
+        # a fresh _process_message_background task (added to
+        # self._background_tasks at line ~1668 via handle_message),
+        # and the _background_tasks.clear() at the end of this method
+        # would drop the reference — the task runs untracked against a
+        # disconnecting adapter, logs send-failures, and may linger
+        # until it completes on its own.  Retrying the drain until the
+        # task set stabilizes closes the window.
+        MAX_DRAIN_ROUNDS = 5
+        for _ in range(MAX_DRAIN_ROUNDS):
+            tasks = [task for task in self._background_tasks if not task.done()]
+            if not tasks:
+                break
+            for task in tasks:
+                self._expected_cancelled_tasks.add(task)
+                task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
+            # Loop: late-arrival tasks spawned during the gather above
+            # will be in self._background_tasks now.  Re-check.
         self._background_tasks.clear()
         self._expected_cancelled_tasks.clear()
         self._pending_messages.clear()

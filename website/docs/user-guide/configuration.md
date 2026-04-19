@@ -75,7 +75,7 @@ For AI provider setup (OpenRouter, Anthropic, Copilot, custom endpoints, self-ho
 
 ### Provider Request Timeouts
 
-You can set `providers.<id>.request_timeout_seconds` for a provider-wide timeout, plus `providers.<id>.models.<model>.timeout_seconds` for a model-specific override. See the commented example in [`cli-config.yaml.example`](https://github.com/NousResearch/hermes-agent/blob/main/cli-config.yaml.example).
+You can set `providers.<id>.request_timeout_seconds` for a provider-wide timeout, plus `providers.<id>.models.<model>.timeout_seconds` for a model-specific override. Applies to the primary turn client on every transport (OpenAI-wire, native Anthropic, Anthropic-compatible), the fallback chain, and rebuilds after credential rotation. Leaving these unset keeps SDK defaults (OpenAI ≈ 600s, native Anthropic 900s). See the commented example in [`cli-config.yaml.example`](https://github.com/NousResearch/hermes-agent/blob/main/cli-config.yaml.example).
 
 ## Terminal Backend Configuration
 

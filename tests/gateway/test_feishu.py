@@ -2996,3 +2996,90 @@ class TestBuildOutboundPayloadTableDetection(unittest.TestCase):
         adapter = FeishuAdapter(PlatformConfig())
         msg_type, _payload = adapter._build_outbound_payload("hello world")
         self.assertEqual(msg_type, "text")
+
+
+class TestInteractiveCardHelpers(unittest.TestCase):
+    """Tests for Card 2.0 interactive card helpers."""
+
+    def test_should_use_interactive_card_detects_tables(self):
+        """Content with markdown tables triggers interactive card."""
+        from gateway.platforms.feishu import _should_use_interactive_card
+        content_with_table = "Here is a table:\n| A | B |\n| --- | --- |\n| 1 | 2 |"
+        self.assertTrue(_should_use_interactive_card(content_with_table))
+
+    def test_should_use_interactive_card_detects_code_blocks(self):
+        from gateway.platforms.feishu import _should_use_interactive_card
+        self.assertTrue(_should_use_interactive_card("```python\nprint('hello')\n```"))
+
+    def test_should_use_interactive_card_detects_headings(self):
+        from gateway.platforms.feishu import _should_use_interactive_card
+        self.assertTrue(_should_use_interactive_card("# Title\nSome text"))
+
+    def test_should_use_interactive_card_detects_blockquotes(self):
+        from gateway.platforms.feishu import _should_use_interactive_card
+        self.assertTrue(_should_use_interactive_card("> This is a blockquote"))
+
+    def test_should_use_interactive_card_plain_text_no_trigger(self):
+        from gateway.platforms.feishu import _should_use_interactive_card
+        plain = "Just a normal message without any special formatting."
+        self.assertFalse(_should_use_interactive_card(plain))
+
+    def test_should_use_interactive_card_inline_formatting_no_trigger(self):
+        """Simple inline formatting does NOT trigger card."""
+        from gateway.platforms.feishu import _should_use_interactive_card
+        self.assertFalse(_should_use_interactive_card("**bold** and *italic* text"))
+        self.assertFalse(_should_use_interactive_card("[link](https://example.com)"))
+        self.assertFalse(_should_use_interactive_card("5*3=15"))
+
+    def test_build_interactive_markdown_card_structure(self):
+        from gateway.platforms.feishu import _build_interactive_markdown_card
+        import json
+        card_json = _build_interactive_markdown_card("**bold text** and more")
+        card = json.loads(card_json)
+        self.assertIsInstance(card, dict)
+        self.assertEqual(card["schema"], "2.0")
+        self.assertIn("body", card)
+        elements = card["body"]["elements"]
+        self.assertGreaterEqual(len(elements), 1)
+        self.assertEqual(elements[0]["tag"], "markdown")
+        self.assertIn("content", elements[0])
+
+    def test_build_interactive_markdown_card_no_header(self):
+        from gateway.platforms.feishu import _build_interactive_markdown_card
+        import json
+        card_json = _build_interactive_markdown_card("test content")
+        card = json.loads(card_json)
+        self.assertNotIn("header", card)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_build_outbound_payload_interactive_card_mode(self):
+        """When use_interactive_cards=True and content has tables, payload uses 'interactive' mode."""
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._use_interactive_cards_for_markdown = True
+        content_with_table = "| A | B |\n| --- | --- |\n| 1 | 2 |"
+        msg_type, payload = adapter._build_outbound_payload(content_with_table)
+        self.assertEqual(msg_type, "interactive")
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_build_outbound_payload_card_disabled_uses_post(self):
+        """When use_interactive_cards=False, tables still use post mode."""
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._use_interactive_cards_for_markdown = False
+        content_with_table = "| A | B |\n| --- | --- |\n| 1 | 2 |"
+        msg_type, _payload = adapter._build_outbound_payload(content_with_table)
+        self.assertEqual(msg_type, "post")
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_build_outbound_payload_oversized_falls_back_to_post(self):
+        """When card payload exceeds 30KB, falls back to post."""
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._use_interactive_cards_for_markdown = True
+        big_content = "| A | B |\n| --- | --- |\n" + "| x | y |\n" * 5000
+        msg_type, _payload = adapter._build_outbound_payload(big_content)
+        self.assertEqual(msg_type, "post")

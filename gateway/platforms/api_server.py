@@ -197,11 +197,64 @@ def _load_merchant_prompt(merchant_id: str = "", active_skill: str = "") -> str:
                         if len(body) > 4000:
                             body = body[:4000] + "\n\n[…truncated for context budget…]"
                         parts.append(f"# Active Skill: {active_skill}\n\n{body}")
+                        # Resolve `see_also:` references in the workflow's
+                        # frontmatter and inline those pattern SKILL.mds too.
+                        # Local 7-14B models won't proactively skill_view for
+                        # cross-references, so we eagerly concatenate the
+                        # small shared recipes (lock-goods-id, readback-verify,
+                        # …) into the system prompt.  Each pattern is trimmed
+                        # to 2000 chars to keep total budget sane.
+                        for ref in _parse_see_also_refs(body):
+                            ref_md = home / "skills" / ref / "SKILL.md"
+                            if not (ref_md.exists() and ref_md.is_file()):
+                                continue
+                            try:
+                                ref_body = ref_md.read_text(
+                                    encoding="utf-8", errors="replace"
+                                ).strip()
+                                if not ref_body:
+                                    continue
+                                if len(ref_body) > 2000:
+                                    ref_body = ref_body[:2000] + "\n\n[…truncated…]"
+                                parts.append(f"# See-also: {ref}\n\n{ref_body}")
+                            except Exception as e:  # noqa: BLE001
+                                logger.warning(
+                                    "[merchant] failed to read see_also %s: %s",
+                                    ref_md, e,
+                                )
                         break
                 except Exception as e:  # noqa: BLE001
                     logger.warning("[merchant] failed to read %s: %s", skill_md, e)
 
     return "\n\n---\n\n".join(parts)
+
+
+_SEE_ALSO_RE = re.compile(
+    r'(?m)^\s*see_also:\s*$((?:\n\s+-\s*.*)+)',
+)
+_SEE_ALSO_ITEM_RE = re.compile(
+    r'-\s*"?([A-Za-z0-9_./-]+)"?\s*$',
+    re.MULTILINE,
+)
+
+
+def _parse_see_also_refs(skill_md_body: str) -> list:
+    """Pull `see_also:` list entries out of a SKILL.md frontmatter.
+
+    Returns a list of skill folder paths (e.g. ``apmzoom-workflow-patterns/
+    lock-goods-id``) suitable for joining onto ``~/.hermes/skills/``.  Empty
+    list on no frontmatter / no see_also / parse failure.
+    """
+    if not skill_md_body.startswith("---"):
+        return []
+    parts = skill_md_body.split("---", 2)
+    if len(parts) < 3:
+        return []
+    fm = parts[1]
+    m = _SEE_ALSO_RE.search(fm)
+    if not m:
+        return []
+    return _SEE_ALSO_ITEM_RE.findall(m.group(1))
 
 
 class ResponseStore:

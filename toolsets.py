@@ -71,6 +71,42 @@ _CODE_INTEL_TOOLS = [
 ]
 
 
+# Canonical built-in knowledge-surface names for the Priority 1 control-plane
+# freeze. These intentionally distinguish the product-facing knowledge
+# families from older low-level family buckets like `web`, `browser`, `vision`,
+# and `code_intel` without changing behavior yet.
+_KNOWLEDGE_SURFACE_ALIASES = {
+    "repo_code_knowledge": "repo-code-knowledge",
+    "repo-knowledge": "repo-code-knowledge",
+    "web_research_knowledge": "web-research-knowledge",
+    "research-knowledge": "web-research-knowledge",
+    "document_intelligence": "document-pdf-diagram-intelligence",
+    "document-intelligence": "document-pdf-diagram-intelligence",
+}
+
+_CANONICAL_KNOWLEDGE_SURFACES = {
+    "repo-code-knowledge",
+    "web-research-knowledge",
+    "document-pdf-diagram-intelligence",
+}
+
+_REPO_CODE_KNOWLEDGE_TOOLS = [
+    "read_file", "search_files",
+    *_CODE_INTEL_TOOLS,
+]
+
+_WEB_RESEARCH_KNOWLEDGE_TOOLS = [
+    "web_search", "web_extract",
+]
+
+_DOCUMENT_INTELLIGENCE_TOOLS = [
+    "browser_navigate", "browser_snapshot", "browser_click",
+    "browser_scroll", "browser_back", "browser_press",
+    "browser_get_images", "browser_vision", "browser_console",
+    "vision_analyze",
+]
+
+
 # Core toolset definitions
 # These can include individual tools or reference other toolsets
 TOOLSETS = {
@@ -192,6 +228,27 @@ TOOLSETS = {
         "description": "Code intelligence tools for AST structure, symbol lookup, definitions, and diagnostics",
         "tools": _CODE_INTEL_TOOLS,
         "includes": []
+    },
+
+    "repo-code-knowledge": {
+        "description": "Canonical built-in repo/code knowledge surface for local file reading, file search, AST structure lookup, and LSP symbol/definition/diagnostic inspection.",
+        "tools": _REPO_CODE_KNOWLEDGE_TOOLS,
+        "includes": [],
+        "aliases": ["repo_code_knowledge", "repo-knowledge"],
+    },
+
+    "web-research-knowledge": {
+        "description": "Canonical built-in web/research knowledge surface for live web search and page extraction. This is a built-in web intelligence surface, not an additive MCP crawl stack.",
+        "tools": _WEB_RESEARCH_KNOWLEDGE_TOOLS,
+        "includes": [],
+        "aliases": ["web_research_knowledge", "research-knowledge"],
+    },
+
+    "document-pdf-diagram-intelligence": {
+        "description": "Canonical built-in document/PDF/diagram intelligence surface for browser navigation, page inspection, image collection, and vision analysis. This is built-in document intelligence, not a standalone PDF parser or diagram editor.",
+        "tools": _DOCUMENT_INTELLIGENCE_TOOLS,
+        "includes": [],
+        "aliases": ["document_intelligence", "document-intelligence"],
     },
     
     "code_execution": {
@@ -441,9 +498,17 @@ def get_toolset(name: str) -> Optional[Dict[str, Any]]:
         Dict: Toolset definition with description, tools, and includes
         None: If toolset not found
     """
-    toolset = TOOLSETS.get(name)
+    canonical_name = _KNOWLEDGE_SURFACE_ALIASES.get(name, name)
+    toolset = TOOLSETS.get(canonical_name)
     if toolset:
-        return toolset
+        if canonical_name == name:
+            return toolset
+        aliased_toolset = dict(toolset)
+        aliased_toolset["description"] = (
+            f"{toolset['description']} Alias for canonical toolset '{canonical_name}'."
+        )
+        aliased_toolset["canonical_name"] = canonical_name
+        return aliased_toolset
 
     try:
         from tools.registry import registry
@@ -492,6 +557,8 @@ def resolve_toolset(name: str, visited: Set[str] = None) -> List[str]:
     """
     if visited is None:
         visited = set()
+
+    name = _KNOWLEDGE_SURFACE_ALIASES.get(name, name)
     
     # Special aliases that represent all tools across every toolset
     # This ensures future toolsets are automatically included without changes.
@@ -574,6 +641,36 @@ def _get_registry_toolset_aliases() -> Dict[str, str]:
         return {}
 
 
+def get_toolset_contract(name: str) -> Optional[Dict[str, Any]]:
+    """Return control-plane classification metadata for a toolset or alias."""
+    canonical_name = _KNOWLEDGE_SURFACE_ALIASES.get(name, name)
+    toolset = TOOLSETS.get(canonical_name)
+    if toolset:
+        return {
+            "name": name,
+            "canonical_name": canonical_name,
+            "source": "builtin",
+            "is_builtin": True,
+            "is_additive": False,
+            "is_alias": name != canonical_name,
+            "aliases": list(toolset.get("aliases", [])),
+            "is_canonical_knowledge_surface": canonical_name in _CANONICAL_KNOWLEDGE_SURFACES,
+            "boundary_note": (
+                "Canonical built-in control-plane surface; downstream wrappers, propagation, "
+                "and additive MCP/plugin productization stay separate."
+                if canonical_name in _CANONICAL_KNOWLEDGE_SURFACES
+                else "Built-in toolset; not an additive registry surface."
+            ),
+            "tools": resolve_toolset(canonical_name),
+        }
+
+    try:
+        from tools.registry import registry
+        return registry.get_registered_toolset_contract(name)
+    except Exception:
+        return None
+
+
 def get_all_toolsets() -> Dict[str, Dict[str, Any]]:
     """
     Get all available toolsets with their definitions.
@@ -583,7 +680,10 @@ def get_all_toolsets() -> Dict[str, Dict[str, Any]]:
     Returns:
         Dict: All toolset definitions
     """
-    result = dict(TOOLSETS)
+    result = {}
+    for name, toolset in TOOLSETS.items():
+        contract = get_toolset_contract(name) or {}
+        result[name] = {**toolset, **contract}
     aliases = _get_registry_toolset_aliases()
     for ts_name in _get_plugin_toolset_names():
         display_name = ts_name
@@ -595,7 +695,8 @@ def get_all_toolsets() -> Dict[str, Dict[str, Any]]:
             continue
         toolset = get_toolset(display_name)
         if toolset:
-            result[display_name] = toolset
+            contract = get_toolset_contract(display_name) or {}
+            result[display_name] = {**toolset, **contract}
     return result
 
 
@@ -634,6 +735,8 @@ def validate_toolset(name: str) -> bool:
     """
     # Accept special alias names for convenience
     if name in {"all", "*"}:
+        return True
+    if name in _KNOWLEDGE_SURFACE_ALIASES:
         return True
     if name in TOOLSETS:
         return True
@@ -681,6 +784,7 @@ def get_toolset_info(name: str) -> Dict[str, Any]:
         return None
     
     resolved_tools = resolve_toolset(name)
+    contract = get_toolset_contract(name) or {}
     
     return {
         "name": name,
@@ -689,7 +793,16 @@ def get_toolset_info(name: str) -> Dict[str, Any]:
         "includes": toolset["includes"],
         "resolved_tools": resolved_tools,
         "tool_count": len(resolved_tools),
-        "is_composite": bool(toolset["includes"])
+        "is_composite": bool(toolset["includes"]),
+        "canonical_name": contract.get("canonical_name", name),
+        "source": contract.get("source"),
+        "is_builtin": contract.get("is_builtin", False),
+        "is_additive": contract.get("is_additive", False),
+        "is_alias": contract.get("is_alias", False),
+        "is_canonical_knowledge_surface": contract.get(
+            "is_canonical_knowledge_surface", False
+        ),
+        "boundary_note": contract.get("boundary_note"),
     }
 
 

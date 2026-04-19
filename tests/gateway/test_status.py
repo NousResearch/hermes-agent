@@ -37,7 +37,7 @@ class TestGatewayPidState:
             "start_time": 123,
         }))
 
-        monkeypatch.setattr(status.os, "kill", lambda pid, sig: None)
+        monkeypatch.setattr(status, "_process_exists", lambda pid: True)
         monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 123)
         monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: None)
 
@@ -53,7 +53,7 @@ class TestGatewayPidState:
             "start_time": 123,
         }))
 
-        monkeypatch.setattr(status.os, "kill", lambda pid, sig: None)
+        monkeypatch.setattr(status, "_process_exists", lambda pid: True)
         monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 123)
         monkeypatch.setattr(
             status,
@@ -74,7 +74,7 @@ class TestGatewayPidState:
             "start_time": 123,
         }))
 
-        monkeypatch.setattr(status.os, "kill", lambda pid, sig: None)
+        monkeypatch.setattr(status, "_process_exists", lambda pid: True)
         monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 123)
         monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: None)
 
@@ -197,7 +197,7 @@ class TestScopedLocks:
             "kind": "hermes-gateway",
         }))
 
-        monkeypatch.setattr(status.os, "kill", lambda pid, sig: None)
+        monkeypatch.setattr(status, "_process_exists", lambda pid: True)
         monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 123)
 
         acquired, existing = status.acquire_scoped_lock("telegram-bot-token", "secret", metadata={"platform": "telegram"})
@@ -215,10 +215,7 @@ class TestScopedLocks:
             "kind": "hermes-gateway",
         }))
 
-        def fake_kill(pid, sig):
-            raise ProcessLookupError
-
-        monkeypatch.setattr(status.os, "kill", fake_kill)
+        monkeypatch.setattr(status, "_process_exists", lambda pid: False)
 
         acquired, existing = status.acquire_scoped_lock("telegram-bot-token", "secret", metadata={"platform": "telegram"})
 

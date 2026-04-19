@@ -29,6 +29,39 @@ _IS_WINDOWS = sys.platform == "win32"
 _UNSET = object()
 
 
+def _process_exists(pid: int) -> bool:
+    """Return True when a PID exists without relying on POSIX-only semantics."""
+    if pid <= 0:
+        return False
+
+    if _IS_WINDOWS:
+        try:
+            import ctypes
+
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            handle = ctypes.windll.kernel32.OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION,
+                False,
+                pid,
+            )
+            if handle:
+                ctypes.windll.kernel32.CloseHandle(handle)
+                return True
+
+            # Protected system processes can deny access while still existing.
+            return ctypes.GetLastError() == 5
+        except Exception:
+            return False
+
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
 def _get_pid_path() -> Path:
     """Return the path to the gateway PID file, respecting HERMES_HOME."""
     home = get_hermes_home()
@@ -338,34 +371,31 @@ def acquire_scoped_lock(scope: str, identity: str, metadata: Optional[dict[str, 
             return True, existing
 
         stale = existing_pid is None
-        if not stale:
-            try:
-                os.kill(existing_pid, 0)
-            except (ProcessLookupError, PermissionError):
+        if not stale and not _process_exists(existing_pid):
+            stale = True
+        elif not stale:
+            current_start = _get_process_start_time(existing_pid)
+            if (
+                existing.get("start_time") is not None
+                and current_start is not None
+                and current_start != existing.get("start_time")
+            ):
                 stale = True
-            else:
-                current_start = _get_process_start_time(existing_pid)
-                if (
-                    existing.get("start_time") is not None
-                    and current_start is not None
-                    and current_start != existing.get("start_time")
-                ):
-                    stale = True
-                # Check if process is stopped (Ctrl+Z / SIGTSTP) — stopped
-                # processes still respond to os.kill(pid, 0) but are not
-                # actually running. Treat them as stale so --replace works.
-                if not stale:
-                    try:
-                        _proc_status = Path(f"/proc/{existing_pid}/status")
-                        if _proc_status.exists():
-                            for _line in _proc_status.read_text().splitlines():
-                                if _line.startswith("State:"):
-                                    _state = _line.split()[1]
-                                    if _state in ("T", "t"):  # stopped or tracing stop
-                                        stale = True
-                                    break
-                    except (OSError, PermissionError):
-                        pass
+            # Check if process is stopped (Ctrl+Z / SIGTSTP) — stopped
+            # processes still respond to existence checks but are not actually
+            # running. Treat them as stale so --replace works.
+            if not stale:
+                try:
+                    _proc_status = Path(f"/proc/{existing_pid}/status")
+                    if _proc_status.exists():
+                        for _line in _proc_status.read_text().splitlines():
+                            if _line.startswith("State:"):
+                                _state = _line.split()[1]
+                                if _state in ("T", "t"):  # stopped or tracing stop
+                                    stale = True
+                                break
+                except (OSError, PermissionError):
+                    pass
         if stale:
             try:
                 lock_path.unlink(missing_ok=True)
@@ -574,9 +604,7 @@ def get_running_pid(
         _cleanup_invalid_pid_path(resolved_pid_path, cleanup_stale=cleanup_stale)
         return None
 
-    try:
-        os.kill(pid, 0)  # signal 0 = existence check, no actual signal sent
-    except (ProcessLookupError, PermissionError):
+    if not _process_exists(pid):
         _cleanup_invalid_pid_path(resolved_pid_path, cleanup_stale=cleanup_stale)
         return None
 

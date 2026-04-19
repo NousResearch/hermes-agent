@@ -304,7 +304,7 @@ class MattermostAdapter(BasePlatformAdapter):
         )
 
     async def edit_message(
-        self, chat_id: str, message_id: str, content: str
+        self, chat_id: str, message_id: str, content: str, *, finalize: bool = False
     ) -> SendResult:
         """Edit an existing post."""
         formatted = self.format_message(content)

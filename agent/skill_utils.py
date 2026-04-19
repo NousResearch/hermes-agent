@@ -210,7 +210,13 @@ def get_external_skills_dirs() -> List[Path]:
             continue
         # Expand ~ and environment variables
         expanded = os.path.expanduser(os.path.expandvars(entry))
-        p = Path(expanded).resolve()
+        p = Path(expanded)
+        # Resolve relative paths against the config file's directory,
+        # not the process cwd, for consistent behavior across CLI/gateway/cron.
+        if not p.is_absolute():
+            p = (config_path.parent / p).resolve()
+        else:
+            p = p.resolve()
         if p == local_skills:
             continue
         if p in seen:

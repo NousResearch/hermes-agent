@@ -444,6 +444,7 @@ def _process_batch_worker(args: Tuple) -> Dict[str, Any]:
             if not reasoning.get("has_any_reasoning", True):
                 print(f"   🚫 Prompt {prompt_index} discarded (no reasoning in any turn)")
                 discarded_no_reasoning += 1
+                completed_in_batch.append(prompt_index)
                 continue
             
             # Get and normalize tool stats for consistent schema across all entries

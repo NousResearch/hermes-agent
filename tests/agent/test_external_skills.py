@@ -155,3 +155,41 @@ class TestExternalSkillView:
             result = json.loads(skill_view("my-external-skill"))
         assert result["success"] is True
         assert "external things" in result["content"]
+
+
+class TestExternalSkillsRelativePathResolution:
+    """Test that relative external_dirs paths resolve against config location, not cwd."""
+
+    def test_relative_path_resolved_against_config_dir(self, tmp_path):
+        """A relative path like '../shared-skills' should resolve from the config directory."""
+        # Create HERMES_HOME with config
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "skills").mkdir()
+
+        # Create external skills directory NEXT to hermes_home (not inside)
+        shared_skills = tmp_path / "shared-skills"
+        skill_dir = shared_skills / "my-skill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: my-skill\ndescription: A shared skill\n---\nShared.\n"
+        )
+
+        # Config uses a relative path: ../shared-skills
+        (hermes_home / "config.yaml").write_text(
+            "skills:\n  external_dirs:\n    - ../shared-skills\n"
+        )
+
+        # Chdir to a completely different location to prove cwd doesn't matter
+        other_dir = tmp_path / "other-cwd"
+        other_dir.mkdir()
+
+        with (
+            patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}),
+            patch("os.getcwd", return_value=str(other_dir)),
+        ):
+            from agent.skill_utils import get_external_skills_dirs
+            result = get_external_skills_dirs()
+
+        assert len(result) == 1
+        assert result[0] == shared_skills.resolve()

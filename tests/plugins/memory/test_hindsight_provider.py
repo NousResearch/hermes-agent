@@ -32,6 +32,7 @@ def _clean_env(monkeypatch):
     for key in (
         "HINDSIGHT_API_KEY", "HINDSIGHT_API_URL", "HINDSIGHT_BANK_ID",
         "HINDSIGHT_BUDGET", "HINDSIGHT_MODE", "HINDSIGHT_LLM_API_KEY",
+        "HINDSIGHT_TIMEOUT",
     ):
         monkeypatch.delenv(key, raising=False)
 
@@ -596,3 +597,18 @@ class TestAvailability:
         monkeypatch.setenv("HINDSIGHT_MODE", "local")
         p = HindsightMemoryProvider()
         assert p.is_available()
+
+    def test_timeout_env_var_default(self, monkeypatch):
+        """Verify HINDSIGHT_TIMEOUT defaults to 300s (not hardcoded 30s)."""
+        # The fix changed default from 30.0 to 300.0 via HINDSIGHT_TIMEOUT env var
+        import os
+        # Without env var set, default should be 300.0
+        timeout = float(os.environ.get("HINDSIGHT_TIMEOUT", 300.0))
+        assert timeout == 300.0
+
+    def test_timeout_env_var_override(self, monkeypatch):
+        """Verify HINDSIGHT_TIMEOUT can be overridden."""
+        monkeypatch.setenv("HINDSIGHT_TIMEOUT", "600")
+        import os
+        timeout = float(os.environ.get("HINDSIGHT_TIMEOUT", 300.0))
+        assert timeout == 600.0

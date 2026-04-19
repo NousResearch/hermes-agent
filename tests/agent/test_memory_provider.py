@@ -155,6 +155,26 @@ class TestMemoryManager:
         assert [p.name for p in mgr.providers] == ["builtin", "mem0"]
         assert len(mgr.providers) == 2
 
+    def test_failed_provider_rollback(self):
+        """If get_tool_schemas() raises, the provider should not be registered."""
+        class BrokenProvider(FakeMemoryProvider):
+            def get_tool_schemas(self):
+                raise RuntimeError("schema load failed")
+
+        mgr = MemoryManager()
+        with pytest.raises(RuntimeError, match="schema load failed"):
+            mgr.add_provider(BrokenProvider("broken"))
+
+        # The broken provider should NOT be in the list
+        assert [p.name for p in mgr.providers] == []
+        assert mgr._has_external is False
+
+        # A subsequent valid provider should still work
+        ok = FakeMemoryProvider("ok")
+        mgr.add_provider(ok)
+        assert [p.name for p in mgr.providers] == ["ok"]
+        assert mgr._has_external is True
+
     def test_system_prompt_merges_blocks(self):
         mgr = MemoryManager()
         p1 = FakeMemoryProvider("builtin")

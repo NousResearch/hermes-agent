@@ -100,14 +100,6 @@ GitHub workflow skills for managing repositories, pull requests, code reviews, i
 | `github-pr-workflow` | Full pull request lifecycle — create branches, commit changes, open PRs, monitor CI status, auto-fix failures, and merge. Works with gh CLI or falls back to git + GitHub REST API via curl. | `github/github-pr-workflow` |
 | `github-repo-management` | Clone, create, fork, configure, and manage GitHub repositories. Manage remotes, secrets, releases, and workflows. Works with gh CLI or falls back to git + GitHub REST API via curl. | `github/github-repo-management` |
 
-## leisure
-
-Skills for discovery and everyday tasks.
-
-| Skill | Description | Path |
-|-------|-------------|------|
-| `find-nearby` | Find nearby places (restaurants, cafes, bars, pharmacies, etc.) using OpenStreetMap. Works with coordinates, addresses, cities, zip codes, or Telegram location pins. No API keys needed. | `leisure/find-nearby` |
-
 ## mcp
 
 Skills for working with MCP (Model Context Protocol) servers, tools, and integrations.
@@ -198,6 +190,7 @@ Skills for document creation, presentations, spreadsheets, and other productivit
 |-------|-------------|------|
 | `google-workspace` | Gmail, Calendar, Drive, Contacts, Sheets, and Docs integration for Hermes. Uses Hermes-managed OAuth2 setup, prefers the Google Workspace CLI (`gws`) when available for broader API coverage, and falls back to the Python client libraries otherwise. | `productivity/google-workspace` |
 | `linear` | Manage Linear issues, projects, and teams via the GraphQL API. Create, update, search, and organize issues. Uses API key auth (no OAuth needed). All operations via curl — no dependencies. | `productivity/linear` |
+| `maps` | Location intelligence — geocode, reverse-geocode, nearby POI search (44 categories, coordinates or address via `--near`), driving/walking/cycling distance + time, turn-by-turn directions, timezone, bounding box + area, POI search in a rectangle. Uses OpenStreetMap + Overpass + OSRM. No API key needed. Telegram location-pin friendly. | `productivity/maps` |
 | `nano-pdf` | Edit PDFs with natural-language instructions using the nano-pdf CLI. Modify text, fix typos, update titles, and make content changes to specific pages without manual editing. | `productivity/nano-pdf` |
 | `notion` | Notion API for creating and managing pages, databases, and blocks via curl. Search, create, update, and query Notion workspaces directly from the terminal. | `productivity/notion` |
 | `ocr-and-documents` | Extract text from PDFs and scanned documents. Use web_extract for remote URLs, pymupdf for local text-based PDFs, marker-pdf for OCR/scanned docs. For DOCX use python-docx, for PPTX see the powerpoint skill. | `productivity/ocr-and-documents` |

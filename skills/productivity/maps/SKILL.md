@@ -1,17 +1,20 @@
 ---
 name: maps
 description: >
-  Geocoding, reverse geocoding, nearby POI search (44 categories),
-  distance/routing, turn-by-turn directions, timezone lookup, bounding box
-  search, and area info. Uses OpenStreetMap + Overpass + OSRM. Free, no API key.
-version: 1.1.0
+  Location intelligence — geocode a place, reverse-geocode coordinates,
+  find nearby places (44 POI categories), driving/walking/cycling
+  distance + time, turn-by-turn directions, timezone lookup, bounding
+  box + area for a named place, and POI search within a rectangle.
+  Uses OpenStreetMap + Overpass + OSRM. Free, no API key.
+version: 1.2.0
 author: Mibayy
 license: MIT
 metadata:
   hermes:
-    tags: [maps, geocoding, places, routing, distance, directions, openstreetmap, nominatim, overpass, osrm]
+    tags: [maps, geocoding, places, routing, distance, directions, nearby, location, openstreetmap, nominatim, overpass, osrm]
     category: productivity
     requires_toolsets: [terminal]
+    supersedes: [find-nearby]
 ---
 
 # Maps Skill
@@ -21,21 +24,26 @@ categories, zero dependencies (Python stdlib only), no API key required.
 
 Data sources: OpenStreetMap/Nominatim, Overpass API, OSRM, TimeAPI.io.
 
+This skill supersedes the old `find-nearby` skill — all of find-nearby's
+functionality is covered by the `nearby` command below, with the same
+`--near "<place>"` shortcut and multi-category support.
+
 ## When to Use
 
-- User wants coordinates for a place name
-- User has coordinates and wants the address
-- User asks for nearby restaurants, hospitals, pharmacies, hotels, etc.
-- User wants driving/walking/cycling distance or travel time
-- User wants turn-by-turn directions between two places
-- User wants timezone information for a location
-- User wants to search for POIs within a geographic area
+- User sends a Telegram location pin (latitude/longitude in the message) → `nearby`
+- User wants coordinates for a place name → `search`
+- User has coordinates and wants the address → `reverse`
+- User asks for nearby restaurants, hospitals, pharmacies, hotels, etc. → `nearby`
+- User wants driving/walking/cycling distance or travel time → `distance`
+- User wants turn-by-turn directions between two places → `directions`
+- User wants timezone information for a location → `timezone`
+- User wants to search for POIs within a geographic area → `area` + `bbox`
 
 ## Prerequisites
 
 Python 3.8+ (stdlib only — no pip installs needed).
 
-Script path after install: `~/.hermes/skills/maps/scripts/maps_client.py`
+Script path: `~/.hermes/skills/maps/scripts/maps_client.py`
 
 ## Commands
 
@@ -63,9 +71,16 @@ Returns: full address breakdown (street, city, state, country, postcode).
 ### nearby — Find places by category
 
 ```bash
+# By coordinates (from a Telegram location pin, for example)
 python3 $MAPS nearby 48.8584 2.2945 restaurant --limit 10
 python3 $MAPS nearby 40.7128 -74.0060 hospital --radius 2000
-python3 $MAPS nearby 51.5074 -0.1278 cafe --limit 5 --radius 300
+
+# By address / city / zip / landmark — --near auto-geocodes
+python3 $MAPS nearby --near "Times Square, New York" --category cafe
+python3 $MAPS nearby --near "90210" --category pharmacy
+
+# Multiple categories merged into one query
+python3 $MAPS nearby --near "downtown austin" --category restaurant --category bar --limit 10
 ```
 
 44 categories: restaurant, cafe, bar, hospital, pharmacy, hotel, supermarket,
@@ -74,6 +89,11 @@ fire_station, library, airport, train_station, bus_stop, church, mosque,
 synagogue, dentist, doctor, cinema, theatre, gym, swimming_pool, post_office,
 convenience_store, bakery, bookshop, laundry, car_wash, car_rental,
 bicycle_rental, taxi, veterinary, zoo, playground, stadium, nightclub.
+
+Each result includes: `name`, `address`, `lat`/`lon`, `distance_m`,
+`maps_url` (clickable Google Maps link), `directions_url` (Google Maps
+directions from the search point), and promoted tags when available —
+`cuisine`, `hours` (opening_hours), `phone`, `website`.
 
 ### distance — Travel distance and time
 
@@ -124,11 +144,31 @@ python3 $MAPS bbox 40.75 -74.00 40.77 -73.98 restaurant --limit 20
 Finds POIs within a geographic rectangle. Use `area` first to get the
 bounding box coordinates for a named place.
 
+## Working With Telegram Location Pins
+
+When a user sends a location pin, the message contains `latitude:` and
+`longitude:` fields. Extract those and pass them straight to `nearby`:
+
+```bash
+# User sent a pin at 36.17, -115.14 and asked "find cafes nearby"
+python3 $MAPS nearby 36.17 -115.14 cafe --radius 1500
+```
+
+Present results as a numbered list with names, distances, and the
+`maps_url` field so the user gets a tap-to-open link in chat. For "open
+now?" questions, check the `hours` field; if missing or unclear, verify
+with `web_search` since OSM hours are community-maintained and not always
+current.
+
 ## Workflow Examples
 
 **"Find Italian restaurants near the Colosseum":**
-1. `search "Colosseum Rome"` → get lat/lon
-2. `nearby LAT LON restaurant --radius 500`
+1. `nearby --near "Colosseum Rome" --category restaurant --radius 500`
+   — one command, auto-geocoded
+
+**"What's near this location pin they sent?":**
+1. Extract lat/lon from the Telegram message
+2. `nearby LAT LON cafe --radius 1500`
 
 **"How do I walk from hotel to conference center?":**
 1. `directions "Hotel Name" --to "Conference Center" --mode walking`
@@ -140,14 +180,19 @@ bounding box coordinates for a named place.
 ## Pitfalls
 
 - Nominatim ToS: max 1 req/s (handled automatically by the script)
-- `nearby` requires lat/lon — use `search` first to get coordinates
+- `nearby` requires lat/lon OR `--near "<address>"` — one of the two is needed
 - OSRM routing coverage is best for Europe and North America
-- Overpass API can be slow during peak hours (script retries automatically)
+- Overpass API can be slow during peak hours; the script automatically
+  falls back between mirrors (overpass-api.de → overpass.kumi.systems)
 - `distance` and `directions` use `--to` flag for the destination (not positional)
+- If a zip code alone gives ambiguous results globally, include country/state
 
 ## Verification
 
 ```bash
 python3 ~/.hermes/skills/maps/scripts/maps_client.py search "Statue of Liberty"
 # Should return lat ~40.689, lon ~-74.044
+
+python3 ~/.hermes/skills/maps/scripts/maps_client.py nearby --near "Times Square" --category restaurant --limit 3
+# Should return a list of restaurants within ~500m of Times Square
 ```

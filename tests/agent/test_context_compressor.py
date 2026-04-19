@@ -222,7 +222,7 @@ class TestNonStringContent:
             "api_mode": "codex_responses",
         }
 
-    def test_summary_prompt_uses_markdown_snapshot_and_dense_word_target(self):
+    def test_summary_prompt_uses_markdown_snapshot_and_adaptive_handoff_guidance(self):
         mock_response = MagicMock()
         mock_response.choices = [MagicMock()]
         mock_response.choices[0].message.content = "ok"
@@ -241,7 +241,8 @@ class TestNonStringContent:
         prompt = mock_call.call_args.kwargs["messages"][0]["content"]
         assert "SESSION_SNAPSHOT.md" in prompt
         assert "```md" in prompt
-        assert "roughly 500 dense words" in prompt
+        assert "Choose the summary length that best fits the size and complexity of this session." in prompt
+        assert "main goal, major achievements, key events, blockers, and what still needs to be done in future turns" in prompt
 
 
 class TestSummaryFailureCooldown:

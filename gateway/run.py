@@ -3019,9 +3019,13 @@ class GatewayRunner:
                     adapter._pending_messages[_quick_key] = queued_event
                 return "Queued for the next turn."
 
-            # /model must not be used while the agent is running.
+            # /model is now in ACTIVE_SESSION_BYPASS_COMMANDS so the adapter-
+            # layer dispatch (gateway/platforms/base.py:1617) routes it directly
+            # to the handler before we ever reach this block for
+            # Telegram/etc.  Kept as a defensive fallback in case the allowlist
+            # is later narrowed or an adapter skips the bypass check.
             if _cmd_def_inner and _cmd_def_inner.name == "model":
-                return "Agent is running — wait or /stop first, then switch models."
+                return await self._handle_model_command(event)
 
             # /approve and /deny must bypass the running-agent interrupt path.
             # The agent thread is blocked on a threading.Event inside

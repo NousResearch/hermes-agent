@@ -277,6 +277,21 @@ ACTIVE_SESSION_BYPASS_COMMANDS: frozenset[str] = frozenset(
         "status",
         "stop",
         "update",
+        # Settings / info commands: handlers only mutate config or read state,
+        # they never touch the running agent (no running_agent.* calls, no
+        # _running_agents mutations). Safe to dispatch mid-session.
+        # Without these, the adapter-layer busy handler
+        # (gateway/platforms/base.py:1636) intercepts the command and feeds
+        # its text to the running agent as interrupt input — producing
+        # "⚡ Interrupting current task..." instead of executing the command.
+        "fast",
+        "model",
+        "personality",
+        "provider",
+        "reasoning",
+        "verbose",
+        "voice",
+        "yolo",
     }
 )
 

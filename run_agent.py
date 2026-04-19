@@ -48,7 +48,10 @@ from hermes_constants import get_hermes_home
 # Load .env from ~/.hermes/.env first, then project root as dev fallback.
 # User-managed env files should override stale shell exports on restart.
 from hermes_cli.env_loader import load_hermes_dotenv
-from hermes_cli.timeouts import get_provider_request_timeout
+from hermes_cli.timeouts import (
+    get_provider_request_timeout,
+    get_provider_stale_timeout,
+)
 
 _hermes_home = get_hermes_home()
 _project_env = Path(__file__).parent / '.env'
@@ -2157,6 +2160,44 @@ class AIAgent:
         if cfg is not None:
             return cfg
         return float(os.getenv("HERMES_API_TIMEOUT", 1800.0))
+
+    def _resolved_api_call_stale_timeout_base(self) -> tuple[float, bool]:
+        """Resolve the base non-stream stale timeout and whether it is implicit.
+
+        Priority:
+          1. ``providers.<id>.models.<model>.stale_timeout_seconds``
+          2. ``providers.<id>.stale_timeout_seconds``
+          3. ``HERMES_API_CALL_STALE_TIMEOUT`` env var
+          4. 300.0s default
+
+        Returns ``(timeout_seconds, uses_implicit_default)`` so the caller can
+        preserve legacy behaviors that only apply when the user has *not*
+        explicitly configured a stale timeout, such as auto-disabling the
+        detector for local endpoints.
+        """
+        cfg = get_provider_stale_timeout(self.provider, self.model)
+        if cfg is not None:
+            return cfg, False
+
+        env_timeout = os.getenv("HERMES_API_CALL_STALE_TIMEOUT")
+        if env_timeout is not None:
+            return float(env_timeout), False
+
+        return 300.0, True
+
+    def _compute_non_stream_stale_timeout(self, messages: list[dict[str, Any]]) -> float:
+        """Compute the effective non-stream stale timeout for this request."""
+        stale_base, uses_implicit_default = self._resolved_api_call_stale_timeout_base()
+        base_url = getattr(self, "_base_url", None) or self.base_url or ""
+        if uses_implicit_default and base_url and is_local_endpoint(base_url):
+            return float("inf")
+
+        est_tokens = sum(len(str(v)) for v in messages) // 4
+        if est_tokens > 100_000:
+            return max(stale_base, 600.0)
+        if est_tokens > 50_000:
+            return max(stale_base, 450.0)
+        return stale_base
 
     def _is_openrouter_url(self) -> bool:
         """Return True when the base URL targets OpenRouter."""
@@ -5594,18 +5635,9 @@ class AIAgent:
         # httpx timeout (default 1800s) with zero feedback.  The stale
         # detector kills the connection early so the main retry loop can
         # apply richer recovery (credential rotation, provider fallback).
-        _stale_base = float(os.getenv("HERMES_API_CALL_STALE_TIMEOUT", 300.0))
-        _base_url = getattr(self, "_base_url", None) or ""
-        if _stale_base == 300.0 and _base_url and is_local_endpoint(_base_url):
-            _stale_timeout = float("inf")
-        else:
-            _est_tokens = sum(len(str(v)) for v in api_kwargs.get("messages", [])) // 4
-            if _est_tokens > 100_000:
-                _stale_timeout = max(_stale_base, 600.0)
-            elif _est_tokens > 50_000:
-                _stale_timeout = max(_stale_base, 450.0)
-            else:
-                _stale_timeout = _stale_base
+        _stale_timeout = self._compute_non_stream_stale_timeout(
+            api_kwargs.get("messages", [])
+        )
 
         _call_start = time.time()
         self._touch_activity("waiting for non-streaming API response")

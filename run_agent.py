@@ -7897,6 +7897,14 @@ class AIAgent:
             return result
         elif self._memory_manager and self._memory_manager.has_tool(function_name):
             return self._memory_manager.handle_tool_call(function_name, function_args)
+        elif function_name == "compress_context":
+            from tools.compress_context_tool import compress_context_tool as _compress_context_tool
+            return _compress_context_tool(
+                protect_last_n=function_args.get("protect_last_n", 20),
+                target_ratio=function_args.get("target_ratio", 0.20),
+                focus_topic=function_args.get("focus_topic"),
+                agent=self,
+            )
         elif function_name == "clarify":
             from tools.clarify_tool import clarify_tool as _clarify_tool
             return _clarify_tool(
@@ -8247,6 +8255,30 @@ class AIAgent:
         # so the steer marker is never truncated. See steer() for details.
         if num_tools > 0:
             self._apply_pending_steer_to_tool_results(messages, num_tools)
+
+        # ── Handle pending compression request from compress_context tool ─────────────────────────
+        if hasattr(self, '_pending_compression_request') and self._pending_compression_request:
+            try:
+                params = self._pending_compression_request
+                self._pending_compression_request = {}
+                from agent.model_metadata import estimate_messages_tokens_rough
+
+                approx_tokens = estimate_messages_tokens_rough(messages)
+                messages_out, active_system_prompt = self._compress_context(
+                    messages,
+                    self._cached_system_prompt or "",
+                    approx_tokens=approx_tokens,
+                    focus_topic=params.get('focus_topic'),
+                )
+                # Update the messages reference in the caller's scope
+                # Note: Since messages is a list, modifications affect the original
+                messages.clear()
+                messages.extend(messages_out)
+                self._cached_system_prompt = active_system_prompt
+                if not self.quiet_mode:
+                    self._vprint(f"{self.log_prefix}Compression completed per agent request")
+            except Exception as e:
+                logger.warning("Compression via tool request failed: %s", e)
 
     def _execute_tool_calls_sequential(self, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
         """Execute tool calls sequentially (original behavior). Used for single calls or interactive tools."""
@@ -8633,6 +8665,28 @@ class AIAgent:
         if num_tools_seq > 0:
             self._apply_pending_steer_to_tool_results(messages, num_tools_seq)
 
+        # ── Handle pending compression request from compress_context tool ─────────────────────────
+        if hasattr(self, '_pending_compression_request') and self._pending_compression_request:
+            try:
+                params = self._pending_compression_request
+                self._pending_compression_request = {}
+                from agent.model_metadata import estimate_messages_tokens_rough
+
+                approx_tokens = estimate_messages_tokens_rough(messages)
+                messages_out, active_system_prompt = self._compress_context(
+                    messages,
+                    self._cached_system_prompt or "",
+                    approx_tokens=approx_tokens,
+                    focus_topic=params.get('focus_topic'),
+                )
+                # Update the messages reference in the caller's scope
+                messages.clear()
+                messages.extend(messages_out)
+                self._cached_system_prompt = active_system_prompt
+                if not self.quiet_mode:
+                    self._vprint(f"{self.log_prefix}Compression completed per agent request")
+            except Exception as e:
+                logger.warning("Compression via tool request failed: %s", e)
 
 
     def _handle_max_iterations(self, messages: list, api_call_count: int) -> str:

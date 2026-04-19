@@ -63,7 +63,19 @@ model:
   #   Leave unset to use the model's native output ceiling (recommended).
   #   Set only if you want to deliberately limit individual response length.
   #
-  # max_tokens: 8192
+# max_tokens: 8192
+
+# Named provider overrides (optional)
+# Use this for per-provider request timeouts and per-model exceptions.
+#
+# providers:
+#   ollama-local:
+#     request_timeout_seconds: 300   # Longer timeout for local cold-starts
+#   anthropic:
+#     request_timeout_seconds: 30    # Fast-fail cloud requests
+#     models:
+#       claude-opus-4.6:
+#         timeout_seconds: 600       # Longer timeout for extended-thinking Opus calls
 
 # =============================================================================
 # OpenRouter Provider Routing (only applies when using OpenRouter)

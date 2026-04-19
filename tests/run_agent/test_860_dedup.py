@@ -3,7 +3,7 @@
 Verifies that:
 1. _flush_messages_to_session_db uses _last_flushed_db_idx to avoid re-writing
 2. Multiple _persist_session calls don't duplicate messages
-3. append_to_transcript(skip_db=True) skips SQLite but writes JSONL
+3. append_to_transcript(skip_db=True) avoids duplicate SQLite writes
 4. The gateway doesn't double-write messages the agent already persisted
 """
 
@@ -164,13 +164,54 @@ class TestFlushDeduplication:
             old_rows = db.get_messages(old_session)
             assert len(old_rows) == 2
 
+    def test_partial_flush_tracks_persisted_prefix_count(self):
+        """A partial DB failure should report the durable prefix length."""
+        from hermes_state import SessionDB
+
+        class FlakySessionDB:
+            def __init__(self, wrapped):
+                self._wrapped = wrapped
+                self._append_calls = 0
+
+            def create_session(self, *args, **kwargs):
+                return self._wrapped.create_session(*args, **kwargs)
+
+            def ensure_session(self, *args, **kwargs):
+                return self._wrapped.ensure_session(*args, **kwargs)
+
+            def append_message(self, *args, **kwargs):
+                self._append_calls += 1
+                if self._append_calls == 2:
+                    raise sqlite3.OperationalError("database is locked")
+                return self._wrapped.append_message(*args, **kwargs)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            real_db = SessionDB(db_path=db_path)
+            flaky_db = FlakySessionDB(real_db)
+
+            agent = self._make_agent(flaky_db)
+            messages = [
+                {"role": "user", "content": "new question"},
+                {"role": "assistant", "content": "new answer"},
+            ]
+
+            persisted = agent._flush_messages_to_session_db(messages, [])
+
+            rows = real_db.get_messages(agent.session_id)
+            assert persisted == 1
+            assert agent._last_flushed_db_idx == 1
+            assert agent._last_session_db_persisted_count == 1
+            assert len(rows) == 1
+            assert rows[0]["content"] == "new question"
+
 
 # ---------------------------------------------------------------------------
 # Test: append_to_transcript skip_db parameter
 # ---------------------------------------------------------------------------
 
 class TestAppendToTranscriptSkipDb:
-    """Verify skip_db=True writes JSONL but not SQLite."""
+    """Verify skip_db=True avoids duplicate SQLite writes."""
 
     @pytest.fixture()
     def store(self, tmp_path):
@@ -179,17 +220,16 @@ class TestAppendToTranscriptSkipDb:
         config = GatewayConfig()
         with patch("gateway.session.SessionStore._ensure_loaded"):
             s = SessionStore(sessions_dir=tmp_path, config=config)
-        s._db = None  # no SQLite for these JSONL-focused tests
+        s._db = None  # force legacy fallback mode
         s._loaded = True
         return s
 
-    def test_skip_db_writes_jsonl_only(self, store, tmp_path):
-        """With skip_db=True, message appears in JSONL but not SQLite."""
+    def test_skip_db_uses_jsonl_fallback_without_sqlite(self, store, tmp_path):
+        """Without SQLite, JSONL remains the fallback transcript backend."""
         session_id = "test-skip-db"
         msg = {"role": "assistant", "content": "hello world"}
         store.append_to_transcript(session_id, msg, skip_db=True)
 
-        # JSONL should have the message
         jsonl_path = store.get_transcript_path(session_id)
         assert jsonl_path.exists()
         with open(jsonl_path) as f:
@@ -199,7 +239,7 @@ class TestAppendToTranscriptSkipDb:
         assert parsed["content"] == "hello world"
 
     def test_skip_db_prevents_sqlite_write(self, tmp_path):
-        """With skip_db=True and a real DB, message does NOT appear in SQLite."""
+        """With skip_db=True and a real DB, SessionStore writes nowhere."""
         from gateway.config import GatewayConfig
         from gateway.session import SessionStore
         from hermes_state import SessionDB
@@ -219,18 +259,14 @@ class TestAppendToTranscriptSkipDb:
         msg = {"role": "assistant", "content": "hello world"}
         store.append_to_transcript(session_id, msg, skip_db=True)
 
-        # SQLite should NOT have the message
         rows = db.get_messages(session_id)
         assert len(rows) == 0, f"Expected 0 DB rows with skip_db=True, got {len(rows)}"
 
-        # But JSONL should have it
         jsonl_path = store.get_transcript_path(session_id)
-        with open(jsonl_path) as f:
-            lines = f.readlines()
-        assert len(lines) == 1
+        assert not jsonl_path.exists()
 
-    def test_default_writes_both(self, tmp_path):
-        """Without skip_db, message appears in both JSONL and SQLite."""
+    def test_default_writes_sqlite_only_when_db_available(self, tmp_path):
+        """Without skip_db, SQLite is canonical and JSONL stays untouched."""
         from gateway.config import GatewayConfig
         from gateway.session import SessionStore
         from hermes_state import SessionDB
@@ -250,15 +286,46 @@ class TestAppendToTranscriptSkipDb:
         msg = {"role": "user", "content": "test message"}
         store.append_to_transcript(session_id, msg)
 
-        # JSONL should have the message
         jsonl_path = store.get_transcript_path(session_id)
-        with open(jsonl_path) as f:
-            lines = f.readlines()
-        assert len(lines) == 1
+        assert not jsonl_path.exists()
 
-        # SQLite should also have the message
         rows = db.get_messages(session_id)
         assert len(rows) == 1
+
+    def test_partial_agent_flush_can_be_completed_without_duplicates(self, tmp_path):
+        """Gateway can persist only the unflushed tail after a partial DB write."""
+        from gateway.config import GatewayConfig
+        from gateway.session import SessionStore
+        from hermes_state import SessionDB
+
+        db_path = tmp_path / "test_partial.db"
+        db = SessionDB(db_path=db_path)
+
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path, config=config)
+        store._db = db
+        store._loaded = True
+
+        session_id = "test-partial-write"
+        db.create_session(session_id=session_id, source="test")
+        db.append_message(session_id=session_id, role="user", content="hello")
+
+        new_messages = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "world"},
+        ]
+        persisted_count = 1
+        for idx, msg in enumerate(new_messages):
+            store.append_to_transcript(
+                session_id,
+                {**msg, "timestamp": "2026-04-16T00:00:00"},
+                skip_db=idx < persisted_count,
+            )
+
+        rows = db.get_messages_as_conversation(session_id)
+        assert [row["content"] for row in rows] == ["hello", "world"]
+        assert not store.get_transcript_path(session_id).exists()
 
 
 # ---------------------------------------------------------------------------

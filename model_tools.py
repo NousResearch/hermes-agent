@@ -426,6 +426,7 @@ def handle_function_call(
     session_id: Optional[str] = None,
     user_task: Optional[str] = None,
     enabled_tools: Optional[List[str]] = None,
+    session_db: Any = None,
     skip_pre_tool_call_hook: bool = False,
 ) -> str:
     """
@@ -503,12 +504,14 @@ def handle_function_call(
                 function_name, function_args,
                 task_id=task_id,
                 enabled_tools=sandbox_enabled,
+                session_db=session_db,
             )
         else:
             result = registry.dispatch(
                 function_name, function_args,
                 task_id=task_id,
                 user_task=user_task,
+                session_db=session_db,
             )
 
         try:

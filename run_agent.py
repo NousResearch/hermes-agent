@@ -1236,6 +1236,7 @@ class AIAgent:
         self._session_db = session_db
         self._parent_session_id = parent_session_id
         self._last_flushed_db_idx = 0  # tracks DB-write cursor to prevent duplicate writes
+        self._last_session_db_persisted_count = 0  # exact count persisted for the current turn
         if self._session_db:
             try:
                 self._session_db.create_session(
@@ -2590,11 +2591,15 @@ class AIAgent:
         Skipped when ``persist_session=False`` (ephemeral helper flows).
         """
         if not self.persist_session:
-            return
+            self._last_session_db_persisted_count = 0
+            return 0
         self._apply_persist_user_message_override(messages)
         self._session_messages = messages
         self._save_session_log(messages)
-        self._flush_messages_to_session_db(messages, conversation_history)
+        self._last_session_db_persisted_count = self._flush_messages_to_session_db(
+            messages, conversation_history
+        )
+        return self._last_session_db_persisted_count
 
     def _flush_messages_to_session_db(self, messages: List[Dict], conversation_history: List[Dict] = None):
         """Persist any un-flushed messages to the SQLite session store.
@@ -2604,8 +2609,10 @@ class AIAgent:
         truly new messages — preventing the duplicate-write bug (#860).
         """
         if not self._session_db:
-            return
+            self._last_session_db_persisted_count = 0
+            return 0
         self._apply_persist_user_message_override(messages)
+        start_idx = len(conversation_history) if conversation_history else 0
         try:
             # If create_session() failed at startup (e.g. transient lock), the
             # session row may not exist yet.  ensure_session() uses INSERT OR
@@ -2615,9 +2622,8 @@ class AIAgent:
                 source=self.platform or "cli",
                 model=self.model,
             )
-            start_idx = len(conversation_history) if conversation_history else 0
             flush_from = max(start_idx, self._last_flushed_db_idx)
-            for msg in messages[flush_from:]:
+            for msg_idx, msg in enumerate(messages[flush_from:], start=flush_from):
                 role = msg.get("role", "unknown")
                 content = msg.get("content")
                 tool_calls_data = None
@@ -2640,9 +2646,14 @@ class AIAgent:
                     reasoning_details=msg.get("reasoning_details") if role == "assistant" else None,
                     codex_reasoning_items=msg.get("codex_reasoning_items") if role == "assistant" else None,
                 )
-            self._last_flushed_db_idx = len(messages)
+                self._last_flushed_db_idx = msg_idx + 1
         except Exception as e:
             logger.warning("Session DB append_message failed: %s", e)
+        self._last_session_db_persisted_count = max(
+            0,
+            min(len(messages), self._last_flushed_db_idx) - start_idx,
+        )
+        return self._last_session_db_persisted_count
 
     def _get_messages_up_to_last_assistant(self, messages: List[Dict]) -> List[Dict]:
         """
@@ -7795,6 +7806,7 @@ class AIAgent:
                 tool_call_id=tool_call_id,
                 session_id=self.session_id or "",
                 enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
+                session_db=self._session_db,
                 skip_pre_tool_call_hook=True,
             )
 
@@ -8393,6 +8405,7 @@ class AIAgent:
                         tool_call_id=tool_call.id,
                         session_id=self.session_id or "",
                         enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
+                        session_db=self._session_db,
                         skip_pre_tool_call_hook=True,
                     )
                     _spinner_result = function_result
@@ -8413,6 +8426,7 @@ class AIAgent:
                         tool_call_id=tool_call.id,
                         session_id=self.session_id or "",
                         enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
+                        session_db=self._session_db,
                         skip_pre_tool_call_hook=True,
                     )
                 except Exception as tool_error:
@@ -8778,7 +8792,7 @@ class AIAgent:
         # They are initialized in __init__ and must persist across run_conversation
         # calls so that nudge logic accumulates correctly in CLI mode.
         self.iteration_budget = IterationBudget(self.max_iterations)
-
+        self._last_session_db_persisted_count = 0
         # Log conversation turn start for debugging/observability
         _msg_preview = (user_message[:80] + "...") if len(user_message) > 80 else user_message
         _msg_preview = _msg_preview.replace("\n", " ")

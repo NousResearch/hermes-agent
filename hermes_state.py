@@ -898,7 +898,18 @@ class SessionDB:
             rows = cursor.fetchall()
         messages = []
         for row in rows:
-            msg = {"role": row["role"], "content": row["content"]}
+            if row["role"] == "session_meta" and row["content"]:
+                try:
+                    parsed = json.loads(row["content"])
+                except (json.JSONDecodeError, TypeError):
+                    msg = {"role": row["role"], "content": row["content"]}
+                else:
+                    if isinstance(parsed, dict):
+                        msg = {"role": row["role"], **parsed}
+                    else:
+                        msg = {"role": row["role"], "content": parsed}
+            else:
+                msg = {"role": row["role"], "content": row["content"]}
             if row["tool_call_id"]:
                 msg["tool_call_id"] = row["tool_call_id"]
             if row["tool_name"]:

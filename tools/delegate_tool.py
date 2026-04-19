@@ -24,6 +24,8 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional
+import shlex
+import subprocess
 
 from toolsets import TOOLSETS
 
@@ -677,6 +679,135 @@ def _run_single_child(
         except Exception:
             logger.debug("Failed to close child agent after delegation")
 
+def _run_acp_child(
+    task_index: int,
+    goal: str,
+    acp_command: str,
+    acp_args: Optional[List[str]],
+    config: Optional[dict],
+    parent_agent,
+    task_count: int = 1,
+) -> Dict[str, Any]:
+    """Spawn an external ACP subprocess for a delegated task and return an entry dict.
+
+    This mirrors the shape returned by _run_single_child so callers can
+    treat ACP-backed children and in-process AIAgent children uniformly.
+    """
+    start = time.monotonic()
+    child_progress_cb = _build_child_progress_callback(task_index, goal, parent_agent, task_count)
+    if child_progress_cb:
+        try:
+            child_progress_cb("subagent.start", preview=goal)
+        except Exception as e:
+            logger.debug("Progress callback start failed (ACP child): %s", e)
+
+    try:
+        # Pre-compute chosen model using the same precedence as _launch_subagent
+        args = list(acp_args or [])
+        model_in_args = None
+        model_in_args_found = False
+        for i, a in enumerate(args):
+            if a == "--model" and i + 1 < len(args):
+                model_in_args = args[i + 1]
+                model_in_args_found = True
+                break
+            if a == "-m" and i + 1 < len(args):
+                model_in_args = args[i + 1]
+                model_in_args_found = True
+                break
+            if isinstance(a, str) and a.startswith("--model="):
+                model_in_args = a.split("=", 1)[1]
+                model_in_args_found = True
+                break
+
+        chosen_model = None
+        if model_in_args_found:
+            chosen_model = model_in_args
+        else:
+            env_model = os.getenv("HERMES_MODEL")
+            if env_model and str(env_model).strip():
+                chosen_model = str(env_model).strip()
+            else:
+                cfg_model = None
+                try:
+                    if isinstance(config, dict):
+                        cfg_model = str(config.get("model") or "").strip() or None
+                except Exception:
+                    cfg_model = None
+                if cfg_model:
+                    chosen_model = cfg_model
+
+        # Launch the subprocess (may raise)
+        proc = _launch_subagent(acp_command, acp_args or [], config)
+
+        rc = getattr(proc, "returncode", None)
+        duration = round(time.monotonic() - start, 2)
+
+        summary = ""
+        try:
+            if getattr(proc, "stdout", None):
+                summary = proc.stdout
+            elif getattr(proc, "stderr", None):
+                summary = proc.stderr
+        except Exception:
+            summary = ""
+
+        completed = (rc == 0)
+        status = "completed" if completed else "failed"
+        exit_reason = "completed" if completed else "error"
+
+        entry: Dict[str, Any] = {
+            "task_index": task_index,
+            "status": status,
+            "summary": summary,
+            "api_calls": 0,
+            "duration_seconds": duration,
+            "model": chosen_model if isinstance(chosen_model, str) else None,
+            "exit_reason": exit_reason,
+            "tokens": {"input": 0, "output": 0},
+            "tool_trace": [],
+        }
+        if status == "failed":
+            entry["error"] = f"ACP subprocess exited with returncode {rc}"
+
+        if child_progress_cb:
+            try:
+                child_progress_cb(
+                    "subagent.complete",
+                    preview=(summary or "")[:160],
+                    status=status,
+                    duration_seconds=duration,
+                    summary=(summary or "")[:500],
+                )
+            except Exception as e:
+                logger.debug("Progress callback completion failed (ACP child): %s", e)
+
+        return entry
+
+    except Exception as exc:
+        duration = round(time.monotonic() - start, 2)
+        logging.exception(f"[subagent-{task_index}] acp spawn failed")
+        if child_progress_cb:
+            try:
+                child_progress_cb(
+                    "subagent.complete",
+                    preview=str(exc),
+                    status="failed",
+                    duration_seconds=duration,
+                    summary=str(exc),
+                )
+            except Exception:
+                pass
+        return {
+            "task_index": task_index,
+            "status": "error",
+            "summary": None,
+            "error": str(exc),
+            "api_calls": 0,
+            "duration_seconds": duration,
+        }
+
+
 def delegate_task(
     goal: Optional[str] = None,
     context: Optional[str] = None,
@@ -768,27 +899,46 @@ def delegate_task(
     children = []
     try:
         for i, t in enumerate(task_list):
-            child = _build_child_agent(
-                task_index=i, goal=t["goal"], context=t.get("context"),
-                toolsets=t.get("toolsets") or toolsets, model=creds["model"],
-                max_iterations=effective_max_iter, task_count=n_tasks, parent_agent=parent_agent,
-                override_provider=creds["provider"], override_base_url=creds["base_url"],
-                override_api_key=creds["api_key"],
-                override_api_mode=creds["api_mode"],
-                override_acp_command=t.get("acp_command") or acp_command,
-                override_acp_args=t.get("acp_args") or acp_args,
-            )
-            # Override with correct parent tool names (before child construction mutated global)
-            child._delegate_saved_tool_names = _parent_tool_names
-            children.append((i, t, child))
+            # Determine effective ACP command/args for this task. Priority:
+            # 1. per-task override (t.get('acp_command') / t.get('acp_args'))
+            # 2. top-level acp_command / acp_args passed to delegate_task
+            # 3. provider runtime resolution (creds.get('command') / creds.get('args'))
+            effective_acp_command = t.get("acp_command") or acp_command or creds.get("command")
+            effective_acp_args = list(t.get("acp_args") or acp_args or creds.get("args") or [])
+
+            if effective_acp_command:
+                # This task is backed by an external ACP subprocess. We don't
+                # build an in-process AIAgent for it — record the spawn spec.
+                children.append((i, t, None, {
+                    "acp_command": effective_acp_command,
+                    "acp_args": effective_acp_args,
+                }))
+            else:
+                child = _build_child_agent(
+                    task_index=i, goal=t["goal"], context=t.get("context"),
+                    toolsets=t.get("toolsets") or toolsets, model=creds["model"],
+                    max_iterations=effective_max_iter, task_count=n_tasks, parent_agent=parent_agent,
+                    override_provider=creds["provider"], override_base_url=creds["base_url"],
+                    override_api_key=creds["api_key"],
+                    override_api_mode=creds["api_mode"],
+                    override_acp_command=t.get("acp_command") or acp_command,
+                    override_acp_args=t.get("acp_args") or acp_args,
+                )
+                # Override with correct parent tool names (before child construction mutated global)
+                child._delegate_saved_tool_names = _parent_tool_names
+                children.append((i, t, child, None))
     finally:
         # Authoritative restore: reset global to parent's tool names after all children built
         _model_tools._last_resolved_tool_names = _parent_tool_names
 
     if n_tasks == 1:
         # Single task -- run directly (no thread pool overhead)
-        _i, _t, child = children[0]
-        result = _run_single_child(0, _t["goal"], child, parent_agent)
+        _i, _t, child, acp_spec = children[0]
+        if acp_spec:
+            # Run an external ACP subprocess for this task
+            result = _run_acp_child(_i, _t["goal"], acp_spec["acp_command"], acp_spec.get("acp_args") or [], cfg, parent_agent, task_count=1)
+        else:
+            result = _run_single_child(0, _t["goal"], child, parent_agent)
         results.append(result)
     else:
         # Batch -- run in parallel with per-task progress lines
@@ -797,14 +947,26 @@ def delegate_task(
 
         with ThreadPoolExecutor(max_workers=max_children) as executor:
             futures = {}
-            for i, t, child in children:
-                future = executor.submit(
-                    _run_single_child,
-                    task_index=i,
-                    goal=t["goal"],
-                    child=child,
-                    parent_agent=parent_agent,
-                )
+            for i, t, child, acp_spec in children:
+                if acp_spec:
+                    future = executor.submit(
+                        _run_acp_child,
+                        i,
+                        t["goal"],
+                        acp_spec["acp_command"],
+                        acp_spec.get("acp_args") or [],
+                        cfg,
+                        parent_agent,
+                        n_tasks,
+                    )
+                else:
+                    future = executor.submit(
+                        _run_single_child,
+                        task_index=i,
+                        goal=t["goal"],
+                        child=child,
+                        parent_agent=parent_agent,
+                    )
                 futures[future] = i
 
             # Poll futures with interrupt checking.  as_completed() blocks
@@ -1052,6 +1214,79 @@ def _load_config() -> dict:
         return full.get("delegation", {})
     except Exception:
         return {}
+
+
+def _launch_subagent(acp_command: Optional[str], acp_args: Optional[List[str]], config: Optional[dict] = None):
+    """Launch an ACP subprocess for a subagent.
+
+    Model precedence (strict):
+      1. model specified in acp_args ("--model NAME", "-m NAME", or "--model=NAME")
+      2. HERMES_MODEL environment variable
+      3. delegation config (config.get("model"))
+
+    When a model is selected and not already present in acp_args, this function
+    injects ["--model", model] into the argument list. It also defensively
+    sets HERMES_MODEL in the environment passed to subprocess.run so the child
+    process always sees the same model hint.
+
+    Uses shlex.split for command parsing and runs subprocess.run with
+    shell=False (list-form command).
+    """
+    if not acp_command:
+        raise ValueError("acp_command is required to launch a subagent")
+
+    args = list(acp_args or [])
+
+    # Detect model specified in acp_args
+    model_in_args = None
+    model_in_args_found = False
+    for i, a in enumerate(args):
+        if a == "--model" and i + 1 < len(args):
+            model_in_args = args[i + 1]
+            model_in_args_found = True
+            break
+        if a == "-m" and i + 1 < len(args):
+            model_in_args = args[i + 1]
+            model_in_args_found = True
+            break
+        if a.startswith("--model="):
+            model_in_args = a.split("=", 1)[1]
+            model_in_args_found = True
+            break
+
+    chosen_model = None
+    if model_in_args_found:
+        chosen_model = model_in_args
+    else:
+        env_model = os.getenv("HERMES_MODEL")
+        if env_model and str(env_model).strip():
+            chosen_model = str(env_model).strip()
+        else:
+            cfg_model = None
+            try:
+                if isinstance(config, dict):
+                    cfg_model = str(config.get("model") or "").strip() or None
+            except Exception:
+                cfg_model = None
+            if cfg_model:
+                chosen_model = cfg_model
+
+    # Inject --model flag if we selected a model but it wasn't explicitly in args
+    if chosen_model and not model_in_args_found:
+        args = list(args) + ["--model", chosen_model]
+
+    # Build final command list
+    cmd_list = shlex.split(acp_command) + args
+
+    # Prepare environment for subprocess: copy current env and ensure HERMES_MODEL
+    run_env = os.environ.copy()
+    if chosen_model:
+        run_env["HERMES_MODEL"] = chosen_model
+
+    # Run subprocess with list args and without a shell
+    # Note: callers/tests may patch subprocess.run; we forward kwargs for testability.
+    result = subprocess.run(cmd_list, check=True, env=run_env)
+    return result
 
 
 # ---------------------------------------------------------------------------
